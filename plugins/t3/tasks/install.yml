@@ -1,0 +1,56 @@
+---
+# The selected version is the least one: a newer one from `t3 update` stays.
+- name: Read the T3 version in use
+  ansible.builtin.command:
+    argv: [readlink, "{{ devbox_home }}/.local/bin/t3"]
+  register: devbox_t3_link
+  changed_when: false
+  failed_when: false
+- name: Note the T3 version in use
+  ansible.builtin.set_fact:
+    devbox_t3_current: "{{ devbox_t3_link.stdout | default('') | regex_search('/versions/([^/]+)/t3$', '\\1') | default(['0'], true) | first }}"
+- name: Create pinned T3 version directory
+  ansible.builtin.file:
+    path: "{{ devbox_home }}/.t3/runtime/versions/{{ devbox_t3_version }}"
+    state: directory
+    owner: "{{ devbox_user }}"
+    group: "{{ devbox_user }}"
+    mode: '0755'
+- name: Download verified T3 archive
+  ansible.builtin.get_url:
+    url: "https://github.com/pingdotgg/t3code/releases/download/v{{ devbox_t3_version }}/t3-{{ devbox_t3_version }}-linux-x64.tar.gz"
+    checksum: "sha256:{{ devbox_t3_sha256 }}"
+    dest: "/opt/devbox-tools/t3-{{ devbox_t3_version }}.tar.gz"
+    mode: '0644'
+- name: Extract T3 runtime
+  ansible.builtin.unarchive:
+    src: "/opt/devbox-tools/t3-{{ devbox_t3_version }}.tar.gz"
+    dest: "{{ devbox_home }}/.t3/runtime/versions/{{ devbox_t3_version }}"
+    remote_src: true
+    extra_opts: [--strip-components=1]
+    creates: "{{ devbox_home }}/.t3/runtime/versions/{{ devbox_t3_version }}/t3"
+    owner: "{{ devbox_user }}"
+    group: "{{ devbox_user }}"
+- name: Mark completed T3 installation
+  ansible.builtin.copy:
+    dest: "{{ devbox_home }}/.t3/runtime/versions/{{ devbox_t3_version }}/.install-complete"
+    content: "{{ devbox_t3_version }}\n"
+    owner: "{{ devbox_user }}"
+    group: "{{ devbox_user }}"
+    mode: '0644'
+- name: Link selected T3 runtime
+  ansible.builtin.file:
+    src: "{{ devbox_home }}/.t3/runtime/versions/{{ devbox_t3_version }}/t3"
+    dest: "{{ devbox_home }}/.local/bin/t3"
+    state: link
+    owner: "{{ devbox_user }}"
+    group: "{{ devbox_user }}"
+  when: devbox_t3_current is version(devbox_t3_version, '<')
+- name: Register T3 launcher for runtime retention
+  ansible.builtin.lineinfile:
+    path: "{{ devbox_home }}/.t3/runtime/launchers"
+    line: "{{ devbox_home }}/.local/bin/t3"
+    create: true
+    owner: "{{ devbox_user }}"
+    group: "{{ devbox_user }}"
+    mode: '0600'

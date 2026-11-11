@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Agent desktop</title>
+    <link rel="stylesheet" href="xterm.css">
+    <style>
+        html, body { height: 100%; margin: 0; }
+        body { display: flex; flex-direction: column; font-family: sans-serif; background: #151515; color: #e8e8e8; }
+        #bar { padding: 6px 12px; font-size: 13px; display: flex; gap: 12px; align-items: center; border-bottom: 1px solid #333; }
+        #bar button { background: none; border: 1px solid transparent; border-radius: 4px; color: #a3a3a3; padding: 4px 12px; font: inherit; cursor: pointer; }
+        #bar button[aria-pressed="true"] { color: #e8e8e8; border-color: #555; background: #262626; }
+        #bar a { color: #73bcf7; }
+        #note { color: #a3a3a3; margin-left: auto; }
+        #desktop, #console { flex: 1; min-height: 0; width: 100%; }
+        #desktop iframe { border: 0; width: 100%; height: 100%; display: block; }
+        #console { padding: 6px; box-sizing: border-box; background: #000; }
+        #t3 { padding: 24px 16px; max-width: 520px; box-sizing: border-box; }
+        #t3 h2 { font-size: 18px; margin: 0 0 8px; }
+        #t3 p { color: #a3a3a3; font-size: 14px; margin: 0 0 20px; }
+        #t3 label { display: block; font-size: 13px; color: #a3a3a3; margin-bottom: 16px; }
+        #t3 .field { display: flex; gap: 8px; margin-top: 6px; }
+        #t3 input { flex: 1; min-width: 0; background: #1e1e1e; color: #e8e8e8; border: 1px solid #333; border-radius: 4px; padding: 10px; font: 16px monospace; }
+        #t3 button { background: #262626; color: #e8e8e8; border: 1px solid #555; border-radius: 4px; padding: 10px 16px; font: inherit; font-size: 14px; cursor: pointer; }
+        #t3 .actions { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-top: 8px; font-size: 14px; }
+        #t3 a { color: #73bcf7; }
+    </style>
+    <script src="../base1/cockpit.js"></script>
+    <script src="xterm.js"></script>
+    <script src="xterm-addon-fit.js"></script>
+</head>
+<body>
+    <div id="bar">
+        <button id="show-desktop" aria-pressed="true">Desktop</button>
+        <button id="show-console" aria-pressed="false">Console</button>
+        <button id="show-t3" aria-pressed="false">T3</button>
+        <a id="open" target="_blank" rel="noopener" hidden>Open the desktop in its own tab</a>
+
+        <span id="note"></span>
+    </div>
+    <div id="desktop"></div>
+    <div id="console" hidden></div>
+    <div id="t3" hidden>
+        <h2>Use T3 from this device</h2>
+        <p>T3 asks every new browser or app to pair once. A code works once, within 10 minutes.</p>
+        <label>Host <span class="field"><input id="t3-host" readonly><button data-copy="t3-host">Copy</button></span></label>
+        <label>Pairing code <span class="field"><input id="t3-code" readonly placeholder="…"><button data-copy="t3-code">Copy</button></span></label>
+        <div class="actions">
+            <a id="t3-browser" target="_blank" rel="noopener" hidden>Open in the browser</a>
+            <a id="t3-app" hidden>Open in the T3 app</a>
+            <button id="t3-new">New code</button>
+        </div>
+    </div>
+    <script src="desktop.js"></script>
+</body>
+</html>

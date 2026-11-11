@@ -1,0 +1,33 @@
+extends: capitalization
+message: "Headings in sentence case: '%s'."
+level: warning
+scope: heading
+match: $sentence
+exceptions:
+  - berth
+  - Ansible
+  - Claude Code
+  - Codex
+  - Pi
+  - T3 Code
+  - GitHub
+  - Unity
+  - Tailscale
+  - Cockpit
+  - Docker
+  - QEMU
+  - Ubuntu
+  - Nexus
+  - Vale
+  - Fumadocs
+  - SSH
+  - USB
+  - ISO
+  - UI
+  - CLI
+  - API
+  - JSON
+  - HTTPS
+  - VNC
+  - Wi-Fi
+  - AGENT.md

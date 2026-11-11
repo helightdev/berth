@@ -1,0 +1,150 @@
+---
+- name: Initialize selected development categories
+  ansible.builtin.set_fact:
+    devbox_selected_packages: []
+    devbox_selected_commands: []
+    devbox_enabled_categories: []
+- name: Collect enabled development tools
+  ansible.builtin.set_fact:
+    devbox_selected_packages: "{{ devbox_selected_packages + item.packages }}"
+    devbox_selected_commands: "{{ devbox_selected_commands + item.commands }}"
+    devbox_enabled_categories: "{{ devbox_enabled_categories + [item.name] }}"
+  loop: "{{ devbox_tool_categories }}"
+  when: item.enabled | bool
+- name: Install additional language and build packages
+  ansible.builtin.apt:
+    name: "{{ devbox_selected_packages }}"
+    state: present
+    lock_timeout: 300
+  when: devbox_selected_packages | length > 0
+- name: Download checksum-pinned mise
+  ansible.builtin.get_url:
+    url: "https://github.com/jdx/mise/releases/download/v{{ devbox_mise_version }}/mise-v{{ devbox_mise_version }}-linux-x64"
+    checksum: "sha256:{{ devbox_mise_sha256 }}"
+    dest: /usr/local/bin/mise
+    mode: '0755'
+- name: Configure agent tool versions
+  ansible.builtin.template:
+    src: mise.toml.j2
+    dest: "{{ devbox_home }}/.config/mise/config.toml"
+    owner: "{{ devbox_user }}"
+    group: "{{ devbox_user }}"
+    mode: '0644'
+- name: Install toolchains as agent
+  ansible.builtin.command:
+    argv: [/usr/local/bin/mise, install, --yes]
+    chdir: "{{ devbox_home }}"
+  become_user: "{{ devbox_user }}"
+  environment:
+    HOME: "{{ devbox_home }}"
+    PATH: "{{ devbox_tool_path }}"
+    MISE_YES: '1'
+  changed_when: false
+- name: Refresh command shims
+  ansible.builtin.command:
+    argv: [/usr/local/bin/mise, reshim]
+    chdir: "{{ devbox_home }}"
+  become_user: "{{ devbox_user }}"
+  environment:
+    HOME: "{{ devbox_home }}"
+    PATH: "{{ devbox_tool_path }}"
+  changed_when: false
+- name: Read resolved tool versions
+  ansible.builtin.command:
+    argv: [/usr/local/bin/mise, ls, --json]
+    chdir: "{{ devbox_home }}"
+  become_user: "{{ devbox_user }}"
+  environment:
+    HOME: "{{ devbox_home }}"
+    PATH: "{{ devbox_tool_path }}"
+  register: devbox_resolved_tools
+  changed_when: false
+- name: Save installed tool inventory
+  ansible.builtin.copy:
+    content: "{{ devbox_resolved_tools.stdout }}\n"
+    dest: /var/lib/devbox/toolchains.json
+    mode: '0644'
+# Chrome's package installs and maintains its own apt source, so ours is only
+# needed to get the first install and is removed again afterwards.
+- name: Check for Chrome's own apt source
+  ansible.builtin.stat:
+    path: /etc/apt/sources.list.d/google-chrome.sources
+  register: devbox_chrome_source
+  when: devbox_tools_chrome | bool
+- name: Install Chrome from a temporary apt source
+  when: devbox_tools_chrome | bool and not devbox_chrome_source.stat.exists
+  block:
+    - name: Install Google repository key
+      ansible.builtin.get_url:
+        url: https://dl.google.com/linux/linux_signing_key.pub
+        dest: /usr/share/keyrings/devbox-google.asc
+        mode: '0644'
+    - name: Configure temporary Chrome repository
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/devbox-google-chrome.list
+        content: "deb [arch=amd64 signed-by=/usr/share/keyrings/devbox-google.asc] https://dl.google.com/linux/chrome/deb/ stable main\n"
+        mode: '0644'
+    - name: Install Chrome
+      ansible.builtin.apt:
+        name: google-chrome-stable
+        state: present
+        update_cache: true
+        lock_timeout: 300
+- name: Check that Chrome registered its apt source
+  ansible.builtin.stat:
+    path: /etc/apt/sources.list.d/google-chrome.sources
+  register: devbox_chrome_source
+  when: devbox_tools_chrome | bool
+- name: Remove the temporary Chrome repository
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/apt/sources.list.d/devbox-google-chrome.list
+    - /etc/apt/sources.list.d/google-chrome.list
+    - /etc/default/google-chrome
+    - /usr/share/keyrings/devbox-google.asc
+  when: devbox_tools_chrome | bool and devbox_chrome_source.stat.exists
+# Chrome otherwise opens with a default-browser and usage-statistics dialog and
+# a welcome tab that all wait for a click on the desktop.
+- name: Create Chrome's settings directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - /etc/opt/chrome/policies/managed
+    - /opt/google/chrome
+  when: devbox_tools_chrome | bool
+- name: Skip Chrome's first-run dialog
+  ansible.builtin.copy:
+    dest: /opt/google/chrome/initial_preferences
+    mode: '0644'
+    content: "{{ {'distribution': {'skip_first_run_ui': true, 'suppress_first_run_default_browser_prompt': true, 'make_chrome_default': false, 'make_chrome_default_for_user': false, 'import_bookmarks': false, 'import_history': false, 'import_search_engine': false, 'show_welcome_page': false}, 'browser': {'check_default_browser': false, 'has_seen_welcome_page': true}, 'sync_promo': {'show_on_first_run_allowed': false}} | to_nice_json }}\n"
+  when: devbox_tools_chrome | bool
+- name: Turn off Chrome's remaining startup prompts
+  ansible.builtin.copy:
+    dest: /etc/opt/chrome/policies/managed/devbox.json
+    mode: '0644'
+    content: "{{ ({'DefaultBrowserSettingEnabled': false, 'MetricsReportingEnabled': false, 'PromotionalTabsEnabled': false, 'PrivacySandboxPromptEnabled': false} | combine(devbox_chrome_search)) | to_nice_json }}\n"
+  when: devbox_tools_chrome | bool
+# The terms-of-service dialog has no setting. Chrome skips it, and the rest of
+# its first run, when these markers exist in the profile directory.
+- name: Create the agent's Chrome profile directory
+  ansible.builtin.file:
+    path: "{{ devbox_home }}/.config/google-chrome"
+    state: directory
+    owner: "{{ devbox_user }}"
+    group: "{{ devbox_user }}"
+    mode: '0700'
+  when: devbox_tools_chrome | bool
+- name: Mark Chrome's first run and terms as done for the agent
+  ansible.builtin.copy:
+    dest: "{{ devbox_home }}/.config/google-chrome/{{ item }}"
+    content: ""
+    owner: "{{ devbox_user }}"
+    group: "{{ devbox_user }}"
+    mode: '0600'
+    force: false
+  loop: ["First Run", "EULA Accepted"]
+  when: devbox_tools_chrome | bool

@@ -1,0 +1,16 @@
+extends: existence
+message: "'%s' asserts quality instead of saying what happens. State the behaviour."
+level: warning
+ignorecase: true
+tokens:
+  - ensures?
+  - ensuring
+  - guarantee(s|d)?
+  - properly
+  - correctly
+  - safely
+  - gracefully
+  - make sure
+  - important(ly)?
+  - always works
+  - just works

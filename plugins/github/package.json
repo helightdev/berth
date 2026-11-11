@@ -1,0 +1,44 @@
+{
+  "name": "berth-plugin-github",
+  "version": "0.1.0",
+  "displayName": "GitHub",
+  "description": "GitHub's CLI and sign-in for berth machines.",
+  "license": "MIT",
+  "keywords": [
+    "berth-plugin"
+  ],
+  "berth": {
+    "features": [
+      {
+        "id": "cli",
+        "group": "Development Tools",
+        "label": "GitHub CLI",
+        "description": "GitHub's command line tool, gh, and git set up to use its login for github.com. Adds its sign-in to the overview. A GH_TOKEN secret given to the host works without signing in.",
+        "summary": "GitHub CLI (`gh`). `gh auth status` tells whether it is signed in; git uses that login for github.com.",
+        "packages": [
+          "gh"
+        ],
+        "commands": [
+          "gh"
+        ],
+        "actions": [
+          {
+            "name": "status",
+            "label": "GitHub sign-in",
+            "help": "Whether gh is signed in for the agent account, and as whom. Part of \"Show who is signed in\".",
+            "extends": "sign-in:status",
+            "run": "echo '── GitHub'; gh auth status 2>&1 | grep -vi 'token:'; echo"
+          },
+          {
+            "name": "login",
+            "label": "Sign in to GitHub",
+            "group": "Sign-In",
+            "terminal": true,
+            "help": "Runs gh auth login on the host as the agent, without a token. It shows a one-time code and the address github.com/login/device: open it in your own browser and enter the code. git then uses that login for github.com over HTTPS. A GH_TOKEN secret given to this host takes precedence over it.",
+            "run": "env -u DISPLAY -u WAYLAND_DISPLAY BROWSER=echo gh auth login --hostname github.com --git-protocol https --web && gh auth setup-git; echo; gh auth status"
+          }
+        ]
+      }
+    ]
+  }
+}

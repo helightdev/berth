@@ -1,0 +1,12 @@
+[Unit]
+Description=Private browser gateway for devbox
+After=devbox-desktop.service
+Wants=devbox-desktop.service
+
+[Service]
+ExecStart=/usr/bin/websockify --web=/usr/share/novnc {{ devbox_bind }}:6080 127.0.0.1:5901
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

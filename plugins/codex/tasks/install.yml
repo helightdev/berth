@@ -1,0 +1,5 @@
+---
+- name: Install Codex with npm as the agent
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/npm-agent.yml"
+  vars:
+    item: {command: codex, package: '@openai/codex', version: '{{ devbox_codex_version }}'}

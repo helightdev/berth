@@ -1,0 +1,20 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+
+/* berth's orange for links and marks, on neutral grays. */
+:root {
+  --color-fd-primary: #b8552f;
+}
+.dark {
+  --color-fd-background: #151515;
+  --color-fd-card: #1e1e1e;
+  --color-fd-popover: #1e1e1e;
+  --color-fd-secondary: #262626;
+  --color-fd-muted: #262626;
+  --color-fd-accent: #262626;
+  --color-fd-border: #333333;
+  --color-fd-foreground: #e8e8e8;
+  --color-fd-muted-foreground: #a3a3a3;
+  --color-fd-primary: #d97757;
+}

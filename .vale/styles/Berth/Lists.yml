@@ -1,0 +1,6 @@
+extends: occurrence
+message: "More than five commas: this sentence is a list. Make it a list or a table."
+level: warning
+scope: sentence
+max: 5
+token: ','

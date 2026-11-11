@@ -1,0 +1,10 @@
+# Managed by devbox. Project-local mise.toml files may select other versions.
+[tools]
+node = {{ devbox_node_versions | to_json }}
+{% for category in devbox_tool_categories %}
+{% if category.enabled | bool %}
+{% for name in category.tools %}
+{{ name | to_json }} = {{ devbox_mise_tools[name] | to_json }}
+{% endfor %}
+{% endif %}
+{% endfor %}

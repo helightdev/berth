@@ -1,0 +1,6 @@
+extends: occurrence
+message: "More than one aside in parentheses in a sentence: split it, or keep only the one that matters."
+level: warning
+scope: sentence
+max: 1
+token: '\([^)]+\)'

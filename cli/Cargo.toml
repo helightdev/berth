@@ -1,0 +1,16 @@
+[package]
+name = "berth"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[dependencies]
+ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
+crossterm = "=0.29.0"
+serde_json = "1"
+tempfile = "3"
+vt100 = "=0.16.2"
+libc = "0.2"
+pulldown-cmark = { version = "0.13", default-features = false }
+
+tui-input = { path = "vendor/tui-input", default-features = false, features = ["crossterm"] }

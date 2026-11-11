@@ -1,0 +1,37 @@
+{
+  "name": "berth-plugin-t3",
+  "version": "0.1.0",
+  "displayName": "T3 Code",
+  "description": "T3 Code, a web front end for the coding agents, for berth machines.",
+  "license": "MIT",
+  "keywords": [
+    "berth-plugin"
+  ],
+  "files": [
+    "tasks"
+  ],
+  "berth": {
+    "features": [
+      {
+        "id": "server",
+        "group": "Agent Orchestrator",
+        "label": "T3 Code",
+        "description": "An orchestrator with a web interface that runs and supervises the coding agents, reachable from your browser. It is not an agent itself and needs at least one of them to be useful. The version is `devbox_t3_version` in the profile's ansible_vars.",
+        "summary": "T3 Code (`t3`) runs as the user service `t3code` and serves its web interface on port 3773.",
+        "commands": [
+          "t3"
+        ],
+        "tasks": "tasks/install.yml",
+        "actions": [
+          {
+            "name": "update",
+            "label": "Update T3 Code",
+            "help": "Bring T3 Code to its latest version with t3 update, which restarts its service when there is a newer one: sessions running in T3 at that moment are interrupted. Part of Update. The version in the profile is the least one; a newer one stays when the configuration is applied again.",
+            "extends": "update",
+            "run": "echo; echo '── T3 Code'; t3 update --yes; t3 --version"
+          }
+        ]
+      }
+    ]
+  }
+}

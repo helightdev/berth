@@ -1,0 +1,15 @@
+{
+    "version": 0,
+    "menu": {
+        "index": {
+            "label": "Agent desktop",
+            "order": 15,
+            "keywords": [
+                {
+                    "matches": ["desktop", "vnc", "novnc", "agent", "screen"]
+                }
+            ]
+        }
+    },
+    "content-security-policy": "default-src 'self'; frame-src https:; style-src 'self' 'unsafe-inline'"
+}

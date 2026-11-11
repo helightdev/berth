@@ -1,0 +1,31 @@
+services:
+  desktop:
+    image: "${IMAGE:-berth-desktop}"
+    build:
+      context: ..
+      dockerfile: container/Dockerfile
+      args:
+        AGENT_USER: "${AGENT_USER:-agent}"
+        OPERATOR_USER: "${OPERATOR_USER:-ops}"
+        INSTALL_PLAYWRIGHT: "${INSTALL_PLAYWRIGHT:-true}"
+        SOFTWARE_RENDERING: "${SOFTWARE_RENDERING:-true}"
+        INSTALL_WEB_TOOLS: "${INSTALL_WEB_TOOLS:-${INSTALL_BOAT_TOOLS:-true}}"
+        INSTALL_NATIVE_TOOLS: "${INSTALL_NATIVE_TOOLS:-${INSTALL_BOAT_TOOLS:-true}}"
+        INSTALL_JVM_TOOLS: "${INSTALL_JVM_TOOLS:-${INSTALL_BOAT_TOOLS:-true}}"
+        INSTALL_DOTNET_TOOLS: "${INSTALL_DOTNET_TOOLS:-${INSTALL_BOAT_TOOLS:-true}}"
+        INSTALL_SCRIPTING_TOOLS: "${INSTALL_SCRIPTING_TOOLS:-${INSTALL_BOAT_TOOLS:-true}}"
+        INSTALL_SCIENTIFIC_TOOLS: "${INSTALL_SCIENTIFIC_TOOLS:-${INSTALL_BOAT_TOOLS:-true}}"
+        INSTALL_CHROME_TOOLS: "${INSTALL_CHROME_TOOLS:-${INSTALL_BOAT_TOOLS:-true}}"
+        PLUGIN_FEATURES: '${PLUGIN_FEATURES:-["claude/cli","codex/cli","pi/cli","t3/server","github/cli"]}'
+    init: true
+    shm_size: 1gb
+    ports:
+      - "127.0.0.1:16080:6080"
+      - "127.0.0.1:13773:3773"
+    volumes:
+      - workspaces:/srv/agent/workspaces
+      - artifacts:/srv/agent/artifacts
+    restart: unless-stopped
+volumes:
+  workspaces:
+  artifacts:

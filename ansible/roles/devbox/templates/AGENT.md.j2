@@ -1,0 +1,56 @@
+# This machine
+
+Generated when the machine was set up; it lists what this one has. The guides
+under `/etc/devbox/guides/` go into detail. Read the one for a tool before using it.
+
+- Host `{{ ansible_facts.hostname }}`, Ubuntu {{ ansible_facts.distribution_version }}, set up as `{{ devbox_profile }}`.
+- You are `{{ devbox_user }}`. {% if devbox_agent_passwordless_sudo %}`sudo -n` works without a password.{% else %}sudo asks for a password; ask the owner for administration.{% endif %}
+
+- Workspaces: `/srv/agent/workspaces`. Outputs meant for people: `/srv/agent/artifacts`.
+- Use separate git worktrees for parallel work.
+
+## Desktop
+
+XFCE runs on display `:1` and is shared: never start a second desktop session.
+`agent-env COMMAND ...` runs a command with that display, its Xauthority and the
+tool PATH; `devbox-desktop` takes screenshots and sends input.
+Details: `/etc/devbox/guides/desktop.md`.
+
+Graphics: {% if devbox_software_rendering %}CPU rendering (Mesa llvmpipe for OpenGL, lavapipe for Vulkan); there is no GPU acceleration.{% else %}the host's GPU where the driver allows it.{% endif %}
+ Details: `/etc/devbox/guides/graphics.md`.
+
+## Installed
+
+- Always: git, ripgrep, jq, Python with uv and pip, Node/npm, GCC, CMake, Ninja,
+  FFmpeg, Firefox{% if devbox_install_playwright %}, Chromium (`devbox-chromium`) with Playwright{% endif %}, LibreOffice, GIMP, Inkscape,
+  PDF and OCR tools, Python artifact libraries in `/opt/devbox-tools/venv`.
+{% for category in devbox_tool_categories if category.name in devbox_enabled_categories %}
+- {{ category.name }}: {{ category.commands | map('regex_replace', '^(.*)$', '`\\1`') | join(', ') }}
+{% endfor %}
+{% if devbox_install_docker and devbox_profile != 'container' %}
+- Docker (`docker`), usable without sudo.
+{% endif %}
+{% for plugin in devbox_plugin_info %}
+- {{ plugin.label }}: {{ plugin.summary }}{% if plugin.guide %} Guide: `/etc/devbox/guides/{{ plugin.name }}.md`.{% endif %}
+
+{% endfor %}
+
+`mise ls` shows the managed runtimes; `/var/lib/devbox/toolchains.json` has the
+resolved versions and `/etc/devbox/expected-commands` every command this machine
+is expected to have. `yq` is the Python/jq-based Ubuntu package, not mikefarah/yq.
+Not listed here means not installed; install what a task needs.
+
+## Rules
+
+- Secrets go to an unlocked default keyring (Secret Service), stored unencrypted
+  in `~/.local/share/keyrings`. Nothing should ask for a keyring password.
+- Tokens and registry logins the owner installed are already in your environment
+  (`~/.config/devbox/secrets.env`, `~/.npmrc`, `~/.docker/config.json`). Use them;
+  never print, copy or commit their values.
+- Signing in to a service is done by a person. Never report a sign-in as working
+  because its CLI is installed.
+- Browser automation keeps its sandbox enabled.
+{% if devbox_profile != 'container' %}
+- Services: `systemctl --user status devbox-desktop devbox-novnc{{ ' t3code' if devbox_install_t3 | bool else '' }}`.
+  Restarting the desktop closes its windows.
+{% endif %}

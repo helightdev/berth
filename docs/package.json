@@ -1,0 +1,34 @@
+{
+  "name": "berth-docs",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "next build",
+    "dev": "next dev",
+    "start": "sirv out --port 3000",
+    "types:check": "fumadocs-mdx && next typegen && tsc --noEmit",
+    "postinstall": "node scripts/gather.mjs && fumadocs-mdx",
+    "gather": "node scripts/gather.mjs",
+    "prebuild": "node scripts/gather.mjs",
+    "predev": "node scripts/gather.mjs"
+  },
+  "dependencies": {
+    "fumadocs-core": "^16.17.10",
+    "fumadocs-mdx": "^15.4.10",
+    "fumadocs-ui": "^16.17.10",
+    "next": "^16.4.4",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.4",
+    "@types/mdx": "^2.0.14",
+    "@types/node": "^25.9.9",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "postcss": "^8.5.32",
+    "sirv-cli": "^3.0.1",
+    "tailwindcss": "^4.3.4",
+    "typescript": "^6.0.3"
+  }
+}

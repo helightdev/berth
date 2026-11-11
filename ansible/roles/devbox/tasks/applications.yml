@@ -1,0 +1,52 @@
+---
+- name: Install Mozilla signing key
+  ansible.builtin.get_url:
+    url: https://packages.mozilla.org/apt/repo-signing-key.gpg
+    dest: /usr/share/keyrings/devbox-mozilla.asc
+    mode: '0644'
+- name: Configure Firefox repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/devbox-mozilla.list
+    content: "deb [signed-by=/usr/share/keyrings/devbox-mozilla.asc] https://packages.mozilla.org/apt mozilla main\n"
+    mode: '0644'
+  register: mozilla_repo
+- name: Prefer the native Firefox package
+  ansible.builtin.copy:
+    dest: /etc/apt/preferences.d/devbox-mozilla
+    mode: '0644'
+    content: |
+      Package: firefox*
+      Pin: origin packages.mozilla.org
+      Pin-Priority: 1001
+- name: Install Firefox
+  ansible.builtin.apt:
+    name: firefox
+    state: present
+    update_cache: "{{ mozilla_repo.changed }}"
+    lock_timeout: 300
+- name: Install Python artifact and automation requirements
+  ansible.builtin.copy:
+    src: python-requirements.txt
+    dest: /opt/devbox-tools/requirements.txt
+    mode: '0644'
+- name: Install Python tools in a dedicated environment
+  ansible.builtin.pip:
+    requirements: /opt/devbox-tools/requirements.txt
+    virtualenv: /opt/devbox-tools/venv
+    virtualenv_command: /usr/bin/python3 -m venv
+- name: Install matching Playwright library
+  ansible.builtin.pip:
+    name: "playwright=={{ devbox_playwright_version }}"
+    virtualenv: /opt/devbox-tools/venv
+  when: devbox_install_playwright
+- name: Install Playwright OS dependencies
+  ansible.builtin.command: /opt/devbox-tools/venv/bin/playwright install-deps chromium
+  changed_when: false
+  when: devbox_install_playwright
+- name: Install Chromium as the agent
+  ansible.builtin.command: /opt/devbox-tools/venv/bin/playwright install chromium
+  become_user: "{{ devbox_user }}"
+  environment:
+    HOME: "{{ devbox_home }}"
+  changed_when: false
+  when: devbox_install_playwright

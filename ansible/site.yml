@@ -1,0 +1,7 @@
+---
+- name: Configure a dedicated agent desktop
+  hosts: all
+  become: true
+  gather_facts: true
+  roles:
+    - devbox

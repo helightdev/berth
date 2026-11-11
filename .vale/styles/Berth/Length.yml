@@ -1,0 +1,6 @@
+extends: occurrence
+message: "Over 35 words: split the sentence."
+level: warning
+scope: sentence
+max: 35
+token: '\b\w+\b'

@@ -1,0 +1,52 @@
+{
+  "name": "berth-plugin-claude",
+  "version": "0.1.0",
+  "displayName": "Claude Code",
+  "description": "Anthropic's coding agent for berth machines.",
+  "license": "MIT",
+  "keywords": [
+    "berth-plugin"
+  ],
+  "files": [
+    "tasks"
+  ],
+  "berth": {
+    "features": [
+      {
+        "id": "cli",
+        "group": "Coding Agents",
+        "label": "Claude Code",
+        "description": "Anthropic's coding agent, from its official installer. The version is `devbox_claude_version` in the profile's ansible_vars. Adds its sign-in to the overview.",
+        "summary": "Claude Code (`claude`). Being installed does not mean signed in: `claude auth status` tells.",
+        "commands": [
+          "claude"
+        ],
+        "tasks": "tasks/install.yml",
+        "actions": [
+          {
+            "name": "status",
+            "label": "Claude Code sign-in",
+            "help": "Whether Claude Code is signed in for the agent account, and as whom. Part of \"Show who is signed in\".",
+            "extends": "sign-in:status",
+            "run": "echo '── Claude Code'; claude auth status 2>&1 | grep -E 'loggedIn|email|subscriptionType|authMethod' || echo 'not signed in'; echo"
+          },
+          {
+            "name": "login",
+            "label": "Sign in to Claude Code",
+            "group": "Sign-In",
+            "terminal": true,
+            "help": "Runs claude auth login on the host as the agent and shows its link here. Open the link in your own browser, sign in, and paste the code it gives you back into the terminal. Nothing has to be done on the host's desktop.",
+            "run": "env -u DISPLAY -u WAYLAND_DISPLAY BROWSER=echo claude auth login; echo; claude auth status | grep -E 'loggedIn|email|subscriptionType'"
+          },
+          {
+            "name": "update",
+            "label": "Update Claude Code",
+            "help": "Bring Claude Code to its latest version with claude update. Part of Update. The version in the profile is the least one; a newer one stays when the configuration is applied again.",
+            "extends": "update",
+            "run": "echo; echo '── Claude Code'; env -u DISABLE_AUTOUPDATER claude update"
+          }
+        ]
+      }
+    ]
+  }
+}

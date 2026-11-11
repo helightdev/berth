@@ -1,0 +1,21 @@
+---
+# The editor is installed through the CLI, so the CLI feature has to be on too.
+- name: Check that the Unity CLI is installed
+  ansible.builtin.stat:
+    path: "{{ devbox_home }}/.local/bin/unity"
+  register: devbox_unity_cli_binary
+- name: Require the Unity CLI for installing an editor
+  ansible.builtin.assert:
+    that: devbox_unity_cli_binary.stat.exists
+    fail_msg: The Unity Editor feature needs the Unity CLI feature switched on as well.
+- name: Install the selected Unity editor as the agent
+  ansible.builtin.command:
+    argv: "{{ [devbox_home ~ '/.local/bin/unity', 'install', devbox_unity_editor_version | default('6000.7.0b8')] + (devbox_unity_editor_modules | default(['webgl']) | map('regex_replace', '^', '--module=') | list) + ['--yes', '--accept-eula'] }}"
+    chdir: "{{ devbox_home }}"
+    creates: "{{ devbox_home }}/Unity/Hub/Editor/{{ devbox_unity_editor_version | default('6000.7.0b8') }}/Editor/Unity"
+  become_user: "{{ devbox_user }}"
+  environment:
+    HOME: "{{ devbox_home }}"
+    PATH: "{{ devbox_tool_path }}"
+    UNITY_NON_INTERACTIVE: '1'
+    UNITY_NO_UPDATE_CHECK: '1'

@@ -1,0 +1,21 @@
+{
+  "hostname": "",
+  "profile": "laptop",
+  "operator_username": "ops",
+  "operator_ssh_public_key": "",
+  "operator_password_hash": "",
+  "operator_passwordless_sudo": false,
+  "agent_username": "agent",
+  "agent_ssh_public_key": "",
+  "agent_password_hash": "",
+  "agent_passwordless_sudo": true,
+  "target_disk_mode": "auto",
+  "target_disk_ssd": "any",
+  "target_disk_serial": "",
+  "keyboard": "de",
+  "release_url": "",
+  "tailscale_auth_key": "",
+  "wifi_enabled": false,
+  "wifi": null,
+  "ansible_vars": {}
+}

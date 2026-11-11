@@ -1,0 +1,15 @@
+---
+- name: Start without plugin contributions
+  ansible.builtin.set_fact:
+    devbox_plugin_info: []
+    devbox_plugin_commands: []
+- name: Create the directory for detailed guides
+  ansible.builtin.file:
+    path: /etc/devbox/guides
+    state: directory
+    mode: '0755'
+- name: Apply each selected plugin feature
+  ansible.builtin.include_tasks: plugin.yml
+  loop: "{{ devbox_plugin_features }}"
+  loop_control:
+    loop_var: devbox_plugin_feature

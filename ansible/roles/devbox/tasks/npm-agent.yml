@@ -1,0 +1,31 @@
+---
+- name: "Read installed {{ item.command }} version"
+  ansible.builtin.command:
+    argv: [npm, ls, --global, --prefix, "{{ devbox_home }}/.local", --json, "{{ item.package }}"]
+    chdir: "{{ devbox_home }}"
+  become_user: "{{ devbox_user }}"
+  environment:
+    HOME: "{{ devbox_home }}"
+    PATH: "{{ devbox_tool_path }}"
+  register: devbox_npm_installed
+  changed_when: false
+  failed_when: false
+- name: "Install selected {{ item.command }} version as agent"
+  ansible.builtin.command:
+    argv: "{{ ['npm', 'install', '--global', '--prefix', devbox_home ~ '/.local', '--no-audit', '--no-fund'] + (['--ignore-scripts'] if item.command == 'pi' else []) + [item.package ~ '@' ~ item.version] }}"
+    chdir: "{{ devbox_home }}"
+  become_user: "{{ devbox_user }}"
+  environment:
+    HOME: "{{ devbox_home }}"
+    PATH: "{{ devbox_tool_path }}"
+  # The selected version is the least one: a newer one from Update stays.
+  when: devbox_npm_installed.rc != 0 or (devbox_npm_installed.stdout | from_json).get('dependencies', {}).get(item.package, {}).get('version', '0') is version(item.version, '<')
+- name: "Verify {{ item.command }} launches without authentication"
+  ansible.builtin.command:
+    argv: ["{{ devbox_home }}/.local/bin/{{ item.command }}", --version]
+    chdir: "{{ devbox_home }}"
+  become_user: "{{ devbox_user }}"
+  environment:
+    HOME: "{{ devbox_home }}"
+    PATH: "{{ devbox_tool_path }}"
+  changed_when: false

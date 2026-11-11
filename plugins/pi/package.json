@@ -1,0 +1,37 @@
+{
+  "name": "berth-plugin-pi",
+  "version": "0.1.0",
+  "displayName": "Pi",
+  "description": "The Pi coding agent for berth machines.",
+  "license": "MIT",
+  "keywords": [
+    "berth-plugin"
+  ],
+  "files": [
+    "tasks"
+  ],
+  "berth": {
+    "features": [
+      {
+        "id": "cli",
+        "group": "Coding Agents",
+        "label": "Pi",
+        "description": "The Pi coding agent, from npm. The version is `devbox_pi_version` in the profile's ansible_vars.",
+        "summary": "Pi (`pi`). It signs in from inside the program, or takes API keys from the environment.",
+        "commands": [
+          "pi"
+        ],
+        "tasks": "tasks/install.yml",
+        "actions": [
+          {
+            "name": "update",
+            "label": "Update Pi",
+            "help": "Bring Pi to its latest version from npm. Part of Update. The version in the profile is the least one; a newer one stays when the configuration is applied again.",
+            "extends": "update",
+            "run": "echo; echo '── Pi'; npm install --global --prefix \"$HOME/.local\" --no-audit --no-fund --loglevel error --ignore-scripts @earendil-works/pi-coding-agent@latest && pi --version"
+          }
+        ]
+      }
+    ]
+  }
+}

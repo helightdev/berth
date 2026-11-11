@@ -1,0 +1,14 @@
+---
+- name: Download Claude's official installer
+  ansible.builtin.get_url:
+    url: https://claude.ai/install.sh
+    dest: /opt/devbox-tools/claude-install.sh
+    mode: '0644'
+- name: Install selected Claude version without a root-owned profile
+  ansible.builtin.command:
+    argv: [/bin/bash, /opt/devbox-tools/claude-install.sh, "{{ devbox_claude_version }}"]
+    creates: "{{ devbox_home }}/.local/share/claude/versions/{{ devbox_claude_version }}"
+  become_user: "{{ devbox_user }}"
+  environment:
+    HOME: "{{ devbox_home }}"
+    DISABLE_AUTOUPDATER: '1'

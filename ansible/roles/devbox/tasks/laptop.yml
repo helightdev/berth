@@ -1,0 +1,87 @@
+---
+- name: Install physical laptop desktop integration
+  ansible.builtin.apt:
+    name: [lightdm, network-manager, network-manager-gnome, linux-firmware, smartmontools, nvme-cli, xfce4-power-manager, xfce4-screensaver]
+    state: present
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+- name: Create power configuration directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop: [/etc/systemd/logind.conf.d, /etc/xdg/xfce4/xfconf/xfce-perchannel-xml, /etc/lightdm/lightdm.conf.d]
+- name: Configure logind fallback power policy
+  ansible.builtin.copy:
+    dest: /etc/systemd/logind.conf.d/70-devbox.conf
+    mode: '0644'
+    content: |
+      [Login]
+      HandleLidSwitch={{ 'suspend' if devbox_lid_suspends_on_battery else 'ignore' }}
+      HandleLidSwitchExternalPower=ignore
+      HandleLidSwitchDocked=ignore
+      IdleAction=ignore
+  register: devbox_logind_policy
+# logind reads its configuration on SIGHUP; restarting it would end sessions.
+- name: Apply the lid policy
+  ansible.builtin.command: systemctl kill -s HUP systemd-logind
+  changed_when: true
+  when: devbox_logind_policy.changed and devbox_start_services
+# With the lid ignored nothing else would switch the panel off at the login screen.
+- name: Install the lid display switch
+  ansible.builtin.copy:
+    src: lid.sh
+    dest: /usr/local/sbin/devbox-lid
+    mode: '0755'
+  register: devbox_lid_script
+- name: Install the lid display service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/devbox-lid.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Switch the built-in display off while the lid is closed
+      [Service]
+      ExecStart=/usr/local/sbin/devbox-lid
+      Restart=always
+      RestartSec=5
+      [Install]
+      WantedBy=multi-user.target
+  register: devbox_lid_unit
+- name: Run the lid display service
+  ansible.builtin.systemd_service:
+    name: devbox-lid.service
+    enabled: true
+    daemon_reload: "{{ devbox_lid_unit.changed }}"
+    state: "{{ 'restarted' if devbox_lid_script.changed or devbox_lid_unit.changed else 'started' }}"
+  when: devbox_start_services
+- name: Set XFCE AC/battery defaults for new physical sessions
+  ansible.builtin.copy:
+    dest: /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-power-manager.xml
+    mode: '0644'
+    content: |
+      <?xml version="1.0" encoding="UTF-8"?>
+      <channel name="xfce4-power-manager" version="1.0">
+        <property name="xfce4-power-manager" type="empty">
+          <property name="lid-action-on-ac" type="uint" value="0"/>
+          <property name="lid-action-on-battery" type="uint" value="{{ 1 if devbox_lid_suspends_on_battery else 0 }}"/>
+          <property name="inactivity-on-ac" type="uint" value="14"/>
+          <property name="critical-power-action" type="uint" value="4"/>
+        </property>
+      </channel>
+- name: Default physical login to XFCE without autologin
+  ansible.builtin.copy:
+    dest: /etc/lightdm/lightdm.conf.d/70-devbox.conf
+    mode: '0644'
+    content: "[Seat:*]\nuser-session=xfce\n"
+- name: Enable physical desktop on subsequent boot
+  ansible.builtin.systemd_service:
+    name: lightdm
+    enabled: true
+  when: devbox_start_services
+- name: Select graphical boot target
+  ansible.builtin.file:
+    src: /usr/lib/systemd/system/graphical.target
+    dest: /etc/systemd/system/default.target
+    state: link
+    force: true

@@ -1,0 +1,52 @@
+{
+  "name": "berth-plugin-codex",
+  "version": "0.1.0",
+  "displayName": "Codex",
+  "description": "OpenAI's coding agent for berth machines.",
+  "license": "MIT",
+  "keywords": [
+    "berth-plugin"
+  ],
+  "files": [
+    "tasks"
+  ],
+  "berth": {
+    "features": [
+      {
+        "id": "cli",
+        "group": "Coding Agents",
+        "label": "Codex",
+        "description": "OpenAI's coding agent, from npm. The version is `devbox_codex_version` in the profile's ansible_vars. Adds its sign-in to the overview.",
+        "summary": "Codex (`codex`). Being installed does not mean signed in: `codex login status` tells.",
+        "commands": [
+          "codex"
+        ],
+        "tasks": "tasks/install.yml",
+        "actions": [
+          {
+            "name": "status",
+            "label": "Codex sign-in",
+            "help": "Whether Codex is signed in for the agent account. Part of \"Show who is signed in\".",
+            "extends": "sign-in:status",
+            "run": "echo '── Codex'; codex login status 2>&1; echo"
+          },
+          {
+            "name": "login",
+            "label": "Sign in to Codex",
+            "group": "Sign-In",
+            "terminal": true,
+            "help": "Runs codex login --device-auth on the host as the agent. It shows a link and a one-time code: open the link in your own browser and enter the code.",
+            "run": "env -u DISPLAY -u WAYLAND_DISPLAY BROWSER=echo codex login --device-auth; echo; codex login status"
+          },
+          {
+            "name": "update",
+            "label": "Update Codex",
+            "help": "Bring Codex to its latest version from npm. Part of Update. The version in the profile is the least one; a newer one stays when the configuration is applied again.",
+            "extends": "update",
+            "run": "echo; echo '── Codex'; npm install --global --prefix \"$HOME/.local\" --no-audit --no-fund --loglevel error @openai/codex@latest && codex --version"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,152 @@
+---
+- name: Configure operator account
+  ansible.builtin.user:
+    name: "{{ devbox_operator_user }}"
+    shell: /bin/bash
+    create_home: true
+    groups: sudo
+    append: true
+    password: "{{ devbox_operator_password_hash if devbox_operator_password_hash else omit }}"
+  no_log: true
+  when: devbox_profile != 'container'
+# Membership of sudo already grants password-based sudo. A rule of our own that
+# demands a password would also override an existing NOPASSWD grant, such as the
+# one cloud-init gives the account this play may be running as.
+- name: Configure operator passwordless administration
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/99-devbox-operator
+    content: "{{ devbox_operator_user }} ALL=(ALL:ALL) NOPASSWD: ALL\n"
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+  when: devbox_profile != 'container' and devbox_operator_passwordless_sudo
+- name: Remove operator passwordless administration
+  ansible.builtin.file:
+    path: /etc/sudoers.d/99-devbox-operator
+    state: absent
+  when: devbox_profile != 'container' and not devbox_operator_passwordless_sudo
+- name: Create the agent account
+  ansible.builtin.user:
+    name: "{{ devbox_user }}"
+    home: "{{ devbox_home }}"
+    shell: /bin/bash
+    create_home: true
+    password: "{{ devbox_agent_password_hash if devbox_agent_password_hash else '!' }}"
+    password_lock: "{{ not (devbox_agent_password_hash | length > 0) }}"
+  no_log: true
+- name: Allow noninteractive administration
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/90-devbox-agent
+    content: "{{ devbox_user }} ALL=(ALL:ALL) {{ 'NOPASSWD: ' if devbox_agent_passwordless_sudo else '' }}ALL\n"
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+- name: Read agent identity
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ devbox_user }}"
+- name: Set runtime identity
+  ansible.builtin.set_fact:
+    devbox_uid: "{{ ansible_facts.getent_passwd[devbox_user][1] }}"
+    devbox_bind: "{{ '0.0.0.0' if devbox_profile == 'container' else '127.0.0.1' }}"
+- name: Create managed root directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - /etc/devbox
+    - /var/lib/devbox
+    - /opt/devbox-tools
+    - /srv/agent
+- name: Create agent directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ devbox_user }}"
+    group: "{{ devbox_user }}"
+    mode: '0700'
+  loop:
+    - "{{ devbox_home }}/.local/bin"
+    - "{{ devbox_home }}/.config/tigervnc"
+    - "{{ devbox_home }}/.config/systemd/user"
+    - "{{ devbox_home }}/.config/autostart"
+    - "{{ devbox_home }}/.local/share/applications"
+    - "{{ devbox_home }}/.t3"
+    - "{{ devbox_home }}/.claude"
+    - "{{ devbox_home }}/.codex"
+    - "{{ devbox_home }}/.pi/agent"
+    - "{{ devbox_home }}/.config/mise"
+    - "{{ devbox_home }}/Desktop"
+    - "{{ devbox_home }}/Downloads"
+    - /srv/agent/workspaces
+    - /srv/agent/artifacts
+    - /srv/agent/shared
+- name: Add tool paths to interactive shells
+  ansible.builtin.copy:
+    dest: /etc/profile.d/devbox.sh
+    mode: '0644'
+    content: |
+      if [ "$(id -un)" = "{{ devbox_user }}" ]; then
+        export PATH="{{ devbox_tool_path }}:$PATH"
+        if [ -r "$HOME/.config/devbox/secrets.env" ]; then . "$HOME/.config/devbox/secrets.env"; fi
+      fi
+      export DISABLE_AUTOUPDATER=1
+- name: Add tool paths to non-login interactive agent shells
+  ansible.builtin.blockinfile:
+    path: "{{ devbox_home }}/.bashrc"
+    create: true
+    owner: "{{ devbox_user }}"
+    group: "{{ devbox_user }}"
+    mode: '0644'
+    marker: '# {mark} DEVBOX TOOLS'
+    block: |
+      export PATH="{{ devbox_tool_path }}:$PATH"
+      export DISABLE_AUTOUPDATER=1
+      if [ -r "$HOME/.config/devbox/secrets.env" ]; then . "$HOME/.config/devbox/secrets.env"; fi
+- name: Provide fd command
+  ansible.builtin.file:
+    src: /usr/bin/fdfind
+    dest: /usr/local/bin/fd
+    state: link
+- name: Manage account SSH access
+  vars:
+    devbox_ssh_accounts: >-
+      {{ [{'user': devbox_user, 'key': devbox_agent_ssh_public_key}]
+         + ([] if devbox_profile == 'container' else
+            [{'user': devbox_operator_user, 'key': devbox_operator_ssh_public_key}]) }}
+  block:
+    - name: Create account SSH directories
+      ansible.builtin.file:
+        path: "/home/{{ item.user }}/.ssh"
+        state: directory
+        owner: "{{ item.user }}"
+        group: "{{ item.user }}"
+        mode: '0700'
+      loop: "{{ devbox_ssh_accounts }}"
+      loop_control:
+        label: "{{ item.user }}"
+      when: item.key | length > 0
+    - name: Check existing authorized keys
+      ansible.builtin.stat:
+        path: "/home/{{ item.user }}/.ssh/authorized_keys"
+      loop: "{{ devbox_ssh_accounts }}"
+      loop_control:
+        label: "{{ item.user }}"
+      register: devbox_authorized_keys
+    - name: Configure account authorized public keys
+      ansible.builtin.blockinfile:
+        path: "/home/{{ item.item.user }}/.ssh/authorized_keys"
+        create: true
+        state: "{{ 'present' if item.item.key | length > 0 else 'absent' }}"
+        owner: "{{ item.item.user }}"
+        group: "{{ item.item.user }}"
+        mode: '0600'
+        marker: '# {mark} DEVBOX'
+        block: "{{ item.item.key }}"
+      loop: "{{ devbox_authorized_keys.results }}"
+      loop_control:
+        label: "{{ item.item.user }}"
+      when: item.item.key | length > 0 or item.stat.exists

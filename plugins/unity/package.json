@@ -1,0 +1,98 @@
+{
+  "name": "berth-plugin-unity",
+  "version": "0.1.0",
+  "displayName": "Unity",
+  "description": "Unity CLI and editor for berth machines.",
+  "license": "MIT",
+  "keywords": [
+    "berth-plugin"
+  ],
+  "files": [
+    "tasks",
+    "guide.md"
+  ],
+  "berth": {
+    "features": [
+      {
+        "id": "cli",
+        "group": "Development Tools",
+        "label": "Unity CLI",
+        "description": "Install the Unity CLI and the libraries the Unity editor needs. Adds the Unity sign-in to the overview, and its state to Status, Self-Test and Update.",
+        "summary": "Unity CLI (`unity`) with its agent skills.",
+        "packages": [
+          "libgtk-3-0t64",
+          "libnss3",
+          "libasound2t64",
+          "libglu1-mesa",
+          "libgbm1",
+          "libxtst6",
+          "libxss1",
+          "cpio"
+        ],
+        "commands": [
+          "unity"
+        ],
+        "tasks": "tasks/cli.yml",
+        "guide": "guide.md",
+        "actions": [
+          {
+            "name": "account",
+            "label": "Unity sign-in and license",
+            "help": "Whether the Unity CLI is signed in on the host and which license is active. Part of \"Show who is signed in\".",
+            "user": "agent",
+            "extends": [
+              "sign-in:status"
+            ],
+            "run": "export UNITY_NON_INTERACTIVE=1 UNITY_NO_BANNER=1 UNITY_NO_UPDATE_CHECK=1; echo \"── Unity\"; unity auth status; unity license status; echo"
+          },
+          {
+            "name": "status",
+            "label": "Unity CLI and editors",
+            "help": "The version of the Unity CLI and the editors that are installed. Part of Status and of the Self-Test.",
+            "user": "agent",
+            "extends": [
+              "status",
+              "smoke"
+            ],
+            "run": "export UNITY_NON_INTERACTIVE=1 UNITY_NO_BANNER=1 UNITY_NO_UPDATE_CHECK=1; echo; echo \"── Unity\"; unity --version && unity editors --installed"
+          },
+          {
+            "name": "update",
+            "label": "Update the Unity CLI",
+            "help": "Bring the Unity CLI to its latest version. Part of Update.",
+            "user": "agent",
+            "extends": [
+              "update"
+            ],
+            "run": "export UNITY_NON_INTERACTIVE=1 UNITY_NO_BANNER=1 UNITY_NO_UPDATE_CHECK=1; echo; echo \"── Unity CLI\"; unity self-update --yes"
+          },
+          {
+            "name": "login",
+            "label": "Sign in to Unity",
+            "help": "Runs unity auth login on the host as the agent and shows its link here. Open the link in your own browser and sign in; the host notices by itself. The license is activated afterwards, falling back to Unity Personal and accepting its terms.",
+            "user": "agent",
+            "terminal": true,
+            "run": "export UNITY_NO_BANNER=1 UNITY_NO_UPDATE_CHECK=1; env -u DISPLAY -u WAYLAND_DISPLAY BROWSER=echo unity auth login || exit 1; export UNITY_NON_INTERACTIVE=1; unity license activate; unity license status >/dev/null 2>&1 || unity license activate --personal --accept-eula; unity license status",
+            "group": "Sign-In"
+          },
+          {
+            "name": "license",
+            "label": "Activate the Unity license",
+            "help": "Activate the license of the signed-in account, falling back to Unity Personal and accepting its terms. Needs the sign-in to have been done once.",
+            "user": "agent",
+            "run": "export UNITY_NON_INTERACTIVE=1 UNITY_NO_BANNER=1 UNITY_NO_UPDATE_CHECK=1; unity license activate; unity license status >/dev/null 2>&1 || unity license activate --personal --accept-eula; unity license status",
+            "group": "Sign-In"
+          }
+        ]
+      },
+      {
+        "id": "editor",
+        "group": "Development Tools",
+        "label": "Unity Editor",
+        "description": "Install a Unity editor with the CLI, several gigabytes. Needs the Unity CLI. The version is `devbox_unity_editor_version` in the profile's ansible_vars (default 6000.7.0b8), its modules `devbox_unity_editor_modules` (default webgl).",
+        "summary": "A Unity editor is preinstalled in `~/Unity/Hub/Editor/`; `unity editors --installed` lists it.",
+        "tasks": "tasks/editor.yml"
+      }
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+[Unit]
+Description=Persistent devbox XFCE desktop
+After=dbus.socket
+Wants=dbus.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/agent-env /usr/local/bin/devbox-desktop-session
+ExecStartPost=/usr/local/bin/agent-env /usr/local/bin/devbox-wait-display
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

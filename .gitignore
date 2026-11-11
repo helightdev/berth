@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+build/
+.env
+config/*.json
+!config/example.json
+secrets/
+*.qcow2
+*.iso
+
+/cli/target/
+
+*.credentials.json

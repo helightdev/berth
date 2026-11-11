@@ -1,0 +1,30 @@
+---
+- name: Download Unity's CLI installer
+  ansible.builtin.get_url:
+    url: https://unity.com/install.sh
+    dest: /opt/devbox-tools/unity-install.sh
+    mode: '0644'
+- name: Read the installed Unity CLI version
+  ansible.builtin.command:
+    argv: ["{{ devbox_home }}/.local/bin/unity", --version]
+  become_user: "{{ devbox_user }}"
+  environment:
+    HOME: "{{ devbox_home }}"
+    UNITY_NON_INTERACTIVE: '1'
+    UNITY_NO_UPDATE_CHECK: '1'
+  register: devbox_unity_cli_installed
+  changed_when: false
+  failed_when: false
+# The installer also registers Unity's skills with the coding agents it finds.
+# Plugins run after the agents are installed, so it finds them.
+- name: Install the selected Unity CLI version as the agent
+  ansible.builtin.command:
+    argv: [/bin/bash, /opt/devbox-tools/unity-install.sh]
+    chdir: "{{ devbox_home }}"
+  become_user: "{{ devbox_user }}"
+  environment:
+    HOME: "{{ devbox_home }}"
+    PATH: "{{ devbox_tool_path }}"
+    UNITY_CLI_VERSION: "{{ devbox_unity_cli_version | default('1.0.0-beta.17') }}"
+    UNITY_NON_INTERACTIVE: '1'
+  when: devbox_unity_cli_installed.stdout | default('') | trim != devbox_unity_cli_version | default('1.0.0-beta.17')

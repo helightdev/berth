@@ -1,0 +1,9 @@
+extends: existence
+message: "Don't restate what it is ('%s'); start with what it does."
+level: warning
+ignorecase: false
+tokens:
+  - '\bThis (method|class|struct|function|property|field|interface|enum|type|helper) (is|will|does|returns|provides|handles|represents|contains)\b'
+  - '\b(Represents|Provides|Contains|Handles) an? (class|method|helper|utility)\b'
+  - '\bIn this (guide|page|section|article),? (we|you)\b'
+  - "\\bLet's\\b"

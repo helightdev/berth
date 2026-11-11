@@ -1,0 +1,5 @@
+---
+- name: Install Pi with npm as the agent
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/npm-agent.yml"
+  vars:
+    item: {command: pi, package: '@earendil-works/pi-coding-agent', version: '{{ devbox_pi_version }}'}

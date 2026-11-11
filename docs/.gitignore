@@ -1,0 +1,12 @@
+/node_modules
+.source
+/.next/
+/out/
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+.env*.local
+
+# the manual, gathered from the README (npm run gather)
+/content/docs/index.md
+/content/docs/manual/

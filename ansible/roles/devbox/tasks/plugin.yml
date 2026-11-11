@@ -1,0 +1,39 @@
+---
+# One feature of a plugin, named PLUGIN/FEATURE.
+- name: Check the feature name
+  ansible.builtin.assert:
+    that: devbox_plugin_feature is match('^[a-z][a-z0-9_-]*/[a-z][a-z0-9_-]*$')
+    fail_msg: "Plugin features are named PLUGIN/FEATURE in lowercase letters, digits, - and _: {{ devbox_plugin_feature }}"
+- name: Find the plugin
+  ansible.builtin.set_fact:
+    devbox_plugin_id: "{{ devbox_plugin_feature.split('/')[0] }}"
+    devbox_plugin_dir: "{{ devbox_plugin_dirs[devbox_plugin_feature.split('/')[0]] | default(playbook_dir ~ '/../plugins/' ~ devbox_plugin_feature.split('/')[0]) }}"
+- name: Read the plugin's package.json
+  ansible.builtin.set_fact:
+    devbox_plugin_matches: "{{ (lookup('ansible.builtin.file', devbox_plugin_dir ~ '/package.json') | from_json).berth.features | default([]) | selectattr('id', 'equalto', devbox_plugin_feature.split('/')[1]) | list }}"
+- name: Require the feature to exist
+  ansible.builtin.assert:
+    that: devbox_plugin_matches | length == 1
+    fail_msg: "{{ devbox_plugin_dir }}/package.json has no feature {{ devbox_plugin_feature.split('/')[1] }}"
+- name: Take the feature's description
+  ansible.builtin.set_fact:
+    devbox_feature: "{{ devbox_plugin_matches[0] }}"
+- name: Install the feature's packages
+  ansible.builtin.apt:
+    name: "{{ devbox_feature.packages }}"
+    state: present
+    lock_timeout: 300
+  when: devbox_feature.packages | default([]) | length > 0
+- name: Run the feature's tasks
+  ansible.builtin.include_tasks: "{{ devbox_plugin_dir }}/{{ devbox_feature.tasks }}"
+  when: devbox_feature.tasks | default('') | length > 0
+- name: Install the feature's guide for agents
+  ansible.builtin.template:
+    src: "{{ devbox_plugin_dir }}/{{ devbox_feature.guide }}"
+    dest: "/etc/devbox/guides/{{ devbox_plugin_feature | replace('/', '-') }}.md"
+    mode: '0644'
+  when: devbox_feature.guide | default('') | length > 0
+- name: Record what the feature adds
+  ansible.builtin.set_fact:
+    devbox_plugin_info: "{{ devbox_plugin_info + [{'name': devbox_plugin_feature | replace('/', '-'), 'label': devbox_feature.label | default(devbox_plugin_feature), 'summary': devbox_feature.summary | default(''), 'guide': devbox_feature.guide | default('') | length > 0}] }}"
+    devbox_plugin_commands: "{{ devbox_plugin_commands + (devbox_feature.commands | default([])) }}"

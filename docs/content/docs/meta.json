@@ -1,0 +1,13 @@
+{
+  "title": "berth",
+  "pages": [
+    "index",
+    "---Manual---",
+    "...manual",
+    "---Guides---",
+    "plugins",
+    "secrets",
+    "tools",
+    "validation"
+  ]
+}
