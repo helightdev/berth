@@ -10,14 +10,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-          targets: x86_64-unknown-linux-musl
+          targets: x86_64-unknown-linux-musl, wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Install Ansible for the template and syntax checks
         run: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-      - name: Rust tests (the build makes berthd and box for the hosts)
-        run: cargo test --locked
+      - name: Rust tests (the build makes berthd and box for the hosts; with the web feature, the page too)
+        run: |
+          cargo test --locked
+          cargo test --locked -p berth --features web
       - name: Python tests
         run: .venv/bin/python -m unittest discover -s tests -v
       - name: Shell syntax
@@ -29,8 +32,10 @@ jobs:
         run: .venv/bin/ansible-playbook -i localhost, ansible/site.yml --syntax-check
       - name: Formatting and lints
         run: |
-          cargo fmt --check -p berth-api -p berth-pty -p berth-core -p berth -p berthd -p box
+          cargo fmt --check -p berth-api -p berth-pty -p berth-core -p berth-tui -p berth -p berthd -p box -p berth-web
           cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --all-targets -p berth --features web -- -D warnings
+          cargo clippy --locked -p berth-web --target wasm32-unknown-unknown -- -D warnings
   prose:
     runs-on: ubuntu-latest
     env:
@@ -43,12 +48,3 @@ jobs:
             | tar -xz -C "$RUNNER_TEMP" vale
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - run: vale --minAlertLevel=warning README.md docs/content/docs plugins/*/guide.md
-  docs:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: npm install --no-audit --no-fund && npm run build
-        working-directory: docs

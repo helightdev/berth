@@ -1,0 +1,48 @@
+name: Docs
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # The site is served from a folder named after the repository on github.io.
+      DOCS_BASE_PATH: /${{ github.event.repository.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # The site has the page of berth serve under /web, which building berth makes.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl, wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: npm install --no-audit --no-fund && npm run build
+        working-directory: docs
+      - run: test -f docs/out/web/berth-web_bg.wasm
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/out
+  # Runs once Pages is switched on for the repository: Settings, Pages, source
+  # "GitHub Actions", and the repository variable DOCS_PAGES set to true.
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.DOCS_PAGES == 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

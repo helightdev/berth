@@ -14,7 +14,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-musl
+          targets: x86_64-unknown-linux-musl, wasm32-unknown-unknown
       - name: musl compiler for the bundled SQLite
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
       - uses: Swatinem/rust-cache@v2
@@ -27,12 +27,21 @@ jobs:
           tar -czf berth-x86_64-linux.tar.gz -C dist berth LICENSE
           sha256sum berth-x86_64-linux.tar.gz > berth-x86_64-linux.tar.gz.sha256
           cp target/host/x86_64-unknown-linux-musl/release/berthd target/host/x86_64-unknown-linux-musl/release/box dist/
+      - name: Build berth with the page for a browser
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl -p berth --features web
+      - name: Pack it
+        run: |
+          cp target/x86_64-unknown-linux-musl/release/berth dist/berth
+          tar -czf berth-web-x86_64-linux.tar.gz -C dist berth LICENSE
+          sha256sum berth-web-x86_64-linux.tar.gz > berth-web-x86_64-linux.tar.gz.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: berth-x86_64-linux
           path: |
             berth-x86_64-linux.tar.gz
             berth-x86_64-linux.tar.gz.sha256
+            berth-web-x86_64-linux.tar.gz
+            berth-web-x86_64-linux.tar.gz.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: host-programs-x86_64-linux
@@ -55,7 +64,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "$GITHUB_REF_NAME" > VERSION
-          gh release create "$GITHUB_REF_NAME" --generate-notes berth-x86_64-linux.tar.gz berth-x86_64-linux.tar.gz.sha256 install.sh VERSION
+          gh release create "$GITHUB_REF_NAME" --generate-notes berth-x86_64-linux.tar.gz berth-x86_64-linux.tar.gz.sha256 berth-web-x86_64-linux.tar.gz berth-web-x86_64-linux.tar.gz.sha256 install.sh VERSION
   image:
     runs-on: ubuntu-latest
     permissions:
