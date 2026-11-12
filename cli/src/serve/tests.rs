@@ -1395,6 +1395,8 @@ async fn an_access_token_gets_in_with_the_role_it_names() {
             .await
             .is_ok()
     );
+    let asked = portal.call("access", None, Value::Null, None).await;
+    assert_eq!(asked.unwrap()["role"], "view");
     let saved = portal
         .call(
             "hosts.save",

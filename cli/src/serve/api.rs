@@ -310,9 +310,13 @@ async fn portal(
     ws: WebSocketUpgrade,
 ) -> Response {
     // Who it is was shown when the portal was opened; what they may do is
-    // asked for each operation.
+    // asked for each operation. The operations see the caller as they would
+    // over HTTP, so `access` names its role and not this machine's user's.
+    let inner = match &access {
+        Some(Extension(access)) => router(state.clone(), false).layer(Extension(access.clone())),
+        None => router(state.clone(), false),
+    };
     let access = caller(access);
-    let inner = router(state.clone(), false);
     let asked = state.clone();
     let resolve: berthd::portal::Resolve = Arc::new(move |name, host| {
         let (table, prefix) = match host {
