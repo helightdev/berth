@@ -362,7 +362,7 @@ impl Field {
                 "This berth's SSH key",
                 "/berth_ssh_key",
                 Toggle,
-                "The operator also takes the SSH key of the berth that sets the host up. berth makes that key itself, an ed25519 one, and offers it when it connects, so it reaches the host without a key of yours. For a host set up from a berth server it is the server's key.",
+                "The operator also takes the SSH key of the berth that sets the host up. berth makes that key itself, an ed25519 one, and offers it when it connects, so it reaches the host without a key of yours. For a host set up from a berth server it is the server's key. c copies it, to add it at a cloud provider or on a host yourself.",
             ),
             OperatorHash => (
                 "Operator password hash",

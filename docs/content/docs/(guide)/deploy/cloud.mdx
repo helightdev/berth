@@ -8,6 +8,8 @@ A cloud seed is cloud-init user data for a fresh Ubuntu 26.04 amd64 instance, at
 
 berth does not create or pay for cloud machines. Create the instance at your provider and paste the seed in as its user data.
 
+The seed gives the operator [the key of berth itself](/docs/reference/profile#the-key-of-berth-itself). You can also add that key at your provider as an SSH key. A new machine then takes it from the start, before the seed has run. Copy it from the Settings tab of the home screen.
+
 ## Render the seed
 
 <Steps>

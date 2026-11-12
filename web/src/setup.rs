@@ -3,6 +3,7 @@
 //! and kept by the server.
 
 use crate::admin::{Admin, Data};
+use crate::browser::Browser;
 use berth_tui::fields::{Action, Field, Kind, Step};
 use berth_tui::screen::{draw_footer, draw_header, inside};
 use berth_tui::setup::{self, Account, Entry, Feature, Item, Profile, Row};
@@ -258,9 +259,7 @@ impl Setup {
         match self.selected() {
             // F5 is the browser's own, so the letters do what berth's F4 and F5 do.
             // The key itself, to give to a host that was not set up from here.
-            Some(Entry::Field(Field::BerthKey)) if !self.own_key.is_empty() => {
-                format!("{}\n\n`{}`", Field::BerthKey.spec().help, self.own_key)
-            }
+            Some(Entry::Field(Field::BerthKey)) => berth_tui::berth_key::field_help(&self.own_key),
             Some(Entry::Field(field)) => field.spec().help.replace("F4", "g").replace("F5", "p"),
             Some(Entry::Key(Account::Operator, Some(_))) => Field::OperatorKey.spec().help.into(),
             Some(Entry::Key(Account::Agent, Some(_))) => Field::AgentKey.spec().help.into(),
@@ -485,6 +484,14 @@ impl Setup {
                 let field = self.selected_field().unwrap();
                 say(self.generate(field, admin));
             }
+            _ if self.selected_field() == Some(Field::BerthKey)
+                && berth_tui::berth_key::is_copy(&key) =>
+            {
+                say(Some(berth_tui::berth_key::copy(
+                    &mut Browser,
+                    &self.own_key,
+                )));
+            }
             Code::Char('p') if self.selected_field().is_some_and(Field::is_password_hash) => {
                 self.password_entry = true;
                 self.editing = Some(Input::default());
@@ -685,6 +692,10 @@ impl Setup {
             (None, Some(field)) if field.is_password_hash() => {
                 "↑↓ select · g generate · p type a password · x clear · Tab next page · Ctrl+S save · Esc back".to_owned()
             }
+            (None, Some(Field::BerthKey)) => format!(
+                "↑↓ select · Space switch · {} · Tab next page · Ctrl+S save · Esc back",
+                berth_tui::berth_key::HINT
+            ),
             (None, Some(field)) if field.can_generate() => {
                 "↑↓ select · Enter change · g generate · x clear · Tab next page · Ctrl+S save · Esc back".to_owned()
             }

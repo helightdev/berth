@@ -656,8 +656,8 @@ impl App {
         match self.selected_entry() {
             Some(Entry::Feature(index)) => self.catalogue[index].help.clone(),
             // The key itself, to give to a host that was not set up from here.
-            Some(Entry::Field(Field::BerthKey)) if !self.own_public.is_empty() => {
-                format!("{}\n\n`{}`", Field::BerthKey.spec().help, self.own_public)
+            Some(Entry::Field(Field::BerthKey)) => {
+                berth_tui::berth_key::field_help(&self.own_public)
             }
             Some(Entry::HostTask(index)) => berth_tui::host::task_help(&self.host, index),
             Some(Entry::HostSession(index)) => berth_tui::host::session_help(&self.host, index),

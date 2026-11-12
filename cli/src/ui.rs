@@ -76,6 +76,9 @@ fn buttons(app: &App) -> Vec<(&'static str, KeyCode)> {
         if field.uses_saved_wifi() && !app.privileged {
             buttons.push(("[Unlock saved passwords F5]", KeyCode::F(5)));
         }
+        if field == Field::BerthKey && !app.own_public.is_empty() {
+            buttons.push(("[Copy the key c]", KeyCode::Char('c')));
+        }
     }
     buttons
 }
@@ -291,14 +294,20 @@ fn draw(frame: &mut Frame, app: &mut App, rows: &[Row], display: &mut ListState,
     }
 
     let keys = if editing {
-        "Enter accept · ↑↓ field · Tab next tab · Esc cancel"
+        "Enter accept · ↑↓ field · Tab next tab · Esc cancel".to_owned()
+    } else if app.selected_field() == Some(Field::BerthKey) {
+        format!(
+            "↑↓ select · Space switch · {} · 1-4 tab · Ctrl+S save · Esc overview",
+            berth_tui::berth_key::HINT
+        )
     } else {
         match app.step {
             Step::Manage => "↑↓ select · Enter choose · x unset · Ctrl+S save · q hosts",
             _ => "↑↓ select · Enter choose · 1-4 tab · x unset · Ctrl+S save · Esc overview",
         }
+        .to_owned()
     };
-    draw_footer(frame, footer, keys, &app.status, theme::ACCENT);
+    draw_footer(frame, footer, &keys, &app.status, theme::ACCENT);
     if let Some(picker) = &mut app.picker {
         picker.draw(frame);
     }
@@ -1046,7 +1055,12 @@ fn session_size() -> (u16, u16) {
     )
 }
 
-fn key_event(app: &mut App, key: KeyEvent, quit_armed: &mut bool) -> Flow {
+fn key_event(
+    app: &mut App,
+    key: KeyEvent,
+    quit_armed: &mut bool,
+    platform: &mut dyn Platform,
+) -> Flow {
     let armed = std::mem::take(quit_armed);
     let control = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
@@ -1126,6 +1140,11 @@ fn key_event(app: &mut App, key: KeyEvent, quit_armed: &mut bool) -> Flow {
         KeyCode::Up => app.move_selection(true),
         KeyCode::Down => app.move_selection(false),
         KeyCode::Right if !app.suggestions.is_empty() => app.suggestion_focus = true,
+        _ if app.selected_field() == Some(Field::BerthKey)
+            && crate::keys::key(&key).is_some_and(|key| berth_tui::berth_key::is_copy(&key)) =>
+        {
+            app.status = berth_tui::berth_key::copy(platform, &app.own_public);
+        }
         KeyCode::Char(digit @ '1'..='9') => {
             if app.step != Step::Manage
                 && let Some(&step) = Step::SETUP.get(digit as usize - '1' as usize)
@@ -1860,6 +1879,46 @@ struct Home {
     started: std::time::Instant,
     /// The link that opens the server's page, as a QR code, while it is shown.
     qr: Option<berth_tui::qr::Overlay>,
+    /// The SSH key of this berth, or of the berth server it uses, and that
+    /// server. Asked for when Settings is first shown; empty when unknown.
+    berth_key: Option<(String, Option<String>)>,
+}
+
+/// The rows of the Settings tab after berth's own settings.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SettingsRow {
+    BerthKey,
+    Connect,
+}
+
+fn settings_extras(home: &Home, paths: &Paths) -> Vec<SettingsRow> {
+    let mut extras = vec![];
+    if home
+        .berth_key
+        .as_ref()
+        .is_some_and(|(key, _)| !key.is_empty())
+    {
+        extras.push(SettingsRow::BerthKey);
+    }
+    if connect_link(paths).is_some() {
+        extras.push(SettingsRow::Connect);
+    }
+    extras
+}
+
+/// The SSH key hosts set up from here take: the server's for a berth that
+/// uses one, which only someone who may set the server up is told.
+fn berth_key(paths: &Paths) -> (String, Option<String>) {
+    match berth_core::server::Server::configured(paths) {
+        Some(server) => {
+            let key = server
+                .call("setup.catalogue", json!({}), None)
+                .ok()
+                .and_then(|found| found["key"].as_str().map(str::to_owned));
+            (key.unwrap_or_default(), Some(server.url))
+        }
+        None => (paths.own_public_key().unwrap_or_default(), None),
+    }
 }
 
 /// What a setting is called on screen.
@@ -1949,11 +2008,15 @@ fn home_loop(terminal: &mut DefaultTerminal, paths: &Paths) -> Result<Option<Str
         status: String::new(),
         started: std::time::Instant::now(),
         qr: None,
+        berth_key: None,
     };
     let mut hits = vec![];
     let mut fade = Fade::default();
     loop {
         fade.check(&mut home.status);
+        if matches!(home.mode, HomeMode::Settings(..)) && home.berth_key.is_none() {
+            home.berth_key = Some(berth_key(paths));
+        }
         if let HomeMode::Plugins(view) = &mut home.mode {
             view.load(paths);
         }
@@ -1984,9 +2047,9 @@ fn home_loop(terminal: &mut DefaultTerminal, paths: &Paths) -> Result<Option<Str
                 if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     return Ok(None);
                 }
-                home_key(&mut home, paths, key)
+                home_key(&mut home, paths, key, &mut Desktop)
             }
-            Event::Mouse(mouse) => home_mouse(&mut home, paths, mouse, &hits),
+            Event::Mouse(mouse) => home_mouse(&mut home, paths, mouse, &hits, &mut Desktop),
             Event::Paste(text) => {
                 let editor = match &mut home.mode {
                     HomeMode::Naming(input) => Some(input),
@@ -2018,11 +2081,12 @@ fn home_mouse(
     paths: &Paths,
     mouse: MouseEvent,
     hits: &[(Rect, HomeTarget)],
+    platform: &mut dyn Platform,
 ) -> Option<Option<String>> {
     let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
     match mouse.kind {
-        MouseEventKind::ScrollUp => home_key(home, paths, key(KeyCode::Up)),
-        MouseEventKind::ScrollDown => home_key(home, paths, key(KeyCode::Down)),
+        MouseEventKind::ScrollUp => home_key(home, paths, key(KeyCode::Up), platform),
+        MouseEventKind::ScrollDown => home_key(home, paths, key(KeyCode::Down), platform),
         MouseEventKind::Down(MouseButton::Left) => {
             let (_, target) = hits
                 .iter()
@@ -2061,7 +2125,7 @@ fn home_mouse(
                             home.selected = index;
                         }
                     }
-                    home_key(home, paths, key(KeyCode::Enter))
+                    home_key(home, paths, key(KeyCode::Enter), platform)
                 }
             }
         }
@@ -2070,7 +2134,20 @@ fn home_mouse(
 }
 
 /// Handle a key on the home screen. `Some` leaves it: with a host, or to quit.
-fn home_key(home: &mut Home, paths: &Paths, key: KeyEvent) -> Option<Option<String>> {
+fn home_key(
+    home: &mut Home,
+    paths: &Paths,
+    key: KeyEvent,
+    platform: &mut dyn Platform,
+) -> Option<Option<String>> {
+    let extras = match home.mode {
+        HomeMode::Settings(..) => settings_extras(home, paths),
+        _ => vec![],
+    };
+    let extra = |selected: usize| {
+        let index = selected.checked_sub(crate::paths::SETTINGS.len())?;
+        extras.get(index).copied()
+    };
     let outcome = match &mut home.mode {
         HomeMode::Registries(view) => Some(registries_key(view, paths, key, &mut home.status)),
         HomeMode::Secrets(view) => Some(secrets_key(view, paths, key, &mut home.status)),
@@ -2123,19 +2200,26 @@ fn home_key(home: &mut Home, paths: &Paths, key: KeyEvent) -> Option<Option<Stri
         HomeMode::Settings(selected, editor) => match key.code {
             KeyCode::Up => *selected = selected.saturating_sub(1),
             KeyCode::Down => {
-                // The row that opens the server's page comes after the settings.
-                let last =
-                    crate::paths::SETTINGS.len() - usize::from(connect_link(paths).is_none());
+                // The key of berth and the row that opens the server's page
+                // come after the settings.
+                let last = crate::paths::SETTINGS.len() + extras.len() - 1;
                 *selected = (*selected + 1).min(last);
             }
             KeyCode::Enter if *selected < crate::paths::SETTINGS.len() => {
                 let (name, _) = crate::paths::SETTINGS[*selected];
                 *editor = Some(Input::new(setting(paths, name).0));
             }
+            KeyCode::Enter | KeyCode::Char('c')
+                if extra(*selected) == Some(SettingsRow::BerthKey) =>
+            {
+                if let Some((key, _)) = &home.berth_key {
+                    home.status = berth_tui::berth_key::copy(platform, key);
+                }
+            }
             KeyCode::Enter | KeyCode::Char('r')
                 if key.code == KeyCode::Enter || key.modifiers.contains(KeyModifiers::ALT) =>
             {
-                if *selected >= crate::paths::SETTINGS.len()
+                if extra(*selected) == Some(SettingsRow::Connect)
                     && let Some((_, link)) = connect_link(paths)
                 {
                     home.qr = Some(berth_tui::qr::Overlay::connect(link));
@@ -2238,6 +2322,8 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
     let (rows, selected, editor, help, keys): (Vec<Line>, usize, _, String, _) = match &home.mode {
         HomeMode::Settings(selected, editor) => {
             let connect = connect_link(paths);
+            let extras = settings_extras(home, paths);
+            let (public, server) = home.berth_key.clone().unwrap_or_default();
             let mut rows: Vec<Line> = crate::paths::SETTINGS
                 .iter()
                 .map(|(name, _)| {
@@ -2255,26 +2341,36 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                     }
                 })
                 .collect();
-            if connect.is_some() {
-                rows.push(Line::from(vec![
-                    Span::styled("Open on another device  ", Style::new().fg(theme::TEXT)),
-                    Span::styled("QR code and link, with the token", muted),
-                ]));
+            for extra in &extras {
+                rows.push(match extra {
+                    SettingsRow::BerthKey => berth_tui::berth_key::row(&public),
+                    SettingsRow::Connect => Line::from(vec![
+                        Span::styled("Open on another device  ", Style::new().fg(theme::TEXT)),
+                        Span::styled("QR code and link, with the token", muted),
+                    ]),
+                });
             }
             let selected = (*selected).min(rows.len() - 1);
-            let (help, keys) = match (crate::paths::SETTINGS.get(selected), &connect) {
-                (Some((name, help)), _) => (
+            let extra = selected
+                .checked_sub(crate::paths::SETTINGS.len())
+                .and_then(|index| extras.get(index));
+            let (help, keys) = match (crate::paths::SETTINGS.get(selected), extra, &connect) {
+                (Some((name, help)), ..) => (
                     format!(
                         "The {help}.\n\nLeave it empty to use the default. Also: berth config {name} VALUE\n\nKept in {}",
                         paths.settings_file().display()
                     ),
                     "↑↓ select · Enter change · Tab registries · q quit",
                 ),
-                (None, Some((url, _))) => (
+                (None, Some(SettingsRow::BerthKey), _) => (
+                    berth_tui::berth_key::help(&public, server.as_deref()),
+                    "↑↓ select · Enter copy the key · Tab registries · q quit",
+                ),
+                (None, Some(SettingsRow::Connect), Some((url, _))) => (
                     berth_tui::qr::connect_help(url, true),
                     "↑↓ select · Enter show the QR code · Tab registries · q quit",
                 ),
-                (None, None) => (String::new(), ""),
+                _ => (String::new(), ""),
             };
             (
                 rows,
@@ -2623,7 +2719,7 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
             }
             _ => continue,
         };
-        match key_event(app, key, &mut quit_armed) {
+        match key_event(app, key, &mut quit_armed, &mut Desktop) {
             Flow::Continue => {}
             Flow::Quit => return Ok(false),
             Flow::Run => return Ok(true),
@@ -2636,6 +2732,25 @@ mod tests {
     use super::*;
     use crate::app::parse_config;
     use ratatui::{Terminal, backend::TestBackend};
+
+    /// A clipboard of the test's own, so none of the desktop's is touched.
+    #[derive(Default)]
+    struct Clipboard(Option<String>);
+
+    impl Platform for Clipboard {
+        fn copy(&mut self, text: &str) -> bool {
+            self.0 = Some(text.to_owned());
+            true
+        }
+
+        fn paste(&mut self) -> Option<String> {
+            self.0.clone()
+        }
+
+        fn open(&mut self, _: &str) -> std::result::Result<(), String> {
+            Err("no browser in tests".into())
+        }
+    }
 
     fn screen(app: &mut App) -> String {
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
@@ -2694,10 +2809,16 @@ mod tests {
             status: String::new(),
             started: std::time::Instant::now(),
             qr: None,
+            berth_key: None,
         };
         let keys = |home: &mut Home, codes: &[KeyCode]| {
             for &code in codes {
-                home_key(home, &paths, KeyEvent::new(code, KeyModifiers::NONE));
+                home_key(
+                    home,
+                    &paths,
+                    KeyEvent::new(code, KeyModifiers::NONE),
+                    &mut Clipboard::default(),
+                );
             }
         };
         let typed = |text: &str| text.chars().map(KeyCode::Char).collect::<Vec<_>>();
@@ -2779,9 +2900,15 @@ mod tests {
             status: String::new(),
             started: std::time::Instant::now(),
             qr: None,
+            berth_key: None,
         };
         let key = |home: &mut Home, code| {
-            home_key(home, &paths, KeyEvent::new(code, KeyModifiers::NONE));
+            home_key(
+                home,
+                &paths,
+                KeyEvent::new(code, KeyModifiers::NONE),
+                &mut Clipboard::default(),
+            );
         };
         key(&mut home, KeyCode::Char('5'));
         if let HomeMode::Plugins(view) = &mut home.mode {
@@ -2885,10 +3012,16 @@ mod tests {
             status: String::new(),
             started: std::time::Instant::now(),
             qr: None,
+            berth_key: None,
         };
         let keys = |home: &mut Home, codes: &[KeyCode]| {
             for &code in codes {
-                home_key(home, &paths, KeyEvent::new(code, KeyModifiers::NONE));
+                home_key(
+                    home,
+                    &paths,
+                    KeyEvent::new(code, KeyModifiers::NONE),
+                    &mut Clipboard::default(),
+                );
             }
         };
         let typed = |text: &str| text.chars().map(KeyCode::Char).collect::<Vec<_>>();
@@ -2969,7 +3102,10 @@ mod tests {
         for &code in codes {
             app.update_suggestions();
             let key = KeyEvent::new(code, KeyModifiers::NONE);
-            if matches!(key_event(app, key, &mut armed), Flow::Run) {
+            if matches!(
+                key_event(app, key, &mut armed, &mut Clipboard::default()),
+                Flow::Run
+            ) {
                 return true;
             }
         }
@@ -2990,6 +3126,7 @@ mod tests {
             status: String::new(),
             started: std::time::Instant::now(),
             qr: None,
+            berth_key: None,
         };
         let last = berth_core::paths::SETTINGS.len();
         let down = |home: &mut Home| {
@@ -2998,6 +3135,7 @@ mod tests {
                     home,
                     &paths,
                     KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                    &mut Clipboard::default(),
                 );
             }
         };
@@ -3029,6 +3167,7 @@ mod tests {
             &mut home,
             &paths,
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut Clipboard::default(),
         );
         let overlay = home.qr.clone().unwrap();
         assert_eq!(overlay.link(), "https://berth.example.ts.net/#token=a1b2");
@@ -3076,9 +3215,16 @@ mod tests {
             status: String::new(),
             started: std::time::Instant::now(),
             qr: None,
+            berth_key: None,
         };
-        let press =
-            |home: &mut Home, code| home_key(home, &paths, KeyEvent::new(code, KeyModifiers::NONE));
+        let press = |home: &mut Home, code| {
+            home_key(
+                home,
+                &paths,
+                KeyEvent::new(code, KeyModifiers::NONE),
+                &mut Clipboard::default(),
+            )
+        };
         assert!(press(&mut home, KeyCode::Char('d')).is_none());
         assert_eq!(paths.settings().unwrap()["default_host"], "laptop");
         for code in [
@@ -3112,7 +3258,7 @@ mod tests {
                 row,
                 modifiers: KeyModifiers::NONE,
             };
-            home_mouse(home, &paths, mouse, &hits)
+            home_mouse(home, &paths, mouse, &hits, &mut Clipboard::default())
         };
         assert!(click(&mut home, 15, 1).is_none());
         assert!(matches!(home.mode, HomeMode::Hosts));
@@ -3195,14 +3341,23 @@ mod tests {
         let mut armed = false;
         let q = KeyEvent::new(Char('q'), KeyModifiers::NONE);
         // The first q only leaves the set-up pages for the host's overview.
-        assert!(matches!(key_event(&mut app, q, &mut armed), Flow::Continue));
+        assert!(matches!(
+            key_event(&mut app, q, &mut armed, &mut Clipboard::default()),
+            Flow::Continue
+        ));
         assert!(!armed && app.step == Step::Manage);
-        assert!(matches!(key_event(&mut app, q, &mut armed), Flow::Continue));
+        assert!(matches!(
+            key_event(&mut app, q, &mut armed, &mut Clipboard::default()),
+            Flow::Continue
+        ));
         assert!(armed);
         let save = KeyEvent::new(Char('s'), KeyModifiers::CONTROL);
-        key_event(&mut app, save, &mut armed);
+        key_event(&mut app, save, &mut armed, &mut Clipboard::default());
         assert!(app.path.is_file() && !app.unsaved());
-        assert!(matches!(key_event(&mut app, q, &mut armed), Flow::Quit));
+        assert!(matches!(
+            key_event(&mut app, q, &mut armed, &mut Clipboard::default()),
+            Flow::Quit
+        ));
     }
 
     #[test]
@@ -3451,5 +3606,123 @@ mod tests {
         press(&mut app, &[KeyCode::Char('x')]);
         assert_eq!(app.text(Field::SshHost), "");
         assert_eq!(app.host.state, State::Idle);
+    }
+
+    const BERTH_KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyOfBerth1234 berth@studio";
+
+    #[test]
+    fn settings_show_the_key_of_berth_and_copy_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: directory.path().join("config"),
+            data_dir: directory.path().join("data"),
+        };
+        paths.set("server", "https://192.0.2.7:8443").unwrap();
+        paths.set("server_token", "a1b2").unwrap();
+        let mut home = Home {
+            hosts: vec![],
+            selected: 0,
+            mode: HomeMode::Settings(0, None),
+            status: String::new(),
+            started: std::time::Instant::now(),
+            qr: None,
+            berth_key: Some((BERTH_KEY.into(), Some("https://192.0.2.7:8443".into()))),
+        };
+        let mut clipboard = Clipboard::default();
+        let settings = berth_core::paths::SETTINGS.len();
+        for _ in 0..settings {
+            home_key(
+                &mut home,
+                &paths,
+                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                &mut clipboard,
+            );
+        }
+        // The key comes after the settings, before the row with the QR code.
+        assert!(matches!(home.mode, HomeMode::Settings(index, _) if index == settings));
+        let mut terminal = Terminal::new(TestBackend::new(130, 50)).unwrap();
+        terminal
+            .draw(|frame| draw_home(frame, &paths, &home, &mut vec![]))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let screen = (0..50)
+            .map(|y| {
+                (0..130)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            screen.contains("This berth's SSH key  ssh-ed25519 …erth1234 berth@studio"),
+            "{screen}"
+        );
+        assert!(screen.contains("Enter copy the key") && screen.contains("berth server at"));
+        assert!(screen.contains("Open on another device"));
+        home_key(
+            &mut home,
+            &paths,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut clipboard,
+        );
+        assert_eq!(clipboard.0.as_deref(), Some(BERTH_KEY));
+        assert_eq!(home.status, "Copied this berth's SSH public key");
+        assert!(home.qr.is_none());
+        // The row after it still shows the QR code.
+        home_key(
+            &mut home,
+            &paths,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &mut clipboard,
+        );
+        home_key(
+            &mut home,
+            &paths,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut clipboard,
+        );
+        assert!(home.qr.is_some());
+        // Without a key to give there is no row for it.
+        home.berth_key = Some((String::new(), None));
+        home.mode = HomeMode::Settings(settings, None);
+        home.qr = None;
+        home_key(
+            &mut home,
+            &paths,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut clipboard,
+        );
+        assert!(home.qr.is_some());
+    }
+
+    #[test]
+    fn the_field_of_berths_key_copies_it() {
+        let mut app = App::new("x.json".into(), parse_config(b"{}").unwrap());
+        app.own_public = BERTH_KEY.into();
+        app.set_step(Step::Accounts);
+        let at = app
+            .entries()
+            .iter()
+            .position(|entry| *entry == Entry::Field(Field::BerthKey));
+        app.list.select(at);
+        let mut clipboard = Clipboard::default();
+        let mut armed = false;
+        let c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
+        key_event(&mut app, c, &mut armed, &mut clipboard);
+        assert_eq!(clipboard.0.as_deref(), Some(BERTH_KEY));
+        assert_eq!(app.status, "Copied this berth's SSH public key");
+        assert!(app.enabled(Field::BerthKey));
+        let screen = screen_text(&mut app);
+        assert!(screen.contains("[Copy the key c]") && screen.contains("c copy the key"));
+        assert!(app.help().contains(BERTH_KEY));
+        // Space still switches it.
+        press(&mut app, &[KeyCode::Char(' ')]);
+        assert!(!app.enabled(Field::BerthKey));
+        // Elsewhere c is nothing of the kind.
+        clipboard.0 = None;
+        press(&mut app, &[KeyCode::Up]);
+        key_event(&mut app, c, &mut armed, &mut clipboard);
+        assert!(clipboard.0.is_none());
     }
 }

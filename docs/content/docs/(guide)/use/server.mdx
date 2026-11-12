@@ -188,6 +188,6 @@ With the role `admin` on the server, which its token has, berth sets the server 
 - `berth seed HOST` has the server render the cloud-init seed, and writes it here.
 - A secret's value is sent to the server and kept only there. Here berth knows its name.
 - A plugin is installed on the server, and its features show on the Features tab of the server's hosts. A `.tgz` or folder of yours is sent there first.
-- The server logs in to hosts with [its own SSH key](/docs/reference/profile#the-key-of-berth-itself), which a host it installs takes. For a host that was set up elsewhere, add that key to the operator first. The Accounts tab shows it.
+- The server logs in to hosts with [its own SSH key](/docs/reference/profile#the-key-of-berth-itself), which a host it installs takes. For a host that was set up elsewhere, add that key to the operator first. Settings and the Accounts tab show it, and copy it to the clipboard.
 
 With a lesser role the set-up tabs say *This host is set up on the berth server at URL*, and the host's overview works as before. The roles, access tokens of an OAuth 2.0 issuer in place of the token, and how to keep set-up on the server itself are in [berth serve](/docs/extend/serve#who-gets-in).

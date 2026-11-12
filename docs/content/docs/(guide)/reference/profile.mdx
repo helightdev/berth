@@ -60,7 +60,11 @@ A profile written before the lists has one key in `operator_ssh_public_key` or `
 
 Each berth makes an ed25519 key of its own the first time it needs one, and keeps it as `id_ed25519` in its data directory. The operator of a host takes it along with the keys in the profile, so the berth that set a host up can log in to it without a key of yours. That matters most for a [berth server](/docs/use/server), which has no keys until you give it some. berth offers the key over SSH unless the profile has a key file set.
 
-`berth key` prints the public half. Turn **This berth's SSH key** off in Accounts, or set `berth_ssh_key` to `false`, for a host that should only take the listed keys.
+`berth key` prints the public half. To copy it, choose **This berth's SSH key** on the Settings tab of the home screen, or press `c` on the field of the same name in Accounts. With a berth server set, both copy the server's key.
+
+Add the key as an SSH key at your cloud provider, and every machine you create there takes it. berth then logs in to a new machine without a key of yours. On a host set up some other way, add it to the operator's `~/.ssh/authorized_keys`.
+
+Turn **This berth's SSH key** off in Accounts, or set `berth_ssh_key` to `false`, for a host that should only take the listed keys.
 
 ## USB installer
 

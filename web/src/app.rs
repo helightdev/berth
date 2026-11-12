@@ -1047,6 +1047,7 @@ impl App {
             self.tab = 0;
         }
         self.home.connect = self.connect_link();
+        self.home.server = browser::shown(&self.server).to_owned();
         let tabs: &[&str] = if admin { &TABS } else { &[] };
         self.tab_hits = draw_header(frame, header, tabs, self.tab, browser::shown(&self.server));
         frame.render_widget(Paragraph::new(theme::logo()), logo);

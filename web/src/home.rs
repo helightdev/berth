@@ -3,6 +3,8 @@
 //! last said; what they change goes to the server.
 
 use crate::admin::{Admin, Data};
+use crate::browser::Browser;
+use berth_tui::berth_key;
 use berth_tui::fields::Kind;
 use berth_tui::plugins::{self, Asked, Place};
 use berth_tui::setup::{valid_name, value_line};
@@ -223,10 +225,19 @@ pub struct Home {
     go_to: Option<String>,
     plugins: plugins::Tab,
     /// The server, and the link that opens this page signed in, when there
-    /// is one to give: the last row of the Settings tab.
+    /// is one to give: a row of the Settings tab.
     pub connect: Option<(String, String)>,
+    /// The address of the server, as the header shows it.
+    pub server: String,
     /// A QR code to show, for the page to take.
     pub qr: Option<berth_tui::qr::Overlay>,
+}
+
+/// The rows of the Settings tab after the server's own settings.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsRow {
+    BerthKey,
+    Connect,
 }
 
 /// The tabs after Hosts, in their order.
@@ -287,9 +298,26 @@ impl Home {
 
     // ── Settings ────────────────────────────────────────────────────────────
 
+    /// The rows of the Settings tab after the server's settings, once it has
+    /// said what they are.
+    fn settings_extras(&self, data: &Data) -> Vec<SettingsRow> {
+        let mut extras = vec![];
+        if data.settings.is_empty() {
+            return extras;
+        }
+        if !data.own_key.is_empty() {
+            extras.push(SettingsRow::BerthKey);
+        }
+        if self.connect.is_some() {
+            extras.push(SettingsRow::Connect);
+        }
+        extras
+    }
+
     fn settings_shown(&mut self, data: &Data) -> Shown {
         let muted = Style::new().fg(theme::MUTED);
-        let count = (data.settings.len() + usize::from(self.connect.is_some())).max(1);
+        let extras = self.settings_extras(data);
+        let count = (data.settings.len() + extras.len()).max(1);
         self.selected[SETTINGS] = self.selected[SETTINGS].min(count - 1);
         let mut rows: Vec<Line> = data
             .settings
@@ -311,16 +339,24 @@ impl Home {
                 line
             })
             .collect();
-        if self.connect.is_some() {
-            rows.push(Line::from(vec![
-                Span::styled("Open on another device  ", Style::new().fg(theme::TEXT)),
-                Span::styled("QR code and link, with the token", muted),
-            ]));
+        for extra in &extras {
+            rows.push(match extra {
+                SettingsRow::BerthKey => berth_key::row(&data.own_key),
+                SettingsRow::Connect => Line::from(vec![
+                    Span::styled("Open on another device  ", Style::new().fg(theme::TEXT)),
+                    Span::styled("QR code and link, with the token", muted),
+                ]),
+            });
         }
-        let connecting =
-            !data.settings.is_empty() && self.selected[SETTINGS] == data.settings.len();
-        let help = match data.settings.get(self.selected[SETTINGS]) {
-            Some(setting) => {
+        let extra = self.selected[SETTINGS]
+            .checked_sub(data.settings.len())
+            .and_then(|index| extras.get(index).copied());
+        let help = match (
+            data.settings.get(self.selected[SETTINGS]),
+            extra,
+            &self.connect,
+        ) {
+            (Some(setting), ..) => {
                 let meaning = setting["meaning"].as_str().unwrap_or("");
                 match setting["open"] == true {
                     true => format!("The {meaning}.\n\nLeave it empty to use the default."),
@@ -330,20 +366,28 @@ impl Home {
                     ),
                 }
             }
-            None => match &self.connect {
-                Some((server, _)) if connecting => berth_tui::qr::connect_help(server, false),
-                _ => "Asking the server for its settings…".into(),
-            },
+            (None, Some(SettingsRow::BerthKey), _) => {
+                berth_key::help(&data.own_key, Some(&self.server))
+            }
+            (None, Some(SettingsRow::Connect), Some((server, _))) => {
+                berth_tui::qr::connect_help(server, false)
+            }
+            _ => "Asking the server for its settings…".into(),
         };
         Shown {
             rows,
             selected: self.selected[SETTINGS],
             editor: self.editor.as_ref().map(|_| (" Edit ", false)),
             help,
-            keys: match (&self.editor, connecting) {
+            keys: match (&self.editor, extra) {
                 (Some(_), _) => "Enter accept · Esc cancel",
-                (None, true) => "↑↓ select · Enter show the QR code · Tab registries · Esc hosts",
-                (None, false) => "↑↓ select · Enter change · Tab registries · Esc hosts",
+                (None, Some(SettingsRow::BerthKey)) => {
+                    "↑↓ select · Enter copy the key · Tab registries · Esc hosts"
+                }
+                (None, Some(SettingsRow::Connect)) => {
+                    "↑↓ select · Enter show the QR code · Tab registries · Esc hosts"
+                }
+                (None, None) => "↑↓ select · Enter change · Tab registries · Esc hosts",
             },
         }
     }
@@ -351,10 +395,15 @@ impl Home {
     fn settings_key(&mut self, key: Key, admin: &Admin) -> Option<String> {
         let data = admin.data.borrow();
         let settings = data.settings.len();
-        let count = settings + usize::from(self.connect.is_some() && settings > 0);
+        let extras = self.settings_extras(&data);
+        let count = settings + extras.len();
         let selected = self.selected[SETTINGS].min(count.saturating_sub(1));
         let setting = data.settings.get(selected).cloned().unwrap_or_default();
+        let own_key = data.own_key.clone();
         drop(data);
+        let extra = selected
+            .checked_sub(settings)
+            .and_then(|index| extras.get(index).copied());
         let name = setting["key"].as_str().unwrap_or("").to_owned();
         if let Some(input) = &mut self.editor {
             match key.code {
@@ -368,8 +417,13 @@ impl Home {
             }
             return None;
         }
-        // The row after the settings shows the link that opens this page.
-        if selected == settings
+        if extra == Some(SettingsRow::BerthKey)
+            && (key.code == Code::Enter || berth_key::is_copy(&key))
+        {
+            return Some(berth_key::copy(&mut Browser, &own_key));
+        }
+        // The last row shows the link that opens this page.
+        if extra == Some(SettingsRow::Connect)
             && (key.code == Code::Enter || berth_tui::qr::is_key(&key))
             && let Some((_, link)) = &self.connect
         {

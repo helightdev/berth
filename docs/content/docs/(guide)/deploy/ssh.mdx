@@ -39,7 +39,7 @@ Enter a hostname, an IP address or a `Host` alias from your SSH configuration in
 
 ### Say how to log in
 
-Choose whether berth asks for an SSH password and for your sudo password on the target. Your ssh-agent and SSH configuration apply as usual. OpenSSH's host key check applies too: if the host is new to you, connect once with `ssh HOST` to accept its key.
+Choose whether berth asks for an SSH password and for your sudo password on the target. Instead of a key of yours, the login can take [the key of berth itself](/docs/reference/profile#the-key-of-berth-itself): copy it from the Settings tab of the home screen into the login's `~/.ssh/authorized_keys`. Your ssh-agent and SSH configuration apply as usual. OpenSSH's host key check applies too: if the host is new to you, connect once with `ssh HOST` to accept its key.
 
 </Step>
 <Step>
