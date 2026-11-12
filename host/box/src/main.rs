@@ -17,7 +17,8 @@ const USAGE: &str = "usage:
   box listen TOPIC-PREFIX [--since ID]  one JSON message per line
   box services                          what can be called, and whether it is up
   box call SERVICE METHOD [JSON]        result on stdout
-  box serve SERVICE -- COMMAND...       per call: COMMAND METHOD, body on stdin, result on stdout";
+  box serve SERVICE -- COMMAND...       per call: COMMAND METHOD, body on stdin, result on stdout
+  box --version                         the version";
 
 /// Remove `--name VALUE` from the arguments.
 pub fn take_flag(args: &mut Vec<String>, name: &str) -> Result<Option<String>, String> {
@@ -157,6 +158,7 @@ fn real_main(mut args: Vec<String>) -> Result<i32, String> {
             return Err(format!("{AGENT_ENV}: {error}"));
         }
         "help" | "--help" | "-h" => println!("{USAGE}"),
+        "--version" => println!("box {}", berth_api::VERSION),
         _ => return net::run_verb(&verb, args),
     }
     Ok(0)
