@@ -999,8 +999,8 @@ mod tests {
     fn hosts_share_one_inventory() {
         let one = berth_core::host::inventory("10.0.0.1", "ops", "", "").unwrap();
         let two = berth_core::host::inventory("box", "", "2222", "").unwrap();
-        let merged = merge_inventory(&[("ovh".into(), one), ("laptop".into(), two)]);
-        assert_eq!(merged["all"]["hosts"]["ovh"]["ansible_user"], "ops");
+        let merged = merge_inventory(&[("server".into(), one), ("laptop".into(), two)]);
+        assert_eq!(merged["all"]["hosts"]["server"]["ansible_user"], "ops");
         assert_eq!(merged["all"]["hosts"]["laptop"]["ansible_port"], 2222);
     }
 }

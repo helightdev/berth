@@ -195,7 +195,7 @@ pub const SERVE: &[Stream] = &[
         server: &[text(
             "message",
             "A stored message with its host.",
-            r#"{"host":"ovh","id":4812,"topic":"myplugin/progress","body":{},"keep":"log","from":{"level":"agent","uid":1001},"time":"2026-11-12T10:00:00Z","done":false}"#,
+            r#"{"host":"server","id":4812,"topic":"myplugin/progress","body":{},"keep":"log","from":{"level":"agent","uid":1001},"time":"2026-11-12T10:00:00Z","done":false}"#,
         )],
         client: &[],
     },
@@ -231,12 +231,12 @@ pub const SERVE: &[Stream] = &[
             text(
                 "channel",
                 "A message from a host's channel.",
-                r#"{"source":"channel","host":"ovh","message":{"id":1,"topic":"a/b","body":{},"keep":"log","from":{"level":"host","uid":0},"time":"2026-11-12T10:00:00Z"}}"#,
+                r#"{"source":"channel","host":"server","message":{"id":1,"topic":"a/b","body":{},"keep":"log","from":{"level":"host","uid":0},"time":"2026-11-12T10:00:00Z"}}"#,
             ),
             text(
                 "job",
                 "A job started or ended.",
-                r#"{"source":"job","job":{"id":"j1","host":"ovh","what":"apply","started":"2026-11-12T10:00:00Z"}}"#,
+                r#"{"source":"job","job":{"id":"j1","host":"server","what":"apply","started":"2026-11-12T10:00:00Z"}}"#,
             ),
             text(
                 "kv",
@@ -247,7 +247,7 @@ pub const SERVE: &[Stream] = &[
         client: &[text(
             "follow",
             "What to follow. Sent once, first.",
-            r#"{"hosts":["ovh"],"topics":["myplugin/"],"jobs":true,"kv":["ui"]}"#,
+            r#"{"hosts":["server"],"topics":["myplugin/"],"jobs":true,"kv":["ui"]}"#,
         )],
     },
 ];

@@ -278,7 +278,7 @@
         "examples": [
           {
             "payload": {
-              "host": "ovh",
+              "host": "server",
               "message": {
                 "body": {},
                 "from": {
@@ -306,7 +306,7 @@
           {
             "payload": {
               "hosts": [
-                "ovh"
+                "server"
               ],
               "jobs": true,
               "kv": [
@@ -330,7 +330,7 @@
           {
             "payload": {
               "job": {
-                "host": "ovh",
+                "host": "server",
                 "id": "j1",
                 "started": "2026-11-12T10:00:00Z",
                 "what": "apply"
@@ -596,7 +596,7 @@
                 "level": "agent",
                 "uid": 1001
               },
-              "host": "ovh",
+              "host": "server",
               "id": 4812,
               "keep": "log",
               "time": "2026-11-12T10:00:00Z",

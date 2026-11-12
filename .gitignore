@@ -14,3 +14,7 @@ secrets/
 /ansible/roles/devbox/files/bin/
 
 *.credentials.json
+
+*.log
+.env.*
+.claude/

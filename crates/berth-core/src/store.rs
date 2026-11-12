@@ -546,38 +546,38 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("berth.db");
         let mut store = Store::open(&path).unwrap();
-        assert_eq!(store.cursor("ovh").unwrap(), 0);
+        assert_eq!(store.cursor("server").unwrap(), 0);
         assert!(
             store
-                .take_in("ovh", &message(1, "a/x", Keep::Log))
+                .take_in("server", &message(1, "a/x", Keep::Log))
                 .unwrap()
                 .is_some()
         );
         assert!(
             store
-                .take_in("ovh", &message(2, "a/y", Keep::Log))
+                .take_in("server", &message(2, "a/y", Keep::Log))
                 .unwrap()
                 .is_some()
         );
         // A message that is only handed on moves the cursor and is not kept.
         assert!(
             store
-                .take_in("ovh", &message(3, "a/x", Keep::None))
+                .take_in("server", &message(3, "a/x", Keep::None))
                 .unwrap()
                 .is_none()
         );
         drop(store);
 
         let mut store = Store::open(&path).unwrap();
-        assert_eq!(store.cursor("ovh").unwrap(), 3);
+        assert_eq!(store.cursor("server").unwrap(), 3);
         // The host sends one again: nothing new, and the cursor does not go back.
         assert!(
             store
-                .take_in("ovh", &message(2, "a/y", Keep::Log))
+                .take_in("server", &message(2, "a/y", Keep::Log))
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(store.cursor("ovh").unwrap(), 3);
+        assert_eq!(store.cursor("server").unwrap(), 3);
         // Ids are per host.
         assert!(
             store
@@ -590,17 +590,17 @@ mod tests {
             .iter()
             .map(|m| (m.host.as_str(), m.message.id))
             .collect();
-        assert_eq!(ids, [("laptop", 1), ("ovh", 2), ("ovh", 1)]);
+        assert_eq!(ids, [("laptop", 1), ("server", 2), ("server", 1)]);
         assert_eq!(found[1].message.body, json!({"n": 2}));
         assert_eq!(found[1].message.from.session.as_deref(), Some("sabc"));
         assert_eq!(found[1].message.from.level, Level::Agent);
 
         // A state replaces the one before it on its topic.
         store
-            .take_in("ovh", &message(4, "state", Keep::Last))
+            .take_in("server", &message(4, "state", Keep::Last))
             .unwrap();
         store
-            .take_in("ovh", &message(5, "state", Keep::Last))
+            .take_in("server", &message(5, "state", Keep::Last))
             .unwrap();
         let filter = Filter {
             topic: Some("state"),
@@ -622,7 +622,7 @@ mod tests {
         for id in 1..=5 {
             let topic = if id % 2 == 0 { "even/n" } else { "odd/n" };
             store
-                .take_in("ovh", &message(id, topic, Keep::Log))
+                .take_in("server", &message(id, topic, Keep::Log))
                 .unwrap();
         }
         let odd = Filter {
@@ -675,8 +675,8 @@ mod tests {
             .unwrap();
         assert_eq!((page.len(), next), (1, None));
 
-        assert!(store.set_done("ovh", 3, true).unwrap());
-        assert!(!store.set_done("ovh", 99, true).unwrap());
+        assert!(store.set_done("server", 3, true).unwrap());
+        assert!(!store.set_done("server", 99, true).unwrap());
         let open = Filter {
             done: Some(false),
             limit: 10,
@@ -689,7 +689,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(store.inbox(&done).unwrap().0[0].message.id, 3);
-        assert!(store.set_done("ovh", 3, false).unwrap());
+        assert!(store.set_done("server", 3, false).unwrap());
         assert_eq!(store.inbox(&open).unwrap().0.len(), 5);
     }
 
@@ -756,12 +756,12 @@ mod tests {
         let mut store = Store::open(&dir.path().join("berth.db")).unwrap();
         let mut old = message(1, "a", Keep::Log);
         old.time = rfc3339(unix_now() - 100 * 86400);
-        store.take_in("ovh", &old).unwrap();
-        store.take_in("ovh", &message(2, "a", Keep::Log)).unwrap();
+        store.take_in("server", &old).unwrap();
+        store.take_in("server", &message(2, "a", Keep::Log)).unwrap();
         store.put("ui", "k", &json!(1), When::Always).unwrap();
         let job = |id: &str, age: u64, ended: bool| Job {
             id: id.into(),
-            host: "ovh".into(),
+            host: "server".into(),
             what: "apply".into(),
             started: rfc3339(unix_now() - age * 86400),
             ended: ended.then(|| rfc3339(unix_now() - age * 86400)),
@@ -782,7 +782,7 @@ mod tests {
         assert_eq!(left, ["jnew", "jrunning"]);
         assert!(store.get("ui", "k").unwrap().is_some());
         // The cursor is not what was pruned.
-        assert_eq!(store.cursor("ovh").unwrap(), 2);
+        assert_eq!(store.cursor("server").unwrap(), 2);
 
         store.end_job("jrunning", Some(3)).unwrap();
         let ended = store.job("jrunning").unwrap().unwrap();
@@ -809,7 +809,7 @@ mod tests {
         assert_eq!(store.schema_version().unwrap(), MIGRATIONS.len() as i64);
         assert_eq!(store.get("ui", "k").unwrap().unwrap().revision, 4);
         assert!(store.jobs(10).unwrap().is_empty());
-        store.take_in("ovh", &message(1, "a", Keep::Log)).unwrap();
+        store.take_in("server", &message(1, "a", Keep::Log)).unwrap();
         drop(store);
         // Opening again changes nothing.
         let store = Store::open(&path).unwrap();

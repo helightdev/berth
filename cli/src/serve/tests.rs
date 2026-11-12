@@ -353,16 +353,16 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
     let mut events = client::websocket_unix(&served.socket, "/v1/events")
         .await
         .unwrap();
-    let follow = r#"{"topics":["build/"],"hosts":["ovh"],"kv":["ui"]}"#;
+    let follow = r#"{"topics":["build/"],"hosts":["server"],"kv":["ui"]}"#;
     events.send(Frame::Text(follow.into())).await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
-    served.state.accept("ovh", message(1, "other/x", "log"));
+    served.state.accept("server", message(1, "other/x", "log"));
     served
         .state
-        .accept("ovh", message(2, "build/progress", "none"));
+        .accept("server", message(2, "build/progress", "none"));
     served
         .state
-        .accept("ovh", message(3, "build/result", "log"));
+        .accept("server", message(3, "build/result", "log"));
     served
         .state
         .accept("laptop", message(1, "build/result", "log"));
@@ -373,7 +373,7 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
     let first = text(&mut events).await;
     assert_eq!(
         (&first["source"], &first["host"], &first["message"]["id"]),
-        (&json!("channel"), &json!("ovh"), &json!(2))
+        (&json!("channel"), &json!("server"), &json!(2))
     );
     assert_eq!(text(&mut events).await["message"]["id"], 3);
     client
@@ -385,7 +385,7 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
         json!({"source": "kv", "namespace": "ui", "key": "k", "value": 5, "revision": 1})
     );
 
-    let inbox: Value = client.get("/v1/inbox?host=ovh").await.unwrap();
+    let inbox: Value = client.get("/v1/inbox?host=server").await.unwrap();
     let ids: Vec<_> = inbox["messages"]
         .as_array()
         .unwrap()
@@ -397,7 +397,7 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
     let page: Value = client.get("/v1/inbox?limit=1").await.unwrap();
     assert!(page["next"].is_i64());
     client
-        .post::<Value>("/v1/inbox/ovh/3/done", &json!({}))
+        .post::<Value>("/v1/inbox/server/3/done", &json!({}))
         .await
         .unwrap();
     let open: Value = client
@@ -406,7 +406,7 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
         .unwrap();
     assert_eq!(open["messages"].as_array().unwrap().len(), 1);
     client
-        .call::<Value>("DELETE", "/v1/inbox/ovh/3/done", None)
+        .call::<Value>("DELETE", "/v1/inbox/server/3/done", None)
         .await
         .unwrap();
     let open: Value = client
@@ -416,7 +416,7 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
     assert_eq!(open["messages"].as_array().unwrap().len(), 2);
     assert_eq!(
         client
-            .post::<Value>("/v1/inbox/ovh/99/done", &json!({}))
+            .post::<Value>("/v1/inbox/server/99/done", &json!({}))
             .await
             .unwrap_err()
             .status(),

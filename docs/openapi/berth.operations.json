@@ -2342,7 +2342,7 @@
               "level": "agent",
               "uid": 1001
             },
-            "host": "ovh",
+            "host": "server",
             "id": 4812,
             "keep": "log",
             "time": "2026-11-12T10:00:00Z",
@@ -2659,7 +2659,7 @@
           "binary": false,
           "description": "A message from a host's channel.",
           "example": {
-            "host": "ovh",
+            "host": "server",
             "message": {
               "body": {},
               "from": {
@@ -2680,7 +2680,7 @@
           "description": "A job started or ended.",
           "example": {
             "job": {
-              "host": "ovh",
+              "host": "server",
               "id": "j1",
               "started": "2026-11-12T10:00:00Z",
               "what": "apply"
@@ -2710,7 +2710,7 @@
           "description": "What to follow. Sent once, first.",
           "example": {
             "hosts": [
-              "ovh"
+              "server"
             ],
             "jobs": true,
             "kv": [
