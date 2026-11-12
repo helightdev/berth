@@ -64,7 +64,18 @@ fn host_programs(root: &Path) {
         let placed = bin.join(name);
         // Left alone when unchanged, so the archive is not packed again for nothing.
         if fs::read(&built).ok() != fs::read(&placed).ok() {
+            // The copy keeps the time of the file it replaces. This script watches
+            // ansible/, and a file written while it runs would run it again on the
+            // next build for nothing.
+            let time = fs::metadata(&placed).and_then(|meta| meta.modified()).ok();
             fs::copy(&built, &placed).expect("copying a host program");
+            if let Some(time) = time {
+                fs::File::options()
+                    .write(true)
+                    .open(&placed)
+                    .and_then(|file| file.set_modified(time))
+                    .expect("the time of a host program");
+            }
         }
     }
 }
