@@ -229,6 +229,28 @@ pub static SERVE: &[Op] = &[
     admin(call("plugins.update", "POST", "/v1/plugins/update")),
     admin(call("setup.catalogue", "GET", "/v1/setup")),
     admin(call("setup.generate", "POST", "/v1/setup/generate")),
+    admin(call("provisioners.list", "GET", "/v1/provisioners")),
+    admin(call(
+        "provisioners.instances",
+        "GET",
+        "/v1/provisioners/{plugin}/{id}/instances",
+    )),
+    admin(call(
+        "instances.create",
+        "POST",
+        "/v1/hosts/{name}/instance",
+    )),
+    admin(call("instances.get", "GET", "/v1/hosts/{name}/instance")),
+    admin(call(
+        "instances.power",
+        "POST",
+        "/v1/hosts/{name}/instance/{verb}",
+    )),
+    admin(call(
+        "instances.destroy",
+        "DELETE",
+        "/v1/hosts/{name}/instance",
+    )),
     call("jobs.list", "GET", "/v1/jobs"),
     call("jobs.get", "GET", "/v1/jobs/{id}"),
     role(stream("jobs.follow", "/v1/jobs/{id}"), Role::View),

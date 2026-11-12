@@ -3,7 +3,7 @@
 use super::{
     Event, Remote, Serve,
     auth::{self, Access},
-    setup,
+    provisioners, setup,
 };
 use axum::{
     Json, Router,
@@ -118,7 +118,7 @@ pub struct HostInfo {
 pub struct JobInfo {
     pub id: String,
     pub host: String,
-    /// What it does: `apply`.
+    /// What it does: `apply`, `rollout`, `provision` or `unprovision`.
     pub what: String,
     pub started: String,
     pub ended: Option<String>,
@@ -223,6 +223,14 @@ pub fn documented() -> OpenApiRouter<Arc<Serve>> {
         .routes(routes!(setup::update_plugins))
         .routes(routes!(setup::catalogue))
         .routes(routes!(setup::generate))
+        .routes(routes!(provisioners::list))
+        .routes(routes!(provisioners::instances))
+        .routes(routes!(
+            provisioners::get,
+            provisioners::create,
+            provisioners::destroy
+        ))
+        .routes(routes!(provisioners::power))
         .routes(routes!(jobs))
         .routes(routes!(job))
         .routes(routes!(job_output))
@@ -635,6 +643,42 @@ async fn rollout_hosts(State(state): App, body: Bytes) -> Answer<Json<JobInfo>> 
         }
     });
     Ok(Json(job_info(job)))
+}
+
+/// Start a job of `what` for a host that runs `work` in a thread of its own,
+/// with its output in the job's log. It ends with 0 when `work` says it went
+/// well, and with 1 otherwise.
+pub(super) fn start_job(
+    state: &Arc<Serve>,
+    host: &str,
+    what: &str,
+    work: impl FnOnce(&mut std::fs::File) -> bool + Send + 'static,
+) -> Answer<JobInfo> {
+    let id = new_id().map_err(internal)?;
+    std::fs::create_dir_all(&state.jobs_dir).map_err(internal)?;
+    let path = state.jobs_dir.join(format!("{id}.log"));
+    let mut output = std::fs::File::create(&path).map_err(internal)?;
+    let job = store::Job {
+        id: id.clone(),
+        host: host.to_owned(),
+        what: what.to_owned(),
+        started: berth_api::now(),
+        ended: None,
+        exit_code: None,
+        output_path: path.to_string_lossy().into_owned(),
+    };
+    state.store.lock().unwrap().add_job(&job)?;
+    let _ = state.events.send(Event::Job(job.json()));
+    let watcher = state.clone();
+    std::thread::spawn(move || {
+        let ok = work(&mut output);
+        let mut store = watcher.store.lock().unwrap();
+        let _ = store.end_job(&id, Some(if ok { 0 } else { 1 }));
+        if let Ok(Some(job)) = store.job(&id) {
+            let _ = watcher.events.send(Event::Job(job.json()));
+        }
+    });
+    Ok(job_info(job))
 }
 
 // ── Jobs ────────────────────────────────────────────────────────────────────
