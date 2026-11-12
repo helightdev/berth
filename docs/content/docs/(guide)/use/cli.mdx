@@ -32,6 +32,7 @@ With a [berth server](/docs/use/server) set, by `--server` or the `server` setti
 | `berth iso HOST [--write /dev/sdX]` | Build the USB installer, downloading the ISO if none is set; write it to a drive after asking |
 | `berth seed HOST` | Render the cloud-init seed |
 | `berth apply HOST` | Apply the host's profile to it over SSH. With a [berth server](/docs/use/server) set, as a job there |
+| `berth apply --behind [--update] [--reboot [--force]]` | Apply every host that is behind, one at a time ([Updates](/docs/use/updates#bringing-hosts-up-to-date)). `--all` takes the current ones too |
 | `berth remove HOST` | Forget a host. The machine itself is left as it is |
 | `berth key` | Print the SSH public key of this berth, which the operator of a host it sets up [takes](/docs/reference/profile#the-key-of-berth-itself) |
 | `berth login`, `berth logout` | Log in to a [berth server](/docs/use/server#with-a-login-in-place-of-the-token) through its OAuth 2.0 issuer, and forget that login |
@@ -100,6 +101,8 @@ See [Secrets](/docs/use/secrets) and [Registries](/docs/use/registries).
 | `berth plugins` | Plugins and where they come from |
 | `berth plugins add SPEC` | Install a plugin with npm from a name, a tarball or a folder |
 | `berth plugins remove NAME` | Remove one of yours, by its id or npm name |
+| `berth plugins update --check` | Which of yours have a newer version in their registry |
+| `berth plugins update [ID] [--apply [--reboot [--force]]]` | Update one plugin or all, then list the hosts that are behind. `--apply` brings them up to date |
 
 With a [berth server](/docs/use/server) set, these show and change the server's plugins. A `.tgz` or folder named in `add` is sent from your machine.
 

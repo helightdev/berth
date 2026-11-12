@@ -16,11 +16,11 @@ It prints where it listens and how many hosts it knows. Only one runs per user. 
 
 | Operations | For |
 | --- | --- |
-| [`hosts.*`](/docs/api/serve/hosts) | The saved hosts and their profiles. A host can be added, changed, removed and applied as a job. The server also renders its cloud-init seed and sends its secrets |
+| [`hosts.*`](/docs/api/serve/hosts) | The saved hosts and their profiles. A host can be added, changed, removed and applied as a job, and `hosts.rollout` applies the hosts that are behind one after another. Each host says whether it is behind. The server also renders its cloud-init seed and sends its secrets |
 | [`secrets.*`](/docs/api/serve/secrets), [`registries.*`](/docs/api/serve/registries), [`settings.*`](/docs/api/serve/settings) | What the server keeps beside the hosts. A secret's value goes in and never comes back out |
-| [`plugins.*`](/docs/api/serve/plugins) | The server's plugins. One is installed from its npm registry, from an `https://` address, or from a `.tgz` that is sent, and one of its own is removed. `setup.catalogue` lists the new features straight away |
+| [`plugins.*`](/docs/api/serve/plugins) | The server's plugins. One is installed from its npm registry, from an `https://` address, or from a `.tgz` that is sent, and one of its own is removed. `plugins.check` asks the registries for newer versions and `plugins.update` installs them. `setup.catalogue` lists the new features straight away |
 | Every [berthd operation](/docs/api/host) | With a host: `"host": "NAME"` on the portal, `/v1/hosts/NAME/…` over HTTP. Only the `secrets` task is refused; `hosts.secrets` sends the server's own |
-| [`jobs.*`](/docs/api/serve/jobs) | Jobs such as an apply, with their output |
+| [`jobs.*`](/docs/api/serve/jobs) | Jobs such as an apply or a roll-out, with their output. A roll-out's job has a report, host by host |
 | [`inbox.*`](/docs/api/serve/inbox) | Messages the hosts published on their channels and kept, taken in while `berth serve` runs; each can be marked done |
 | [`kv.*`](/docs/api/serve/kv) | A key-value store with revisions, for user interfaces to keep state in |
 | [`events.follow`](/docs/api/serve/events) | One stream of channel messages, jobs and key-value changes, at `/v1/events` |

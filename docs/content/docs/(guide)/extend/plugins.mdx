@@ -53,6 +53,25 @@ berth plugins remove @acme/berth-plugin-foo
 
 `add` runs `npm install --ignore-scripts --prefix ~/.config/berth/plugins`, so registries and credentials come from your npm configuration. You can also copy a folder to `~/.config/berth/plugins/NAME/` by hand. Npm is not needed for that.
 
+### Updating a plugin
+
+```bash
+berth plugins update --check                 # which have a newer version
+berth plugins update foo                     # one, by its id or npm name
+berth plugins update                         # all of them
+```
+
+`--check` runs `npm outdated` with your npm configuration, so it asks the registry each plugin came from. `update` installs the registry's latest version and then lists the hosts that are behind. On the Plugins tab, `c` checks, `U` updates the selected plugin and `A` all of them. A plugin with a newer version says `update available: 1.0.0 → 1.1.0`.
+
+| Came from | Updated by |
+| --- | --- |
+| A registry | `berth plugins update` |
+| A `.tgz`, an `https://` address or a folder | Adding the new one again, which replaces it |
+| A folder copied by hand | Copying the new one over it |
+| berth itself | `berth update`, or a newer server image |
+
+A host keeps what it was applied with until it is applied again. After an update, `berth plugins update --apply` or `r` on the Plugins tab applies the hosts that are behind ([Updates](/docs/use/updates#bringing-hosts-up-to-date)).
+
 ### On a berth server
 
 With a [berth server](/docs/use/server) set, the Plugins tab and `berth plugins` show the server's plugins and change those, which needs the role `admin` there. The server installs a package name or an `https://` address with its own npm and npm configuration. A `.tgz` or a folder on your machine is packed and sent to the server. The page in a browser has the same tab, and `u` there sends a `.tgz` from the device.

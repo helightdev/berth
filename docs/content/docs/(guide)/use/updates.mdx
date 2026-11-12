@@ -1,6 +1,6 @@
 ---
 title: Updates
-description: What a host updates on its own, what you update from berth, and what berth does not do.
+description: Updates on the host and from berth, hosts that are behind, and what berth leaves out.
 icon: RefreshCw
 ---
 
@@ -15,6 +15,7 @@ Ubuntu security updates and Firefox's vendor updates install automatically. The 
 | **Update** on the overview, or `berth run HOST update` | `apt` update and `dist-upgrade`, then Claude Code, Codex, Pi, T3 Code and the Unity CLI to their latest versions, through their plugins |
 | **Reboot**, or `berth run HOST reboot` | Restarts the host to finish updates |
 | **Apply this configuration** | Runs the role again, which brings new or changed features and settings, berthd and box, and plugin tasks and services |
+| `berth plugins update` | Your plugins, to the latest version of their registry ([Updating a plugin](/docs/extend/plugins#updating-a-plugin)) |
 
 The versions in the defaults (`devbox_claude_version`, `devbox_codex_version`, `devbox_pi_version`, `devbox_t3_version`) are the least ones, so applying the configuration again does not go back to them after an update. Claude Code's own self-update is off.
 
@@ -26,6 +27,37 @@ berth update             # download it, check its SHA-256 and replace this progr
 ```
 
 `berth update` takes the same archive as the install script. A container is updated by pulling a newer image. `berthd` and `box` travel inside `berth`. A host gets the new ones when you apply its configuration. Its overview says when its tools are of another version than your berth. `BERTH_RELEASES` names a mirror of the releases page.
+
+## Hosts that are behind
+
+Applying records on the host which berth and which plugins the configuration came from, with each plugin's version and a digest of its files. berth compares that with what it would apply now. When a plugin was updated, or berth was, the overview says what changed, such as `claude 1.0.0 → 1.1.0`. A plugin that changed without a new version shows as `(changed)`. A berth server's host list marks such a host `behind`, and `hosts.get` says what changed.
+
+A host applied by an older berth, or with an older berthd, says nothing yet. Applying it once with this berth records it.
+
+## Bringing hosts up to date
+
+```bash
+berth apply --behind                     # every host that is behind
+berth apply --behind --update --reboot   # and run Update, and reboot where needed
+berth plugins update --apply             # update the plugins, then the same
+```
+
+The hosts are taken one at a time, by name. Each is applied and then checked. Its berthd has to answer with this berth's version and the host must no longer be behind. Its Status task has to end well too. Hosts that are current are skipped. The first host that fails stops the roll-out, and the hosts after it are not touched.
+
+| Option | Does |
+| --- | --- |
+| `--update` | Runs the host's Update task after applying. If it ends badly, that host is finished and the roll-out stops after it |
+| `--reboot` | Reboots a host that says it needs it, waits up to ten minutes for it to answer again, then checks it. A host with running sessions is not rebooted, and the roll-out stops there |
+| `--force` | Reboots also while sessions run, which ends them |
+| `--all` | Applies the hosts that are current too |
+
+With a berth server set, the roll-out is a job of the server. On the Plugins tab, after an update, `r` lists the hosts with what changed and starts on a second `r`. `R` does the same with `--reboot`.
+
+## What applying again keeps
+
+Applying again keeps the agent's home and workspaces, sign-ins, the secrets that were sent, running sessions, and the channel's messages. A tool installed at a newer version than the profile names stays at that version. A plugin service restarts only when its script or unit changed, and the output says which.
+
+A task, service or channel topic a plugin no longer has is gone after applying. What a plugin's own Ansible tasks installed stays on the host.
 
 ## After changing versions
 
