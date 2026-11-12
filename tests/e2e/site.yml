@@ -29,3 +29,7 @@
       ansible.builtin.include_role:
         name: devbox
         tasks_from: berth.yml
+    - name: Record what this configuration came from
+      ansible.builtin.include_role:
+        name: devbox
+        tasks_from: applied.yml

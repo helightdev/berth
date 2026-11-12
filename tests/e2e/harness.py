@@ -91,6 +91,22 @@ def source():
     return overlay
 
 
+def source_with_plugins(name, plugins):
+    """Another overlay of the checkout whose plugins/ has these besides the
+    shipped ones, by id: {id: folder}, copied so a test may change them."""
+    overlay = SCRATCH / name
+    overlay.mkdir()
+    for entry in source().iterdir():
+        if entry.name != 'plugins':
+            (overlay / entry.name).symlink_to(entry.resolve() if entry.name != 'ansible' else entry)
+    (overlay / 'plugins').mkdir()
+    for shipped in (SRC / 'plugins').iterdir():
+        (overlay / 'plugins' / shipped.name).symlink_to(shipped)
+    for plugin, folder in plugins.items():
+        shutil.copytree(folder, overlay / 'plugins' / plugin)
+    return overlay
+
+
 # ---------------------------------------------------------------------------
 # A workstation: a HOME and XDG directories of its own
 
@@ -278,7 +294,8 @@ def served():
     wait_for('the operator taking the server\'s key', lambda: server.ssh(
         OPERATOR, 'true', key=server.own_key, check=False).returncode == 0)
     issuer = Issuer(clients={'berth-client': ('client-secret', 'openid berth:operate')})
-    serve = Serve(server, web=True, env={'BERTH_OAUTH_ISSUER': issuer.url, 'BERTH_OAUTH_AUDIENCE': 'berth'})
+    serve = Serve(server, web=True, env={'BERTH_OAUTH_ISSUER': issuer.url, 'BERTH_OAUTH_AUDIENCE': 'berth',
+                                         **package_registry().env()})
     serve.issuer = issuer
     # The host's profile as the workstation has it, so applying it from the
     # server keeps the workstation's keys; the server adds its own.
@@ -730,6 +747,81 @@ class NpmRegistry:
 
     def stop(self):
         self.server.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# An npm registry that serves packages: what npm asks to install and to tell
+# whether a newer version is there
+
+
+class PackageRegistry:
+    def __init__(self):
+        # package name: {version: (manifest, tarball bytes)}
+        self.packages = {}
+        self.dir = Path(tempfile.mkdtemp(prefix='registry-', dir=SCRATCH))
+        registry = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def answer(self, status, data, kind='application/json'):
+                self.send_response(status)
+                self.send_header('Content-Type', kind)
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):  # noqa: N802
+                from urllib.parse import unquote  # noqa: PLC0415
+                path = unquote(self.path.split('?')[0]).lstrip('/')
+                if '/-/' in path:
+                    name, file = path.split('/-/', 1)
+                    for manifest, tarball in registry.packages.get(name, {}).values():
+                        if manifest['dist']['tarball'].endswith('/' + file):
+                            return self.answer(200, tarball, 'application/octet-stream')
+                    return self.answer(404, b'{}')
+                versions = registry.packages.get(path)
+                if not versions:
+                    return self.answer(404, b'{"error": "not found"}')
+                latest = max(versions, key=lambda version: [int(part) for part in version.split('.')])
+                body = {'name': path, 'dist-tags': {'latest': latest},
+                        'versions': {version: manifest for version, (manifest, _) in versions.items()}}
+                self.answer(200, json.dumps(body).encode())
+
+        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.url = f'http://127.0.0.1:{self.server.server_address[1]}/'
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def publish(self, folder):
+        """Pack a folder as npm does and serve it as its name and version."""
+        manifest = json.loads((Path(folder) / 'package.json').read_text())
+        subprocess.run(['npm', 'pack', '--silent', '--ignore-scripts', '--pack-destination', str(self.dir),
+                        str(folder)], check=True, capture_output=True, env={**os.environ, 'npm_config_offline': 'true'})
+        name, version = manifest['name'], manifest['version']
+        file = f'{name.split("/")[-1]}-{version}.tgz'
+        tarball = (self.dir / file).read_bytes()
+        integrity = 'sha512-' + base64.b64encode(hashlib.sha512(tarball).digest()).decode()
+        manifest['dist'] = {'tarball': f'{self.url}{name}/-/{file}', 'integrity': integrity,
+                            'shasum': hashlib.sha1(tarball).hexdigest()}  # noqa: S324 (what npm checks)
+        self.packages.setdefault(name, {})[version] = (manifest, tarball)
+
+    def env(self):
+        """What lets npm reach it, for berth and berth serve."""
+        return {'npm_config_registry': self.url, 'npm_config_offline': 'false'}
+
+    def stop(self):
+        self.server.shutdown()
+
+
+_registry = []
+
+
+def package_registry():
+    """The registry of packages for this run, started once."""
+    if not _registry:
+        _registry.append(PackageRegistry())
+    return _registry[0]
 
 
 # ---------------------------------------------------------------------------
