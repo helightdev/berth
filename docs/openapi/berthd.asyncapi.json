@@ -369,7 +369,7 @@
   "info": {
     "description": "The WebSocket streams of a host's berthd.",
     "title": "berthd",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "operations": {
     "channel.receive": {
