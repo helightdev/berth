@@ -58,6 +58,7 @@ mod page {
             println!("cargo:rerun-if-changed=../{entry}");
         }
         println!("cargo:rerun-if-env-changed=BERTH_WEB_PROFILE");
+        println!("cargo:rerun-if-env-changed=BERTH_BUILD_VERSION");
         let profile = env::var("BERTH_WEB_PROFILE").unwrap_or_else(|_| {
             match env::var("PROFILE").as_deref() {
                 Ok("release") => "web",

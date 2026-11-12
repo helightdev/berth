@@ -109,7 +109,7 @@ pub fn logo() -> Vec<Line<'static>> {
     let mut about = row("█ ", "██", " █", 0.6);
     about.push(Span::styled("set up and look after agent machines", muted));
     let mut version = row("▀▀", "▀▀", "▀▀", 0.0);
-    version.push(Span::styled(concat!("v", env!("CARGO_PKG_VERSION")), muted));
+    version.push(Span::styled(format!("v{}", berth_api::VERSION), muted));
     vec![Line::from(name), Line::from(about), Line::from(version)]
 }
 

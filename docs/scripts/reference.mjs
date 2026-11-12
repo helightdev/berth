@@ -188,7 +188,8 @@ const placeholders = {
   text: 'hello',
   url: 'https://example.com',
   address: '100.64.0.12',
-  version: '0.2.0',
+  // The version the documents were written by.
+  version: JSON.parse(readFileSync(join(docs, 'openapi', 'berthd.operations.json'), 'utf8')).version,
   started: '2026-11-12T09:30:00Z',
   ended: '2026-11-12T09:30:02Z',
   time: '2026-11-12T09:30:00Z',

@@ -12,6 +12,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # A tag vX.Y.Z builds version X.Y.Z. Any other build says the version in
+      # Cargo.toml, which is that of the latest release.
+      - name: The version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version=${GITHUB_REF_NAME#v}
+            if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+              echo "::error::$GITHUB_REF_NAME is not a version tag such as v1.2.0 or v1.2.0-rc.1"
+              exit 1
+            fi
+            echo "BERTH_BUILD_VERSION=$version" >> "$GITHUB_ENV"
+          fi
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl, wasm32-unknown-unknown
@@ -34,6 +46,22 @@ jobs:
           cp target/x86_64-unknown-linux-musl/release/berth dist/berth
           tar -czf berth-web-x86_64-linux.tar.gz -C dist berth LICENSE
           sha256sum berth-web-x86_64-linux.tar.gz > berth-web-x86_64-linux.tar.gz.sha256
+      - name: Check the versions
+        # berth in both archives, and the berthd and box it carries, all say the same.
+        run: |
+          want=${BERTH_BUILD_VERSION:-$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)}
+          mkdir check check-web
+          tar -xzf berth-x86_64-linux.tar.gz -C check berth
+          tar -xzf berth-web-x86_64-linux.tar.gz -C check-web berth
+          for program in check/berth check-web/berth dist/berthd dist/box; do
+            said=$("$program" --version)
+            echo "$program: $said"
+            case "$said" in
+              "${program##*/} $want" | "${program##*/} $want "*) ;;
+              *) echo "::error::$program says $said, not $want"; exit 1 ;;
+            esac
+          done
+          rm -r check check-web
       - uses: actions/upload-artifact@v4
         with:
           name: berth-x86_64-linux
@@ -64,7 +92,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "$GITHUB_REF_NAME" > VERSION
-          gh release create "$GITHUB_REF_NAME" --generate-notes berth-x86_64-linux.tar.gz berth-x86_64-linux.tar.gz.sha256 berth-web-x86_64-linux.tar.gz berth-web-x86_64-linux.tar.gz.sha256 install.sh VERSION
+          # A tag such as v0.4.0-rc.1 is a pre-release, which berth update and
+          # install.sh pass over.
+          prerelease=
+          case "$GITHUB_REF_NAME" in *-*) prerelease=--prerelease ;; esac
+          # A release made on GitHub's page exists already, and only lacks the files.
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes $prerelease
+          gh release upload "$GITHUB_REF_NAME" --clobber berth-x86_64-linux.tar.gz berth-x86_64-linux.tar.gz.sha256 berth-web-x86_64-linux.tar.gz berth-web-x86_64-linux.tar.gz.sha256 install.sh VERSION
   image:
     runs-on: ubuntu-latest
     permissions:
@@ -72,6 +107,18 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+      # A tag vX.Y.Z builds version X.Y.Z. Any other build says the version in
+      # Cargo.toml, which is that of the latest release.
+      - name: The version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version=${GITHUB_REF_NAME#v}
+            if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+              echo "::error::$GITHUB_REF_NAME is not a version tag such as v1.2.0 or v1.2.0-rc.1"
+              exit 1
+            fi
+            echo "BERTH_BUILD_VERSION=$version" >> "$GITHUB_ENV"
+          fi
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         if: github.event_name != 'pull_request'
@@ -91,8 +138,50 @@ jobs:
         with:
           context: .
           file: container/berth.Dockerfile
+          build-args: BERTH_BUILD_VERSION=${{ env.BERTH_BUILD_VERSION }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+  # main says the version of the latest release, so that a build from it is
+  # never older than what berth update offers. A pre-release leaves it alone.
+  main:
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+    needs: [release, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Set the version on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          current=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          if [ "$(printf '%s\n' "$current" "$version" | sort -V | tail -n 1)" = "$current" ]; then
+            echo "main says $current, which is not older than $version"
+            exit 0
+          fi
+          sed -i "/^\[workspace.package\]/,/^\[/s/^version = \".*\"/version = \"$version\"/" Cargo.toml
+          cargo update --workspace
+          # The API documents name the version too.
+          sed -i -E "s/^( *\"version\": )\"${current//./\\.}\"\$/\1\"$version\"/" docs/openapi/*.json
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898283+github-actions[bot]@users.noreply.github.com'
+          git commit -am "chore(release): $version"
+          # main may have moved on since the checkout.
+          for attempt in 1 2 3; do
+            git push origin HEAD:main && break
+            [ "$attempt" = 3 ] && exit 1
+            git pull --rebase origin main
+          done
+          # A push with this job's token starts no workflows of its own.
+          for workflow in CI Build Docs; do
+            gh workflow run "$workflow" --ref main
+          done

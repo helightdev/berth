@@ -13,8 +13,18 @@ mod types;
 
 pub use types::*;
 
-/// The version of the programs.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The version of every program: berth, berthd, box and the page. A release
+/// build takes it from its tag through `BERTH_BUILD_VERSION`; any other build
+/// says the version in the workspace's Cargo.toml.
+pub const VERSION: &str = match option_env!("BERTH_BUILD_VERSION") {
+    Some(version) if !version.is_empty() => version,
+    _ => env!("CARGO_PKG_VERSION"),
+};
+// Plain numbers, as berth update and the hosts compare them: no v of a tag.
+const _: () = assert!(
+    VERSION.as_bytes()[0].is_ascii_digit(),
+    "BERTH_BUILD_VERSION is a version such as 0.3.0, without the v of its tag"
+);
 /// Rises when something is added to the API.
 pub const API: u32 = 1;
 
@@ -135,5 +145,41 @@ mod tests {
         assert_eq!(duration("5m"), Some(300));
         assert_eq!(duration("12"), Some(12));
         assert_eq!(duration("1w"), None);
+    }
+
+    /// A release sets the version of every program through `VERSION`, so no
+    /// other crate may read its own.
+    #[test]
+    fn the_version_is_read_here_only() {
+        fn sources(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                let name = entry.file_name();
+                if path.is_dir() && name != "target" && name != "vendor" {
+                    sources(&path, found);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    found.push(path);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut found = Vec::new();
+        for dir in ["cli", "crates", "host", "web"] {
+            sources(&root.join(dir), &mut found);
+        }
+        let elsewhere: Vec<_> = found
+            .iter()
+            .filter(|path| !path.ends_with("crates/berth-api/src/lib.rs"))
+            .filter(|path| {
+                std::fs::read_to_string(path)
+                    .unwrap()
+                    .contains(concat!("CARGO_PKG", "_VERSION"))
+            })
+            .collect();
+        assert!(
+            elsewhere.is_empty(),
+            "use berth_api::VERSION in {elsewhere:?}"
+        );
+        assert!(found.len() > 50, "the sources were not found");
     }
 }

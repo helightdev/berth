@@ -56,13 +56,16 @@ fn latest() -> Result<String> {
     }
 }
 
-/// Numbers compared part by part, so 0.10.0 is newer than 0.9.0.
+/// Numbers compared part by part, so 0.10.0 is newer than 0.9.0. A release is
+/// newer than its pre-releases, such as 0.4.0-rc.1.
 fn newer(candidate: &str, current: &str) -> bool {
-    let parts = |version: &str| -> Vec<u64> {
-        version
+    let parts = |version: &str| -> (Vec<u64>, bool) {
+        let numbers = version
             .split(['.', '-', '+'])
             .map_while(|part| part.parse().ok())
-            .collect()
+            .collect();
+        let release = !version.split('+').next().unwrap_or("").contains('-');
+        (numbers, release)
     };
     parts(candidate) > parts(current)
 }
@@ -80,7 +83,7 @@ pub fn command(args: &[&str]) -> Result<()> {
         )
         .into());
     }
-    let current = env!("CARGO_PKG_VERSION");
+    let current = berth_api::VERSION;
     let latest = latest()?;
     if !newer(&latest, current) {
         println!("berth {current} is the latest");
@@ -145,5 +148,9 @@ mod tests {
         assert!(!newer("0.2.0", "0.2.0"));
         assert!(!newer("0.1.9", "0.2.0"));
         assert!(!newer("", "0.2.0"));
+        assert!(newer("0.4.0", "0.4.0-rc.1"));
+        assert!(newer("0.4.0-rc.1", "0.3.0"));
+        assert!(!newer("0.4.0-rc.1", "0.4.0"));
+        assert!(!newer("0.3.0", "0.4.0-rc.1"));
     }
 }

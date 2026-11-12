@@ -432,7 +432,7 @@ fn run() -> Result<()> {
         }
         ["host", host, ref rest @ ..] => return host_command(&paths, host, rest),
         ["--version" | "-V" | "version"] => {
-            println!("berth {}", env!("CARGO_PKG_VERSION"));
+            println!("berth {}", berth_api::VERSION);
             return Ok(());
         }
         ["update", ref rest @ ..] => return update::command(rest),

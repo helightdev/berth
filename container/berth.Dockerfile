@@ -3,6 +3,9 @@
 #
 #   docker build -f container/berth.Dockerfile -t berth .
 #
+# BERTH_BUILD_VERSION is the version a release gives it, from its tag; without
+# it the image says the version in Cargo.toml.
+#
 # Settings and host profiles live in /config, the store and builds in /data.
 FROM rust:1-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends musl-tools python3 \
@@ -10,8 +13,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends musl-tools pyth
     && rustup target add x86_64-unknown-linux-musl wasm32-unknown-unknown
 WORKDIR /src
 COPY . .
+ARG BERTH_BUILD_VERSION=
 # With the page for a browser, which the default command serves.
-RUN cargo build --release --locked --target x86_64-unknown-linux-musl -p berth --features web
+RUN cargo build --release --locked --target x86_64-unknown-linux-musl -p berth --features web \
+    && said=$(target/x86_64-unknown-linux-musl/release/berth --version) && echo "$said" \
+    && { [ -z "$BERTH_BUILD_VERSION" ] || [ "$said" = "berth $BERTH_BUILD_VERSION" ]; }
 
 FROM debian:trixie-slim
 COPY requirements.txt /tmp/requirements.txt
