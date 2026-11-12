@@ -38,6 +38,8 @@ pub enum Entry {
     /// One of an account's SSH keys by its place among them, or the row that
     /// adds one.
     Key(Account, Option<usize>),
+    /// A row of the machine berth creates for the host.
+    Machine(crate::machine::Pick),
     Run,
 }
 

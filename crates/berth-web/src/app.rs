@@ -426,6 +426,16 @@ impl App {
                     self.status.clear();
                     self.password = Some(Input::default());
                 }
+                Arrived::Provisioners(listed) => {
+                    if let Some(setup) = &mut self.setup {
+                        setup.machine.listed(listed);
+                    }
+                }
+                Arrived::Instance(found) => {
+                    if let Some(setup) = &mut self.setup {
+                        setup.machine.found(found);
+                    }
+                }
                 Arrived::Session(session) => {
                     if self.screen == Screen::Host
                         && let Ok(session) = serde_json::from_value(session)
