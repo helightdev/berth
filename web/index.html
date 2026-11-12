@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="berth-server" content="@SERVER@">
+<title>berth</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #0d111c; color: #cdd6f4; }
+  body { font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; }
+  #terminal { position: fixed; inset: 0; overflow: hidden; }
+  /* The canvas is a whole number of cells and centred; the rest is this background. */
+  #terminal canvas { position: absolute; display: block; background: #0d111c; }
+  noscript, #failed { position: fixed; inset: 0; display: grid; place-items: center; padding: 2rem; text-align: center; }
+</style>
+</head>
+<body>
+  <div id="terminal"></div>
+  <noscript>berth draws this page with JavaScript and WebAssembly.</noscript>
+  <script type="module">
+    import init from "./berth-web.js?v=@BUILD@";
+    try {
+      await init({ module_or_path: "./berth-web_bg.wasm?v=@BUILD@" });
+    } catch (error) {
+      const note = document.createElement("div");
+      note.id = "failed";
+      note.textContent = "berth could not start in this browser: " + error;
+      document.body.append(note);
+    }
+  </script>
+</body>
+</html>

@@ -3,7 +3,7 @@
 //! its own; what it draws there is kept here and shown in a panel.
 
 use crate::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyEvent;
 use std::{
     fs::File,
     io::{Read, Write},
@@ -142,46 +142,13 @@ impl Drop for Session {
 
 /// What a terminal sends for a key.
 pub fn key_bytes(key: &KeyEvent) -> Vec<u8> {
-    let control = key.modifiers.contains(KeyModifiers::CONTROL);
-    let bytes = match key.code {
-        KeyCode::Char(ch) if control && ch.is_ascii_alphabetic() => {
-            vec![ch.to_ascii_lowercase() as u8 - b'a' + 1]
-        }
-        KeyCode::Char(' ' | '@') if control => vec![0],
-        KeyCode::Char(ch @ ('[' | '\\' | ']' | '^' | '_')) if control => vec![ch as u8 - b'@'],
-        KeyCode::Char(ch) => ch.to_string().into_bytes(),
-        KeyCode::BackTab => b"\x1b[Z".to_vec(),
-        KeyCode::PageUp => b"\x1b[5~".to_vec(),
-        KeyCode::PageDown => b"\x1b[6~".to_vec(),
-        KeyCode::Insert => b"\x1b[2~".to_vec(),
-        KeyCode::F(number @ 1..=4) => vec![0x1b, b'O', b'P' + number - 1],
-        KeyCode::F(number @ 5..=12) => {
-            let code = [15, 17, 18, 19, 20, 21, 23, 24][number as usize - 5];
-            format!("\x1b[{code}~").into_bytes()
-        }
-        KeyCode::Enter => vec![b'\r'],
-        KeyCode::Backspace => vec![0x7f],
-        KeyCode::Tab => vec![b'\t'],
-        KeyCode::Esc => vec![0x1b],
-        KeyCode::Up => b"\x1b[A".to_vec(),
-        KeyCode::Down => b"\x1b[B".to_vec(),
-        KeyCode::Right => b"\x1b[C".to_vec(),
-        KeyCode::Left => b"\x1b[D".to_vec(),
-        KeyCode::Home => b"\x1b[H".to_vec(),
-        KeyCode::End => b"\x1b[F".to_vec(),
-        KeyCode::Delete => b"\x1b[3~".to_vec(),
-        _ => vec![],
-    };
-    // Alt is the key with an escape in front.
-    if key.modifiers.contains(KeyModifiers::ALT) && !bytes.is_empty() {
-        return [vec![0x1b], bytes].concat();
-    }
-    bytes
+    crate::keys::key(key).map_or(vec![], |key| berth_tui::event::key_bytes(&key))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
 
     #[test]
     fn a_session_shows_output_and_takes_input() {

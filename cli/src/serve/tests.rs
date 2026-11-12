@@ -786,3 +786,29 @@ fn the_committed_documents_are_current() {
         );
     }
 }
+
+#[cfg(feature = "web")]
+#[tokio::test(flavor = "multi_thread")]
+async fn the_page_is_given_without_the_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state_in(dir.path(), Some("s3cret-token"));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = api::router(state, true).merge(super::page::router());
+    tokio::spawn(async move { axum::serve(listener, router).await });
+    let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    let mut client = Client::over(stream).await.unwrap();
+    // The page for a browser holds nothing, so it is given without the token;
+    // what it shows it asks the portal for.
+    let page = client
+        .send("GET", "/", &[], Default::default())
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&page.body).into_owned();
+    assert!(page.status == 200 && text.contains("berth-web.js?v=") && !text.contains("@BUILD@"));
+    let wasm = client
+        .send("GET", "/berth-web_bg.wasm", &[], Default::default())
+        .await
+        .unwrap();
+    assert!(wasm.status == 200 && wasm.body.starts_with(b"\0asm"));
+}

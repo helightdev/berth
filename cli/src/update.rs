@@ -9,7 +9,11 @@ use crate::Result;
 use std::{fs, path::Path, process::Command};
 
 const REPOSITORY: &str = "https://github.com/helightdev/berth";
+/// The archive of this build's kind: with the page for a browser, or without.
+#[cfg(not(feature = "web"))]
 const ASSET: &str = "berth-x86_64-linux.tar.gz";
+#[cfg(feature = "web")]
+const ASSET: &str = "berth-web-x86_64-linux.tar.gz";
 
 /// Where the releases are: GitHub's, or `BERTH_RELEASES` for a mirror.
 fn releases() -> String {

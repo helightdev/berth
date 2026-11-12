@@ -212,13 +212,13 @@ pub fn recognise<'a>(
             match part.strip_prefix('{').and_then(|p| p.strip_suffix('}')) {
                 Some(name) => match name.strip_prefix('*') {
                     Some(name) if index < given.len() => {
-                        found.push((name, crate::client::decode(&given[index..].join("/"))));
+                        found.push((name, crate::escape::decode(&given[index..].join("/"))));
                         return Some((op, found));
                     }
                     Some(_) => continue 'ops,
                     None => match given.get(index) {
                         Some(value) if !value.is_empty() => {
-                            found.push((name, crate::client::decode(value)))
+                            found.push((name, crate::escape::decode(value)))
                         }
                         _ => continue 'ops,
                     },

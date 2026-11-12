@@ -9,7 +9,8 @@ icon: Hammer
 | Folder | Holds |
 | --- | --- |
 | `cli/` | `berth`: the terminal UI, the commands and `berth serve` |
-| `crates/` | Shared libraries: `berth-core`, `berth-api`, `berth-pty` |
+| `crates/` | Shared libraries: `berth-core`, `berth-api`, `berth-pty`, and `berth-tui`, the screens the terminal UI and the page share |
+| `web/` | The page `berth serve --web` shows in a browser, built for WebAssembly. The docs build copies it to `/web` |
 | `host/` | `berthd` and `box`, built static for hosts |
 | `ansible/` | The devbox role |
 | `plugins/` | The plugins that come with berth |
@@ -76,3 +77,19 @@ GitHub Actions build on every push:
 | Build | The static `berth` for Linux x86_64 as artifact `berth-x86_64-linux`, the host programs as `host-programs-x86_64-linux`; the container image `ghcr.io/helightdev/berth`, tagged `edge` from `main` |
 
 Pushing a `v*` tag also publishes a GitHub release with `berth-x86_64-linux.tar.gz`, its checksum file and `install.sh`. The image gets the version as its tag. `install.sh` installs the latest release.
+
+## With the page for a browser
+
+berth comes in two builds. The usual one has no page. The `web` feature adds the page `berth serve --web` shows, built from `web/` as WebAssembly and carried in the program (about 2 MB more):
+
+```bash
+rustup target add wasm32-unknown-unknown        # once
+cargo build --release -p berth --features web
+```
+
+| Build | Release archive | Install script |
+| --- | --- | --- |
+| Usual | `berth-x86_64-linux.tar.gz` | the default |
+| With the page | `berth-web-x86_64-linux.tar.gz` | `BERTH_VARIANT=web` |
+
+`berth update` stays with the build it is. The container image is the one with the page. The docs build takes the page from `target/web-dist` for `/web`.

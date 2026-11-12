@@ -1,17 +1,17 @@
 mod app;
 mod commands;
 mod fields;
-mod markdown;
+mod keys;
 mod picker;
 mod remote;
 mod serve;
 mod session;
-mod theme;
 mod ui;
 mod update;
 
 use app::{App, parse_config};
 use berth_core::{credentials, discovery, job, paths, plugins, registry};
+pub(crate) use berth_tui::{markdown, theme};
 use crossterm::{cursor::SetCursorStyle, event};
 use fields::{Action, Field, Step};
 use paths::Paths;

@@ -4,6 +4,8 @@
 
 mod api;
 mod docs;
+#[cfg(feature = "web")]
+mod page;
 #[cfg(test)]
 mod tests;
 
@@ -289,23 +291,40 @@ fn lock(paths: &Paths) -> Result<std::fs::File> {
     Ok(file)
 }
 
-const USAGE: &str = "Usage: berth serve [--listen ADDRESS:PORT [--expose]]";
+const USAGE: &str = "Usage: berth serve [--listen ADDRESS:PORT [--expose] [--web]]";
 
-/// `berth serve [--listen ADDRESS:PORT [--expose]]`
+/// `berth serve [--listen ADDRESS:PORT [--expose] [--web]]`
 ///
 /// Over TCP every request shows the token, but the connection is plain HTTP,
 /// so an address other than this machine's own takes `--expose` as well: for a
-/// container whose port is published, or behind a proxy that adds TLS.
+/// container whose port is published, or behind a proxy that adds TLS. With
+/// `--web` the address also gives the hosts as a page for a browser.
 pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
-    let listen = match *args {
-        [] => None,
-        ["--listen", address]
-        | ["--listen", address, "--expose"]
-        | ["--expose", "--listen", address] => {
+    let (mut listen, mut expose, mut web) = (None, false, false);
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        match *word {
+            "--listen" => listen = Some(*words.next().ok_or(USAGE)?),
+            "--expose" => expose = true,
+            "--web" => web = true,
+            _ => return Err(USAGE.into()),
+        }
+    }
+    if listen.is_none() && (expose || web) {
+        return Err(USAGE.into());
+    }
+    if web && !cfg!(feature = "web") {
+        return Err(
+            "This berth is built without the page for a browser: the berth-web build has it".into(),
+        );
+    }
+    let listen = match listen {
+        None => None,
+        Some(address) => {
             let address: std::net::SocketAddr = address
                 .parse()
                 .map_err(|_| format!("Not an address and port: {address}"))?;
-            if !address.ip().is_loopback() && !args.contains(&"--expose") {
+            if !address.ip().is_loopback() && !expose {
                 return Err(format!(
                     "{address} can be reached from other machines, over plain HTTP: add --expose to allow it, or use 127.0.0.1 or [::1]"
                 )
@@ -313,7 +332,6 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
             }
             Some(address)
         }
-        _ => return Err(USAGE.into()),
     };
     let _lock = lock(paths)?;
     let mut store = open_store(paths)?;
@@ -357,6 +375,14 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
                     state.paths.data_dir.join("serve.token").display()
                 );
                 let guarded = api::router(state.clone(), true);
+                #[cfg(feature = "web")]
+                let guarded = match web {
+                    true => {
+                        println!("The hosts in a browser: http://{}/", tcp.local_addr()?);
+                        guarded.merge(page::router())
+                    }
+                    false => guarded,
+                };
                 Some(tokio::spawn(async move { axum::serve(tcp, guarded).await }))
             }
             None => None,

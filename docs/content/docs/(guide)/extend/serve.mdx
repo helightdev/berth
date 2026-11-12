@@ -77,7 +77,7 @@ berth serve --listen 0.0.0.0:7777 --expose
 
 ## In a container
 
-The `ghcr.io/helightdev/berth` image runs `berth serve --listen 0.0.0.0:7777 --expose` by default, as user `berth` (uid 1000):
+The `ghcr.io/helightdev/berth` image runs `berth serve --listen 0.0.0.0:7777 --expose --web` by default, as user `berth` (uid 1000):
 
 ```bash
 docker run -d --name berth -p 127.0.0.1:7777:7777 \

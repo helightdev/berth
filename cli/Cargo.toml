@@ -9,6 +9,7 @@ license.workspace = true
 berth-core.workspace = true
 berth-api.workspace = true
 berth-pty.workspace = true
+berth-tui.workspace = true
 # For its API document, which berth serve's includes.
 berthd = { path = "../host/berthd" }
 tokio.workspace = true
@@ -26,3 +27,12 @@ libc = "0.2"
 pulldown-cmark = { version = "0.13", default-features = false }
 
 tui-input = { path = "vendor/tui-input", default-features = false, features = ["crossterm"] }
+
+[features]
+# The page for a browser, carried in the program for `berth serve --web`.
+# Building it needs the wasm32-unknown-unknown target.
+web = ["dep:wasm-bindgen-cli-support"]
+
+[build-dependencies]
+# The same version as the wasm-bindgen the page is built with.
+wasm-bindgen-cli-support = { version = "=0.2.129", optional = true }

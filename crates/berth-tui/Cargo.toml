@@ -1,0 +1,17 @@
+[package]
+name = "berth-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The screens of a host with no terminal in them, for berth and for its page in a browser"
+
+[dependencies]
+berth-api = { workspace = true, default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+vt100.workspace = true
+ratatui = { version = "=0.30.2", default-features = false }
+pulldown-cmark = { version = "0.13", default-features = false }
+tui-input = { path = "../../cli/vendor/tui-input", default-features = false }
+web-time = "1"

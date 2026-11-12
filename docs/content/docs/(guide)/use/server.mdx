@@ -73,11 +73,47 @@ berth config server ""            # back to the hosts of this machine
 | `http://HOST:PORT` | A server's port directly |
 | `unix:/path/to/serve.sock` | A `berth serve` on this machine, without a token |
 
+## In a browser
+
+With `--web`, `berth serve` also shows its hosts as a page. It needs the build of berth with the page in it. The container image is one, and the install script takes it with `BERTH_VARIANT=web` ([Building](/docs/reference/building#with-the-page-for-a-browser)).
+
+```bash title="On the server"
+berth serve --listen 0.0.0.0:7777 --expose --web
+```
+
+Open the server's address in a browser and enter the token:
+
+```
+https://berth.example.ts.net/
+https://berth.example.ts.net/#token=TOKEN     # a link that signs in
+```
+
+The page is the host list and each host's overview from the terminal UI, drawn in the browser: tasks with their questions and arguments, sessions, and the terminal panel. The browser keeps the token until **x** on the host list forgets it. A token in a link is taken out of the address bar when the page opens.
+
+| In the page | Instead of |
+| --- | --- |
+| **Alt+Q** leaves a running session | `Ctrl+Q`, which closes some browsers |
+| **Ctrl+V** and the browser's paste | The desktop clipboard tools |
+| A click on a link opens a tab | `xdg-open` |
+
+Keys the browser keeps for itself, such as `Ctrl+W` and `Ctrl+T`, never reach a shell in the page. A phone can tap rows and key hints, but has no keyboard for a terminal.
+
+### Without `--web`
+
+The same page is part of this site, at [/web](/web/). It asks which server to use, or takes it from its address:
+
+```
+/web/?server=https://berth.example.ts.net
+/web/?server=https://berth.example.ts.net#token=TOKEN
+```
+
+Your browser talks to the server you name, and to nothing else. It keeps the server and the token. A page loaded over `https` can only reach a server over `https`.
+
 ## What works from another machine
 
 | Works through the server | Stays on the server |
 | --- | --- |
-| `berth list` and the host list of the home screen | The set-up tabs of a host: features, accounts, secrets, install |
+| `berth list`, and the host list of the home screen and of the page | The set-up tabs of a host: features, accounts, secrets, install |
 | The host's overview with its tasks, sessions and terminal panel | Applying a profile, and building installers and seeds |
 | The host commands such as `berth run`, `exec`, `attach` and `channel` | Secrets, registries and the **Secrets and registry logins** task |
 

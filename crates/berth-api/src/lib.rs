@@ -1,8 +1,11 @@
 //! What goes over the wire between berth, berthd and box: the types, the
 //! table of streams, and a client that works over any byte stream.
 
+#[cfg(feature = "client")]
 pub mod client;
+pub mod escape;
 pub mod ops;
+#[cfg(feature = "client")]
 pub mod portal;
 pub mod streams;
 mod types;

@@ -18,6 +18,15 @@ Ubuntu security updates and Firefox's vendor updates install automatically. The 
 
 The versions in the defaults (`devbox_claude_version`, `devbox_codex_version`, `devbox_pi_version`, `devbox_t3_version`) are the least ones, so applying the configuration again does not go back to them after an update. Claude Code's own self-update is off.
 
+## berth itself
+
+```bash
+berth update --check     # is there a newer release?
+berth update             # download it, check its SHA-256 and replace this program
+```
+
+`berth update` takes the same archive as the install script. A container is updated by pulling a newer image. `berthd` and `box` travel inside `berth`. A host gets the new ones when you apply its configuration. Its overview says when its tools are of another version than your berth. `BERTH_RELEASES` names a mirror of the releases page.
+
 ## After changing versions
 
 Applying does not restart desktops that are already running or turns an agent is in the middle of. After changing versions, a service's environment or unit files, restart the agent's user services in a quiet moment, or reboot.

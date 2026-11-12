@@ -7,10 +7,11 @@ use crate::{
     job::{Job, Stage},
     picker::Picker,
     plugins::{self, Plugin},
-    remote::{Arguments, HostView, Pending, State},
+    remote::{HostView, State},
     theme,
 };
 use berth_core::{apply, host::Host};
+use berth_tui::host::Pick;
 use ratatui::{
     style::Style,
     text::{Line, Span},
@@ -1057,67 +1058,27 @@ impl App {
                 ]);
             }
         }
-        let mut groups: Vec<(String, Vec<Row>)> = vec![];
-        let add = |groups: &mut Vec<(String, Vec<Row>)>, title: &str, row: Row| match groups
-            .iter_mut()
-            .find(|(known, _)| known.eq_ignore_ascii_case(title))
-        {
-            Some((_, rows)) => rows.push(row),
-            None => groups.push((title.to_owned(), vec![row])),
-        };
-        for (index, task) in self.host.tasks.iter().enumerate() {
-            // A step of another task has no row of its own.
-            if !task.extends.is_empty() {
-                continue;
-            }
-            let title = if task.group.is_empty() {
-                "System"
-            } else {
-                task.group.as_str()
-            };
-            let label = if task.label.is_empty() {
-                &task.name
-            } else {
-                &task.label
-            };
-            add(
-                &mut groups,
-                title,
-                Row::entry(format!("  ▸ {label}"), Entry::HostTask(index)),
-            );
-        }
         let user = match self.as_agent {
             true => self.agent_label().to_owned(),
             false => self.operator_label(),
         };
-        let terminal = Row::entry(format!("  ▸ Terminal · as {user}"), Entry::Task("terminal"));
-        match groups.iter_mut().find(|(title, _)| title == "System") {
-            Some((_, rows)) => rows.insert(1.min(rows.len()), terminal),
-            None => groups.insert(0, ("System".to_owned(), vec![terminal])),
-        }
-        if !self.host.sessions.is_empty() {
-            let rows = self
-                .host
-                .sessions
-                .iter()
-                .enumerate()
-                .map(|(index, session)| {
-                    let state = match (session.running(), session.lost, session.exit_code) {
-                        (true, ..) => "running".to_owned(),
-                        (_, true, _) => "lost".to_owned(),
-                        (_, _, Some(0)) => "done".to_owned(),
-                        (_, _, Some(code)) => format!("failed ({code})"),
-                        _ => "ended".to_owned(),
-                    };
-                    Row::entry(
-                        format!("  ▸ {} · {state}", session.title),
-                        Entry::HostSession(index),
-                    )
-                })
-                .collect();
-            groups.push(("Sessions".to_owned(), rows));
-        }
-        groups
+        berth_tui::host::groups(&self.host, &user)
+            .into_iter()
+            .map(|(title, rows)| {
+                let rows = rows
+                    .into_iter()
+                    .map(|(line, pick)| {
+                        let entry = match pick {
+                            Pick::Task(index) => Entry::HostTask(index),
+                            Pick::Terminal => Entry::Task("terminal"),
+                            Pick::Session(index) => Entry::HostSession(index),
+                        };
+                        Row::entry(line, entry)
+                    })
+                    .collect();
+                (title, rows)
+            })
+            .collect()
     }
 
     fn agent_label(&self) -> &str {
@@ -1158,61 +1119,8 @@ impl App {
     /// steps from plugins lists what each of them adds.
     pub fn help(&self) -> String {
         match self.selected_entry() {
-            Some(Entry::HostTask(index)) => {
-                let Some(task) = self.host.tasks.get(index) else {
-                    return String::new();
-                };
-                let mut help = task.help.clone();
-                if !task.arguments.is_empty() {
-                    help += "\n\nAsks for: ";
-                    let names: Vec<&str> = task
-                        .arguments
-                        .iter()
-                        .map(|argument| {
-                            if argument.label.is_empty() {
-                                &argument.name
-                            } else {
-                                &argument.label
-                            }
-                        })
-                        .map(String::as_str)
-                        .collect();
-                    help += &names.join(", ");
-                    help += ".";
-                }
-                let steps: Vec<_> = self
-                    .host
-                    .tasks
-                    .iter()
-                    .filter(|step| step.extends.contains(&task.name))
-                    .collect();
-                if !steps.is_empty() {
-                    help += "\n\n### From plugins\n\n";
-                    for step in steps {
-                        help +=
-                            &format!("- **{}**: {}\n", step.label, step.help.replace('\n', " "));
-                    }
-                }
-                help += &format!("\n\nFrom the command line: `berth run HOST {}`", task.name);
-                help
-            }
-            Some(Entry::HostSession(index)) => {
-                let Some(session) = self.host.sessions.get(index) else {
-                    return String::new();
-                };
-                let state = match (&session.ended, session.exit_code) {
-                    (None, _) => "still running".to_owned(),
-                    (Some(ended), Some(code)) => format!("ended {ended} with exit code {code}"),
-                    (Some(ended), None) => format!("ended {ended}"),
-                };
-                format!(
-                    "`{}` as {}, started {}, {state}. It lives on the host and goes on while nobody watches.\n\nEnter opens it here. x forgets one that has ended, with its output. From the command line: `berth attach HOST {id}` or `berth output HOST {id}`.",
-                    session.command.join(" "),
-                    session.user,
-                    session.started,
-                    id = session.id,
-                )
-            }
+            Some(Entry::HostTask(index)) => berth_tui::host::task_help(&self.host, index),
+            Some(Entry::HostSession(index)) => berth_tui::host::session_help(&self.host, index),
             _ => self.entry_help().to_owned(),
         }
     }
@@ -1931,7 +1839,7 @@ impl App {
         }
         match host.link(self.host.password.as_deref()) {
             Ok(spec) => {
-                self.host.connect(spec);
+                crate::remote::connect(&mut self.host, spec);
             }
             Err(error) => self.host.state = State::Unreachable(error.to_string()),
         }
@@ -1975,68 +1883,18 @@ impl App {
 
     /// Run a task of the host: after its question and its arguments, if it has any.
     pub fn begin_task(&mut self, index: usize, confirmed: bool) {
-        let Some(task) = self.host.tasks.get(index).cloned() else {
-            return;
-        };
-        if let (Some(question), false) = (&task.confirm, confirmed) {
-            self.host.question = Some((question.clone(), Pending::Task(index)));
-            return;
-        }
-        if task.arguments.is_empty() {
-            self.launch_task(index, Default::default());
-            return;
-        }
-        self.host.arguments = Some(Arguments {
-            task: index,
-            index: 0,
-            values: Default::default(),
-            input: Input::new(task.arguments[0].default.clone()),
-            choices: vec![],
-            chosen: None,
-        });
-        self.ask_choices();
-    }
-
-    fn ask_choices(&self) {
-        if let Some(dialog) = &self.host.arguments
-            && let Some(task) = self.host.tasks.get(dialog.task)
-            && let Some(argument) = task.arguments.get(dialog.index)
-            && !argument.choices.is_empty()
-        {
-            self.host.send(crate::remote::Request::Choices {
-                task: task.name.clone(),
-                argument: argument.name.clone(),
-            });
+        if let Some((index, values)) = self.host.begin_task(index, confirmed) {
+            self.launch_task(index, values);
         }
     }
 
     /// Take the value typed for the argument being asked and go on to the
     /// next, or run the task after the last.
     pub fn accept_argument(&mut self) {
-        let Some(mut dialog) = self.host.arguments.take() else {
-            return;
-        };
-        let Some(task) = self.host.tasks.get(dialog.task).cloned() else {
-            return;
-        };
-        let argument = &task.arguments[dialog.index];
-        let value = dialog.input.value().to_owned();
-        if value.is_empty() && argument.required {
-            self.status = format!("{} is needed", argument_label(argument));
-            self.host.arguments = Some(dialog);
-            return;
-        }
-        dialog.values.insert(argument.name.clone(), value);
-        dialog.index += 1;
-        match task.arguments.get(dialog.index) {
-            Some(next) => {
-                dialog.input = Input::new(next.default.clone());
-                dialog.choices.clear();
-                dialog.chosen = None;
-                self.host.arguments = Some(dialog);
-                self.ask_choices();
-            }
-            None => self.launch_task(dialog.task, dialog.values),
+        match self.host.accept_argument() {
+            Ok(Some((index, values))) => self.launch_task(index, values),
+            Ok(None) => {}
+            Err(missing) => self.status = missing,
         }
     }
 
@@ -2044,10 +1902,7 @@ impl App {
         let Some(task) = self.host.tasks.get(index).cloned() else {
             return;
         };
-        let mut body = json!({"arguments": values});
-        if task.terminal {
-            (body["rows"], body["cols"]) = (json!(self.host.size.0), json!(self.host.size.1));
-        }
+        let mut body = self.host.task_body(&task, &values);
         // Secrets are built here and travel on the task's standard input.
         if task.input.as_deref() == Some("secrets") {
             let payload =
@@ -2063,14 +1918,7 @@ impl App {
             }
         }
         let _ = self.save();
-        self.status = format!(
-            "Starting {}…",
-            if task.label.is_empty() {
-                &task.name
-            } else {
-                &task.label
-            }
-        );
+        self.status = format!("Starting {}…", berth_tui::host::task_label(&task));
         self.host.run(&task.name, body);
     }
 
@@ -2487,14 +2335,6 @@ impl App {
         }
         self.job = Some(Job::start(stages, next, files)?);
         Ok(())
-    }
-}
-
-pub fn argument_label(argument: &berth_api::Argument) -> &str {
-    if argument.label.is_empty() {
-        &argument.name
-    } else {
-        &argument.label
     }
 }
 

@@ -10,13 +10,20 @@ set -eu
 repo=helightdev/berth
 dir=${BERTH_INSTALL_DIR:-$HOME/.local/bin}
 version=${BERTH_VERSION:-latest}
+# BERTH_VARIANT=web takes the build that carries the page for a browser.
+variant=${BERTH_VARIANT:-}
 
 fail() { printf 'install: %s\n' "$1" >&2; exit 1; }
 
 [ "$(uname -s)" = Linux ] || fail "berth runs on Linux; on another system use the container image ghcr.io/$repo"
 case "$(uname -m)" in
-  x86_64|amd64) asset=berth-x86_64-linux.tar.gz ;;
+  x86_64|amd64) arch=x86_64 ;;
   *) fail "no released program for $(uname -m): build it with cargo install --locked --git https://github.com/$repo berth" ;;
+esac
+case "$variant" in
+  "") asset=berth-$arch-linux.tar.gz ;;
+  web) asset=berth-web-$arch-linux.tar.gz ;;
+  *) fail "no variant $variant: leave BERTH_VARIANT unset, or set it to web" ;;
 esac
 for tool in curl tar sha256sum; do
   command -v "$tool" >/dev/null || fail "$tool is needed"

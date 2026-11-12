@@ -9,14 +9,18 @@ use crate::{
     registry::Store,
     theme,
 };
+use berth_tui::screen::{
+    Platform, Spots, clear_hints, dialog, draw_arguments, draw_footer, draw_header, draw_panel,
+    draw_question, draw_view, ellipsize, hint_at, inside, note_hints, pasted, with_links, words,
+};
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
 };
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Alignment, Constraint, Layout, Margin, Rect},
-    style::{Color, Modifier, Style},
+    layout::{Constraint, Layout, Margin, Rect},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Clear, Gauge, List, ListItem, ListState, Padding, Paragraph, Wrap},
 };
@@ -41,51 +45,6 @@ enum Flow {
     Continue,
     Quit,
     Run,
-}
-
-fn inside(rect: Rect, x: u16, y: u16) -> bool {
-    x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom()
-}
-
-fn ellipsize(text: &str, width: usize) -> String {
-    let text = text.replace(['\n', '\r'], " ");
-    if Span::raw(&text).width() <= width {
-        return text;
-    }
-    if width == 0 {
-        return String::new();
-    }
-    let mut result = String::new();
-    let mut used = 0;
-    for ch in text.chars() {
-        let columns = Span::raw(ch.to_string()).width();
-        if used + columns >= width {
-            break;
-        }
-        result.push(ch);
-        used += columns;
-    }
-    result.push('…');
-    result
-}
-
-/// Break text into lines of at most `width` columns, at spaces.
-fn wrap(text: &str, width: usize) -> Vec<String> {
-    let mut lines = vec![String::new()];
-    for word in text.split_whitespace() {
-        let line = lines.last_mut().expect("one line");
-        if !line.is_empty()
-            && Span::raw(line.as_str()).width() + 1 + Span::raw(word).width() > width
-        {
-            lines.push(word.to_owned());
-        } else {
-            if !line.is_empty() {
-                line.push(' ');
-            }
-            line.push_str(word);
-        }
-    }
-    lines
 }
 
 fn buttons(app: &App) -> Vec<(&'static str, KeyCode)> {
@@ -121,150 +80,9 @@ fn buttons(app: &App) -> Vec<(&'static str, KeyCode)> {
     buttons
 }
 
-/// The top line: the name, the tabs and what is open. Returns the tabs' areas.
-fn draw_header(
-    frame: &mut Frame,
-    area: Rect,
-    tabs: &[&str],
-    current: usize,
-    context: &str,
-) -> Vec<Rect> {
-    let mut spans = vec![
-        Span::styled("▐", Style::new().fg(theme::STEEL)),
-        Span::styled("▄", Style::new().fg(theme::ACCENT)),
-        Span::styled("▌", Style::new().fg(theme::STEEL)),
-        Span::styled(" berth  ", Style::new().fg(theme::TEXT).bold()),
-    ];
-    let mut x = area.x + 11;
-    let mut areas = vec![];
-    for (index, tab) in tabs.iter().enumerate() {
-        let width = tab.len() as u16 + 4;
-        areas.push(Rect::new(
-            x,
-            area.y,
-            width.min(area.right().saturating_sub(x)),
-            1,
-        ));
-        x += width + 1;
-        if index == current {
-            spans.push(Span::styled(
-                format!(" {} {tab} ", index + 1),
-                theme::plate(),
-            ));
-        } else {
-            spans.push(Span::styled(
-                format!(" {} ", index + 1),
-                Style::new().fg(theme::ACCENT),
-            ));
-            spans.push(Span::styled(
-                format!("{tab} "),
-                Style::new().fg(theme::MUTED),
-            ));
-        }
-        spans.push(Span::raw(" "));
-    }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
-    let width = (context.chars().count() as u16).min(area.right().saturating_sub(x));
-    frame.render_widget(
-        Paragraph::new(context)
-            .alignment(Alignment::Right)
-            .style(Style::new().fg(theme::MUTED)),
-        Rect::new(area.right() - width, area.y, width, 1),
-    );
-    areas
-}
-
-thread_local! {
-    /// Where the key hints of the last frame are, with the key each stands for.
-    static HINTS: std::cell::RefCell<Vec<(Rect, KeyEvent)>> = const { std::cell::RefCell::new(vec![]) };
-}
-
-/// The key a hint such as `Ctrl+V pastes` names, if it names one key.
-fn hint_key(name: &str) -> Option<KeyEvent> {
-    let (modifiers, name) = match name.strip_prefix("Ctrl+") {
-        Some(rest) => (KeyModifiers::CONTROL, rest),
-        None => (KeyModifiers::NONE, name),
-    };
-    let code = match name {
-        "Enter" => KeyCode::Enter,
-        "Esc" => KeyCode::Esc,
-        "Tab" => KeyCode::Tab,
-        "Space" => KeyCode::Char(' '),
-        "Left" => KeyCode::Left,
-        "Right" => KeyCode::Right,
-        _ => {
-            let mut chars = name.chars();
-            match (chars.next(), chars.as_str()) {
-                (Some(ch), "") if ch.is_ascii_alphanumeric() => {
-                    KeyCode::Char(ch.to_ascii_lowercase())
-                }
-                (Some('F'), number) => KeyCode::F(number.parse().ok()?),
-                _ => return None,
-            }
-        }
-    };
-    Some(KeyEvent::new(code, modifiers))
-}
-
-/// Remember where the hints of `keys` are drawn from (x, y) on, so that a click
-/// on one presses its key. A panel over the screen replaces the hints under it.
-fn note_hints(keys: &str, mut x: u16, y: u16, modal: bool) {
-    HINTS.with_borrow_mut(|hints| {
-        if modal {
-            hints.clear();
-        }
-        for hint in keys.split(" · ") {
-            let width = Span::raw(hint).width() as u16;
-            let name = hint.split(' ').next().unwrap_or(hint);
-            if let Some(key) = hint_key(name)
-                && !hint.ends_with('…')
-            {
-                hints.push((Rect::new(x, y, width, 1), key));
-            }
-            x += width + 2;
-        }
-    });
-}
-
-/// A click on a key hint is that key.
-fn hint_click(event: Event) -> Event {
-    if let Event::Mouse(mouse) = &event
-        && mouse.kind == MouseEventKind::Down(MouseButton::Left)
-        && let Some(key) = HINTS.with_borrow(|hints| {
-            hints
-                .iter()
-                .find(|(rect, _)| inside(*rect, mouse.column, mouse.row))
-                .map(|(_, key)| *key)
-        })
-    {
-        return Event::Key(key);
-    }
-    event
-}
-
-/// The bottom line: key hints on the left, the last message on the right.
-fn draw_footer(frame: &mut Frame, area: Rect, keys: &str, status: &str, colour: Color) {
-    let width = if status.is_empty() {
-        0
-    } else {
-        (status.chars().count() as u16 + 2).min(area.width / 2)
-    };
-    let [hints, note] =
-        Layout::horizontal([Constraint::Min(0), Constraint::Length(width)]).areas(area);
-    let shown = ellipsize(keys, hints.width as usize);
-    note_hints(&shown, hints.x, hints.y, false);
-    frame.render_widget(Paragraph::new(theme::hints(&shown)), hints);
-    frame.render_widget(
-        Paragraph::new(ellipsize(status, note.width as usize))
-            .alignment(Alignment::Right)
-            .style(Style::new().fg(colour)),
-        note,
-    );
-}
-
 fn draw(frame: &mut Frame, app: &mut App, rows: &[Row], display: &mut ListState, hits: &mut Hits) {
     hits.clear();
-    HINTS.with_borrow_mut(Vec::clear);
+    clear_hints();
     frame.render_widget(theme::backdrop(), frame.area());
     let area = frame.area().inner(Margin {
         horizontal: 2,
@@ -286,7 +104,7 @@ fn draw(frame: &mut Frame, app: &mut App, rows: &[Row], display: &mut ListState,
     let tabs = draw_header(
         frame,
         header,
-        if setup { &labels } else { &[] },
+        if setup { &labels[..] } else { &[][..] },
         current.unwrap_or(0),
         &if setup {
             format!("{host} › set-up")
@@ -491,57 +309,12 @@ fn draw(frame: &mut Frame, app: &mut App, rows: &[Row], display: &mut ListState,
         (app.links, app.words) = draw_session(frame, session, &app.status);
     }
     if let Some(view) = &app.host.view {
-        (app.links, app.words) = draw_view(frame, view, &app.status);
+        (app.links, app.words) = draw_view(frame, view, &app.status, "Ctrl+Q");
     }
     if let Some((question, _)) = &app.host.question {
-        let lines = wrap(question, 56).into_iter().map(Line::raw).collect();
-        dialog(frame, " Are you sure? ", " y yes · n no ", lines);
+        draw_question(frame, question);
     }
-    if let Some(asked) = &app.host.arguments
-        && let Some(task) = app.host.tasks.get(asked.task)
-        && let Some(argument) = task.arguments.get(asked.index)
-    {
-        let mut lines = vec![Line::raw(ellipsize(
-            crate::app::argument_label(argument),
-            56,
-        ))];
-        for (index, choice) in asked.choices.iter().enumerate().take(8) {
-            let mark = if asked.chosen == Some(index) {
-                "●"
-            } else {
-                "○"
-            };
-            lines.push(Line::styled(
-                ellipsize(&format!("  {mark} {choice}"), 56),
-                Style::new().fg(theme::MUTED),
-            ));
-        }
-        lines.push(Line::raw(""));
-        let typed = ellipsize(asked.input.value(), 52);
-        lines.push(Line::from(vec![
-            Span::styled("› ", Style::new().fg(theme::ACCENT)),
-            Span::raw(typed.clone()),
-        ]));
-        let title = ellipsize(
-            &format!(
-                " {} · {} of {} ",
-                task.label,
-                asked.index + 1,
-                task.arguments.len()
-            ),
-            58,
-        );
-        let keys = match asked.choices.is_empty() {
-            true => " Enter accept · Esc cancel ",
-            false => " ↑↓ choose · Enter accept · Esc cancel ",
-        };
-        let rows = lines.len() as u16;
-        let area = dialog(frame, &title, keys, lines);
-        if area.width > 6 && area.height > rows {
-            let column = Span::raw(typed).width() as u16;
-            frame.set_cursor_position((area.x + 4 + column, area.y + rows));
-        }
-    }
+    draw_arguments(frame, &app.host);
     if app.choosing_drive {
         let lines = app
             .usb_drives
@@ -587,56 +360,6 @@ fn draw(frame: &mut Frame, app: &mut App, rows: &[Row], display: &mut ListState,
             kept,
         );
     }
-}
-
-/// A small centred box over the rest of the screen. Returns its area.
-fn dialog(frame: &mut Frame, title: &str, keys: &str, lines: Vec<Line>) -> Rect {
-    let screen = frame.area();
-    let width = 62.min(screen.width);
-    let height = (lines.len() as u16 + 2).min(screen.height);
-    let area = Rect::new(
-        screen.x + (screen.width - width) / 2,
-        screen.y + (screen.height - height) / 2,
-        width,
-        height,
-    );
-    note_hints(
-        keys.trim(),
-        area.x + 1,
-        area.bottom().saturating_sub(1),
-        true,
-    );
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            theme::popup(title.trim(), theme::ACCENT).title_bottom(theme::hints(keys.trim())),
-        ),
-        area,
-    );
-    area
-}
-
-/// Split a line of output into text and the web addresses in it.
-fn with_links(line: &str) -> Vec<(String, bool)> {
-    let mut parts = vec![];
-    let mut rest = line;
-    while let Some(start) = [rest.find("https://"), rest.find("http://")]
-        .into_iter()
-        .flatten()
-        .min()
-    {
-        let tail = &rest[start..];
-        let end = tail
-            .find(|ch: char| ch.is_whitespace() || "()<>\"'".contains(ch))
-            .unwrap_or(tail.len());
-        // Punctuation after an address belongs to the sentence.
-        let link = tail[..end].trim_end_matches(['.', ',', ';', ':', '…']);
-        parts.push((rest[..start].to_owned(), false));
-        parts.push((link.to_owned(), true));
-        rest = &tail[link.len()..];
-    }
-    parts.push((rest.to_owned(), false));
-    parts
 }
 
 /// Put text on the clipboard: with the desktop's own tool when there is one,
@@ -712,34 +435,6 @@ fn paste_text() -> Option<String> {
     }
     None
 }
-
-/// The words of one line of output and the column each starts at.
-fn words(line: &str) -> Vec<(u16, String)> {
-    let mut found = vec![];
-    let (mut column, mut start, mut word) = (0u16, 0u16, String::new());
-    for ch in line.chars().chain([' ']) {
-        if ch.is_whitespace() {
-            // Brackets and sentence punctuation around a value are not part of it.
-            let trimmed = word
-                .trim_start_matches(['(', '"', '\''])
-                .trim_end_matches([')', '"', '\'', '.', ',', ';', ':']);
-            if !trimmed.is_empty() {
-                let lead = word.len() - word.trim_start_matches(['(', '"', '\'']).len();
-                found.push((start + lead as u16, trimmed.to_owned()));
-            }
-            word.clear();
-        } else {
-            if word.is_empty() {
-                start = column;
-            }
-            word.push(ch);
-        }
-        column += Span::raw(ch.to_string()).width() as u16;
-    }
-    found
-}
-
-type Spots = Vec<(Rect, String)>;
 
 /// Draw a running or finished job. Returns where its web addresses and its
 /// words are, for opening and copying with the mouse.
@@ -882,193 +577,54 @@ fn draw_session(
     )
 }
 
-/// Draw a session of the host: the same panel, with what leaving it means there.
-fn draw_view(frame: &mut Frame, view: &crate::remote::View, note: &str) -> (Spots, Spots) {
-    let keys = match (view.outcome(), view.ours, view.terminal) {
-        (None, _, true) => {
-            " Ctrl+V paste · Ctrl+Q leave it running · Click opens a link · Right-click copies · Wheel scrolls "
-        }
-        (None, ..) => {
-            " Ctrl+Q leave it running · Click opens a link · Right-click copies · Wheel scrolls "
-        }
-        (Some(true), true, _) => " ✓ Done · Enter close · k keep it in Sessions ",
-        (Some(false), true, _) => " ✗ It did not finish · Enter close · k keep it in Sessions ",
-        (Some(true), false, _) => " ✓ Done · Enter close · d forget it ",
-        (Some(false), false, _) => " ✗ It did not finish · Enter close · d forget it ",
-    };
-    draw_panel(
-        frame,
-        &view.title,
-        view.screen(),
-        view.outcome(),
-        keys,
-        note,
-    )
-}
+/// The desktop this terminal runs on: its clipboard, and its way to open a link.
+struct Desktop;
 
-/// The terminal panel: a screen, in a box coloured by how the command fared.
-fn draw_panel(
-    frame: &mut Frame,
-    title: &str,
-    screen: &vt100::Screen,
-    outcome: Option<bool>,
-    keys: &str,
-    note: &str,
-) -> (Spots, Spots) {
-    let (rows, cols) = screen.size();
-    let colour = match outcome {
-        None => theme::ACCENT,
-        Some(true) => theme::GOOD,
-        Some(false) => theme::BAD,
-    };
-    let full = frame.area();
-    let (width, height) = ((cols + 4).min(full.width), (rows + 2).min(full.height));
-    let area = Rect::new(
-        full.x + (full.width - width) / 2,
-        full.y + (full.height - height) / 2,
-        width,
-        height,
-    );
-    note_hints(
-        keys.trim(),
-        area.x + 1,
-        area.bottom().saturating_sub(1),
-        true,
-    );
-    let block = theme::popup(title, colour)
-        .title_bottom(theme::hints(keys.trim()))
-        .title_bottom(Line::styled(note.to_owned(), Style::new().fg(theme::WARN)).right_aligned());
-    let inner = block.inner(area);
-    frame.render_widget(Clear, area);
-    frame.render_widget(block, area);
+impl Platform for Desktop {
+    fn copy(&mut self, text: &str) -> bool {
+        copy_text(text)
+    }
 
-    let colour_of = |colour: vt100::Color| match colour {
-        vt100::Color::Default => None,
-        vt100::Color::Idx(index) => Some(Color::Indexed(index)),
-        vt100::Color::Rgb(r, g, b) => Some(Color::Rgb(r, g, b)),
-    };
-    let (mut links, mut copyable): (Spots, Spots) = (vec![], vec![]);
-    // A long address runs over several rows, so rows that were wrapped are read
-    // as one line, with the place on screen of each character kept.
-    let mut line = String::new();
-    let mut places: Vec<(u16, u16)> = vec![];
-    for row in 0..rows.min(inner.height) {
-        let mut text = String::new();
-        for col in 0..cols.min(inner.width) {
-            let Some(cell) = screen.cell(row, col) else {
-                continue;
-            };
-            if cell.is_wide_continuation() {
-                continue;
-            }
-            let symbol = if cell.has_contents() {
-                cell.contents()
-            } else {
-                " "
-            };
-            let mut style = Style::new();
-            if let Some(colour) = colour_of(cell.fgcolor()) {
-                style = style.fg(colour);
-            }
-            if let Some(colour) = colour_of(cell.bgcolor()) {
-                style = style.bg(colour);
-            }
-            for (on, modifier) in [
-                (cell.bold(), Modifier::BOLD),
-                (cell.dim(), Modifier::DIM),
-                (cell.italic(), Modifier::ITALIC),
-                (cell.underline(), Modifier::UNDERLINED),
-                (cell.inverse(), Modifier::REVERSED),
-            ] {
-                if on {
-                    style = style.add_modifier(modifier);
-                }
-            }
-            let position = (inner.x + col, inner.y + row);
-            if let Some(shown) = frame.buffer_mut().cell_mut(position) {
-                shown.set_symbol(symbol).set_style(style);
-            }
-            text.push_str(symbol);
-            for ch in symbol.chars() {
-                line.push(ch);
-                places.push(position);
-            }
-        }
-        for (column, word) in words(&text) {
-            let width = Span::raw(word.as_str()).width() as u16;
-            copyable.push((Rect::new(inner.x + column, inner.y + row, width, 1), word));
-        }
-        if screen.row_wrapped(row) && row + 1 < rows.min(inner.height) {
-            continue;
-        }
-        let mut at = 0;
-        for (part, link) in with_links(&line) {
-            let count = part.chars().count();
-            if link {
-                for &(x, y) in &places[at..at + count] {
-                    if let Some(shown) = frame.buffer_mut().cell_mut((x, y)) {
-                        shown.set_style(Style::new().fg(theme::ACCENT).underlined());
-                    }
-                    links.push((Rect::new(x, y, 1, 1), part.clone()));
-                }
-            }
-            at += count;
-        }
-        line.clear();
-        places.clear();
+    fn paste(&mut self) -> Option<String> {
+        paste_text()
     }
-    if outcome.is_none() && !screen.hide_cursor() {
-        let (row, col) = screen.cursor_position();
-        if row < inner.height && col < inner.width {
-            frame.set_cursor_position((inner.x + col, inner.y + row));
-        }
-    }
-    (links, copyable)
-}
 
-/// A click on a web address opens it here; a right-click on a word copies it.
-fn spot_event(app: &mut App, event: &Event) -> bool {
-    if let Event::Mouse(mouse) = event
-        && mouse.kind == MouseEventKind::Down(MouseButton::Right)
-        && let Some((_, word)) = app
-            .words
-            .iter()
-            .find(|(rect, _)| inside(*rect, mouse.column, mouse.row))
-    {
-        app.status = if copy_text(word) {
-            format!("Copied {}", ellipsize(word, 40))
-        } else {
-            "Could not reach the clipboard".into()
-        };
-        return true;
-    }
-    if let Event::Mouse(mouse) = event
-        && mouse.kind == MouseEventKind::Down(MouseButton::Left)
-        && let Some((_, link)) = app
-            .links
-            .iter()
-            .find(|(rect, _)| inside(*rect, mouse.column, mouse.row))
-    {
-        let opened = std::process::Command::new("xdg-open")
+    fn open(&mut self, link: &str) -> std::result::Result<(), String> {
+        std::process::Command::new("xdg-open")
             .arg(link)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .spawn();
-        if let Err(error) = opened {
-            app.status = format!("Could not open the link: {error}");
-        }
-        return true;
+            .spawn()
+            .map(drop)
+            .map_err(|error| error.to_string())
     }
-    false
 }
 
-/// What the status bar says after a paste. Not the text: it may be a secret.
-fn pasted(text: &str) -> String {
-    match text.chars().count() {
-        0 => "The clipboard is empty".into(),
-        1 => "Pasted 1 character".into(),
-        count => format!("Pasted {count} characters"),
+/// A click on a key hint is that key.
+fn hint_click(event: Event) -> Event {
+    if let Event::Mouse(mouse) = &event
+        && mouse.kind == MouseEventKind::Down(MouseButton::Left)
+        && let Some(key) = hint_at(mouse.column, mouse.row)
+    {
+        return Event::Key(crate::keys::native(key));
+    }
+    event
+}
+
+/// A click on a web address opens it here; a right-click on a word copies it.
+fn spot_event(app: &mut App, event: &Event) -> bool {
+    let said = crate::keys::event(event).and_then(|event| {
+        berth_tui::screen::spot_event(&app.links, &app.words, &event, &mut Desktop)
+    });
+    match said {
+        Some(said) => {
+            if !said.is_empty() {
+                app.status = said;
+            }
+            true
+        }
+        None => false,
     }
 }
 
@@ -1116,58 +672,16 @@ fn session_event(app: &mut App, event: &Event) {
 
 /// Keys and the mouse while a session of the host is in the panel.
 fn view_event(app: &mut App, event: &Event) {
-    if spot_event(app, event) {
-        return;
-    }
-    let Some(view) = &mut app.host.view else {
-        return;
-    };
-    match event {
-        Event::Mouse(mouse) if mouse.kind == MouseEventKind::ScrollUp => view.scroll(3),
-        Event::Mouse(mouse) if mouse.kind == MouseEventKind::ScrollDown => view.scroll(-3),
-        Event::Paste(text) if view.terminal => {
-            let bytes = view.paste(text);
-            app.host.input(bytes);
-            app.status = pasted(text);
-        }
-        Event::Key(key) if key.kind != KeyEventKind::Release => {
-            let control = key.modifiers.contains(KeyModifiers::CONTROL);
-            if control && key.code == KeyCode::Char('q') {
-                let running = view.running();
-                app.host.close(false);
-                if running {
-                    app.status = "It runs on; open it again from Sessions".into();
-                }
-            } else if !view.running() {
-                let (ours, title, outcome) = (view.ours, view.title.clone(), view.outcome());
-                let forget = match key.code {
-                    KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q') => ours,
-                    KeyCode::Char('k') if ours => false,
-                    KeyCode::Char('d') if !ours => true,
-                    _ => return,
-                };
-                app.status = match outcome {
-                    Some(true) => format!("{title} finished"),
-                    _ => format!("{title} did not finish"),
-                };
-                app.host.close(forget);
-            } else if !view.terminal {
-                // A transcript takes no typing.
-            } else if control && key.code == KeyCode::Char('v') {
-                app.status = match paste_text() {
-                    Some(text) => {
-                        let bytes = view.paste(&text);
-                        app.host.input(bytes);
-                        pasted(&text)
-                    }
-                    None => "Could not read the clipboard".into(),
-                };
-            } else {
-                let bytes = view.key(key);
-                app.host.input(bytes);
-            }
-        }
-        _ => {}
+    if let Some(event) = crate::keys::event(event)
+        && let Some(said) = berth_tui::screen::view_event(
+            &mut app.host,
+            &app.links,
+            &app.words,
+            &event,
+            &mut Desktop,
+        )
+    {
+        app.status = said;
     }
 }
 
@@ -1190,35 +704,10 @@ fn question_event(app: &mut App, event: &Event) -> Flow {
 
 /// The dialog that asks for a task's arguments.
 fn arguments_event(app: &mut App, event: &Event) {
-    let Some(asked) = &mut app.host.arguments else {
-        return;
-    };
-    match event {
-        Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
-            KeyCode::Esc => app.host.arguments = None,
-            KeyCode::Enter => app.accept_argument(),
-            KeyCode::Up | KeyCode::Down if !asked.choices.is_empty() => {
-                let count = asked.choices.len().min(8);
-                let next = match (asked.chosen, key.code) {
-                    (None, KeyCode::Down) => 0,
-                    (None, _) => count - 1,
-                    (Some(index), KeyCode::Down) => (index + 1) % count,
-                    (Some(index), _) => (index + count - 1) % count,
-                };
-                asked.chosen = Some(next);
-                asked.input = Input::new(asked.choices[next].clone());
-            }
-            _ => {
-                asked.chosen = None;
-                asked.input.handle_event(event);
-            }
-        },
-        Event::Paste(text) => {
-            for ch in text.chars().filter(|ch| !ch.is_control()) {
-                asked.input.handle(InputRequest::InsertChar(ch));
-            }
-        }
-        _ => {}
+    if let Some(event) = crate::keys::event(event)
+        && berth_tui::screen::arguments_event(&mut app.host, &event)
+    {
+        app.accept_argument();
     }
 }
 
@@ -2725,7 +2214,7 @@ fn home_key(home: &mut Home, paths: &Paths, key: KeyEvent) -> Option<Option<Stri
 
 fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect, HomeTarget)>) {
     hits.clear();
-    HINTS.with_borrow_mut(Vec::clear);
+    clear_hints();
     frame.render_widget(theme::backdrop(), frame.area());
     let area = frame.area().inner(Margin {
         horizontal: 2,

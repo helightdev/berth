@@ -10,9 +10,15 @@ description = "Wire types and client for berthd and berth serve"
 serde.workspace = true
 serde_json.workspace = true
 utoipa.workspace = true
-tokio.workspace = true
-hyper.workspace = true
-hyper-util.workspace = true
-http-body-util.workspace = true
-tokio-tungstenite.workspace = true
-futures-util.workspace = true
+tokio = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true }
+hyper-util = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+
+[features]
+default = ["client"]
+# The client over a byte stream; without it only the types and tables remain,
+# which is what a browser build takes.
+client = ["dep:tokio", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util"]

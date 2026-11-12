@@ -15,6 +15,8 @@ export function baseOptions(): BaseLayoutProps {
         </>
       ),
     },
+    // The page of berth serve, as plain files under public/web: not a route of the site.
+    links: [{ text: 'Web', url: asset('/web/'), external: true }],
     githubUrl: github,
     // Dark only.
     themeSwitch: { enabled: false },

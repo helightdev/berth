@@ -17,4 +17,10 @@ const config = {
   env: { NEXT_PUBLIC_BASE_PATH: basePath ?? '' },
 };
 
+// A file host gives public/web/index.html for /web/ by itself; the
+// development server has to be told.
+if (process.env.NODE_ENV === 'development') {
+  config.rewrites = async () => [{ source: '/web/', destination: '/web/index.html' }];
+}
+
 export default withMDX(config);

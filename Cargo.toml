@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "cli", "host/berthd", "host/box"]
+members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "crates/berth-tui", "cli", "host/berthd", "host/box", "web"]
 # The vendored crate is a member because it lives inside; it is left out of what
 # is built, tested and linted by default.
-default-members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "cli", "host/berthd", "host/box"]
+default-members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "crates/berth-tui", "cli", "host/berthd", "host/box"]
 
 [workspace.package]
 version = "0.2.0"
@@ -15,6 +15,7 @@ license = "MIT"
 berth-api = { path = "crates/berth-api" }
 berth-pty = { path = "crates/berth-pty" }
 berth-core = { path = "crates/berth-core" }
+berth-tui = { path = "crates/berth-tui" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"
@@ -33,3 +34,10 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 
 [profile.release]
 strip = true
+
+# The page of berth serve: small rather than fast, since it is carried in berth.
+[profile.web]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1

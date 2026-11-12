@@ -103,7 +103,8 @@ See [Secrets](/docs/use/secrets) and [Registries](/docs/use/registries).
 | --- | --- |
 | `berth call HOST SERVICE METHOD [JSON]` | Call a service a plugin runs on the host |
 | `berth channel HOST [TOPIC-PREFIX] [--since ID]` | Messages on the host's channel as they come |
-| `berth serve [--listen ADDRESS:PORT [--expose]]` | The API over all hosts ([berth serve](/docs/extend/serve)); `--expose` allows an address other than loopback |
+| `berth serve [--listen ADDRESS:PORT [--expose] [--web]]` | The API over all hosts ([berth serve](/docs/extend/serve)). `--expose` allows an address other than loopback. `--web` also shows [the hosts in a browser](/docs/use/server#in-a-browser) |
+| `berth update [--check]` | Replace this program with the latest release ([Updates](/docs/use/updates#berth-itself)) |
 | `berth inbox [HOST] [--topic PREFIX] [--all]` | Messages `berth serve` took in from the hosts' channels |
 | `berth kv get\|set\|rm\|ls NAMESPACE [KEY] [JSON]` | The key-value store of `berth serve` |
 | `berth operations`, `berth openapi`, `berth asyncapi` | The API documents of `berth serve` ([API](/docs/api#the-documents)) |
