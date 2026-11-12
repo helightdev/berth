@@ -1896,7 +1896,7 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
         ("keyboard", json!("de")),
         ("operator_username", json!("ops")),
         ("agent_username", json!("agent")),
-        ("operator_passwordless_sudo", json!(false)),
+        ("operator_passwordless_sudo", json!(true)),
         ("agent_passwordless_sudo", json!(true)),
         ("target_disk_ssd", json!("any")),
     ] {
@@ -1977,18 +1977,24 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
     if let Some(builder) = config["builder"].as_object_mut() {
         builder.remove("manage_task");
     }
-    // Prompt switches were once stored as the strings "true" and "false".
     // Device names change between sessions, so the drive to write is chosen each time.
     if let Some(builder) = config["builder"].as_object_mut() {
         builder.remove("usb_device");
     }
-    for (key, default) in [("ask_become_pass", true), ("ask_pass", false)] {
+    // Prompt switches were once stored as the strings "true" and "false".
+    // Asking for the sudo password stays unset until it is chosen, so that it
+    // follows the operator's sudo as `Host` reads it.
+    for key in ["ask_become_pass", "ask_pass"] {
         let value = &config["builder"][key];
-        let enabled = value
+        if let Some(enabled) = value
             .as_bool()
             .or_else(|| value.as_str().map(|text| text == "true"))
-            .unwrap_or(default);
-        config["builder"][key] = json!(enabled);
+        {
+            config["builder"][key] = json!(enabled);
+        }
+    }
+    if config["builder"]["ask_pass"].is_null() {
+        config["builder"]["ask_pass"] = json!(false);
     }
     Ok(config)
 }

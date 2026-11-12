@@ -49,9 +49,7 @@ impl Host {
 
     /// The SSH user sudo asks for a password.
     pub fn asks_password(&self) -> bool {
-        self.config["builder"]["ask_become_pass"]
-            .as_bool()
-            .unwrap_or(false)
+        berth_api::profile::asks_become_pass(&self.config)
     }
 
     /// The `berth serve` this host is reached through, for a profile written

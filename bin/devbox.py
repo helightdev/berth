@@ -151,7 +151,7 @@ def checked_config(path, kind):
         for key in account_keys(c, account):
             check_public_key(key, account)
     check_password_hash(text(c, 'operator_password_hash'), 'operator')
-    flag(c, 'operator_passwordless_sudo', False)
+    flag(c, 'operator_passwordless_sudo', True)
     if text(c, 'agent_password_hash'):
         check_password_hash(c['agent_password_hash'], 'agent')
     privileges = text(c, 'agent_privileges')
@@ -243,7 +243,7 @@ def account_vars(c):
         'devbox_operator_user': c.get('operator_username', DEFAULT_OPERATOR),
         'devbox_operator_password_hash': c.get('operator_password_hash', ''),
         'devbox_operator_ssh_public_key': '\n'.join(account_keys(c, 'operator')),
-        'devbox_operator_passwordless_sudo': c.get('operator_passwordless_sudo', False),
+        'devbox_operator_passwordless_sudo': c.get('operator_passwordless_sudo', True),
     }
 
 
@@ -309,7 +309,7 @@ def autoinstall(c):
 
 def cloud_config(c, sha):
     boot = (ROOT / 'bootstrap/bootstrap.sh').read_bytes()
-    sudo = 'NOPASSWD:ALL' if c.get('operator_passwordless_sudo', False) else 'ALL'
+    sudo = 'NOPASSWD:ALL' if c.get('operator_passwordless_sudo', True) else 'ALL'
     operator = {
         'name': c.get('operator_username', DEFAULT_OPERATOR), 'shell': '/bin/bash', 'groups': ['sudo'],
         'sudo': [f'ALL=(ALL) {sudo}'], 'lock_passwd': False, 'passwd': c['operator_password_hash'],

@@ -141,6 +141,14 @@ class RenderTests(unittest.TestCase):
         self.assertFalse(deployment['ansible_vars']['devbox_agent_passwordless_sudo'])
         self.assertEqual(deployment['ansible_vars']['devbox_operator_user'],'admin')
 
+    def test_operator_sudo_needs_no_password_unless_turned_off(self):
+        c=config()
+        self.assertEqual(builder.cloud_config(c,'a'*64)['users'][1]['sudo'],['ALL=(ALL) NOPASSWD:ALL'])
+        self.assertTrue(builder.deployment(c,'a'*64)['ansible_vars']['devbox_operator_passwordless_sudo'])
+        c['operator_passwordless_sudo']=False
+        self.assertEqual(builder.cloud_config(c,'a'*64)['users'][1]['sudo'],['ALL=(ALL) ALL'])
+        self.assertFalse(builder.deployment(c,'a'*64)['ansible_vars']['devbox_operator_passwordless_sudo'])
+
     def test_wifi_special_characters_are_encoded_not_executed(self):
         c=config(); c['wifi']={'interface':'wlan0','ssid':'a "quote"','password':'$HOME;`example`'}
         text=json.dumps(builder.autoinstall(c))

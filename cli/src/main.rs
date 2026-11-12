@@ -757,7 +757,8 @@ mod tests {
         let config = parse_config(br#"{}"#).unwrap();
         assert_eq!(config["target_disk_mode"], "auto");
         assert_eq!(config["wifi_enabled"], false);
-        assert_eq!(config["builder"]["ask_become_pass"], true);
+        assert_eq!(config["operator_passwordless_sudo"], true);
+        assert!(config["builder"]["ask_become_pass"].is_null());
         let legacy = parse_config(
             br#"{"target_disk_serial":"OLD_SSD","wifi":{"ssid":"saved"},
                 "release_url":"https://REPLACE.example/x","builder":{"ask_pass":"true"}}"#,
@@ -767,6 +768,34 @@ mod tests {
         assert_eq!(legacy["wifi_enabled"], true);
         assert_eq!(legacy["release_url"], "");
         assert_eq!(legacy["builder"]["ask_pass"], true);
+    }
+
+    #[test]
+    fn asking_for_the_sudo_password_follows_the_operator_until_chosen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("studio.json");
+        let profile = r#"{"builder":{"ssh_host":"192.0.2.10","ssh_user":"ops"}}"#;
+        let mut app = App::new(path.clone(), parse_config(profile.as_bytes()).unwrap());
+        // An edit elsewhere leaves the choice to the operator's sudo.
+        app.commit(Field::Hostname, "studio");
+        app.save().unwrap();
+        let host = |path: &std::path::Path| berth_core::host::Host {
+            name: "studio".into(),
+            path: path.to_owned(),
+            config: serde_json::from_slice(&fs::read(path).unwrap()).unwrap(),
+            key: None,
+        };
+        assert!(!app.enabled(Field::AskBecomePass));
+        assert!(!host(&path).asks_password());
+        // An operator that types its password for sudo is asked for it.
+        app.activate(Field::OperatorSudo);
+        app.save().unwrap();
+        assert!(app.enabled(Field::AskBecomePass) && host(&path).asks_password());
+        // Once chosen, the choice stays.
+        app.activate(Field::AskBecomePass);
+        app.save().unwrap();
+        assert!(!app.enabled(Field::AskBecomePass) && !host(&path).asks_password());
+        assert_eq!(app.config["builder"]["ask_become_pass"], false);
     }
 
     #[test]

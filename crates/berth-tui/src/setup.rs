@@ -439,11 +439,19 @@ impl<'a> Profile<'a> {
 
     /// State of a toggle. Unset feature switches are on, like the role defaults,
     /// and tool categories follow the older single `devbox_install_dev_tools` switch.
+    /// Asking for the sudo password follows the operator's sudo.
     pub fn enabled(&self, field: Field) -> bool {
+        use berth_api::profile;
         let pointer = field.spec().pointer;
+        if field == Field::AskBecomePass {
+            return profile::asks_become_pass(self.config);
+        }
         let stored = self.config.pointer(pointer).and_then(Value::as_bool);
         stored.unwrap_or_else(|| {
-            if pointer == "/berth_ssh_key" {
+            if matches!(
+                field,
+                Field::BerthKey | Field::OperatorSudo | Field::AgentSudo
+            ) {
                 true
             } else if pointer.starts_with("/ansible_vars/devbox_tools_") {
                 self.config["ansible_vars"]["devbox_install_dev_tools"]

@@ -374,7 +374,7 @@ impl Field {
                 "Operator passwordless sudo",
                 "/operator_passwordless_sudo",
                 Toggle,
-                "Allow the operator to use sudo without a password.",
+                "Allow the operator to use sudo without a password. On unless turned off, so berth needs no sudo password to look after the host. Off, the operator types its password for sudo.",
             ),
             AgentUser => (
                 "Agent username",
@@ -506,7 +506,7 @@ impl Field {
                 "Ask for sudo password",
                 "/builder/ask_become_pass",
                 Toggle,
-                "Ask for your sudo password on the target. Turn off only when that account has passwordless sudo.",
+                "Ask for your sudo password on the target. Until it is switched, it follows the operator: on when the operator has no passwordless sudo, off when it has.",
             ),
             SshHost => (
                 "SSH host",
