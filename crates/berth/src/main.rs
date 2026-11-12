@@ -67,7 +67,11 @@ Usage:
                              whether a registry answers and accepts its login
   berth registry remove NAME
   berth secret [set NAME | remove NAME]
-                             secret values kept on this machine
+                             secret values kept on this machine; tailnet_api_key is
+                             the control server's API key, for enrollment keys
+  berth tailnet-key HOST     create a one-use enrollment key for HOST, valid for an
+                             hour, at the control server of the tailnet_ settings
+                             (HOST may also be the path of its profile)
   berth host HOST            what a host is given
   berth host HOST secret NAME env VARIABLE | file PATH [MODE] | off
   berth host HOST registry NAME on|off
@@ -123,6 +127,23 @@ fn show_config(paths: &Paths) -> Result<()> {
         println!("{key} = {}\n    {help}", value.unwrap_or("(not set)"));
     }
     Ok(())
+}
+
+/// `berth config KEY VALUE`: the tailnet settings of a berth server this
+/// berth uses are the server's, and change there.
+fn change_setting(paths: &Paths, key: &str, value: &str) -> Result<()> {
+    match berth_core::server::Server::configured(paths) {
+        Some(server) if berth_core::tailnet::SETTINGS.contains(&key) => {
+            server.call(
+                "settings.set",
+                json!({"key": key}),
+                Some(json!({"value": value})),
+            )?;
+            println!("Changed {key} on the berth server at {}", server.url);
+            Ok(())
+        }
+        _ => paths.set(key, value),
+    }
 }
 
 fn enter() -> Result<ratatui::DefaultTerminal> {
@@ -368,6 +389,7 @@ fn run() -> Result<()> {
         "login",
         "logout",
         "key",
+        "tailnet-key",
     ];
     if let Some(server) = berth_core::server::Server::configured(&paths)
         && !args.first().is_some_and(|verb| local.contains(verb))
@@ -490,8 +512,22 @@ fn run() -> Result<()> {
             return Ok(());
         }
         ["config"] => return show_config(&paths),
-        ["config", key] => return paths.set(key, ""),
-        ["config", key, value] => return paths.set(key, value),
+        ["config", key] => return change_setting(&paths, key, ""),
+        ["config", key, value] => return change_setting(&paths, key, value),
+        ["tailnet-key", host] => {
+            // An apply runs this on the machine that runs berth, for a host
+            // not on the tailnet yet; the key goes to the role on stdout.
+            let host = berth_core::host::Host::load(&paths, host)?;
+            let name = host.path.file_stem().unwrap_or_default().to_string_lossy();
+            let key = berth_core::tailnet::create_key(
+                &paths,
+                &host.config,
+                &name,
+                berth_core::tailnet::APPLY_LIFETIME,
+            )?;
+            println!("{key}");
+            return Ok(());
+        }
         ["iso", host] => return build_installer(&paths, host, None),
         ["iso", host, "--write", device] => return build_installer(&paths, host, Some(device)),
         ["login"] => return commands::login(&paths),

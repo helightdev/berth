@@ -79,9 +79,44 @@ pub fn operator_keys(config: &Value, own: Option<&str>) -> Vec<String> {
     keys
 }
 
+/// The secret that holds the API key of the tailnet's control server. berth
+/// uses it itself, to create enrollment keys, and never gives it to a host.
+pub const TAILNET_API_KEY: &str = "tailnet_api_key";
+
+/// Whether the host gets Tailscale, which it does unless the profile says not.
+pub fn installs_tailscale(config: &Value) -> bool {
+    config["ansible_vars"]["devbox_install_tailscale"]
+        .as_bool()
+        .unwrap_or(true)
+}
+
+/// Whether berth creates the host's enrollment key itself when one is needed:
+/// switched on, and no key pasted into the profile.
+pub fn joins_automatically(config: &Value) -> bool {
+    installs_tailscale(config)
+        && config["tailscale_auto_key"].as_bool().unwrap_or(false)
+        && config["tailscale_auth_key"]
+            .as_str()
+            .unwrap_or("")
+            .is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pasted_key_wins_over_the_automatic_one() {
+        assert!(!joins_automatically(&json!({})));
+        assert!(joins_automatically(&json!({"tailscale_auto_key": true})));
+        assert!(!joins_automatically(
+            &json!({"tailscale_auto_key": true, "tailscale_auth_key": "tskey-1"})
+        ));
+        assert!(!joins_automatically(&json!({
+            "tailscale_auto_key": true,
+            "ansible_vars": {"devbox_install_tailscale": false},
+        })));
+    }
 
     #[test]
     fn keys_come_from_the_list_and_from_an_older_profile() {

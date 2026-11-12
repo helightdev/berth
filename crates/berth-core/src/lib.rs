@@ -14,5 +14,6 @@ pub mod registry;
 pub mod rollout;
 pub mod server;
 pub mod store;
+pub mod tailnet;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;

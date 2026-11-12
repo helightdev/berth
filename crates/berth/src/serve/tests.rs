@@ -1048,6 +1048,31 @@ async fn the_server_is_set_up_through_the_api() {
         (&days["value"], &days["open"]),
         (&json!("30"), &json!(true))
     );
+    // The tailnet is set on the server, and its API key stays there.
+    let at = value("http://192.0.2.9:8080");
+    assert_eq!(
+        send(client, "PUT", "/v1/settings/tailnet_login_server", at)
+            .await
+            .0,
+        200
+    );
+    let key = value("hskey-api-x");
+    assert_eq!(
+        send(client, "PUT", "/v1/secrets/tailnet_api_key", key)
+            .await
+            .0,
+        200
+    );
+    let giving = json!({"builder": {"ssh_host": "192.0.2.7"}, "secrets": [{"name": "tailnet_api_key", "env": "KEY"}]});
+    send(client, "PUT", "/v1/hosts/studio/profile", giving).await;
+    let (status, said) = send(client, "POST", "/v1/hosts/studio/secrets", Value::Null).await;
+    assert_eq!(status, 400);
+    assert!(
+        said["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("never sent to a host")
+    );
 
     assert_eq!(
         send(client, "DELETE", "/v1/hosts/studio", Value::Null)

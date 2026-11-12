@@ -294,38 +294,21 @@
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ devbox_uid }}/bus"
   loop: "{{ ['devbox-desktop.service', 'devbox-novnc.service'] + (['t3code.service'] if devbox_install_t3 | bool else []) }}"
   when: devbox_start_services
-- name: Inspect Tailscale enrollment
-  ansible.builtin.command: tailscale status --json
-  register: tailscale_status
-  changed_when: false
-  failed_when: false
+- name: Join the tailnet
+  ansible.builtin.include_tasks: tailnet.yml
   when: devbox_install_tailscale and devbox_start_services
-- name: Store one-time enrollment credential
-  ansible.builtin.copy:
-    dest: /run/devbox-tailscale-key
-    content: "{{ devbox_tailscale_auth_key }}"
-    mode: '0600'
-  no_log: true
-  when: devbox_install_tailscale and devbox_start_services and devbox_tailscale_auth_key | length > 0
-- name: Enroll Tailscale only when not already enrolled
-  block:
-    - name: Consume enrollment key
-      ansible.builtin.command: tailscale up --auth-key=file:/run/devbox-tailscale-key
-      no_log: true
-      when: (tailscale_status.stdout | default('{}', true) | from_json).get('BackendState', '') != 'Running'
-  always:
-    - name: Remove temporary enrollment credential
-      ansible.builtin.file:
-        path: /run/devbox-tailscale-key
-        state: absent
-  when: devbox_install_tailscale and devbox_start_services and devbox_tailscale_auth_key | length > 0
 # Publishing needs an enrolled host and HTTPS certificates enabled for the
 # tailnet. Neither is certain here, so a failure is reported, not fatal.
+# Headscale offers neither tailscale serve nor certificates.
 - name: Publish the desktop and T3 on the tailnet
   ansible.builtin.shell: |
     tailscale status >/dev/null 2>&1 || { echo 'not enrolled in a tailnet yet'; exit 3; }
+    control=$(tailscale debug prefs 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ControlURL", ""))' 2>/dev/null || true)
+    if [[ -n $control && ! $control =~ ^https://[a-z0-9.-]*tailscale\.com/?$ ]]; then echo "the control server $control does not offer tailscale serve"; exit 5; fi
     timeout 60 tailscale serve --bg --https=443 http://127.0.0.1:6080 2>&1 || exit 4
     timeout 60 tailscale serve --bg --https=8443 http://127.0.0.1:3773 2>&1 || exit 4
+  args:
+    executable: /bin/bash
   register: devbox_serve
   changed_when: false
   failed_when: false
@@ -333,10 +316,12 @@
 - name: Explain unpublished tailnet endpoints
   ansible.builtin.debug:
     msg: >-
-      The desktop and T3 were not published on the tailnet
-      ({{ devbox_serve.stdout | default('') | trim }}). Enroll the host and enable
-      HTTPS certificates for the tailnet, then run the publish task from the UI's
-      Manage action or apply again.
+      {% if devbox_serve.rc == 5 %}The desktop and T3 are not published on the tailnet
+      ({{ devbox_serve.stdout | trim }}). Reach them through an SSH tunnel, as the
+      access task of the UI's Manage action shows.{% else %}The desktop and T3 were
+      not published on the tailnet ({{ devbox_serve.stdout | default('') | trim }}).
+      Enroll the host and enable HTTPS certificates for the tailnet, then run the
+      publish task from the UI's Manage action or apply again.{% endif %}
   when: devbox_serve is not skipped and devbox_serve.rc | default(0) != 0
 # The timer first fires five minutes after a boot, which has long passed during
 # an install; without this the self-signed certificate stays until a reboot.

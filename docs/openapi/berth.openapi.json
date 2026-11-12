@@ -5739,7 +5739,7 @@
             "description": "It could not be made; the message says why"
           }
         },
-        "summary": "Make up a host name, hash or make up a password, or create a Tailscale key.",
+        "summary": "Make up a host name, hash or make up a password, or create a one-use enrollment key at the tailnet's control server.",
         "tags": [
           "set-up"
         ]

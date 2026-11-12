@@ -18,7 +18,7 @@ use berth_api::{
 use berth_core::{
     apply,
     host::Host,
-    paths::{SETTINGS, layout},
+    paths::{Paths, SETTINGS, layout},
     plugins,
     registry::{self, Store},
     server::safe,
@@ -161,11 +161,27 @@ pub async fn seed(State(state): App, Path(name): Path<String>) -> Answer<Json<Se
         )
         .map_err(internal)?;
     }
+    // The seed is rendered from a private copy of the profile, which holds a
+    // new enrollment key for a host that joins the tailnet automatically.
+    let saved: Value =
+        serde_json::from_slice(&std::fs::read(&path).map_err(internal)?).map_err(internal)?;
+    let paths = Paths {
+        config_dir: state.paths.config_dir.clone(),
+        data_dir: state.paths.data_dir.clone(),
+    };
+    let seeded = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let config = berth_core::tailnet::seed_profile(&paths, &saved, &name)
+            .map_err(|error| error.to_string())?;
+        berth_core::tailnet::profile_file(&config).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(internal)?
+    .map_err(bad)?;
     let mut command = tokio::process::Command::new("python3");
     command
         .current_dir(&source)
         .args([layout::BUILDER, "render", "--kind", "cloud", "--config"])
-        .arg(&path)
+        .arg(seeded.path())
         .env("DEVBOX_BUILD_DIR", state.paths.build_dir())
         .env("BERTH_PLUGINS", dirs.to_string())
         .env(
@@ -370,7 +386,13 @@ pub async fn check_registry(State(state): App, Path(name): Path<String>) -> Answ
 
 /// The settings a caller may change. The others say who gets in and where the
 /// server's files are, which is set on the server itself.
-const OPEN_SETTINGS: &[&str] = &["default_host", "retention_days"];
+const OPEN_SETTINGS: &[&str] = &[
+    "default_host",
+    "retention_days",
+    "tailnet_login_server",
+    "tailnet_user",
+    "tailnet_tags",
+];
 
 #[derive(Serialize, ToSchema)]
 pub struct Setting {
@@ -652,7 +674,7 @@ pub struct Generated {
     pub password: Option<String>,
 }
 
-#[utoipa::path(post, path = "/v1/setup/generate", summary = "Make up a host name, hash or make up a password, or create a Tailscale key.", tag = "set-up",
+#[utoipa::path(post, path = "/v1/setup/generate", summary = "Make up a host name, hash or make up a password, or create a one-use enrollment key at the tailnet's control server.", tag = "set-up",
     request_body(content = Generate, description = "What to make"),
     responses((status = 200, description = "What was made", body = Generated),
               (status = 400, description = "It could not be made; the message says why", body = ErrorBody)))]
@@ -663,6 +685,10 @@ pub async fn generate(State(state): App, Json(asked): Json<Generate>) -> Answer<
             Some(profile_path(&state, host)?.with_extension("credentials.json"))
         }
         _ => None,
+    };
+    let paths = Paths {
+        config_dir: state.paths.config_dir.clone(),
+        data_dir: state.paths.data_dir.clone(),
     };
     let made = tokio::task::spawn_blocking(move || -> Result<Generated, String> {
         let fail = |error: Box<dyn std::error::Error>| error.to_string();
@@ -698,13 +724,15 @@ pub async fn generate(State(state): App, Json(asked): Json<Generate>) -> Answer<
                 }
             },
             "tailscale_key" => {
-                let description = match asked.host.as_deref().unwrap_or("") {
-                    "" => "devbox".to_owned(),
-                    host => format!("devbox {host}"),
-                };
+                let host = asked.host.unwrap_or_default();
+                let config = Host::load(&paths, &host)
+                    .map(|host| host.config)
+                    .unwrap_or_default();
+                let (value, note) =
+                    berth_core::tailnet::generate(&paths, &config, &host).map_err(fail)?;
                 Ok(Generated {
-                    value: credentials::tailscale_auth_key(&description).map_err(fail)?,
-                    note: "One-use Tailscale key created · valid for 24 hours".into(),
+                    value,
+                    note,
                     password: None,
                 })
             }

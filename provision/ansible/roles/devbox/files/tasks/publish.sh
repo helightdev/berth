@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 . "$(dirname "$0")/common.sh"
 [[ -n $address ]] || { echo 'Not on a tailnet. Run: sudo tailscale up' >&2; exit 1; }
+if own_control; then
+  echo "Nothing published: the tailnet's control server, $control, offers neither tailscale serve nor HTTPS certificates." >&2
+  access
+  exit 3
+fi
 # Needs HTTPS certificates enabled for the tailnet; tailscale says so if not.
 timeout 60 tailscale serve --bg --https=443 http://127.0.0.1:6080
 timeout 60 tailscale serve --bg --https=8443 http://127.0.0.1:3773

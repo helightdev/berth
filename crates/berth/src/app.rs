@@ -265,7 +265,7 @@ impl App {
             .keys()
             .cloned()
             .collect();
-        self.secret_names = store.secret_names();
+        self.secret_names = berth_tui::setup::host_secrets(store.secret_names());
     }
 
     pub fn toggle_host_registry(&mut self, index: usize) {
@@ -840,15 +840,25 @@ impl App {
         } else if field == Field::Hostname {
             self.set(field, json!(credentials::hostname()?));
         } else if field == Field::TailscaleKey {
-            let host = self.text(Field::Hostname);
-            let description = if host.is_empty() {
-                "devbox".to_owned()
-            } else {
-                format!("devbox {host}")
+            let host = self.text(Field::Hostname).to_owned();
+            // A server's host gets its key from the server's control server.
+            let (key, note) = match self.host_profile().served() {
+                Some(server) => {
+                    let made = server.call(
+                        "setup.generate",
+                        json!({}),
+                        Some(json!({"what": "tailscale_key", "host": self.name()})),
+                    )?;
+                    let text = |key: &str| made[key].as_str().unwrap_or("").to_owned();
+                    (text("value"), text("note"))
+                }
+                None => {
+                    let paths = crate::paths::Paths::locate()?;
+                    berth_core::tailnet::generate(&paths, &self.config, &host)?
+                }
             };
-            let key = credentials::tailscale_auth_key(&description)?;
             self.set(field, json!(key));
-            self.status = "One-use Tailscale key created · valid for 24 hours".into();
+            self.status = note;
         } else if field == Field::IsoSha {
             self.hash_iso()?;
         } else if field.is_password_hash() {
@@ -1500,6 +1510,18 @@ impl App {
         // Secrets go to private files rather than argv. They live until the command ends.
         let mut extra = tempfile::NamedTempFile::new()?;
         let inventory = tempfile::NamedTempFile::new()?;
+        // The profile a seed is rendered from, with a new enrollment key in it
+        // for a host that joins the tailnet automatically.
+        let seeded = match action {
+            Action::UsbSeed | Action::CloudSeed | Action::Iso => {
+                let saved: Value = serde_json::from_slice(&fs::read(&self.path)?)?;
+                let paths = crate::paths::Paths::locate()?;
+                let config = berth_core::tailnet::seed_profile(&paths, &saved, &self.name())?;
+                Some(berth_core::tailnet::profile_file(&config)?)
+            }
+            _ => None,
+        };
+        let profile = seeded.as_ref().map(|file| file.path().to_owned());
         let mut command;
         match action {
             Action::Save | Action::Manage => return Err("Nothing to run".into()),
@@ -1517,7 +1539,7 @@ impl App {
                         "cloud"
                     })
                     .arg("--config")
-                    .arg(&self.path);
+                    .args(&profile);
                 // A release that is not public: the seed carries the login of
                 // the registry named for it.
                 let store = self.text(Field::ReleaseStore);
@@ -1543,7 +1565,7 @@ impl App {
                 command = Command::new("python3");
                 command
                     .args([layout::BUILDER, "iso", "--config"])
-                    .arg(&self.path)
+                    .args(&profile)
                     .arg("--iso")
                     .arg(expand_path(self.text(Field::Iso)))
                     .arg("--overwrite");
@@ -1561,14 +1583,19 @@ impl App {
             }
             Action::Apply => {
                 command = apply::playbook(&std::env::current_dir()?);
-                serde_json::to_writer(
-                    &mut extra,
-                    &apply::ansible_vars(
-                        &self.config,
-                        &self.plugin_dirs(),
-                        Some(self.own_public.as_str()),
-                    ),
+                let mut vars = apply::ansible_vars(
+                    &self.config,
+                    &self.plugin_dirs(),
+                    Some(self.own_public.as_str()),
+                );
+                let paths = crate::paths::Paths::locate()?;
+                apply::add_tailnet(
+                    &mut vars,
+                    &paths,
+                    &self.config,
+                    &std::path::absolute(&self.path)?,
                 )?;
+                serde_json::to_writer(&mut extra, &vars)?;
                 extra.flush()?;
                 command
                     .args([layout::PLAYBOOK, "--become", "-e"])
@@ -1611,7 +1638,9 @@ impl App {
         // The release archive packs the user's plugins next to the source's.
         command.env("BERTH_PLUGINS", self.plugin_dirs().to_string());
         command.env("BERTH_SSH_PUBLIC_KEY", &self.own_public);
-        Ok((command, vec![extra, inventory]))
+        let mut files = vec![extra, inventory];
+        files.extend(seeded);
+        Ok((command, files))
     }
 
     fn next_hint(&self) -> &'static str {

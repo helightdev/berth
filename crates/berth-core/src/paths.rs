@@ -98,6 +98,18 @@ pub const SETTINGS: &[(&str, &str)] = &[
         "oauth_claim",
         "the claim with the roles berth:view, berth:operate and berth:admin (default: scope; dots go into objects, as in realm_access.roles)",
     ),
+    (
+        "tailnet_login_server",
+        "address of the Headscale server hosts join, such as https://hs.example.org (empty: Tailscale's own service)",
+    ),
+    (
+        "tailnet_user",
+        "the Headscale user that new hosts belong to, by name or number",
+    ),
+    (
+        "tailnet_tags",
+        "tags new hosts get, comma separated, such as tag:berth (for Tailscale also DEVBOX_TAILSCALE_TAGS)",
+    ),
 ];
 
 pub struct Paths {
@@ -232,6 +244,10 @@ impl Paths {
         let mut settings = self.settings()?;
         if value.is_empty() {
             settings.remove(key);
+        } else if key == "tailnet_login_server"
+            && !(value.starts_with("https://") || value.starts_with("http://"))
+        {
+            return Err("tailnet_login_server is an address such as https://hs.example.org".into());
         } else if key == "source" {
             let source = fs::canonicalize(crate::discovery::expand_path(value))?;
             older_source(&source)?;
@@ -395,6 +411,7 @@ mod tests {
 
         assert!(paths.set("colour", "blue").is_err());
         paths.set("default_host", "laptop").unwrap();
+        assert!(paths.set("tailnet_login_server", "hs.example.org").is_err());
         assert_eq!(paths.settings().unwrap()["default_host"], "laptop");
         assert!(paths.set("source", home.path().to_str().unwrap()).is_err());
 

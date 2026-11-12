@@ -147,7 +147,27 @@ impl Row {
     }
 }
 
+/// The secrets a host can be given: all but the one berth keeps for itself.
+pub fn host_secrets(mut names: Vec<String>) -> Vec<String> {
+    names.retain(|name| name != berth_api::profile::TAILNET_API_KEY);
+    names
+}
+
+/// What the Secrets tab says of a secret berth uses itself, if it is one.
+pub fn own_secret_help(name: &str) -> Option<&'static str> {
+    (name == berth_api::profile::TAILNET_API_KEY).then_some(
+        "The API key of the tailnet's control server: a Tailscale API access token, or a Headscale API key (headscale apikeys create). berth creates one-use enrollment keys with it, for hosts that join the tailnet automatically and for F4 on the key field. It is never sent to a host. Enter replaces it, x twice removes it.",
+    )
+}
+
 pub fn set_pointer(config: &mut Value, pointer: &str, value: Value) {
+    // A pasted key would win over the automatic one and is hidden from then on.
+    if pointer == "/tailscale_auto_key"
+        && value == json!(true)
+        && let Some(profile) = config.as_object_mut()
+    {
+        profile.remove("tailscale_auth_key");
+    }
     let mut node = config;
     let mut parts = pointer.trim_start_matches('/').split('/').peekable();
     while let Some(part) = parts.next() {
@@ -754,7 +774,10 @@ impl<'a> Profile<'a> {
         }
         fields.extend([HardenSsh, Cockpit, Docker, Tailscale]);
         if self.enabled(Tailscale) {
-            fields.push(TailscaleKey);
+            fields.extend([TailscaleLoginServer, TailscaleAuto]);
+            if !self.enabled(TailscaleAuto) {
+                fields.push(TailscaleKey);
+            }
         }
         fields
     }
@@ -1018,6 +1041,36 @@ mod tests {
         assert_eq!(groups[0].items, [Item::Feature(0)]);
         assert_eq!(groups.last().unwrap().items, [Item::Feature(1)]);
         assert!(profile.item_enabled(Item::Feature(1)));
+    }
+
+    #[test]
+    fn a_host_joins_automatically_or_with_a_pasted_key() {
+        let mut config = json!({"tailscale_auth_key": "tskey-old"});
+        let fields = |config: &Value| {
+            Profile {
+                config,
+                step: Step::Install,
+                action: Action::Ssh,
+                features: &[],
+                registries: &[],
+                secrets: &[],
+                own_key: "",
+            }
+            .fields()
+        };
+        let shown = fields(&config);
+        assert!(shown.contains(&Field::TailscaleKey));
+        assert!(shown.contains(&Field::TailscaleLoginServer));
+        set_pointer(&mut config, "/tailscale_auto_key", json!(true));
+        assert!(config.get("tailscale_auth_key").is_none());
+        let shown = fields(&config);
+        assert!(shown.contains(&Field::TailscaleAuto) && !shown.contains(&Field::TailscaleKey));
+        // berth's own API key is no secret a host can be given.
+        let names = vec!["github".to_owned(), "tailnet_api_key".to_owned()];
+        assert_eq!(host_secrets(names), ["github"]);
+        assert!(
+            own_secret_help("tailnet_api_key").is_some() && own_secret_help("github").is_none()
+        );
     }
 
     #[test]

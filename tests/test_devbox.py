@@ -253,6 +253,26 @@ class RenderTests(unittest.TestCase):
                          'provision/ansible/site.yml','provision/config/example.json']:
                 self.assertIn(need,names)
             self.assertFalse(any('secrets/' in x or 'config/local.json' in x for x in names))
+    def test_seed_joins_the_login_server_with_the_key_berth_put_in(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'host.json'
+            # A profile as berth renders it for a host that joins automatically.
+            path.write_text(json.dumps({**config(),'tailscale_auto_key':True,
+                                        'tailscale_auth_key':'hskey-auth-new','tailscale_login_server':'http://hs.test:8080'}))
+            variables=builder.deployment(builder.checked_config(path,'cloud'),'0'*64)['ansible_vars']
+            self.assertEqual(variables['devbox_tailscale_auth_key'],'hskey-auth-new')
+            self.assertEqual(variables['devbox_tailscale_login_server'],'http://hs.test:8080')
+            self.assertNotIn('devbox_tailscale_key_command',variables)
+            # Without berth nothing makes the key.
+            path.write_text(json.dumps({**config(),'tailscale_auto_key':True}))
+            with self.assertRaisesRegex(ValueError,'needs berth'): builder.checked_config(path,'cloud')
+            path.write_text(json.dumps({**config(),'tailscale_login_server':'hs.test'}))
+            with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
+            # A pasted key without a login server stays as it was.
+            path.write_text(json.dumps({**config(),'tailscale_auth_key':'tskey-auth-old'}))
+            variables=builder.deployment(builder.checked_config(path,'cloud'),'0'*64)['ansible_vars']
+            self.assertEqual(variables['devbox_tailscale_auth_key'],'tskey-auth-old')
+            self.assertNotIn('devbox_tailscale_login_server',variables)
     def test_rendered_seeds_roundtrip_and_are_private(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(builder,'BUILD',Path(temp)/'build'):
             path=Path(temp)/'host.json'; path.write_text(json.dumps(config()))

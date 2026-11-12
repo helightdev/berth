@@ -167,6 +167,14 @@ def checked_config(path, kind):
     if not isinstance(variables, dict) or any(not k.startswith('devbox_') for k in variables):
         raise ValueError('ansible_vars must contain only devbox_ settings')
     text(c, 'tailscale_auth_key')
+    login_server = text(c, 'tailscale_login_server')
+    if login_server and not re.fullmatch(r'https?://[^\s/]+(/[^\s]*)?', login_server):
+        raise ValueError('tailscale_login_server must be an http:// or https:// address')
+    # berth puts a new key into the profile it renders; without berth there is none.
+    if flag(c, 'tailscale_auto_key', False) and not c.get('tailscale_auth_key') \
+            and variables.get('devbox_install_tailscale', True):
+        raise ValueError('tailscale_auto_key needs berth to create the key: render the seed with berth, '
+                         'or paste a key into tailscale_auth_key')
 
     if kind == 'usb':
         c['target_disk_mode'] = disk_guard.policy(c)['mode']
@@ -256,6 +264,8 @@ def deployment(c, sha):
     variables.update(account_vars(c))
     if c.get('tailscale_auth_key'):
         variables['devbox_tailscale_auth_key'] = c['tailscale_auth_key']
+    if c.get('tailscale_login_server'):
+        variables['devbox_tailscale_login_server'] = c['tailscale_login_server']
     return {'profile': c['profile'], 'release_sha256': sha,
             'release_url': c.get('release_url', ''), 'ansible_vars': variables}
 

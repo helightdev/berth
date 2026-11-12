@@ -161,7 +161,7 @@ impl Setup {
     pub fn sync(&mut self, data: &Data) {
         self.features = data.features.clone();
         self.registries = data.registry_names();
-        self.secrets = data.secret_names();
+        self.secrets = setup::host_secrets(data.secret_names());
         self.stores = setup::release_stores(&data.registries);
         self.own_key = data.own_key.clone();
     }

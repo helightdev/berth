@@ -1978,6 +1978,9 @@ struct Home {
     /// The SSH key of this berth, or of the berth server it uses, and that
     /// server. Asked for when Settings is first shown; empty when unknown.
     berth_key: Option<(String, Option<String>)>,
+    /// The tailnet settings of the berth server this berth uses, which are
+    /// the server's to keep. Asked for with the key.
+    served: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// The rows of the Settings tab after berth's own settings.
@@ -2017,6 +2020,44 @@ fn berth_key(paths: &Paths) -> (String, Option<String>) {
     }
 }
 
+/// The tailnet settings of the berth server this berth uses, by key.
+fn served_settings(paths: &Paths) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let server = berth_core::server::Server::configured(paths)?;
+    let listed = server.call("settings.list", json!({}), None).ok()?;
+    Some(
+        listed
+            .as_array()?
+            .iter()
+            .filter_map(|setting| {
+                let key = setting["key"].as_str()?;
+                berth_core::tailnet::SETTINGS
+                    .contains(&key)
+                    .then(|| (key.to_owned(), setting["value"].clone()))
+            })
+            .collect(),
+    )
+}
+
+/// Change a setting: on the berth server this berth uses for one that is
+/// the server's, here otherwise.
+fn change_setting(home: &mut Home, paths: &Paths, key: &str, value: &str) -> crate::Result<()> {
+    match (
+        berth_core::server::Server::configured(paths),
+        &mut home.served,
+    ) {
+        (Some(server), Some(served)) if berth_core::tailnet::SETTINGS.contains(&key) => {
+            server.call(
+                "settings.set",
+                json!({"key": key}),
+                Some(json!({"value": value})),
+            )?;
+            served.insert(key.into(), json!(value));
+            Ok(())
+        }
+        _ => paths.set(key, value),
+    }
+}
+
 /// What a setting is called on screen.
 fn setting_label(key: &str) -> &str {
     match key {
@@ -2027,9 +2068,17 @@ fn setting_label(key: &str) -> &str {
     }
 }
 
-/// A setting's stored value, and what applies when it is not set.
-fn setting(paths: &Paths, key: &str) -> (String, String) {
-    let stored = paths.settings().unwrap_or_default();
+/// A setting's stored value, and what applies when it is not set. `served`
+/// has the settings a berth server keeps.
+fn setting(
+    paths: &Paths,
+    served: Option<&serde_json::Map<String, serde_json::Value>>,
+    key: &str,
+) -> (String, String) {
+    let stored = match served {
+        Some(served) if berth_core::tailnet::SETTINGS.contains(&key) => served.clone(),
+        _ => paths.settings().unwrap_or_default(),
+    };
     let stored = stored.get(key).and_then(|value| value.as_str());
     let fallback = match key {
         "source" => paths
@@ -2093,7 +2142,7 @@ pub fn home(terminal: &mut DefaultTerminal, paths: &Paths) -> Result<Option<Stri
 
 fn home_loop(terminal: &mut DefaultTerminal, paths: &Paths) -> Result<Option<String>> {
     let hosts = paths.hosts();
-    let preferred = setting(paths, "default_host").0;
+    let preferred = setting(paths, None, "default_host").0;
     let mut home = Home {
         selected: hosts
             .iter()
@@ -2105,6 +2154,7 @@ fn home_loop(terminal: &mut DefaultTerminal, paths: &Paths) -> Result<Option<Str
         started: std::time::Instant::now(),
         qr: None,
         berth_key: None,
+        served: None,
     };
     let mut hits = vec![];
     let mut fade = Fade::default();
@@ -2112,6 +2162,7 @@ fn home_loop(terminal: &mut DefaultTerminal, paths: &Paths) -> Result<Option<Str
         fade.check(&mut home.status);
         if matches!(home.mode, HomeMode::Settings(..)) && home.berth_key.is_none() {
             home.berth_key = Some(berth_key(paths));
+            home.served = served_settings(paths);
         }
         if let HomeMode::Plugins(view) = &mut home.mode {
             view.load(paths);
@@ -2283,7 +2334,7 @@ fn home_key(
             KeyCode::Enter => {
                 let (name, _) = crate::paths::SETTINGS[*selected];
                 let value = editor.take().unwrap_or_default();
-                home.status = match paths.set(name, value.value().trim()) {
+                home.status = match change_setting(home, paths, name, value.value().trim()) {
                     Ok(()) => format!("Saved {}", setting_label(name)),
                     Err(error) => error.to_string(),
                 };
@@ -2304,7 +2355,7 @@ fn home_key(
             }
             KeyCode::Enter if *selected < crate::paths::SETTINGS.len() => {
                 let (name, _) = crate::paths::SETTINGS[*selected];
-                *editor = Some(Input::new(setting(paths, name).0));
+                *editor = Some(Input::new(setting(paths, home.served.as_ref(), name).0));
             }
             KeyCode::Enter | KeyCode::Char('c')
                 if extra(*selected) == Some(SettingsRow::BerthKey) =>
@@ -2424,7 +2475,7 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
             let mut rows: Vec<Line> = crate::paths::SETTINGS
                 .iter()
                 .map(|(name, _)| {
-                    let (stored, fallback) = setting(paths, name);
+                    let (stored, fallback) = setting(paths, home.served.as_ref(), name);
                     if stored.is_empty() {
                         Line::from(vec![
                             Span::styled(
@@ -2454,8 +2505,14 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
             let (help, keys) = match (crate::paths::SETTINGS.get(selected), extra, &connect) {
                 (Some((name, help)), ..) => (
                     format!(
-                        "The {help}.\n\nLeave it empty to use the default. Also: berth config {name} VALUE\n\nKept in {}",
-                        paths.settings_file().display()
+                        "The {help}.\n\nLeave it empty to use the default. Also: berth config {name} VALUE\n\nKept {}",
+                        match (&home.served, berth_core::tailnet::SETTINGS.contains(name)) {
+                            (Some(_), true) => format!(
+                                "on the berth server at {server}",
+                                server = server.as_deref().unwrap_or("")
+                            ),
+                            _ => format!("in {}", paths.settings_file().display()),
+                        }
                     ),
                     "↑↓ select · Enter change · Tab registries · q quit",
                 ),
@@ -2534,11 +2591,12 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                 (None, None) => " Name of the new secret ",
             };
             let about = match names.get(selected) {
+                Some(name) if let Some(help) = berth_tui::setup::own_secret_help(name) => help,
                 Some(_) => {
                     "A token, password or key file kept on this machine. Enter replaces its value, x twice removes it. Values are never shown."
                 }
                 None => {
-                    "Add a secret: first a short name (lower-case letters, digits, - and _), then its value. Paste works."
+                    "Add a secret: first a short name (lower-case letters, digits, - and _), then its value. Paste works. The name tailnet_api_key is for the API key of the tailnet's control server, which berth keeps for itself."
                 }
             };
             let help = format!(
@@ -2593,7 +2651,7 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
             )
         }
         mode => {
-            let preferred = setting(paths, "default_host").0;
+            let preferred = setting(paths, None, "default_host").0;
             let mut rows: Vec<Line> = home
                 .hosts
                 .iter()
@@ -2907,6 +2965,7 @@ mod tests {
             started: std::time::Instant::now(),
             qr: None,
             berth_key: None,
+            served: None,
         };
         let keys = |home: &mut Home, codes: &[KeyCode]| {
             for &code in codes {
@@ -2998,6 +3057,7 @@ mod tests {
             started: std::time::Instant::now(),
             qr: None,
             berth_key: None,
+            served: None,
         };
         let key = |home: &mut Home, code| {
             home_key(
@@ -3110,6 +3170,7 @@ mod tests {
             started: std::time::Instant::now(),
             qr: None,
             berth_key: None,
+            served: None,
         };
         let keys = |home: &mut Home, codes: &[KeyCode]| {
             for &code in codes {
@@ -3224,6 +3285,7 @@ mod tests {
             started: std::time::Instant::now(),
             qr: None,
             berth_key: None,
+            served: None,
         };
         let last = berth_core::paths::SETTINGS.len();
         let down = |home: &mut Home| {
@@ -3313,6 +3375,7 @@ mod tests {
             started: std::time::Instant::now(),
             qr: None,
             berth_key: None,
+            served: None,
         };
         let press = |home: &mut Home, code| {
             home_key(
@@ -3725,6 +3788,7 @@ mod tests {
             started: std::time::Instant::now(),
             qr: None,
             berth_key: Some((BERTH_KEY.into(), Some("https://192.0.2.7:8443".into()))),
+            served: None,
         };
         let mut clipboard = Clipboard::default();
         let settings = berth_core::paths::SETTINGS.len();
