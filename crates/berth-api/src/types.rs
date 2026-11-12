@@ -548,3 +548,97 @@ impl Default for Config {
         }
     }
 }
+
+// ── Plugins ─────────────────────────────────────────────────────────────────
+
+/// Where a plugin comes from, which says whether it can be removed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginOrigin {
+    /// It is part of the provisioning source and stays.
+    #[default]
+    Shipped,
+    /// Installed with npm into the plugin directory.
+    Npm,
+    /// A folder copied into the plugin directory.
+    Folder,
+}
+
+/// A task a feature adds to a host's overview.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct PluginTask {
+    /// The task is `PLUGIN:NAME` on the host.
+    pub name: String,
+    pub label: String,
+    /// `agent`, `operator` or `root`.
+    pub user: String,
+    /// The agent may run it with `box run`.
+    #[serde(default)]
+    pub agent: bool,
+    /// Tasks of berth it runs after, with no row of its own.
+    #[serde(default)]
+    pub extends: Vec<String>,
+    /// The names of the arguments it asks for.
+    #[serde(default)]
+    pub arguments: Vec<String>,
+}
+
+/// A program a feature keeps running on the host to answer calls.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct PluginService {
+    /// The service is `PLUGIN/NAME` on the host.
+    pub name: String,
+    pub user: String,
+    #[serde(default)]
+    pub methods: Vec<String>,
+}
+
+/// Something a plugin installs, switched on per host.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct PluginFeature {
+    /// A profile names it `PLUGIN/ID`.
+    pub id: String,
+    pub label: String,
+    /// The group of the Features page it is listed in.
+    pub group: String,
+    #[serde(default)]
+    pub help: String,
+    #[serde(default)]
+    pub tasks: Vec<PluginTask>,
+    #[serde(default)]
+    pub services: Vec<PluginService>,
+    /// Channel topics, without the plugin's id.
+    #[serde(default)]
+    pub channels: Vec<String>,
+}
+
+/// A plugin that was found, with what it can install.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct PluginInfo {
+    pub id: String,
+    pub label: String,
+    /// Its npm name.
+    pub package: String,
+    pub version: String,
+    #[serde(default)]
+    pub description: String,
+    pub origin: PluginOrigin,
+    /// Where it is on the machine that has it.
+    pub dir: String,
+    #[serde(default)]
+    pub features: Vec<PluginFeature>,
+}
+
+/// The plugins a berth serve has, and where it keeps its own.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct PluginList {
+    pub plugins: Vec<PluginInfo>,
+    /// The directory of its own plugins; a folder copied there is one too.
+    pub dir: String,
+}
+
+/// What npm said of a change, a few lines; the first starts with ✓.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct PluginReport {
+    pub lines: Vec<String>,
+}

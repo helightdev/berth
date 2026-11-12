@@ -18,6 +18,7 @@ It prints where it listens and how many hosts it knows. Only one runs per user. 
 | --- | --- |
 | [`hosts.*`](/docs/api/serve/hosts) | The saved hosts and their profiles. A host can be added, changed, removed and applied as a job. The server also renders its cloud-init seed and sends its secrets |
 | [`secrets.*`](/docs/api/serve/secrets), [`registries.*`](/docs/api/serve/registries), [`settings.*`](/docs/api/serve/settings) | What the server keeps beside the hosts. A secret's value goes in and never comes back out |
+| [`plugins.*`](/docs/api/serve/plugins) | The server's plugins. One is installed from its npm registry, from an `https://` address, or from a `.tgz` that is sent, and one of its own is removed. `setup.catalogue` lists the new features straight away |
 | Every [berthd operation](/docs/api/host) | With a host: `"host": "NAME"` on the portal, `/v1/hosts/NAME/…` over HTTP. Only the `secrets` task is refused; `hosts.secrets` sends the server's own |
 | [`jobs.*`](/docs/api/serve/jobs) | Jobs such as an apply, with their output |
 | [`inbox.*`](/docs/api/serve/inbox) | Messages the hosts published on their channels and kept, taken in while `berth serve` runs; each can be marked done |
@@ -84,7 +85,7 @@ A caller over TCP shows the server's token or an OAuth 2.0 access token, and act
 | --- | --- |
 | `view` | Read what the hosts and the server report, such as sessions with their output, logs, jobs and the inbox |
 | `operate` | Work on the hosts with tasks, commands, terminals and files. Units, power and the key-value store are included |
-| `admin` | Change profiles, secrets, registries and settings, and apply a profile to a host |
+| `admin` | Change profiles, secrets, registries, settings and plugins, and apply a profile to a host |
 
 The server's token is `admin`. The socket doesn't ask for a token and is `admin` too. The [API reference](/docs/api/serve) lists the role of each operation, and [`access`](/docs/api/serve/general) tells a caller its own.
 
@@ -135,6 +136,7 @@ A caller over TCP is then `operate` at most, and the socket stays `admin`. Some 
 
 - The settings that say who gets in and where the server's files are. `settings.set` takes only `default_host` and `retention_days`.
 - A profile's `builder.link`, which is a command the server runs.
+- A path on the server as what `plugins.add` installs. It takes a package name or an `https://` address, and `plugins.upload` takes a `.tgz`.
 - Building a USB installer, which needs the drive.
 
 ## In a container

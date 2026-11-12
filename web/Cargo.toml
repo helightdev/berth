@@ -24,8 +24,9 @@ console_error_panic_hook = "0.1"
 # ratatui locks through critical-section; a page has one thread, and std's lock does.
 critical-section = { version = "1", features = ["std"] }
 web-sys = { version = "0.3", features = [
-    "BinaryType", "Clipboard", "ClipboardEvent", "CloseEvent", "DataTransfer", "Document", "DomRect",
-    "Element", "Event", "EventTarget", "History", "HtmlElement", "KeyboardEvent", "Location",
+    "BinaryType", "Blob", "Clipboard", "ClipboardEvent", "CloseEvent", "DataTransfer", "Document", "DomRect",
+    "Element", "Event", "EventTarget", "File", "FileList", "History", "HtmlElement", "HtmlInputElement",
+    "KeyboardEvent", "Location",
     "MessageEvent", "MouseEvent", "Navigator", "ResizeObserver", "Storage", "WebSocket", "WheelEvent",
     "Window",
 ] }

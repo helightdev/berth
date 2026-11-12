@@ -1,6 +1,6 @@
 //! The routes that set the server up: the hosts' profiles, what is sent to
-//! and installed on a host, and the registries, secrets and settings the
-//! server keeps. All of them need the role `admin`.
+//! and installed on a host, and the registries, secrets, settings and plugins
+//! the server keeps. All of them need the role `admin`.
 
 use super::{
     Serve,
@@ -8,9 +8,10 @@ use super::{
 };
 use axum::{
     Json,
+    body::Bytes,
     extract::{Path, State},
 };
-use berth_api::{Done, ErrorBody, Session, b64, code};
+use berth_api::{Done, ErrorBody, PluginList, PluginOrigin, PluginReport, Session, b64, code};
 use berth_core::{
     apply,
     host::Host,
@@ -423,6 +424,104 @@ pub async fn set_setting(
     }
     state.paths.set(&key, &setting.value).map_err(bad)?;
     Ok(Json(Done { ok: true }))
+}
+
+// ── Plugins ─────────────────────────────────────────────────────────────────
+
+/// Where the server keeps its own plugins.
+fn plugin_dir(state: &Serve) -> std::path::PathBuf {
+    plugins::own_dir(&state.paths.config_dir)
+}
+
+/// One npm at a time works on the plugin directory.
+static NPM: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Run a change of the plugin directory, which waits for npm.
+async fn change_plugins(
+    work: impl FnOnce() -> berth_core::Result<Vec<String>> + Send + 'static,
+) -> Answer<Json<PluginReport>> {
+    let lines = tokio::task::spawn_blocking(move || {
+        let _one = NPM.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        work().map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(internal)?
+    .map_err(bad)?;
+    Ok(Json(PluginReport { lines }))
+}
+
+/// What npm installs, with the server's npm configuration and none of the
+/// package's scripts.
+#[derive(Deserialize, ToSchema)]
+pub struct PluginSpec {
+    /// A package of the server's npm registry, `[@SCOPE/]NAME[@VERSION]`, or
+    /// the https address of a .tgz.
+    pub spec: String,
+}
+
+#[utoipa::path(get, path = "/v1/plugins", summary = "The plugins: those that come with berth and the server's own.", tag = "set-up",
+    responses((status = 200, description = "The plugins with their features", body = PluginList)))]
+pub async fn plugins(State(state): App) -> Answer<Json<PluginList>> {
+    let source = state.paths.source().map_err(internal)?;
+    let own = plugin_dir(&state);
+    Ok(Json(PluginList {
+        plugins: plugins::found(&source, &own)
+            .iter()
+            .map(|plugin| plugin.info(&own))
+            .collect(),
+        dir: own.display().to_string(),
+    }))
+}
+
+#[utoipa::path(post, path = "/v1/plugins", summary = "Install a plugin with npm from a registry or an address.", tag = "set-up",
+    request_body(content = PluginSpec, description = "What to install"),
+    responses((status = 200, description = "Installed; what npm said", body = PluginReport),
+              (status = 400, description = "Not a package or address, or npm failed; the message has its output", body = ErrorBody)))]
+pub async fn add_plugin(
+    State(state): App,
+    Json(asked): Json<PluginSpec>,
+) -> Answer<Json<PluginReport>> {
+    let spec = asked.spec.trim().to_owned();
+    if !plugins::registry_spec(&spec) {
+        return Err(bad(format!(
+            "{spec} is no package of a registry or https address of a .tgz. A file of yours is sent with plugins.upload"
+        )));
+    }
+    let own = plugin_dir(&state);
+    change_plugins(move || plugins::install(&own, &spec)).await
+}
+
+#[utoipa::path(post, path = "/v1/plugins/package", summary = "Install a plugin from a .tgz, as npm pack makes one, which the server keeps.", tag = "set-up",
+    request_body(content = Vec<u8>, content_type = "application/gzip", description = "The .tgz"),
+    responses((status = 200, description = "Installed; what npm said", body = PluginReport),
+              (status = 400, description = "Not a .tgz, or npm failed; the message has its output", body = ErrorBody)))]
+pub async fn upload_plugin(State(state): App, body: Bytes) -> Answer<Json<PluginReport>> {
+    let own = plugin_dir(&state);
+    change_plugins(move || plugins::install_upload(&own, &body)).await
+}
+
+#[utoipa::path(delete, path = "/v1/plugins/{id}", summary = "Remove one of the server's own plugins.", tag = "set-up",
+    params(("id" = String, Path, description = "The plugin's id")),
+    responses((status = 200, description = "Removed; what npm said", body = PluginReport),
+              (status = 404, description = "No such plugin", body = ErrorBody),
+              (status = 409, description = "It comes with berth and stays", body = ErrorBody)))]
+pub async fn remove_plugin(
+    State(state): App,
+    Path(id): Path<String>,
+) -> Answer<Json<PluginReport>> {
+    let source = state.paths.source().map_err(internal)?;
+    let own = plugin_dir(&state);
+    let plugin = plugins::found(&source, &own)
+        .into_iter()
+        .find(|plugin| plugin.id == id)
+        .ok_or_else(|| missing(format!("No plugin {id}")))?;
+    if plugin.origin(&own) == PluginOrigin::Shipped {
+        return Err(Fail::new(
+            code::CONFLICT,
+            format!("{} comes with berth and stays", plugin.label),
+        ));
+    }
+    change_plugins(move || plugins::remove(&own, &plugin)).await
 }
 
 // ── What a set-up screen needs ──────────────────────────────────────────────

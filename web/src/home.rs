@@ -1,9 +1,10 @@
 //! The tabs of the home screen that set the server up: its settings, its
-//! registries and its secrets. What they show is what the server last said;
-//! what they change goes to the server.
+//! registries, its secrets and its plugins. What they show is what the server
+//! last said; what they change goes to the server.
 
 use crate::admin::{Admin, Data};
 use berth_tui::fields::Kind;
+use berth_tui::plugins::{self, Asked, Place};
 use berth_tui::setup::{valid_name, value_line};
 use berth_tui::{Code, Key, event, theme};
 use ratzilla::ratatui::{
@@ -220,12 +221,14 @@ pub struct Home {
     naming: Option<String>,
     /// A new or renamed registry, to select once the rows have it.
     go_to: Option<String>,
+    plugins: plugins::Tab,
 }
 
 /// The tabs after Hosts, in their order.
 pub const SETTINGS: usize = 0;
 pub const REGISTRIES: usize = 1;
 pub const SECRETS: usize = 2;
+pub const PLUGINS: usize = 3;
 
 fn cycle(all: &[&str], current: &str) -> String {
     let index = all
@@ -237,11 +240,17 @@ fn cycle(all: &[&str], current: &str) -> String {
 
 impl Home {
     pub fn select(&mut self, tab: usize, row: usize) {
-        self.selected[tab] = row;
+        match tab {
+            PLUGINS => self.plugins.selected = row,
+            tab => self.selected[tab] = row,
+        }
     }
 
     pub fn selected(&self, tab: usize) -> usize {
-        self.selected[tab]
+        match tab {
+            PLUGINS => self.plugins.selected,
+            tab => self.selected[tab],
+        }
     }
 
     /// Leave what is being typed, on changing tabs.
@@ -249,12 +258,14 @@ impl Home {
         self.editor = None;
         self.naming = None;
         self.armed = false;
+        self.plugins.leave();
     }
 
     pub fn shown(&mut self, tab: usize, data: &Data) -> Shown {
         match tab {
             SETTINGS => self.settings_shown(data),
             REGISTRIES => self.registries_shown(data),
+            PLUGINS => self.plugins_shown(data),
             _ => self.secrets_shown(data),
         }
     }
@@ -264,6 +275,7 @@ impl Home {
         match tab {
             SETTINGS => self.settings_key(key, admin),
             REGISTRIES => self.registries_key(key, admin),
+            PLUGINS => self.plugins_key(key, admin),
             _ => self.secrets_key(key, admin),
         }
     }
@@ -392,7 +404,7 @@ impl Home {
             help,
             keys: match self.editor {
                 Some(_) => "Enter accept · Esc cancel",
-                None => "↑↓ select · Enter set · x remove · Esc hosts",
+                None => "↑↓ select · Enter set · x remove · Tab plugins · Esc hosts",
             },
         }
     }
@@ -730,6 +742,52 @@ impl Home {
                 _ => {}
             },
             _ => {}
+        }
+        None
+    }
+
+    // ── Plugins ─────────────────────────────────────────────────────────────
+
+    fn plugins_shown(&mut self, data: &Data) -> Shown {
+        let listed = plugins::rows(&data.plugins);
+        let selected = self.plugins.selected(&data.plugins);
+        let plugin = listed[selected].0.map(|index| &data.plugins[index]);
+        let help = plugins::help(plugin, &data.report, &Place::Page.adding(&data.plugin_dir));
+        Shown {
+            rows: listed.into_iter().map(|(_, line)| line).collect(),
+            selected,
+            editor: self
+                .editor
+                .as_ref()
+                .map(|_| (Place::Page.editor_title(), false)),
+            help,
+            keys: match self.editor {
+                Some(_) => "Enter install · Esc cancel",
+                None => "↑↓ select · Enter add · u send a .tgz · x remove · Esc hosts",
+            },
+        }
+    }
+
+    fn plugins_key(&mut self, key: Key, admin: &Admin) -> Option<String> {
+        let (listed, mut report) = {
+            let data = admin.data.borrow();
+            (data.plugins.clone(), data.report.clone())
+        };
+        let asked = self
+            .plugins
+            .key(key, &mut self.editor, &listed, &mut report, &Place::Page);
+        admin.data.borrow_mut().report = report;
+        match asked {
+            Asked::Nothing(said) => return said,
+            Asked::Install(spec) => admin.add_plugin(&spec),
+            Asked::Remove(id) => admin.remove_plugin(&id),
+            Asked::Other if key.code == Code::Char('u') => {
+                let admin = admin.clone();
+                crate::browser::choose_file(".tgz,.tar.gz", move |name, package| {
+                    admin.upload_plugin(&name, &package)
+                });
+            }
+            Asked::Other => {}
         }
         None
     }

@@ -74,7 +74,7 @@ Usage:
                              push the container image
   berth plugins              plugins and where they come from
   berth plugins add SPEC     install a plugin with npm: a name, a tarball or a folder
-  berth plugins remove NAME  remove one installed that way, by its npm name
+  berth plugins remove NAME  remove one of yours, by its id or npm name
   berth --server URL [--token TOKEN] [COMMAND…]
                              this once, use the hosts of a berth serve elsewhere
                              (http://HOST:PORT, https://HOST or unix:/path); the
@@ -173,6 +173,26 @@ fn open(paths: &Paths, host: &str) -> Result<App> {
                 .host_profile()
                 .served()
                 .and_then(|server| server.call("setup.catalogue", json!({}), None).ok());
+            // The server's plugins are what its hosts can have.
+            if let Some(features) = known
+                .as_ref()
+                .and_then(|found| found["features"].as_array())
+            {
+                let text = |feature: &serde_json::Value, key: &str| {
+                    feature[key].as_str().unwrap_or("").to_owned()
+                };
+                app.set_features(
+                    features
+                        .iter()
+                        .map(|feature| berth_tui::setup::Feature {
+                            key: text(feature, "key"),
+                            label: text(feature, "label"),
+                            group: text(feature, "group"),
+                            help: text(feature, "help"),
+                        })
+                        .collect(),
+                );
+            }
             app.own_public = known
                 .and_then(|found| found["key"].as_str().map(str::to_owned))
                 .unwrap_or_default();
@@ -423,74 +443,41 @@ fn run() -> Result<()> {
             return Ok(());
         }
         ["plugins"] => {
-            std::env::set_current_dir(paths.source()?)?;
-            for plugin in plugins::load(&["plugins".into(), paths.config_dir.join("plugins")]) {
-                println!(
-                    "{}  {} {}  {}",
-                    plugin.id,
-                    plugin.package,
-                    plugin.version,
-                    plugin.dir.display()
-                );
-                for feature in &plugin.features {
-                    println!(
-                        "  {}/{}  {} ({})",
-                        plugin.id, feature.id, feature.label, feature.group
-                    );
-                    for action in &feature.actions {
-                        let mut notes = vec![format!("as {}", action.user)];
-                        if action.agent {
-                            notes.push("the agent may run it".into());
-                        }
-                        if !action.extends.is_empty() {
-                            notes.push(format!("part of {}", action.extends.join(", ")));
-                        }
-                        for argument in &action.arguments {
-                            notes.push(format!("asks {}", argument.name));
-                        }
-                        println!(
-                            "    task     {}:{}  {} ({})",
-                            plugin.id,
-                            action.name,
-                            action.label,
-                            notes.join("; ")
-                        );
-                    }
-                    for service in &feature.services {
-                        let methods: Vec<&str> = service
-                            .methods
-                            .iter()
-                            .map(|method| method.name.as_str())
-                            .collect();
-                        println!(
-                            "    service  {}/{}  as {}: {}",
-                            plugin.id,
-                            service.name,
-                            service.user,
-                            methods.join(", ")
-                        );
-                    }
-                    for channel in &feature.channels {
-                        println!("    channel  {}/{}", plugin.id, channel.topic);
-                    }
-                }
+            let listing = plugins::Manager::new(&paths).list()?;
+            print!("{}", plugins::describe(&listing.plugins));
+            return Ok(());
+        }
+        ["plugins", "add", spec] => {
+            for line in plugins::Manager::new(&paths).add(spec)? {
+                println!("{line}");
             }
             return Ok(());
         }
-        ["plugins", verb @ ("add" | "remove"), spec] => {
-            let dir = paths.config_dir.join("plugins");
-            fs::create_dir_all(&dir)?;
-            // A plugin is data for berth; nothing of it should run on this machine.
-            let mut npm = Command::new("npm");
-            npm.arg(if verb == "add" {
-                "install"
-            } else {
-                "uninstall"
-            })
-            .args(["--ignore-scripts", "--no-audit", "--no-fund", "--prefix"])
-            .arg(&dir)
-            .arg(spec);
-            return succeed(npm);
+        ["plugins", "remove", name] => {
+            let manager = plugins::Manager::new(&paths);
+            // A name npm knows that berth does not, such as a broken package.
+            let known = manager
+                .list()?
+                .plugins
+                .iter()
+                .any(|plugin| plugin.id == *name || plugin.package == *name);
+            if !known && manager.server().is_none() {
+                let mut npm = Command::new("npm");
+                npm.args([
+                    "uninstall",
+                    "--ignore-scripts",
+                    "--no-audit",
+                    "--no-fund",
+                    "--prefix",
+                ])
+                .arg(plugins::own_dir(&paths.config_dir))
+                .arg(name);
+                return succeed(npm);
+            }
+            for line in manager.remove(name)? {
+                println!("{line}");
+            }
+            return Ok(());
         }
         ["config"] => return show_config(&paths),
         ["config", key] => return paths.set(key, ""),
@@ -632,6 +619,7 @@ mod tests {
             version: "1.0.0".into(),
             description: String::new(),
             dir: "/plugins/demo".into(),
+            found: "/plugins/demo".into(),
             features: vec![
                 feature("one", "development tools", "hello"),
                 feature("two", "Games", "other"),

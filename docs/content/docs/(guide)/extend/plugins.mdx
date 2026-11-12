@@ -53,6 +53,12 @@ berth plugins remove @acme/berth-plugin-foo
 
 `add` runs `npm install --ignore-scripts --prefix ~/.config/berth/plugins`, so registries and credentials come from your npm configuration. You can also copy a folder to `~/.config/berth/plugins/NAME/` by hand. Npm is not needed for that.
 
+### On a berth server
+
+With a [berth server](/docs/use/server) set, the Plugins tab and `berth plugins` show the server's plugins and change those, which needs the role `admin` there. The server installs a package name or an `https://` address with its own npm and npm configuration. A `.tgz` or a folder on your machine is packed and sent to the server. The page in a browser has the same tab, and `u` there sends a `.tgz` from the device.
+
+The server's hosts can have a new plugin's features as soon as it is installed. Its tasks run on the server when a host is applied, so installing is part of set-up. A server with `serve_setup off` takes it only on its own socket ([Closing set-up](/docs/extend/serve#closing-set-up)).
+
 A plugin of yours with the same id as a built-in one replaces it. berth reads a plugin's `package.json` and hands its tasks to Ansible. It never runs the package's npm scripts.
 
 ## Other install methods

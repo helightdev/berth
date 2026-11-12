@@ -3,6 +3,7 @@
 //! what is here.
 
 use crate::portal::{Frame, Portal};
+use berth_api::{PluginInfo, PluginList};
 use berth_tui::fields::Field;
 use berth_tui::host::View;
 use berth_tui::setup::Feature;
@@ -42,9 +43,12 @@ pub struct Data {
     /// Every secret's name; a registry's login is `registry/NAME`.
     pub secrets: Vec<String>,
     pub settings: Vec<Value>,
+    pub plugins: Vec<PluginInfo>,
+    /// Where the server keeps its own plugins.
+    pub plugin_dir: String,
     /// Something to say on the status line.
     pub said: Option<String>,
-    /// What the last check of a registry found.
+    /// What the last check of a registry, or change of the plugins, said.
     pub report: Vec<String>,
     pub arrived: Vec<Arrived>,
     /// A job of the server, in a panel.
@@ -114,31 +118,36 @@ impl Admin {
                 data.setup = access["setup"].as_bool().unwrap_or(false);
             }
             if admin.data.borrow().admin() {
-                admin.call("setup.catalogue", json!({}), Value::Null, |admin, found| {
-                    let mut data = admin.data.borrow_mut();
-                    data.template = found["template"].clone();
-                    data.own_key = found["key"].as_str().unwrap_or("").to_owned();
-                    data.features = found["features"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .map(|feature| {
-                            let text = |key: &str| feature[key].as_str().unwrap_or("").to_owned();
-                            Feature {
-                                key: text("key"),
-                                label: text("label"),
-                                group: text("group"),
-                                help: text("help"),
-                            }
-                        })
-                        .collect();
-                });
+                admin.catalogue();
                 admin.refresh();
             }
         });
     }
 
-    /// Read the registries, the secrets' names and the settings again.
+    /// Ask what a new host starts from and what the plugins can install.
+    fn catalogue(&self) {
+        self.call("setup.catalogue", json!({}), Value::Null, |admin, found| {
+            let mut data = admin.data.borrow_mut();
+            data.template = found["template"].clone();
+            data.own_key = found["key"].as_str().unwrap_or("").to_owned();
+            data.features = found["features"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|feature| {
+                    let text = |key: &str| feature[key].as_str().unwrap_or("").to_owned();
+                    Feature {
+                        key: text("key"),
+                        label: text("label"),
+                        group: text("group"),
+                        help: text("help"),
+                    }
+                })
+                .collect();
+        });
+    }
+
+    /// Read the registries, the secrets' names, the settings and the plugins again.
     pub fn refresh(&self) {
         self.call("registries.list", json!({}), Value::Null, |admin, found| {
             let mut fresh = found["registries"].as_object().cloned().unwrap_or_default();
@@ -162,6 +171,57 @@ impl Admin {
         self.call("settings.list", json!({}), Value::Null, |admin, found| {
             admin.data.borrow_mut().settings = found.as_array().cloned().unwrap_or_default();
         });
+        self.call("plugins.list", json!({}), Value::Null, |admin, found| {
+            let listing: PluginList = serde_json::from_value(found).unwrap_or_default();
+            let mut data = admin.data.borrow_mut();
+            data.plugins = listing.plugins;
+            data.plugin_dir = listing.dir;
+        });
+    }
+
+    /// Change the server's plugins. What npm said is shown, and what a host
+    /// can have installed is asked for again.
+    fn change_plugins(&self, op: &str, args: Value, body: Value) {
+        let admin = self.clone();
+        self.portal.call(op, None, args, body, move |result| {
+            let lines: Vec<String> = match result {
+                Ok(report) => report["lines"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|line| line.as_str().map(str::to_owned))
+                    .collect(),
+                Err(error) => error.lines().map(str::to_owned).collect(),
+            };
+            {
+                let mut data = admin.data.borrow_mut();
+                data.said = Some(berth_tui::plugins::status(&lines));
+                data.report = lines;
+            }
+            admin.catalogue();
+            admin.refresh();
+        });
+    }
+
+    pub fn add_plugin(&self, spec: &str) {
+        self.say(format!("Installing {spec} on the server…"));
+        self.change_plugins("plugins.add", json!({}), json!({"spec": spec}));
+    }
+
+    /// Send a .tgz for the server to install.
+    pub fn upload_plugin(&self, name: &str, package: &[u8]) {
+        if package.len() > berth_api::ops::PORTAL_BYTES {
+            return self.say(format!(
+                "✗ {name} is larger than the 8 MiB a server is sent"
+            ));
+        }
+        self.say(format!("Sending {name} to the server…"));
+        let body = json!({"base64": berth_api::b64(package)});
+        self.change_plugins("plugins.upload", json!({}), body);
+    }
+
+    pub fn remove_plugin(&self, id: &str) {
+        self.change_plugins("plugins.remove", json!({"id": id}), Value::Null);
     }
 
     /// Change something the server keeps, say so, and read it all again.

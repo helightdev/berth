@@ -504,6 +504,213 @@
         ],
         "type": "object"
       },
+      "PluginFeature": {
+        "description": "Something a plugin installs, switched on per host.",
+        "properties": {
+          "channels": {
+            "description": "Channel topics, without the plugin's id.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "group": {
+            "description": "The group of the Features page it is listed in.",
+            "type": "string"
+          },
+          "help": {
+            "type": "string"
+          },
+          "id": {
+            "description": "A profile names it `PLUGIN/ID`.",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "services": {
+            "items": {
+              "$ref": "#/components/schemas/PluginService"
+            },
+            "type": "array"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/PluginTask"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "group"
+        ],
+        "type": "object"
+      },
+      "PluginInfo": {
+        "description": "A plugin that was found, with what it can install.",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "dir": {
+            "description": "Where it is on the machine that has it.",
+            "type": "string"
+          },
+          "features": {
+            "items": {
+              "$ref": "#/components/schemas/PluginFeature"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/PluginOrigin"
+          },
+          "package": {
+            "description": "Its npm name.",
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "package",
+          "version",
+          "origin",
+          "dir"
+        ],
+        "type": "object"
+      },
+      "PluginList": {
+        "description": "The plugins a berth serve has, and where it keeps its own.",
+        "properties": {
+          "dir": {
+            "description": "The directory of its own plugins; a folder copied there is one too.",
+            "type": "string"
+          },
+          "plugins": {
+            "items": {
+              "$ref": "#/components/schemas/PluginInfo"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "plugins",
+          "dir"
+        ],
+        "type": "object"
+      },
+      "PluginOrigin": {
+        "description": "Where a plugin comes from, which says whether it can be removed.",
+        "enum": [
+          "shipped",
+          "npm",
+          "folder"
+        ],
+        "type": "string"
+      },
+      "PluginReport": {
+        "description": "What npm said of a change, a few lines; the first starts with ✓.",
+        "properties": {
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "lines"
+        ],
+        "type": "object"
+      },
+      "PluginService": {
+        "description": "A program a feature keeps running on the host to answer calls.",
+        "properties": {
+          "methods": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "The service is `PLUGIN/NAME` on the host.",
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "user"
+        ],
+        "type": "object"
+      },
+      "PluginSpec": {
+        "description": "What npm installs, with the server's npm configuration and none of the\npackage's scripts.",
+        "properties": {
+          "spec": {
+            "description": "A package of the server's npm registry, `[@SCOPE/]NAME[@VERSION]`, or\nthe https address of a .tgz.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "spec"
+        ],
+        "type": "object"
+      },
+      "PluginTask": {
+        "description": "A task a feature adds to a host's overview.",
+        "properties": {
+          "agent": {
+            "description": "The agent may run it with `box run`.",
+            "type": "boolean"
+          },
+          "arguments": {
+            "description": "The names of the arguments it asks for.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "extends": {
+            "description": "Tasks of berth it runs after, with no row of its own.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "description": "The task is `PLUGIN:NAME` on the host.",
+            "type": "string"
+          },
+          "user": {
+            "description": "`agent`, `operator` or `root`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "user"
+        ],
+        "type": "object"
+      },
       "Registries": {
         "properties": {
           "registries": {
@@ -1307,6 +1514,116 @@
       },
       "role": "admin",
       "summary": "Change one of the settings that are open to callers."
+    },
+    {
+      "args": [],
+      "group": "plugins",
+      "http": {
+        "method": "GET",
+        "path": "/v1/plugins"
+      },
+      "kind": "call",
+      "name": "plugins.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/PluginList"
+        }
+      },
+      "role": "admin",
+      "summary": "The plugins: those that come with berth and the server's own."
+    },
+    {
+      "args": [],
+      "data": {
+        "description": "What to install",
+        "schema": {
+          "$ref": "#/components/schemas/PluginSpec"
+        }
+      },
+      "errors": [
+        {
+          "description": "Not a package or address, or npm failed; the message has its output",
+          "status": "400"
+        }
+      ],
+      "group": "plugins",
+      "http": {
+        "method": "POST",
+        "path": "/v1/plugins"
+      },
+      "kind": "call",
+      "name": "plugins.add",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/PluginReport"
+        }
+      },
+      "role": "admin",
+      "summary": "Install a plugin with npm from a registry or an address."
+    },
+    {
+      "args": [],
+      "data": {
+        "bytes": true
+      },
+      "errors": [
+        {
+          "description": "Not a .tgz, or npm failed; the message has its output",
+          "status": "400"
+        }
+      ],
+      "group": "plugins",
+      "http": {
+        "method": "POST",
+        "path": "/v1/plugins/package"
+      },
+      "kind": "call",
+      "name": "plugins.upload",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/PluginReport"
+        }
+      },
+      "role": "admin",
+      "summary": "Install a plugin from a .tgz, as npm pack makes one, which the server keeps."
+    },
+    {
+      "args": [
+        {
+          "description": "The plugin's id",
+          "in": "path",
+          "name": "id",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such plugin",
+          "status": "404"
+        },
+        {
+          "description": "It comes with berth and stays",
+          "status": "409"
+        }
+      ],
+      "group": "plugins",
+      "http": {
+        "method": "DELETE",
+        "path": "/v1/plugins/{id}"
+      },
+      "kind": "call",
+      "name": "plugins.remove",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/PluginReport"
+        }
+      },
+      "role": "admin",
+      "summary": "Remove one of the server's own plugins."
     },
     {
       "args": [],

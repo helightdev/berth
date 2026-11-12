@@ -1361,115 +1361,48 @@ fn registry_rows(store: &Store) -> Vec<(RegistryRow, Line<'static>)> {
     rows
 }
 
-/// The Plugins tab: the selected row, the editor for what to install, whether a
-/// removal waits for a second x, and what npm said last.
+/// The Plugins tab: its rows and editor, the plugins of this machine or of
+/// the berth server as they were last read, and what the last change said.
 #[derive(Default)]
 struct PluginView {
-    selected: usize,
+    tab: berth_tui::plugins::Tab,
     editor: Option<Input>,
-    armed: bool,
+    listing: Option<std::result::Result<berth_api::PluginList, String>>,
     report: Vec<String>,
 }
 
-/// Where the user's own plugins are.
-fn plugin_dir(paths: &Paths) -> std::path::PathBuf {
-    paths.config_dir.join("plugins")
-}
+impl PluginView {
+    /// Read the plugins, unless they were read since the last change.
+    fn load(&mut self, paths: &Paths) {
+        if self.listing.is_none() {
+            let listed = crate::plugins::Manager::new(paths).list();
+            self.listing = Some(listed.map_err(|error| error.to_string()));
+        }
+    }
 
-/// The plugins of the source and the user's own.
-fn found_plugins(paths: &Paths) -> Vec<crate::plugins::Plugin> {
-    let shipped = paths
-        .source()
-        .map(|dir| dir.join("plugins"))
-        .unwrap_or_default();
-    crate::plugins::load(&[shipped, plugin_dir(paths)])
-}
+    fn plugins(&self) -> &[berth_api::PluginInfo] {
+        match &self.listing {
+            Some(Ok(listing)) => &listing.plugins,
+            _ => &[],
+        }
+    }
 
-/// The rows of the Plugins tab: each line with the plugin it belongs to.
-fn plugin_rows(
-    paths: &Paths,
-    plugins: &[crate::plugins::Plugin],
-) -> Vec<(Option<usize>, Line<'static>)> {
-    let muted = Style::new().fg(theme::MUTED);
-    let own = plugin_dir(paths);
-    let mut rows = vec![];
-    for (index, plugin) in plugins.iter().enumerate() {
-        let origin = if plugin.dir.starts_with(&own) {
-            "yours"
-        } else {
-            "comes with berth"
+    /// Show what a change said, and read the plugins again.
+    fn changed(&mut self, done: Result<Vec<String>>, status: &mut String) {
+        self.report = match done {
+            Ok(lines) => lines,
+            Err(error) => error.to_string().lines().map(str::to_owned).collect(),
         };
-        rows.push((
-            Some(index),
-            Line::from(vec![
-                Span::styled(plugin.label.clone(), Style::new().fg(theme::ACCENT).bold()),
-                Span::styled(
-                    format!("  {} {}  · {origin}", plugin.package, plugin.version),
-                    muted,
-                ),
-            ]),
-        ));
-        for (number, feature) in plugin.features.iter().enumerate() {
-            let branch = if number + 1 < plugin.features.len() {
-                "  ├─ "
-            } else {
-                "  └─ "
-            };
-            rows.push((
-                Some(index),
-                Line::from(vec![
-                    Span::styled(branch, muted),
-                    Span::styled(feature.label.clone(), Style::new().fg(theme::TEXT)),
-                    Span::styled(format!("  in {}", feature.group), muted),
-                ]),
-            ));
-        }
+        *status = berth_tui::plugins::status(&self.report);
+        self.listing = None;
     }
-    rows.push((
-        None,
-        Line::styled("+ Add plugin", Style::new().fg(theme::ACCENT)),
-    ));
-    rows
 }
 
-/// Run npm for the user's plugin directory and return what it printed.
-/// Nothing of a plugin runs here: install scripts are off.
-fn npm(paths: &Paths, verb: &str, what: &str) -> Vec<String> {
-    let dir = plugin_dir(paths);
-    if let Err(error) = std::fs::create_dir_all(&dir) {
-        return vec![format!("✗ {error}")];
-    }
-    let output = std::process::Command::new("npm")
-        .arg(verb)
-        .args([
-            "--ignore-scripts",
-            "--no-audit",
-            "--no-fund",
-            "--no-progress",
-            "--prefix",
-        ])
-        .arg(&dir)
-        .arg(what)
-        .stdin(std::process::Stdio::null())
-        .output();
-    match output {
-        Err(error) => vec![format!("✗ npm could not be started: {error}")],
-        Ok(output) => {
-            let mut lines = vec![if output.status.success() {
-                format!("✓ npm {verb} {what}")
-            } else {
-                format!("✗ npm {verb} {what} failed")
-            }];
-            let text = [output.stdout, output.stderr].concat();
-            lines.extend(
-                String::from_utf8_lossy(&text)
-                    .lines()
-                    .filter(|line| !line.trim().is_empty())
-                    .take(12)
-                    .map(str::to_owned),
-            );
-            lines
-        }
+/// Where the plugins of the Plugins tab are: here, or on the berth server.
+fn plugin_place(server: &Option<berth_core::server::Server>) -> berth_tui::plugins::Place<'_> {
+    match server {
+        Some(server) => berth_tui::plugins::Place::Server(&server.url),
+        None => berth_tui::plugins::Place::Here,
     }
 }
 
@@ -1480,73 +1413,39 @@ fn plugins_key(
     key: KeyEvent,
     status: &mut String,
 ) -> Outcome {
-    let plugins = found_plugins(paths);
-    let rows = plugin_rows(paths, &plugins);
-    view.selected = view.selected.min(rows.len() - 1);
-    let selected = rows[view.selected].0.map(|index| &plugins[index]);
-    if let Some(input) = &mut view.editor {
-        match key.code {
-            KeyCode::Esc => view.editor = None,
-            KeyCode::Enter => {
-                let spec = input.value().trim().to_owned();
-                view.editor = None;
-                if !spec.is_empty() {
-                    let spec = crate::discovery::expand_path(&spec)
-                        .to_str()
-                        .filter(|_| spec.starts_with(['~', '.', '/']))
-                        .map_or(spec.clone(), str::to_owned);
-                    view.report = npm(paths, "install", &spec);
-                    *status = view.report[0].clone();
-                }
-            }
-            _ => {
-                input.handle_event(&Event::Key(key));
-            }
-        }
+    use berth_tui::plugins::Asked;
+    view.load(paths);
+    let server = berth_core::server::Server::configured(paths);
+    let plugins = view.plugins().to_vec();
+    let Some(shared) = crate::keys::key(&key) else {
         return Outcome::Stay;
-    }
-    let armed = std::mem::take(&mut view.armed);
-    match key.code {
-        KeyCode::Up => {
-            view.selected = view.selected.saturating_sub(1);
-            view.report.clear();
+    };
+    let place = plugin_place(&server);
+    match view
+        .tab
+        .key(shared, &mut view.editor, &plugins, &mut view.report, &place)
+    {
+        Asked::Nothing(said) => {
+            if let Some(said) = said {
+                *status = said;
+            }
         }
-        KeyCode::Down => {
-            view.selected = (view.selected + 1).min(rows.len() - 1);
-            view.report.clear();
+        Asked::Install(spec) => {
+            let done = crate::plugins::Manager::new(paths).add(&spec);
+            view.changed(done, status);
         }
-        KeyCode::Enter if selected.is_none() => view.editor = Some(Input::default()),
-        KeyCode::Char('x') | KeyCode::Delete => match selected {
-            Some(plugin) if !plugin.dir.starts_with(plugin_dir(paths)) => {
-                *status = format!("{} comes with berth and stays", plugin.label);
-            }
-            Some(plugin) if !armed => {
-                view.armed = true;
-                *status = format!("x again removes {} from this machine", plugin.label);
-            }
-            // Installed with npm, or a folder that was copied there.
-            Some(plugin)
-                if plugin
-                    .dir
-                    .starts_with(plugin_dir(paths).join("node_modules")) =>
-            {
-                view.report = npm(paths, "uninstall", &plugin.package);
-                *status = view.report[0].clone();
-            }
-            Some(plugin) => {
-                *status = match std::fs::remove_dir_all(&plugin.dir) {
-                    Ok(()) => format!("Removed {}", plugin.label),
-                    Err(error) => error.to_string(),
-                }
-            }
-            None => {}
+        Asked::Remove(id) => {
+            let done = crate::plugins::Manager::new(paths).remove(&id);
+            view.changed(done, status);
+        }
+        Asked::Other => match key.code {
+            KeyCode::Char('1') | KeyCode::Tab | KeyCode::Esc => return Outcome::Tab(0),
+            KeyCode::Char('2') => return Outcome::Tab(1),
+            KeyCode::Char('3') => return Outcome::Tab(2),
+            KeyCode::Char('4') | KeyCode::BackTab => return Outcome::Tab(3),
+            KeyCode::Char('q') => return Outcome::Quit,
+            _ => {}
         },
-        KeyCode::Char('1') | KeyCode::Tab | KeyCode::Esc => return Outcome::Tab(0),
-        KeyCode::Char('2') => return Outcome::Tab(1),
-        KeyCode::Char('3') => return Outcome::Tab(2),
-        KeyCode::Char('4') | KeyCode::BackTab => return Outcome::Tab(3),
-        KeyCode::Char('q') => return Outcome::Quit,
-        _ => {}
     }
     Outcome::Stay
 }
@@ -2018,6 +1917,9 @@ fn home_loop(terminal: &mut DefaultTerminal, paths: &Paths) -> Result<Option<Str
     let mut fade = Fade::default();
     loop {
         fade.check(&mut home.status);
+        if let HomeMode::Plugins(view) = &mut home.mode {
+            view.load(paths);
+        }
         // The water redraws many times a second. Each frame is applied at once,
         // so the text cursor is not seen travelling to the water and back.
         crossterm::execute!(
@@ -2103,7 +2005,7 @@ fn home_mouse(
                             view.naming = None;
                         }
                         HomeMode::Plugins(view) => {
-                            view.selected = index;
+                            view.tab.selected = index;
                             view.editor = None;
                         }
                         HomeMode::Settings(selected, editor) => {
@@ -2387,35 +2289,32 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
             )
         }
         HomeMode::Plugins(view) => {
-            let plugins = found_plugins(paths);
-            let listed = plugin_rows(paths, &plugins);
-            let selected = view.selected.min(listed.len() - 1);
-            let help = match (
-                view.report.is_empty(),
-                listed[selected].0.map(|index| &plugins[index]),
-            ) {
-                (false, _) => view.report.join("\n"),
-                (true, Some(plugin)) => {
-                    let mut text = format!("{}\n\n", plugin.description);
-                    for feature in &plugin.features {
-                        text += &format!("{}: {}\n\n", feature.label, feature.help);
-                    }
-                    text + &format!(
-                        "Its features are switched on per host, on the Features page.\n\nFrom {}",
-                        plugin.dir.display()
-                    )
-                }
-                (true, None) => format!(
-                    "Install a plugin with npm: a package name from your registry, a .tgz from npm pack, or a folder. Registries and logins come from your npm configuration. Nothing of a plugin runs on this machine.\n\nA folder copied to {} works as well.",
-                    plugin_dir(paths).display()
-                ),
+            let plugins = view.plugins();
+            let listed = berth_tui::plugins::rows(plugins);
+            let selected = view.tab.selected.min(listed.len() - 1);
+            let server = berth_core::server::Server::configured(paths);
+            let place = plugin_place(&server);
+            let report = match &view.listing {
+                Some(Err(error)) if view.report.is_empty() => vec![format!("✗ {error}")],
+                _ => view.report.clone(),
             };
+            let dir = match &view.listing {
+                Some(Ok(listing)) => listing.dir.clone(),
+                _ => crate::plugins::own_dir(&paths.config_dir)
+                    .display()
+                    .to_string(),
+            };
+            let help = berth_tui::plugins::help(
+                listed[selected].0.map(|index| &plugins[index]),
+                &report,
+                &place.adding(&dir),
+            );
             (
                 listed.into_iter().map(|(_, line)| line).collect(),
                 selected,
                 view.editor
                     .as_ref()
-                    .map(|input| (" Package, .tgz or folder ", input)),
+                    .map(|input| (place.editor_title(), input)),
                 help,
                 if view.editor.is_some() {
                     "Enter install · Esc cancel"
@@ -2799,6 +2698,9 @@ mod tests {
             home_key(home, &paths, KeyEvent::new(code, KeyModifiers::NONE));
         };
         key(&mut home, KeyCode::Char('5'));
+        if let HomeMode::Plugins(view) = &mut home.mode {
+            view.load(&paths);
+        }
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
         terminal
             .draw(|frame| draw_home(frame, &paths, &home, &mut vec![]))

@@ -132,7 +132,7 @@ The page is the terminal UI drawn in the browser. It has the host list and the o
 
 With the role `admin` the page also sets the server up, with the same screens as the terminal UI:
 
-- **Settings**, **Registries** and **Secrets** are tabs of the home screen.
+- **Settings**, **Registries**, **Secrets** and **Plugins** are tabs of the home screen. On **Plugins**, `u` sends a `.tgz` from the device.
 - **New host** starts a profile, and a host's overview opens its Features, Accounts, Secrets and Install pages.
 - **Install** renders a cloud-init seed to copy, or applies the profile over SSH from the server and shows the output as it runs.
 - **Install secrets and registry logins** sends a host what its profile names.
@@ -148,7 +148,7 @@ Some keys differ:
 
 A password the server makes up is shown once in the page. The server keeps a copy beside the host's profile.
 
-What needs your own machine stays in the terminal UI. That is the USB installer and the container image, values read from your local keys, and installing plugins.
+What needs your own machine stays in the terminal UI. That is the USB installer and the container image, values read from your local keys, and sending a plugin's folder.
 
 Keys the browser keeps for itself, such as `Ctrl+W` and `Ctrl+T`, never reach a shell in the page. A phone can tap rows and key hints, but has no keyboard for a terminal.
 
@@ -173,6 +173,7 @@ Your browser talks to the server you name, and to nothing else. It keeps the ser
 | The set-up tabs of a host, new hosts, and `berth remove` | |
 | `berth apply`, `berth seed`, and the **Secrets and registry logins** task | |
 | `berth secret`, `berth registry` and `berth host` | |
+| The Plugins tab and `berth plugins` | |
 
 berth keeps the server's hosts apart from its own. Its own hosts are hidden while a server is set and return when the setting is cleared.
 
@@ -184,6 +185,7 @@ With the role `admin` on the server, which its token has, berth sets the server 
 - **Apply this configuration** and `berth apply HOST` run as a job on the server. Its output is shown as it comes.
 - `berth seed HOST` has the server render the cloud-init seed, and writes it here.
 - A secret's value is sent to the server and kept only there. Here berth knows its name.
+- A plugin is installed on the server, and its features show on the Features tab of the server's hosts. A `.tgz` or folder of yours is sent there first.
 - The server logs in to hosts with [its own SSH key](/docs/reference/profile#the-key-of-berth-itself), which a host it installs takes. For a host that was set up elsewhere, add that key to the operator first. The Accounts tab shows it.
 
 With a lesser role the set-up tabs say *This host is set up on the berth server at URL*, and the host's overview works as before. The roles, access tokens of an OAuth 2.0 issuer in place of the token, and how to keep set-up on the server itself are in [berth serve](/docs/extend/serve#who-gets-in).

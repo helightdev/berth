@@ -53,6 +53,38 @@ impl Platform for Browser {
     }
 }
 
+/// Let the user choose a file of this device, and hand over its name and
+/// bytes once the browser has read it. Nothing happens when none is chosen.
+pub fn choose_file(accept: &str, then: impl FnOnce(String, Vec<u8>) + 'static) {
+    let Some(element) = window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.create_element("input").ok())
+    else {
+        return;
+    };
+    let input: web_sys::HtmlInputElement = element.unchecked_into();
+    input.set_type("file");
+    input.set_accept(accept);
+    let chosen = input.clone();
+    let changed = Closure::once_into_js(move || {
+        let Some(file) = chosen.files().and_then(|files| files.get(0)) else {
+            return;
+        };
+        let name = file.name();
+        let read = Closure::once_into_js(move |buffer: JsValue| {
+            then(name, js_sys::Uint8Array::new(&buffer).to_vec());
+        });
+        let reading: JsValue = file.array_buffer().into();
+        if let Ok(then) = js_sys::Reflect::get(&reading, &"then".into()) {
+            let _ = then
+                .unchecked_into::<js_sys::Function>()
+                .call1(&reading, &read);
+        }
+    });
+    input.set_onchange(Some(changed.unchecked_ref()));
+    input.click();
+}
+
 fn storage() -> Option<web_sys::Storage> {
     window()?.local_storage().ok()?
 }

@@ -305,6 +305,12 @@ impl App {
         self.plugins = plugins;
     }
 
+    /// What a server's host can have installed: what the server's plugins
+    /// offer, as `setup.catalogue` lists it.
+    pub fn set_features(&mut self, features: Vec<setup::Feature>) {
+        self.catalogue = features;
+    }
+
     /// The groups of the Features page: the built-in ones, with what plugins add
     /// to them, then groups only plugins have.
     pub fn feature_groups(&self) -> Vec<FeatureGroup> {

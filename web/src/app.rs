@@ -46,7 +46,7 @@ enum Screen {
 }
 
 /// The tabs of the home screen, for whoever may set the server up.
-const TABS: [&str; 4] = ["Hosts", "Settings", "Registries", "Secrets"];
+const TABS: [&str; 5] = ["Hosts", "Settings", "Registries", "Secrets", "Plugins"];
 
 /// What the server last said of its hosts.
 #[derive(Default)]
@@ -993,7 +993,7 @@ impl App {
         if !typing {
             self.status.clear();
             match key.code {
-                Code::Char(digit @ '1'..='4') => {
+                Code::Char(digit @ '1'..='5') => {
                     return self.open_tab(digit as usize - '1' as usize);
                 }
                 Code::Tab if self.is_admin() => return self.open_tab((self.tab + 1) % TABS.len()),
@@ -1171,7 +1171,7 @@ impl App {
         let keys = match (admin, self.naming.is_some()) {
             (_, true) => "Enter create · Esc cancel",
             (true, false) => {
-                "↑↓ select · Enter open · n new host · d default · x remove · 2 settings · 3 registries · 4 secrets · r refresh · o sign out"
+                "↑↓ select · Enter open · n new host · d default · x remove · 2 settings · 3 registries · 4 secrets · 5 plugins · r refresh · o sign out"
             }
             (false, false) => "↑↓ select · Enter open · r refresh · o sign out",
         };

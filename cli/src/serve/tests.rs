@@ -1067,6 +1067,107 @@ async fn the_server_is_set_up_through_the_api() {
     assert_eq!(access, json!({"role": "admin", "setup": true}));
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn plugins_are_managed_through_the_api() {
+    let served = served().await;
+    let mut client = served.client().await;
+    let client = &mut client;
+    let keys = |found: &Value| -> Vec<String> {
+        found["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|feature| feature["key"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    // The plugins that come with berth stay.
+    let (status, listed) = send(client, "GET", "/v1/plugins", Value::Null).await;
+    assert_eq!(status, 200, "{listed}");
+    let claude = listed["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|plugin| plugin["id"] == "claude")
+        .unwrap();
+    assert_eq!(claude["origin"], "shipped");
+    assert_eq!(claude["features"][0]["id"], "cli");
+    let (status, said) = send(client, "DELETE", "/v1/plugins/claude", Value::Null).await;
+    assert_eq!(status, 409, "{said}");
+    assert_eq!(
+        send(client, "DELETE", "/v1/plugins/nothing", Value::Null)
+            .await
+            .0,
+        404
+    );
+
+    // A folder copied to the server's plugin directory is one of its own, and
+    // a new host can have its features at once.
+    let own = served.dir.path().join("config/plugins/hello");
+    std::fs::create_dir_all(&own).unwrap();
+    std::fs::write(
+        own.join("package.json"),
+        r#"{"name":"berth-plugin-hello","version":"1.0.0","displayName":"Hello",
+            "berth":{"features":[{"id":"cow","label":"cowsay","group":"Development Tools",
+              "actions":[{"name":"moo","run":"cowsay moo","agent":true}]}]}}"#,
+    )
+    .unwrap();
+    let (_, listed) = send(client, "GET", "/v1/plugins", Value::Null).await;
+    let hello = listed["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|plugin| plugin["id"] == "hello")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (&hello["origin"], &hello["package"], &hello["version"]),
+        (
+            &json!("folder"),
+            &json!("berth-plugin-hello"),
+            &json!("1.0.0")
+        )
+    );
+    assert_eq!(hello["features"][0]["tasks"][0]["name"], "moo");
+    assert!(listed["dir"].as_str().unwrap().ends_with("config/plugins"));
+    let (_, found) = send(client, "GET", "/v1/setup", Value::Null).await;
+    assert!(keys(&found).contains(&"hello/cow".to_owned()));
+    let (status, said) = send(client, "DELETE", "/v1/plugins/hello", Value::Null).await;
+    assert_eq!(status, 200, "{said}");
+    assert!(said["lines"][0].as_str().unwrap().starts_with('✓'));
+    assert!(!own.exists());
+    let (_, found) = send(client, "GET", "/v1/setup", Value::Null).await;
+    assert!(!keys(&found).contains(&"hello/cow".to_owned()));
+
+    // npm is given a package of a registry or an address, and never a path of
+    // the server, a repository or an option.
+    for spec in [
+        "../x",
+        "/etc",
+        "-g",
+        "git+ssh://x/y",
+        "file:x",
+        "a b",
+        "Bad",
+        "@x",
+    ] {
+        let (status, said) = send(client, "POST", "/v1/plugins", json!({"spec": spec})).await;
+        assert_eq!(status, 400, "{spec}: {said}");
+    }
+    // What is sent has to be a .tgz.
+    let headers = [("content-type", "application/gzip")];
+    let answer = client
+        .send(
+            "POST",
+            "/v1/plugins/package",
+            &headers,
+            "not a tarball".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(answer.status, 400);
+}
+
 /// An issuer for the tests: a key pair, and its public half as a key set.
 struct Issuer {
     key: jsonwebtoken::EncodingKey,
@@ -1340,6 +1441,14 @@ async fn set_up_can_be_closed_to_the_network() {
                 .as_str()
                 .unwrap()
                 .contains("set-up")
+        );
+        // Installing a plugin is set-up too: its tasks run when a host is applied.
+        let spec = json!({"spec": "berth-plugin-foo"});
+        assert_eq!(
+            as_bearer(address, token, "POST", "/v1/plugins", spec)
+                .await
+                .0,
+            403
         );
         assert_eq!(
             as_bearer(address, token, "PUT", "/v1/kv/ui/x", json!(1))

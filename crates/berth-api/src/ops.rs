@@ -62,7 +62,7 @@ pub enum Role {
     View,
     /// Use the hosts: run tasks and commands, write files, control units.
     Operate,
-    /// Set up: profiles, secrets, registries, and applying them to hosts.
+    /// Set up: profiles, secrets, registries, plugins, and applying them to hosts.
     Admin,
 }
 
@@ -220,6 +220,10 @@ pub const SERVE: &[Op] = &[
     )),
     admin(call("settings.list", "GET", "/v1/settings")),
     admin(call("settings.set", "PUT", "/v1/settings/{key}")),
+    admin(call("plugins.list", "GET", "/v1/plugins")),
+    admin(call("plugins.add", "POST", "/v1/plugins")),
+    admin(bytes(call("plugins.upload", "POST", "/v1/plugins/package"))),
+    admin(call("plugins.remove", "DELETE", "/v1/plugins/{id}")),
     admin(call("setup.catalogue", "GET", "/v1/setup")),
     admin(call("setup.generate", "POST", "/v1/setup/generate")),
     call("jobs.list", "GET", "/v1/jobs"),
@@ -346,6 +350,7 @@ mod tests {
         assert_eq!(role(HOST, "files.read"), Role::Operate);
         assert_eq!(role(HOST, "sessions.attach"), Role::Operate);
         assert_eq!(role(SERVE, "hosts.apply"), Role::Admin);
+        assert_eq!(role(SERVE, "plugins.upload"), Role::Admin);
         assert_eq!(role(SERVE, "kv.set"), Role::Operate);
         assert!(Role::View < Role::Operate && Role::Operate < Role::Admin);
         assert_eq!(Role::named("operate"), Some(Role::Operate));
