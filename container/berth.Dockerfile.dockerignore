@@ -5,6 +5,9 @@ build/
 docs/
 **/node_modules/
 **/__pycache__/
-config/*.json
-!config/example.json
-ansible/roles/devbox/files/bin/
+provision/config/*.json
+!provision/config/example.json
+provision/ansible/roles/devbox/files/bin/
+# What a checkout from before provision/ may still have lying about.
+/config/
+/ansible/

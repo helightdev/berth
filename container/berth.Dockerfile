@@ -20,7 +20,7 @@ RUN cargo build --release --locked --target x86_64-unknown-linux-musl -p berth -
     && { [ -z "$BERTH_BUILD_VERSION" ] || [ "$said" = "berth $BERTH_BUILD_VERSION" ]; }
 
 FROM debian:trixie-slim
-COPY requirements.txt /tmp/requirements.txt
+COPY provision/requirements.txt /tmp/requirements.txt
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl npm openssh-client openssl python3 python3-pip tar tini \
     && pip install --no-cache-dir --break-system-packages -r /tmp/requirements.txt \

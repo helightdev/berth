@@ -14,8 +14,8 @@ berth sets up and looks after agent workstations. These are Ubuntu machines with
 | `crates/berthd/`, `crates/box/` | The controller on each host and the agent's own tool there |
 | `crates/berth-web/` | The page of `berth serve --web`, built for WebAssembly |
 | `crates/vendor/` | The vendored `tui-input` crate |
-| `ansible/`, `bootstrap/`, `bin/`, `config/` | The provisioning source that is applied to a host |
-| `plugins/` | The plugins that come with berth, each an npm-format package with a `guide.md` |
+| `provision/` | The installer side of the provisioning source: the role in `ansible/`, first-boot provisioning in `bootstrap/`, the builder of seeds and releases in `bin/devbox.py` and the example profile in `config/`. berth names these paths in `layout` in `crates/berth-core/src/paths.rs` |
+| `plugins/` | The plugins that come with berth, each an npm-format package with a `guide.md`. With `provision/` they make the provisioning source, which berth carries and unpacks with the same layout |
 | `container/` | The desktop image and berth's own image |
 | `ci/` | The images and scripts that run the checks and the end-to-end tests in containers |
 | `docs/` | The documentation site (Fumadocs). `docs/AGENTS.md` has notes for its Next.js version |
@@ -36,7 +36,7 @@ python3 -m unittest discover -s tests -v
 vale --minAlertLevel=warning README.md docs/content/docs plugins/*/guide.md
 ```
 
-Development and test builds embed quick builds of berthd, box and the page (the `host-dev` and `web-dev` profiles). Only `--release` embeds the release builds. The `web` feature needs the `wasm32-unknown-unknown` target. The Python tests skip their YAML checks without PyYAML, so install `requirements.txt` in a virtual environment to run them all.
+Development and test builds embed quick builds of berthd, box and the page (the `host-dev` and `web-dev` profiles). Only `--release` embeds the release builds. The `web` feature needs the `wasm32-unknown-unknown` target. The Python tests skip their YAML checks without PyYAML, so install `provision/requirements.txt` in a virtual environment to run them all.
 
 ### In containers
 

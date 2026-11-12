@@ -1,7 +1,12 @@
 //! Applying a host's configuration: the Ansible run of the installer role
 //! against it over SSH.
 
-use crate::{Result, host::Host, paths::Paths, plugins};
+use crate::{
+    Result,
+    host::Host,
+    paths::{Paths, layout},
+    plugins,
+};
 use serde_json::{Value, json};
 use std::{io::Write, process::Command};
 
@@ -60,14 +65,17 @@ pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: Option<&str>) -> V
     vars
 }
 
-/// `ansible-playbook` of the source's own environment when it has one.
+/// `ansible-playbook` of the source's own environment when it has one, with
+/// the source's Ansible settings.
 pub fn playbook(source: &std::path::Path) -> Command {
     let local = source.join(".venv/bin/ansible-playbook");
-    Command::new(if local.is_file() {
+    let mut command = Command::new(if local.is_file() {
         local
     } else {
         "ansible-playbook".into()
-    })
+    });
+    command.env("ANSIBLE_CONFIG", source.join(layout::ANSIBLE_CONFIG));
+    command
 }
 
 /// The Ansible run that applies `host`'s profile to it over SSH. With a
@@ -98,7 +106,7 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
     let mut command = playbook(&source);
     command
         .current_dir(&source)
-        .args(["ansible/site.yml", "--become", "-e"])
+        .args([layout::PLAYBOOK, "--become", "-e"])
         .arg(format!("@{}", extra.path().display()))
         .arg("-i")
         .arg(inventory.path());
@@ -160,8 +168,8 @@ mod tests {
     fn a_password_travels_in_the_private_file() {
         let home = tempfile::tempdir().unwrap();
         let source = home.path().join("source");
-        std::fs::create_dir_all(source.join("bin")).unwrap();
-        std::fs::write(source.join("bin/devbox.py"), "").unwrap();
+        std::fs::create_dir_all(source.join("provision/bin")).unwrap();
+        std::fs::write(source.join(layout::BUILDER), "").unwrap();
         let paths = Paths {
             config_dir: home.path().join("config"),
             data_dir: home.path().join("data"),
@@ -185,7 +193,14 @@ mod tests {
                 .iter()
                 .any(|arg| arg.contains("hunter2") || arg == "--ask-become-pass")
         );
-        assert_eq!(&args[..2], ["ansible/site.yml", "--become"]);
+        assert_eq!(&args[..2], [layout::PLAYBOOK, "--become"]);
+        let config = prepared
+            .command
+            .get_envs()
+            .find(|(name, _)| *name == "ANSIBLE_CONFIG")
+            .and_then(|(_, value)| value);
+        let wanted = paths.source().unwrap().join(layout::ANSIBLE_CONFIG);
+        assert_eq!(config, Some(wanted.as_os_str()));
         let extra: Value =
             serde_json::from_slice(&std::fs::read(prepared.files[0].path()).unwrap()).unwrap();
         assert_eq!(extra["ansible_become_password"], "hunter2");

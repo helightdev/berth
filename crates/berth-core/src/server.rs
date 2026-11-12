@@ -214,7 +214,7 @@ impl Server {
         }
         // A whole profile, so every screen has what it expects; only where the
         // host is and that it is the server's are its own.
-        let example = std::fs::read(paths.source()?.join("config/example.json"))?;
+        let example = std::fs::read(paths.source()?.join(crate::paths::layout::EXAMPLE))?;
         let example: Value = serde_json::from_slice(&example)?;
         for (host, profile) in fetched.hosts {
             let Some(name) = host["name"].as_str().filter(|name| safe(name)) else {

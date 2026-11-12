@@ -79,7 +79,7 @@ berth iso garage-laptop --write /dev/sdX    # and writes it, after asking
 The image is `~/.local/share/berth/build/HOSTNAME-autoinstall.iso`. To write it by hand, use the script from the provisioning source. It accepts only a whole USB disk that is large enough and has no system mount on it, and unmounts anything else first:
 
 ```bash
-sudo bin/write-usb.sh HOSTNAME-autoinstall.iso /dev/sdX
+sudo provision/bin/write-usb.sh HOSTNAME-autoinstall.iso /dev/sdX
 ```
 
 ## Boot it
@@ -132,11 +132,11 @@ The USB drive and its seed can still hold credentials after the installed copies
 
 ## Without berth
 
-From a source checkout, copy `config/example.json` to `config/local.json` (ignored by git), fill it in, and run the builder directly:
+From a source checkout, copy `provision/config/example.json` to `provision/config/local.json` (ignored by git), fill it in, and run the builder directly:
 
 ```bash
-python3 bin/devbox.py render --config config/local.json
-python3 bin/devbox.py iso --config config/local.json \
+python3 provision/bin/devbox.py render --config provision/config/local.json
+python3 provision/bin/devbox.py iso --config provision/config/local.json \
   --iso /path/to/ubuntu-26.04-live-server-amd64.iso \
   --sha256 THE_VERIFIED_SHA256        # optional: fail if the ISO differs
 ```

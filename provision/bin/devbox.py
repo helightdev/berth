@@ -18,16 +18,19 @@ import tarfile
 import tempfile
 import uuid
 
-ROOT = Path(__file__).resolve().parents[1]
+# The root of the source: the checkout, or the unpacked release.
+ROOT = Path(__file__).resolve().parents[2]
 # The berth UI keeps build output outside the checkout.
 BUILD = Path(os.environ.get('DEVBOX_BUILD_DIR') or ROOT / 'build').resolve()
 
 # Explicit allowlist: local profiles, keys and build outputs never enter a release.
+# A release is laid out as the checkout is.
 RELEASE_SOURCES = [
-    'ansible', 'bin', 'bootstrap', 'container', 'plugins', 'tests',
-    'requirements.txt', 'ansible.cfg', 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE',
+    'provision/ansible', 'provision/bin', 'provision/bootstrap', 'provision/requirements.txt',
+    'provision/ansible.cfg', 'provision/config/example.json',
+    'container', 'plugins', 'tests', 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE',
     'crates/berth/Cargo.toml', 'crates/berth/build.rs', 'crates/berth/src', 'crates/vendor/tui-input',
-    'crates/vendor/README.md', 'config/example.json',
+    'crates/vendor/README.md',
 ]
 PROFILES = {'laptop', 'qemu', 'cloud'}
 DEFAULT_OPERATOR = 'ops'
@@ -44,7 +47,7 @@ SSH_KEY = re.compile(r'(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+
 
 
 def _load_disk_guard():
-    spec = importlib.util.spec_from_file_location('disk_guard', ROOT / 'bin/check-target-disk.py')
+    spec = importlib.util.spec_from_file_location('disk_guard', ROOT / 'provision/bin/check-target-disk.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -308,7 +311,7 @@ def autoinstall(c):
 
 
 def cloud_config(c, sha):
-    boot = (ROOT / 'bootstrap/bootstrap.sh').read_bytes()
+    boot = (ROOT / 'provision/bootstrap/bootstrap.sh').read_bytes()
     sudo = 'NOPASSWD:ALL' if c.get('operator_passwordless_sudo', True) else 'ALL'
     operator = {
         'name': c.get('operator_username', DEFAULT_OPERATOR), 'shell': '/bin/bash', 'groups': ['sudo'],
@@ -354,8 +357,8 @@ def render(config, kind):
             {'instance-id': str(uuid.uuid4()), 'local-hostname': c['hostname']}) + '\n')
         payload = out / 'agent-bootstrap'
         payload.mkdir(exist_ok=True, mode=0o700)
-        for source, name in [(ROOT / 'bootstrap/bootstrap.sh', 'bootstrap.sh'),
-                             (ROOT / 'bin/check-target-disk.py', 'check-target-disk.py'),
+        for source, name in [(ROOT / 'provision/bootstrap/bootstrap.sh', 'bootstrap.sh'),
+                             (ROOT / 'provision/bin/check-target-disk.py', 'check-target-disk.py'),
                              (archive, 'release.tar.gz')]:
             shutil.copyfile(source, payload / name)
             (payload / name).chmod(0o600)

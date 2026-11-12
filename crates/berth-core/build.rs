@@ -74,7 +74,7 @@ fn host_programs(root: &Path) {
         status.success(),
         "building berthd and box failed; the target is added with: rustup target add {HOST_TARGET}"
     );
-    let bin = root.join("ansible/roles/devbox/files/bin");
+    let bin = root.join("provision/ansible/roles/devbox/files/bin");
     fs::create_dir_all(&bin).expect("the role's bin directory");
     for name in ["berthd", "box"] {
         let built = target.join(HOST_TARGET).join(profile).join(name);
@@ -82,7 +82,7 @@ fn host_programs(root: &Path) {
         // Left alone when unchanged, so the archive is not packed again for nothing.
         if fs::read(&built).ok() != fs::read(&placed).ok() {
             // The copy keeps the time of the file it replaces. This script watches
-            // ansible/, and a file written while it runs would run it again on the
+            // provision/ansible/, and a file written while it runs would run it again on the
             // next build for nothing.
             let time = fs::metadata(&placed).and_then(|meta| meta.modified()).ok();
             fs::copy(&built, &placed).expect("copying a host program");
@@ -105,29 +105,29 @@ fn main() {
         .nth(2)
         .expect("the checkout");
     host_programs(root);
-    // What bin/devbox.py puts in a release.
+    // What provision/bin/devbox.py puts in a release.
     for entry in [
-        "ansible",
-        "bin",
-        "bootstrap",
+        "provision/ansible",
+        "provision/bin",
+        "provision/bootstrap",
+        "provision/requirements.txt",
+        "provision/ansible.cfg",
+        "provision/config/example.json",
         "container",
         "plugins",
         "tests",
-        "requirements.txt",
-        "ansible.cfg",
         "README.md",
         "LICENSE-MIT",
         "LICENSE-APACHE",
-        "config/example.json",
     ] {
         println!("cargo:rerun-if-changed=../../{entry}");
     }
     let status = Command::new("python3")
-        .arg(root.join("bin/devbox.py"))
+        .arg(root.join("provision/bin/devbox.py"))
         .arg("release")
         .env("DEVBOX_BUILD_DIR", &out)
         .env_remove("BERTH_PLUGINS")
         .status()
         .expect("python3 is needed to pack the provisioning source");
-    assert!(status.success(), "bin/devbox.py release failed");
+    assert!(status.success(), "provision/bin/devbox.py release failed");
 }

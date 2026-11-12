@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rustup target add x86_64-unknown-linux-musl wasm32-unknown-unknown
 RUN curl -fsSL "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz" \
       | tar -xz -C /usr/local/bin vale
-COPY requirements.txt /tmp/requirements.txt
+COPY provision/requirements.txt /tmp/requirements.txt
 RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 # The container runs as the user who owns the checkout, whose id is only known

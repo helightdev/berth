@@ -1,8 +1,8 @@
 **
-!ansible/
-!ansible/**
-!ansible.cfg
-!requirements.txt
+!provision/ansible/
+!provision/ansible/**
+!provision/ansible.cfg
+!provision/requirements.txt
 !container/
 !container/Dockerfile
 !container/entrypoint.sh

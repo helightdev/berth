@@ -7,7 +7,7 @@
 - name: Find the plugin
   ansible.builtin.set_fact:
     devbox_plugin_id: "{{ devbox_plugin_feature.split('/')[0] }}"
-    devbox_plugin_dir: "{{ devbox_plugin_dirs[devbox_plugin_feature.split('/')[0]] | default(playbook_dir ~ '/../plugins/' ~ devbox_plugin_feature.split('/')[0]) }}"
+    devbox_plugin_dir: "{{ devbox_plugin_dirs[devbox_plugin_feature.split('/')[0]] | default(playbook_dir ~ '/../../plugins/' ~ devbox_plugin_feature.split('/')[0]) }}"
 - name: Read the plugin's package.json
   ansible.builtin.set_fact:
     devbox_plugin_package: "{{ lookup('ansible.builtin.file', devbox_plugin_dir ~ '/package.json') | from_json }}"

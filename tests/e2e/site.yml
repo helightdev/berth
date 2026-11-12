@@ -2,7 +2,7 @@
 # The role as the end-to-end tests apply it: the tasks berth itself talks to
 # (accounts and keys, plugins, the agent's helpers, berthd and its files),
 # without the desktop packages, toolchains and browsers that need the internet.
-# The tests put this playbook where berth looks for ansible/site.yml.
+# The tests put this playbook where berth looks for provision/ansible/site.yml.
 - name: Configure what berth talks to on a host
   hosts: all
   become: true

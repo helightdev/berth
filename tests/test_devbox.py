@@ -15,8 +15,8 @@ def load(name,path):
     module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
     return module
 
-builder=load('builder','bin/devbox.py')
-guard=load('guard','bin/check-target-disk.py')
+builder=load('builder','provision/bin/devbox.py')
+guard=load('guard','provision/bin/check-target-disk.py')
 
 def config():
     return {'hostname':'test-devbox','profile':'qemu',
@@ -85,7 +85,7 @@ class DiskGuardTests(unittest.TestCase):
 
 class RenderTests(unittest.TestCase):
     def test_placeholder_example_cannot_produce_installer(self):
-        with self.assertRaises(ValueError): builder.checked_config(ROOT/'config/example.json','usb')
+        with self.assertRaises(ValueError): builder.checked_config(ROOT/'provision/config/example.json','usb')
     def test_cloud_seed_carries_a_release_login_only_when_given(self):
         paths=lambda seed:[entry['path'] for entry in seed['write_files']]
         self.assertNotIn('/opt/devbox-bootstrap/release-login',paths(builder.cloud_config(config(),'a'*64)))
@@ -247,7 +247,11 @@ class RenderTests(unittest.TestCase):
             import tarfile
             with tarfile.open(Path(temp)/'devbox-release.tar.gz') as archive:
                 names=archive.getnames()
-            self.assertIn('bootstrap/bootstrap.sh',names)
+            self.assertIn('provision/bootstrap/bootstrap.sh',names)
+            # What bootstrap.sh and berth look for in an unpacked release.
+            for need in ['provision/bin/devbox.py','provision/requirements.txt','provision/ansible.cfg',
+                         'provision/ansible/site.yml','provision/config/example.json']:
+                self.assertIn(need,names)
             self.assertFalse(any('secrets/' in x or 'config/local.json' in x for x in names))
     def test_rendered_seeds_roundtrip_and_are_private(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(builder,'BUILD',Path(temp)/'build'):
@@ -260,7 +264,7 @@ class RenderTests(unittest.TestCase):
 
 class HostTaskTests(unittest.TestCase):
     """The scripts berthd runs for berth's own tasks."""
-    TASKS=ROOT/'ansible/roles/devbox/files/tasks'
+    TASKS=ROOT/'provision/ansible/roles/devbox/files/tasks'
     def test_task_scripts_parse_and_share_the_helpers(self):
         scripts=sorted(self.TASKS.glob('*.sh'))
         self.assertEqual({p.stem for p in scripts},{'common','status','access','publish','pair','update','reboot'})
@@ -270,17 +274,17 @@ class HostTaskTests(unittest.TestCase):
         for name in ['status','access','publish','pair']:
             self.assertIn('common.sh',(self.TASKS/f'{name}.sh').read_text())
     def test_the_old_ways_are_gone(self):
-        self.assertFalse((ROOT/'bin/manage-host.sh').exists())
-        self.assertFalse((ROOT/'ansible/roles/devbox/files/desktop.py').exists())
+        self.assertFalse((ROOT/'provision/bin/manage-host.sh').exists())
+        self.assertFalse((ROOT/'provision/ansible/roles/devbox/files/desktop.py').exists())
     def test_host_programs_travel_in_the_release_when_built(self):
-        built=ROOT/'ansible/roles/devbox/files/bin/berthd'
+        built=ROOT/'provision/ansible/roles/devbox/files/bin/berthd'
         if not built.exists(): self.skipTest('run `cargo build -p berth` first')
         with tempfile.TemporaryDirectory() as temp, patch.object(builder,'BUILD',Path(temp)):
             import tarfile
             with tarfile.open(builder.release()) as archive: names=archive.getnames()
         for name in ['berthd','box']:
-            self.assertIn(f'ansible/roles/devbox/files/bin/{name}',names)
-        self.assertIn('ansible/roles/devbox/files/tasks/status.sh',names)
+            self.assertIn(f'provision/ansible/roles/devbox/files/bin/{name}',names)
+        self.assertIn('provision/ansible/roles/devbox/files/tasks/status.sh',names)
         self.assertIn('plugins/backup/files/backup.sh',names)
 
 if __name__=='__main__': unittest.main()

@@ -15,12 +15,13 @@ ARG PLUGIN_FEATURES='["claude/cli","codex/cli","pi/cli","t3/server","github/cli"
 ARG SOFTWARE_RENDERING=true
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates sudo dbus && rm -rf /var/lib/apt/lists/*
-COPY requirements.txt /tmp/devbox-requirements.txt
+COPY provision/requirements.txt /tmp/devbox-requirements.txt
 RUN python3 -m venv /opt/ansible && /opt/ansible/bin/pip install -r /tmp/devbox-requirements.txt
-COPY ansible /opt/devbox/ansible
+# Laid out as the checkout is: the role finds the plugins at ../../plugins.
+COPY provision/ansible /opt/devbox/provision/ansible
+COPY provision/ansible.cfg /opt/devbox/provision/ansible.cfg
 COPY plugins /opt/devbox/plugins
-COPY ansible.cfg /opt/devbox/ansible.cfg
-WORKDIR /opt/devbox
+WORKDIR /opt/devbox/provision
 RUN /opt/ansible/bin/ansible-playbook -i localhost, -c local ansible/site.yml \
     -e "devbox_user=${AGENT_USER}" -e "devbox_operator_user=${OPERATOR_USER}" \
     -e "{\"devbox_profile\":\"container\",\"devbox_install_playwright\":${INSTALL_PLAYWRIGHT},\"devbox_tools_web\":${INSTALL_WEB_TOOLS},\"devbox_tools_native\":${INSTALL_NATIVE_TOOLS},\"devbox_tools_jvm\":${INSTALL_JVM_TOOLS},\"devbox_tools_dotnet\":${INSTALL_DOTNET_TOOLS},\"devbox_tools_scripting\":${INSTALL_SCRIPTING_TOOLS},\"devbox_tools_scientific\":${INSTALL_SCIENTIFIC_TOOLS},\"devbox_tools_chrome\":${INSTALL_CHROME_TOOLS},\"devbox_plugin_features\":${PLUGIN_FEATURES},\"devbox_software_rendering\":${SOFTWARE_RENDERING}}" \

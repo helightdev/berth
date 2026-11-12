@@ -30,12 +30,12 @@ See [Building and releasing](/docs/reference/building#in-containers) for running
 </Accordion>
 <Accordion title="Full host in QEMU">
 
-`bin/qemu.py cloud` boots the Ubuntu cloud image. Apply the role over SSH with the `qemu` profile, then run `berth run HOST smoke`. A second apply should not change anything, and after a reboot the desktop, noVNC, T3 and Docker should be up without anyone logging in. See [Testing in QEMU](/docs/deploy/qemu#what-to-check).
+`provision/bin/qemu.py cloud` boots the Ubuntu cloud image. Apply the role over SSH with the `qemu` profile, then run `berth run HOST smoke`. A second apply should not change anything, and after a reboot the desktop, noVNC, T3 and Docker should be up without anyone logging in. See [Testing in QEMU](/docs/deploy/qemu#what-to-check).
 
 </Accordion>
 <Accordion title="Unattended ISO in QEMU">
 
-`bin/qemu.py install` boots the remastered ISO with disk mode `auto`. It selects the virtual disk, installs without input and powers off. Test the selected disk policy this way before booting a physical machine.
+`provision/bin/qemu.py install` boots the remastered ISO with disk mode `auto`. It selects the virtual disk, installs without input and powers off. Test the selected disk policy this way before booting a physical machine.
 
 </Accordion>
 <Accordion title="SSH hardening">

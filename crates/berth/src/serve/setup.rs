@@ -18,7 +18,7 @@ use berth_api::{
 use berth_core::{
     apply,
     host::Host,
-    paths::SETTINGS,
+    paths::{SETTINGS, layout},
     plugins,
     registry::{self, Store},
     server::safe,
@@ -164,7 +164,7 @@ pub async fn seed(State(state): App, Path(name): Path<String>) -> Answer<Json<Se
     let mut command = tokio::process::Command::new("python3");
     command
         .current_dir(&source)
-        .args(["bin/devbox.py", "render", "--kind", "cloud", "--config"])
+        .args([layout::BUILDER, "render", "--kind", "cloud", "--config"])
         .arg(&path)
         .env("DEVBOX_BUILD_DIR", state.paths.build_dir())
         .env("BERTH_PLUGINS", dirs.to_string())
@@ -601,7 +601,7 @@ pub struct Catalogue {
     responses((status = 200, description = "The starting profile and the plugins' features", body = Catalogue)))]
 pub async fn catalogue(State(state): App) -> Answer<Json<Catalogue>> {
     let source = state.paths.source().map_err(internal)?;
-    let template = std::fs::read(source.join("config/example.json")).map_err(internal)?;
+    let template = std::fs::read(source.join(layout::EXAMPLE)).map_err(internal)?;
     let found = plugins::load(&[
         source.join("plugins"),
         state.paths.config_dir.join("plugins"),

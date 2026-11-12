@@ -62,8 +62,13 @@ import sys, tarfile
 with tarfile.open(sys.argv[1]) as archive:
     archive.extractall(sys.argv[2], filter='data')
 PY
+# The release is laid out as the checkout it was made from; this script and the
+# release come from the same seed builder.
+for need in provision/requirements.txt provision/ansible.cfg provision/ansible/site.yml; do
+  [[ -f "$release/$need" ]] || { echo "The release has no $need: render the seed and the release with the same berth" >&2; set_state failed; exit 1; }
+done
 python3 -m venv /opt/devbox/ansible-venv
-/opt/devbox/ansible-venv/bin/pip install -r "$release/requirements.txt"
+/opt/devbox/ansible-venv/bin/pip install -r "$release/provision/requirements.txt"
 python3 - <<'PY'
 import json, os
 from pathlib import Path
@@ -76,8 +81,8 @@ PY
 cd "$release"
 # The role creates shared tools under /opt that the agent must be able to run,
 # so it gets the normal umask rather than this script's private one.
-(umask 022; ANSIBLE_CONFIG="$release/ansible.cfg" /opt/devbox/ansible-venv/bin/ansible-playbook \
-  -i localhost, -c local ansible/site.yml -e @/etc/devbox/host.json)
+(umask 022; ANSIBLE_CONFIG="$release/provision/ansible.cfg" /opt/devbox/ansible-venv/bin/ansible-playbook \
+  -i localhost, -c local provision/ansible/site.yml -e @/etc/devbox/host.json)
 ln -sfn "$release" /opt/devbox/current
 printf '%s\n' "$digest" > "$state/ready"
 chmod 0644 "$state/ready"

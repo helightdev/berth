@@ -4,7 +4,7 @@ description: Try the USB installer, a cloud seed or the role in a virtual machin
 icon: FlaskConical
 ---
 
-`bin/qemu.py` in the provisioning source boots an installer image, an installed disk or a cloud image in QEMU with UEFI firmware. It is the safe place to test a disk policy or a seed.
+`provision/bin/qemu.py` in the provisioning source boots an installer image, an installed disk or a cloud image in QEMU with UEFI firmware. It is the safe place to test a disk policy or a seed.
 
 ## What you need
 
@@ -26,7 +26,7 @@ Create a separate host with `profile: qemu`. For the USB installer, use disk mod
 Build the test ISO, then install from it:
 
 ```bash
-python3 bin/qemu.py install --directory build/vm-install \
+python3 provision/bin/qemu.py install --directory build/vm-install \
   --image build/agent-qemu-autoinstall.iso \
   --code /path/to/OVMF_CODE.fd --vars /path/to/OVMF_VARS.fd
 ```
@@ -34,7 +34,7 @@ python3 bin/qemu.py install --directory build/vm-install \
 After the installer powers off, boot the installed disk without the ISO:
 
 ```bash
-python3 bin/qemu.py boot --directory build/vm-install \
+python3 provision/bin/qemu.py boot --directory build/vm-install \
   --code /path/to/OVMF_CODE.fd --vars /path/to/OVMF_VARS.fd
 ```
 
@@ -44,7 +44,7 @@ python3 bin/qemu.py boot --directory build/vm-install \
 Publish the release and render a seed for the qemu host with `devbox_bootstrap_ssh_cidr: 10.0.2.2/32`, QEMU's address for your machine. Then:
 
 ```bash
-python3 bin/qemu.py cloud --directory build/vm-cloud \
+python3 provision/bin/qemu.py cloud --directory build/vm-cloud \
   --image /path/to/ubuntu-26.04-cloudimg-amd64.img \
   --user-data build/agent-qemu/cloud/user-data \
   --code /path/to/OVMF_CODE.fd --vars /path/to/OVMF_VARS.fd

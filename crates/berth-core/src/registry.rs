@@ -757,7 +757,7 @@ pub fn publish_from(
     };
     let mut release = Command::new("python3");
     release
-        .args(["bin/devbox.py", "release"])
+        .args([crate::paths::layout::BUILDER, "release"])
         .env("DEVBOX_BUILD_DIR", build);
     release.env("BERTH_PLUGINS", plugins.to_string());
     release.stdout(Stdio::null());

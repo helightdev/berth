@@ -14,7 +14,7 @@ try:
 except ImportError:
     jinja2 = yaml = None
 
-ROLE = Path(__file__).resolve().parents[1] / 'ansible/roles/devbox'
+ROLE = Path(__file__).resolve().parents[1] / 'provision/ansible/roles/devbox'
 
 
 @unittest.skipUnless(jinja2 and yaml, 'Run with the Ansible venv Python for template checks')
@@ -125,7 +125,7 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(self.feature({'id': 'bare'}), {'tasks': [], 'services': [], 'channels': []})
 
     def test_shipped_plugins_make_valid_tasks(self):
-        plugins = ROLE.parents[2] / 'plugins'
+        plugins = ROLE.parents[3] / 'plugins'
         names = []
         for package in sorted(plugins.glob('*/package.json')):
             data = json.loads(package.read_text())

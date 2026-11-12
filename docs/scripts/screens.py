@@ -132,7 +132,7 @@ echo 'PATH="/dev/sdb" TYPE="disk" TRAN="usb" SIZE="57.3G" MODEL="Demo Flash Driv
 
 
 def profile(name: str, **values) -> dict:
-    base = json.loads((REPO / "config/example.json").read_text())
+    base = json.loads((REPO / "provision/config/example.json").read_text())
     base.update({"hostname": name})
     base.update(values)
     return base
@@ -221,7 +221,7 @@ def host_files() -> dict:
     import yaml  # noqa: PLC0415 (only needed here)
 
     task_dir = "/usr/local/lib/berth/tasks"
-    core = yaml.safe_load((REPO / "ansible/roles/devbox/vars/main.yml").read_text())["devbox_core_tasks"]
+    core = yaml.safe_load((REPO / "provision/ansible/roles/devbox/vars/main.yml").read_text())["devbox_core_tasks"]
     for task in core:
         task["run"] = task["run"].replace("{{ devbox_task_dir }}", task_dir)
     tasks, services, channels = core, [], []
@@ -265,7 +265,7 @@ def start_host(scratch: Path) -> bool:
     if not shutil.which("docker") or docker("image", "inspect", IMAGE, check=False).returncode:
         print(f"no docker or no {IMAGE} image: skipping the pictures of a connected host")
         return False
-    binaries = REPO / "ansible/roles/devbox/files/bin"
+    binaries = REPO / "provision/ansible/roles/devbox/files/bin"
     if not (binaries / "berthd").is_file():
         print("no static berthd (cargo build): skipping the pictures of a connected host")
         return False

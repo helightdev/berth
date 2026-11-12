@@ -13,10 +13,11 @@ icon: Hammer
 | `crates/vendor/` | The vendored `tui-input` crate |
 | `crates/berth-web/` | The page `berth serve --web` shows in a browser, built for WebAssembly. The docs build copies it to `/web` |
 | `crates/berthd/`, `crates/box/` | `berthd` and `box`, built static for hosts |
-| `ansible/` | The devbox role |
+| `provision/ansible/` | The devbox role |
+| `provision/bootstrap/` | First-boot provisioning |
+| `provision/bin/` | `devbox.py` (release, seeds, ISO), `qemu.py`, `write-usb.sh` |
+| `provision/config/` | `example.json`, the profile a new host starts from |
 | `plugins/` | The plugins that come with berth |
-| `bootstrap/` | First-boot provisioning |
-| `bin/` | `devbox.py` (release, seeds, ISO), `qemu.py`, `write-usb.sh` |
 | `container/` | The desktop image and berth's own image |
 | `ci/` | The images and scripts for the checks and the end-to-end tests |
 | `docs/` | This site |
@@ -52,9 +53,9 @@ berth config source "$PWD"
 
 ```bash
 cargo test --locked
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install -r provision/requirements.txt
 .venv/bin/python -m unittest discover -s tests
-.venv/bin/ansible-playbook -i localhost, ansible/site.yml --syntax-check
+ANSIBLE_CONFIG=provision/ansible.cfg .venv/bin/ansible-playbook -i localhost, provision/ansible/site.yml --syntax-check
 vale README.md docs/content/docs
 ```
 
@@ -80,7 +81,7 @@ To run one module or one test case, name it: `ci/run.sh e2e e2e_serve.Roles`. Th
 ## The release archive
 
 ```bash
-python3 bin/devbox.py release
+python3 provision/bin/devbox.py release
 ```
 
 writes `build/devbox-release.tar.gz` and `build/release.sha256`. The archive is deterministic for the same source files and uses an explicit allowlist: it never contains local host profiles, secrets, virtualenvs or build output. Host-specific installer images and seeds are private and must not be published.

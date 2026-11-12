@@ -10,7 +10,7 @@ use crate::{
     remote::{HostView, State},
     theme,
 };
-use berth_core::{apply, host::Host};
+use berth_core::{apply, host::Host, paths::layout};
 use berth_tui::host::Pick;
 use berth_tui::setup::{self, set_pointer};
 pub use berth_tui::setup::{FeatureGroup, Item, value_line};
@@ -826,7 +826,7 @@ impl App {
         if field == Field::Iso {
             let mut command = Command::new("python3");
             command
-                .args(["bin/devbox.py", "fetch-iso", "--dir"])
+                .args([layout::BUILDER, "fetch-iso", "--dir"])
                 .arg(&self.iso_dir);
             let stage = Stage {
                 title: "Download Ubuntu Server ISO".into(),
@@ -1505,12 +1505,12 @@ impl App {
             Action::Save | Action::Manage => return Err("Nothing to run".into()),
             Action::Release => {
                 command = Command::new("python3");
-                command.args(["bin/devbox.py", "release"]);
+                command.args([layout::BUILDER, "release"]);
             }
             Action::UsbSeed | Action::CloudSeed => {
                 command = Command::new("python3");
                 command
-                    .args(["bin/devbox.py", "render", "--kind"])
+                    .args([layout::BUILDER, "render", "--kind"])
                     .arg(if action == Action::UsbSeed {
                         "usb"
                     } else {
@@ -1542,7 +1542,7 @@ impl App {
             Action::Iso => {
                 command = Command::new("python3");
                 command
-                    .args(["bin/devbox.py", "iso", "--config"])
+                    .args([layout::BUILDER, "iso", "--config"])
                     .arg(&self.path)
                     .arg("--iso")
                     .arg(expand_path(self.text(Field::Iso)))
@@ -1560,7 +1560,7 @@ impl App {
                 return Ok((prepared.command, prepared.files));
             }
             Action::Apply => {
-                command = apply::playbook(Path::new("."));
+                command = apply::playbook(&std::env::current_dir()?);
                 serde_json::to_writer(
                     &mut extra,
                     &apply::ansible_vars(
@@ -1571,7 +1571,7 @@ impl App {
                 )?;
                 extra.flush()?;
                 command
-                    .args(["ansible/site.yml", "--become", "-e"])
+                    .args([layout::PLAYBOOK, "--become", "-e"])
                     .arg(format!("@{}", extra.path().display()))
                     .arg("-i");
                 if self.text(Field::Inventory).is_empty() {
@@ -1869,7 +1869,7 @@ impl App {
                 .join(format!("{}-autoinstall.iso", self.text(Field::Hostname)));
             let mut write = Command::new("sudo");
             write
-                .args(["-n", "bash", "bin/write-usb.sh"])
+                .args(["-n", "bash", layout::WRITE_USB])
                 .arg(&iso)
                 .arg(usb);
             stages.push(Stage {

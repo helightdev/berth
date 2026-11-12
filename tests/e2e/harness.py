@@ -75,19 +75,23 @@ def keygen(path, comment):
 
 
 def source():
-    """The checkout with tests/e2e/site.yml as ansible/site.yml, made once."""
+    """The checkout with tests/e2e/site.yml as provision/ansible/site.yml, made once."""
     overlay = SCRATCH / 'source'
     if overlay.exists():
         return overlay
     overlay.mkdir()
     for entry in SRC.iterdir():
         # A virtual environment or build output of the checkout is not ours.
-        if entry.name.startswith('.') or entry.name in ('ansible', 'target', 'build'):
+        if entry.name.startswith('.') or entry.name in ('provision', 'target', 'build'):
             continue
         (overlay / entry.name).symlink_to(entry)
-    (overlay / 'ansible').mkdir()
-    (overlay / 'ansible/roles').symlink_to(SRC / 'ansible/roles')
-    (overlay / 'ansible/site.yml').symlink_to(SRC / 'tests/e2e/site.yml')
+    (overlay / 'provision').mkdir()
+    for entry in (SRC / 'provision').iterdir():
+        if entry.name != 'ansible':
+            (overlay / 'provision' / entry.name).symlink_to(entry)
+    (overlay / 'provision/ansible').mkdir()
+    (overlay / 'provision/ansible/roles').symlink_to(SRC / 'provision/ansible/roles')
+    (overlay / 'provision/ansible/site.yml').symlink_to(SRC / 'tests/e2e/site.yml')
     return overlay
 
 
@@ -98,7 +102,7 @@ def source_with_plugins(name, plugins):
     overlay.mkdir()
     for entry in source().iterdir():
         if entry.name != 'plugins':
-            (overlay / entry.name).symlink_to(entry.resolve() if entry.name != 'ansible' else entry)
+            (overlay / entry.name).symlink_to(entry.resolve() if entry.name != 'provision' else entry)
     (overlay / 'plugins').mkdir()
     for shipped in (SRC / 'plugins').iterdir():
         (overlay / 'plugins' / shipped.name).symlink_to(shipped)
@@ -218,7 +222,7 @@ def shell_quote(text):
 
 def profile(**values):
     """A profile like berth writes for a new host, with the test host's address."""
-    base = json.loads((SRC / 'config/example.json').read_text())
+    base = json.loads((SRC / 'provision/config/example.json').read_text())
     base.update({
         'hostname': HOST, 'profile': 'cloud', 'keyboard': 'us',
         # The operator's sudo needs no password, as by default, so berth asks for none.

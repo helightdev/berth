@@ -14,7 +14,7 @@ use berth_core::{credentials, discovery, job, paths, plugins, registry};
 pub(crate) use berth_tui::{markdown, theme};
 use crossterm::{cursor::SetCursorStyle, event};
 use fields::{Action, Field, Step};
-use paths::Paths;
+use paths::{Paths, layout};
 use serde_json::json;
 use std::{error::Error, fs, io::Write, process::Command};
 
@@ -111,7 +111,7 @@ fn show_config(paths: &Paths) -> Result<()> {
     println!("Builds     {}", paths.build_dir().display());
     match paths.source() {
         Ok(source) => println!("Source     {}", source.display()),
-        Err(_) => println!("Source     not found"),
+        Err(error) => println!("Source     {error}"),
     }
     println!();
     for (key, help) in paths::SETTINGS {
@@ -155,7 +155,7 @@ fn open(paths: &Paths, host: &str) -> Result<App> {
     let (data, existing) = match fs::read(&path) {
         Ok(data) => (data, true),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            (fs::read("config/example.json")?, false)
+            (fs::read(layout::EXAMPLE)?, false)
         }
         Err(error) => return Err(error.into()),
     };
@@ -244,7 +244,7 @@ fn build_installer(paths: &Paths, host: &str, device: Option<&str>) -> Result<()
     app.action = Action::Iso;
     if app.text(Field::Iso).is_empty() {
         let output = Command::new("python3")
-            .args(["bin/devbox.py", "fetch-iso", "--dir"])
+            .args([layout::BUILDER, "fetch-iso", "--dir"])
             .arg(&app.iso_dir)
             .stderr(std::process::Stdio::inherit())
             .output()?;
@@ -268,7 +268,7 @@ fn build_installer(paths: &Paths, host: &str, device: Option<&str>) -> Result<()
     }
     let mut write = Command::new("sudo");
     write
-        .args(["bash", "bin/write-usb.sh"])
+        .args(["bash", layout::WRITE_USB])
         .arg(app.build_dir.join(name))
         .arg(device);
     succeed(write)
