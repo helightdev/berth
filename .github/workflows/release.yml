@@ -35,8 +35,8 @@ jobs:
       - name: Pack
         run: |
           mkdir dist
-          cp target/x86_64-unknown-linux-musl/release/berth LICENSE dist/
-          tar -czf berth-x86_64-linux.tar.gz -C dist berth LICENSE
+          cp target/x86_64-unknown-linux-musl/release/berth LICENSE-MIT LICENSE-APACHE dist/
+          tar -czf berth-x86_64-linux.tar.gz -C dist berth LICENSE-MIT LICENSE-APACHE
           sha256sum berth-x86_64-linux.tar.gz > berth-x86_64-linux.tar.gz.sha256
           cp target/host/x86_64-unknown-linux-musl/release/berthd target/host/x86_64-unknown-linux-musl/release/box dist/
       - name: Build berth with the page for a browser
@@ -44,7 +44,7 @@ jobs:
       - name: Pack it
         run: |
           cp target/x86_64-unknown-linux-musl/release/berth dist/berth
-          tar -czf berth-web-x86_64-linux.tar.gz -C dist berth LICENSE
+          tar -czf berth-web-x86_64-linux.tar.gz -C dist berth LICENSE-MIT LICENSE-APACHE
           sha256sum berth-web-x86_64-linux.tar.gz > berth-web-x86_64-linux.tar.gz.sha256
       - name: Check the versions
         # berth in both archives, and the berthd and box it carries, all say the same.

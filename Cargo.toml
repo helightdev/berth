@@ -9,7 +9,7 @@ default-members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", 
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 berth-api = { path = "crates/berth-api" }

@@ -25,7 +25,7 @@ BUILD = Path(os.environ.get('DEVBOX_BUILD_DIR') or ROOT / 'build').resolve()
 # Explicit allowlist: local profiles, keys and build outputs never enter a release.
 RELEASE_SOURCES = [
     'ansible', 'bin', 'bootstrap', 'container', 'plugins', 'tests',
-    'requirements.txt', 'ansible.cfg', 'README.md', 'LICENSE',
+    'requirements.txt', 'ansible.cfg', 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE',
     'cli/Cargo.toml', 'cli/Cargo.lock', 'cli/build.rs', 'cli/src', 'cli/vendor/tui-input',
     'cli/vendor/README.md', 'config/example.json',
 ]

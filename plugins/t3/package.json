@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "displayName": "T3 Code",
   "description": "T3 Code, a web front end for the coding agents, for berth machines.",
-  "license": "MIT",
+  "license": "MIT OR Apache-2.0",
   "keywords": [
     "berth-plugin"
   ],

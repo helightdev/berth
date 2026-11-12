@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "displayName": "End-to-end",
   "description": "A plugin for berth's end-to-end tests: a task, a service and a topic.",
-  "license": "MIT",
+  "license": "MIT OR Apache-2.0",
   "keywords": ["berth-plugin"],
   "berth": {
     "features": [

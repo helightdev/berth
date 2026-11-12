@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "displayName": "Backup",
   "description": "Snapshots of the agent's data with restic, sent anywhere rclone reaches.",
-  "license": "MIT",
+  "license": "MIT OR Apache-2.0",
   "keywords": [
     "berth-plugin"
   ],
