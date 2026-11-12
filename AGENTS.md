@@ -33,7 +33,7 @@ python3 -m unittest discover -s tests -v
 vale --minAlertLevel=warning README.md docs/content/docs plugins/*/guide.md
 ```
 
-The `web` feature needs the `wasm32-unknown-unknown` target. The Python tests skip their YAML checks without PyYAML, so install `requirements.txt` in a virtual environment to run them all.
+Development and test builds embed quick builds of berthd, box and the page (the `host-dev` and `web-dev` profiles). Only `--release` embeds the release builds. The `web` feature needs the `wasm32-unknown-unknown` target. The Python tests skip their YAML checks without PyYAML, so install `requirements.txt` in a virtual environment to run them all.
 
 ### In containers
 

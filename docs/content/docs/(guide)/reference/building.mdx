@@ -30,6 +30,16 @@ cargo install --locked --path cli                # into ~/.cargo/bin
 
 The build first makes `berthd` and `box` as static musl binaries and places them in the role's files. It then packs the provisioning source and embeds it in `berth`. It needs Python 3 for the packing.
 
+A release build embeds release builds of `berthd`, `box` and the page. A development or test build (`cargo build`, `cargo test`) embeds quicker ones:
+
+| Part | Profile | Built |
+| --- | --- | --- |
+| `berthd`, `box` | `host-dev` | Optimised for size, incrementally, with debug assertions |
+| The page | `web-dev` | Optimised, without the link-time optimisation of `web` |
+| berth itself | `dev` | Line numbers, no other debug information |
+
+For a debugger, `CARGO_PROFILE_DEV_DEBUG=true` gives berth's own crates full debug information.
+
 While changing the role or plugins, point berth at the checkout instead of the built-in copy:
 
 ```bash
@@ -110,4 +120,4 @@ cargo build --release -p berth --features web
 | Usual | `berth-x86_64-linux.tar.gz` | the default |
 | With the page | `berth-web-x86_64-linux.tar.gz` | `BERTH_VARIANT=web` |
 
-`berth update` stays with the build it is. The container image is the one with the page. The docs build takes the page from `target/web-dist` for `/web`.
+`berth update` stays with the build it is. The container image is the one with the page. The docs build takes the page from `target/web-dist` for `/web`. It builds the page with the `web` profile, as a release does, by setting `BERTH_WEB_PROFILE=web`.
