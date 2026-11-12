@@ -20,19 +20,21 @@ use axum::{
     routing::{any, get},
 };
 use berth_api::{
-    Done, ErrorBody, ErrorDetail, Message, Output, Version, b64, client, code,
+    Applied, Behind, Done, ErrorBody, ErrorDetail, HostBehind, Message, Output, Rollout,
+    RolloutReport, Version, b64, client, code,
     ops::{self, Role},
     streams,
 };
 use berth_core::{
     apply,
     host::Host,
+    rollout,
     store::{self, Filter, When},
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{sync::Arc, time::Duration};
+use std::{io::Write, sync::Arc, time::Duration};
 use tokio::sync::broadcast::error::RecvError;
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -102,6 +104,14 @@ pub struct HostInfo {
     /// Why it is not reachable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The berth version its configuration was last applied with, when its
+    /// berthd says. An older berthd does not, nor does a host not applied
+    /// since.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied: Option<String>,
+    /// What changed since then, when the server would apply something else now.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub behind: Option<Behind>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -113,6 +123,9 @@ pub struct JobInfo {
     pub started: String,
     pub ended: Option<String>,
     pub exit_code: Option<i32>,
+    /// How a roll-out went, host by host, once it has ended.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report: Option<RolloutReport>,
 }
 
 /// A stored message: the host's message with where it came from.
@@ -153,8 +166,17 @@ pub struct KvWritten {
     pub revision: i64,
 }
 
+/// Where a roll-out keeps its report: beside its output.
+fn report_path(output: &str) -> std::path::PathBuf {
+    std::path::Path::new(output).with_extension("json")
+}
+
 fn job_info(job: store::Job) -> JobInfo {
+    let report = std::fs::read(report_path(&job.output_path))
+        .ok()
+        .and_then(|data| serde_json::from_slice(&data).ok());
     JobInfo {
+        report,
         id: job.id,
         host: job.host,
         what: job.what,
@@ -184,6 +206,7 @@ pub fn documented() -> OpenApiRouter<Arc<Serve>> {
         .routes(routes!(host, setup::remove_host))
         .routes(routes!(setup::profile, setup::save_profile))
         .routes(routes!(apply_host))
+        .routes(routes!(rollout_hosts))
         .routes(routes!(setup::seed))
         .routes(routes!(setup::send_secrets))
         .routes(routes!(setup::secrets))
@@ -196,6 +219,8 @@ pub fn documented() -> OpenApiRouter<Arc<Serve>> {
         .routes(routes!(setup::plugins, setup::add_plugin))
         .routes(routes!(setup::upload_plugin))
         .routes(routes!(setup::remove_plugin))
+        .routes(routes!(setup::check_plugins))
+        .routes(routes!(setup::update_plugins))
         .routes(routes!(setup::catalogue))
         .routes(routes!(setup::generate))
         .routes(routes!(jobs))
@@ -356,8 +381,19 @@ async fn access(State(state): App, access: Option<Extension<Access>>) -> Json<Ac
 
 // ── Hosts ───────────────────────────────────────────────────────────────────
 
-async fn info(remote: Arc<Remote>) -> HostInfo {
+/// What the server would apply now, to compare a host with.
+pub(super) type Compare = Arc<dyn Fn(&Applied) -> Option<Behind> + Send + Sync>;
+
+pub(super) fn compare(state: &Serve) -> Compare {
+    Arc::new(rollout::comparer(&state.paths))
+}
+
+async fn info(remote: Arc<Remote>, compare: Compare) -> HostInfo {
     let seen = remote.version().await;
+    let applied = seen
+        .as_ref()
+        .ok()
+        .and_then(|version| version.applied.clone());
     HostInfo {
         name: remote.name.clone(),
         address: remote.address.clone(),
@@ -365,7 +401,31 @@ async fn info(remote: Arc<Remote>) -> HostInfo {
         version: seen.as_ref().ok().map(|version| version.version.clone()),
         api: seen.as_ref().ok().map(|version| version.api),
         error: seen.err(),
+        behind: applied.as_ref().and_then(|applied| compare(applied)),
+        applied: applied.map(|applied| applied.berth),
     }
+}
+
+/// The server's hosts that are behind, asked all at once.
+pub(super) async fn behind_hosts(state: &Arc<Serve>) -> Vec<HostBehind> {
+    state.refresh(false);
+    let compare = compare(state);
+    let remotes: Vec<_> = state.hosts.read().unwrap().values().cloned().collect();
+    let infos = futures_util::future::join_all(
+        remotes
+            .into_iter()
+            .map(|remote| info(remote, compare.clone())),
+    )
+    .await;
+    infos
+        .into_iter()
+        .filter_map(|info| {
+            Some(HostBehind {
+                name: info.name,
+                behind: info.behind?,
+            })
+        })
+        .collect()
 }
 
 pub(super) fn remote(state: &Serve, name: &str) -> Answer<Arc<Remote>> {
@@ -381,6 +441,7 @@ async fn version() -> Json<Version> {
         version: berth_api::VERSION.into(),
         api: berth_api::API,
         mode: "serve".into(),
+        applied: None,
     })
 }
 
@@ -388,8 +449,16 @@ async fn version() -> Json<Version> {
     responses((status = 200, description = "The saved hosts and whether each answers", body = Vec<HostInfo>)))]
 async fn hosts(State(state): App) -> Json<Vec<HostInfo>> {
     state.refresh(false);
+    let compare = compare(&state);
     let remotes: Vec<_> = state.hosts.read().unwrap().values().cloned().collect();
-    Json(futures_util::future::join_all(remotes.into_iter().map(info)).await)
+    Json(
+        futures_util::future::join_all(
+            remotes
+                .into_iter()
+                .map(|remote| info(remote, compare.clone())),
+        )
+        .await,
+    )
 }
 
 #[utoipa::path(get, path = "/v1/hosts/{name}", summary = "One host: its address, and whether it answers.", tag = "hosts",
@@ -398,7 +467,7 @@ async fn hosts(State(state): App) -> Json<Vec<HostInfo>> {
               (status = 404, description = "No such host", body = ErrorBody)))]
 async fn host(State(state): App, Path(name): Path<String>) -> Answer<Json<HostInfo>> {
     state.refresh(false);
-    Ok(Json(info(remote(&state, &name)?).await))
+    Ok(Json(info(remote(&state, &name)?, compare(&state)).await))
 }
 
 /// What applying may be given.
@@ -490,6 +559,77 @@ async fn apply_host(
         drop(files);
         let mut store = watcher.store.lock().unwrap();
         let _ = store.end_job(&id, exit_code);
+        if let Ok(Some(job)) = store.job(&id) {
+            let _ = watcher.events.send(Event::Job(job.json()));
+        }
+    });
+    Ok(Json(job_info(job)))
+}
+
+#[utoipa::path(post, path = "/v1/rollout", summary = "Bring hosts up to date one after another, as a job: apply each that is behind, maybe run its update and reboot it, and check it. The first that fails stops the rest.", tag = "hosts",
+    request_body(content = Option<Rollout>, description = "Which hosts and what to do; by default the saved hosts that are behind, applied only"),
+    responses((status = 200, description = "The job; its report says how each host went once it has ended", body = JobInfo),
+              (status = 400, description = "The body is not a roll-out", body = ErrorBody),
+              (status = 404, description = "No such host", body = ErrorBody)))]
+async fn rollout_hosts(State(state): App, body: Bytes) -> Answer<Json<JobInfo>> {
+    state.refresh(false);
+    let options: Rollout = match body.is_empty() {
+        true => Rollout::default(),
+        false => serde_json::from_slice(&body)
+            .map_err(|error| Fail::new(code::BAD_REQUEST, error.to_string()))?,
+    };
+    let known: Vec<String> = state.hosts.read().unwrap().keys().cloned().collect();
+    let names = rollout::chosen(known, &options.hosts)
+        .map_err(|error| Fail::new(code::NOT_FOUND, error.to_string()))?;
+    let id = new_id().map_err(internal)?;
+    std::fs::create_dir_all(&state.jobs_dir).map_err(internal)?;
+    let path = state.jobs_dir.join(format!("{id}.log"));
+    let mut output = std::fs::File::create(&path).map_err(internal)?;
+    let job = store::Job {
+        id: id.clone(),
+        host: names.join(", "),
+        what: "rollout".into(),
+        started: berth_api::now(),
+        ended: None,
+        exit_code: None,
+        output_path: path.to_string_lossy().into_owned(),
+    };
+    state.store.lock().unwrap().add_job(&job)?;
+    let _ = state.events.send(Event::Job(job.json()));
+    let passwords: Vec<Option<String>> = names
+        .iter()
+        .map(|name| state.host(name).and_then(|remote| remote.password.clone()))
+        .collect();
+    let watcher = state.clone();
+    // Its own thread: the roll-out waits on hosts with a runtime of its own.
+    std::thread::spawn(move || {
+        let paths = &watcher.paths;
+        let mut targets: Vec<Box<dyn rollout::Target + '_>> = vec![];
+        let mut problem = None;
+        for (name, password) in names.iter().zip(passwords) {
+            match Host::load(paths, name).and_then(|host| rollout::Live::new(paths, host, password))
+            {
+                Ok(target) => targets.push(Box::new(target)),
+                Err(error) => problem = Some(format!("✗ {name}: {error}")),
+            }
+        }
+        let report = match problem {
+            Some(problem) => {
+                let _ = writeln!(output, "{problem}");
+                RolloutReport::default()
+            }
+            None => {
+                let compare = rollout::comparer(paths);
+                rollout::run(&mut targets, &options, &compare, &mut output)
+            }
+        };
+        drop(targets);
+        let _ = std::fs::write(
+            report_path(&path.to_string_lossy()),
+            serde_json::to_vec(&report).unwrap_or_default(),
+        );
+        let mut store = watcher.store.lock().unwrap();
+        let _ = store.end_job(&id, Some(if report.ok { 0 } else { 1 }));
         if let Ok(Some(job)) = store.job(&id) {
             let _ = watcher.events.send(Event::Job(job.json()));
         }

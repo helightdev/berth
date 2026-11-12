@@ -1414,6 +1414,33 @@ struct PluginView {
     editor: Option<Input>,
     listing: Option<std::result::Result<berth_api::PluginList, String>>,
     report: Vec<String>,
+    /// The lines of a roll-out that runs, as they come.
+    rolling: Option<std::sync::mpsc::Receiver<String>>,
+}
+
+/// The lines a roll-out writes, sent on one by one; only its own, not what
+/// Ansible says.
+struct RolloutLines {
+    sender: std::sync::mpsc::Sender<String>,
+    pending: Vec<u8>,
+}
+
+impl std::io::Write for RolloutLines {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.pending.extend_from_slice(data);
+        while let Some(end) = self.pending.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = self.pending.drain(..=end).collect();
+            let line = String::from_utf8_lossy(&line).trim_end().to_owned();
+            if berth_tui::plugins::rollout_line(&line) {
+                let _ = self.sender.send(line);
+            }
+        }
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 impl PluginView {
@@ -1430,6 +1457,51 @@ impl PluginView {
             Some(Ok(listing)) => &listing.plugins,
             _ => &[],
         }
+    }
+
+    /// Take in what a roll-out that runs has said since.
+    fn pump(&mut self, status: &mut String) {
+        let Some(lines) = &self.rolling else {
+            return;
+        };
+        loop {
+            match lines.try_recv() {
+                Ok(line) => {
+                    *status = line.clone();
+                    self.report.push(line);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.rolling = None;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Start a roll-out in the background, its lines shown as they come.
+    fn roll_out(&mut self, paths: &Paths, options: berth_api::Rollout) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let paths = Paths {
+            config_dir: paths.config_dir.clone(),
+            data_dir: paths.data_dir.clone(),
+        };
+        self.report = vec!["Rolling out…".into()];
+        self.tab.behind.clear();
+        self.rolling = Some(receiver);
+        std::thread::spawn(move || {
+            let mut out = RolloutLines {
+                sender: sender.clone(),
+                pending: vec![],
+            };
+            let said = match crate::commands::rollout(&paths, &options, false, &mut out) {
+                Ok(report) => crate::commands::rollout_summary(&report),
+                Err(error) => format!("✗ {error}"),
+            };
+            for line in said.lines() {
+                let _ = sender.send(line.to_owned());
+            }
+        });
     }
 
     /// Show what a change said, and read the plugins again.
@@ -1483,6 +1555,30 @@ fn plugins_key(
             let done = crate::plugins::Manager::new(paths).remove(&id);
             view.changed(done, status);
         }
+        Asked::Check => match crate::plugins::Manager::new(paths).check() {
+            Ok(checked) => {
+                view.report = view.tab.checked(checked.plugins);
+                *status = berth_tui::plugins::status(&view.report);
+            }
+            Err(error) => view.changed(Err(error), status),
+        },
+        Asked::Update(id) => {
+            let manager = crate::plugins::Manager::new(paths);
+            match manager.update(id.as_deref()) {
+                Ok(mut report) => {
+                    if manager.server().is_none() {
+                        report.behind = berth_core::rollout::survey(paths);
+                    }
+                    let lines = view.tab.updated(report);
+                    view.changed(Ok(lines), status);
+                }
+                Err(error) => view.changed(Err(error), status),
+            }
+        }
+        Asked::Rollout(_) if view.rolling.is_some() => {
+            *status = "A roll-out runs already".into();
+        }
+        Asked::Rollout(options) => view.roll_out(paths, options),
         Asked::Other => match key.code {
             KeyCode::Char('1') | KeyCode::Tab | KeyCode::Esc => return Outcome::Tab(0),
             KeyCode::Char('2') => return Outcome::Tab(1),
@@ -2019,6 +2115,7 @@ fn home_loop(terminal: &mut DefaultTerminal, paths: &Paths) -> Result<Option<Str
         }
         if let HomeMode::Plugins(view) = &mut home.mode {
             view.load(paths);
+            view.pump(&mut home.status);
         }
         // The water redraws many times a second. Each frame is applied at once,
         // so the text cursor is not seen travelling to the water and back.
@@ -2462,7 +2559,7 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
         }
         HomeMode::Plugins(view) => {
             let plugins = view.plugins();
-            let listed = berth_tui::plugins::rows(plugins);
+            let listed = berth_tui::plugins::rows(plugins, &view.tab.updates);
             let selected = view.tab.selected.min(listed.len() - 1);
             let server = berth_core::server::Server::configured(paths);
             let place = plugin_place(&server);
@@ -2491,7 +2588,7 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                 if view.editor.is_some() {
                     "Enter install · Esc cancel"
                 } else {
-                    "↑↓ select · Enter add · x remove · Tab hosts · q quit"
+                    "↑↓ select · Enter add · c check · U update · A all · x remove · Tab hosts · q quit"
                 },
             )
         }

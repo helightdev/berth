@@ -597,22 +597,32 @@ impl App {
             true => self.agent_label().to_owned(),
             false => self.operator_label(),
         };
-        berth_tui::host::groups(&self.host, &user)
+        let behind = berth_tui::host::behind_note(&self.host).map(|text| {
+            (
+                "Configuration".to_owned(),
+                vec![note(text, theme::WARN), fixed("apply")],
+            )
+        });
+        behind
             .into_iter()
-            .map(|(title, rows)| {
-                let rows = rows
+            .chain(
+                berth_tui::host::groups(&self.host, &user)
                     .into_iter()
-                    .map(|(line, pick)| {
-                        let entry = match pick {
-                            Pick::Task(index) => Entry::HostTask(index),
-                            Pick::Terminal => Entry::Task("terminal"),
-                            Pick::Session(index) => Entry::HostSession(index),
-                        };
-                        Row::entry(line, entry)
-                    })
-                    .collect();
-                (title, rows)
-            })
+                    .map(|(title, rows)| {
+                        let rows = rows
+                            .into_iter()
+                            .map(|(line, pick)| {
+                                let entry = match pick {
+                                    Pick::Task(index) => Entry::HostTask(index),
+                                    Pick::Terminal => Entry::Task("terminal"),
+                                    Pick::Session(index) => Entry::HostSession(index),
+                                };
+                                Row::entry(line, entry)
+                            })
+                            .collect();
+                        (title, rows)
+                    }),
+            )
             .collect()
     }
 
@@ -1332,7 +1342,7 @@ impl App {
         }
         match host.link(self.host.password.as_deref()) {
             Ok(spec) => {
-                crate::remote::connect(&mut self.host, spec);
+                crate::remote::connect_with(&mut self.host, spec, compare(&host));
             }
             Err(error) => self.host.state = State::Unreachable(error.to_string()),
         }
@@ -1997,4 +2007,23 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
         config["builder"]["ask_pass"] = json!(false);
     }
     Ok(config)
+}
+
+/// How the overview tells whether a host is behind: a server's host the way
+/// the server sees it, another with this machine's plugins.
+fn compare(host: &Host) -> Option<crate::remote::Compare> {
+    if let Some(server) = host.served() {
+        let name = host.name.clone();
+        return Some(std::sync::Arc::new(move |_: &berth_api::Version| {
+            let found = server
+                .call("hosts.get", serde_json::json!({"name": name}), None)
+                .ok()?;
+            serde_json::from_value(found.get("behind")?.clone()).ok()
+        }));
+    }
+    let paths = crate::paths::Paths::locate().ok()?;
+    let now = berth_core::rollout::comparer(&paths);
+    Some(std::sync::Arc::new(move |version: &berth_api::Version| {
+        now(version.applied.as_ref()?)
+    }))
 }

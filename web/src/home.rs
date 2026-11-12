@@ -829,7 +829,9 @@ impl Home {
     // ── Plugins ─────────────────────────────────────────────────────────────
 
     fn plugins_shown(&mut self, data: &Data) -> Shown {
-        let listed = plugins::rows(&data.plugins);
+        self.plugins.updates = data.updates.clone();
+        self.plugins.behind = data.behind.clone();
+        let listed = plugins::rows(&data.plugins, &data.updates);
         let selected = self.plugins.selected(&data.plugins);
         let plugin = listed[selected].0.map(|index| &data.plugins[index]);
         let help = plugins::help(plugin, &data.report, &Place::Page.adding(&data.plugin_dir));
@@ -843,7 +845,9 @@ impl Home {
             help,
             keys: match self.editor {
                 Some(_) => "Enter install · Esc cancel",
-                None => "↑↓ select · Enter add · u send a .tgz · x remove · Esc hosts",
+                None => {
+                    "↑↓ select · Enter add · u send a .tgz · c check · U update · A all · x remove · Esc hosts"
+                }
             },
         }
     }
@@ -851,6 +855,8 @@ impl Home {
     fn plugins_key(&mut self, key: Key, admin: &Admin) -> Option<String> {
         let (listed, mut report) = {
             let data = admin.data.borrow();
+            self.plugins.updates = data.updates.clone();
+            self.plugins.behind = data.behind.clone();
             (data.plugins.clone(), data.report.clone())
         };
         let asked = self
@@ -861,6 +867,9 @@ impl Home {
             Asked::Nothing(said) => return said,
             Asked::Install(spec) => admin.add_plugin(&spec),
             Asked::Remove(id) => admin.remove_plugin(&id),
+            Asked::Check => admin.check_plugins(),
+            Asked::Update(id) => admin.update_plugins(id.as_deref()),
+            Asked::Rollout(options) => admin.roll_out(&options),
             Asked::Other if key.code == Code::Char('u') => {
                 let admin = admin.clone();
                 crate::browser::choose_file(".tgz,.tar.gz", move |name, package| {

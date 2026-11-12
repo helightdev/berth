@@ -51,6 +51,9 @@ pub enum Request {
 
 pub enum Event {
     Version(api::Version),
+    /// How the host's configuration differs from what would be applied now;
+    /// nothing when it is current or does not say.
+    Behind(Option<api::Behind>),
     /// The host could not be asked. `missing` when it has no controller.
     Failed {
         message: String,
@@ -240,6 +243,8 @@ pub struct HostView {
     pub tasks: Vec<api::Task>,
     pub sessions: Vec<api::Session>,
     pub stats: Option<api::Stats>,
+    /// What changed since the host was applied, when berth knows.
+    pub behind: Option<api::Behind>,
     pub view: Option<View>,
     /// The SSH user's sudo password, kept for this run of the UI.
     pub password: Option<String>,
@@ -260,6 +265,7 @@ impl Default for HostView {
             tasks: vec![],
             sessions: vec![],
             stats: None,
+            behind: None,
             view: None,
             password: None,
             question: None,
@@ -297,6 +303,7 @@ impl HostView {
         self.tasks.clear();
         self.sessions.clear();
         self.stats = None;
+        self.behind = None;
         self.state = State::Idle;
     }
 
@@ -468,6 +475,7 @@ impl HostView {
                         self.state = State::Unreachable(message);
                     }
                 }
+                Event::Behind(behind) => self.behind = behind,
                 Event::Tasks(tasks) => self.tasks = tasks,
                 Event::Sessions(sessions) => self.sessions = sessions,
                 Event::Stats(stats) => self.stats = Some(*stats),
@@ -662,6 +670,15 @@ pub fn groups(host: &HostView, terminal_user: &str) -> Vec<(String, Vec<(String,
         groups.push(("Sessions".to_owned(), rows));
     }
     groups
+}
+
+/// What the overview says of a host whose configuration is behind.
+pub fn behind_note(host: &HostView) -> Option<String> {
+    let behind = host.behind.as_ref()?;
+    Some(format!(
+        "Applied before these changed: {}. Applying the configuration again brings the host up to date; sign-ins and data stay.",
+        behind.text()
+    ))
 }
 
 /// A list that comes bare, or under a key of an object.

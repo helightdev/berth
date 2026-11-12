@@ -151,6 +151,20 @@ impl Transport for Remote {
                     match version {
                         Ok(version) => {
                             let old = version.api < NEEDS_API;
+                            // The server says whether the host is behind what it would apply.
+                            let asked = events.clone();
+                            portal.call(
+                                "hosts.get",
+                                None,
+                                json!({"name": host}),
+                                Value::Null,
+                                move |result| {
+                                    let behind = result.ok().and_then(|found| {
+                                        serde_json::from_value(found.get("behind")?.clone()).ok()
+                                    });
+                                    asked.borrow_mut().push_back(Event::Behind(behind));
+                                },
+                            );
                             events.borrow_mut().push_back(Event::Version(version));
                             if old {
                                 return;

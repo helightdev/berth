@@ -84,10 +84,16 @@ async fn version(AppState(state): AppState<Arc<State>>) -> Json<api::Version> {
     } else {
         "single"
     };
+    // Written by the role at the end of an apply; read each time, as it
+    // changes without a reload.
+    let applied = std::fs::read(state.config_dir.join("applied.json"))
+        .ok()
+        .and_then(|data| serde_json::from_slice(&data).ok());
     Json(api::Version {
         version: api::VERSION.into(),
         api: api::API,
         mode: mode.into(),
+        applied,
     })
 }
 

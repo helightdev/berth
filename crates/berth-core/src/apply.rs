@@ -79,6 +79,12 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
     let dirs = plugin_dirs(&plugins);
     let own = paths.own_public_key();
     let mut vars = ansible_vars(&host.config, &dirs, own.as_deref());
+    // The role keeps this on the host, for the plugins the host has, so
+    // berth can tell later whether the host is behind.
+    vars["devbox_berth_applied"] = json!({
+        "berth": berth_api::VERSION,
+        "plugins": plugins::records(&plugins),
+    });
     if let Some(password) = become_password {
         vars["ansible_become_password"] = json!(password);
     }

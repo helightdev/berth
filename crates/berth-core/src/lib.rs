@@ -11,6 +11,7 @@ pub mod oauth;
 pub mod paths;
 pub mod plugins;
 pub mod registry;
+pub mod rollout;
 pub mod server;
 pub mod store;
 

@@ -737,6 +737,135 @@ pub fn apply(paths: &Paths, name: &str) -> Result<()> {
     std::process::exit(code);
 }
 
+/// A roll-out, from here or as a job of the berth server berth is set to
+/// use. Its output goes to `out` as it comes. With `ask`, a host whose sudo
+/// asks for a password has it asked for on the terminal.
+pub fn rollout(
+    paths: &Paths,
+    options: &api::Rollout,
+    ask: bool,
+    out: &mut dyn Write,
+) -> Result<api::RolloutReport> {
+    let Some(server) = berth_core::server::Server::configured(paths) else {
+        let password = |host: &Host| match ask {
+            true => host.sudo_password().ok().flatten(),
+            false => std::env::var("BERTH_SUDO_PASSWORD")
+                .ok()
+                .filter(|_| host.asks_password()),
+        };
+        return berth_core::rollout::local(paths, options, &password, out);
+    };
+    link::runtime()?.block_on(async {
+        let portal = server.portal().await?;
+        let job = portal
+            .call(
+                "hosts.rollout",
+                None,
+                Value::Null,
+                Some(serde_json::to_value(options)?),
+            )
+            .await?;
+        let id = job["id"].as_str().unwrap_or("").to_owned();
+        let _ = writeln!(out, "Job {id} on the berth server at {}", server.url);
+        let mut output = portal.open("jobs.follow", None, json!({"id": id})).await?;
+        while let Some(piece) = output.recv().await {
+            if let api::portal::Piece::Binary(data) = piece? {
+                out.write_all(&data)?;
+                out.flush()?;
+            }
+        }
+        let ended = portal
+            .call("jobs.get", None, json!({"id": id}), None)
+            .await?;
+        Ok(serde_json::from_value(ended["report"].clone()).unwrap_or_default())
+    })
+}
+
+/// `[--all] [--update] [--reboot] [--force]` of a roll-out.
+pub fn parse_rollout(args: &[&str]) -> Result<api::Rollout> {
+    let mut options = api::Rollout::default();
+    for arg in args {
+        match *arg {
+            "--behind" => {}
+            "--all" => options.all = true,
+            "--update" => options.update = true,
+            "--reboot" => options.reboot = true,
+            "--force" => options.force = true,
+            other => return Err(format!("Not an option of a roll-out: {other}").into()),
+        }
+    }
+    if options.force && !options.reboot {
+        return Err("--force only goes with --reboot".into());
+    }
+    Ok(options)
+}
+
+/// `berth apply --behind|--all [--update] [--reboot] [--force]`: bring the
+/// hosts up to date, one at a time.
+pub fn apply_hosts(paths: &Paths, args: &[&str]) -> Result<()> {
+    let options = parse_rollout(args)?;
+    let mut out = std::io::stdout();
+    let report = rollout(paths, &options, true, &mut out)?;
+    println!("{}", rollout_summary(&report));
+    if !report.ok {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// A line per host of a roll-out's report.
+pub fn rollout_summary(report: &api::RolloutReport) -> String {
+    berth_tui::plugins::summary(report).join("\n")
+}
+
+/// `berth plugins update [ID] [--check] [--apply [--reboot [--force]]]`.
+pub fn update_plugins(paths: &Paths, args: &[&str]) -> Result<()> {
+    let (mut name, mut check, mut rollout_args) = (None, false, vec![]);
+    let mut apply = false;
+    for arg in args {
+        match *arg {
+            "--check" => check = true,
+            "--apply" => apply = true,
+            "--reboot" | "--force" | "--update" => rollout_args.push(*arg),
+            word if !word.starts_with('-') && name.is_none() => name = Some(word),
+            other => return Err(format!("Not an option of berth plugins update: {other}").into()),
+        }
+    }
+    if !rollout_args.is_empty() && !apply {
+        return Err(format!("{} goes with --apply", rollout_args[0]).into());
+    }
+    let manager = berth_core::plugins::Manager::new(paths);
+    if check {
+        let checked = manager.check()?;
+        for plugin in checked.plugins {
+            let state = match (&plugin.latest, plugin.note.as_str()) {
+                (Some(latest), _) => format!("{} → {latest}", plugin.version),
+                (None, "") => format!("{} is the latest", plugin.version),
+                (None, note) => format!("{}: {note}", plugin.version),
+            };
+            println!("{:<16} {state}", plugin.id);
+        }
+        return Ok(());
+    }
+    let mut report = manager.update(name)?;
+    for line in &report.lines {
+        println!("{line}");
+    }
+    if manager.server().is_none() {
+        report.behind = berth_core::rollout::survey(paths);
+    }
+    for host in &report.behind {
+        println!("{} needs applying: {}", host.name, host.behind.text());
+    }
+    if !apply {
+        if !report.behind.is_empty() {
+            println!("berth apply --behind brings them up to date.");
+        }
+        return Ok(());
+    }
+    apply_hosts(paths, &rollout_args)
+}
+
 /// `berth seed HOST` with a berth server: the server renders the seed, and it
 /// is written here.
 pub fn seed(paths: &Paths, name: &str) -> Result<()> {

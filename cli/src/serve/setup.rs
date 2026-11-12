@@ -11,7 +11,10 @@ use axum::{
     body::Bytes,
     extract::{Path, State},
 };
-use berth_api::{Done, ErrorBody, PluginList, PluginOrigin, PluginReport, Session, b64, code};
+use berth_api::{
+    Done, ErrorBody, PluginList, PluginOrigin, PluginReport, PluginUpdateSpec, PluginUpdates,
+    Session, b64, code,
+};
 use berth_core::{
     apply,
     host::Host,
@@ -447,7 +450,10 @@ async fn change_plugins(
     .await
     .map_err(internal)?
     .map_err(bad)?;
-    Ok(Json(PluginReport { lines }))
+    Ok(Json(PluginReport {
+        lines,
+        behind: vec![],
+    }))
 }
 
 /// What npm installs, with the server's npm configuration and none of the
@@ -522,6 +528,48 @@ pub async fn remove_plugin(
         ));
     }
     change_plugins(move || plugins::remove(&own, &plugin)).await
+}
+
+#[utoipa::path(get, path = "/v1/plugins/updates", summary = "Ask the registries the server's own plugins came from whether they have newer versions.", tag = "set-up",
+    responses((status = 200, description = "Each of the server's own plugins, with the latest version where there is a newer one", body = PluginUpdates),
+              (status = 400, description = "npm could not be run", body = ErrorBody)))]
+pub async fn check_plugins(State(state): App) -> Answer<Json<PluginUpdates>> {
+    let source = state.paths.source().map_err(internal)?;
+    let own = plugin_dir(&state);
+    let checked = tokio::task::spawn_blocking(move || {
+        let _one = NPM.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        plugins::check(&own, &plugins::found(&source, &own)).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(internal)?
+    .map_err(bad)?;
+    Ok(Json(checked))
+}
+
+#[utoipa::path(post, path = "/v1/plugins/update", summary = "Update one of the server's own plugins, or all, to the latest version of their registry, and say which hosts are behind then.", tag = "set-up",
+    request_body(content = Option<PluginUpdateSpec>, description = "The plugin, by id or npm name; all without one"),
+    responses((status = 200, description = "Updated; what npm said, and the hosts that need applying", body = PluginReport),
+              (status = 400, description = "It has no registry to ask, comes with berth, or npm failed; the message says which", body = ErrorBody),
+              (status = 404, description = "No such plugin", body = ErrorBody)))]
+pub async fn update_plugins(State(state): App, body: Bytes) -> Answer<Json<PluginReport>> {
+    let asked: PluginUpdateSpec = match body.is_empty() {
+        true => PluginUpdateSpec::default(),
+        false => serde_json::from_slice(&body).map_err(bad)?,
+    };
+    let source = state.paths.source().map_err(internal)?;
+    let own = plugin_dir(&state);
+    let found = plugins::found(&source, &own);
+    if let Some(name) = &asked.id
+        && !found
+            .iter()
+            .any(|plugin| &plugin.id == name || &plugin.package == name)
+    {
+        return Err(missing(format!("No plugin {name}")));
+    }
+    let Json(mut report) =
+        change_plugins(move || plugins::update(&own, &found, asked.id.as_deref())).await?;
+    report.behind = super::api::behind_hosts(&state).await;
+    Ok(Json(report))
 }
 
 // ── What a set-up screen needs ──────────────────────────────────────────────

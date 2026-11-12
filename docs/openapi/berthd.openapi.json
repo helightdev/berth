@@ -1,6 +1,49 @@
 {
   "components": {
     "schemas": {
+      "Applied": {
+        "description": "What berth recorded on a host when it applied the configuration: its own\nversion and the plugins whose features the host has.",
+        "properties": {
+          "berth": {
+            "type": "string"
+          },
+          "plugins": {
+            "items": {
+              "$ref": "#/components/schemas/AppliedPlugin"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "berth"
+        ],
+        "type": "object"
+      },
+      "AppliedPlugin": {
+        "description": "A plugin as it was when a host's configuration was applied.",
+        "properties": {
+          "digest": {
+            "description": "SHA-256 of its files, so a change without a new version shows too.",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "package",
+          "version",
+          "digest"
+        ],
+        "type": "object"
+      },
       "Argument": {
         "properties": {
           "choices": {
@@ -1291,6 +1334,17 @@
             "format": "int32",
             "minimum": 0,
             "type": "integer"
+          },
+          "applied": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Applied",
+                "description": "What the host's configuration was last applied from, when berth\nrecorded it. An older berthd does not say."
+              }
+            ]
           },
           "mode": {
             "description": "`system` or `single`.",

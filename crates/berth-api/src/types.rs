@@ -40,6 +40,10 @@ pub struct Version {
     /// `system` or `single`.
     #[serde(default)]
     pub mode: String,
+    /// What the host's configuration was last applied from, when berth
+    /// recorded it. An older berthd does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied: Option<Applied>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -641,4 +645,203 @@ pub struct PluginList {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct PluginReport {
     pub lines: Vec<String>,
+    /// After an update: the hosts whose configuration is now behind.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub behind: Vec<HostBehind>,
+}
+
+/// Whether a newer version of a plugin is there, as its registry says.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct PluginUpdate {
+    pub id: String,
+    pub package: String,
+    /// The version installed.
+    pub version: String,
+    /// The registry's latest version, when it is another one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest: Option<String>,
+    /// Why there is nothing to ask, or what asking said: a plugin from a
+    /// .tgz or a folder has no registry to ask.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
+}
+
+/// The answer of `plugins.check`: each of the user's plugins.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct PluginUpdates {
+    pub plugins: Vec<PluginUpdate>,
+}
+
+/// What to update: one plugin by its id or npm name, or all of them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct PluginUpdateSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+// ── What a host was applied from ────────────────────────────────────────────
+
+/// A plugin as it was when a host's configuration was applied.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AppliedPlugin {
+    pub id: String,
+    pub package: String,
+    pub version: String,
+    /// SHA-256 of its files, so a change without a new version shows too.
+    pub digest: String,
+}
+
+/// What berth recorded on a host when it applied the configuration: its own
+/// version and the plugins whose features the host has.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Applied {
+    pub berth: String,
+    #[serde(default)]
+    pub plugins: Vec<AppliedPlugin>,
+}
+
+/// Something that changed since a host was applied: berth itself or a plugin.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Change {
+    /// `berth`, or a plugin's id.
+    pub id: String,
+    /// The version the host was applied with.
+    pub from: String,
+    /// The version there is now; empty for a plugin that is gone, the same
+    /// as `from` for one whose files changed.
+    pub to: String,
+}
+
+impl Change {
+    /// `claude 1.0.0 → 1.1.0`, `claude 1.0.0 (changed)`, `claude 1.0.0 (gone)`.
+    pub fn text(&self) -> String {
+        match self.to.as_str() {
+            "" => format!("{} {} (gone)", self.id, self.from),
+            to if to == self.from => format!("{} {} (changed)", self.id, self.from),
+            to => format!("{} {} → {to}", self.id, self.from),
+        }
+    }
+}
+
+/// How a host's configuration differs from what berth would apply now.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Behind {
+    /// berth first when its version changed, then the plugins.
+    pub changes: Vec<Change>,
+}
+
+impl Behind {
+    /// Compare what was applied with berth's version and plugins now.
+    /// Nothing when they are the same.
+    pub fn compare(applied: &Applied, berth: &str, now: &[AppliedPlugin]) -> Option<Behind> {
+        let mut changes = vec![];
+        if applied.berth != berth {
+            changes.push(Change {
+                id: "berth".into(),
+                from: applied.berth.clone(),
+                to: berth.into(),
+            });
+        }
+        for was in &applied.plugins {
+            match now.iter().find(|plugin| plugin.id == was.id) {
+                Some(is) if is.digest == was.digest => {}
+                is => changes.push(Change {
+                    id: was.id.clone(),
+                    from: was.version.clone(),
+                    to: is.map(|is| is.version.clone()).unwrap_or_default(),
+                }),
+            }
+        }
+        (!changes.is_empty()).then_some(Behind { changes })
+    }
+
+    /// `claude 1.0.0 → 1.1.0, berth 0.3.0 → 0.4.0`.
+    pub fn text(&self) -> String {
+        self.changes
+            .iter()
+            .map(Change::text)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// A host whose configuration is behind, and how.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct HostBehind {
+    pub name: String,
+    #[serde(flatten)]
+    pub behind: Behind,
+}
+
+// ── Rolling out ─────────────────────────────────────────────────────────────
+
+/// What a roll-out does: apply the hosts that are behind one after another,
+/// stopping at the first that fails.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Rollout {
+    /// These hosts, in this order; all saved hosts by name when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
+    /// Also the hosts that are current.
+    #[serde(default)]
+    pub all: bool,
+    /// Run each host's `update` task after applying.
+    #[serde(default)]
+    pub update: bool,
+    /// Reboot a host that says it needs it, and wait for it to come back.
+    #[serde(default)]
+    pub reboot: bool,
+    /// Reboot although sessions run, which ends them.
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// How one host of a roll-out went.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RolloutState {
+    /// Applied, and healthy afterwards.
+    Done,
+    /// Nothing to do: it was current.
+    Current,
+    /// Not started, because an earlier host stopped the roll-out.
+    #[default]
+    Skipped,
+    /// Something went wrong; the roll-out stopped here.
+    Failed,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RolloutHost {
+    pub name: String,
+    pub state: RolloutState,
+    /// What had changed, as it was before applying.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<Change>,
+    /// It was rebooted.
+    #[serde(default)]
+    pub rebooted: bool,
+    /// What went wrong, for a failed host.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
+    /// What did not go well without being a failure, such as an update step
+    /// that ended badly. One stops the roll-out after this host.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// Whether a line of a roll-out's output is one of its own, rather than
+/// what Ansible or a task wrote: those start with ▸, ✓, ! or ✗.
+pub fn rollout_line(line: &str) -> bool {
+    ["▸ ", "✓ ", "! ", "✗ "]
+        .iter()
+        .any(|start| line.starts_with(start))
+}
+
+/// The result of a roll-out, host by host in the order they were taken.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RolloutReport {
+    pub hosts: Vec<RolloutHost>,
+    /// Every host is done or current.
+    pub ok: bool,
 }

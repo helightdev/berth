@@ -1132,6 +1132,30 @@ async fn plugins_are_managed_through_the_api() {
     assert!(listed["dir"].as_str().unwrap().ends_with("config/plugins"));
     let (_, found) = send(client, "GET", "/v1/setup", Value::Null).await;
     assert!(keys(&found).contains(&"hello/cow".to_owned()));
+    // A folder has no registry to ask for a newer version, nor has berth's own.
+    let (status, checked) = send(client, "GET", "/v1/plugins/updates", Value::Null).await;
+    assert_eq!(status, 200, "{checked}");
+    assert_eq!(checked["plugins"][0]["id"], "hello");
+    assert!(
+        checked["plugins"][0]["note"]
+            .as_str()
+            .unwrap()
+            .contains("folder")
+    );
+    for (id, status, says) in [
+        ("hello", 400, "copy the new one"),
+        ("claude", 400, "comes with berth"),
+        ("nothing", 404, "No plugin"),
+    ] {
+        let (got, said) = send(client, "POST", "/v1/plugins/update", json!({"id": id})).await;
+        assert_eq!(got, status, "{id}: {said}");
+        assert!(
+            said["error"]["message"].as_str().unwrap().contains(says),
+            "{said}"
+        );
+    }
+    let (status, said) = send(client, "POST", "/v1/rollout", json!({"hosts": ["nothing"]})).await;
+    assert_eq!(status, 404, "{said}");
     let (status, said) = send(client, "DELETE", "/v1/plugins/hello", Value::Null).await;
     assert_eq!(status, 200, "{said}");
     assert!(said["lines"][0].as_str().unwrap().starts_with('✓'));

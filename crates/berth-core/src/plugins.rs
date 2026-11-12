@@ -4,8 +4,8 @@
 
 use crate::{Result, paths::Paths, server::Server};
 use berth_api::{
-    PluginFeature, PluginInfo, PluginList as Listing, PluginOrigin, PluginReport as Report,
-    PluginService, PluginTask,
+    AppliedPlugin, PluginFeature, PluginInfo, PluginList as Listing, PluginOrigin,
+    PluginReport as Report, PluginService, PluginTask, PluginUpdate, PluginUpdates,
 };
 use serde_json::{Value, json};
 use std::fs;
@@ -343,6 +343,64 @@ pub fn describe(plugins: &[PluginInfo]) -> String {
     text
 }
 
+/// SHA-256 over a plugin's files, their paths and contents, so a plugin
+/// that changed without a new version is told apart. What npm installed
+/// beside it (`node_modules`) and a `.git` folder are not part of it.
+pub fn digest(dir: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    fn walk(base: &Path, dir: &Path, files: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            if name == "node_modules" || name == ".git" {
+                continue;
+            }
+            match fs::metadata(&path) {
+                Ok(meta) if meta.is_dir() => walk(base, &path, files),
+                Ok(_) => files.push(path.strip_prefix(base).unwrap_or(&path).to_owned()),
+                Err(_) => {}
+            }
+        }
+    }
+    let mut files = vec![];
+    walk(dir, dir, &mut files);
+    files.sort();
+    let mut hash = Sha256::new();
+    for file in files {
+        let data = fs::read(dir.join(&file)).unwrap_or_default();
+        hash.update(file.to_string_lossy().as_bytes());
+        hash.update([0]);
+        hash.update((data.len() as u64).to_be_bytes());
+        hash.update(&data);
+    }
+    hash.finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// What is recorded of each plugin on a host when it is applied.
+pub fn records(plugins: &[Plugin]) -> Vec<AppliedPlugin> {
+    plugins
+        .iter()
+        .map(|plugin| AppliedPlugin {
+            id: plugin.id.clone(),
+            package: plugin.package.clone(),
+            version: plugin.version.clone(),
+            digest: digest(&plugin.dir),
+        })
+        .collect()
+}
+
+/// How a host that says what it was applied from differs from what these
+/// plugins and this berth would apply now.
+pub fn behind(applied: &berth_api::Applied, plugins: &[Plugin]) -> Option<berth_api::Behind> {
+    berth_api::Behind::compare(applied, berth_api::VERSION, &records(plugins))
+}
+
 /// Run npm on a plugin directory, and say what it said: a line with ✓ or ✗,
 /// then a few of npm's. Nothing of a plugin runs: its scripts are off.
 pub fn npm(own: &Path, verb: &str, what: &str) -> Result<Vec<String>> {
@@ -439,6 +497,163 @@ pub fn remove(own: &Path, plugin: &Plugin) -> Result<Vec<String>> {
             Ok(vec![format!("✓ Removed {}", plugin.label)])
         }
     }
+}
+
+/// What the plugin directory's `package.json` says each package was
+/// installed from: a version range or tag for a registry, `file:…` for a
+/// .tgz or a folder, or an address.
+fn installed_from(own: &Path) -> serde_json::Map<String, Value> {
+    fs::read(own.join("package.json"))
+        .ok()
+        .and_then(|data| serde_json::from_slice::<Value>(&data).ok())
+        .and_then(|manifest| manifest["dependencies"].as_object().cloned())
+        .unwrap_or_default()
+}
+
+/// Whether a dependency's spec is one a registry answers for.
+fn from_registry(spec: &str) -> bool {
+    !spec.is_empty() && !spec.contains(':') && !spec.contains('/')
+}
+
+/// What can be said of updates without asking a registry: shipped plugins
+/// are not listed, and those without a registry say so. The rest are the
+/// packages to ask npm about.
+fn updatable(own: &Path, plugins: &[Plugin]) -> (Vec<PluginUpdate>, Vec<String>) {
+    let from = installed_from(own);
+    let mut updates = vec![];
+    let mut ask = vec![];
+    for plugin in plugins {
+        let note = match plugin.origin(own) {
+            PluginOrigin::Shipped => continue,
+            PluginOrigin::Folder => {
+                "A folder copied into the plugin directory: copy the new one over it".to_owned()
+            }
+            PluginOrigin::Npm => match from.get(&plugin.package).and_then(Value::as_str) {
+                Some(spec) if from_registry(spec) => {
+                    ask.push(plugin.package.clone());
+                    String::new()
+                }
+                _ => "Installed from a .tgz, a folder or an address, which has no newer version to ask for: add it again to replace it".to_owned(),
+            },
+        };
+        updates.push(PluginUpdate {
+            id: plugin.id.clone(),
+            package: plugin.package.clone(),
+            version: plugin.version.clone(),
+            latest: None,
+            note,
+        });
+    }
+    (updates, ask)
+}
+
+/// Take in what `npm outdated --json` said: by package, the latest version.
+/// npm says `{"error": …}` when it could not ask.
+fn take_outdated(updates: &mut [PluginUpdate], asked: &[String], said: &str) {
+    let said: Value = serde_json::from_str(said.trim()).unwrap_or(json!({}));
+    let error = said["error"]["summary"]
+        .as_str()
+        .or(said["error"]["code"].as_str())
+        .map(str::to_owned);
+    for update in updates
+        .iter_mut()
+        .filter(|update| asked.contains(&update.package))
+    {
+        if let Some(error) = &error {
+            update.note = format!("npm could not ask the registry: {error}");
+            continue;
+        }
+        // An entry per place a package is installed, or one.
+        let entry = match &said[&update.package] {
+            Value::Array(entries) => entries.first().cloned().unwrap_or(Value::Null),
+            entry => entry.clone(),
+        };
+        if let Some(latest) = entry["latest"].as_str()
+            && latest != update.version
+        {
+            update.latest = Some(latest.to_owned());
+        }
+    }
+}
+
+/// Ask npm, with its configuration as installing has it, for the latest
+/// versions of these packages.
+fn ask_npm(own: &Path, updates: &mut [PluginUpdate], ask: &[String]) -> Result<()> {
+    if ask.is_empty() {
+        return Ok(());
+    }
+    let output = std::process::Command::new("npm")
+        .args(["outdated", "--json", "--prefix"])
+        .arg(own)
+        .args(ask)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| format!("npm could not be started: {error}"))?;
+    // npm ends with 1 when something is outdated; what it printed counts.
+    take_outdated(updates, ask, &String::from_utf8_lossy(&output.stdout));
+    Ok(())
+}
+
+/// Ask the registries the user's plugins came from whether they have newer
+/// versions.
+pub fn check(own: &Path, plugins: &[Plugin]) -> Result<PluginUpdates> {
+    let (mut updates, ask) = updatable(own, plugins);
+    ask_npm(own, &mut updates, &ask)?;
+    Ok(PluginUpdates { plugins: updates })
+}
+
+/// Update one plugin, by its id or npm name, or all of them to the latest
+/// version their registry has. A plugin without a registry says why not.
+pub fn update(own: &Path, plugins: &[Plugin], name: Option<&str>) -> Result<Vec<String>> {
+    let (mut updates, mut ask) = updatable(own, plugins);
+    if let Some(name) = name {
+        let Some(plugin) = plugins
+            .iter()
+            .find(|plugin| plugin.id == name || plugin.package == name)
+        else {
+            return Err(format!("No plugin {name}. See: berth plugins").into());
+        };
+        match updates.iter().find(|update| update.id == plugin.id) {
+            None => {
+                return Err(format!(
+                    "{} comes with berth and is updated with it: berth update",
+                    plugin.label
+                )
+                .into());
+            }
+            Some(update) if !update.note.is_empty() => {
+                return Err(format!("✗ {}: {}", update.id, update.note).into());
+            }
+            Some(_) => {
+                ask = vec![plugin.package.clone()];
+                updates.retain(|update| update.id == plugin.id);
+            }
+        }
+    }
+    ask_npm(own, &mut updates, &ask)?;
+    let mut lines = vec![];
+    for update in updates
+        .iter()
+        .filter(|update| ask.contains(&update.package))
+    {
+        match &update.latest {
+            Some(latest) => {
+                npm(own, "install", &format!("{}@{latest}", update.package))?;
+                lines.push(format!("✓ {} {} → {latest}", update.id, update.version));
+            }
+            None if update.note.is_empty() && name.is_some() => {
+                lines.push(format!("✓ {} {} is the latest", update.id, update.version));
+            }
+            None => {}
+        }
+    }
+    if lines.is_empty() {
+        lines.push("✓ No plugin has a newer version".into());
+    }
+    for update in updates.iter().filter(|update| !update.note.is_empty()) {
+        lines.push(format!("  {}: {}", update.id, update.note));
+    }
+    Ok(lines)
 }
 
 /// Whether a spec names a package of a registry, `[@SCOPE/]NAME[@VERSION]`,
@@ -599,6 +814,32 @@ impl Manager {
                 remove(&self.own, plugin)
             }
         }
+    }
+
+    /// Which of the user's plugins have a newer version.
+    pub fn check(&self) -> Result<PluginUpdates> {
+        if let Some(server) = &self.server {
+            return Ok(serde_json::from_value(server.call(
+                "plugins.check",
+                Value::Null,
+                None,
+            )?)?);
+        }
+        check(&self.own, &self.found())
+    }
+
+    /// Update one plugin, by its id or npm name, or all. A server says which
+    /// of its hosts are behind afterwards.
+    pub fn update(&self, name: Option<&str>) -> Result<Report> {
+        if let Some(server) = &self.server {
+            let data = json!({"id": name});
+            let report = server.call("plugins.update", Value::Null, Some(data))?;
+            return Ok(serde_json::from_value(report)?);
+        }
+        Ok(Report {
+            lines: update(&self.own, &self.found(), name)?,
+            behind: vec![],
+        })
     }
 }
 
@@ -785,5 +1026,97 @@ mod tests {
         forget_uploads(own);
         assert!(!uploads(own).join("1.tgz").exists() && uploads(own).join("2.tgz").exists());
         assert!(install_upload(own, b"not a tarball").is_err());
+    }
+
+    #[test]
+    fn updates_are_asked_for_packages_of_a_registry_only() {
+        let base = tempfile::tempdir().unwrap();
+        let own = base.path().join("own");
+        let write = |dir: &Path, name: &str| {
+            fs::create_dir_all(dir).unwrap();
+            fs::write(
+                dir.join("package.json"),
+                format!(r#"{{"name":"{name}","version":"1.0.0","berth":{{}}}}"#),
+            )
+            .unwrap();
+        };
+        write(
+            &base.path().join("source/plugins/shipped"),
+            "berth-plugin-shipped",
+        );
+        write(&own.join("node_modules/berth-plugin-a"), "berth-plugin-a");
+        write(
+            &own.join("node_modules/@acme/berth-plugin-b"),
+            "@acme/berth-plugin-b",
+        );
+        write(&own.join("node_modules/berth-plugin-c"), "berth-plugin-c");
+        write(&own.join("d"), "berth-plugin-d");
+        fs::write(
+            own.join("package.json"),
+            r#"{"dependencies":{"berth-plugin-a":"^1.0.0","@acme/berth-plugin-b":"latest",
+                "berth-plugin-c":"file:uploads/1.tgz"}}"#,
+        )
+        .unwrap();
+        let plugins = found(&base.path().join("source"), &own);
+        let (mut updates, ask) = updatable(&own, &plugins);
+        assert_eq!(ask, ["berth-plugin-a", "@acme/berth-plugin-b"]);
+        let ids: Vec<_> = updates.iter().map(|update| update.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b", "c", "d"]);
+        assert!(updates[2].note.contains("add it again") && updates[3].note.contains("folder"));
+        take_outdated(
+            &mut updates,
+            &ask,
+            r#"{"berth-plugin-a":{"current":"1.0.0","wanted":"1.0.0","latest":"2.0.0"},
+                "@acme/berth-plugin-b":[{"current":"1.0.0","latest":"1.0.0"}]}"#,
+        );
+        assert_eq!(updates[0].latest.as_deref(), Some("2.0.0"));
+        assert_eq!(updates[1].latest, None);
+        take_outdated(
+            &mut updates,
+            &ask,
+            r#"{"error":{"code":"ENOTFOUND","summary":"no"}}"#,
+        );
+        assert!(updates[1].note.contains("could not ask"));
+        // A shipped plugin is updated with berth.
+        let error = update(&own, &plugins, Some("shipped"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("berth update"), "{error}");
+        let error = update(&own, &plugins, Some("c")).unwrap_err().to_string();
+        assert!(error.contains("add it again"), "{error}");
+    }
+
+    #[test]
+    fn a_changed_file_changes_the_digest_and_shows_the_host_behind() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path().join("plugins/x");
+        fs::create_dir_all(dir.join("tasks")).unwrap();
+        fs::write(
+            dir.join("package.json"),
+            r#"{"name":"berth-plugin-x","version":"1.0.0","berth":{}}"#,
+        )
+        .unwrap();
+        fs::write(dir.join("tasks/main.yml"), "- debug: {msg: one}\n").unwrap();
+        fs::create_dir_all(dir.join("node_modules/dep")).unwrap();
+        let plugins = load(&[base.path().join("plugins")]);
+        let before = berth_api::Applied {
+            berth: berth_api::VERSION.into(),
+            plugins: records(&plugins),
+        };
+        assert_eq!(behind(&before, &plugins), None);
+        // What npm put beside it does not count; a task does.
+        fs::write(dir.join("node_modules/dep/index.js"), "").unwrap();
+        assert_eq!(behind(&before, &plugins), None);
+        fs::write(dir.join("tasks/main.yml"), "- debug: {msg: two}\n").unwrap();
+        let changed = behind(&before, &plugins).unwrap();
+        assert_eq!(changed.text(), "x 1.0.0 (changed)");
+        let older = berth_api::Applied {
+            berth: "0.0.1".into(),
+            ..before.clone()
+        };
+        assert_eq!(
+            behind(&older, &[]).unwrap().text(),
+            format!("berth 0.0.1 → {}, x 1.0.0 (gone)", berth_api::VERSION)
+        );
     }
 }

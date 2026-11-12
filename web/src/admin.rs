@@ -53,6 +53,12 @@ pub struct Data {
     pub arrived: Vec<Arrived>,
     /// A job of the server, in a panel.
     pub job: Option<View>,
+    /// What the last check of the plugins found.
+    pub updates: Vec<berth_api::PluginUpdate>,
+    /// The hosts the last update of the plugins left behind.
+    pub behind: Vec<berth_api::HostBehind>,
+    /// A roll-out runs, and the part of a line of its output not ended yet.
+    pub rolling: Option<Vec<u8>>,
     /// The hosts are different now.
     pub hosts_changed: bool,
 }
@@ -222,6 +228,144 @@ impl Admin {
 
     pub fn remove_plugin(&self, id: &str) {
         self.change_plugins("plugins.remove", json!({"id": id}), Value::Null);
+    }
+
+    /// Ask the server which of its plugins have a newer version.
+    pub fn check_plugins(&self) {
+        self.say("Asking the registries…".to_owned());
+        let admin = self.clone();
+        self.portal.call(
+            "plugins.check",
+            None,
+            json!({}),
+            Value::Null,
+            move |result| {
+                let mut data = admin.data.borrow_mut();
+                match result.and_then(|found| {
+                    serde_json::from_value::<berth_api::PluginUpdates>(found)
+                        .map_err(|error| error.to_string())
+                }) {
+                    Ok(checked) => {
+                        let mut tab = berth_tui::plugins::Tab::default();
+                        data.report = tab.checked(checked.plugins);
+                        data.updates = tab.updates;
+                    }
+                    Err(error) => data.report = error.lines().map(str::to_owned).collect(),
+                }
+                data.said = Some(berth_tui::plugins::status(&data.report));
+            },
+        );
+    }
+
+    /// Update one of the server's plugins, or all, and say which hosts are behind.
+    pub fn update_plugins(&self, id: Option<&str>) {
+        self.say("Updating on the server…".to_owned());
+        let admin = self.clone();
+        self.portal.call(
+            "plugins.update",
+            None,
+            json!({}),
+            json!({"id": id}),
+            move |result| {
+                {
+                    let mut data = admin.data.borrow_mut();
+                    match result.and_then(|found| {
+                        serde_json::from_value::<berth_api::PluginReport>(found)
+                            .map_err(|error| error.to_string())
+                    }) {
+                        Ok(report) => {
+                            let mut tab = berth_tui::plugins::Tab::default();
+                            data.report = tab.updated(report);
+                            data.updates.clear();
+                            data.behind = tab.behind;
+                        }
+                        Err(error) => data.report = error.lines().map(str::to_owned).collect(),
+                    }
+                    data.said = Some(berth_tui::plugins::status(&data.report));
+                }
+                admin.catalogue();
+                admin.refresh();
+            },
+        );
+    }
+
+    /// Roll out to the hosts that are behind as a job of the server, its
+    /// own lines shown on the tab as they come.
+    pub fn roll_out(&self, options: &berth_api::Rollout) {
+        if self.data.borrow().rolling.is_some() {
+            return self.say("A roll-out runs already".to_owned());
+        }
+        {
+            let mut data = self.data.borrow_mut();
+            data.rolling = Some(vec![]);
+            data.behind.clear();
+            data.report = vec!["Rolling out…".into()];
+        }
+        let admin = self.clone();
+        let body = serde_json::to_value(options).unwrap_or_default();
+        self.portal
+            .call("hosts.rollout", None, json!({}), body, move |result| {
+                let job = match result {
+                    Ok(job) => job,
+                    Err(error) => {
+                        let mut data = admin.data.borrow_mut();
+                        data.rolling = None;
+                        data.report = vec![format!("✗ {error}")];
+                        return;
+                    }
+                };
+                let id = job["id"].clone();
+                let follower = admin.clone();
+                admin
+                    .portal
+                    .stream("jobs.follow", None, json!({"id": id}), move |frame| {
+                        let mut data = follower.data.borrow_mut();
+                        match frame {
+                            Frame::Bytes(bytes) => {
+                                let Some(pending) = &mut data.rolling else {
+                                    return;
+                                };
+                                pending.extend_from_slice(&bytes);
+                                let mut lines = vec![];
+                                while let Some(end) = pending.iter().position(|byte| *byte == b'\n')
+                                {
+                                    let line: Vec<u8> = pending.drain(..=end).collect();
+                                    let line = String::from_utf8_lossy(&line).trim_end().to_owned();
+                                    if berth_tui::plugins::rollout_line(&line) {
+                                        lines.push(line);
+                                    }
+                                }
+                                if let Some(last) = lines.last() {
+                                    data.said = Some(last.clone());
+                                }
+                                data.report.extend(lines);
+                            }
+                            Frame::Data(_) => {}
+                            Frame::End(_) => {
+                                data.rolling = None;
+                                data.hosts_changed = true;
+                                drop(data);
+                                let ended = follower.clone();
+                                follower.portal.call(
+                                    "jobs.get",
+                                    None,
+                                    json!({"id": id}),
+                                    Value::Null,
+                                    move |result| {
+                                        let report = result
+                                            .ok()
+                                            .and_then(|job| {
+                                                serde_json::from_value(job["report"].clone()).ok()
+                                            })
+                                            .unwrap_or_default();
+                                        let mut data = ended.data.borrow_mut();
+                                        data.report.extend(berth_tui::plugins::summary(&report));
+                                    },
+                                );
+                            }
+                        }
+                    });
+            });
     }
 
     /// Change something the server keeps, say so, and read it all again.

@@ -50,3 +50,6 @@
     dest: /var/lib/devbox/status.json
     mode: '0644'
     content: "{{ {'state': 'configured-needs-enrollment', 'profile': devbox_profile, 'agents_installed': devbox_install_agents, 't3': devbox_t3_version, 'claude': devbox_claude_version, 'codex': devbox_codex_version, 'pi': devbox_pi_version, 'tool_categories': devbox_enabled_categories, 'plugin_features': devbox_plugin_features, 'agent_privileges': devbox_privileges, 'software_rendering': devbox_software_rendering, 'cockpit': devbox_install_cockpit and devbox_profile != 'container', 'ssh_hardened': devbox_ssh_hardened | default(false)} | to_nice_json }}\n"
+# Last, so a run that failed leaves the host recorded as it was before.
+- name: Record what this configuration came from
+  ansible.builtin.import_tasks: applied.yml

@@ -477,6 +477,17 @@ impl App {
         )));
         let said = match &self.host.state {
             State::Ready(_) => {
+                if let Some(text) = host::behind_note(&self.host) {
+                    rows.push(Row::info(""));
+                    rows.push(heading("Configuration"));
+                    rows.push(note(text, theme::WARN));
+                    if self.is_admin() {
+                        rows.push(Row {
+                            line: "  ▸ Apply this configuration".into(),
+                            entry: Some(Entry::Apply),
+                        });
+                    }
+                }
                 for (title, group) in host::groups(&self.host, self.terminal_user()) {
                     rows.push(Row::info(""));
                     rows.push(heading(&title));
@@ -1146,6 +1157,9 @@ impl App {
                 Span::styled(format!("{address}  "), muted),
                 state,
             ];
+            if host["behind"].is_object() {
+                line.push(Span::styled("  behind", Style::new().fg(theme::WARN)));
+            }
             if !preferred.is_empty() && name == preferred {
                 line.push(Span::styled("  default", Style::new().fg(theme::STEEL)));
             }

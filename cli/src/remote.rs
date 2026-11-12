@@ -20,11 +20,27 @@ enum Out {
     Resize(u16, u16),
 }
 
-async fn refresh(link: Arc<Link>, events: mpsc::Sender<Event>, all: bool) {
+/// How a host's version is compared with what would be applied now. It may
+/// wait on the network, and runs off the runtime.
+pub type Compare = Arc<dyn Fn(&api::Version) -> Option<api::Behind> + Send + Sync>;
+
+async fn refresh(
+    link: Arc<Link>,
+    events: mpsc::Sender<Event>,
+    all: bool,
+    compare: Option<Compare>,
+) {
     if all {
         match link.get::<api::Version>("/v1/version").await {
             Ok(version) => {
                 let old = version.api < NEEDS_API;
+                if let Some(compare) = compare {
+                    let asked = version.clone();
+                    let events = events.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let _ = events.send(Event::Behind(compare(&asked)));
+                    });
+                }
                 let _ = events.send(Event::Version(version));
                 if old {
                     return;
@@ -132,13 +148,14 @@ async fn worker(
     link: Arc<Link>,
     mut requests: UnboundedReceiver<Request>,
     events: mpsc::Sender<Event>,
+    compare: Option<Compare>,
 ) {
     let mut stream: Option<UnboundedSender<Out>> = None;
     while let Some(request) = requests.recv().await {
         let (link, events) = (link.clone(), events.clone());
         match request {
-            Request::Refresh => drop(tokio::spawn(refresh(link, events, true))),
-            Request::Poll => drop(tokio::spawn(refresh(link, events, false))),
+            Request::Refresh => drop(tokio::spawn(refresh(link, events, true, compare.clone()))),
+            Request::Poll => drop(tokio::spawn(refresh(link, events, false, None))),
             Request::Run { name, body } => drop(tokio::spawn(async move {
                 let path = format!("/v1/tasks/{}", api::client::encode(&name));
                 let _ = events.send(match link.post::<api::Session>(&path, &body).await {
@@ -175,7 +192,7 @@ async fn worker(
                 if let Err(error) = link.call::<Value>("DELETE", &path, None).await {
                     let _ = events.send(Event::Error(error.to_string()));
                 }
-                refresh(link, events, false).await;
+                refresh(link, events, false, None).await;
             })),
             Request::Choices { task, argument } => drop(tokio::spawn(async move {
                 let path = format!(
@@ -204,12 +221,12 @@ pub struct Remote {
 }
 
 impl Remote {
-    pub fn start(spec: LinkSpec) -> std::io::Result<Remote> {
+    pub fn start(spec: LinkSpec, compare: Option<Compare>) -> std::io::Result<Remote> {
         let runtime = berth_core::link::runtime()?;
         let (requests, receiver) = unbounded_channel();
         let (sender, events) = mpsc::channel();
         std::thread::spawn(move || {
-            runtime.block_on(worker(Arc::new(Link::new(spec)), receiver, sender));
+            runtime.block_on(worker(Arc::new(Link::new(spec)), receiver, sender, compare));
         });
         Ok(Remote { requests, events })
     }
@@ -226,8 +243,18 @@ impl Transport for Remote {
 }
 
 /// Start talking to the host over `spec`. Returns why not, if it cannot be.
+#[cfg(test)]
 pub fn connect(host: &mut HostView, spec: LinkSpec) -> Option<String> {
-    match Remote::start(spec) {
+    connect_with(host, spec, None)
+}
+
+/// The same, comparing the host with what would be applied now.
+pub fn connect_with(
+    host: &mut HostView,
+    spec: LinkSpec,
+    compare: Option<Compare>,
+) -> Option<String> {
+    match Remote::start(spec, compare) {
         Ok(remote) => {
             host.connect(Box::new(remote));
             None

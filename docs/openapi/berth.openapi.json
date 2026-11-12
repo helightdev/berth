@@ -25,6 +25,49 @@
         ],
         "type": "object"
       },
+      "Applied": {
+        "description": "What berth recorded on a host when it applied the configuration: its own\nversion and the plugins whose features the host has.",
+        "properties": {
+          "berth": {
+            "type": "string"
+          },
+          "plugins": {
+            "items": {
+              "$ref": "#/components/schemas/AppliedPlugin"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "berth"
+        ],
+        "type": "object"
+      },
+      "AppliedPlugin": {
+        "description": "A plugin as it was when a host's configuration was applied.",
+        "properties": {
+          "digest": {
+            "description": "SHA-256 of its files, so a change without a new version shows too.",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "package",
+          "version",
+          "digest"
+        ],
+        "type": "object"
+      },
       "ApplyWith": {
         "description": "What applying may be given.",
         "properties": {
@@ -59,6 +102,22 @@
         },
         "required": [
           "name"
+        ],
+        "type": "object"
+      },
+      "Behind": {
+        "description": "How a host's configuration differs from what berth would apply now.",
+        "properties": {
+          "changes": {
+            "description": "berth first when its version changed, then the plugins.",
+            "items": {
+              "$ref": "#/components/schemas/Change"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "changes"
         ],
         "type": "object"
       },
@@ -109,6 +168,29 @@
         "required": [
           "template",
           "features"
+        ],
+        "type": "object"
+      },
+      "Change": {
+        "description": "Something that changed since a host was applied: berth itself or a plugin.",
+        "properties": {
+          "from": {
+            "description": "The version the host was applied with.",
+            "type": "string"
+          },
+          "id": {
+            "description": "`berth`, or a plugin's id.",
+            "type": "string"
+          },
+          "to": {
+            "description": "The version there is now; empty for a plugin that is gone, the same\nas `from` for one whose files changed.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "from",
+          "to"
         ],
         "type": "object"
       },
@@ -435,6 +517,25 @@
         ],
         "type": "object"
       },
+      "HostBehind": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Behind"
+          },
+          {
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "A host whose configuration is behind, and how."
+      },
       "HostInfo": {
         "properties": {
           "address": {
@@ -447,6 +548,24 @@
             "type": [
               "integer",
               "null"
+            ]
+          },
+          "applied": {
+            "description": "The berth version its configuration was last applied with, when its\nberthd says. An older berthd does not, nor does a host not applied\nsince.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "behind": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Behind",
+                "description": "What changed since then, when the server would apply something else now."
+              }
             ]
           },
           "error": {
@@ -592,6 +711,17 @@
           },
           "id": {
             "type": "string"
+          },
+          "report": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RolloutReport",
+                "description": "How a roll-out went, host by host, once it has ended."
+              }
+            ]
           },
           "started": {
             "type": "string"
@@ -990,6 +1120,13 @@
       "PluginReport": {
         "description": "What npm said of a change, a few lines; the first starts with ✓.",
         "properties": {
+          "behind": {
+            "description": "After an update: the hosts whose configuration is now behind.",
+            "items": {
+              "$ref": "#/components/schemas/HostBehind"
+            },
+            "type": "array"
+          },
           "lines": {
             "items": {
               "type": "string"
@@ -1075,6 +1212,65 @@
           "name",
           "label",
           "user"
+        ],
+        "type": "object"
+      },
+      "PluginUpdate": {
+        "description": "Whether a newer version of a plugin is there, as its registry says.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "latest": {
+            "description": "The registry's latest version, when it is another one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note": {
+            "description": "Why there is nothing to ask, or what asking said: a plugin from a\n.tgz or a folder has no registry to ask.",
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          },
+          "version": {
+            "description": "The version installed.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "package",
+          "version"
+        ],
+        "type": "object"
+      },
+      "PluginUpdateSpec": {
+        "description": "What to update: one plugin by its id or npm name, or all of them.",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PluginUpdates": {
+        "description": "The answer of `plugins.check`: each of the user's plugins.",
+        "properties": {
+          "plugins": {
+            "items": {
+              "$ref": "#/components/schemas/PluginUpdate"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "plugins"
         ],
         "type": "object"
       },
@@ -1216,6 +1412,102 @@
           "cols"
         ],
         "type": "object"
+      },
+      "Rollout": {
+        "description": "What a roll-out does: apply the hosts that are behind one after another,\nstopping at the first that fails.",
+        "properties": {
+          "all": {
+            "description": "Also the hosts that are current.",
+            "type": "boolean"
+          },
+          "force": {
+            "description": "Reboot although sessions run, which ends them.",
+            "type": "boolean"
+          },
+          "hosts": {
+            "description": "These hosts, in this order; all saved hosts by name when empty.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reboot": {
+            "description": "Reboot a host that says it needs it, and wait for it to come back.",
+            "type": "boolean"
+          },
+          "update": {
+            "description": "Run each host's `update` task after applying.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "RolloutHost": {
+        "properties": {
+          "changes": {
+            "description": "What had changed, as it was before applying.",
+            "items": {
+              "$ref": "#/components/schemas/Change"
+            },
+            "type": "array"
+          },
+          "error": {
+            "description": "What went wrong, for a failed host.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "rebooted": {
+            "description": "It was rebooted.",
+            "type": "boolean"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RolloutState"
+          },
+          "warnings": {
+            "description": "What did not go well without being a failure, such as an update step\nthat ended badly. One stops the roll-out after this host.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "state"
+        ],
+        "type": "object"
+      },
+      "RolloutReport": {
+        "description": "The result of a roll-out, host by host in the order they were taken.",
+        "properties": {
+          "hosts": {
+            "items": {
+              "$ref": "#/components/schemas/RolloutHost"
+            },
+            "type": "array"
+          },
+          "ok": {
+            "description": "Every host is done or current.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "hosts",
+          "ok"
+        ],
+        "type": "object"
+      },
+      "RolloutState": {
+        "description": "How one host of a roll-out went.",
+        "enum": [
+          "done",
+          "current",
+          "skipped",
+          "failed"
+        ],
+        "type": "string"
       },
       "RunTask": {
         "properties": {
@@ -1933,6 +2225,17 @@
             "format": "int32",
             "minimum": 0,
             "type": "integer"
+          },
+          "applied": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Applied",
+                "description": "What the host's configuration was last applied from, when berth\nrecorded it. An older berthd does not say."
+              }
+            ]
           },
           "mode": {
             "description": "`system` or `single`.",
@@ -4835,6 +5138,95 @@
         ]
       }
     },
+    "/v1/plugins/update": {
+      "post": {
+        "operationId": "update_plugins",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PluginUpdateSpec"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The plugin, by id or npm name; all without one"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginReport"
+                }
+              }
+            },
+            "description": "Updated; what npm said, and the hosts that need applying"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "It has no registry to ask, comes with berth, or npm failed; the message says which"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such plugin"
+          }
+        },
+        "summary": "Update one of the server's own plugins, or all, to the latest version of their registry, and say which hosts are behind then.",
+        "tags": [
+          "set-up"
+        ]
+      }
+    },
+    "/v1/plugins/updates": {
+      "get": {
+        "operationId": "check_plugins",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginUpdates"
+                }
+              }
+            },
+            "description": "Each of the server's own plugins, with the latest version where there is a newer one"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "npm could not be run"
+          }
+        },
+        "summary": "Ask the registries the server's own plugins came from whether they have newer versions.",
+        "tags": [
+          "set-up"
+        ]
+      }
+    },
     "/v1/plugins/{id}": {
       "delete": {
         "operationId": "remove_plugin",
@@ -5038,6 +5430,64 @@
         "summary": "Whether a registry answers and takes its login.",
         "tags": [
           "set-up"
+        ]
+      }
+    },
+    "/v1/rollout": {
+      "post": {
+        "operationId": "rollout_hosts",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/Rollout"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "Which hosts and what to do; by default the saved hosts that are behind, applied only"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobInfo"
+                }
+              }
+            },
+            "description": "The job; its report says how each host went once it has ended"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not a roll-out"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such host"
+          }
+        },
+        "summary": "Bring hosts up to date one after another, as a job: apply each that is behind, maybe run its update and reboot it, and check it. The first that fails stops the rest.",
+        "tags": [
+          "hosts"
         ]
       }
     },

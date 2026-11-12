@@ -30,6 +30,11 @@ Usage:
                              build the unattended installer; write it to a USB drive
   berth seed HOST            render the cloud-init seed
   berth apply HOST           apply the host's profile to it over SSH
+  berth apply --behind [--update] [--reboot [--force]]
+                             apply every host that is behind, one at a time, stopping
+                             at the first that fails; --all takes current ones too,
+                             --update runs their update task, --reboot reboots those
+                             that need it unless sessions run (--force: even then)
   berth login                log in to a berth server that takes access tokens of an
                              OAuth 2.0 issuer; berth logout forgets the login
   berth remove HOST          forget a host; the machine is left as it is
@@ -75,6 +80,10 @@ Usage:
   berth plugins              plugins and where they come from
   berth plugins add SPEC     install a plugin with npm: a name, a tarball or a folder
   berth plugins remove NAME  remove one of yours, by its id or npm name
+  berth plugins update [ID] [--check] [--apply [--reboot [--force]]]
+                             update one plugin or all to their registry's latest
+                             version (--check only says which have one), then say
+                             which hosts are behind; --apply brings them up to date
   berth --server URL [--token TOKEN] [COMMAND…]
                              this once, use the hosts of a berth serve elsewhere
                              (http://HOST:PORT, https://HOST or unix:/path); the
@@ -453,6 +462,7 @@ fn run() -> Result<()> {
             }
             return Ok(());
         }
+        ["plugins", "update", ref rest @ ..] => return commands::update_plugins(&paths, rest),
         ["plugins", "remove", name] => {
             let manager = plugins::Manager::new(&paths);
             // A name npm knows that berth does not, such as a broken package.
@@ -493,6 +503,7 @@ fn run() -> Result<()> {
             );
             return Ok(());
         }
+        ["apply", "--behind" | "--all", ..] => return commands::apply_hosts(&paths, &args[1..]),
         ["apply", host] => return commands::apply(&paths, host),
         ["remove", host] => return commands::remove(&paths, host),
         ["seed", host] if berth_core::server::Server::configured(&paths).is_some() => {

@@ -1,11 +1,12 @@
 //! The Plugins tab of the home screen: the plugins there are with their
-//! features, installing one and removing one. berth shows those of this
+//! features, installing, updating and removing one, and bringing the hosts
+//! that are behind up to date afterwards. berth shows those of this
 //! machine or of its berth server, the page in a browser those of the server
 //! it came from. What the tab asks for, each of them does its own way.
 
 use crate::event::{self, Code, Key};
 use crate::theme;
-use berth_api::{PluginInfo, PluginOrigin};
+use berth_api::{HostBehind, PluginInfo, PluginOrigin, PluginReport, PluginUpdate, Rollout};
 use ratatui::{
     style::Style,
     text::{Line, Span},
@@ -64,8 +65,12 @@ fn server_note(dir: &str) -> String {
 }
 
 /// The rows of the tab: each line with the plugin it belongs to, and last the
-/// row that adds one.
-pub fn rows(plugins: &[PluginInfo]) -> Vec<(Option<usize>, Line<'static>)> {
+/// row that adds one. A plugin with a newer version, as the last check
+/// found, says so.
+pub fn rows(
+    plugins: &[PluginInfo],
+    updates: &[PluginUpdate],
+) -> Vec<(Option<usize>, Line<'static>)> {
     let muted = Style::new().fg(theme::MUTED);
     let mut rows = vec![];
     for (index, plugin) in plugins.iter().enumerate() {
@@ -73,16 +78,24 @@ pub fn rows(plugins: &[PluginInfo]) -> Vec<(Option<usize>, Line<'static>)> {
             PluginOrigin::Shipped => "comes with berth",
             _ => "yours",
         };
-        rows.push((
-            Some(index),
-            Line::from(vec![
-                Span::styled(plugin.label.clone(), Style::new().fg(theme::ACCENT).bold()),
-                Span::styled(
-                    format!("  {} {}  · {origin}", plugin.package, plugin.version),
-                    muted,
-                ),
-            ]),
-        ));
+        let mut spans = vec![
+            Span::styled(plugin.label.clone(), Style::new().fg(theme::ACCENT).bold()),
+            Span::styled(
+                format!("  {} {}  · {origin}", plugin.package, plugin.version),
+                muted,
+            ),
+        ];
+        if let Some(latest) = updates
+            .iter()
+            .find(|update| update.id == plugin.id)
+            .and_then(|update| update.latest.as_ref())
+        {
+            spans.push(Span::styled(
+                format!("  · update available: {} → {latest}", plugin.version),
+                Style::new().fg(theme::WARN),
+            ));
+        }
+        rows.push((Some(index), Line::from(spans)));
         for (number, feature) in plugin.features.iter().enumerate() {
             let branch = if number + 1 < plugin.features.len() {
                 "  ├─ "
@@ -134,22 +147,45 @@ pub enum Asked {
     Install(String),
     /// Remove this plugin, by its id.
     Remove(String),
+    /// Ask the registries for newer versions.
+    Check,
+    /// Update this plugin, by its id, or all.
+    Update(Option<String>),
+    /// Bring the hosts that are behind up to date.
+    Rollout(Rollout),
     /// Not a key of the tab: switching tabs and leaving are the screen's.
     Other,
 }
 
-/// The tab's state: the selected row, and whether a removal waits for a
-/// second x. The editor for what to install is the screen's.
+/// What waits for its key a second time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Armed {
+    Remove,
+    /// A roll-out, with a reboot or not.
+    Rollout(bool),
+}
+
+/// The tab's state: the selected row, what the last check and update found,
+/// and what waits for its key a second time. The editor for what to install
+/// is the screen's.
 #[derive(Default)]
 pub struct Tab {
     pub selected: usize,
-    armed: bool,
+    /// What the last check said of each plugin.
+    pub updates: Vec<PluginUpdate>,
+    /// The hosts the last update left behind.
+    pub behind: Vec<HostBehind>,
+    armed: Option<Armed>,
 }
 
 impl Tab {
     /// The selected row, kept within the rows there are.
     pub fn selected(&mut self, plugins: &[PluginInfo]) -> usize {
-        let count = rows(plugins).len();
+        let count = plugins
+            .iter()
+            .map(|plugin| plugin.features.len() + 1)
+            .sum::<usize>()
+            + 1;
         self.selected = self.selected.min(count - 1);
         self.selected
     }
@@ -157,14 +193,71 @@ impl Tab {
     /// The plugin of the selected row, if it is one's.
     pub fn plugin<'a>(&mut self, plugins: &'a [PluginInfo]) -> Option<&'a PluginInfo> {
         let selected = self.selected(plugins);
-        rows(plugins)[selected].0.map(|index| &plugins[index])
+        rows(plugins, &[])[selected].0.map(|index| &plugins[index])
     }
 
-    /// Forget a removal that waits, on leaving the tab.
+    /// Forget what waits, on leaving the tab.
     pub fn leave(&mut self) {
-        self.armed = false;
+        self.armed = None;
     }
 
+    /// Take what a check said.
+    pub fn checked(&mut self, updates: Vec<PluginUpdate>) -> Vec<String> {
+        let mut lines = vec![];
+        for update in &updates {
+            match (&update.latest, update.note.as_str()) {
+                (Some(latest), _) => {
+                    lines.push(format!("{} {} → {latest}", update.id, update.version))
+                }
+                (None, "") => {}
+                (None, note) => lines.push(format!("{}: {note}", update.id)),
+            }
+        }
+        let newer = updates
+            .iter()
+            .filter(|update| update.latest.is_some())
+            .count();
+        lines.insert(
+            0,
+            match newer {
+                0 => "✓ No plugin has a newer version".to_owned(),
+                1 => "✓ 1 plugin has a newer version: U updates the selected one, A all".to_owned(),
+                count => format!(
+                    "✓ {count} plugins have a newer version: U updates the selected one, A all"
+                ),
+            },
+        );
+        self.updates = updates;
+        lines
+    }
+
+    /// Take what an update said: npm's lines, then the hosts that are behind
+    /// and how to bring them up to date.
+    pub fn updated(&mut self, report: PluginReport) -> Vec<String> {
+        let mut lines = report.lines;
+        self.updates.clear();
+        self.behind = report.behind;
+        if self.behind.is_empty() {
+            lines.push("No host is behind.".into());
+        } else {
+            for host in &self.behind {
+                lines.push(format!(
+                    "{} needs applying: {}",
+                    host.name,
+                    host.behind.text()
+                ));
+            }
+            lines.push(ROLL_OUT.into());
+        }
+        lines
+    }
+}
+
+/// How the tab offers a roll-out.
+const ROLL_OUT: &str =
+    "r applies them one at a time, R also reboots those that need it. Either asks first.";
+
+impl Tab {
     /// Take a key, with `editor` open while what to install is typed. Moving
     /// on clears `report`, what the last change said.
     pub fn key(
@@ -175,7 +268,7 @@ impl Tab {
         report: &mut Vec<String>,
         place: &Place,
     ) -> Asked {
-        let count = rows(plugins).len();
+        let count = rows(plugins, &[]).len();
         let selected = self.plugin(plugins).cloned();
         if let Some(input) = editor {
             match key.code {
@@ -191,7 +284,7 @@ impl Tab {
             }
             return Asked::Nothing(None);
         }
-        let armed = std::mem::take(&mut self.armed);
+        let armed = self.armed.take();
         match key.code {
             Code::Up => {
                 self.selected = self.selected.saturating_sub(1);
@@ -202,14 +295,51 @@ impl Tab {
                 report.clear();
             }
             Code::Enter if selected.is_none() => *editor = Some(Input::default()),
+            Code::Char('c') => return Asked::Check,
+            Code::Char('A') => return Asked::Update(None),
+            Code::Char('U') => {
+                return match selected {
+                    Some(plugin) if plugin.origin == PluginOrigin::Shipped => Asked::Nothing(Some(
+                        format!("{} comes with berth and is updated with it", plugin.label),
+                    )),
+                    Some(plugin) => Asked::Update(Some(plugin.id)),
+                    None => Asked::Update(None),
+                };
+            }
+            Code::Char(key @ ('r' | 'R')) => {
+                let reboot = key == 'R';
+                if self.behind.is_empty() {
+                    return Asked::Nothing(Some(
+                        "No host is behind after an update here; a host's overview applies it by itself"
+                            .into(),
+                    ));
+                }
+                let options = Rollout {
+                    hosts: self.behind.iter().map(|host| host.name.clone()).collect(),
+                    reboot,
+                    ..Default::default()
+                };
+                if armed == Some(Armed::Rollout(reboot)) {
+                    return Asked::Rollout(options);
+                }
+                self.armed = Some(Armed::Rollout(reboot));
+                *report = plan(&self.behind, &options);
+                report.push(format!("{key} again starts it, any other key does not."));
+                return Asked::Nothing(Some(format!(
+                    "{key} again rolls out to {}",
+                    options.hosts.join(", ")
+                )));
+            }
             Code::Char('x') | Code::Delete => {
                 return Asked::Nothing(match selected {
                     Some(plugin) if plugin.origin == PluginOrigin::Shipped => {
                         Some(format!("{} comes with berth and stays", plugin.label))
                     }
-                    Some(plugin) if armed => return Asked::Remove(plugin.id),
+                    Some(plugin) if armed == Some(Armed::Remove) => {
+                        return Asked::Remove(plugin.id);
+                    }
                     Some(plugin) => {
-                        self.armed = true;
+                        self.armed = Some(Armed::Remove);
                         Some(format!(
                             "x again removes {} from {}",
                             plugin.label,
@@ -223,6 +353,58 @@ impl Tab {
         }
         Asked::Nothing(None)
     }
+}
+
+/// What a roll-out will do, before it starts: a line per host, and the steps.
+fn plan(behind: &[HostBehind], options: &Rollout) -> Vec<String> {
+    let mut lines = vec![format!(
+        "Roll out to {} host{}:",
+        behind.len(),
+        if behind.len() == 1 { "" } else { "s" }
+    )];
+    lines.extend(
+        behind
+            .iter()
+            .map(|host| format!("{}: {}", host.name, host.behind.text())),
+    );
+    lines.push(format!(
+        "One host at a time: apply{}, then check it. The first that fails stops the rest.",
+        if options.reboot {
+            ", reboot if it needs it (not while sessions run)"
+        } else {
+            ""
+        }
+    ));
+    lines
+}
+
+pub use berth_api::rollout_line;
+
+/// A line per host of a roll-out's report.
+pub fn summary(report: &berth_api::RolloutReport) -> Vec<String> {
+    use berth_api::RolloutState::*;
+    let mut lines = vec![];
+    for host in &report.hosts {
+        let state = match host.state {
+            Done if host.rebooted => "up to date, rebooted",
+            Done => "up to date",
+            Current => "was current",
+            Skipped => "not started",
+            Failed => "failed",
+        };
+        let mut line = format!("{}: {state}", host.name);
+        if !host.error.is_empty() {
+            line += &format!(": {}", host.error);
+        }
+        for warning in &host.warnings {
+            line += &format!("; {warning}");
+        }
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        lines.push("No hosts".into());
+    }
+    lines
 }
 
 /// What a change said, for the status line: its first line.
@@ -258,7 +440,7 @@ mod tests {
             plugin("aa", PluginOrigin::Npm),
             plugin("zz", PluginOrigin::Shipped),
         ];
-        let text: Vec<String> = rows(&plugins)
+        let text: Vec<String> = rows(&plugins, &[])
             .iter()
             .map(|(_, line)| {
                 line.spans
@@ -303,5 +485,87 @@ mod tests {
         );
         assert!(report.is_empty() && editor.is_none());
         assert!(help(None, &[], &place.adding("/srv/plugins")).contains("https://berth.example"));
+    }
+
+    #[test]
+    fn updates_are_checked_made_and_rolled_out_from_the_tab() {
+        let plugins = [
+            plugin("aa", PluginOrigin::Npm),
+            plugin("zz", PluginOrigin::Shipped),
+        ];
+        let mut tab = Tab::default();
+        let mut editor = None;
+        let mut report = vec![];
+        let place = Place::Here;
+        let mut press = |tab: &mut Tab, report: &mut Vec<String>, code| {
+            tab.key(Key::plain(code), &mut editor, &plugins, report, &place)
+        };
+        assert_eq!(press(&mut tab, &mut report, Code::Char('c')), Asked::Check);
+        let said = tab.checked(vec![PluginUpdate {
+            id: "aa".into(),
+            package: "berth-plugin-aa".into(),
+            version: "1.0.0".into(),
+            latest: Some("2.0.0".into()),
+            note: String::new(),
+        }]);
+        assert!(said[0].contains("1 plugin has a newer version"));
+        let first = rows(&plugins, &tab.updates)[0]
+            .1
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(
+            first.ends_with("· update available: 1.0.0 → 2.0.0"),
+            "{first}"
+        );
+        assert_eq!(
+            press(&mut tab, &mut report, Code::Char('U')),
+            Asked::Update(Some("aa".into()))
+        );
+        assert_eq!(
+            press(&mut tab, &mut report, Code::Char('A')),
+            Asked::Update(None)
+        );
+        // Nothing to roll out before an update said what is behind.
+        assert!(matches!(
+            press(&mut tab, &mut report, Code::Char('r')),
+            Asked::Nothing(Some(_))
+        ));
+        let lines = tab.updated(PluginReport {
+            lines: vec!["✓ aa 1.0.0 → 2.0.0".into()],
+            behind: vec![HostBehind {
+                name: "studio".into(),
+                behind: berth_api::Behind {
+                    changes: vec![berth_api::Change {
+                        id: "aa".into(),
+                        from: "1.0.0".into(),
+                        to: "2.0.0".into(),
+                    }],
+                },
+            }],
+        });
+        assert_eq!(lines[1], "studio needs applying: aa 1.0.0 → 2.0.0");
+        assert!(tab.updates.is_empty());
+        // The plan first, then the same key again starts it.
+        press(&mut tab, &mut report, Code::Char('R'));
+        assert_eq!(report[1], "studio: aa 1.0.0 → 2.0.0");
+        assert!(report[2].contains("reboot if it needs it"));
+        assert_eq!(
+            press(&mut tab, &mut report, Code::Char('R')),
+            Asked::Rollout(Rollout {
+                hosts: vec!["studio".into()],
+                reboot: true,
+                ..Default::default()
+            })
+        );
+        // Another key in between disarms it.
+        press(&mut tab, &mut report, Code::Char('r'));
+        press(&mut tab, &mut report, Code::Down);
+        assert!(matches!(
+            press(&mut tab, &mut report, Code::Char('r')),
+            Asked::Nothing(_)
+        ));
+        assert!(rollout_line("▸ studio: applying") && !rollout_line("TASK [x]"));
     }
 }
