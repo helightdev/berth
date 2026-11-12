@@ -1,7 +1,7 @@
 //! Colours and the logo.
 //!
 //! The mark is a machine moored in a berth, between two quay walls;
-//! `assets/logo.svg` is the same drawing.
+//! `docs/public/logo.svg` is the same drawing.
 //! berth paints its own background, so the colours below are chosen against
 //! `BASE` and not against whatever the terminal happens to use.
 

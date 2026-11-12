@@ -1,4 +1,4 @@
-<img src="assets/logo.svg" alt="" width="72" align="right">
+<img src="docs/public/logo.svg" alt="" width="72" align="right">
 
 # berth
 
@@ -62,8 +62,8 @@ The documentation site is built from [`docs/`](docs) (`cd docs && npm install &&
 
 ## Contributing and security
 
-[CONTRIBUTING.md](CONTRIBUTING.md) says what berth is meant to be and how changes
-get in. Open an issue before a pull request. [SECURITY.md](SECURITY.md) says how
+[CONTRIBUTING.md](.github/CONTRIBUTING.md) says what berth is meant to be and how changes
+get in. Open an issue before a pull request. [SECURITY.md](.github/SECURITY.md) says how
 to report a vulnerability and where berth's API is meant to be reachable from.
 
 ## License
@@ -71,7 +71,7 @@ to report a vulnerability and where berth's API is meant to be reachable from.
 Licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or
 the [MIT license](LICENSE-MIT), at your option. Contributions are licensed the same way.
 
-The vendored `tui-input` crate under `cli/vendor` has its own MIT license. The
+The vendored `tui-input` crate under `crates/vendor` has its own MIT license. The
 agents and tools that plugins install, such as Claude Code, Codex and Unity,
 are separate products under their vendors' terms. berth downloads them from
 their vendors and doesn't include them.

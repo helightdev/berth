@@ -8,7 +8,7 @@ permissions:
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
-# The checks and the end-to-end tests run container/ci.sh, as on a developer's
+# The checks and the end-to-end tests run ci/run.sh, as on a developer's
 # machine. Image layers are kept in GitHub's cache; cargo's downloads and the
 # target directory are a directory the cache action keeps.
 env:
@@ -25,7 +25,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: container/ci.Dockerfile
+          file: ci/dev.Dockerfile
           tags: berth-ci-dev
           load: true
           cache-from: type=gha,scope=berth-ci-dev
@@ -33,10 +33,10 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ env.BERTH_CI_CACHE }}
-          key: checks-${{ hashFiles('Cargo.lock', 'container/ci.Dockerfile') }}-${{ github.sha }}
-          restore-keys: checks-${{ hashFiles('Cargo.lock', 'container/ci.Dockerfile') }}-
+          key: checks-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-${{ github.sha }}
+          restore-keys: checks-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-
       - name: Checks
-        run: container/ci.sh check
+        run: ci/run.sh check
       - name: Keep the cache small
         if: always()
         run: rm -rf "$BERTH_CI_CACHE/target/debug/incremental" "$BERTH_CI_CACHE/target/tmp"
@@ -52,7 +52,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: container/ci.Dockerfile
+          file: ci/dev.Dockerfile
           tags: berth-ci-dev
           load: true
           cache-from: type=gha,scope=berth-ci-dev
@@ -60,7 +60,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: container/ci-host.Dockerfile
+          file: ci/host.Dockerfile
           tags: berth-ci-host
           load: true
           cache-from: type=gha,scope=berth-ci-host
@@ -68,10 +68,10 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ env.BERTH_CI_CACHE }}
-          key: e2e-${{ hashFiles('Cargo.lock', 'container/ci.Dockerfile') }}-${{ github.sha }}
-          restore-keys: e2e-${{ hashFiles('Cargo.lock', 'container/ci.Dockerfile') }}-
+          key: e2e-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-${{ github.sha }}
+          restore-keys: e2e-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-
       - name: End-to-end tests
-        run: container/ci.sh e2e
+        run: ci/run.sh e2e
       - name: Upload the test host's logs
         if: failure()
         uses: actions/upload-artifact@v4

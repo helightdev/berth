@@ -32,7 +32,13 @@ fn cargo() -> Command {
 }
 
 fn host_programs(root: &Path) {
-    for entry in ["host", "crates/berth-api", "crates/berth-pty", "Cargo.lock"] {
+    for entry in [
+        "crates/berthd",
+        "crates/box",
+        "crates/berth-api",
+        "crates/berth-pty",
+        "Cargo.lock",
+    ] {
         println!("cargo:rerun-if-changed=../../{entry}");
     }
     // The version they say they are, which a release sets.

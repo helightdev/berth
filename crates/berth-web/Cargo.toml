@@ -15,7 +15,7 @@ path = "src/main.rs"
 berth-api = { workspace = true, default-features = false }
 berth-tui.workspace = true
 serde_json.workspace = true
-tui-input = { path = "../cli/vendor/tui-input", default-features = false }
+tui-input.workspace = true
 web-time = "1"
 ratzilla = "0.3.1"
 wasm-bindgen = "=0.2.129"

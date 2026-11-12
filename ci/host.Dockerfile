@@ -2,7 +2,7 @@
 # over, with SSH, sudo and an operator account whose key arrives at start.
 # Applying a profile installs the rest, as on a real host.
 #
-#   container/ci.sh e2e
+#   ci/run.sh e2e
 FROM ubuntu:26.04
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -19,6 +19,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN printf '%s\n' 'AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/provided-keys/%u' \
       'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'LogLevel VERBOSE' \
       > /etc/ssh/sshd_config.d/10-provided.conf
-COPY --chmod=0755 container/ci-host.sh /usr/local/sbin/berth-ci-host
+COPY --chmod=0755 ci/host.sh /usr/local/sbin/berth-ci-host
 EXPOSE 22
 ENTRYPOINT ["tini", "--", "/usr/local/sbin/berth-ci-host"]

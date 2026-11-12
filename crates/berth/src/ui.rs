@@ -2872,7 +2872,7 @@ mod tests {
     fn space_on_a_group_heading_switches_the_group() {
         let mut app = App::new("x.json".into(), parse_config(b"{}").unwrap());
         // The coding agents are plugins that come with berth.
-        app.set_plugins(crate::plugins::load(&["../plugins".into()]));
+        app.set_plugins(crate::plugins::load(&["../../plugins".into()]));
         let chosen = |app: &App| app.config["ansible_vars"]["devbox_plugin_features"].to_string();
         app.set_step(Step::Features);
         // The heading itself is selected first and offers the key.

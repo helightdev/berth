@@ -2,7 +2,7 @@
 # Podman needs nothing else. The checkout is mounted at /src; cargo's
 # downloads (/cache/cargo) and the target directory (/src/target) are volumes.
 #
-#   container/ci.sh shell
+#   ci/run.sh shell
 FROM rust:1-trixie
 ARG VALE_VERSION=3.25.1
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8

@@ -2,7 +2,7 @@
 test host, a link to its berthd, berth serve, an OAuth issuer and a small
 WebSocket client.
 
-The tests run in the runner container of container/ci.compose.yml, next to
+The tests run in the runner container of ci/compose.yml, next to
 the test host `studio`, on a network that reaches nothing else. Everything a
 test writes goes into scratch directories; the checkout is read-only.
 """
@@ -45,7 +45,7 @@ def runtime_dir():
 
 def needs_e2e(cls):
     """Skip a test case outside the runner container."""
-    reason = 'the end-to-end tests run in containers: container/ci.sh e2e'
+    reason = 'the end-to-end tests run in containers: ci/run.sh e2e'
     return unittest.skipUnless(os.environ.get('BERTH_E2E') == '1', reason)(cls)
 
 

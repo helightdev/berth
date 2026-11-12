@@ -11,7 +11,7 @@ berth-api.workspace = true
 berth-pty.workspace = true
 berth-tui.workspace = true
 # For its API document, which berth serve's includes.
-berthd = { path = "../host/berthd" }
+berthd = { path = "../berthd" }
 tokio.workspace = true
 futures-util.workspace = true
 serde.workspace = true
@@ -27,7 +27,7 @@ libc = "0.2"
 pulldown-cmark = { version = "0.13", default-features = false }
 jsonwebtoken = { version = "9", default-features = false }
 
-tui-input = { path = "vendor/tui-input", default-features = false, features = ["crossterm"] }
+tui-input = { workspace = true, features = ["crossterm"] }
 
 [features]
 # The page for a browser, carried in the program for `berth serve --web`.

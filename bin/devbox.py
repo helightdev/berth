@@ -26,8 +26,8 @@ BUILD = Path(os.environ.get('DEVBOX_BUILD_DIR') or ROOT / 'build').resolve()
 RELEASE_SOURCES = [
     'ansible', 'bin', 'bootstrap', 'container', 'plugins', 'tests',
     'requirements.txt', 'ansible.cfg', 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE',
-    'cli/Cargo.toml', 'cli/Cargo.lock', 'cli/build.rs', 'cli/src', 'cli/vendor/tui-input',
-    'cli/vendor/README.md', 'config/example.json',
+    'crates/berth/Cargo.toml', 'crates/berth/build.rs', 'crates/berth/src', 'crates/vendor/tui-input',
+    'crates/vendor/README.md', 'config/example.json',
 ]
 PROFILES = {'laptop', 'qemu', 'cloud'}
 DEFAULT_OPERATOR = 'ops'

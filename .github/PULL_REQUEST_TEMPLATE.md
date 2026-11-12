@@ -8,7 +8,7 @@ Issue: #
 ## How it was tested
 
 
-- [ ] `container/ci.sh all` passes
+- [ ] `ci/run.sh all` passes
 - [ ] Documentation is updated and Vale doesn't report warnings
 - [ ] The terminal client and the page in a browser both have it, where it applies
 - [ ] I read every line of this change myself

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The checks of CI, run inside the dev container by container/ci.sh. Given
-# names, only those run: container/ci.sh check clippy vale
+# The checks of CI, run inside the dev container by ci/run.sh. Given
+# names, only those run: ci/run.sh check clippy vale
 set -euo pipefail
 cd /src
 
@@ -15,7 +15,7 @@ rust-tests() {
 python-tests() { python3 -m unittest discover -s tests -v; }
 shell-syntax() {
   local script bad=0
-  for script in install.sh bin/*.sh bootstrap/*.sh container/*.sh ansible/roles/devbox/files/*.sh \
+  for script in install.sh bin/*.sh bootstrap/*.sh container/*.sh ci/*.sh ansible/roles/devbox/files/*.sh \
     ansible/roles/devbox/files/tasks/*.sh plugins/*/files/*.sh; do
     bash -n "$script" || bad=1
   done

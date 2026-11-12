@@ -499,7 +499,7 @@ impl Berthd {
     /// A berthd in single-user mode, or nothing when it is not built or does
     /// not answer yet.
     async fn start() -> Option<Berthd> {
-        let program = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/debug/berthd");
+        let program = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/berthd");
         if !program.is_file() {
             eprintln!("skipped: {} is not built", program.display());
             return None;
@@ -768,7 +768,7 @@ async fn messages_are_taken_in_once_also_across_a_restart() {
 /// BERTH_UPDATE_DOCS=1 to write them after a change to the API.
 #[test]
 fn the_committed_documents_are_current() {
-    let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/openapi");
+    let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/openapi");
     for (name, document) in [
         ("berth.openapi.json", super::docs::openapi()),
         ("berth.asyncapi.json", super::docs::asyncapi()),

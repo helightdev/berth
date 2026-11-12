@@ -164,9 +164,7 @@ mod tests {
         }
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let mut found = Vec::new();
-        for dir in ["cli", "crates", "host", "web"] {
-            sources(&root.join(dir), &mut found);
-        }
+        sources(&root.join("crates"), &mut found);
         let elsewhere: Vec<_> = found
             .iter()
             .filter(|path| !path.ends_with("crates/berth-api/src/lib.rs"))

@@ -8,15 +8,17 @@ icon: Hammer
 
 | Folder | Holds |
 | --- | --- |
-| `cli/` | `berth`: the terminal UI, the commands and `berth serve` |
-| `crates/` | Shared libraries: `berth-core`, `berth-api`, `berth-pty`, and `berth-tui`, the screens the terminal UI and the page share |
-| `web/` | The page `berth serve --web` shows in a browser, built for WebAssembly. The docs build copies it to `/web` |
-| `host/` | `berthd` and `box`, built static for hosts |
+| `crates/berth/` | `berth`: the terminal UI, the commands and `berth serve` |
+| `crates/berth-core/`, `berth-api/`, `berth-pty/`, `berth-tui/` | Shared libraries. `berth-tui` has the screens the terminal UI and the page share |
+| `crates/vendor/` | The vendored `tui-input` crate |
+| `crates/berth-web/` | The page `berth serve --web` shows in a browser, built for WebAssembly. The docs build copies it to `/web` |
+| `crates/berthd/`, `crates/box/` | `berthd` and `box`, built static for hosts |
 | `ansible/` | The devbox role |
 | `plugins/` | The plugins that come with berth |
 | `bootstrap/` | First-boot provisioning |
 | `bin/` | `devbox.py` (release, seeds, ISO), `qemu.py`, `write-usb.sh` |
-| `container/` | The desktop image, berth's own image, and the images and script for checks and tests |
+| `container/` | The desktop image and berth's own image |
+| `ci/` | The images and scripts for the checks and the end-to-end tests |
 | `docs/` | This site |
 | `tests/` | Python tests, and the end-to-end tests in `tests/e2e/` |
 
@@ -25,7 +27,7 @@ icon: Hammer
 ```bash
 rustup target add x86_64-unknown-linux-musl     # once
 cargo build --release -p berth
-cargo install --locked --path cli                # into ~/.cargo/bin
+cargo install --locked --path crates/berth       # into ~/.cargo/bin
 ```
 
 The build first makes `berthd` and `box` as static musl binaries and places them in the role's files. It then packs the provisioning source and embeds it in `berth`. It needs Python 3 for the packing.
@@ -60,20 +62,20 @@ Two of the Rust tests compare the API that berthd and `berth serve` describe wit
 
 ## In containers
 
-With Docker or Podman you need nothing else on your machine. `container/ci.sh` builds an image with Rust and its targets, Python with Ansible, and Vale. Everything runs in it. CI runs the same script.
+With Docker or Podman you need nothing else on your machine. `ci/run.sh` builds an image with Rust and its targets, Python with Ansible, and Vale. Everything runs in it. CI runs the same script.
 
 ```bash
-container/ci.sh check              # what CI checks
-container/ci.sh check clippy vale  # some of it
-container/ci.sh e2e                # the end-to-end tests
-container/ci.sh shell              # a shell with the toolchain, the checkout at /src
+ci/run.sh check              # what CI checks
+ci/run.sh check clippy vale  # some of it
+ci/run.sh e2e                # the end-to-end tests
+ci/run.sh shell              # a shell with the toolchain, the checkout at /src
 ```
 
-The checkout is mounted, and files are written as you. Cargo's downloads and the target directory stay in the volumes `berth-ci-cargo` and `berth-ci-target`, so later runs are fast. `container/ci.sh clean` removes them and the images.
+The checkout is mounted, and files are written as you. Cargo's downloads and the target directory stay in the volumes `berth-ci-cargo` and `berth-ci-target`, so later runs are fast. `ci/run.sh clean` removes them and the images.
 
 The test host of the end-to-end tests is an Ubuntu container with SSH and an operator account. A profile is applied to it over SSH, with the role's tasks for the accounts, the plugins and berthd. The tests then use the host through berth's commands, berthd's API and `berth serve`. The desktop packages, toolchains and browsers are left out. The test host and the tests are on an internal network with no way out. Each run starts from a new host and removes it afterwards. After a failure the host's logs are in `build/ci/logs/`.
 
-To run one module or one test case, name it: `container/ci.sh e2e e2e_serve.Roles`. The modules are listed in order in `tests/e2e/run.py`. A new one goes there, after the ones whose state it uses.
+To run one module or one test case, name it: `ci/run.sh e2e e2e_serve.Roles`. The modules are listed in order in `tests/e2e/run.py`. A new one goes there, after the ones whose state it uses.
 
 ## The release archive
 
@@ -100,7 +102,7 @@ GitHub Actions build on every push:
 
 | Workflow | Does |
 | --- | --- |
-| CI | The checks above and the end-to-end tests, both with `container/ci.sh`, and Vale |
+| CI | The checks above and the end-to-end tests, both with `ci/run.sh`, and Vale |
 | Docs | The docs build, and publishing it to GitHub Pages from `main` |
 | Build | The static `berth` for Linux x86_64 as artifact `berth-x86_64-linux`, the host programs as `host-programs-x86_64-linux`; the container image `ghcr.io/helightdev/berth`, tagged `edge` from `main` |
 
@@ -117,7 +119,7 @@ A tag with a suffix, such as `v0.4.0-rc.1`, makes a pre-release. Its programs sa
 
 ## With the page for a browser
 
-berth comes in two builds. The usual one has no page. The `web` feature adds the page `berth serve --web` shows, built from `web/` as WebAssembly and carried in the program (about 2 MB more):
+berth comes in two builds. The usual one has no page. The `web` feature adds the page `berth serve --web` shows, built from `crates/berth-web/` as WebAssembly and carried in the program (about 2 MB more):
 
 ```bash
 rustup target add wasm32-unknown-unknown        # once

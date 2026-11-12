@@ -58,7 +58,7 @@ OUT = REPO / "docs/public/screens"
 CONTAINER = "berth-demo-studio"
 IMAGE = "ubuntu:26.04"
 
-# The theme of the UI (cli/src/theme.rs); used for the frame and for cells that
+# The theme of the UI (crates/berth-tui/src/theme.rs); used for the frame and for cells that
 # keep the terminal's default colours, such as plain command output.
 BASE = "#0d111c"
 TEXT = "#cdd6f4"

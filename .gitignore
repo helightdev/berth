@@ -10,7 +10,6 @@ secrets/
 *.iso
 
 /target/
-/cli/target/
 /ansible/roles/devbox/files/bin/
 
 *.credentials.json

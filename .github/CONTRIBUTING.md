@@ -2,7 +2,7 @@
 
 Thanks for wanting to help. This page says what berth is trying to be, and how
 a change gets from an idea to `main`. Coding agents working in the repository
-should also read [AGENTS.md](AGENTS.md).
+should also read [AGENTS.md](../AGENTS.md).
 
 ## What berth is
 
@@ -79,18 +79,18 @@ afterwards. A short account in your own words tells us more than a formatted pag
 Everything runs in containers, so Docker is all you need on your machine:
 
 ```bash
-container/ci.sh check     # formatting, lints, unit tests, prose
-container/ci.sh e2e       # end-to-end tests against a test host
-container/ci.sh all       # both
+ci/run.sh check     # formatting, lints, unit tests, prose
+ci/run.sh e2e       # end-to-end tests against a test host
+ci/run.sh all       # both
 ```
 
-`container/ci.sh shell` opens a shell in the development container. Building
+`ci/run.sh shell` opens a shell in the development container. Building
 without containers is described in the
-[building reference](docs/content/docs/%28guide%29/reference/building.mdx).
+[building reference](../docs/content/docs/%28guide%29/reference/building.mdx).
 
 A pull request is ready when:
 
-- `container/ci.sh all` passes.
+- `ci/run.sh all` passes.
 - Behaviour that changed has a test. For anything that touches a host, that
   means a case in `tests/e2e/`.
 - Documentation under `docs/content/docs/` is updated in the same pull
@@ -119,6 +119,6 @@ where they go.
 
 ## Licence
 
-berth is licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE)
-or the [MIT license](LICENSE-MIT), at your option. By contributing you agree
+berth is licensed under either of the [Apache License, Version 2.0](../LICENSE-APACHE)
+or the [MIT license](../LICENSE-MIT), at your option. By contributing you agree
 that your contribution is licensed the same way, with no further terms.

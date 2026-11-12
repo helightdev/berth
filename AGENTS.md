@@ -6,15 +6,18 @@ berth sets up and looks after agent workstations. These are Ubuntu machines with
 
 | Path | What it is |
 | --- | --- |
-| `cli/` | The `berth` program: terminal UI, commands and `berth serve` (`cli/src/serve/`) |
+| `crates/berth/` | The `berth` program: terminal UI, commands and `berth serve` (`crates/berth/src/serve/`) |
 | `crates/berth-api/` | Types and the operations table shared by every program (`ops.rs` names each operation, its HTTP route and its role) |
 | `crates/berth-core/` | Hosts, profiles, links to hosts, registries and secrets, the store |
 | `crates/berth-tui/` | The parts of the UI that run in a terminal and in a browser |
 | `crates/berth-pty/` | Terminals for sessions |
-| `host/berthd/`, `host/box/` | The controller on each host and the agent's own tool there |
-| `web/` | The page of `berth serve --web`, built for WebAssembly |
+| `crates/berthd/`, `crates/box/` | The controller on each host and the agent's own tool there |
+| `crates/berth-web/` | The page of `berth serve --web`, built for WebAssembly |
+| `crates/vendor/` | The vendored `tui-input` crate |
 | `ansible/`, `bootstrap/`, `bin/`, `config/` | The provisioning source that is applied to a host |
 | `plugins/` | The plugins that come with berth, each an npm-format package with a `guide.md` |
+| `container/` | The desktop image and berth's own image |
+| `ci/` | The images and scripts that run the checks and the end-to-end tests in containers |
 | `docs/` | The documentation site (Fumadocs). `docs/AGENTS.md` has notes for its Next.js version |
 | `tests/` | Python tests of the provisioning source |
 
@@ -37,12 +40,12 @@ Development and test builds embed quick builds of berthd, box and the page (the 
 
 ### In containers
 
-With only Docker or Podman, `container/ci.sh` runs the same checks in an image that has the toolchain. CI uses it too.
+With only Docker or Podman, `ci/run.sh` runs the same checks in an image that has the toolchain. CI uses it too.
 
 ```bash
-container/ci.sh check [CHECK…]   # fmt, shell-syntax, ansible-syntax, vale, python-tests, rust-tests, clippy
-container/ci.sh e2e [TEST…]      # the end-to-end tests, such as e2e_serve.Roles
-container/ci.sh shell            # a shell in the dev container
+ci/run.sh check [CHECK…]   # fmt, shell-syntax, ansible-syntax, vale, python-tests, rust-tests, clippy
+ci/run.sh e2e [TEST…]      # the end-to-end tests, such as e2e_serve.Roles
+ci/run.sh shell            # a shell in the dev container
 ```
 
 The end-to-end tests in `tests/e2e/` apply a profile to a throw-away Ubuntu container over SSH and then use it with berth, berthd and `berth serve`. They run on a network with nothing else on it, in scratch directories. The order of the modules is in `tests/e2e/run.py`. The test host's logs from a failed run are in `build/ci/logs/`.

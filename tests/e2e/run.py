@@ -2,11 +2,11 @@
 """Run the end-to-end tests, in order: the first applies the test host's
 profile, and the others use the host it set up.
 
-    container/ci.sh e2e                          all of them
-    container/ci.sh e2e e2e_serve                one module
-    container/ci.sh e2e e2e_serve.Roles          one test case
+    ci/run.sh e2e                          all of them
+    ci/run.sh e2e e2e_serve                one module
+    ci/run.sh e2e e2e_serve.Roles          one test case
 
-Only meant for the runner container of container/ci.compose.yml.
+Only meant for the runner container of ci/compose.yml.
 """
 import os
 import sys
@@ -35,7 +35,7 @@ MODULES = [
 
 def main():
     if os.environ.get('BERTH_E2E') != '1':
-        sys.exit('The end-to-end tests run in their containers: container/ci.sh e2e')
+        sys.exit('The end-to-end tests run in their containers: ci/run.sh e2e')
     if not harness.BERTH.is_file():
         sys.exit(f'No {harness.BERTH}: build berth first')
     names = sys.argv[1:] or MODULES

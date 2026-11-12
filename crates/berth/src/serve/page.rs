@@ -1,4 +1,4 @@
-//! berth in a browser: the page built from `web/`, carried in the program.
+//! berth in a browser: the page built from `crates/berth-web/`, carried in the program.
 //! It is served to anyone who asks, since it holds nothing: what it shows it
 //! gets through the portal, with the token its user gives it.
 
@@ -10,7 +10,7 @@ use axum::{
 };
 
 const BUILD: &str = env!("BERTH_WEB_BUILD");
-const PAGE: &str = include_str!("../../../web/index.html");
+const PAGE: &str = include_str!("../../../berth-web/index.html");
 const SCRIPT: &str = include_str!(concat!(env!("OUT_DIR"), "/web/berth-web.js"));
 const WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/web/berth-web_bg.wasm"));
 

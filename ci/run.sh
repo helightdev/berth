@@ -2,16 +2,16 @@
 # Checks and end-to-end tests in containers, the same here and in CI. Needs
 # Docker or Podman with compose, and nothing else.
 #
-#   container/ci.sh check [CHECK…]   the checks of CI: fmt, shell-syntax, ansible-syntax,
-#                                    vale, python-tests, rust-tests, clippy
-#   container/ci.sh e2e [TEST…]      build berth, start a test host and run the
-#                                    end-to-end tests against it (names as in
-#                                    unittest: e2e_serve, e2e_serve.Roles)
-#   container/ci.sh all              check, then e2e
-#   container/ci.sh shell            a shell in the dev container
-#   container/ci.sh run COMMAND…     a command in the dev container
-#   container/ci.sh build            build the images
-#   container/ci.sh clean            remove the images and the cache volumes
+#   ci/run.sh check [CHECK…]    the checks of CI: fmt, shell-syntax, ansible-syntax,
+#                               vale, python-tests, rust-tests, clippy
+#   ci/run.sh e2e [TEST…]       build berth, start a test host and run the
+#                               end-to-end tests against it (names as in
+#                               unittest: e2e_serve, e2e_serve.Roles)
+#   ci/run.sh all               check, then e2e
+#   ci/run.sh shell             a shell in the dev container
+#   ci/run.sh run COMMAND…      a command in the dev container
+#   ci/run.sh build             build the images
+#   ci/run.sh clean             remove the images and the cache volumes
 #
 # BERTH_CI_ENGINE    docker or podman (default: whichever is found, Docker first)
 # BERTH_CI_CACHE     a directory for cargo's downloads and the target directory
@@ -57,7 +57,7 @@ fi
 # the user rather than to the engine's root.
 mkdir -p target build/ci
 
-compose() { "$engine" compose -f container/ci.compose.yml "$@"; }
+compose() { "$engine" compose -f ci/compose.yml "$@"; }
 # A terminal only when there is one.
 tty=()
 [[ -t 0 && -t 1 ]] || tty=(-T)
@@ -96,9 +96,9 @@ command=${1:-}
 shift || true
 case $command in
   build) build ;;
-  check) build dev && dev container/ci-checks.sh "$@" ;;
+  check) build dev && dev ci/checks.sh "$@" ;;
   e2e) build && e2e "$@" ;;
-  all) build && dev container/ci-checks.sh && e2e ;;
+  all) build && dev ci/checks.sh && e2e ;;
   shell) build dev && dev bash ;;
   run) build dev && dev "$@" ;;
   clean)

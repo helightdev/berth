@@ -1,4 +1,4 @@
-# The checks and the end-to-end tests, run by container/ci.sh.
+# The checks and the end-to-end tests, run by ci/run.sh.
 #
 # dev     the toolchain, with the checkout at /src, as the user who owns it
 # runner  the same image on a network of its own, which drives the tests
@@ -11,7 +11,7 @@ x-dev: &dev
   image: ${BERTH_CI_DEV_IMAGE:-berth-ci-dev}
   build:
     context: ..
-    dockerfile: container/ci.Dockerfile
+    dockerfile: ci/dev.Dockerfile
   working_dir: /src
   # SELinux would keep the container out of the checkout otherwise.
   security_opt: [label=disable]
@@ -51,7 +51,7 @@ services:
     image: ${BERTH_CI_HOST_IMAGE:-berth-ci-host}
     build:
       context: ..
-      dockerfile: container/ci-host.Dockerfile
+      dockerfile: ci/host.Dockerfile
     profiles: [e2e]
     hostname: studio
     networks: [e2e]

@@ -19,6 +19,6 @@ updates:
       docs:
         patterns: ["*"]
   - package-ecosystem: docker
-    directory: /container
+    directories: [/container, /ci]
     schedule:
       interval: monthly

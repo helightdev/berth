@@ -47,15 +47,18 @@ mod page {
     pub fn build() {
         let out = env::var("OUT_DIR").expect("OUT_DIR");
         let manifest = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
-        let root = Path::new(&manifest).parent().expect("the checkout");
+        let root = Path::new(&manifest)
+            .ancestors()
+            .nth(2)
+            .expect("the checkout");
         for entry in [
-            "web",
+            "crates/berth-web",
             "crates/berth-tui",
             "crates/berth-api",
-            "cli/vendor/tui-input",
+            "crates/vendor/tui-input",
             "Cargo.lock",
         ] {
-            println!("cargo:rerun-if-changed=../{entry}");
+            println!("cargo:rerun-if-changed=../../{entry}");
         }
         println!("cargo:rerun-if-env-changed=BERTH_WEB_PROFILE");
         println!("cargo:rerun-if-env-changed=BERTH_BUILD_VERSION");
