@@ -119,7 +119,7 @@ def source_with_plugins(name, plugins):
 class Workstation:
     """A user's machine with berth: its own HOME, XDG directories and SSH key."""
 
-    def __init__(self, name, ssh_key=True):
+    def __init__(self, name, ssh_key=True, source_dir=None, trust=True):
         self.root = SCRATCH / name
         self.home = self.root / 'home'
         self.config = self.home / '.config'
@@ -133,7 +133,7 @@ class Workstation:
             'XDG_CONFIG_HOME': str(self.config), 'XDG_DATA_HOME': str(self.data),
             'XDG_RUNTIME_DIR': str(self.run_dir),
             'PATH': os.environ['PATH'], 'LANG': 'C.UTF-8', 'TERM': 'xterm-256color',
-            'BERTH_SOURCE': str(source()),
+            'BERTH_SOURCE': str(source_dir or source()),
             # npm stays off the network: plugins come from folders here.
             'npm_config_registry': 'http://127.0.0.1:9/', 'npm_config_offline': 'true',
             'npm_config_cache': str(self.root / 'npm-cache'), 'npm_config_update_notifier': 'false',
@@ -141,7 +141,9 @@ class Workstation:
         }
         self.key = self.home / '.ssh/id_ed25519'
         self.public = keygen(self.key, f'tester@{name}') if ssh_key else None
-        self.trust_host()
+        # A host that is not up yet is trusted once it answers.
+        if trust:
+            self.trust_host()
 
     @property
     def berth_dir(self):
@@ -284,6 +286,12 @@ def provisioned():
     wait_for('berthd answering', lambda: station.link().get('/v1/version'), timeout=60)
     _provisioned['workstation'] = station
     return station
+
+
+def adopt(station):
+    """Take a workstation whose host was set up otherwise, such as by its
+    first boot, as the one provisioned() gives the tests."""
+    _provisioned['workstation'] = station
 
 
 def served():
