@@ -31,6 +31,8 @@ A profile is a JSON file that describes one host. berth writes it from the set-u
     profile: { type: '"laptop" | "cloud" | "qemu"', default: '"laptop"', description: 'Provisioning defaults. Only laptop adds a physical login and power settings.' },
     keyboard: { type: 'string', description: 'Keyboard layout of the installer, such as de or us.' },
     tailscale_auth_key: { type: 'string', description: 'Optional enrollment key; prefer a short-lived, one-use key.' },
+    tailscale_auto_key: { type: 'boolean', default: 'false', description: 'berth creates a one-use enrollment key whenever the host joins the tailnet. A pasted key wins. See Access.' },
+    tailscale_login_server: { type: 'string', description: 'The Headscale server the host joins. Empty: berth\'s tailnet_login_server setting, or Tailscale.' },
     release_url: { type: 'string', description: 'HTTPS address of the release archive, for cloud seeds.' },
     release_store: { type: 'string', description: 'A registry or repository berth uploads the release archive to when it makes the seed.' },
     release_private: { type: 'boolean', default: 'false', description: 'Whether the seed carries a login for downloading the archive.' },

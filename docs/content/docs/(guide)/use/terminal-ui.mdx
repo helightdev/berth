@@ -18,7 +18,7 @@ The home screen has five tabs, switched with the number keys or Tab.
 | Tab | Holds |
 | --- | --- |
 | `1` Hosts | The saved hosts and their addresses. `n` creates one, `d` makes the selected one the default |
-| `2` Settings | The settings of `berth config`, the SSH key of berth to copy, and with a berth server a QR code that opens its page on a phone |
+| `2` Settings | The settings of `berth config`, the SSH key of berth to copy, and with a berth server a QR code that opens its page on a phone. With a server, the `tailnet_` settings are the server's |
 | `3` Registries | npm, Docker, file and Nexus registries ([Registries](/docs/use/registries)) |
 | `4` Secrets | Secret values kept on your machine ([Secrets](/docs/use/secrets)) |
 | `5` Plugins | Built-in and installed plugins, and adding, updating and removing your own ([Plugins](/docs/extend/plugins#updating-a-plugin)). With a server set, the server's |
@@ -71,7 +71,7 @@ Every `.pub` file in `~/.ssh`, keys held by ssh-agent, private key paths, and `H
 </Accordion>
 <Accordion title="Tailscale">
 
-The Linux machines in `tailscale status`, as address suggestions. With `TS_API_KEY` set, F4 on the Tailscale key field creates a one-use enrollment key through the Tailscale API.
+The Linux machines in `tailscale status`, as address suggestions. With the secret `tailnet_api_key` or `TS_API_KEY` set, F4 on the Tailscale key field creates a one-use enrollment key through the API of Tailscale or of the Headscale server in `tailnet_login_server`.
 
 </Accordion>
 <Accordion title="Wi-Fi">

@@ -48,7 +48,7 @@ Wired DHCP is always configured. To add Wi-Fi, switch **Wi-Fi** on and give the 
 
 ### Optionally, join the tailnet
 
-Give a short-lived, one-use Tailscale key in **Tailscale enrollment key**. With a Tailscale API access token exported as `TS_API_KEY`, F4 on that field creates a one-use, pre-approved key valid for 24 hours. Tailnets that require tags take them from `DEVBOX_TAILSCALE_TAGS=tag:devbox,...`.
+Give a short-lived, one-use Tailscale key in **Tailscale enrollment key**. Or switch on **Automatic enrollment key**: with the control server's API key in the secret `tailnet_api_key`, berth creates a one-use key valid for 24 hours each time it builds the installer. F4 on the key field does the same for a key to paste. Tailnets that require tags take them from `berth config tailnet_tags tag:devbox`. For a Headscale server, see [Headscale](/docs/use/access#headscale).
 
 Reusable keys and existing machine identities do not belong in installer images.
 

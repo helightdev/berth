@@ -27,7 +27,8 @@ For each part:
   Don't put anything on a host that an agent on it shouldn't be able to read.
 - **Secrets** are kept unencrypted on the machine that runs berth, in a file
   only its user can read, and are written to the agent's files on the hosts
-  that take them.
+  that take them. The tailnet's API key, `tailnet_api_key`, is the exception:
+  berth uses it to create one-use enrollment keys and never sends it to a host.
 
 A host is an agent's workspace and should be treated as one. Give it
 credentials with the narrowest scope that does the job, and assume that what
