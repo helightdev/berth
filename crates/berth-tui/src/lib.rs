@@ -3,9 +3,11 @@
 //! events into and its page in a browser the browser's.
 
 pub mod event;
+pub mod fields;
 pub mod host;
 pub mod markdown;
 pub mod screen;
+pub mod setup;
 pub mod theme;
 
 pub use event::{Click, Code, Event, Key, Mouse};

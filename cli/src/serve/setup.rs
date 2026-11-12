@@ -420,3 +420,140 @@ pub async fn set_setting(
     state.paths.set(&key, &setting.value).map_err(bad)?;
     Ok(Json(Done { ok: true }))
 }
+
+// ── What a set-up screen needs ──────────────────────────────────────────────
+
+/// Something a plugin installs, for the Features page of a host.
+#[derive(Serialize, ToSchema)]
+pub struct FeatureInfo {
+    /// `PLUGIN/FEATURE`, as a profile's `devbox_plugin_features` names it.
+    pub key: String,
+    pub label: String,
+    /// The group of the Features page it is listed in.
+    pub group: String,
+    pub help: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct Catalogue {
+    /// The profile a new host starts from.
+    pub template: Value,
+    /// What the server's plugins can install, in the order they are applied.
+    pub features: Vec<FeatureInfo>,
+}
+
+#[utoipa::path(get, path = "/v1/setup", summary = "What a new host starts from, and what plugins can install on one.", tag = "set-up",
+    responses((status = 200, description = "The starting profile and the plugins' features", body = Catalogue)))]
+pub async fn catalogue(State(state): App) -> Answer<Json<Catalogue>> {
+    let source = state.paths.source().map_err(internal)?;
+    let template = std::fs::read(source.join("config/example.json")).map_err(internal)?;
+    let found = plugins::load(&[
+        source.join("plugins"),
+        state.paths.config_dir.join("plugins"),
+    ]);
+    let features = found
+        .iter()
+        .flat_map(|plugin| {
+            plugin.features.iter().map(|feature| FeatureInfo {
+                key: format!("{}/{}", plugin.id, feature.id),
+                label: feature.label.clone(),
+                group: feature.group.clone(),
+                help: feature.help.to_owned(),
+            })
+        })
+        .collect();
+    let mut template: Value = serde_json::from_slice(&template).map_err(internal)?;
+    // How a host is reached is part of every profile, also of one not reached yet.
+    if !template["builder"].is_object() {
+        template["builder"] = json!({});
+    }
+    Ok(Json(Catalogue { template, features }))
+}
+
+/// Something for the server to make up for a profile.
+#[derive(Deserialize, ToSchema)]
+pub struct Generate {
+    /// `hostname`, `password` or `tailscale_key`.
+    pub what: String,
+    /// For `password`: the password to hash. Without it one is made up and
+    /// kept beside the profile of `host`, under `user`.
+    pub password: Option<String>,
+    pub host: Option<String>,
+    pub user: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct Generated {
+    /// The host name, the password's hash, or the key.
+    pub value: String,
+    /// What to tell whoever asked.
+    pub note: String,
+    /// A password that was made up, for whoever asked to write down.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+#[utoipa::path(post, path = "/v1/setup/generate", summary = "Make up a host name, hash or make up a password, or create a Tailscale key.", tag = "set-up",
+    request_body(content = Generate, description = "What to make"),
+    responses((status = 200, description = "What was made", body = Generated),
+              (status = 400, description = "It could not be made; the message says why", body = ErrorBody)))]
+pub async fn generate(State(state): App, Json(asked): Json<Generate>) -> Answer<Json<Generated>> {
+    use berth_core::credentials;
+    let kept = match (&asked.host, asked.what.as_str()) {
+        (Some(host), "password") if asked.password.is_none() => {
+            Some(profile_path(&state, host)?.with_extension("credentials.json"))
+        }
+        _ => None,
+    };
+    let made = tokio::task::spawn_blocking(move || -> Result<Generated, String> {
+        let fail = |error: Box<dyn std::error::Error>| error.to_string();
+        match asked.what.as_str() {
+            "hostname" => Ok(Generated {
+                value: credentials::hostname().map_err(fail)?,
+                note: String::new(),
+                password: None,
+            }),
+            "password" => match (asked.password, kept) {
+                (Some(password), _) => Ok(Generated {
+                    value: credentials::hash(&password).map_err(fail)?,
+                    note: "Password hashed".into(),
+                    password: None,
+                }),
+                (None, Some(path)) => {
+                    let password = credentials::password().map_err(fail)?;
+                    let value = credentials::hash(&password).map_err(fail)?;
+                    let user = asked.user.filter(|user| !user.is_empty());
+                    credentials::save(&path, user.as_deref().unwrap_or("account"), &password)
+                        .map_err(fail)?;
+                    Ok(Generated {
+                        value,
+                        note: format!(
+                            "Generated password saved privately on the server in {}",
+                            path.display()
+                        ),
+                        password: Some(password),
+                    })
+                }
+                (None, None) => {
+                    Err("A made-up password is kept beside a host: name the host".into())
+                }
+            },
+            "tailscale_key" => {
+                let description = match asked.host.as_deref().unwrap_or("") {
+                    "" => "devbox".to_owned(),
+                    host => format!("devbox {host}"),
+                };
+                Ok(Generated {
+                    value: credentials::tailscale_auth_key(&description).map_err(fail)?,
+                    note: "One-use Tailscale key created · valid for 24 hours".into(),
+                    password: None,
+                })
+            }
+            other => Err(format!("Nothing to make for {other}")),
+        }
+    })
+    .await
+    .map_err(internal)?
+    .map_err(bad)?;
+    Ok(Json(made))
+}

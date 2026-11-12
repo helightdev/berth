@@ -977,8 +977,8 @@ fn choose(app: &mut App, entry: Entry) -> Flow {
         Entry::HostRegistry(index) => app.toggle_host_registry(index),
         Entry::HostSecret(index) => app.editing = Some(Input::new(app.host_secret(index))),
         Entry::Group(_) => app.status = "Space switches the whole group".into(),
-        Entry::Feature(plugin, feature) => {
-            let item = Item::Feature(plugin, feature);
+        Entry::Feature(index) => {
+            let item = Item::Feature(index);
             app.set_item(item, !app.item_enabled(item));
         }
         Entry::HostTask(index) => app.begin_task(index, false),
@@ -2670,7 +2670,7 @@ mod tests {
     fn space_on_a_group_heading_switches_the_group() {
         let mut app = App::new("x.json".into(), parse_config(b"{}").unwrap());
         // The coding agents are plugins that come with berth.
-        app.plugins = crate::plugins::load(&["../plugins".into()]);
+        app.set_plugins(crate::plugins::load(&["../plugins".into()]));
         let chosen = |app: &App| app.config["ansible_vars"]["devbox_plugin_features"].to_string();
         app.set_step(Step::Features);
         // The heading itself is selected first and offers the key.

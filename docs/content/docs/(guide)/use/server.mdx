@@ -128,13 +128,27 @@ https://berth.example.ts.net/
 https://berth.example.ts.net/#token=TOKEN     # a link that signs in
 ```
 
-The page is the host list and each host's overview from the terminal UI, drawn in the browser: tasks with their questions and arguments, sessions, and the terminal panel. The browser keeps the token until **x** on the host list forgets it. A token in a link is taken out of the address bar when the page opens.
+The page is the terminal UI drawn in the browser. It has the host list and the overview of each host, where tasks run and sessions open in the terminal panel. The browser keeps the token until **o** on the host list signs out. A token in a link is taken out of the address bar when the page opens.
+
+With the role `admin` the page also sets the server up, with the same screens as the terminal UI:
+
+- **Settings**, **Registries** and **Secrets** are tabs of the home screen.
+- **New host** starts a profile, and a host's overview opens its Features, Accounts, Secrets and Install pages.
+- **Install** renders a cloud-init seed to copy, or applies the profile over SSH from the server and shows the output as it runs.
+- **Install secrets and registry logins** sends a host what its profile names.
+
+Some keys differ:
 
 | In the page | Instead of |
 | --- | --- |
 | **Alt+Q** leaves a running session | `Ctrl+Q`, which closes some browsers |
 | **Ctrl+V** and the browser's paste | The desktop clipboard tools |
 | A click on a link opens a tab | `xdg-open` |
+| **g** generates and **p** takes a password to hash | `F4` and `F5`, which reloads a page |
+
+A password the server makes up is shown once in the page. The server keeps a copy beside the host's profile.
+
+What needs your own machine stays in the terminal UI. That is the USB installer and the container image, values read from your local keys, and installing plugins.
 
 Keys the browser keeps for itself, such as `Ctrl+W` and `Ctrl+T`, never reach a shell in the page. A phone can tap rows and key hints, but has no keyboard for a terminal.
 

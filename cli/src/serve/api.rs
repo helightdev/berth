@@ -193,6 +193,8 @@ pub fn documented() -> OpenApiRouter<Arc<Serve>> {
         .routes(routes!(setup::check_registry))
         .routes(routes!(setup::settings))
         .routes(routes!(setup::set_setting))
+        .routes(routes!(setup::catalogue))
+        .routes(routes!(setup::generate))
         .routes(routes!(jobs))
         .routes(routes!(job))
         .routes(routes!(job_output))

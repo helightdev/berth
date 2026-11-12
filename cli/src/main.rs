@@ -617,19 +617,19 @@ mod tests {
     fn plugin_features_join_groups() {
         use app::{Entry, Item};
         let mut app = app(r#"{"builder":{"ssh_host":"box","shipped_plugins":true}}"#);
-        app.plugins = vec![demo_plugin()];
+        app.set_plugins(vec![demo_plugin()]);
         app.step = Step::Features;
         let groups = app.feature_groups();
         // One feature joins a built-in group, the other brings its own. The
         // groups of the coding agents are not shown without their plugins.
         assert_eq!(groups[0].title, "Development Tools");
-        assert_eq!(groups[0].items.last(), Some(&Item::Feature(0, 0)));
+        assert_eq!(groups[0].items.last(), Some(&Item::Feature(0)));
         assert_eq!(groups.last().unwrap().title, "Games");
-        assert_eq!(groups.last().unwrap().items, [Item::Feature(0, 1)]);
+        assert_eq!(groups.last().unwrap().items, [Item::Feature(1)]);
 
         // Chosen out of order, stored in the plugin's order.
-        app.set_item(Item::Feature(0, 1), true);
-        app.set_item(Item::Feature(0, 0), true);
+        app.set_item(Item::Feature(1), true);
+        app.set_item(Item::Feature(0), true);
         assert_eq!(
             app.config["ansible_vars"]["devbox_plugin_features"],
             json!(["demo/one", "demo/two"])
@@ -642,7 +642,7 @@ mod tests {
                 .iter()
                 .any(|entry| matches!(entry, Entry::HostTask(_)))
         );
-        app.set_item(Item::Feature(0, 0), false);
+        app.set_item(Item::Feature(0), false);
         assert_eq!(
             app.config["ansible_vars"]["devbox_plugin_features"],
             json!(["demo/two"])
@@ -685,7 +685,7 @@ mod tests {
     fn groups_are_selectable_and_switch_everything_in_them() {
         use app::Entry;
         let mut app = app(r#"{"builder":{"shipped_plugins":true}}"#);
-        app.plugins = vec![demo_plugin()];
+        app.set_plugins(vec![demo_plugin()]);
         app.step = Step::Features;
         let rows = app.rows();
         assert!(

@@ -3,7 +3,7 @@
 use crate::{
     Result, credentials,
     discovery::{self, Choices, expand_path},
-    fields::{Action, Field, Group, Kind, SOURCES, Step, TASKS},
+    fields::{Action, Field, Kind, SOURCES, Step, TASKS},
     job::{Job, Stage},
     picker::Picker,
     plugins::{self, Plugin},
@@ -12,11 +12,9 @@ use crate::{
 };
 use berth_core::{apply, host::Host};
 use berth_tui::host::Pick;
-use ratatui::{
-    style::Style,
-    text::{Line, Span},
-    widgets::ListState,
-};
+use berth_tui::setup::{self, set_pointer};
+pub use berth_tui::setup::{FeatureGroup, Item, value_line};
+use ratatui::{style::Style, text::Line, widgets::ListState};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -36,8 +34,8 @@ pub enum Entry {
     Task(&'static str),
     /// The heading of a group on the Features page.
     Group(usize),
-    /// A plugin's feature, switched on or off for this host: plugin and feature index.
-    Feature(usize, usize),
+    /// A plugin's feature, switched on or off for this host: its index among them.
+    Feature(usize),
     /// A task of the host, by index into what it listed.
     HostTask(usize),
     /// A session on the host, by index into what it listed.
@@ -49,19 +47,6 @@ pub enum Entry {
     /// Open the set-up flow.
     Setup,
     Run,
-}
-
-/// Something a group of the Features page switches.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Item {
-    Field(Field),
-    /// Plugin and feature index.
-    Feature(usize, usize),
-}
-
-pub struct FeatureGroup {
-    pub title: String,
-    pub items: Vec<Item>,
 }
 
 pub struct Row {
@@ -106,6 +91,8 @@ pub struct App {
     pub as_agent: bool,
     /// Plugins found in the source and in the user's plugin directory.
     pub plugins: Vec<Plugin>,
+    /// What those plugins can install, for the Features page.
+    catalogue: Vec<setup::Feature>,
     /// Where berth keeps its settings, for the registries and secret values.
     pub config_dir: PathBuf,
     /// The registries and secrets that exist, for the Secrets page.
@@ -163,80 +150,23 @@ pub struct App {
     pub usb_drives: Choices,
 }
 
-fn set_pointer(config: &mut Value, pointer: &str, value: Value) {
-    let mut node = config;
-    let mut parts = pointer.trim_start_matches('/').split('/').peekable();
-    while let Some(part) = parts.next() {
-        if !node.is_object() {
-            *node = json!({});
-        }
-        if parts.peek().is_none() {
-            node[part] = value;
-            return;
-        }
-        node = &mut node[part];
-    }
-}
-
-pub fn value_line(label: &str, value: &str, kind: Kind) -> Line<'static> {
-    let (answer, style) = match kind {
-        Kind::Toggle if value == "true" => ("● On", Style::new().fg(theme::GOOD)),
-        Kind::Toggle => ("○ Off", Style::new().fg(theme::MUTED)),
-        _ if value.is_empty() => ("Not set", Style::new().fg(theme::MUTED).italic()),
-        Kind::Secret => ("••••••", Style::new().fg(theme::ACCENT)),
-        _ => (value, Style::new().fg(theme::ACCENT)),
-    };
-    Line::from(vec![
-        Span::styled(format!("{label}  "), Style::new().fg(theme::TEXT)),
-        Span::styled(answer.to_owned(), style),
-    ])
-}
-
-/// An SSH public key as type, the end of the key and its comment.
-fn short_key(key: &str) -> String {
-    let mut parts = key.split_whitespace();
-    match (parts.next(), parts.next()) {
-        (Some(kind), Some(data)) if data.len() > 12 && data.is_ascii() => {
-            let comment = parts.collect::<Vec<_>>().join(" ");
-            format!("{kind} …{} {comment}", &data[data.len() - 8..])
-                .trim_end()
-                .to_owned()
-        }
-        _ => key.to_owned(),
-    }
-}
-
-/// Names Ubuntu already uses for system accounts or groups; useradd refuses them.
-const RESERVED_NAMES: &[&str] = &[
-    "root", "daemon", "bin", "sys", "adm", "tty", "disk", "lp", "mail", "news", "uucp", "man",
-    "proxy", "kmem", "dialout", "fax", "voice", "cdrom", "floppy", "tape", "sudo", "audio", "dip",
-    "www-data", "backup", "operator", "list", "irc", "src", "shadow", "utmp", "video", "sasl",
-    "plugdev", "staff", "games", "users", "nogroup", "admin", "docker",
-];
-
-fn valid_username(name: &str) -> bool {
-    let mut chars = name.chars();
-    name.len() <= 32
-        && !RESERVED_NAMES.contains(&name)
-        && chars
-            .next()
-            .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
-}
-
-fn valid_hostname(name: &str) -> bool {
-    name.len() <= 63
-        && name.starts_with(|c: char| c.is_ascii_lowercase())
-        && !name.ends_with('-')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-}
-
-fn valid_password_hash(hash: &str) -> bool {
-    (hash.starts_with("$6$") || hash.starts_with("$y$"))
-        && hash.len() >= 40
-        && !hash.contains(char::is_whitespace)
+/// The rows of a set-up page, as rows of this screen.
+fn lift(rows: Vec<setup::Row>) -> Vec<Row> {
+    rows.into_iter()
+        .map(|row| Row {
+            line: row.line,
+            entry: row.entry.map(|entry| match entry {
+                setup::Entry::Source(index) => Entry::Source(index),
+                setup::Entry::Action(action) => Entry::Action(action),
+                setup::Entry::Field(field) => Entry::Field(field),
+                setup::Entry::Group(index) => Entry::Group(index),
+                setup::Entry::Feature(index) => Entry::Feature(index),
+                setup::Entry::Registry(index) => Entry::HostRegistry(index),
+                setup::Entry::Secret(index) => Entry::HostSecret(index),
+                setup::Entry::Run => Entry::Run,
+            }),
+        })
+        .collect()
 }
 
 impl App {
@@ -267,6 +197,7 @@ impl App {
             tailnet_hosts: vec![],
             wifi_networks: vec![],
             plugins: vec![],
+            catalogue: vec![],
             config_dir: PathBuf::new(),
             registry_names: vec![],
             secret_names: vec![],
@@ -291,27 +222,25 @@ impl App {
         app
     }
 
-    pub fn text(&self, field: Field) -> &str {
-        self.config
-            .pointer(field.spec().pointer)
-            .and_then(Value::as_str)
-            .unwrap_or("")
+    /// The profile as its set-up pages see it.
+    fn view(&self) -> setup::Profile<'_> {
+        setup::Profile {
+            config: &self.config,
+            step: self.step,
+            action: self.action,
+            features: &self.catalogue,
+            registries: &self.registry_names,
+            secrets: &self.secret_names,
+        }
     }
 
-    /// State of a toggle. Unset feature switches are on, like the role defaults,
-    /// and tool categories follow the older single `devbox_install_dev_tools` switch.
+    pub fn text(&self, field: Field) -> &str {
+        self.view().text(field)
+    }
+
+    /// State of a toggle. Unset feature switches are on, like the role defaults.
     pub fn enabled(&self, field: Field) -> bool {
-        let pointer = field.spec().pointer;
-        let stored = self.config.pointer(pointer).and_then(Value::as_bool);
-        stored.unwrap_or_else(|| {
-            if pointer.starts_with("/ansible_vars/devbox_tools_") {
-                self.config["ansible_vars"]["devbox_install_dev_tools"]
-                    .as_bool()
-                    .unwrap_or(true)
-            } else {
-                pointer.starts_with("/ansible_vars/")
-            }
-        })
+        self.view().enabled(field)
     }
 
     /// Read which registries and secrets exist. They are kept outside the profile.
@@ -326,272 +255,62 @@ impl App {
         self.secret_names = store.secret_names();
     }
 
-    fn names(&self, key: &str) -> Vec<Value> {
-        self.config[key].as_array().cloned().unwrap_or_default()
-    }
-
-    pub fn host_registry(&self, index: usize) -> bool {
-        self.names("registries")
-            .contains(&json!(self.registry_names[index]))
-    }
-
     pub fn toggle_host_registry(&mut self, index: usize) {
-        let name = json!(self.registry_names[index]);
-        let mut registries = self.names("registries");
-        match registries.iter().position(|known| *known == name) {
-            Some(position) => {
-                registries.remove(position);
-            }
-            None => registries.push(name),
-        }
-        self.config["registries"] = json!(registries);
+        setup::toggle_registry(&mut self.config, &self.registry_names[index]);
     }
 
     /// How this host gets a secret: `GH_TOKEN` for a variable, a path for a
     /// file, nothing when it does not get it.
     pub fn host_secret(&self, index: usize) -> String {
-        let name = &self.secret_names[index];
-        self.names("secrets")
-            .iter()
-            .find(|entry| entry["name"] == name.as_str())
-            .and_then(|entry| entry["env"].as_str().or(entry["file"].as_str()))
-            .unwrap_or("")
-            .to_owned()
+        self.view().secret_how(index)
     }
 
     pub fn set_host_secret(&mut self, index: usize, how: &str) {
-        let name = self.secret_names[index].clone();
-        let how = how.trim();
-        let mut secrets = self.names("secrets");
-        let known = secrets
-            .iter()
-            .position(|entry| entry["name"] == name.as_str());
-        let variable = how.starts_with(|ch: char| ch.is_ascii_alphabetic() || ch == '_')
-            && how
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_');
-        let entry = if how.is_empty() {
-            None
-        } else if variable {
-            Some(json!({"name": name, "env": how}))
-        } else if how.starts_with('~')
-            || how.starts_with('/')
-            || how.contains('/')
-            || how.starts_with('.')
-        {
-            // An earlier file keeps the mode given on the command line.
-            let mode =
-                known.and_then(|position| secrets[position]["mode"].as_str().map(str::to_owned));
-            let mut entry = json!({"name": name, "file": how});
-            if let Some(mode) = mode {
-                entry["mode"] = json!(mode);
-            }
-            Some(entry)
-        } else {
-            self.status =
-                "A variable name such as GH_TOKEN, or a path such as ~/.config/app/token".into();
-            return;
-        };
-        if let Some(position) = known {
-            secrets.remove(position);
+        if let Err(why) = setup::set_secret(&mut self.config, &self.secret_names[index], how) {
+            self.status = why.into();
         }
-        secrets.extend(entry);
-        self.config["secrets"] = json!(secrets);
     }
 
     fn access_rows(&self) -> Vec<Row> {
-        let heading = |text: &'static str| {
-            Row::info(Line::styled(text, Style::new().fg(theme::ACCENT).bold()))
-        };
-        let muted = Style::new().fg(theme::MUTED);
-        let branch = |index: usize, count: usize| {
-            if index + 1 < count {
-                "  ├─ "
-            } else {
-                "  └─ "
-            }
-        };
-        let mut rows = vec![heading("Registries")];
-        if self.registry_names.is_empty() {
-            rows.push(Row::info(Line::styled(
-                "  none yet · add them on the Registries tab of the home screen",
-                muted,
-            )));
-        }
-        for (index, name) in self.registry_names.iter().enumerate() {
-            let mut line = value_line(name, &self.host_registry(index).to_string(), Kind::Toggle);
-            line.spans.insert(
-                0,
-                Span::styled(branch(index, self.registry_names.len()), muted),
-            );
-            rows.push(Row::entry(line, Entry::HostRegistry(index)));
-        }
-        rows.push(heading("Secrets"));
-        if self.secret_names.is_empty() {
-            rows.push(Row::info(Line::styled(
-                "  none yet · add them on the Secrets tab of the home screen",
-                muted,
-            )));
-        }
-        for (index, name) in self.secret_names.iter().enumerate() {
-            let how = self.host_secret(index);
-            let mut line = Line::from(vec![
-                Span::styled(branch(index, self.secret_names.len()), muted),
-                Span::styled(format!("{name}  "), Style::new().fg(theme::TEXT)),
-            ]);
-            line.spans.push(if how.is_empty() {
-                Span::styled("○ Not given", muted)
-            } else if how.contains('/') || how.starts_with(['~', '.']) {
-                Span::styled(format!("● file {how}"), Style::new().fg(theme::GOOD))
-            } else {
-                Span::styled(format!("● variable {how}"), Style::new().fg(theme::GOOD))
-            });
-            rows.push(Row::entry(line, Entry::HostSecret(index)));
-        }
-        // What the profile names but this machine has no value for.
-        for entry in self.names("secrets") {
-            let name = entry["name"].as_str().unwrap_or("");
-            if !self.secret_names.iter().any(|known| known == name) {
-                rows.push(Row::info(Line::styled(
-                    format!("✗ {name} is given to this host but has no value stored here"),
-                    Style::new().fg(theme::BAD),
-                )));
-            }
-        }
-        for name in self.names("registries") {
-            if !self
-                .registry_names
-                .iter()
-                .any(|known| name == known.as_str())
-            {
-                rows.push(Row::info(Line::styled(
-                    format!(
-                        "✗ Registry {} is given to this host but not configured here",
-                        name.as_str().unwrap_or("")
-                    ),
-                    Style::new().fg(theme::BAD),
-                )));
-            }
-        }
-        rows.push(Row::info(""));
-        rows.push(Row::info(Line::styled(
-            "They reach a running host with \"Install secrets and registry logins\" on its overview.",
-            muted,
-        )));
-        rows
+        lift(self.view().access_rows())
     }
 
     /// Read the plugins of the source (the working directory) and the user's own.
     pub fn load_plugins(&mut self, user_dir: PathBuf) {
-        self.plugins = plugins::load(&["plugins".into(), user_dir]);
+        self.set_plugins(plugins::load(&["plugins".into(), user_dir]));
     }
 
-    /// The plugin features this host has switched on, as `PLUGIN/FEATURE`.
-    fn chosen_features(&self) -> Vec<String> {
-        self.config["ansible_vars"]["devbox_plugin_features"]
-            .as_array()
-            .map(|names| {
-                names
-                    .iter()
-                    .filter_map(|name| name.as_str().map(str::to_owned))
-                    .collect()
+    pub fn set_plugins(&mut self, plugins: Vec<Plugin>) {
+        self.catalogue = plugins
+            .iter()
+            .flat_map(|plugin| {
+                plugin.features.iter().map(|feature| setup::Feature {
+                    key: format!("{}/{}", plugin.id, feature.id),
+                    label: feature.label.clone(),
+                    group: feature.group.clone(),
+                    help: feature.help.to_owned(),
+                })
             })
-            .unwrap_or_default()
-    }
-
-    fn feature_key(&self, plugin: usize, feature: usize) -> String {
-        let plugin = &self.plugins[plugin];
-        format!("{}/{}", plugin.id, plugin.features[feature].id)
-    }
-
-    /// Store the chosen features in the order the plugins declare them, which is
-    /// the order the role applies them in. Ones of plugins not present stay.
-    fn set_feature(&mut self, plugin: usize, feature: usize, on: bool) {
-        let key = self.feature_key(plugin, feature);
-        let mut chosen = self.chosen_features();
-        chosen.retain(|known| *known != key);
-        if on {
-            chosen.push(key);
-        }
-        let mut ordered = vec![];
-        for (index, plugin) in self.plugins.iter().enumerate() {
-            for number in 0..plugin.features.len() {
-                let key = self.feature_key(index, number);
-                if chosen.contains(&key) {
-                    ordered.push(key);
-                }
-            }
-        }
-        chosen.retain(|key| !ordered.contains(key));
-        ordered.extend(chosen);
-        set_pointer(
-            &mut self.config,
-            "/ansible_vars/devbox_plugin_features",
-            json!(ordered),
-        );
+            .collect();
+        self.plugins = plugins;
     }
 
     /// The groups of the Features page: the built-in ones, with what plugins add
     /// to them, then groups only plugins have.
     pub fn feature_groups(&self) -> Vec<FeatureGroup> {
-        use Field::*;
-        // The first two are filled by plugins that come with berth.
-        let builtin: [(&str, &[Field]); 5] = [
-            ("Coding Agents", &[]),
-            ("Agent Orchestrator", &[]),
-            (
-                "Development Tools",
-                &[
-                    ToolsWeb,
-                    ToolsNative,
-                    ToolsJvm,
-                    ToolsDotnet,
-                    ToolsScripting,
-                    ToolsScientific,
-                ],
-            ),
-            ("Browsers", &[ToolsChrome, Playwright]),
-            ("Desktop", &[SoftwareRendering]),
-        ];
-        let mut groups: Vec<FeatureGroup> = builtin
-            .iter()
-            .map(|(title, fields)| FeatureGroup {
-                title: (*title).to_owned(),
-                items: fields.iter().map(|field| Item::Field(*field)).collect(),
-            })
-            .collect();
-        for (index, plugin) in self.plugins.iter().enumerate() {
-            for (number, feature) in plugin.features.iter().enumerate() {
-                let item = Item::Feature(index, number);
-                let known = groups
-                    .iter_mut()
-                    .find(|group| group.title.eq_ignore_ascii_case(&feature.group));
-                match known {
-                    Some(group) => group.items.push(item),
-                    None => groups.push(FeatureGroup {
-                        title: feature.group.clone(),
-                        items: vec![item],
-                    }),
-                }
-            }
-        }
-        groups.retain(|group| !group.items.is_empty());
-        groups
+        self.view().feature_groups()
     }
 
     pub fn item_enabled(&self, item: Item) -> bool {
-        match item {
-            Item::Field(field) => self.enabled(field),
-            Item::Feature(plugin, feature) => self
-                .chosen_features()
-                .contains(&self.feature_key(plugin, feature)),
-        }
+        self.view().item_enabled(item)
     }
 
     pub fn set_item(&mut self, item: Item, on: bool) {
         match item {
             Item::Field(field) => self.set_toggle(field, on),
-            Item::Feature(plugin, feature) => self.set_feature(plugin, feature, on),
+            Item::Feature(index) => {
+                setup::set_feature(&mut self.config, &self.catalogue, index, on)
+            }
         }
     }
 
@@ -605,10 +324,7 @@ impl App {
 
     /// Whether everything in a group is on, which is when switching it turns it off.
     pub fn group_all_on(&self, index: usize) -> bool {
-        self.feature_groups()[index]
-            .items
-            .iter()
-            .all(|item| self.item_enabled(*item))
+        self.view().group_all_on(index)
     }
 
     /// Switch everything in a group on, or off when all of it is on already.
@@ -622,47 +338,7 @@ impl App {
     }
 
     fn feature_rows(&self) -> Vec<Row> {
-        let mut rows = vec![];
-        for (index, group) in self.feature_groups().into_iter().enumerate() {
-            let on = group
-                .items
-                .iter()
-                .filter(|item| self.item_enabled(**item))
-                .count();
-            rows.push(Row::entry(
-                Line::from(vec![
-                    Span::styled(group.title, Style::new().fg(theme::ACCENT).bold()),
-                    Span::styled(
-                        format!("  {on} of {}", group.items.len()),
-                        Style::new().fg(theme::MUTED),
-                    ),
-                ]),
-                Entry::Group(index),
-            ));
-            for (number, item) in group.items.iter().enumerate() {
-                let label = match *item {
-                    Item::Field(field) => field.spec().label,
-                    Item::Feature(plugin, feature) => &self.plugins[plugin].features[feature].label,
-                };
-                let mut line =
-                    value_line(label, &self.item_enabled(*item).to_string(), Kind::Toggle);
-                let prefix = if number + 1 < group.items.len() {
-                    "  ├─ "
-                } else {
-                    "  └─ "
-                };
-                line.spans
-                    .insert(0, Span::styled(prefix, Style::new().fg(theme::MUTED)));
-                rows.push(Row::entry(
-                    line,
-                    match *item {
-                        Item::Field(field) => Entry::Field(field),
-                        Item::Feature(plugin, feature) => Entry::Feature(plugin, feature),
-                    },
-                ));
-            }
-        }
-        rows
+        lift(self.view().feature_rows())
     }
 
     /// Set a toggle. The coding agents share the older switch for all of them,
@@ -685,156 +361,13 @@ impl App {
     }
 
     /// Fields shown by the current step for the chosen action.
+    #[cfg(test)]
     pub fn fields(&self) -> Vec<Field> {
-        use Field::*;
-        match self.step {
-            Step::Features => {
-                let mut fields = vec![];
-                fields.extend([
-                    ToolsWeb,
-                    ToolsNative,
-                    ToolsJvm,
-                    ToolsDotnet,
-                    ToolsScripting,
-                    ToolsScientific,
-                    ToolsChrome,
-                    Playwright,
-                    SoftwareRendering,
-                ]);
-                fields
-            }
-            Step::Install | Step::Manage => self.settings(),
-            Step::Secrets => vec![],
-            // The container only has the agent account.
-            Step::Accounts if self.action == Action::Docker => vec![AgentUser],
-            Step::Accounts => vec![
-                OperatorUser,
-                OperatorKey,
-                OperatorHash,
-                OperatorSudo,
-                AgentUser,
-                AgentHash,
-                AgentKey,
-                AgentPrivileges,
-                AgentSudo,
-            ],
-        }
-    }
-
-    fn settings(&self) -> Vec<Field> {
-        use Field::*;
-        let action = self.action;
-        if matches!(action, Action::Save | Action::Release | Action::Docker) {
-            return vec![];
-        }
-        if action == Action::Manage {
-            // How a server's host is reached is for whoever sets the server up.
-            if self.locked() {
-                return vec![];
-            }
-            return vec![SshHost, SshUser, SshPort, SshKey, AskBecomePass];
-        }
-        let mut fields = vec![Profile];
-        if action.installer() || action == Action::CloudSeed {
-            fields.push(Hostname);
-        }
-        if action.installer() {
-            fields.push(DiskMode);
-            let mode = self.text(DiskMode);
-            match mode {
-                "serial" => fields.push(DiskSerial),
-                "model" => fields.push(DiskModel),
-                "path" => fields.push(DiskPath),
-                _ => {}
-            }
-            if !matches!(mode, "serial" | "ssd" | "hdd") {
-                fields.push(DiskType);
-            }
-            fields.push(Keyboard);
-        }
-        fields.push(Geometry);
-        if action.installer() {
-            fields.push(Wifi);
-            if self.enabled(Wifi) {
-                fields.extend([WifiSsid, WifiPassword, WifiInterface]);
-            }
-        }
-        if action == Action::CloudSeed {
-            fields.push(ReleaseStore);
-            fields.push(if self.text(ReleaseStore).is_empty() {
-                ReleaseUrl
-            } else {
-                ReleasePrivate
-            });
-        }
-        fields.push(RecoveryCidr);
-        match action {
-            Action::Iso => fields.extend([Iso, IsoSha]),
-            Action::Apply => fields.extend([Inventory, AskBecomePass]),
-            Action::Ssh => {
-                fields.extend([SshHost, SshUser, SshPort, SshKey, AskPass, AskBecomePass])
-            }
-            _ => {}
-        }
-        fields.extend([HardenSsh, Cockpit, Docker, Tailscale]);
-        if self.enabled(Tailscale) {
-            fields.push(TailscaleKey);
-        }
-        fields
+        self.view().fields()
     }
 
     fn field_rows(&self) -> Vec<Row> {
-        let fields = self.fields();
-        let mut rows = Vec::new();
-        for (index, &field) in fields.iter().enumerate() {
-            let group = field.group();
-            if let Some(Group::Heading(heading)) = group
-                && (index == 0 || fields[index - 1].group() != group)
-            {
-                rows.push(Row::info(Line::styled(
-                    heading,
-                    Style::new().fg(theme::ACCENT).bold(),
-                )));
-            }
-            let prefix = match group {
-                None => "",
-                Some(_)
-                    if fields
-                        .get(index + 1)
-                        .is_some_and(|next| next.group() == group) =>
-                {
-                    "  ├─ "
-                }
-                Some(_) => "  └─ ",
-            };
-            let spec = field.spec();
-            let value = if spec.kind == Kind::Toggle {
-                self.enabled(field).to_string()
-            } else {
-                self.text(field).to_owned()
-            };
-            let (value, kind) = match field {
-                Field::OperatorKey | Field::AgentKey => (short_key(&value), spec.kind),
-                // Enough of the key to recognise it, not enough to use it.
-                Field::TailscaleKey if value.len() > 24 && value.is_ascii() => (
-                    format!(
-                        "{}…{}",
-                        &value[..value.len().min(16)],
-                        &value[value.len() - 4..]
-                    ),
-                    Kind::Text,
-                ),
-                _ => (value, spec.kind),
-            };
-            let mut line = value_line(spec.label, &value, kind);
-            line.spans
-                .insert(0, Span::styled(prefix, Style::new().fg(theme::MUTED)));
-            rows.push(Row::entry(line, Entry::Field(field)));
-        }
-        if rows.is_empty() {
-            rows.push(Row::info("This action needs no settings here."));
-        }
-        rows
+        lift(self.view().field_rows())
     }
 
     fn review_rows(&self) -> Vec<Row> {
@@ -869,13 +402,7 @@ impl App {
             };
             rows.push(Row::info(Line::styled(text, Style::new().fg(color))));
         }
-        let cloud = self.action == Action::CloudSeed || self.text(Field::Profile) == "cloud";
-        if cloud && self.text(Field::RecoveryCidr).is_empty() {
-            let text = if self.enabled(Field::HardenSsh) {
-                "! No recovery SSH CIDR: SSH is reachable from any address (keys only)"
-            } else {
-                "! No recovery SSH CIDR and no SSH hardening: SSH with passwords is reachable from any address"
-            };
+        if let Some(text) = self.view().open_ssh_warning() {
             rows.push(Row::info(Line::styled(text, Style::new().fg(theme::WARN))));
         }
         if problems.is_empty() {
@@ -915,21 +442,10 @@ impl App {
             Step::Secrets => rows = self.access_rows(),
             Step::Accounts => {
                 rows = self.field_rows();
-                rows.push(Row::info(""));
-                rows.push(heading("Fill In From This Machine"));
-                for (index, (label, _)) in SOURCES.iter().enumerate() {
-                    rows.push(Row::entry(format!("  {label}"), Entry::Source(index)));
-                }
+                rows.extend(lift(setup::Profile::source_rows()));
             }
             Step::Install => {
-                rows.push(heading("How To Install"));
-                for action in self.methods().iter().copied() {
-                    let mark = if action == self.action { "●" } else { "○" };
-                    rows.push(Row::entry(
-                        format!("  {mark} {}", action.label()),
-                        Entry::Action(action),
-                    ));
-                }
+                rows = lift(self.view().method_rows(self.methods()));
                 rows.push(Row::info(""));
                 rows.extend(self.field_rows());
                 rows.push(Row::info(""));
@@ -1119,6 +635,7 @@ impl App {
     /// steps from plugins lists what each of them adds.
     pub fn help(&self) -> String {
         match self.selected_entry() {
+            Some(Entry::Feature(index)) => self.catalogue[index].help.clone(),
             Some(Entry::HostTask(index)) => berth_tui::host::task_help(&self.host, index),
             Some(Entry::HostSession(index)) => berth_tui::host::session_help(&self.host, index),
             _ => self.entry_help().to_owned(),
@@ -1134,10 +651,8 @@ impl App {
                 .iter()
                 .find(|(task, ..)| *task == name)
                 .map_or("", |(.., help)| help),
-            Some(Entry::Group(_)) => {
-                "A group of things to install. Space switches all of it on, or off when all of it is on. Plugins add their own entries to these groups."
-            }
-            Some(Entry::Feature(plugin, feature)) => self.plugins[plugin].features[feature].help,
+            Some(Entry::Group(_)) => setup::GROUP_HELP,
+            Some(Entry::Feature(_)) => "",
             Some(Entry::HostTask(_) | Entry::HostSession(_)) => "",
             Some(Entry::HostRegistry(_)) => {
                 "Give this host the login of this registry. Its npm repositories become the agent's npm registry with the login in ~/.npmrc, and its Docker addresses get the login in ~/.docker/config.json. Registries are set up on the Registries tab of the home screen."
@@ -1688,109 +1203,20 @@ impl App {
     pub fn problems(&self) -> Vec<String> {
         use Field::*;
         let action = self.action;
-        let mut problems = Vec::new();
+        if action == Action::Manage {
+            return self
+                .remote_inventory()
+                .err()
+                .map(|error| error.to_string())
+                .into_iter()
+                .collect();
+        }
+        let mut problems = self.view().problems();
         let mut check = |ok: bool, message: &str| {
             if !ok {
                 problems.push(message.to_owned());
             }
         };
-        if matches!(action, Action::Save | Action::Release) {
-            return problems;
-        }
-        if action == Action::Manage {
-            if let Err(error) = self.remote_inventory() {
-                problems.push(error.to_string());
-            }
-            return problems;
-        }
-        let agent = self.text(AgentUser);
-        check(
-            valid_username(agent),
-            "Agent username is invalid or reserved by Ubuntu",
-        );
-        if action == Action::Docker {
-            return problems;
-        }
-        let operator = self.text(OperatorUser);
-        check(
-            valid_username(operator),
-            "Operator username is invalid or reserved by Ubuntu (operator and admin are)",
-        );
-        check(
-            operator != agent,
-            "Operator and agent need different usernames",
-        );
-        for (field, name) in [(OperatorHash, "Operator"), (AgentHash, "Agent")] {
-            let hash = self.text(field);
-            check(
-                hash.is_empty() || valid_password_hash(hash),
-                &format!("{name} password hash is not SHA-512 crypt or yescrypt"),
-            );
-        }
-        for (field, name) in [(OperatorKey, "Operator"), (AgentKey, "Agent")] {
-            let key = self.text(field);
-            check(
-                key.is_empty() || discovery::is_public_key(key),
-                &format!("{name} SSH public key is not a supported OpenSSH key"),
-            );
-        }
-        check(
-            self.enabled(AgentSudo)
-                || !self.text(AgentPrivileges).is_empty()
-                || !self.text(AgentHash).is_empty(),
-            "Agent needs a password when passwordless sudo is off",
-        );
-        let geometry = self.text(Geometry);
-        check(
-            geometry.is_empty()
-                || geometry.split_once('x').is_some_and(|(w, h)| {
-                    [w, h].iter().all(|n| {
-                        (3..=4).contains(&n.len()) && n.chars().all(|c| c.is_ascii_digit())
-                    })
-                }),
-            "Desktop size must look like 1600x900",
-        );
-
-        if action.installer() || action == Action::CloudSeed {
-            // Seeds are the only way into the new machine, so the operator must be able to log in.
-            check(
-                valid_hostname(self.text(Hostname)),
-                "Hostname is missing or invalid (F4 generates)",
-            );
-            check(
-                !self.text(OperatorKey).is_empty(),
-                "Operator SSH public key is required",
-            );
-            check(
-                !self.text(OperatorHash).is_empty(),
-                "Operator password is required (F4 or F5)",
-            );
-        }
-        if action.installer() {
-            match self.text(DiskMode) {
-                "serial" => check(
-                    !self.text(DiskSerial).is_empty(),
-                    "Serial disk selection needs the target disk serial",
-                ),
-                "model" => check(
-                    !self.text(DiskModel).is_empty(),
-                    "Model disk selection needs a model pattern",
-                ),
-                "path" => check(
-                    self.text(DiskPath).starts_with("/dev/"),
-                    "Path disk selection needs a /dev/ path or pattern",
-                ),
-                _ => {}
-            }
-            if self.enabled(Wifi) {
-                check(
-                    [WifiSsid, WifiPassword]
-                        .iter()
-                        .all(|field| !self.text(*field).is_empty()),
-                    "Wi-Fi needs an SSID and password",
-                );
-            }
-        }
         match action {
             Action::Iso => {
                 check(
@@ -1810,13 +1236,6 @@ impl App {
                                 .chars()
                                 .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
                     "ISO SHA256 must be 64 lowercase hex characters",
-                );
-            }
-            Action::CloudSeed => {
-                check(
-                    !self.text(ReleaseStore).is_empty()
-                        || self.text(ReleaseUrl).starts_with("https://"),
-                    "Choose where to publish the release, or enter its HTTPS address",
                 );
             }
             Action::Apply => {
@@ -2123,7 +1542,10 @@ impl App {
                 ] {
                     command.env(env, self.enabled(field).to_string());
                 }
-                command.env("PLUGIN_FEATURES", json!(self.chosen_features()).to_string());
+                command.env(
+                    "PLUGIN_FEATURES",
+                    json!(setup::chosen_features(&self.config)).to_string(),
+                );
             }
         }
         command.env("DEVBOX_BUILD_DIR", &self.build_dir);

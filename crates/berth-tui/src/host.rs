@@ -104,6 +104,21 @@ impl View {
         }
     }
 
+    /// A panel onto output that is no session of a host: a job of the
+    /// server, or something to read.
+    pub fn plain(title: &str, rows: u16, cols: u16) -> View {
+        View {
+            id: String::new(),
+            title: title.to_owned(),
+            terminal: false,
+            parser: vt100::Parser::new(rows, cols, HISTORY),
+            ended: None,
+            ours: true,
+            shell: false,
+            tail: vec![],
+        }
+    }
+
     pub fn screen(&self) -> &vt100::Screen {
         self.parser.screen()
     }

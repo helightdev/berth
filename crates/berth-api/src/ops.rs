@@ -220,6 +220,8 @@ pub const SERVE: &[Op] = &[
     )),
     admin(call("settings.list", "GET", "/v1/settings")),
     admin(call("settings.set", "PUT", "/v1/settings/{key}")),
+    admin(call("setup.catalogue", "GET", "/v1/setup")),
+    admin(call("setup.generate", "POST", "/v1/setup/generate")),
     call("jobs.list", "GET", "/v1/jobs"),
     call("jobs.get", "GET", "/v1/jobs/{id}"),
     role(stream("jobs.follow", "/v1/jobs/{id}"), Role::View),

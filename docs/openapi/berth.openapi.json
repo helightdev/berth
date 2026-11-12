@@ -86,6 +86,25 @@
         ],
         "type": "object"
       },
+      "Catalogue": {
+        "properties": {
+          "features": {
+            "description": "What the server's plugins can install, in the order they are applied.",
+            "items": {
+              "$ref": "#/components/schemas/FeatureInfo"
+            },
+            "type": "array"
+          },
+          "template": {
+            "description": "The profile a new host starts from."
+          }
+        },
+        "required": [
+          "template",
+          "features"
+        ],
+        "type": "object"
+      },
       "Checked": {
         "properties": {
           "lines": {
@@ -211,6 +230,32 @@
         ],
         "type": "object"
       },
+      "FeatureInfo": {
+        "description": "Something a plugin installs, for the Features page of a host.",
+        "properties": {
+          "group": {
+            "description": "The group of the Features page it is listed in.",
+            "type": "string"
+          },
+          "help": {
+            "type": "string"
+          },
+          "key": {
+            "description": "`PLUGIN/FEATURE`, as a profile's `devbox_plugin_features` names it.",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "group",
+          "help"
+        ],
+        "type": "object"
+      },
       "FileEntry": {
         "properties": {
           "kind": {
@@ -295,6 +340,62 @@
         "required": [
           "level",
           "uid"
+        ],
+        "type": "object"
+      },
+      "Generate": {
+        "description": "Something for the server to make up for a profile.",
+        "properties": {
+          "host": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "password": {
+            "description": "For `password`: the password to hash. Without it one is made up and\nkept beside the profile of `host`, under `user`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "what": {
+            "description": "`hostname`, `password` or `tailscale_key`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "what"
+        ],
+        "type": "object"
+      },
+      "Generated": {
+        "properties": {
+          "note": {
+            "description": "What to tell whoever asked.",
+            "type": "string"
+          },
+          "password": {
+            "description": "A password that was made up, for whoever asked to write down.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "description": "The host name, the password's hash, or the key.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "note"
         ],
         "type": "object"
       },
@@ -4752,6 +4853,69 @@
           }
         },
         "summary": "Change one of the settings that are open to callers.",
+        "tags": [
+          "set-up"
+        ]
+      }
+    },
+    "/v1/setup": {
+      "get": {
+        "operationId": "catalogue",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Catalogue"
+                }
+              }
+            },
+            "description": "The starting profile and the plugins' features"
+          }
+        },
+        "summary": "What a new host starts from, and what plugins can install on one.",
+        "tags": [
+          "set-up"
+        ]
+      }
+    },
+    "/v1/setup/generate": {
+      "post": {
+        "operationId": "generate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Generate"
+              }
+            }
+          },
+          "description": "What to make",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Generated"
+                }
+              }
+            },
+            "description": "What was made"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "It could not be made; the message says why"
+          }
+        },
+        "summary": "Make up a host name, hash or make up a password, or create a Tailscale key.",
         "tags": [
           "set-up"
         ]

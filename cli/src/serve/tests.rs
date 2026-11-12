@@ -892,6 +892,34 @@ async fn the_server_is_set_up_through_the_api() {
         400
     );
 
+    // What a set-up screen starts from: the profile of a new host, and what
+    // the plugins that come with berth install.
+    let (status, found) = send(client, "GET", "/v1/setup", Value::Null).await;
+    assert_eq!(status, 200, "{found}");
+    assert!(found["template"]["builder"].is_object());
+    let features = found["features"].as_array().unwrap();
+    assert!(features.iter().any(|feature| {
+        feature["key"].as_str().is_some_and(|key| key.contains('/'))
+            && feature["group"] == "Coding Agents"
+    }));
+    let (_, name) = send(
+        client,
+        "POST",
+        "/v1/setup/generate",
+        json!({"what": "hostname"}),
+    )
+    .await;
+    assert!(name["value"].as_str().unwrap().starts_with("devbox-"));
+    // A made-up password is kept beside a host, so it needs one.
+    for what in ["nothing", "password"] {
+        let asked = json!({"what": what});
+        assert_eq!(
+            send(client, "POST", "/v1/setup/generate", asked).await.0,
+            400,
+            "{what}"
+        );
+    }
+
     // Secrets are kept by name; their values do not come back.
     assert_eq!(
         send(

@@ -3,13 +3,19 @@
 //! the server's.
 
 #[cfg(target_arch = "wasm32")]
+mod admin;
+#[cfg(target_arch = "wasm32")]
 mod app;
 #[cfg(target_arch = "wasm32")]
 mod browser;
 #[cfg(target_arch = "wasm32")]
+mod home;
+#[cfg(target_arch = "wasm32")]
 mod portal;
 #[cfg(target_arch = "wasm32")]
 mod remote;
+#[cfg(target_arch = "wasm32")]
+mod setup;
 
 #[cfg(target_arch = "wasm32")]
 fn main() {

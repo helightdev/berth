@@ -1,12 +1,15 @@
 //! The page's screens: the token, the server's hosts, and one host.
 
+use crate::admin::{Admin, Arrived, Data};
 use crate::browser::{self, Browser};
+use crate::home::Home;
 use crate::portal::{Link, Portal};
 use crate::remote::Remote;
-use berth_tui::host::{self, HostView, Pending, Pick, Request, State};
+use crate::setup::{Flow, Setup, draw_editor, masked_line};
+use berth_tui::host::{self, HostView, Pending, Pick, Request, State, View};
 use berth_tui::screen::{
-    self, Spots, clear_hints, dialog, draw_arguments, draw_footer, draw_header, draw_question,
-    draw_view, ellipsize, hint_click, inside,
+    self, Platform, Spots, clear_hints, dialog, draw_arguments, draw_footer, draw_header,
+    draw_panel, draw_question, draw_view, ellipsize, hint_click, inside,
 };
 use berth_tui::{Click, Code, Event, Key, event, markdown, theme};
 use ratzilla::ratatui::{
@@ -39,7 +42,11 @@ enum Screen {
     Token,
     Hosts,
     Host,
+    Setup,
 }
+
+/// The tabs of the home screen, for whoever may set the server up.
+const TABS: [&str; 4] = ["Hosts", "Settings", "Registries", "Secrets"];
 
 /// What the server last said of its hosts.
 #[derive(Default)]
@@ -55,6 +62,10 @@ enum Entry {
     Pick(Pick),
     /// Ask the host again.
     Again,
+    /// Open the set-up pages of the host.
+    Setup,
+    /// Apply the host's profile to it, from the server.
+    Apply,
 }
 
 struct Row {
@@ -107,6 +118,25 @@ pub struct App {
     hits: Vec<(Rect, usize)>,
     started: Instant,
     size: (u16, u16),
+    /// What the server keeps for setting it up, and the calls that change it.
+    data: Rc<RefCell<Data>>,
+    admin: Option<Admin>,
+    /// The tab of the home screen: the hosts, then the ones of `home`.
+    tab: usize,
+    home: Home,
+    tab_hits: Vec<Rect>,
+    /// The name of a new host, while it is typed.
+    naming: Option<Input>,
+    /// Removing a host waits for a second x.
+    armed: bool,
+    setup: Option<Setup>,
+    /// The SSH user's sudo password, asked for to apply a host.
+    password: Option<Input>,
+    /// A rendered seed, in a panel, and its text for copying.
+    seed: Option<(View, String)>,
+    /// A password the server made up, shown until it is put away: what it
+    /// is for, and the password.
+    made: Option<(&'static str, String)>,
 }
 
 impl App {
@@ -160,6 +190,17 @@ impl App {
             hits: vec![],
             started: Instant::now(),
             size: (100, 30),
+            data: Rc::default(),
+            admin: None,
+            tab: 0,
+            home: Home::default(),
+            tab_hits: vec![],
+            naming: None,
+            armed: false,
+            setup: None,
+            password: None,
+            seed: None,
+            made: None,
         };
         if !app.token.is_empty() && !app.server.is_empty() {
             app.connect();
@@ -174,6 +215,10 @@ impl App {
         self.retry = None;
         match Portal::open(&browser::portal_url(&self.server), &self.token) {
             Ok(portal) => {
+                // Who the token is here decides what the page offers.
+                let admin = Admin::new(portal.clone(), self.data.clone());
+                admin.load();
+                self.admin = Some(admin);
                 self.portal = Some(portal);
                 if self.screen == Screen::Token {
                     self.screen = Screen::Hosts;
@@ -197,6 +242,10 @@ impl App {
     /// Back to the token dialog, forgetting the token.
     fn sign_out(&mut self, why: &str) {
         self.portal = None;
+        self.admin = None;
+        *self.data.borrow_mut() = Data::default();
+        self.setup = None;
+        self.tab = 0;
         self.proven = false;
         self.retry = None;
         self.host.disconnect();
@@ -261,6 +310,7 @@ impl App {
             }
             return;
         }
+        self.take_in();
         if self
             .asked
             .is_none_or(|asked| asked.elapsed() >= HOSTS_EVERY)
@@ -297,6 +347,82 @@ impl App {
         let last = self.entries().len().saturating_sub(1);
         if self.list.selected().unwrap_or(0) > last {
             self.list.select(Some(last));
+        }
+    }
+
+    /// The size a panel for output gets.
+    fn panel_size(&self) -> (u16, u16) {
+        let (width, height) = self.size;
+        (
+            height.saturating_sub(4).max(4),
+            width.saturating_sub(8).max(20),
+        )
+    }
+
+    fn is_admin(&self) -> bool {
+        self.data.borrow().admin()
+    }
+
+    /// Take in what the server answered since the last frame.
+    fn take_in(&mut self) {
+        let size = self.panel_size();
+        let (said, arrived, changed) = {
+            let mut data = self.data.borrow_mut();
+            if let Some(job) = &mut data.job {
+                job.resize(size.0, size.1);
+            }
+            (
+                data.said.take(),
+                std::mem::take(&mut data.arrived),
+                std::mem::take(&mut data.hosts_changed),
+            )
+        };
+        if let Some(said) = said {
+            self.status = said;
+        }
+        if changed {
+            self.ask_hosts();
+        }
+        for arrived in arrived {
+            match arrived {
+                Arrived::Profile(profile) => {
+                    if let Some(setup) = &mut self.setup {
+                        setup.arrived(profile);
+                    }
+                }
+                Arrived::Saved(profile) => {
+                    if let Some(setup) = &mut self.setup {
+                        setup.saved(profile);
+                    }
+                }
+                Arrived::Generated(field, value, password) => {
+                    if let Some(setup) = &mut self.setup {
+                        setup.generated(field, &value);
+                        self.made = password.map(|password| (field.spec().label, password));
+                    }
+                }
+                Arrived::Seed(text) => {
+                    let mut view = View::plain("Cloud-init user data", size.0, size.1);
+                    view.feed(text.as_bytes());
+                    view.ended = Some(Some(0));
+                    self.seed = Some((view, text));
+                }
+                Arrived::Password => {
+                    self.status.clear();
+                    self.password = Some(Input::default());
+                }
+                Arrived::Session(session) => {
+                    if self.screen == Screen::Host
+                        && let Ok(session) = serde_json::from_value(session)
+                    {
+                        self.host.open(&session);
+                    }
+                }
+            }
+        }
+        if let Some(setup) = &mut self.setup {
+            setup.panel = size;
+            setup.sync(&self.data.borrow());
         }
     }
 
@@ -344,6 +470,7 @@ impl App {
                         entry: Some(Entry::Pick(pick)),
                     }));
                 }
+                rows.extend(self.setup_rows(true));
                 return rows;
             }
             State::Idle | State::Connecting | State::Password => {
@@ -376,6 +503,35 @@ impl App {
         rows.push(Row::info(""));
         rows.push(heading("Host"));
         rows.extend(said);
+        rows.extend(self.setup_rows(!matches!(
+            self.host.state,
+            State::Idle | State::Connecting | State::Password
+        )));
+        rows
+    }
+
+    /// What whoever may set the server up can do with the host from here.
+    fn setup_rows(&self, apply: bool) -> Vec<Row> {
+        if !self.is_admin() {
+            return vec![];
+        }
+        let mut rows = vec![
+            Row::info(""),
+            Row::info(Line::styled(
+                "Set-Up",
+                Style::new().fg(theme::ACCENT).bold(),
+            )),
+            Row {
+                line: "  ▸ Change what is installed, accounts or install method  ›".into(),
+                entry: Some(Entry::Setup),
+            },
+        ];
+        if apply {
+            rows.push(Row {
+                line: "  ▸ Apply this configuration".into(),
+                entry: Some(Entry::Apply),
+            });
+        }
         rows
     }
 
@@ -400,6 +556,8 @@ impl App {
                 "A shell on the host, as one of its sessions. Space switches between the agent and the SSH user.\n\nLeaving the shell closes it; {LEAVE} leaves it running, to be opened again from Sessions."
             ),
             Some(Entry::Again) => "Ask the host again what it can do.".into(),
+            Some(Entry::Setup) => "Opens the set-up pages of this host: what is installed, its accounts, and how to install it. Esc comes back here. Changes reach a running host with Apply this configuration.".into(),
+            Some(Entry::Apply) => "Run the installer role against the host again, from the server, with the settings of its profile: for example after changing what is installed. It also installs or updates berth's own tools on the host. The output is shown here as it runs, and the job stays in the server's list.".into(),
             None => String::new(),
         }
     }
@@ -418,8 +576,13 @@ impl App {
         let Some(task) = self.host.tasks.get(index).cloned() else {
             return;
         };
-        // Secrets are kept where berth is installed, and travel from there.
+        // Secrets are kept by the server, and travel from there.
         if task.input.as_deref() == Some("secrets") {
+            if let (true, Some(admin)) = (self.is_admin(), &self.admin) {
+                self.status = format!("Starting {}…", host::task_label(&task));
+                admin.send_secrets(&self.name);
+                return;
+            }
             self.status = format!(
                 "{} sends secrets, which this page does not hold: berth run {} {}",
                 host::task_label(&task),
@@ -454,6 +617,24 @@ impl App {
                 self.status = "Starting a shell…".into();
             }
             Entry::Again => self.host.disconnect(),
+            Entry::Setup => {
+                if let Some(admin) = &self.admin {
+                    self.setup = Some(Setup::open(&self.name, admin));
+                    self.screen = Screen::Setup;
+                }
+            }
+            Entry::Apply => {
+                self.host.question = Some((
+                    format!("Apply the configuration of {} to it now?", self.name),
+                    Pending::Apply,
+                ))
+            }
+        }
+    }
+
+    fn apply(&mut self, password: Option<&str>) {
+        if let Some(admin) = &self.admin {
+            admin.apply(&self.name, password, self.panel_size());
         }
     }
 
@@ -525,13 +706,15 @@ impl App {
                 return;
             };
             match key.code {
-                Code::Char('y' | 'Y') => {
-                    if let Some((_, Pending::Task(index))) = self.host.question.take()
-                        && let Some((index, values)) = self.host.begin_task(index, true)
-                    {
-                        self.launch(index, values);
+                Code::Char('y' | 'Y') => match self.host.question.take() {
+                    Some((_, Pending::Task(index))) => {
+                        if let Some((index, values)) = self.host.begin_task(index, true) {
+                            self.launch(index, values);
+                        }
                     }
-                }
+                    Some((_, Pending::Apply)) => self.apply(None),
+                    None => {}
+                },
                 Code::Char('n' | 'N') | Code::Esc => self.host.question = None,
                 _ => {}
             }
@@ -632,6 +815,7 @@ impl App {
             Some(Entry::Pick(Pick::Session(_))) => {
                 "↑↓ select · Enter open · x forget · r refresh · q hosts"
             }
+            Some(Entry::Setup) => "↑↓ select · Enter open · r refresh · q hosts",
             _ => "↑↓ select · Enter choose · r refresh · q hosts",
         };
         draw_footer(frame, footer, keys, &self.status, theme::ACCENT);
@@ -645,48 +829,192 @@ impl App {
         draw_arguments(frame, &self.host);
     }
 
-    // ── The hosts ───────────────────────────────────────────────────────────
+    // ── The home screen ─────────────────────────────────────────────────────
 
-    fn hosts_event(&mut self, event: Event) {
-        let count = self.hosts.borrow().list.len();
-        let open = |app: &mut App, index: usize| {
-            let host = app.hosts.borrow().list.get(index).cloned();
-            if let Some(host) = host
-                && let Some(name) = host["name"].as_str()
-            {
-                app.open_host(name, host["address"].as_str().unwrap_or(""));
+    fn open_tab(&mut self, tab: usize) {
+        if self.is_admin() && tab < TABS.len() {
+            self.tab = tab;
+            self.home.leave();
+            self.naming = None;
+            self.data.borrow_mut().report.clear();
+        }
+    }
+
+    /// The hosts, and for whoever may add one the row that does.
+    fn host_rows(&self) -> usize {
+        self.hosts.borrow().list.len() + usize::from(self.is_admin())
+    }
+
+    fn open_selected(&mut self) {
+        let host = self.hosts.borrow().list.get(self.cursor).cloned();
+        match host {
+            Some(host) => {
+                if let Some(name) = host["name"].as_str() {
+                    self.open_host(name, host["address"].as_str().unwrap_or(""));
+                }
             }
-        };
-        match event {
-            Event::Key(key) => match key.code {
-                Code::Up | Code::Char('k') if count > 0 => {
-                    self.cursor = (self.cursor + count - 1) % count
+            None if self.is_admin() => self.naming = Some(Input::default()),
+            None => {}
+        }
+    }
+
+    /// Start the set-up of a new host under the name that was typed.
+    fn name_host(&mut self, name: &str) {
+        let safe = !name.is_empty()
+            && !name.starts_with('.')
+            && name
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'));
+        let known = self
+            .hosts
+            .borrow()
+            .list
+            .iter()
+            .any(|host| host["name"] == name);
+        let template = self.data.borrow().template.clone();
+        if !safe || name.ends_with(".json") {
+            self.status = "A name of letters, digits, - and _".into();
+        } else if known {
+            self.status = format!("There is a host {name} already");
+        } else if !template.is_object() {
+            self.status = "The server has not said yet what a new host starts from".into();
+        } else {
+            self.naming = None;
+            self.name = name.to_owned();
+            self.address.clear();
+            self.status = format!("{name} is kept on the server once it is saved");
+            self.setup = Some(Setup::new(name, template));
+            self.screen = Screen::Setup;
+        }
+    }
+
+    fn hosts_key(&mut self, key: Key) {
+        let armed = std::mem::take(&mut self.armed);
+        if let Some(input) = &mut self.naming {
+            match key.code {
+                Code::Esc => self.naming = None,
+                Code::Enter => {
+                    let name = input.value().trim().to_owned();
+                    self.name_host(&name);
                 }
-                Code::Down | Code::Char('j') if count > 0 => {
-                    self.cursor = (self.cursor + 1) % count
+                _ => event::edit(input, &key),
+            }
+            return;
+        }
+        let count = self.host_rows();
+        let selected = self
+            .hosts
+            .borrow()
+            .list
+            .get(self.cursor)
+            .and_then(|host| host["name"].as_str().map(str::to_owned));
+        match key.code {
+            Code::Up | Code::Char('k') if count > 0 => {
+                self.cursor = (self.cursor + count - 1) % count
+            }
+            Code::Down | Code::Char('j') if count > 0 => self.cursor = (self.cursor + 1) % count,
+            Code::Enter => self.open_selected(),
+            Code::Char('r') => {
+                self.ask_hosts();
+                if let (true, Some(admin)) = (self.is_admin(), &self.admin) {
+                    admin.refresh();
                 }
-                Code::Enter => open(self, self.cursor),
-                Code::Char('r') => self.ask_hosts(),
-                Code::Char('x') => self.sign_out(""),
+            }
+            Code::Char('n') if self.is_admin() => self.naming = Some(Input::default()),
+            Code::Char('d') if self.is_admin() => {
+                if let (Some(name), Some(admin)) = (selected, &self.admin) {
+                    admin.set_setting("default_host", &name, format!("{name} is the default host"));
+                }
+            }
+            Code::Char('x') | Code::Delete if self.is_admin() => match (selected, &self.admin) {
+                (Some(name), Some(admin)) if armed => admin.remove_host(&name),
+                (Some(name), _) => {
+                    self.armed = true;
+                    self.status = format!(
+                        "x again removes {name} from the server. The host itself is left as it is."
+                    );
+                }
                 _ => {}
             },
-            Event::Mouse(mouse) if mouse.click == Click::Left => {
-                let hit = self
-                    .hits
-                    .iter()
-                    .find(|(rect, _)| inside(*rect, mouse.column, mouse.row))
-                    .map(|(_, index)| *index);
-                match hit {
-                    Some(index) if index == self.cursor => open(self, index),
-                    Some(index) => self.cursor = index,
-                    None => {}
-                }
-            }
+            Code::Char('o') => self.sign_out(""),
             _ => {}
         }
     }
 
-    fn draw_hosts(&mut self, frame: &mut Frame, area: Rect) {
+    fn home_event(&mut self, event: Event) {
+        let typing = self.naming.is_some() || self.home.editor.is_some();
+        if let Event::Mouse(mouse) = &event {
+            if mouse.click != Click::Left {
+                return;
+            }
+            let tab = self
+                .tab_hits
+                .iter()
+                .position(|rect| inside(*rect, mouse.column, mouse.row));
+            if let Some(tab) = tab {
+                self.open_tab(tab);
+                return;
+            }
+            let hit = self
+                .hits
+                .iter()
+                .find(|(rect, _)| inside(*rect, mouse.column, mouse.row))
+                .map(|(_, index)| *index);
+            let Some(index) = hit else {
+                return;
+            };
+            // A click selects; a click on what is selected chooses it.
+            let selected = match self.tab {
+                0 => self.cursor,
+                tab => self.home.selected(tab - 1),
+            };
+            if index == selected {
+                self.home_event(Event::Key(Key::plain(Code::Enter)));
+            } else if !typing {
+                match self.tab {
+                    0 => self.cursor = index,
+                    tab => {
+                        self.home.select(tab - 1, index);
+                        self.data.borrow_mut().report.clear();
+                    }
+                }
+            }
+            return;
+        }
+        if let Event::Paste(text) = &event {
+            if let Some(input) = self.naming.as_mut().or(self.home.editor.as_mut()) {
+                event::paste(input, text.trim());
+            }
+            return;
+        }
+        let Event::Key(key) = event else {
+            return;
+        };
+        if !typing {
+            self.status.clear();
+            match key.code {
+                Code::Char(digit @ '1'..='4') => {
+                    return self.open_tab(digit as usize - '1' as usize);
+                }
+                Code::Tab if self.is_admin() => return self.open_tab((self.tab + 1) % TABS.len()),
+                Code::BackTab if self.is_admin() => {
+                    return self.open_tab((self.tab + TABS.len() - 1) % TABS.len());
+                }
+                Code::Esc | Code::Char('q') if self.tab != 0 => return self.open_tab(0),
+                _ => {}
+            }
+        }
+        match (self.tab, self.admin.clone()) {
+            (0, _) | (_, None) => self.hosts_key(key),
+            (tab, Some(admin)) => {
+                if let Some(said) = self.home.key(tab - 1, key, &admin) {
+                    self.status = said;
+                }
+            }
+        }
+    }
+
+    fn draw_home(&mut self, frame: &mut Frame, area: Rect) {
         let [header, _, logo, main, water, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
@@ -696,7 +1024,12 @@ impl App {
             Constraint::Length(1),
         ])
         .areas(area);
-        draw_header(frame, header, &[], 0, browser::shown(&self.server));
+        let admin = self.is_admin();
+        if !admin {
+            self.tab = 0;
+        }
+        let tabs: &[&str] = if admin { &TABS } else { &[] };
+        self.tab_hits = draw_header(frame, header, tabs, self.tab, browser::shown(&self.server));
         frame.render_widget(Paragraph::new(theme::logo()), logo);
         frame.render_widget(
             Paragraph::new(theme::swell(
@@ -705,8 +1038,58 @@ impl App {
             )),
             water,
         );
+        self.hits.clear();
+        if self.tab == 0 {
+            return self.draw_hosts(frame, main, footer);
+        }
+        // Rows on the left with the editor under them, what the selected row
+        // means on the right.
+        let shown = self.home.shown(self.tab - 1, &self.data.borrow());
+        let [left, _, right] = Layout::horizontal([
+            Constraint::Percentage(64),
+            Constraint::Length(2),
+            Constraint::Min(0),
+        ])
+        .areas(main);
+        frame.render_widget(
+            Paragraph::new(markdown::render(&shown.help))
+                .block(theme::panel("Information", false))
+                .wrap(Wrap { trim: false }),
+            right,
+        );
+        let [body, edit] = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(if shown.editor.is_some() { 3 } else { 0 }),
+        ])
+        .areas(left);
+        let mut state = ListState::default().with_selected(Some(shown.selected));
+        let count = shown.rows.len();
+        frame.render_stateful_widget(
+            List::new(shown.rows)
+                .highlight_symbol(theme::cursor())
+                .highlight_style(Style::new().bg(theme::RAISED)),
+            body,
+            &mut state,
+        );
+        for index in state.offset()..count {
+            let y = body.y + (index - state.offset()) as u16;
+            if y >= body.bottom() {
+                break;
+            }
+            self.hits.push((Rect::new(body.x, y, body.width, 1), index));
+        }
+        if let (Some((title, masked)), Some(input)) = (shown.editor, &self.home.editor) {
+            draw_editor(frame, edit, title, input, masked);
+        }
+        draw_footer(frame, footer, shown.keys, &self.status, theme::ACCENT);
+    }
+
+    fn draw_hosts(&mut self, frame: &mut Frame, main: Rect, footer: Rect) {
+        let admin = self.is_admin();
+        let preferred = self.data.borrow().setting("default_host").to_owned();
         let hosts = self.hosts.borrow();
-        self.cursor = self.cursor.min(hosts.list.len().saturating_sub(1));
+        let count = hosts.list.len() + usize::from(admin);
+        self.cursor = self.cursor.min(count.saturating_sub(1));
         let widest = hosts
             .list
             .iter()
@@ -716,8 +1099,7 @@ impl App {
             .unwrap_or(0);
         let muted = Style::new().fg(theme::MUTED);
         let mut lines: Vec<Line> = vec![];
-        self.hits.clear();
-        for (index, host) in hosts.list.iter().enumerate() {
+        for host in hosts.list.iter() {
             let name = host["name"].as_str().unwrap_or("");
             let state = match (host["reachable"].as_bool(), host["version"].as_str()) {
                 (Some(true), Some(version)) => {
@@ -735,17 +1117,32 @@ impl App {
                     Style::new().fg(theme::WARN),
                 ),
             };
-            lines.push(Line::from(vec![
+            let address = match host["address"].as_str().unwrap_or("") {
+                "" => "no address yet",
+                address => address,
+            };
+            let mut line = vec![
                 Span::styled(format!("{name:<widest$}  "), Style::new().fg(theme::TEXT)),
-                Span::styled(
-                    format!("{}  ", host["address"].as_str().unwrap_or("")),
-                    muted,
-                ),
+                Span::styled(format!("{address}  "), muted),
                 state,
-            ]));
-            let y = main.y + index as u16;
-            if y < main.bottom() {
-                self.hits.push((Rect::new(main.x, y, main.width, 1), index));
+            ];
+            if !preferred.is_empty() && name == preferred {
+                line.push(Span::styled("  default", Style::new().fg(theme::STEEL)));
+            }
+            lines.push(Line::from(line));
+        }
+        if admin {
+            lines.push(Line::styled("+ New host", Style::new().fg(theme::ACCENT)));
+        }
+        let [body, edit] = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(if self.naming.is_some() { 3 } else { 0 }),
+        ])
+        .areas(main);
+        for index in 0..lines.len() {
+            let y = body.y + index as u16;
+            if y < body.bottom() {
+                self.hits.push((Rect::new(body.x, y, body.width, 1), index));
             }
         }
         if lines.is_empty() {
@@ -753,28 +1150,166 @@ impl App {
                 (Some(error), _) => format!("✗ {error}"),
                 (None, false) => "Asking the server for its hosts…".into(),
                 (None, true) => {
-                    "The server has no hosts yet. They are set up with berth where it runs.".into()
+                    "The server has no hosts yet. They are set up with berth where it runs, or from here with the role admin.".into()
                 }
             };
-            frame.render_widget(Paragraph::new(text).style(muted), main);
+            frame.render_widget(Paragraph::new(text).style(muted), body);
         } else {
             let mut state = ListState::default().with_selected(Some(self.cursor));
             frame.render_stateful_widget(
                 List::new(lines)
                     .highlight_symbol(theme::cursor())
                     .highlight_style(Style::new().bg(theme::RAISED)),
-                main,
+                body,
                 &mut state,
             );
         }
         drop(hosts);
-        draw_footer(
-            frame,
-            footer,
-            "↑↓ select · Enter open · r refresh · x forget the token",
-            &self.status,
-            theme::ACCENT,
-        );
+        if let Some(input) = &self.naming {
+            draw_editor(frame, edit, " New host name ", input, false);
+        }
+        let keys = match (admin, self.naming.is_some()) {
+            (_, true) => "Enter create · Esc cancel",
+            (true, false) => {
+                "↑↓ select · Enter open · n new host · d default · x remove · 2 settings · 3 registries · 4 secrets · r refresh · o sign out"
+            }
+            (false, false) => "↑↓ select · Enter open · r refresh · o sign out",
+        };
+        draw_footer(frame, footer, keys, &self.status, theme::ACCENT);
+    }
+
+    // ── What lies over a screen ─────────────────────────────────────────────
+
+    /// The panels and dialogs that take every key while they are open.
+    /// Returns whether the event was one of theirs.
+    fn over_event(&mut self, event: &Event) -> bool {
+        if let Some(input) = &mut self.password {
+            match event {
+                Event::Key(key) => match key.code {
+                    Code::Esc => self.password = None,
+                    Code::Enter => {
+                        let password = input.value().to_owned();
+                        self.password = None;
+                        if !password.is_empty() {
+                            self.apply(Some(&password));
+                        }
+                    }
+                    _ => event::edit(input, key),
+                },
+                Event::Paste(text) => event::paste(input, text.trim()),
+                Event::Mouse(_) => {}
+            }
+            return true;
+        }
+        if let Some((_, password)) = &self.made {
+            if let Event::Key(key) = event {
+                match key.code {
+                    Code::Char('c') => {
+                        self.status = match Browser.copy(password) {
+                            true => "Copied the password".into(),
+                            false => "The browser did not let the page copy".into(),
+                        };
+                    }
+                    Code::Enter | Code::Esc => self.made = None,
+                    _ => {}
+                }
+            }
+            return true;
+        }
+        let scroll = |view: &mut View, event: &Event| {
+            if let Event::Mouse(mouse) = event {
+                match mouse.click {
+                    Click::ScrollUp => view.scroll(3),
+                    Click::ScrollDown => view.scroll(-3),
+                    _ => {}
+                }
+            }
+        };
+        if let Some((view, text)) = &mut self.seed {
+            scroll(view, event);
+            if let Event::Key(key) = event {
+                match key.code {
+                    Code::Char('c') => {
+                        self.status = match Browser.copy(text) {
+                            true => "Copied the user data".into(),
+                            false => "The browser did not let the page copy".into(),
+                        };
+                    }
+                    Code::Enter | Code::Esc | Code::Char('q') => self.seed = None,
+                    Code::PageUp => view.scroll(10),
+                    Code::PageDown => view.scroll(-10),
+                    _ => {}
+                }
+            }
+            return true;
+        }
+        let mut data = self.data.borrow_mut();
+        if let Some(view) = &mut data.job {
+            scroll(view, event);
+            if let Event::Key(key) = event {
+                match key.code {
+                    Code::Enter | Code::Esc | Code::Char('q') => data.job = None,
+                    Code::PageUp => view.scroll(10),
+                    Code::PageDown => view.scroll(-10),
+                    _ => {}
+                }
+            }
+            return true;
+        }
+        false
+    }
+
+    fn draw_over(&mut self, frame: &mut Frame) {
+        if let Some(view) = &self.data.borrow().job {
+            let keys = match view.outcome() {
+                None => " It runs on the server · Esc hides it · Wheel scrolls ",
+                Some(true) => " ✓ Done · Enter close ",
+                Some(false) => " ✗ It did not finish · Enter close ",
+            };
+            draw_panel(
+                frame,
+                &view.title,
+                view.screen(),
+                view.outcome(),
+                keys,
+                &self.status,
+            );
+        }
+        if let Some((view, _)) = &self.seed {
+            draw_panel(
+                frame,
+                &view.title,
+                view.screen(),
+                None,
+                " c copy all of it · Wheel scrolls · Enter close ",
+                &self.status,
+            );
+        }
+        if let Some((label, password)) = &self.made {
+            let lines = vec![
+                Line::raw(format!("The password behind the {}:", label.to_lowercase())),
+                Line::raw(""),
+                Line::styled(password.clone(), Style::new().fg(theme::ACCENT)),
+                Line::raw(""),
+                Line::raw("It is shown this once. The server keeps a copy beside the"),
+                Line::raw("host's profile, readable by the user it runs as."),
+            ];
+            dialog(
+                frame,
+                " Generated password ",
+                " c copy · Enter close ",
+                lines,
+            );
+        }
+        if let Some(input) = &self.password {
+            let lines = vec![
+                Line::raw(format!("The SSH user's sudo password on {}.", self.name)),
+                Line::raw("The server keeps it until it stops, and stores it nowhere."),
+                Line::raw(""),
+                masked_line("Password  ", input.value(), true),
+            ];
+            dialog(frame, " Password ", " Enter apply · Esc cancel ", lines);
+        }
     }
 
     // ── The token ───────────────────────────────────────────────────────────
@@ -891,10 +1426,32 @@ impl App {
 
     pub fn event(&mut self, event: Event) {
         let event = hint_click(event);
+        if self.over_event(&event) {
+            return;
+        }
         match self.screen {
             Screen::Token => self.token_event(event),
-            Screen::Hosts => self.hosts_event(event),
+            Screen::Hosts => self.home_event(event),
             Screen::Host => self.host_event(event),
+            Screen::Setup => {
+                let (Some(setup), Some(admin)) = (&mut self.setup, &self.admin) else {
+                    self.screen = Screen::Hosts;
+                    return;
+                };
+                if let Flow::Leave = setup.event(event, admin, &mut self.status) {
+                    // A host the server never got has no overview to go back to.
+                    let kept = setup.kept();
+                    self.setup = None;
+                    self.asked = None;
+                    match kept {
+                        true => {
+                            let (name, address) = (self.name.clone(), self.address.clone());
+                            self.open_host(&name, &address);
+                        }
+                        false => self.screen = Screen::Hosts,
+                    }
+                }
+            }
         }
     }
 
@@ -909,8 +1466,13 @@ impl App {
         });
         match self.screen {
             Screen::Token => self.draw_token(frame, area),
-            Screen::Hosts => self.draw_hosts(frame, area),
+            Screen::Hosts => self.draw_home(frame, area),
             Screen::Host => self.draw_host(frame, area),
+            Screen::Setup => match &mut self.setup {
+                Some(setup) => setup.draw(frame, area, &self.status),
+                None => self.draw_home(frame, area),
+            },
         }
+        self.draw_over(frame);
     }
 }
