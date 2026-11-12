@@ -88,9 +88,17 @@ ci/run.sh all       # both
 without containers is described in the
 [building reference](../docs/content/docs/%28guide%29/reference/building.mdx).
 
+The container tests don't settle whether a change works. The test host is a
+bare container that lacks systemd, a desktop and the real agents. A clean run
+there covers only part of what berth does. Try your change on a real
+deployment as well: a laptop, a server or a VM that berth installed. Most
+contributors have one, and we test on ours before a release. Say in the pull
+request what you tried it on.
+
 A pull request is ready when:
 
 - `ci/run.sh all` passes.
+- You ran the change on a real host, when it touches anything a host does.
 - Behaviour that changed has a test. For anything that touches a host, that
   means a case in `tests/e2e/`.
 - Documentation under `docs/content/docs/` is updated in the same pull
