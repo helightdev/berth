@@ -1,0 +1,9 @@
+---
+- name: Install the handler of the e2e/echo service
+  ansible.builtin.copy:
+    dest: /usr/local/bin/berth-e2e-echo
+    mode: '0755'
+    content: |
+      #!/bin/sh
+      # box serve runs this as: berth-e2e-echo METHOD, with the body on stdin.
+      printf '{"method": "%s", "body": %s, "level": "%s"}\n' "$1" "$(cat)" "$BERTH_CALLER_LEVEL"

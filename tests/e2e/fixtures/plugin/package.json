@@ -1,0 +1,51 @@
+{
+  "name": "berth-plugin-e2e",
+  "version": "1.0.0",
+  "displayName": "End-to-end",
+  "description": "A plugin for berth's end-to-end tests: a task, a service and a topic.",
+  "license": "MIT",
+  "keywords": ["berth-plugin"],
+  "berth": {
+    "features": [
+      {
+        "id": "hello",
+        "group": "Testing",
+        "label": "Hello",
+        "description": "Says hello, and answers calls.",
+        "summary": "A greeting, for the tests.",
+        "tasks": "tasks/install.yml",
+        "guide": "guide.md",
+        "actions": [
+          {
+            "name": "hello",
+            "label": "Say hello",
+            "help": "Greets someone.",
+            "agent": true,
+            "arguments": [
+              {"name": "name", "label": "Whom to greet", "required": true, "choices": "printf 'ada\\ngrace\\n'"}
+            ],
+            "run": "echo \"hello $BERTH_ARG_NAME from $(id -un)\""
+          },
+          {
+            "name": "status",
+            "label": "Hello status",
+            "help": "Part of Status.",
+            "extends": "sign-in:status",
+            "run": "echo 'e2e plugin: signed in'"
+          }
+        ],
+        "services": [
+          {
+            "name": "echo",
+            "description": "Answers each call with its method and body.",
+            "user": "agent",
+            "agent": true,
+            "run": "exec box serve e2e/echo -- /usr/local/bin/berth-e2e-echo",
+            "methods": [{"name": "say", "description": "The method and the body, back."}]
+          }
+        ],
+        "channels": [{"topic": "notes", "keep": "log", "max": 5}]
+      }
+    ]
+  }
+}

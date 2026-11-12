@@ -1,0 +1,3 @@
+# The test host takes only its init.
+*
+!container/ci-host.sh

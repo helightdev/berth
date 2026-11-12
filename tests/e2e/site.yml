@@ -1,0 +1,31 @@
+---
+# The role as the end-to-end tests apply it: the tasks berth itself talks to
+# (accounts and keys, plugins, the agent's helpers, berthd and its files),
+# without the desktop packages, toolchains and browsers that need the internet.
+# The tests put this playbook where berth looks for ansible/site.yml.
+- name: Configure what berth talks to on a host
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Check target and profile before any changes
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == 'Ubuntu'
+          - devbox_profile in ['laptop', 'cloud', 'qemu', 'container']
+    - name: Configure accounts and paths
+      ansible.builtin.include_role:
+        name: devbox
+        tasks_from: accounts.yml
+    - name: Apply selected plugins
+      ansible.builtin.include_role:
+        name: devbox
+        tasks_from: plugins.yml
+    - name: Install the agent's helpers
+      ansible.builtin.include_role:
+        name: devbox
+        tasks_from: desktop.yml
+    - name: Install berthd, box and what they read
+      ansible.builtin.include_role:
+        name: devbox
+        tasks_from: berth.yml
