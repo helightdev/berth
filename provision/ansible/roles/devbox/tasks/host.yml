@@ -339,6 +339,12 @@
   changed_when: false
   failed_when: false
   when: devbox_start_services
+# Cockpit brings NetworkManager; without it there is none to configure.
+- name: Check whether NetworkManager is installed
+  ansible.builtin.stat:
+    path: /usr/sbin/NetworkManager
+  register: devbox_network_manager
+  when: devbox_start_services
 # Where networkd owns the network, NetworkManager would still try DHCP on every
 # unused port and NetworkManager-wait-online would fail at each boot.
 - name: Keep NetworkManager off ports that systemd-networkd does not use
@@ -351,7 +357,7 @@
       [main]
       no-auto-default=*
   register: devbox_nm_no_auto_default
-  when: devbox_start_services and devbox_networkd_state.stdout | default('') == 'active'
+  when: devbox_start_services and devbox_network_manager.stat.exists and devbox_networkd_state.stdout | default('') == 'active'
 - name: Drop the connections NetworkManager created on its own
   ansible.builtin.shell: |
     set -e
@@ -372,7 +378,7 @@
   ansible.builtin.command: nmcli -t -f NAME connection show
   register: devbox_nm_connections
   changed_when: false
-  when: devbox_start_services
+  when: devbox_start_services and devbox_network_manager.stat.exists
 - name: Mark the host as online for NetworkManager
   ansible.builtin.shell: |
     set -e
@@ -383,4 +389,4 @@
     systemctl restart NetworkManager
   args:
     executable: /bin/bash
-  when: devbox_start_services and 'devbox-online' not in devbox_nm_connections.stdout_lines
+  when: devbox_start_services and devbox_network_manager.stat.exists and 'devbox-online' not in devbox_nm_connections.stdout_lines
