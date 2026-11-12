@@ -53,6 +53,12 @@ The end-to-end tests in `tests/e2e/` apply a profile to a throw-away Ubuntu cont
 - The API documents in `docs/openapi/` are committed. Regenerate them with `BERTH_UPDATE_DOCS=1 cargo test -p berth -p berthd`.
 - The pages under `docs/content/docs/api/host` and `api/serve` are generated from those documents. Do not edit them by hand.
 
+## Versions and releases
+
+- Every program says `berth_api::VERSION`. Do not read `CARGO_PKG_VERSION` anywhere else. A test checks.
+- A release is a pushed tag `vX.Y.Z`. The Build workflow builds with `BERTH_BUILD_VERSION` set from it, publishes the release and the image, then commits the version to `main` (`Cargo.toml`, `Cargo.lock`, `docs/openapi/`). Do not change the version by hand.
+- A tag with a suffix, such as `v0.4.0-rc.1`, makes a pre-release and leaves `main` alone.
+
 ## Conventions
 
 - Commits follow Conventional Commits (`feat(serve): …`, `fix(role): …`, `docs: …`, `ci: …`). Write a short subject, and add a body only when it explains something the diff does not.

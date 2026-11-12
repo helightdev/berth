@@ -104,7 +104,16 @@ GitHub Actions build on every push:
 | Docs | The docs build, and publishing it to GitHub Pages from `main` |
 | Build | The static `berth` for Linux x86_64 as artifact `berth-x86_64-linux`, the host programs as `host-programs-x86_64-linux`; the container image `ghcr.io/helightdev/berth`, tagged `edge` from `main` |
 
-Pushing a `v*` tag also publishes a GitHub release with `berth-x86_64-linux.tar.gz`, its checksum file and `install.sh`. The image gets the version as its tag. `install.sh` installs the latest release.
+To release, push a tag such as `v0.3.0`, or create the release on GitHub's release page with a new tag. Build then:
+
+1. Builds `berth`, `berthd`, `box` and the page with the version of the tag, and checks that each says it.
+2. Publishes the release with both archives, their checksum files, `install.sh` and `VERSION`. A release made on the page gets the files added.
+3. Pushes the image tagged `0.3.0`, `0.3` and `latest`.
+4. Commits the version to `main` in `Cargo.toml`, `Cargo.lock` and `docs/openapi/`, and starts CI, Build and Docs for that commit.
+
+You don't edit a version anywhere. A build from a checkout says the version in `Cargo.toml`, which is that of the latest release. That way `berth update` never offers an older version. `berth`, `berthd`, `box` and the page take the version from `berth_api::VERSION`. A release build sets it with `BERTH_BUILD_VERSION`, and `docker build` takes the same name as a build argument.
+
+A tag with a suffix, such as `v0.4.0-rc.1`, makes a pre-release. Its programs say `0.4.0-rc.1` and its image is tagged only with that. `main` stays as it is. `install.sh` and `berth update` pass over pre-releases, and `BERTH_VERSION=v0.4.0-rc.1` installs one.
 
 ## With the page for a browser
 
