@@ -22,10 +22,10 @@ ratatui = { version = "=0.30.2", default-features = false, features = ["crosster
 crossterm = "=0.29.0"
 serde_json = "1"
 tempfile = "3"
-vt100 = "=0.16.2"
+vt100 = "=0.18.1"
 libc = "0.2"
 pulldown-cmark = { version = "0.13", default-features = false }
-jsonwebtoken = { version = "9", default-features = false }
+jsonwebtoken = { version = "11", default-features = false }
 
 tui-input = { workspace = true, features = ["crossterm"] }
 
