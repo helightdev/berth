@@ -28,6 +28,7 @@ MODULES = [
     'e2e_plugins',
     'e2e_serve',
     'e2e_client',
+    'e2e_own_key',
 ]
 
 

@@ -205,8 +205,8 @@ def profile(**values):
     base = json.loads((SRC / 'config/example.json').read_text())
     base.update({
         'hostname': HOST, 'profile': 'cloud', 'keyboard': 'us',
-        'operator_passwordless_sudo': True,
-        'builder': {'ssh_host': HOST, 'ssh_user': OPERATOR, 'ask_become_pass': False},
+        # The operator's sudo needs no password, as by default, so berth asks for none.
+        'builder': {'ssh_host': HOST, 'ssh_user': OPERATOR},
         'ansible_vars': light_vars(),
     })
     base.update(values)
