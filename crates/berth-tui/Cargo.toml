@@ -12,6 +12,8 @@ serde.workspace = true
 serde_json.workspace = true
 vt100.workspace = true
 ratatui = { version = "=0.30.2", default-features = false }
+# Links as QR codes, for a phone; nothing but the encoder.
+qrcode = { version = "0.14", default-features = false }
 pulldown-cmark = { version = "0.13", default-features = false }
 tui-input = { path = "../../cli/vendor/tui-input", default-features = false }
 web-time = "1"

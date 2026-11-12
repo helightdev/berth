@@ -154,6 +154,8 @@ pub struct App {
     pub job: Option<Job>,
     /// Connected USB drives, as (description, device path).
     pub usb_drives: Choices,
+    /// A link of the panel as a QR code, over everything else.
+    pub qr: Option<berth_tui::qr::Overlay>,
 }
 
 /// The rows of a set-up page, as rows of this screen.
@@ -226,6 +228,7 @@ impl App {
             confirm: None,
             job: None,
             usb_drives: vec![],
+            qr: None,
         };
         app.saved = app.config.clone();
         app

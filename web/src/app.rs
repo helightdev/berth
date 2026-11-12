@@ -11,7 +11,7 @@ use berth_tui::screen::{
     self, Platform, Spots, clear_hints, dialog, draw_arguments, draw_footer, draw_header,
     draw_panel, draw_question, draw_view, ellipsize, hint_click, inside,
 };
-use berth_tui::{Click, Code, Event, Key, event, markdown, theme};
+use berth_tui::{Click, Code, Event, Key, event, markdown, qr, theme};
 use ratzilla::ratatui::{
     Frame,
     layout::{Constraint, Layout, Margin, Rect},
@@ -137,6 +137,10 @@ pub struct App {
     /// A password the server made up, shown until it is put away: what it
     /// is for, and the password.
     made: Option<(&'static str, String)>,
+    /// The web addresses of a server's job or a seed in its panel.
+    over_links: Spots,
+    /// A link as a QR code, over everything else.
+    qr: Option<qr::Overlay>,
 }
 
 impl App {
@@ -201,6 +205,8 @@ impl App {
             password: None,
             seed: None,
             made: None,
+            over_links: vec![],
+            qr: None,
         };
         if !app.token.is_empty() && !app.server.is_empty() {
             app.connect();
@@ -357,6 +363,15 @@ impl App {
             height.saturating_sub(4).max(4),
             width.saturating_sub(8).max(20),
         )
+    }
+
+    /// The server, and the link that opens this page signed in with its
+    /// token: at this page's own address, which is the server's when the
+    /// server gave it, and told which server otherwise.
+    fn connect_link(&self) -> Option<(String, String)> {
+        let server = (!self.embedded).then_some(self.server.as_str());
+        let link = qr::connect_link(&browser::page(), server, &self.token)?;
+        Some((self.server.clone(), link))
     }
 
     fn is_admin(&self) -> bool {
@@ -1010,6 +1025,9 @@ impl App {
                 if let Some(said) = self.home.key(tab - 1, key, &admin) {
                     self.status = said;
                 }
+                if let Some(shown) = self.home.qr.take() {
+                    self.qr = Some(shown);
+                }
             }
         }
     }
@@ -1028,6 +1046,7 @@ impl App {
         if !admin {
             self.tab = 0;
         }
+        self.home.connect = self.connect_link();
         let tabs: &[&str] = if admin { &TABS } else { &[] };
         self.tab_hits = draw_header(frame, header, tabs, self.tab, browser::shown(&self.server));
         frame.render_widget(Paragraph::new(theme::logo()), logo);
@@ -1260,13 +1279,14 @@ impl App {
     }
 
     fn draw_over(&mut self, frame: &mut Frame) {
+        self.over_links.clear();
         if let Some(view) = &self.data.borrow().job {
             let keys = match view.outcome() {
                 None => " It runs on the server · Esc hides it · Wheel scrolls ",
                 Some(true) => " ✓ Done · Enter close ",
                 Some(false) => " ✗ It did not finish · Enter close ",
             };
-            draw_panel(
+            (self.over_links, _) = draw_panel(
                 frame,
                 &view.title,
                 view.screen(),
@@ -1276,7 +1296,7 @@ impl App {
             );
         }
         if let Some((view, _)) = &self.seed {
-            draw_panel(
+            (self.over_links, _) = draw_panel(
                 frame,
                 &view.title,
                 view.screen(),
@@ -1426,6 +1446,25 @@ impl App {
 
     pub fn event(&mut self, event: Event) {
         let event = hint_click(event);
+        // Alt+R over a panel shows its links as QR codes.
+        let over = self.seed.is_some() || self.data.borrow().job.is_some();
+        let links = match (
+            over,
+            self.screen == Screen::Host && self.host.view.is_some(),
+        ) {
+            (true, _) => Some(&self.over_links),
+            (false, true) => Some(&self.links),
+            (false, false) => None,
+        };
+        if let Some(links) = links.or(self.qr.as_ref().map(|_| &self.over_links)) {
+            let mut said = None;
+            if qr::take(&mut self.qr, links, &event, &mut said) {
+                if let Some(said) = said {
+                    self.status = said;
+                }
+                return;
+            }
+        }
         if self.over_event(&event) {
             return;
         }
@@ -1474,5 +1513,8 @@ impl App {
             },
         }
         self.draw_over(frame);
+        if let Some(shown) = &self.qr {
+            shown.draw(frame);
+        }
     }
 }

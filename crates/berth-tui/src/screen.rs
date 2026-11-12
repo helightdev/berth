@@ -337,6 +337,11 @@ pub fn draw_panel(
         Some(true) => theme::GOOD,
         Some(false) => theme::BAD,
     };
+    // A panel with a web address in it offers its QR code.
+    let keys = match crate::qr::any_link(screen_lines(screen).iter().map(String::as_str)) {
+        true => format!(" {} · {} ", keys.trim(), crate::qr::HINT),
+        false => keys.to_owned(),
+    };
     let full = frame.area();
     let (width, height) = ((cols + 4).min(full.width), (rows + 2).min(full.height));
     let area = Rect::new(
@@ -440,6 +445,30 @@ pub fn draw_panel(
         }
     }
     (links, copyable)
+}
+
+/// The text of a screen, with rows that were wrapped joined into one line.
+fn screen_lines(screen: &vt100::Screen) -> Vec<String> {
+    let (rows, cols) = screen.size();
+    let mut lines = vec![String::new()];
+    for row in 0..rows {
+        let line = lines.last_mut().expect("one line");
+        for col in 0..cols {
+            if let Some(cell) = screen.cell(row, col)
+                && !cell.is_wide_continuation()
+            {
+                line.push_str(if cell.has_contents() {
+                    cell.contents()
+                } else {
+                    " "
+                });
+            }
+        }
+        if !screen.row_wrapped(row) {
+            lines.push(String::new());
+        }
+    }
+    lines
 }
 
 /// What the status bar says after a paste. Not the text: it may be a secret.

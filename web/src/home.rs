@@ -222,6 +222,11 @@ pub struct Home {
     /// A new or renamed registry, to select once the rows have it.
     go_to: Option<String>,
     plugins: plugins::Tab,
+    /// The server, and the link that opens this page signed in, when there
+    /// is one to give: the last row of the Settings tab.
+    pub connect: Option<(String, String)>,
+    /// A QR code to show, for the page to take.
+    pub qr: Option<berth_tui::qr::Overlay>,
 }
 
 /// The tabs after Hosts, in their order.
@@ -284,9 +289,9 @@ impl Home {
 
     fn settings_shown(&mut self, data: &Data) -> Shown {
         let muted = Style::new().fg(theme::MUTED);
-        let count = data.settings.len().max(1);
+        let count = (data.settings.len() + usize::from(self.connect.is_some())).max(1);
         self.selected[SETTINGS] = self.selected[SETTINGS].min(count - 1);
-        let rows = data
+        let mut rows: Vec<Line> = data
             .settings
             .iter()
             .map(|setting| {
@@ -306,6 +311,14 @@ impl Home {
                 line
             })
             .collect();
+        if self.connect.is_some() {
+            rows.push(Line::from(vec![
+                Span::styled("Open on another device  ", Style::new().fg(theme::TEXT)),
+                Span::styled("QR code and link, with the token", muted),
+            ]));
+        }
+        let connecting =
+            !data.settings.is_empty() && self.selected[SETTINGS] == data.settings.len();
         let help = match data.settings.get(self.selected[SETTINGS]) {
             Some(setting) => {
                 let meaning = setting["meaning"].as_str().unwrap_or("");
@@ -317,23 +330,28 @@ impl Home {
                     ),
                 }
             }
-            None => "Asking the server for its settings…".into(),
+            None => match &self.connect {
+                Some((server, _)) if connecting => berth_tui::qr::connect_help(server, false),
+                _ => "Asking the server for its settings…".into(),
+            },
         };
         Shown {
             rows,
             selected: self.selected[SETTINGS],
             editor: self.editor.as_ref().map(|_| (" Edit ", false)),
             help,
-            keys: match self.editor {
-                Some(_) => "Enter accept · Esc cancel",
-                None => "↑↓ select · Enter change · Tab registries · Esc hosts",
+            keys: match (&self.editor, connecting) {
+                (Some(_), _) => "Enter accept · Esc cancel",
+                (None, true) => "↑↓ select · Enter show the QR code · Tab registries · Esc hosts",
+                (None, false) => "↑↓ select · Enter change · Tab registries · Esc hosts",
             },
         }
     }
 
     fn settings_key(&mut self, key: Key, admin: &Admin) -> Option<String> {
         let data = admin.data.borrow();
-        let count = data.settings.len();
+        let settings = data.settings.len();
+        let count = settings + usize::from(self.connect.is_some() && settings > 0);
         let selected = self.selected[SETTINGS].min(count.saturating_sub(1));
         let setting = data.settings.get(selected).cloned().unwrap_or_default();
         drop(data);
@@ -348,6 +366,14 @@ impl Home {
                 }
                 _ => event::edit(input, &key),
             }
+            return None;
+        }
+        // The row after the settings shows the link that opens this page.
+        if selected == settings
+            && (key.code == Code::Enter || berth_tui::qr::is_key(&key))
+            && let Some((_, link)) = &self.connect
+        {
+            self.qr = Some(berth_tui::qr::Overlay::connect(link.clone()));
             return None;
         }
         match key.code {

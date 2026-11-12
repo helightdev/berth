@@ -7,6 +7,7 @@ pub mod fields;
 pub mod host;
 pub mod markdown;
 pub mod plugins;
+pub mod qr;
 pub mod screen;
 pub mod setup;
 pub mod theme;

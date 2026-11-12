@@ -187,6 +187,20 @@ pub fn origin() -> String {
         .unwrap_or_default()
 }
 
+/// Where this page is: its origin and path, without what follows them.
+pub fn page() -> String {
+    window()
+        .map(|window| {
+            let location = window.location();
+            format!(
+                "{}{}",
+                location.origin().unwrap_or_default(),
+                location.pathname().unwrap_or_default()
+            )
+        })
+        .unwrap_or_default()
+}
+
 /// A server's address as typed, made whole: without a scheme it is https,
 /// or http for this machine itself.
 pub fn address(typed: &str) -> String {

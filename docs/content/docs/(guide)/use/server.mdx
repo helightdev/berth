@@ -128,6 +128,8 @@ https://berth.example.ts.net/
 https://berth.example.ts.net/#token=TOKEN     # a link that signs in
 ```
 
+To open the page on a phone, choose **Open on another device** on the Settings tab of the home screen. It shows a QR code and the link with the token in it, so anyone who scans it gets in. The row is there when berth reaches the server with its token, such as `server_token`, and in the page for the role `admin`. From the terminal UI the link opens the server's own page, which needs `--web`. From the page it opens the same page you are on, such as the one at /web.
+
 The page is the terminal UI drawn in the browser. It has the host list and the overview of each host, where tasks run and sessions open in the terminal panel. The browser keeps the token until **o** on the host list signs out. A token in a link is taken out of the address bar when the page opens.
 
 With the role `admin` the page also sets the server up, with the same screens as the terminal UI:
