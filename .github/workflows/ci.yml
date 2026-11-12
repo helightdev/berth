@@ -1,6 +1,9 @@
 name: CI
 on:
+  # A pull request from a branch here would otherwise run everything twice.
   push:
+    branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 permissions:
