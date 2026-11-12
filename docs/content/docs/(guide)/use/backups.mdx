@@ -1,0 +1,99 @@
+---
+title: Backups
+description: Nightly encrypted snapshots of the agent's data with restic, through the Backup plugin.
+icon: Archive
+---
+
+The **Backup** plugin, which comes with berth, takes a restic snapshot of the agent's data every night and stores it anywhere rclone reaches: S3, Backblaze B2, SFTP and the rest. Without it, restic is installed but no destination, credentials or schedule is set up.
+
+## Set it up
+
+<Steps>
+<Step>
+
+### Switch it on
+
+On the host's **Features** tab, switch on **Backups** under System.
+
+</Step>
+<Step>
+
+### Set the repository
+
+Set `devbox_backup_repository` in the profile's `ansible_vars`, in restic's rclone form:
+
+```json title="~/.config/berth/hosts/studio.json"
+{ "ansible_vars": { "devbox_backup_repository": "rclone:b2:my-bucket/studio" } }
+```
+
+</Step>
+<Step>
+
+### Send the two secrets
+
+The repository password and the rclone configuration go to the host as files:
+
+```bash
+berth secret set backup-password
+berth secret set rclone-conf < ~/.config/rclone/rclone.conf
+berth host studio secret backup-password file ~/.config/berth-backup/password 0600
+berth host studio secret rclone-conf file ~/.config/rclone/rclone.conf 0600
+berth run studio secrets
+```
+
+</Step>
+<Step>
+
+### Apply
+
+Run **Apply this configuration**. The schedule is switched on only when a repository is set.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Keep a copy of the repository password somewhere else. Without it the snapshots cannot be read.
+</Callout>
+
+## Tasks
+
+| Task | Does |
+| --- | --- |
+| Back up now (`backup:snapshot`) | Takes a snapshot and applies the retention policy; the first run creates the repository |
+| List snapshots (`backup:list`) | The snapshots in the repository, of this host and of others that share it |
+| Restore a snapshot (`backup:restore`) | Puts a snapshot's files back where they were taken from, after confirmation |
+| Last snapshot | Part of Status. When the last snapshot was taken and when the next is due |
+
+```bash
+berth run studio backup:snapshot
+berth run studio backup:restore snapshot=latest
+```
+
+A restore writes over files in place. Files that are not in the snapshot stay as they are. It also works on a freshly set-up host that was given the same repository and secrets.
+
+## What is in a snapshot
+
+- The agent's home and everything under `/srv/agent`
+- The host's own description: `/etc/devbox`, `/etc/berth`, `/var/lib/devbox`
+
+Left out, because they can be made again:
+
+- caches: `.cache`, npm, Cargo and Gradle caches
+- `node_modules`, and Rust `target/debug` and `target/release`
+- installed runtimes and Unity editors
+- every Unity `Library`, `Temp` and `Logs` folder in `/srv/agent/workspaces`
+ The full list is `/etc/berth-backup.exclude` on the host.
+
+## Settings
+
+| Setting | Default |
+| --- | --- |
+| `devbox_backup_repository` | none; no schedule without it |
+| `devbox_backup_schedule` | `*-*-* 03:30:00`, a systemd calendar time, with up to 30 minutes of random delay |
+| `devbox_backup_keep_daily` | `7` |
+| `devbox_backup_keep_weekly` | `4` |
+| `devbox_backup_keep_monthly` | `6` |
+| `devbox_backup_system_paths` | `/etc/devbox`, `/etc/berth`, `/var/lib/devbox` |
+| `devbox_backup_exclude` | the list above |
+
+The T3 Code database needs an application-consistent copy. Stop the service or snapshot while it is idle before relying on a restore of it.

@@ -1,0 +1,154 @@
+---
+# berthd, the host's API, and box, the command on the desktop. Both are built
+# with berth (`cargo build -p berth`) into this role's files; berthd reads the JSON files written
+# here and nothing else writes them.
+- name: Require the host programs in the role's files
+  ansible.builtin.assert:
+    that: query('ansible.builtin.fileglob', role_path ~ '/files/bin/berthd', role_path ~ '/files/bin/box') | length == 2
+    fail_msg: berthd and box are missing from the role's files. Building berth puts them there: cargo build -p berth.
+- name: Install berthd and box
+  ansible.builtin.copy:
+    src: "bin/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    mode: '0755'
+  loop: [berthd, box]
+  register: devbox_berth_programs
+- name: Keep the old name of the desktop command
+  ansible.builtin.file:
+    src: /usr/local/bin/box
+    dest: /usr/local/bin/devbox-desktop
+    state: link
+    force: true
+- name: Create berthd's directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop: "{{ devbox_berth_dirs + ([{'path': '/run/berth', 'mode': '0755', 'owner': devbox_user}] if devbox_profile == 'container' else []) }}"
+  vars:
+    devbox_berth_dirs:
+      - {path: /etc/berth, mode: '0755'}
+      - {path: /var/lib/berth, mode: '0700'}
+      - {path: "{{ devbox_task_dir }}", mode: '0755'}
+      - {path: "{{ devbox_service_dir }}", mode: '0755'}
+- name: Install berth's own tasks
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ devbox_task_dir }}/{{ item | basename }}"
+    mode: '0755'
+  loop: "{{ query('ansible.builtin.fileglob', role_path ~ '/files/tasks/*.sh') | sort }}"
+  loop_control:
+    label: "{{ item | basename }}"
+- name: Write what berthd reads
+  ansible.builtin.copy:
+    dest: "/etc/berth/{{ item.name }}.json"
+    content: "{{ item.value | to_nice_json }}\n"
+    mode: '0644'
+  loop:
+    - name: berthd
+      value:
+        agent: "{{ devbox_user }}"
+        operator: "{{ '' if devbox_profile == 'container' else devbox_operator_user }}"
+        roots: ["{{ devbox_home }}", /srv/agent]
+        units: "{{ ['ssh', 'tailscaled', 'berthd', 'cockpit.socket', 'docker', 'lightdm'] + devbox_service_units }}"
+        agent_env: /usr/local/bin/agent-env
+    - {name: tasks, value: "{{ devbox_tasks }}"}
+    - {name: services, value: "{{ devbox_plugin_services }}"}
+    - {name: channels, value: "{{ devbox_plugin_channels }}"}
+  loop_control:
+    label: "{{ item.name }}"
+  register: devbox_berth_files
+# The agent's rights follow the services of plugins, so they are settled here
+# and not with the accounts.
+- name: Set what the agent may do as root
+  ansible.builtin.template:
+    src: sudoers-agent.j2
+    dest: /etc/sudoers.d/90-devbox-agent
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+- name: Run berthd and the services of plugins
+  when: devbox_profile != 'container'
+  block:
+    - name: Install the berthd unit
+      ansible.builtin.template:
+        src: berthd.service.j2
+        dest: /etc/systemd/system/berthd.service
+        mode: '0644'
+      register: devbox_berthd_unit
+    - name: Start berthd
+      ansible.builtin.systemd_service:
+        name: berthd.service
+        daemon_reload: true
+        enabled: true
+        state: started
+      register: devbox_berthd_started
+      when: devbox_start_services
+    # A restart ends the sessions berthd holds, so it happens only for a new
+    # program or unit. New tasks, services and topics need a reload.
+    - name: Restart berthd after its program changed
+      ansible.builtin.systemd_service:
+        name: berthd.service
+        state: restarted
+      register: devbox_berthd_restarted
+      when:
+        - devbox_start_services
+        - not devbox_berthd_started.changed
+        - devbox_berth_programs.results[0].changed or devbox_berthd_unit.changed
+    - name: Have berthd read its files again
+      ansible.builtin.systemd_service:
+        name: berthd.service
+        state: reloaded
+      when:
+        - devbox_start_services
+        - devbox_berth_files.changed
+        - not devbox_berthd_started.changed
+        - not (devbox_berthd_restarted.changed | default(false))
+    - name: Install what each plugin service runs
+      ansible.builtin.copy:
+        dest: "{{ devbox_service_dir }}/{{ item.name | replace('/', '-') }}.sh"
+        mode: '0755'
+        content: |
+          #!/usr/bin/env bash
+          {{ item.run }}
+      loop: "{{ devbox_plugin_services }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: devbox_service_scripts
+    - name: Install a unit for each plugin service
+      ansible.builtin.template:
+        src: berth-service.service.j2
+        dest: "/etc/systemd/system/berth-svc-{{ item.name | replace('/', '-') }}.service"
+        mode: '0644'
+      loop: "{{ devbox_plugin_services }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: devbox_service_unit_files
+    - name: Find the units of plugin services
+      ansible.builtin.find:
+        paths: /etc/systemd/system
+        patterns: 'berth-svc-*.service'
+      register: devbox_service_found
+    - name: Stop services that are no longer declared
+      ansible.builtin.systemd_service:
+        name: "{{ item | basename }}"
+        enabled: false
+        state: stopped
+      loop: "{{ devbox_service_found.files | map(attribute='path') | reject('in', devbox_service_units | map('regex_replace', '^', '/etc/systemd/system/') | list) | list }}"
+      failed_when: false
+      when: devbox_start_services
+    - name: Remove their units
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ devbox_service_found.files | map(attribute='path') | reject('in', devbox_service_units | map('regex_replace', '^', '/etc/systemd/system/') | list) | list }}"
+    - name: Start the plugin services
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        daemon_reload: true
+        enabled: true
+        state: "{{ 'restarted' if devbox_service_scripts.changed or devbox_service_unit_files.changed else 'started' }}"
+      loop: "{{ devbox_service_units }}"
+      when: devbox_start_services

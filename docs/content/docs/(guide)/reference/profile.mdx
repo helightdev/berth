@@ -1,0 +1,115 @@
+---
+title: Profile
+description: The fields of a host profile, ~/.config/berth/hosts/NAME.json, and where each is set in the terminal UI.
+icon: FileBraces
+---
+
+A profile is a JSON file that describes one host. berth writes it from the set-up tabs. The fields below can also be edited by hand. Settings of the Ansible role go under `ansible_vars`, and how berth reaches and installs the host under `builder`.
+
+```json title="~/.config/berth/hosts/studio.json (excerpt)"
+{
+  "hostname": "studio",
+  "profile": "laptop",
+  "operator_username": "ops",
+  "operator_ssh_public_key": "ssh-ed25519 AAAA... you@workstation",
+  "agent_username": "agent",
+  "agent_privileges": "limited",
+  "target_disk_mode": "auto",
+  "keyboard": "us",
+  "ansible_vars": {
+    "devbox_plugin_features": ["claude/cli", "codex/cli", "t3/server", "github/cli"]
+  },
+  "builder": { "ssh_host": "studio.example.ts.net", "ssh_user": "ops" }
+}
+```
+
+## Host
+
+<TypeTable
+  type={{
+    hostname: { type: 'string', description: 'Hostname of the installed machine: lower-case letters, digits and hyphens, starting with a letter. F4 generates one.' },
+    profile: { type: '"laptop" | "cloud" | "qemu"', default: '"laptop"', description: 'Provisioning defaults. Only laptop adds a physical login and power settings.' },
+    keyboard: { type: 'string', description: 'Keyboard layout of the installer, such as de or us.' },
+    tailscale_auth_key: { type: 'string', description: 'Optional enrollment key; prefer a short-lived, one-use key.' },
+    release_url: { type: 'string', description: 'HTTPS address of the release archive, for cloud seeds.' },
+    release_store: { type: 'string', description: 'A registry or repository berth uploads the release archive to when it makes the seed.' },
+    release_private: { type: 'boolean', default: 'false', description: 'Whether the seed carries a login for downloading the archive.' },
+  }}
+/>
+
+## Accounts
+
+<TypeTable
+  type={{
+    operator_username: { type: 'string', default: '"ops"', description: 'Your account on the host.' },
+    operator_ssh_public_key: { type: 'string', description: 'OpenSSH public key for the operator.' },
+    operator_password_hash: { type: 'string', description: 'SHA-512 crypt or yescrypt hash. Needed for Cockpit and the console.' },
+    operator_passwordless_sudo: { type: 'boolean', default: 'false', description: 'sudo without a password for the operator.' },
+    agent_username: { type: 'string', default: '"agent"', description: 'The agents\' account; home is /home/USERNAME.' },
+    agent_ssh_public_key: { type: 'string', description: 'Optional key for SSH to the agent account.' },
+    agent_password_hash: { type: 'string', description: 'Optional; empty locks password login.' },
+    agent_passwordless_sudo: { type: 'boolean', default: 'true', description: 'Turning it off requires an agent password.' },
+    agent_privileges: { type: '"full" | "limited" | "none"', default: '"limited"', description: 'What the agent may do with sudo. See Accounts and sudo.' },
+  }}
+/>
+
+## USB installer
+
+<TypeTable
+  type={{
+    target_disk_mode: { type: 'string', default: '"auto"', description: 'auto, serial, model, path, largest, smallest, ssd or hdd. See Disk selection.' },
+    target_disk_ssd: { type: '"any" | "ssd" | "hdd"', default: '"any"', description: 'Filter for auto, model, path and size selection.' },
+    target_disk_serial: { type: 'string', description: 'Exact udev ID_SERIAL, for serial mode.' },
+    target_disk_model: { type: 'string', description: 'udev ID_MODEL pattern, for model mode.' },
+    target_disk_path: { type: 'string', description: '/dev path or pattern, for path mode.' },
+    wifi_enabled: { type: 'boolean', default: 'false', description: 'Configure Wi-Fi in the installer; wired DHCP stays.' },
+    wifi: { type: '{ ssid, password, interface? }', description: 'The network. Leave interface out to use the one found on the target.' },
+  }}
+/>
+
+## Role settings (`ansible_vars`)
+
+Any `devbox_` setting of the role. The ones the terminal UI edits:
+
+| Setting | In berth | Default |
+| --- | --- | --- |
+| `devbox_plugin_features` | Features tab | `claude/cli`, `codex/cli`, `pi/cli`, `t3/server`, `github/cli` |
+| `devbox_tools_*` (one per [category](/docs/reference/tools#tool-categories)) | Features tab | on |
+| `devbox_install_playwright` | Features tab | on |
+| `devbox_software_rendering` | Software graphics | on |
+| `devbox_geometry` | Desktop size | `1600x900` |
+| `devbox_bootstrap_ssh_cidr` | Recovery SSH CIDR | none |
+| `devbox_harden_ssh` | SSH hardening | on |
+| `devbox_install_cockpit` | Cockpit web console | on |
+| `devbox_install_docker` | Docker on host | on |
+| `devbox_install_tailscale` | Tailscale | on |
+
+Others, such as `devbox_tailscale_serve`, the agent versions and the backup settings, are described where they are used. All defaults are in [`defaults/main.yml`](https://github.com/helightdev/berth/blob/main/ansible/roles/devbox/defaults/main.yml).
+
+## Install and connection (`builder`)
+
+How berth installs and connects to the host. These settings stay on your machine.
+
+<TypeTable
+  type={{
+    ssh_host: { type: 'string', description: 'Hostname, IP or Host alias from ~/.ssh/config. A host with one opens on its overview.' },
+    ssh_user: { type: 'string', description: 'Login user; blank uses your SSH configuration.' },
+    ssh_port: { type: 'string', description: 'Blank uses your SSH configuration.' },
+    ssh_key: { type: 'string', description: 'Private key path; blank uses ssh-agent or SSH configuration.' },
+    ask_pass: { type: 'boolean', description: 'Ask for an SSH login password.' },
+    ask_become_pass: { type: 'boolean', description: 'Ask for the SSH user\'s sudo password.' },
+    link: { type: 'string[]', description: 'A command that connects to berthd instead of SSH, such as docker exec -i NAME berthd connect.' },
+    inventory: { type: 'string', description: 'Ansible inventory for This machine or an inventory; blank is this machine.' },
+    iso: { type: 'string', description: 'Ubuntu Server ISO to build the USB installer from.' },
+    iso_sha256: { type: 'string', description: 'SHA-256 the ISO must have.' },
+    usb_device: { type: 'string', description: 'USB drive to write the finished image to.' },
+  }}
+/>
+
+## Beside the profile
+
+| File | Holds |
+| --- | --- |
+| `NAME.credentials.json` | Generated passwords, mode 0600 |
+
+Secrets and registries a host gets are listed in the profile by name (`secrets`, `registries`). Their values stay in `~/.config/berth/secrets.json`.

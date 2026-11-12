@@ -1,0 +1,194 @@
+---
+title: Writing a service
+description: "Declare a service in a plugin, serve it with box serve, and call it from the agent or from your machine."
+icon: Workflow
+---
+
+A service is a program on a host that runs all the time and answers calls. The
+plugin declares it, berth runs it, and `berthd` routes each call to it. The
+caller is the agent on the host, with `box call`, or you, from your machine, with `berth call`.
+
+## Declare it
+
+A feature in the plugin's `package.json` can list `services` in its `berth`
+section. The name is written without the plugin's id, which berth adds:
+
+```json
+{
+  "name": "berth-plugin-ask",
+  "berth": {
+    "features": [
+      {
+        "id": "desk",
+        "label": "Ask a person",
+        "tasks": "tasks/desk.yml",
+        "services": [
+          {
+            "name": "desk",
+            "description": "The agent asks a question and waits for a person to answer.",
+            "user": "root",
+            "agent": true,
+            "run": "box serve ask/desk -- /opt/ask/handler",
+            "timeout": 600,
+            "methods": [
+              { "name": "ask", "description": "Ask a question; returns the answer." },
+              { "name": "answer", "description": "Answer an open question. Host level only." }
+            ]
+          }
+        ],
+        "channels": [
+          { "topic": "questions", "keep": "log", "max": 200, "days": 7 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `name` | The service is called `PLUGIN/NAME`, here `ask/desk` |
+| `user` | `root` or `agent`. Only that user may serve it |
+| `agent` | `true` lets the agent call it. Host level can always call it |
+| `run` | The command to run |
+| `timeout` | Seconds a caller waits for an answer before it gets `504 timeout`; 30 by default |
+| `methods` | The methods, with a description each, for `box services` and the API |
+
+The `timeout` must be long enough for the work. A service that waits for a
+person needs minutes, not the default 30 seconds. Here it is 600.
+
+The `channels` entry sets how long the topic `ask/questions` is kept. Its topic
+is also written without the plugin's id.
+
+## The unit
+
+When the host is applied, the role writes the declared services to
+`/etc/berth/services.json` and makes a systemd unit of each one. The unit is
+named `berth-svc-PLUGIN-NAME.service`, so this one is
+`berth-svc-ask-desk.service`. It runs the `run` command as the declared user and starts
+after `berthd.service`. It is restarted when it fails. It is an ordinary unit:
+`systemctl status` and `journalctl -u` work on it, and so do the unit calls of
+the [units operations](/docs/api/host/units).
+
+A service is up while its program has a WebSocket open to `berthd`. Only the
+declared user may serve it, and a second connection to the same service is
+refused.
+In a container, where berthd runs without systemd, there are no units, and a service is whatever connects.
+
+## Serving with box
+
+```text
+box serve SERVICE -- COMMAND…
+```
+
+`box serve` opens the serving connection and reconnects with a backoff when
+`berthd` restarts. For each call it runs `COMMAND METHOD`, with the call's JSON
+body on standard input. What `COMMAND` prints on standard output is the result,
+which must be JSON. If `COMMAND` exits with a non-zero status, the call fails
+and the message is whatever it wrote to standard error.
+
+The caller is in the environment of each run:
+
+| Variable | Value |
+|---|---|
+| `BERTH_CALLER_LEVEL` | `host` or `agent` |
+| `BERTH_CALLER_UID` | the caller's user id |
+
+The service decides per method who may use it. Because a root service open to
+the agent crosses the agent's privileges, every method that should
+not be open to the agent has to check the level.
+
+## Example: ask a person
+
+The agent runs into a question only a person can answer. It calls
+`ask/desk ask` and waits. The question appears on the channel, a person
+answers it from berth, and the agent's call returns the answer.
+
+Each open question is a named pipe in `/run/ask`, named by the number of the
+handler process waiting on it, which is unique among open questions.
+The `ask` handler publishes the question on the topic `ask/questions` and then
+blocks reading the pipe. The `answer` handler writes into the pipe.
+
+The handler is `/opt/ask/handler`, installed by the feature's task file. It
+needs `jq`.
+
+```sh
+#!/bin/sh
+# Called by box serve as: handler METHOD, with the JSON body on stdin.
+set -eu
+dir=/run/ask
+mkdir -p "$dir"
+body=$(cat)
+
+case "$1" in
+ask)
+  question=$(printf '%s' "$body" | jq -r '.question // empty')
+  [ -n "$question" ] || { echo 'question is required' >&2; exit 1; }
+
+  id=$$
+  fifo=$dir/$id
+  mkfifo -m 600 "$fifo"
+  trap 'rm -f "$fifo"' EXIT
+
+  # A client of the channel sees the question here.
+  box publish ask/questions \
+    "$(jq -nc --argjson id "$id" --arg question "$question" '{id: $id, question: $question}')" \
+    --keep log
+
+  # Block until someone answers. Stop a little before the service's timeout of
+  # 600 seconds, so this process ends and removes its pipe.
+  text=$(timeout 590 cat "$fifo") || { echo 'nobody answered' >&2; exit 1; }
+  jq -nc --arg text "$text" '{answer: $text}'
+  ;;
+
+answer)
+  # Only host level answers. The agent may ask, and must not answer itself.
+  [ "$BERTH_CALLER_LEVEL" = host ] || { echo 'only host level may answer' >&2; exit 1; }
+
+  id=$(printf '%s' "$body" | jq -r '.id // empty')
+  case "$id" in ''|*[!0-9]*) echo 'id must be a number' >&2; exit 1 ;; esac
+  fifo=$dir/$id
+  [ -p "$fifo" ] || { echo "no open question $id" >&2; exit 1; }
+
+  printf '%s' "$body" | jq -j '.text // ""' > "$fifo"
+  box publish ask/answered "{\"id\": $id}" --keep none
+  echo '{"ok": true}'
+  ;;
+
+*)
+  echo "unknown method $1" >&2
+  exit 1
+  ;;
+esac
+```
+
+The handler relies on `box serve` starting a separate process for each call, so
+an `ask` that is waiting does not stop an `answer` from running.
+
+### Using it
+
+On the host, the agent asks and waits:
+
+```sh
+box call ask/desk ask '{"question":"Which branch do I release from?"}'
+```
+
+On your machine, a person watches the topic and answers. The `id` is the one
+in the question:
+
+```sh
+berth channel studio ask/
+# {"id":4812,"topic":"ask/questions","body":{"id":3107,"question":"Which branch do I release from?"}, ...}
+
+berth call studio ask/desk answer '{"id":3107,"text":"main"}'
+```
+
+The agent's `box call` then prints `{"answer":"main"}` and exits with status 0.
+On the host, a script can list what is waiting: `box listen ask/`
+prints each question as a line of JSON, and `berth inbox studio --topic ask/` lists
+the ones `berth serve` has taken in from the host.
+
+If nobody answers within 590 seconds, the handler exits with an error and the
+agent gets `nobody answered` as the message. The caller's own wait ends at the
+service's `timeout` of 600 seconds, so the pipe is removed before the call is
+given up on.

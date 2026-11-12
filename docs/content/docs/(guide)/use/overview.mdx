@@ -1,0 +1,62 @@
+---
+title: A host's overview
+description: The page of a running host, with its tasks, the terminal panel and its sessions.
+icon: LayoutDashboard
+---
+
+Opening an installed host shows its overview, with the connection at the top and the host's tasks in groups below. The host reports its own tasks, and the list changes with what is installed there.
+
+<Screen name="overview" alt="The overview of a host: connection settings, then System, Access, Sync, Sign-In, Backup and Set-Up groups" />
+
+The line under the title is the host's load, CPU, memory, disk and uptime.
+
+## Tasks
+
+| Group | Task | Does |
+| --- | --- | --- |
+| System | Status | Provisioning state and services, graphics and disk space, failed units and the access links, then what plugins report |
+| | Terminal | A shell on the host in a panel; Space switches between the agent and the SSH user |
+| | Self-Test | `devbox-smoke` as the agent, with the checks plugins add |
+| | Update | `apt` update and upgrade, then what plugins keep up to date; says whether a reboot is needed |
+| | Reboot | Restarts the host, after asking |
+| Access | Access links and desktop password | Links for the desktop, T3, Cockpit and SSH, and the virtual desktop's password |
+| | Publish desktop and T3 on the tailnet | `tailscale serve` for both, and the tailnet's trusted certificate for Cockpit |
+| | Use T3 from another device | A one-time pairing link for a phone or another computer |
+| Sync | Secrets and registry logins | Sends this host's secrets and logins to the agent account |
+| Sign-In | Show who is signed in | The accounts of the agent that the host's plugins know about |
+| | Sign in to Claude Code, Codex, GitHub | The tool's sign-in in a panel, from its plugin |
+| Set-Up | Change what is installed, accounts or install method | Opens the [set-up tabs](/docs/use/terminal-ui#a-host) |
+| | Apply this configuration | Runs the role again with this profile, such as after changing what is installed |
+
+Plugins add tasks to these groups or bring groups of their own, such as **Backup**. They also add steps to built-in tasks such as Status and Update. A task's output stays on the page.
+
+Some tasks take arguments, such as which snapshot to restore. Tasks that cannot be undone ask for confirmation first. When the profile says to ask for the SSH user's sudo password, berth asks once and keeps it until it closes.
+
+## Panels
+
+The terminal and sign-ins run in a panel inside berth.
+
+<Screen name="terminal" alt="A terminal panel on the host, as the agent, with id and ls run in it" />
+
+| In a panel | Does |
+| --- | --- |
+| Click on a web address | Opens it on your machine |
+| Right-click | Copies a word, such as a one-time code |
+| Ctrl+V | Pastes |
+| Mouse wheel | Scrolls back |
+| Ctrl+Q | Leaves the panel; a terminal keeps running |
+| `exit` or Ctrl+D | Ends a terminal |
+
+## Sessions
+
+A terminal is a session of the host and keeps running when you leave it. Running sessions appear in a **Sessions** group on the overview, where Enter opens one again. `berth sessions HOST` lists them, and `berth attach HOST ID` puts your own terminal onto one ([Commands](/docs/use/cli#sessions-and-commands)).
+
+## Unreachable hosts
+
+Instead of the tasks, the overview then says why, and offers:
+
+| Row | Does |
+| --- | --- |
+| Connect again | Asks the host again what it can do, asking for the sudo password again if needed |
+| Terminal over SSH | A plain SSH shell as the SSH user, for a host whose berthd cannot be reached |
+| Apply this configuration | Shown when berthd is missing or older than berth needs; installs or updates it |

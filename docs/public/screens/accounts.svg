@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1036 526" width="1036" height="526" role="img" aria-label="berth cloud-1: accounts">
+<style>text{font-family:'JetBrains Mono','Cascadia Mono','DejaVu Sans Mono',Menlo,Consolas,monospace;font-size:14px;white-space:pre}.b{font-weight:700}</style>
+<rect width="100%" height="100%" rx="10" fill="#0d111c" stroke="#344264"/>
+<circle cx="20" cy="17.0" r="5" fill="#344264"/><circle cx="38" cy="17.0" r="5" fill="#344264"/><circle cx="56" cy="17.0" r="5" fill="#344264"/>
+<text x="518.0" y="22.0" fill="#7c89b0" text-anchor="middle">berth cloud-1: accounts</text>
+<rect x="232.4" y="62" width="101.3" height="18.5" fill="#74b2ff"/>
+<text x="30.8" y="76" fill="#5c76aa" textLength="8.4" lengthAdjust="spacingAndGlyphs">▐</text>
+<text x="39.2" y="76" fill="#74b2ff" textLength="8.4" lengthAdjust="spacingAndGlyphs">▄</text>
+<text x="47.6" y="76" fill="#5c76aa" textLength="8.4" lengthAdjust="spacingAndGlyphs">▌</text>
+<text x="56.0" y="76" fill="#cdd6f4" class="b" textLength="67.2" lengthAdjust="spacingAndGlyphs"> berth  </text>
+<text x="123.2" y="76" fill="#74b2ff" textLength="25.2" lengthAdjust="spacingAndGlyphs"> 1 </text>
+<text x="148.4" y="76" fill="#7c89b0" textLength="75.6" lengthAdjust="spacingAndGlyphs">Features </text>
+<text x="232.4" y="76" fill="#0d111c" class="b" textLength="100.8" lengthAdjust="spacingAndGlyphs"> 2 Accounts </text>
+<text x="341.6" y="76" fill="#74b2ff" textLength="25.2" lengthAdjust="spacingAndGlyphs"> 3 </text>
+<text x="366.8" y="76" fill="#7c89b0" textLength="67.2" lengthAdjust="spacingAndGlyphs">Secrets </text>
+<text x="442.4" y="76" fill="#74b2ff" textLength="25.2" lengthAdjust="spacingAndGlyphs"> 4 </text>
+<text x="467.6" y="76" fill="#7c89b0" textLength="67.2" lengthAdjust="spacingAndGlyphs">Install </text>
+<text x="870.8" y="76" fill="#7c89b0" textLength="134.4" lengthAdjust="spacingAndGlyphs">cloud-1 › set-up</text>
+<text x="47.6" y="112" fill="#74b2ff" class="b" textLength="588.0" lengthAdjust="spacingAndGlyphs">Operator Account                                                      </text>
+<text x="652.4" y="112" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">╭</text>
+<text x="660.8" y="112" fill="#7c89b0" class="b" textLength="109.2" lengthAdjust="spacingAndGlyphs"> Information </text>
+<text x="770.0" y="112" fill="#344264" textLength="235.2" lengthAdjust="spacingAndGlyphs">───────────────────────────╮</text>
+<rect x="30.8" y="116" width="605.3" height="18.5" fill="#212c46"/>
+<text x="30.8" y="130" fill="#74b2ff" textLength="16.8" lengthAdjust="spacingAndGlyphs">▌ </text>
+<text x="47.6" y="130" fill="#7c89b0" textLength="42.0" lengthAdjust="spacingAndGlyphs">  ├─ </text>
+<text x="89.6" y="130" fill="#cdd6f4" textLength="159.6" lengthAdjust="spacingAndGlyphs">Operator username  </text>
+<text x="249.2" y="130" fill="#74b2ff" textLength="25.2" lengthAdjust="spacingAndGlyphs">ops</text>
+<text x="652.4" y="130" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="660.8" y="130" fill="#cdd6f4" textLength="336.0" lengthAdjust="spacingAndGlyphs"> Account for human login and            </text>
+<text x="996.8" y="130" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="47.6" y="148" fill="#7c89b0" textLength="42.0" lengthAdjust="spacingAndGlyphs">  ├─ </text>
+<text x="89.6" y="148" fill="#cdd6f4" textLength="210.0" lengthAdjust="spacingAndGlyphs">Operator SSH public key  </text>
+<text x="299.6" y="148" fill="#74b2ff" textLength="319.2" lengthAdjust="spacingAndGlyphs">ssh-ed25519 …lKEZtrdQ demo@workstation</text>
+<text x="652.4" y="148" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="660.8" y="148" fill="#cdd6f4" textLength="336.0" lengthAdjust="spacingAndGlyphs"> management. Ubuntu reserves names such </text>
+<text x="996.8" y="148" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="47.6" y="166" fill="#7c89b0" textLength="42.0" lengthAdjust="spacingAndGlyphs">  ├─ </text>
+<text x="89.6" y="166" fill="#cdd6f4" textLength="201.6" lengthAdjust="spacingAndGlyphs">Operator password hash  </text>
+<text x="291.2" y="166" fill="#7c89b0" textLength="58.8" lengthAdjust="spacingAndGlyphs">Not set</text>
+<text x="652.4" y="166" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="660.8" y="166" fill="#cdd6f4" textLength="336.0" lengthAdjust="spacingAndGlyphs"> as operator, admin and root.           </text>
+<text x="996.8" y="166" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="47.6" y="184" fill="#7c89b0" textLength="42.0" lengthAdjust="spacingAndGlyphs">  └─ </text>
+<text x="89.6" y="184" fill="#cdd6f4" textLength="235.2" lengthAdjust="spacingAndGlyphs">Operator passwordless sudo  </text>
+<text x="324.8" y="184" fill="#7c89b0" textLength="42.0" lengthAdjust="spacingAndGlyphs">○ Off</text>
+<text x="652.4" y="184" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="996.8" y="184" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="47.6" y="202" fill="#74b2ff" class="b" textLength="588.0" lengthAdjust="spacingAndGlyphs">Agent Account                                                         </text>
+<text x="652.4" y="202" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="996.8" y="202" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="47.6" y="220" fill="#7c89b0" textLength="42.0" lengthAdjust="spacingAndGlyphs">  ├─ </text>
+<text x="89.6" y="220" fill="#cdd6f4" textLength="134.4" lengthAdjust="spacingAndGlyphs">Agent username  </text>
+<text x="224.0" y="220" fill="#74b2ff" textLength="42.0" lengthAdjust="spacingAndGlyphs">agent</text>
+<text x="652.4" y="220" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="996.8" y="220" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="47.6" y="238" fill="#7c89b0" textLength="42.0" lengthAdjust="spacingAndGlyphs">  ├─ </text>
+<text x="89.6" y="238" fill="#cdd6f4" textLength="176.4" lengthAdjust="spacingAndGlyphs">Agent password hash  </text>
+<text x="266.0" y="238" fill="#7c89b0" textLength="58.8" lengthAdjust="spacingAndGlyphs">Not set</text>
+<text x="652.4" y="238" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="996.8" y="238" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="47.6" y="256" fill="#7c89b0" textLength="42.0" lengthAdjust="spacingAndGlyphs">  ├─ </text>
+<text x="89.6" y="256" fill="#cdd6f4" textLength="184.8" lengthAdjust="spacingAndGlyphs">Agent SSH public key  </text>
+<text x="274.4" y="256" fill="#7c89b0" textLength="58.8" lengthAdjust="spacingAndGlyphs">Not set</text>
+<text x="652.4" y="256" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="996.8" y="256" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="47.6" y="274" fill="#7c89b0" textLength="42.0" lengthAdjust="spacingAndGlyphs">  ├─ </text>
+<text x="89.6" y="274" fill="#cdd6f4" textLength="151.2" lengthAdjust="spacingAndGlyphs">Agent privileges  </text>
+<text x="240.8" y="274" fill="#74b2ff" textLength="58.8" lengthAdjust="spacingAndGlyphs">limited</text>
+<text x="652.4" y="274" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="996.8" y="274" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="47.6" y="292" fill="#7c89b0" textLength="42.0" lengthAdjust="spacingAndGlyphs">  └─ </text>
+<text x="89.6" y="292" fill="#cdd6f4" textLength="210.0" lengthAdjust="spacingAndGlyphs">Agent passwordless sudo  </text>
+<text x="299.6" y="292" fill="#9ed88c" textLength="33.6" lengthAdjust="spacingAndGlyphs">● On</text>
+<text x="652.4" y="292" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="996.8" y="292" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="652.4" y="310" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="996.8" y="310" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="47.6" y="328" fill="#74b2ff" class="b" textLength="588.0" lengthAdjust="spacingAndGlyphs">Fill In From This Machine                                             </text>
+<text x="652.4" y="328" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="996.8" y="328" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="14.0" y="346" fill="#cdd6f4" textLength="638.4" lengthAdjust="spacingAndGlyphs">      Detect local inputs                                                   </text>
+<text x="652.4" y="346" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="996.8" y="346" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="14.0" y="364" fill="#cdd6f4" textLength="638.4" lengthAdjust="spacingAndGlyphs">      Import a devbox JSON profile                                          </text>
+<text x="652.4" y="364" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="996.8" y="364" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="14.0" y="382" fill="#cdd6f4" textLength="638.4" lengthAdjust="spacingAndGlyphs">      Import an SSH public key file                                         </text>
+<text x="652.4" y="382" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="996.8" y="382" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="652.4" y="400" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="996.8" y="400" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="652.4" y="418" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="996.8" y="418" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="652.4" y="436" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="996.8" y="436" fill="#344264" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
+<text x="652.4" y="454" fill="#344264" textLength="352.8" lengthAdjust="spacingAndGlyphs">╰────────────────────────────────────────╯</text>
+<text x="30.8" y="490" fill="#74b2ff" class="b" textLength="16.8" lengthAdjust="spacingAndGlyphs">↑↓</text>
+<text x="47.6" y="490" fill="#7c89b0" textLength="58.8" lengthAdjust="spacingAndGlyphs"> select</text>
+<text x="123.2" y="490" fill="#74b2ff" class="b" textLength="42.0" lengthAdjust="spacingAndGlyphs">Enter</text>
+<text x="165.2" y="490" fill="#7c89b0" textLength="58.8" lengthAdjust="spacingAndGlyphs"> choose</text>
+<text x="240.8" y="490" fill="#74b2ff" class="b" textLength="25.2" lengthAdjust="spacingAndGlyphs">1-4</text>
+<text x="266.0" y="490" fill="#7c89b0" textLength="33.6" lengthAdjust="spacingAndGlyphs"> tab</text>
+<text x="316.4" y="490" fill="#74b2ff" class="b" textLength="8.4" lengthAdjust="spacingAndGlyphs">x</text>
+<text x="324.8" y="490" fill="#7c89b0" textLength="50.4" lengthAdjust="spacingAndGlyphs"> unset</text>
+<text x="392.0" y="490" fill="#74b2ff" class="b" textLength="50.4" lengthAdjust="spacingAndGlyphs">Ctrl+S</text>
+<text x="442.4" y="490" fill="#7c89b0" textLength="42.0" lengthAdjust="spacingAndGlyphs"> save</text>
+<text x="501.2" y="490" fill="#74b2ff" class="b" textLength="25.2" lengthAdjust="spacingAndGlyphs">Esc</text>
+<text x="526.4" y="490" fill="#7c89b0" textLength="75.6" lengthAdjust="spacingAndGlyphs"> overview</text>
+</svg>

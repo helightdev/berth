@@ -1,0 +1,90 @@
+---
+title: box
+description: The command on every host for the agent's side of berth, from desktop control to tasks, the channel and services.
+icon: Box
+---
+
+`box` is installed on every host as `/usr/local/bin/box`. It talks to berthd at agent level and works from any shell of the agent, including those of T3 Code and the coding agents.
+
+```text
+box desktop screenshot [--output PATH|-] | click X Y [BUTTON] | type TEXT | key CHORD | scroll up|down [STEPS] | clipboard | pause | resume
+box mcp                               the desktop tools as an MCP server on stdio
+box exec [COMMAND...]                 run a command, or a shell, with the desktop's environment
+box tasks                             the tasks this user may run
+box run TASK [NAME=VALUE...]          run one; output here, its exit code as box's
+box publish TOPIC [JSON] [--keep none|last|log]
+box listen TOPIC-PREFIX [--since ID]  one JSON message per line
+box services                          what can be called, and whether it is up
+box call SERVICE METHOD [JSON]        result on stdout
+box serve SERVICE -- COMMAND...       per call: COMMAND METHOD, body on stdin, result on stdout
+```
+
+## Desktop
+
+`box desktop` controls the agent's shared desktop. It enters the desktop's environment by itself, so it works from any shell of the agent.
+
+```bash title="As the agent"
+box desktop screenshot --output /srv/agent/artifacts/screen.png
+box desktop click 300 250
+box desktop type "Hello"
+box desktop key ctrl+l
+box desktop scroll down 3
+box desktop clipboard
+box desktop pause
+box desktop resume
+```
+
+Each subcommand also takes its arguments as JSON with `--args`, as in `box desktop click --args '{"x":300,"y":250}'`.
+
+Input is serialized per call, and `pause` blocks cooperating tools until `resume`. It is not a scheduler: only one GUI task should use the desktop at a time. T3 Code stays usable for coding if the desktop fails.
+
+## Desktop tools for other clients
+
+`box mcp` offers the same tools as a stdio MCP server: screenshot, click, typing, key chords, scroll and clipboard read. The Claude Code and Codex plugins register it for the agent when they are installed. For another client, merge `/etc/devbox/mcp.json` into its configuration, or register it as Claude Code would:
+
+```bash title="As the agent"
+claude mcp add --transport stdio --scope user desktop -- /usr/local/bin/box mcp
+```
+
+## Desktop environment
+
+`box exec` runs a command with the desktop's display, Xauthority, session bus and tool PATH. Without a command it starts a shell. GUI programs and commands T3 starts already share that environment. Ordinary SSH shells need `box exec`.
+
+```bash title="As the agent"
+box exec firefox https://example.com
+box exec glxinfo -B
+box exec xvfb-run -a COMMAND
+box exec devbox-smoke
+```
+
+## Tasks
+
+`box tasks` lists the host's tasks the agent may run, those marked `agent: true`, and `box run` runs one with its plugin steps:
+
+```bash title="As the agent"
+box tasks
+box run smoke
+box run sign-in:status
+```
+
+## Channel
+
+The channel passes JSON messages between programs on the host and berth. Topics of plugins are `PLUGIN/TOPIC`; `--keep` overrides how long a message is kept (`none`, `last` or `log`).
+
+```bash title="As the agent"
+box publish myplugin/progress '{"percent": 40}' --keep last
+box listen myplugin/
+box listen myplugin/ --since 120
+```
+
+From your machine, `berth channel HOST PREFIX` follows the same messages.
+
+## Services
+
+```bash title="As the agent"
+box services
+box call ask/desk ask '{"question":"Which branch do I release from?"}'
+box serve ask/desk -- /opt/ask/handler
+```
+
+See [Writing a service](/docs/extend/services) for `box serve`.

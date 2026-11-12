@@ -44,7 +44,6 @@
     - {src: desktop-session.sh, name: devbox-desktop-session}
     - {src: wait-display.sh, name: devbox-wait-display}
     - {src: init-vnc.py, name: devbox-init-vnc}
-    - {src: desktop.py, name: devbox-desktop}
     - {src: chromium.py, name: devbox-chromium}
     - {src: smoke.sh, name: devbox-smoke}
     - {src: secrets.py, name: devbox-secrets}
@@ -148,4 +147,4 @@
     dest: /etc/devbox/mcp.json
     mode: '0644'
     content: |
-      {"mcpServers":{"devbox-desktop":{"command":"/usr/local/bin/agent-env","args":["/usr/local/bin/devbox-desktop","--mcp"]}}}
+      {"mcpServers":{"desktop":{"command":"/usr/local/bin/agent-env","args":["/usr/local/bin/box","mcp"]}}}

@@ -1,0 +1,5 @@
+{
+  "title": "Extending",
+  "icon": "Puzzle",
+  "pages": ["plugins", "writing-plugins", "services", "serve", "streams"]
+}

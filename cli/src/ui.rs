@@ -69,6 +69,25 @@ fn ellipsize(text: &str, width: usize) -> String {
     result
 }
 
+/// Break text into lines of at most `width` columns, at spaces.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = vec![String::new()];
+    for word in text.split_whitespace() {
+        let line = lines.last_mut().expect("one line");
+        if !line.is_empty()
+            && Span::raw(line.as_str()).width() + 1 + Span::raw(word).width() > width
+        {
+            lines.push(word.to_owned());
+        } else {
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+    }
+    lines
+}
+
 fn buttons(app: &App) -> Vec<(&'static str, KeyCode)> {
     let mut buttons = vec![];
     if app.path_selected() {
@@ -471,6 +490,58 @@ fn draw(frame: &mut Frame, app: &mut App, rows: &[Row], display: &mut ListState,
     if let Some(session) = &app.session {
         (app.links, app.words) = draw_session(frame, session, &app.status);
     }
+    if let Some(view) = &app.host.view {
+        (app.links, app.words) = draw_view(frame, view, &app.status);
+    }
+    if let Some((question, _)) = &app.host.question {
+        let lines = wrap(question, 56).into_iter().map(Line::raw).collect();
+        dialog(frame, " Are you sure? ", " y yes · n no ", lines);
+    }
+    if let Some(asked) = &app.host.arguments
+        && let Some(task) = app.host.tasks.get(asked.task)
+        && let Some(argument) = task.arguments.get(asked.index)
+    {
+        let mut lines = vec![Line::raw(ellipsize(
+            crate::app::argument_label(argument),
+            56,
+        ))];
+        for (index, choice) in asked.choices.iter().enumerate().take(8) {
+            let mark = if asked.chosen == Some(index) {
+                "●"
+            } else {
+                "○"
+            };
+            lines.push(Line::styled(
+                ellipsize(&format!("  {mark} {choice}"), 56),
+                Style::new().fg(theme::MUTED),
+            ));
+        }
+        lines.push(Line::raw(""));
+        let typed = ellipsize(asked.input.value(), 52);
+        lines.push(Line::from(vec![
+            Span::styled("› ", Style::new().fg(theme::ACCENT)),
+            Span::raw(typed.clone()),
+        ]));
+        let title = ellipsize(
+            &format!(
+                " {} · {} of {} ",
+                task.label,
+                asked.index + 1,
+                task.arguments.len()
+            ),
+            58,
+        );
+        let keys = match asked.choices.is_empty() {
+            true => " Enter accept · Esc cancel ",
+            false => " ↑↓ choose · Enter accept · Esc cancel ",
+        };
+        let rows = lines.len() as u16;
+        let area = dialog(frame, &title, keys, lines);
+        if area.width > 6 && area.height > rows {
+            let column = Span::raw(typed).width() as u16;
+            frame.set_cursor_position((area.x + 4 + column, area.y + rows));
+        }
+    }
     if app.choosing_drive {
         let lines = app
             .usb_drives
@@ -503,7 +574,18 @@ fn draw(frame: &mut Frame, app: &mut App, rows: &[Row], display: &mut ListState,
             (true, "") => format!("{local} on {}", app.text(Field::SshHost)),
             (true, user) => format!("{user} on {}", app.text(Field::SshHost)),
         };
-        draw_unlock(frame, input, app.unlock_failed, app.unlock_reason, &user);
+        let kept = match app.unlock_remote {
+            true => "Kept until berth is closed. It is not stored.",
+            false => "Used once for sudo. It is not stored.",
+        };
+        draw_unlock(
+            frame,
+            input,
+            app.unlock_failed,
+            app.unlock_reason,
+            &user,
+            kept,
+        );
     }
 }
 
@@ -518,7 +600,12 @@ fn dialog(frame: &mut Frame, title: &str, keys: &str, lines: Vec<Line>) -> Rect 
         width,
         height,
     );
-    note_hints(keys.trim(), area.x + 1, area.bottom().saturating_sub(1), true);
+    note_hints(
+        keys.trim(),
+        area.x + 1,
+        area.bottom().saturating_sub(1),
+        true,
+    );
     frame.render_widget(Clear, area);
     frame.render_widget(
         Paragraph::new(lines).block(
@@ -659,7 +746,7 @@ type Spots = Vec<(Rect, String)>;
 fn draw_job(frame: &mut Frame, job: &Job, action: &str, note: &str, area: Rect) -> (Spots, Spots) {
     let (keys, color) = match &job.outcome {
         None => (" Esc cancel ", theme::ACCENT),
-        Some(Ok(())) if job.offers_usb(action) => {
+        Some(Ok(())) if job.offers_usb(action, Action::Iso.label()) => {
             (" w write to USB drive · Enter close ", theme::GOOD)
         }
         Some(Ok(())) => (
@@ -673,7 +760,12 @@ fn draw_job(frame: &mut Frame, job: &Job, action: &str, note: &str, area: Rect) 
     } else {
         format!(" {action} · {} ", job.title)
     };
-    note_hints(keys.trim(), area.x + 1, area.bottom().saturating_sub(1), true);
+    note_hints(
+        keys.trim(),
+        area.x + 1,
+        area.bottom().saturating_sub(1),
+        true,
+    );
     let block = theme::popup(title.trim(), color)
         .title_bottom(theme::hints(keys.trim()))
         .title_bottom(
@@ -768,16 +860,66 @@ fn draw_job(frame: &mut Frame, job: &Job, action: &str, note: &str, area: Rect) 
 
 /// Draw a command's terminal. Returns where its web addresses and its words
 /// are, for opening and copying with the mouse.
-fn draw_session(frame: &mut Frame, session: &crate::session::Session, note: &str) -> (Spots, Spots) {
-    let screen = session.screen();
+fn draw_session(
+    frame: &mut Frame,
+    session: &crate::session::Session,
+    note: &str,
+) -> (Spots, Spots) {
+    let keys = match session.outcome {
+        None => {
+            " Ctrl+V paste · Ctrl+Q close · Click opens a link · Right-click copies · Wheel scrolls "
+        }
+        Some(true) => " ✓ Done · Enter close ",
+        Some(false) => " ✗ It did not finish · Enter close ",
+    };
+    draw_panel(
+        frame,
+        &session.title,
+        session.screen(),
+        session.outcome,
+        keys,
+        note,
+    )
+}
+
+/// Draw a session of the host: the same panel, with what leaving it means there.
+fn draw_view(frame: &mut Frame, view: &crate::remote::View, note: &str) -> (Spots, Spots) {
+    let keys = match (view.outcome(), view.ours, view.terminal) {
+        (None, _, true) => {
+            " Ctrl+V paste · Ctrl+Q leave it running · Click opens a link · Right-click copies · Wheel scrolls "
+        }
+        (None, ..) => {
+            " Ctrl+Q leave it running · Click opens a link · Right-click copies · Wheel scrolls "
+        }
+        (Some(true), true, _) => " ✓ Done · Enter close · k keep it in Sessions ",
+        (Some(false), true, _) => " ✗ It did not finish · Enter close · k keep it in Sessions ",
+        (Some(true), false, _) => " ✓ Done · Enter close · d forget it ",
+        (Some(false), false, _) => " ✗ It did not finish · Enter close · d forget it ",
+    };
+    draw_panel(
+        frame,
+        &view.title,
+        view.screen(),
+        view.outcome(),
+        keys,
+        note,
+    )
+}
+
+/// The terminal panel: a screen, in a box coloured by how the command fared.
+fn draw_panel(
+    frame: &mut Frame,
+    title: &str,
+    screen: &vt100::Screen,
+    outcome: Option<bool>,
+    keys: &str,
+    note: &str,
+) -> (Spots, Spots) {
     let (rows, cols) = screen.size();
-    let (keys, colour) = match session.outcome {
-        None => (
-            " Ctrl+V paste · Ctrl+Q close · Click opens a link · Right-click copies · Wheel scrolls ",
-            theme::ACCENT,
-        ),
-        Some(true) => (" ✓ Done · Enter close ", theme::GOOD),
-        Some(false) => (" ✗ It did not finish · Enter close ", theme::BAD),
+    let colour = match outcome {
+        None => theme::ACCENT,
+        Some(true) => theme::GOOD,
+        Some(false) => theme::BAD,
     };
     let full = frame.area();
     let (width, height) = ((cols + 4).min(full.width), (rows + 2).min(full.height));
@@ -787,8 +929,13 @@ fn draw_session(frame: &mut Frame, session: &crate::session::Session, note: &str
         width,
         height,
     );
-    note_hints(keys.trim(), area.x + 1, area.bottom().saturating_sub(1), true);
-    let block = theme::popup(&session.title, colour)
+    note_hints(
+        keys.trim(),
+        area.x + 1,
+        area.bottom().saturating_sub(1),
+        true,
+    );
+    let block = theme::popup(title, colour)
         .title_bottom(theme::hints(keys.trim()))
         .title_bottom(Line::styled(note.to_owned(), Style::new().fg(theme::WARN)).right_aligned());
     let inner = block.inner(area);
@@ -808,11 +955,17 @@ fn draw_session(frame: &mut Frame, session: &crate::session::Session, note: &str
     for row in 0..rows.min(inner.height) {
         let mut text = String::new();
         for col in 0..cols.min(inner.width) {
-            let Some(cell) = screen.cell(row, col) else { continue };
+            let Some(cell) = screen.cell(row, col) else {
+                continue;
+            };
             if cell.is_wide_continuation() {
                 continue;
             }
-            let symbol = if cell.has_contents() { cell.contents() } else { " " };
+            let symbol = if cell.has_contents() {
+                cell.contents()
+            } else {
+                " "
+            };
             let mut style = Style::new();
             if let Some(colour) = colour_of(cell.fgcolor()) {
                 style = style.fg(colour);
@@ -864,7 +1017,7 @@ fn draw_session(frame: &mut Frame, session: &crate::session::Session, note: &str
         line.clear();
         places.clear();
     }
-    if session.running() && !screen.hide_cursor() {
+    if outcome.is_none() && !screen.hide_cursor() {
         let (row, col) = screen.cursor_position();
         if row < inner.height && col < inner.width {
             frame.set_cursor_position((inner.x + col, inner.y + row));
@@ -875,7 +1028,6 @@ fn draw_session(frame: &mut Frame, session: &crate::session::Session, note: &str
 
 /// A click on a web address opens it here; a right-click on a word copies it.
 fn spot_event(app: &mut App, event: &Event) -> bool {
-
     if let Event::Mouse(mouse) = event
         && mouse.kind == MouseEventKind::Down(MouseButton::Right)
         && let Some((_, word)) = app
@@ -962,6 +1114,148 @@ fn session_event(app: &mut App, event: &Event) {
     }
 }
 
+/// Keys and the mouse while a session of the host is in the panel.
+fn view_event(app: &mut App, event: &Event) {
+    if spot_event(app, event) {
+        return;
+    }
+    let Some(view) = &mut app.host.view else {
+        return;
+    };
+    match event {
+        Event::Mouse(mouse) if mouse.kind == MouseEventKind::ScrollUp => view.scroll(3),
+        Event::Mouse(mouse) if mouse.kind == MouseEventKind::ScrollDown => view.scroll(-3),
+        Event::Paste(text) if view.terminal => {
+            let bytes = view.paste(text);
+            app.host.input(bytes);
+            app.status = pasted(text);
+        }
+        Event::Key(key) if key.kind != KeyEventKind::Release => {
+            let control = key.modifiers.contains(KeyModifiers::CONTROL);
+            if control && key.code == KeyCode::Char('q') {
+                let running = view.running();
+                app.host.close(false);
+                if running {
+                    app.status = "It runs on; open it again from Sessions".into();
+                }
+            } else if !view.running() {
+                let (ours, title, outcome) = (view.ours, view.title.clone(), view.outcome());
+                let forget = match key.code {
+                    KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q') => ours,
+                    KeyCode::Char('k') if ours => false,
+                    KeyCode::Char('d') if !ours => true,
+                    _ => return,
+                };
+                app.status = match outcome {
+                    Some(true) => format!("{title} finished"),
+                    _ => format!("{title} did not finish"),
+                };
+                app.host.close(forget);
+            } else if !view.terminal {
+                // A transcript takes no typing.
+            } else if control && key.code == KeyCode::Char('v') {
+                app.status = match paste_text() {
+                    Some(text) => {
+                        let bytes = view.paste(&text);
+                        app.host.input(bytes);
+                        pasted(&text)
+                    }
+                    None => "Could not read the clipboard".into(),
+                };
+            } else {
+                let bytes = view.key(key);
+                app.host.input(bytes);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The yes-or-no question before a task or before applying.
+fn question_event(app: &mut App, event: &Event) -> Flow {
+    let Event::Key(key) = event else {
+        return Flow::Continue;
+    };
+    match key.code {
+        KeyCode::Char('y' | 'Y') => match app.host.question.take() {
+            Some((_, crate::remote::Pending::Task(index))) => app.begin_task(index, true),
+            Some((_, crate::remote::Pending::Apply)) => return apply(app, true),
+            None => {}
+        },
+        KeyCode::Char('n' | 'N') | KeyCode::Esc => app.host.question = None,
+        _ => {}
+    }
+    Flow::Continue
+}
+
+/// The dialog that asks for a task's arguments.
+fn arguments_event(app: &mut App, event: &Event) {
+    let Some(asked) = &mut app.host.arguments else {
+        return;
+    };
+    match event {
+        Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
+            KeyCode::Esc => app.host.arguments = None,
+            KeyCode::Enter => app.accept_argument(),
+            KeyCode::Up | KeyCode::Down if !asked.choices.is_empty() => {
+                let count = asked.choices.len().min(8);
+                let next = match (asked.chosen, key.code) {
+                    (None, KeyCode::Down) => 0,
+                    (None, _) => count - 1,
+                    (Some(index), KeyCode::Down) => (index + 1) % count,
+                    (Some(index), _) => (index + count - 1) % count,
+                };
+                asked.chosen = Some(next);
+                asked.input = Input::new(asked.choices[next].clone());
+            }
+            _ => {
+                asked.chosen = None;
+                asked.input.handle_event(event);
+            }
+        },
+        Event::Paste(text) => {
+            for ch in text.chars().filter(|ch| !ch.is_control()) {
+                asked.input.handle(InputRequest::InsertChar(ch));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Applying the configuration is the SSH install, run from the overview. It
+/// may replace the host's controller, which ends the sessions running there.
+fn apply(app: &mut App, confirmed: bool) -> Flow {
+    let running = app
+        .host
+        .sessions
+        .iter()
+        .filter(|session| session.running())
+        .count();
+    if running > 0 && !confirmed {
+        let question = format!(
+            "{running} session{} on the host. Applying can restart berth's controller there, which ends them. Apply anyway?",
+            if running == 1 {
+                " is running"
+            } else {
+                "s are running"
+            }
+        );
+        app.host.question = Some((question, crate::remote::Pending::Apply));
+        return Flow::Continue;
+    }
+    app.action = Action::Ssh;
+    let problems = app.problems();
+    app.action = Action::Manage;
+    if problems.is_empty() {
+        app.terminal_action = Some(Action::Ssh);
+        // What the host can do may be different afterwards.
+        app.host.disconnect();
+        return Flow::Run;
+    }
+    app.status = problems[0].clone();
+    Flow::Continue
+}
+
 fn job_event(app: &mut App, event: &Event) {
     if spot_event(app, event) {
         return;
@@ -977,7 +1271,9 @@ fn job_event(app: &mut App, event: &Event) {
         if key.code == KeyCode::Esc || interrupt {
             job.cancel();
         }
-    } else if key.code == KeyCode::Char('w') && job.offers_usb(app.action.label()) {
+    } else if key.code == KeyCode::Char('w')
+        && job.offers_usb(app.action.label(), Action::Iso.label())
+    {
         app.write_built_iso(None);
     } else if matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) || interrupt {
         app.close_job();
@@ -1001,15 +1297,19 @@ fn confirm_event(app: &mut App, event: &Event) {
     }
 }
 
-fn draw_unlock(frame: &mut Frame, input: &Input, failed: bool, reason: &str, user: &str) {
+fn draw_unlock(
+    frame: &mut Frame,
+    input: &Input,
+    failed: bool,
+    reason: &str,
+    user: &str,
+    kept: &'static str,
+) {
     let typed = input.value().chars().count().min(54);
     let note = if failed {
         Line::styled("Wrong password. Try again.", Style::new().fg(theme::BAD))
     } else {
-        Line::styled(
-            "Used once for sudo. It is not stored.",
-            Style::new().fg(theme::MUTED),
-        )
+        Line::styled(kept, Style::new().fg(theme::MUTED))
     };
     let lines = vec![
         Line::raw(reason.to_owned()),
@@ -1192,38 +1492,20 @@ fn choose(app: &mut App, entry: Entry) -> Flow {
             let item = Item::Feature(plugin, feature);
             app.set_item(item, !app.item_enabled(item));
         }
-        Entry::PluginAction(index, feature, action) => {
-            let plugin = &app.plugins[index];
-            let task = format!("{}:{}", plugin.id, plugin.features[feature].actions[action].name);
-            let terminal = plugin.features[feature].actions[action].terminal;
-            return run_task(app, &task, terminal);
+        Entry::HostTask(index) => app.begin_task(index, false),
+        Entry::HostSession(index) => {
+            if let Some(session) = app.host.sessions.get(index).cloned() {
+                app.host.open(&session);
+            }
         }
-        Entry::SignIn(index) => {
-            let (name, .., terminal) = crate::fields::SIGN_INS[index];
-            return run_task(app, &format!("sign-in:{name}"), terminal);
-        }
-        Entry::Task("terminal") => {
+        Entry::Task("terminal") => app.start_host_shell(),
+        Entry::Task("ssh") => {
             let (rows, cols) = session_size();
             app.start_shell(rows, cols);
         }
-        // Applying the configuration is the SSH install, run from the overview.
-        Entry::Task("apply") => {
-            app.action = Action::Ssh;
-            let problems = app.problems();
-            app.action = Action::Manage;
-            if problems.is_empty() {
-                app.terminal_action = Some(Action::Ssh);
-                return Flow::Run;
-            }
-            app.status = problems[0].clone();
-        }
-        Entry::Task(task) => {
-            app.commit(Field::ManageTask, task);
-            match app.problems().first() {
-                Some(problem) => app.status = problem.clone(),
-                None => app.run(false),
-            }
-        }
+        Entry::Task("connect") => app.reconnect_host(),
+        Entry::Task("apply") => return apply(app, false),
+        Entry::Task(_) => {}
         Entry::Run => {
             if !app.problems().is_empty() {
                 app.status = "Fix the listed problems first".into();
@@ -1241,22 +1523,10 @@ fn choose(app: &mut App, entry: Entry) -> Flow {
 /// The size of the terminal panel for the window as it is now.
 fn session_size() -> (u16, u16) {
     let (width, height) = crossterm::terminal::size().unwrap_or((100, 30));
-    (height.saturating_sub(4).max(4), width.saturating_sub(8).max(20))
-}
-
-/// Run a plugin's or a sign-in's command on the host: as a job, or in a
-/// terminal inside the UI when it asks questions or shows a link to follow.
-fn run_task(app: &mut App, task: &str, terminal: bool) -> Flow {
-    app.set_task(task);
-    if let Some(problem) = app.problems().first() {
-        app.status = problem.clone();
-    } else if terminal {
-        let (rows, cols) = session_size();
-        app.start_session(rows, cols);
-    } else {
-        app.run(false);
-    }
-    Flow::Continue
+    (
+        height.saturating_sub(4).max(4),
+        width.saturating_sub(8).max(20),
+    )
 }
 
 fn key_event(app: &mut App, key: KeyEvent, quit_armed: &mut bool) -> Flow {
@@ -1358,6 +1628,17 @@ fn key_event(app: &mut App, key: KeyEvent, quit_armed: &mut bool) -> Flow {
             if let Some(Entry::HostSecret(index)) = app.selected_entry() {
                 app.set_host_secret(index, "");
             }
+            if let Some(Entry::HostSession(index)) = app.selected_entry()
+                && let Some(session) = app.host.sessions.get(index)
+            {
+                if session.running() {
+                    app.status = "It is still running. Open it and end it first.".into();
+                } else {
+                    app.status = format!("Forgot {}", session.title);
+                    app.host
+                        .send(crate::remote::Request::Delete(session.id.clone()));
+                }
+            }
             if let Some(field) = app.selected_field() {
                 app.clear(field);
             }
@@ -1431,8 +1712,14 @@ impl RegistryRow {
     fn registry(&self) -> Option<&str> {
         use RegistryRow::*;
         match self {
-            Name(name) | Type(name) | Address(name) | User(name) | Password(name)
-            | Repository(name, _) | Format(name, _) | DockerAddress(name, _)
+            Name(name)
+            | Type(name)
+            | Address(name)
+            | User(name)
+            | Password(name)
+            | Repository(name, _)
+            | Format(name, _)
+            | DockerAddress(name, _)
             | AddRepository(name) => Some(name),
             AddRegistry => None,
         }
@@ -1441,16 +1728,36 @@ impl RegistryRow {
     fn help(&self) -> &'static str {
         use RegistryRow::*;
         match self {
-            Name(_) => "A registry: a server packages, files or images come from and go to. Enter renames it, x removes it with its stored login. Hosts get a registry with: berth host HOST registry NAME on.",
-            Type(_) => "Enter switches the kind. Sonatype Nexus: one server and login with repositories under it. npm registry: any npm-compatible registry at this address. File server: an address files are uploaded to with HTTP PUT, for the release archive. Docker registry: any registry for container images.",
-            Address(_) => "Where the registry is. With https:// for Nexus, npm and file servers; a Docker registry is HOST or HOST:PORT.",
-            User(_) => "The account to log in with. Leave it empty when the registry takes a token alone, such as an npm token. x clears it.",
-            Password(_) => "The password or token. It is kept in secrets.json on this machine, readable by you only, and is never shown. x forgets it.",
-            Repository(..) => "A repository on the Nexus server, by its name there. Enter renames it, x removes it from this list.",
-            Format(..) => "Enter switches the format. npm: becomes the agent's npm registry. raw: a place to publish the release archive. docker: container images.",
-            DockerAddress(..) => "Leave it empty when the repository uses path based routing in Nexus: images are then at HOST/REPOSITORY/IMAGE. With a connector on a port or host name of its own, enter that as HOST:PORT.",
-            AddRepository(_) => "Add a repository of this Nexus server. Type its name; it starts as npm and Format changes that.",
-            AddRegistry => "Add a registry. Type a short name for it (lower-case letters, digits, - and _), then set its kind and address.",
+            Name(_) => {
+                "A registry: a server packages, files or images come from and go to. Enter renames it, x removes it with its stored login. Hosts get a registry with: berth host HOST registry NAME on."
+            }
+            Type(_) => {
+                "Enter switches the kind. Sonatype Nexus: one server and login with repositories under it. npm registry: any npm-compatible registry at this address. File server: an address files are uploaded to with HTTP PUT, for the release archive. Docker registry: any registry for container images."
+            }
+            Address(_) => {
+                "Where the registry is. With https:// for Nexus, npm and file servers; a Docker registry is HOST or HOST:PORT."
+            }
+            User(_) => {
+                "The account to log in with. Leave it empty when the registry takes a token alone, such as an npm token. x clears it."
+            }
+            Password(_) => {
+                "The password or token. It is kept in secrets.json on this machine, readable by you only, and is never shown. x forgets it."
+            }
+            Repository(..) => {
+                "A repository on the Nexus server, by its name there. Enter renames it, x removes it from this list."
+            }
+            Format(..) => {
+                "Enter switches the format. npm: becomes the agent's npm registry. raw: a place to publish the release archive. docker: container images."
+            }
+            DockerAddress(..) => {
+                "Leave it empty when the repository uses path based routing in Nexus: images are then at HOST/REPOSITORY/IMAGE. With a connector on a port or host name of its own, enter that as HOST:PORT."
+            }
+            AddRepository(_) => {
+                "Add a repository of this Nexus server. Type its name; it starts as npm and Format changes that."
+            }
+            AddRegistry => {
+                "Add a registry. Type a short name for it (lower-case letters, digits, - and _), then set its kind and address."
+            }
         }
     }
 }
@@ -1472,10 +1779,23 @@ fn registry_rows(store: &Store) -> Vec<(RegistryRow, Line<'static>)> {
             Name(name.clone()),
             Line::styled(name.clone(), Style::new().fg(theme::ACCENT).bold()),
         ));
-        rows.push((Type(name.clone()), field("  ├─ ", "Kind", crate::registry::type_label(&text("type")))));
-        rows.push((Address(name.clone()), field("  ├─ ", "Address", &text("url"))));
-        rows.push((User(name.clone()), field("  ├─ ", "User name", &text("username"))));
-        let stored = store.secret(&format!("registry/{name}")).ok().flatten().is_some();
+        rows.push((
+            Type(name.clone()),
+            field("  ├─ ", "Kind", crate::registry::type_label(&text("type"))),
+        ));
+        rows.push((
+            Address(name.clone()),
+            field("  ├─ ", "Address", &text("url")),
+        ));
+        rows.push((
+            User(name.clone()),
+            field("  ├─ ", "User name", &text("username")),
+        ));
+        let stored = store
+            .secret(&format!("registry/{name}"))
+            .ok()
+            .flatten()
+            .is_some();
         let mut password = Line::from(vec![
             Span::styled(if nexus { "  ├─ " } else { "  └─ " }, muted),
             Span::styled("Password or token  ", Style::new().fg(theme::TEXT)),
@@ -1488,7 +1808,10 @@ fn registry_rows(store: &Store) -> Vec<(RegistryRow, Line<'static>)> {
         if !nexus {
             continue;
         }
-        let repositories = registry["repositories"].as_array().cloned().unwrap_or_default();
+        let repositories = registry["repositories"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         for (index, repository) in repositories.iter().enumerate() {
             let repo = repository["name"].as_str().unwrap_or("");
             let format = repository["format"].as_str().unwrap_or("");
@@ -1500,16 +1823,26 @@ fn registry_rows(store: &Store) -> Vec<(RegistryRow, Line<'static>)> {
                 ));
             }
             rows.push((Repository(name.clone(), index), line));
-            let last = if format == "docker" { "  │    ├─ " } else { "  │    └─ " };
+            let last = if format == "docker" {
+                "  │    ├─ "
+            } else {
+                "  │    └─ "
+            };
             rows.push((Format(name.clone(), index), field(last, "Format", format)));
             if format == "docker" {
-                let line = match repository["address"].as_str().filter(|address| !address.is_empty()) {
+                let line = match repository["address"]
+                    .as_str()
+                    .filter(|address| !address.is_empty())
+                {
                     Some(address) => field("  │    └─ ", "Docker address", address),
                     None => Line::from(vec![
                         Span::styled("  │    └─ ", muted),
                         Span::styled("Docker address  ", Style::new().fg(theme::TEXT)),
                         Span::styled(
-                            format!("Default · {} (path based routing)", crate::registry::docker_address(&registry, repository)),
+                            format!(
+                                "Default · {} (path based routing)",
+                                crate::registry::docker_address(&registry, repository)
+                            ),
                             muted.italic(),
                         ),
                     ]),
@@ -1519,10 +1852,16 @@ fn registry_rows(store: &Store) -> Vec<(RegistryRow, Line<'static>)> {
         }
         rows.push((
             AddRepository(name.clone()),
-            Line::from(vec![Span::styled("  └─ ", muted), Span::styled("+ Add repository", Style::new().fg(theme::ACCENT))]),
+            Line::from(vec![
+                Span::styled("  └─ ", muted),
+                Span::styled("+ Add repository", Style::new().fg(theme::ACCENT)),
+            ]),
         ));
     }
-    rows.push((AddRegistry, Line::styled("+ Add registry", Style::new().fg(theme::ACCENT))));
+    rows.push((
+        AddRegistry,
+        Line::styled("+ Add registry", Style::new().fg(theme::ACCENT)),
+    ));
     rows
 }
 
@@ -1543,26 +1882,43 @@ fn plugin_dir(paths: &Paths) -> std::path::PathBuf {
 
 /// The plugins of the source and the user's own.
 fn found_plugins(paths: &Paths) -> Vec<crate::plugins::Plugin> {
-    let shipped = paths.source().map(|dir| dir.join("plugins")).unwrap_or_default();
+    let shipped = paths
+        .source()
+        .map(|dir| dir.join("plugins"))
+        .unwrap_or_default();
     crate::plugins::load(&[shipped, plugin_dir(paths)])
 }
 
 /// The rows of the Plugins tab: each line with the plugin it belongs to.
-fn plugin_rows(paths: &Paths, plugins: &[crate::plugins::Plugin]) -> Vec<(Option<usize>, Line<'static>)> {
+fn plugin_rows(
+    paths: &Paths,
+    plugins: &[crate::plugins::Plugin],
+) -> Vec<(Option<usize>, Line<'static>)> {
     let muted = Style::new().fg(theme::MUTED);
     let own = plugin_dir(paths);
     let mut rows = vec![];
     for (index, plugin) in plugins.iter().enumerate() {
-        let origin = if plugin.dir.starts_with(&own) { "yours" } else { "comes with berth" };
+        let origin = if plugin.dir.starts_with(&own) {
+            "yours"
+        } else {
+            "comes with berth"
+        };
         rows.push((
             Some(index),
             Line::from(vec![
                 Span::styled(plugin.label.clone(), Style::new().fg(theme::ACCENT).bold()),
-                Span::styled(format!("  {} {}  · {origin}", plugin.package, plugin.version), muted),
+                Span::styled(
+                    format!("  {} {}  · {origin}", plugin.package, plugin.version),
+                    muted,
+                ),
             ]),
         ));
         for (number, feature) in plugin.features.iter().enumerate() {
-            let branch = if number + 1 < plugin.features.len() { "  ├─ " } else { "  └─ " };
+            let branch = if number + 1 < plugin.features.len() {
+                "  ├─ "
+            } else {
+                "  └─ "
+            };
             rows.push((
                 Some(index),
                 Line::from(vec![
@@ -1573,7 +1929,10 @@ fn plugin_rows(paths: &Paths, plugins: &[crate::plugins::Plugin]) -> Vec<(Option
             ));
         }
     }
-    rows.push((None, Line::styled("+ Add plugin", Style::new().fg(theme::ACCENT))));
+    rows.push((
+        None,
+        Line::styled("+ Add plugin", Style::new().fg(theme::ACCENT)),
+    ));
     rows
 }
 
@@ -1586,7 +1945,13 @@ fn npm(paths: &Paths, verb: &str, what: &str) -> Vec<String> {
     }
     let output = std::process::Command::new("npm")
         .arg(verb)
-        .args(["--ignore-scripts", "--no-audit", "--no-fund", "--no-progress", "--prefix"])
+        .args([
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+            "--no-progress",
+            "--prefix",
+        ])
         .arg(&dir)
         .arg(what)
         .stdin(std::process::Stdio::null())
@@ -1613,7 +1978,12 @@ fn npm(paths: &Paths, verb: &str, what: &str) -> Vec<String> {
 }
 
 /// Handle a key on the Plugins tab.
-fn plugins_key(view: &mut PluginView, paths: &Paths, key: KeyEvent, status: &mut String) -> Outcome {
+fn plugins_key(
+    view: &mut PluginView,
+    paths: &Paths,
+    key: KeyEvent,
+    status: &mut String,
+) -> Outcome {
     let plugins = found_plugins(paths);
     let rows = plugin_rows(paths, &plugins);
     view.selected = view.selected.min(rows.len() - 1);
@@ -1659,7 +2029,11 @@ fn plugins_key(view: &mut PluginView, paths: &Paths, key: KeyEvent, status: &mut
                 *status = format!("x again removes {} from this machine", plugin.label);
             }
             // Installed with npm, or a folder that was copied there.
-            Some(plugin) if plugin.dir.starts_with(plugin_dir(paths).join("node_modules")) => {
+            Some(plugin)
+                if plugin
+                    .dir
+                    .starts_with(plugin_dir(paths).join("node_modules")) =>
+            {
                 view.report = npm(paths, "uninstall", &plugin.package);
                 *status = view.report[0].clone();
             }
@@ -1693,7 +2067,12 @@ struct SecretView {
 }
 
 /// Handle a key on the Secrets tab. The row after the last secret adds one.
-fn secrets_key(view: &mut SecretView, paths: &Paths, key: KeyEvent, status: &mut String) -> Outcome {
+fn secrets_key(
+    view: &mut SecretView,
+    paths: &Paths,
+    key: KeyEvent,
+    status: &mut String,
+) -> Outcome {
     let store = Store::new(paths);
     let names = store.secret_names();
     view.selected = view.selected.min(names.len());
@@ -1710,7 +2089,8 @@ fn secrets_key(view: &mut SecretView, paths: &Paths, key: KeyEvent, status: &mut
                 if selected.is_none() && view.naming.is_none() {
                     let name = typed.trim();
                     if !crate::plugins::valid_name(name) {
-                        *status = "Use lower-case letters, digits, - and _, starting with a letter".into();
+                        *status = "Use lower-case letters, digits, - and _, starting with a letter"
+                            .into();
                     } else if names.iter().any(|known| known == name) {
                         *status = format!("There is a secret {name} already");
                     } else {
@@ -1731,7 +2111,10 @@ fn secrets_key(view: &mut SecretView, paths: &Paths, key: KeyEvent, status: &mut
                     Err(error) => error.to_string(),
                 };
                 let listed = store.secret_names();
-                view.selected = listed.iter().position(|known| *known == name).unwrap_or(view.selected);
+                view.selected = listed
+                    .iter()
+                    .position(|known| *known == name)
+                    .unwrap_or(view.selected);
             }
             _ => {
                 input.handle_event(&Event::Key(key));
@@ -1782,7 +2165,9 @@ fn registry_accept(store: &Store, row: &RegistryRow, value: &str) -> crate::Resu
     let message = match row {
         AddRegistry | Name(_) => {
             if !valid(value) {
-                return Err("Use lower-case letters, digits, - and _, starting with a letter".into());
+                return Err(
+                    "Use lower-case letters, digits, - and _, starting with a letter".into(),
+                );
             }
             if registries.contains_key(value) {
                 return Err(format!("There is a registry {value} already").into());
@@ -1802,7 +2187,10 @@ fn registry_accept(store: &Store, row: &RegistryRow, value: &str) -> crate::Resu
         }
         Address(name) => {
             let registry = &mut registries[name.as_str()];
-            if registry["type"] != "docker" && !value.starts_with("https://") && !value.starts_with("http://") {
+            if registry["type"] != "docker"
+                && !value.starts_with("https://")
+                && !value.starts_with("http://")
+            {
                 return Err("Start the address with https://".into());
             }
             registry["url"] = json!(value.trim_end_matches('/'));
@@ -1810,8 +2198,12 @@ fn registry_accept(store: &Store, row: &RegistryRow, value: &str) -> crate::Resu
         }
         User(name) => {
             match value {
-                "" => registries[name.as_str()].as_object_mut().and_then(|registry| registry.remove("username")),
-                user => registries[name.as_str()].as_object_mut().and_then(|registry| registry.insert("username".into(), json!(user))),
+                "" => registries[name.as_str()]
+                    .as_object_mut()
+                    .and_then(|registry| registry.remove("username")),
+                user => registries[name.as_str()]
+                    .as_object_mut()
+                    .and_then(|registry| registry.insert("username".into(), json!(user))),
             };
             "User name saved".into()
         }
@@ -1827,7 +2219,10 @@ fn registry_accept(store: &Store, row: &RegistryRow, value: &str) -> crate::Resu
                 return Err("The repository's name on the server, without / or spaces".into());
             }
             let registry = &mut registries[name.as_str()];
-            let mut repositories = registry["repositories"].as_array().cloned().unwrap_or_default();
+            let mut repositories = registry["repositories"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
             if repositories.iter().any(|known| known["name"] == value) {
                 return Err(format!("{value} is listed already").into());
             }
@@ -1842,8 +2237,12 @@ fn registry_accept(store: &Store, row: &RegistryRow, value: &str) -> crate::Resu
             let address = value.split_once("://").map_or(value, |(_, rest)| rest);
             let repository = &mut registries[name.as_str()]["repositories"][*index];
             match address.trim_end_matches('/') {
-                "" => repository.as_object_mut().and_then(|repository| repository.remove("address")),
-                address => repository.as_object_mut().and_then(|repository| repository.insert("address".into(), json!(address))),
+                "" => repository
+                    .as_object_mut()
+                    .and_then(|repository| repository.remove("address")),
+                address => repository
+                    .as_object_mut()
+                    .and_then(|repository| repository.insert("address".into(), json!(address))),
             };
             "Docker address saved".into()
         }
@@ -1854,7 +2253,12 @@ fn registry_accept(store: &Store, row: &RegistryRow, value: &str) -> crate::Resu
 }
 
 /// Handle a key on the Registries tab.
-fn registries_key(view: &mut RegistryView, paths: &Paths, key: KeyEvent, status: &mut String) -> Outcome {
+fn registries_key(
+    view: &mut RegistryView,
+    paths: &Paths,
+    key: KeyEvent,
+    status: &mut String,
+) -> Outcome {
     use RegistryRow::*;
     let store = Store::new(paths);
     let rows = registry_rows(&store);
@@ -1871,7 +2275,9 @@ fn registries_key(view: &mut RegistryView, paths: &Paths, key: KeyEvent, status:
                         view.editor = None;
                         // A new or renamed registry stays selected, ready for its kind and address.
                         if matches!(row, AddRegistry | Name(_)) {
-                            let named = registry_rows(&store).iter().position(|(row, _)| *row == Name(typed.clone()));
+                            let named = registry_rows(&store)
+                                .iter()
+                                .position(|(row, _)| *row == Name(typed.clone()));
                             view.selected = named.unwrap_or(view.selected);
                         }
                     }
@@ -1905,10 +2311,15 @@ fn registries_key(view: &mut RegistryView, paths: &Paths, key: KeyEvent, status:
     let change = |edit: &dyn Fn(&mut serde_json::Map<String, serde_json::Value>)| {
         let mut registries = store.registries().unwrap_or_default();
         edit(&mut registries);
-        store.save_registries(registries).map_or_else(|error| error.to_string(), |()| String::new())
+        store
+            .save_registries(registries)
+            .map_or_else(|error| error.to_string(), |()| String::new())
     };
     let cycle = |all: &[&str], current: &str| {
-        let index = all.iter().position(|known| *known == current).map_or(0, |index| index + 1);
+        let index = all
+            .iter()
+            .position(|known| *known == current)
+            .map_or(0, |index| index + 1);
         all[index % all.len()].to_owned()
     };
     match key.code {
@@ -1917,14 +2328,20 @@ fn registries_key(view: &mut RegistryView, paths: &Paths, key: KeyEvent, status:
         KeyCode::Enter | KeyCode::Char(' ') => match &row {
             Type(name) => {
                 *status = change(&|registries| {
-                    let next = cycle(crate::registry::TYPES, registries[name.as_str()]["type"].as_str().unwrap_or(""));
+                    let next = cycle(
+                        crate::registry::TYPES,
+                        registries[name.as_str()]["type"].as_str().unwrap_or(""),
+                    );
                     registries[name.as_str()]["type"] = json!(next);
                 })
             }
             Format(name, index) => {
                 *status = change(&|registries| {
                     let repository = &mut registries[name.as_str()]["repositories"][*index];
-                    let next = cycle(crate::registry::FORMATS, repository["format"].as_str().unwrap_or(""));
+                    let next = cycle(
+                        crate::registry::FORMATS,
+                        repository["format"].as_str().unwrap_or(""),
+                    );
                     repository["format"] = json!(next);
                 })
             }
@@ -1933,10 +2350,25 @@ fn registries_key(view: &mut RegistryView, paths: &Paths, key: KeyEvent, status:
                 let registries = store.registries().unwrap_or_default();
                 let current = match other {
                     Name(name) => name.clone(),
-                    Address(name) => registries[name.as_str()]["url"].as_str().unwrap_or("").to_owned(),
-                    User(name) => registries[name.as_str()]["username"].as_str().unwrap_or("").to_owned(),
-                    Repository(name, index) => registries[name.as_str()]["repositories"][*index]["name"].as_str().unwrap_or("").to_owned(),
-                    DockerAddress(name, index) => registries[name.as_str()]["repositories"][*index]["address"].as_str().unwrap_or("").to_owned(),
+                    Address(name) => registries[name.as_str()]["url"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned(),
+                    User(name) => registries[name.as_str()]["username"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned(),
+                    Repository(name, index) => {
+                        registries[name.as_str()]["repositories"][*index]["name"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_owned()
+                    }
+                    DockerAddress(name, index) => registries[name.as_str()]["repositories"][*index]
+                        ["address"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned(),
                     _ => String::new(),
                 };
                 view.editor = Some(Input::new(current));
@@ -1968,7 +2400,9 @@ fn registries_key(view: &mut RegistryView, paths: &Paths, key: KeyEvent, status:
             }
             Repository(name, index) => {
                 *status = change(&|registries| {
-                    if let Some(repositories) = registries[name.as_str()]["repositories"].as_array_mut() {
+                    if let Some(repositories) =
+                        registries[name.as_str()]["repositories"].as_array_mut()
+                    {
                         repositories.remove(*index);
                     }
                 })
@@ -2090,9 +2524,15 @@ fn home_loop(terminal: &mut DefaultTerminal, paths: &Paths) -> Result<Option<Str
         fade.check(&mut home.status);
         // The water redraws many times a second. Each frame is applied at once,
         // so the text cursor is not seen travelling to the water and back.
-        crossterm::execute!(std::io::stdout(), crossterm::terminal::BeginSynchronizedUpdate)?;
+        crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::BeginSynchronizedUpdate
+        )?;
         let drawn = terminal.draw(|frame| draw_home(frame, paths, &home, &mut hits));
-        crossterm::execute!(std::io::stdout(), crossterm::terminal::EndSynchronizedUpdate)?;
+        crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::EndSynchronizedUpdate
+        )?;
         drawn?;
         if !event::poll(std::time::Duration::from_millis(50))? {
             continue;
@@ -2308,7 +2748,13 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
         _ => 0,
     };
     let settings = tab != 0;
-    let tabs = draw_header(frame, header, &["Hosts", "Settings", "Registries", "Secrets", "Plugins"], tab, "");
+    let tabs = draw_header(
+        frame,
+        header,
+        &["Hosts", "Settings", "Registries", "Secrets", "Plugins"],
+        tab,
+        "",
+    );
     hits.extend(
         tabs.into_iter()
             .enumerate()
@@ -2421,8 +2867,12 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                 (None, None) => " Name of the new secret ",
             };
             let about = match names.get(selected) {
-                Some(_) => "A token, password or key file kept on this machine. Enter replaces its value, x twice removes it. Values are never shown.",
-                None => "Add a secret: first a short name (lower-case letters, digits, - and _), then its value. Paste works.",
+                Some(_) => {
+                    "A token, password or key file kept on this machine. Enter replaces its value, x twice removes it. Values are never shown."
+                }
+                None => {
+                    "Add a secret: first a short name (lower-case letters, digits, - and _), then its value. Paste works."
+                }
             };
             let help = format!(
                 "{about}\n\nWhich host gets a secret, and whether as an environment variable or a file, is chosen on the Secrets page of that host.\n\nKept in {}, readable by you only, not encrypted.",
@@ -2444,7 +2894,10 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
             let plugins = found_plugins(paths);
             let listed = plugin_rows(paths, &plugins);
             let selected = view.selected.min(listed.len() - 1);
-            let help = match (view.report.is_empty(), listed[selected].0.map(|index| &plugins[index])) {
+            let help = match (
+                view.report.is_empty(),
+                listed[selected].0.map(|index| &plugins[index]),
+            ) {
                 (false, _) => view.report.join("\n"),
                 (true, Some(plugin)) => {
                     let mut text = format!("{}\n\n", plugin.description);
@@ -2464,7 +2917,9 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
             (
                 listed.into_iter().map(|(_, line)| line).collect(),
                 selected,
-                view.editor.as_ref().map(|input| (" Package, .tgz or folder ", input)),
+                view.editor
+                    .as_ref()
+                    .map(|input| (" Package, .tgz or folder ", input)),
                 help,
                 if view.editor.is_some() {
                     "Enter install · Esc cancel"
@@ -2574,6 +3029,9 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
             false => fade.check(&mut app.status),
         };
         app.update_suggestions();
+        app.watch_host();
+        let (panel_rows, panel_cols) = session_size();
+        app.host.resize(panel_rows, panel_cols);
         let rows = app.rows();
         terminal.draw(|frame| draw(frame, app, &rows, &mut display, &mut hits))?;
         if let Some(job) = &mut app.job {
@@ -2597,6 +3055,27 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
             }
             let event = hint_click(event::read()?);
             session_event(app, &event);
+            continue;
+        }
+        if let Some(view) = &app.host.view {
+            // A shell that was left needs no key to close its panel.
+            if view.shell && view.outcome() == Some(true) {
+                app.host.close(true);
+                continue;
+            }
+            if !event::poll(std::time::Duration::from_millis(40))? {
+                continue;
+            }
+            let event = hint_click(event::read()?);
+            view_event(app, &event);
+            continue;
+        }
+        // While the overview talks to the host, what it says is taken in
+        // without waiting for a key.
+        if app.step == Step::Manage
+            && app.host.connected()
+            && !event::poll(std::time::Duration::from_millis(200))?
+        {
             continue;
         }
         if let Some(left) = fading
@@ -2633,6 +3112,16 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
         }
         if app.confirm.is_some() {
             confirm_event(app, &event);
+            continue;
+        }
+        if app.host.question.is_some() {
+            if let Flow::Run = question_event(app, &event) {
+                return Ok(true);
+            }
+            continue;
+        }
+        if app.host.arguments.is_some() {
+            arguments_event(app, &event);
             continue;
         }
         if app.picker.is_some() {
@@ -2738,7 +3227,9 @@ mod tests {
         keys(&mut home, &[KeyCode::Enter]);
         keys(&mut home, &typed("ghp_value"));
         let mut terminal = Terminal::new(TestBackend::new(110, 24)).unwrap();
-        terminal.draw(|frame| draw_home(frame, &paths, &home, &mut vec![])).unwrap();
+        terminal
+            .draw(|frame| draw_home(frame, &paths, &home, &mut vec![]))
+            .unwrap();
         let buffer = terminal.backend().buffer();
         let screen: String = (0..24)
             .flat_map(|y| (0..110).map(move |x| (x, y)))
@@ -2747,7 +3238,10 @@ mod tests {
         assert!(screen.contains("•••••••••") && !screen.contains("ghp_value"));
         keys(&mut home, &[KeyCode::Enter]);
         let store = Store::new(&paths);
-        assert_eq!(store.secret("github").unwrap().as_deref(), Some("ghp_value"));
+        assert_eq!(
+            store.secret("github").unwrap().as_deref(),
+            Some("ghp_value")
+        );
         store.set_secret("registry/nexus", Some("pw")).unwrap();
         assert_eq!(store.secret_names(), ["github"]);
 
@@ -2761,10 +3255,16 @@ mod tests {
             press(&mut app, &[code]);
         }
         press(&mut app, &[KeyCode::Enter]);
-        assert_eq!(app.config["secrets"], json!([{"name": "github", "env": "GH_TOKEN"}]));
+        assert_eq!(
+            app.config["secrets"],
+            json!([{"name": "github", "env": "GH_TOKEN"}])
+        );
         assert!(screen_text(&mut app).contains("github  ● variable GH_TOKEN"));
         app.set_host_secret(0, "~/.config/gh/token");
-        assert_eq!(app.config["secrets"], json!([{"name": "github", "file": "~/.config/gh/token"}]));
+        assert_eq!(
+            app.config["secrets"],
+            json!([{"name": "github", "file": "~/.config/gh/token"}])
+        );
         app.set_host_secret(0, "not a name or path");
         assert_eq!(app.config["secrets"][0]["file"], "~/.config/gh/token");
         press(&mut app, &[KeyCode::Char('x')]);
@@ -2804,7 +3304,9 @@ mod tests {
         };
         key(&mut home, KeyCode::Char('5'));
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-        terminal.draw(|frame| draw_home(frame, &paths, &home, &mut vec![])).unwrap();
+        terminal
+            .draw(|frame| draw_home(frame, &paths, &home, &mut vec![]))
+            .unwrap();
         let buffer = terminal.backend().buffer();
         let text: String = (0..40)
             .flat_map(|y| (0..120).map(move |x| (x, y)))
@@ -2825,7 +3327,8 @@ mod tests {
 
     #[test]
     fn hints_can_be_clicked() {
-        let keys = "↑↓ select · Enter open · Ctrl+V paste · x remove · F3 browse · Click opens a link";
+        let keys =
+            "↑↓ select · Enter open · Ctrl+V paste · x remove · F3 browse · Click opens a link";
         note_hints(keys, 4, 9, true);
         let click = |column| {
             hint_click(Event::Mouse(MouseEvent {
@@ -2852,7 +3355,9 @@ mod tests {
     fn a_session_draws_its_terminal_and_finds_a_wrapped_link() {
         let address = format!("https://example.com/login?code={}", "a".repeat(40));
         let mut command = std::process::Command::new("printf");
-        command.arg(format!("Open %s now\\r\\ncode: AB12-CD34\\r\\n")).arg(&address);
+        command
+            .arg("Open %s now\\r\\ncode: AB12-CD34\\r\\n")
+            .arg(&address);
         let mut session = crate::session::Session::start("demo", command, 6, 30).unwrap();
         for _ in 0..200 {
             session.tick();
@@ -2861,7 +3366,11 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        session.tick();
+        // The last output can arrive a moment after the process has ended.
+        for _ in 0..5 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            session.tick();
+        }
         let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
         let (mut links, mut words) = (vec![], vec![]);
         terminal
@@ -2917,10 +3426,16 @@ mod tests {
         keys(&mut home, &typed("hunter2"));
         let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
         let mut shown = |home: &Home| {
-            terminal.draw(|frame| draw_home(frame, &paths, home, &mut vec![])).unwrap();
+            terminal
+                .draw(|frame| draw_home(frame, &paths, home, &mut vec![]))
+                .unwrap();
             let buffer = terminal.backend().buffer();
             (0..30)
-                .map(|y| (0..110).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+                .map(|y| {
+                    (0..110)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         };
@@ -2939,7 +3454,10 @@ mod tests {
             json!({"type": "nexus", "url": "https://nexus.example", "username": "ci", "repositories": [
                 {"format": "docker", "name": "images", "address": "nexus.example:8083"}]})
         );
-        assert_eq!(store.secret("registry/nexus").unwrap().as_deref(), Some("hunter2"));
+        assert_eq!(
+            store.secret("registry/nexus").unwrap().as_deref(),
+            Some("hunter2")
+        );
         let screen = shown(&home);
         println!("{screen}");
         assert!(screen.contains("Registries") && screen.contains("● stored"));
@@ -3187,65 +3705,179 @@ mod tests {
         assert!(app.confirm.is_none() && app.job.is_none());
     }
 
+    /// A host that has answered, with a few tasks as it would list them.
+    fn host_tasks() -> Vec<berth_api::Task> {
+        serde_json::from_value(json!([
+            {"name": "status", "label": "Status", "group": "System", "user": "root", "help": "How the host is."},
+            {"name": "claude:status", "label": "Claude Code sign-in", "extends": ["sign-in:status"], "help": "Whether Claude is signed in."},
+            {"name": "sign-in:status", "label": "Show who is signed in", "group": "Sign-In", "help": "Accounts."},
+            {"name": "claude:login", "label": "Sign in to Claude Code", "group": "sign-in", "terminal": true},
+            {"name": "reboot", "label": "Reboot", "group": "System", "user": "root", "confirm": "Restart the host?"},
+            {"name": "backup:restore", "label": "Restore", "group": "Backup",
+             "arguments": [{"name": "snapshot", "label": "Snapshot", "required": true, "choices": "restic snapshots"},
+                           {"name": "target", "default": "/"}]},
+        ]))
+        .unwrap()
+    }
+
     #[test]
-    fn manage_tab_runs_tasks_against_the_host() {
+    fn the_overview_is_what_the_host_lists() {
+        use crate::remote::{Pending, State};
         let mut app = App::new("unused.json".into(), parse_config(b"{}").unwrap());
         app.set_step(Step::Manage);
         assert_eq!(app.action, Action::Manage);
+        // Without an address there is nothing to ask.
         let manage = screen(&mut app);
-        assert!(manage.contains("▸ Status") && manage.contains("▸ Terminal · as agent"));
-        assert!(manage.contains("System") && manage.contains("▸ Self-Test"));
-        // The list is longer than this small screen; the last task is reached by scrolling.
-        assert!(app.entries().contains(&Entry::Task("reboot")));
-        assert!(manage.contains("✗ Enter an SSH hostname"));
-        // Without an address a task explains itself instead of starting.
-        let status = app
-            .entries()
-            .iter()
-            .position(|entry| *entry == Entry::Task("status"))
-            .unwrap();
-        app.list.select(Some(status));
-        assert!(!press(&mut app, &[KeyCode::Enter]));
-        assert!(app.status.contains("SSH hostname") && app.job.is_none());
-        // Applying the configuration is the SSH install and runs in the terminal.
+        assert!(manage.contains("✗ Enter an SSH hostname") && !manage.contains("▸ Status"));
+        assert!(app.entries().contains(&Entry::Task("apply")));
+
         app.commit(Field::SshHost, "devbox.example");
+        app.config["agent_username"] = json!("robot");
+        assert!(screen_text(&mut app).contains("Asking the host"));
+        // A host without berth's controller offers to apply, once.
+        app.host.state = State::Missing;
+        let applies = |app: &App| {
+            app.entries()
+                .iter()
+                .filter(|entry| **entry == Entry::Task("apply"))
+                .count()
+        };
+        assert!(screen_text(&mut app).contains("not on this host yet") && applies(&app) == 1);
+        app.host.state =
+            State::Unreachable("ssh: connect to host devbox.example: timed out\nmore".into());
+        let text = screen_text(&mut app);
+        assert!(text.contains("✗ ssh: connect to host") && text.contains("▸ Terminal over SSH"));
+        assert!(app.entries().contains(&Entry::Task("connect")));
+
+        // One that answered lists its tasks in their groups.
+        app.host.state = State::Ready("0.2.0".into());
+        app.host.tasks = host_tasks();
+        let rows: Vec<String> = app.rows().iter().map(|row| row.line.to_string()).collect();
+        let place = |text: &str| rows.iter().position(|row| row.contains(text)).unwrap();
+        assert!(
+            place("System") < place("▸ Status")
+                && place("▸ Status") < place("▸ Terminal · as robot")
+        );
+        assert!(place("▸ Terminal") < place("▸ Reboot"));
+        // Groups are matched whatever their case; a step has no row of its own.
+        assert!(place("Sign-In") < place("▸ Show who is signed in"));
+        assert!(place("▸ Show who is signed in") < place("▸ Sign in to Claude Code"));
+        assert!(place("Backup") > place("▸ Sign in to Claude Code"));
+        assert!(!rows.iter().any(|row| row.contains("Claude Code sign-in")));
+        assert!(!rows.iter().any(|row| row.contains("Sessions")));
+        let select = |app: &mut App, entry: Entry| {
+            let at = app.entries().iter().position(|known| *known == entry);
+            app.list.select(Some(at.unwrap()));
+        };
+        // The information box says what the plugins' steps add.
+        select(&mut app, Entry::HostTask(2));
+        let help = app.help();
+        assert!(
+            help.contains("### From plugins") && help.contains("**Claude Code sign-in**: Whether")
+        );
+        assert!(help.contains("berth run HOST sign-in:status"));
+
+        // A task with a question waits for the yes.
+        select(&mut app, Entry::HostTask(4));
+        assert!(!press(&mut app, &[KeyCode::Enter]));
+        assert_eq!(
+            app.host.question,
+            Some(("Restart the host?".into(), Pending::Task(4)))
+        );
+        assert!(screen_text(&mut app).contains("Restart the host?"));
+        question_event(
+            &mut app,
+            &Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+        );
+        assert!(app.host.question.is_none());
+
+        // A task with arguments asks for each; a needed one cannot be left empty.
+        select(&mut app, Entry::HostTask(5));
+        press(&mut app, &[KeyCode::Enter]);
+        let key = |app: &mut App, code| {
+            arguments_event(app, &Event::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+        };
+        assert!(screen_text(&mut app).contains("Restore · 1 of 2"));
+        key(&mut app, KeyCode::Enter);
+        assert!(app.status.contains("Snapshot is needed"));
+        app.host.arguments.as_mut().unwrap().choices = vec!["abc123".into(), "def456".into()];
+        assert!(screen_text(&mut app).contains("○ def456"));
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Enter);
+        let asked = app.host.arguments.as_ref().unwrap();
+        assert_eq!((asked.index, asked.input.value()), (1, "/"));
+        assert_eq!(asked.values["snapshot"], "def456");
+        key(&mut app, KeyCode::Esc);
+        assert!(app.host.arguments.is_none());
+
+        // Sessions of the host get a group; a running one is not forgotten with x.
+        app.host.sessions = serde_json::from_value(json!([
+            {"id": "sabc", "kind": "terminal", "title": "robot on devbox", "command": ["bash", "-l"], "user": "agent",
+             "started_by": {"level": "host", "uid": 0}, "started": "2026-11-12T10:00:00Z"},
+            {"id": "sdef", "kind": "process", "title": "Update", "command": ["update"], "user": "root",
+             "started_by": {"level": "host", "uid": 0}, "started": "2026-11-12T10:00:00Z",
+             "ended": "2026-11-12T10:05:00Z", "exit_code": 2},
+        ]))
+        .unwrap();
+        let text: String = app
+            .rows()
+            .iter()
+            .map(|row| row.line.to_string() + "\n")
+            .collect();
+        assert!(
+            text.contains("▸ robot on devbox · running") && text.contains("▸ Update · failed (2)")
+        );
+        select(&mut app, Entry::HostSession(0));
+        assert!(
+            app.help().contains("still running") && app.help().contains("berth attach HOST sabc")
+        );
+        press(&mut app, &[KeyCode::Char('x')]);
+        assert!(app.status.contains("still running"));
+        // Opening one puts it in the panel; a transcript takes its lines.
+        select(&mut app, Entry::HostSession(1));
+        press(&mut app, &[KeyCode::Enter]);
+        let view = app.host.view.as_ref().unwrap();
+        assert!(view.id == "sdef" && !view.terminal && !view.ours);
+        assert!(screen_text(&mut app).contains("Ctrl+Q leave it running"));
+        view_event(
+            &mut app,
+            &Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
+        );
+        assert!(app.host.view.is_none());
+
+        // Applying with a session running asks first; then it is the SSH install.
         app.config["hostname"] = json!("devbox-1");
         app.config["operator_ssh_public_key"] = json!("ssh-ed25519 AAAA me");
-        let apply = app
-            .entries()
-            .iter()
-            .position(|entry| *entry == Entry::Task("apply"));
-        app.list.select(apply);
-        assert!(press(&mut app, &[KeyCode::Enter]));
+        select(&mut app, Entry::Task("apply"));
+        assert!(!press(&mut app, &[KeyCode::Enter]));
+        assert!(matches!(app.host.question, Some((_, Pending::Apply))));
+        let yes = Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(matches!(question_event(&mut app, &yes), Flow::Run));
         assert_eq!(app.terminal_action, Some(Action::Ssh));
-        // The agent's shell goes through the SSH user and sudo. Space switches
-        // the Terminal row between the two accounts.
+        assert_eq!(app.host.state, State::Idle);
         app.terminal_action = None;
-        app.config["agent_username"] = json!("robot");
-        let terminal = app
-            .entries()
-            .iter()
-            .position(|entry| *entry == Entry::Task("terminal"));
-        app.list.select(terminal);
-        assert!(screen_text(&mut app).contains("Terminal · as robot"));
+
+        // Space switches the Terminal row between the two accounts.
+        app.host.state = State::Ready("0.2.0".into());
+        select(&mut app, Entry::Task("terminal"));
         press(&mut app, &[KeyCode::Char(' ')]);
         assert!(!app.as_agent && screen_text(&mut app).contains("the SSH user"));
         press(&mut app, &[KeyCode::Char(' ')]);
         let command = format!("{:?}", app.agent_terminal().unwrap());
         assert!(command.contains("devbox.example") && command.contains("sudo -iu robot "));
         // The set-up pages are a flow under the overview, with the install method.
-        let setup = app
-            .entries()
-            .iter()
-            .position(|entry| *entry == Entry::Setup);
-        app.list.select(setup);
+        select(&mut app, Entry::Setup);
         press(&mut app, &[KeyCode::Enter, KeyCode::Char('4')]);
         assert_eq!((app.step, app.action), (Step::Install, Action::Iso));
         press(&mut app, &[KeyCode::Esc]);
         assert_eq!(app.step, Step::Manage);
-        // x removes the value of the selected field.
-        app.list.select(Some(0));
+        // x removes the value of the selected field, and with the address
+        // gone what was known of the host is too.
+        app.host.state = State::Ready("0.2.0".into());
+        select(&mut app, Entry::Field(Field::SshHost));
         press(&mut app, &[KeyCode::Char('x')]);
         assert_eq!(app.text(Field::SshHost), "");
+        assert_eq!(app.host.state, State::Idle);
     }
 }

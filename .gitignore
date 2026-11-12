@@ -9,6 +9,8 @@ secrets/
 *.qcow2
 *.iso
 
+/target/
 /cli/target/
+/ansible/roles/devbox/files/bin/
 
 *.credentials.json

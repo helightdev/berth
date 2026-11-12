@@ -1,0 +1,471 @@
+{
+  "asyncapi": "3.0.0",
+  "channels": {
+    "channel": {
+      "address": "/v1/channel",
+      "bindings": {
+        "ws": {
+          "query": {
+            "properties": {
+              "since": {
+                "description": "Kept messages after this id come first. Without it, only each topic's `last` message does.",
+                "type": "string"
+              },
+              "topic": {
+                "description": "Only topics starting with this.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      "description": "Messages on the channel: the kept ones after `since`, then what arrives.",
+      "messages": {
+        "channel.message": {
+          "$ref": "#/components/messages/channel.message"
+        },
+        "channel.publish": {
+          "$ref": "#/components/messages/channel.publish"
+        }
+      },
+      "parameters": {},
+      "x-berth-level": "both",
+      "x-berth-resumable": true
+    },
+    "logs": {
+      "address": "/v1/logs",
+      "bindings": {
+        "ws": {
+          "query": {
+            "properties": {
+              "since": {
+                "description": "A cursor from an earlier entry, or a time journalctl understands.",
+                "type": "string"
+              },
+              "unit": {
+                "description": "Only this unit.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      "description": "Journal entries, then what is logged.",
+      "messages": {
+        "logs.entry": {
+          "$ref": "#/components/messages/logs.entry"
+        }
+      },
+      "parameters": {},
+      "x-berth-level": "host",
+      "x-berth-resumable": true
+    },
+    "serve": {
+      "address": "/v1/services/{service}/serve",
+      "bindings": {
+        "ws": {
+          "query": {
+            "properties": {},
+            "type": "object"
+          }
+        }
+      },
+      "description": "For the program that answers a service's calls. While it is open the service is up.",
+      "messages": {
+        "serve.call": {
+          "$ref": "#/components/messages/serve.call"
+        },
+        "serve.error": {
+          "$ref": "#/components/messages/serve.error"
+        },
+        "serve.result": {
+          "$ref": "#/components/messages/serve.result"
+        }
+      },
+      "parameters": {
+        "service": {
+          "description": "service"
+        }
+      },
+      "x-berth-level": "both",
+      "x-berth-resumable": false
+    },
+    "session": {
+      "address": "/v1/sessions/{id}",
+      "bindings": {
+        "ws": {
+          "query": {
+            "properties": {
+              "since": {
+                "description": "Byte offset to start from. Without it a terminal replays its current screen and a process starts at the beginning.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      "description": "A session, live: its output as it is produced, and input to it.",
+      "messages": {
+        "session.dropped": {
+          "$ref": "#/components/messages/session.dropped"
+        },
+        "session.eof": {
+          "$ref": "#/components/messages/session.eof"
+        },
+        "session.exited": {
+          "$ref": "#/components/messages/session.exited"
+        },
+        "session.input": {
+          "$ref": "#/components/messages/session.input"
+        },
+        "session.output": {
+          "$ref": "#/components/messages/session.output"
+        },
+        "session.resize": {
+          "$ref": "#/components/messages/session.resize"
+        },
+        "session.signal": {
+          "$ref": "#/components/messages/session.signal"
+        }
+      },
+      "parameters": {
+        "id": {
+          "description": "id"
+        }
+      },
+      "x-berth-level": "both",
+      "x-berth-resumable": true
+    }
+  },
+  "components": {
+    "messages": {
+      "channel.message": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "body": {
+                "percent": 40
+              },
+              "from": {
+                "level": "agent",
+                "uid": 1001
+              },
+              "id": 4812,
+              "keep": "log",
+              "time": "2026-11-12T10:00:00Z",
+              "topic": "myplugin/progress"
+            }
+          }
+        ],
+        "name": "message",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "One message."
+      },
+      "channel.publish": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "body": {
+                "percent": 40
+              },
+              "keep": "none",
+              "topic": "myplugin/progress"
+            }
+          }
+        ],
+        "name": "publish",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "Publish a message."
+      },
+      "logs.entry": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "cursor": "s=…",
+              "message": "Server listening on 0.0.0.0 port 22.",
+              "priority": 6,
+              "time": "2026-11-12T10:00:00Z",
+              "unit": "ssh.service"
+            }
+          }
+        ],
+        "name": "entry",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "One journal entry."
+      },
+      "serve.call": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "body": {},
+              "from": {
+                "level": "agent",
+                "uid": 1001
+              },
+              "id": 7,
+              "method": "start"
+            }
+          }
+        ],
+        "name": "call",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "A call to answer."
+      },
+      "serve.error": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "error": {
+                "code": "bad_request",
+                "message": "no such thing"
+              },
+              "id": 7
+            }
+          }
+        ],
+        "name": "error",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "A call that failed."
+      },
+      "serve.result": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "id": 7,
+              "result": {
+                "ok": true
+              }
+            }
+          }
+        ],
+        "name": "result",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "The answer to a call."
+      },
+      "session.dropped": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "dropped": {
+                "bytes": 65536
+              }
+            }
+          }
+        ],
+        "name": "dropped",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "This viewer was too slow and missed output; read it back with the output call."
+      },
+      "session.eof": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "eof": true
+            }
+          }
+        ],
+        "name": "eof",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "Close a process's standard input."
+      },
+      "session.exited": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "exited": {
+                "exit_code": 0
+              }
+            }
+          }
+        ],
+        "name": "exited",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "The command ended. The last frame."
+      },
+      "session.input": {
+        "contentType": "application/octet-stream",
+        "name": "input",
+        "payload": {
+          "format": "binary",
+          "type": "string"
+        },
+        "summary": "Terminal: bytes typed. Process: first byte 0, the rest goes to standard input."
+      },
+      "session.output": {
+        "contentType": "application/octet-stream",
+        "name": "output",
+        "payload": {
+          "format": "binary",
+          "type": "string"
+        },
+        "summary": "Terminal: the terminal's bytes. Process: the first byte is the stream (1 stdout, 2 stderr), the rest its bytes."
+      },
+      "session.resize": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "resize": {
+                "cols": 120,
+                "rows": 40
+              }
+            }
+          }
+        ],
+        "name": "resize",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "A terminal's new size."
+      },
+      "session.signal": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "signal": "INT"
+            }
+          }
+        ],
+        "name": "signal",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "INT, TERM, HUP or KILL to the session's process group."
+      }
+    }
+  },
+  "defaultContentType": "application/json",
+  "info": {
+    "description": "The WebSocket streams of a host's berthd.",
+    "title": "berthd",
+    "version": "0.2.0"
+  },
+  "operations": {
+    "channel.receive": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/channel"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/channel/messages/channel.publish"
+        }
+      ]
+    },
+    "channel.send": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/channel"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/channel/messages/channel.message"
+        }
+      ]
+    },
+    "logs.send": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/logs"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/logs/messages/logs.entry"
+        }
+      ]
+    },
+    "serve.receive": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/serve"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/serve/messages/serve.result"
+        },
+        {
+          "$ref": "#/channels/serve/messages/serve.error"
+        }
+      ]
+    },
+    "serve.send": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/serve"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/serve/messages/serve.call"
+        }
+      ]
+    },
+    "session.receive": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/session"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/session/messages/session.input"
+        },
+        {
+          "$ref": "#/channels/session/messages/session.resize"
+        },
+        {
+          "$ref": "#/channels/session/messages/session.signal"
+        },
+        {
+          "$ref": "#/channels/session/messages/session.eof"
+        }
+      ]
+    },
+    "session.send": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/session"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/session/messages/session.output"
+        },
+        {
+          "$ref": "#/channels/session/messages/session.exited"
+        },
+        {
+          "$ref": "#/channels/session/messages/session.dropped"
+        }
+      ]
+    }
+  }
+}

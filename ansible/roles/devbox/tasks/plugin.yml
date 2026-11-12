@@ -10,7 +10,11 @@
     devbox_plugin_dir: "{{ devbox_plugin_dirs[devbox_plugin_feature.split('/')[0]] | default(playbook_dir ~ '/../plugins/' ~ devbox_plugin_feature.split('/')[0]) }}"
 - name: Read the plugin's package.json
   ansible.builtin.set_fact:
-    devbox_plugin_matches: "{{ (lookup('ansible.builtin.file', devbox_plugin_dir ~ '/package.json') | from_json).berth.features | default([]) | selectattr('id', 'equalto', devbox_plugin_feature.split('/')[1]) | list }}"
+    devbox_plugin_package: "{{ lookup('ansible.builtin.file', devbox_plugin_dir ~ '/package.json') | from_json }}"
+- name: Find the feature in it
+  ansible.builtin.set_fact:
+    devbox_plugin_label: "{{ devbox_plugin_package.displayName | default(devbox_plugin_id) }}"
+    devbox_plugin_matches: "{{ devbox_plugin_package.berth.features | default([]) | selectattr('id', 'equalto', devbox_plugin_feature.split('/')[1]) | list }}"
 - name: Require the feature to exist
   ansible.builtin.assert:
     that: devbox_plugin_matches | length == 1
@@ -37,3 +41,13 @@
   ansible.builtin.set_fact:
     devbox_plugin_info: "{{ devbox_plugin_info + [{'name': devbox_plugin_feature | replace('/', '-'), 'label': devbox_feature.label | default(devbox_plugin_feature), 'summary': devbox_feature.summary | default(''), 'guide': devbox_feature.guide | default('') | length > 0}] }}"
     devbox_plugin_commands: "{{ devbox_plugin_commands + (devbox_feature.commands | default([])) }}"
+# Its actions become tasks of the host, named PLUGIN:ACTION; its services and
+# channel topics are named PLUGIN/NAME. berth.yml writes them for berthd.
+- name: Read what the feature adds for berthd
+  ansible.builtin.set_fact:
+    devbox_feature_adds: "{{ lookup('ansible.builtin.template', role_path ~ '/templates/berth-feature.json.j2') }}"
+- name: Record it
+  ansible.builtin.set_fact:
+    devbox_plugin_tasks: "{{ devbox_plugin_tasks + (devbox_feature_adds if devbox_feature_adds is mapping else devbox_feature_adds | from_json).tasks }}"
+    devbox_plugin_services: "{{ devbox_plugin_services + (devbox_feature_adds if devbox_feature_adds is mapping else devbox_feature_adds | from_json).services }}"
+    devbox_plugin_channels: "{{ devbox_plugin_channels + (devbox_feature_adds if devbox_feature_adds is mapping else devbox_feature_adds | from_json).channels }}"

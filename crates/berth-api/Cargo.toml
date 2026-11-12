@@ -1,0 +1,18 @@
+[package]
+name = "berth-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Wire types and client for berthd and berth serve"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+utoipa.workspace = true
+tokio.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true

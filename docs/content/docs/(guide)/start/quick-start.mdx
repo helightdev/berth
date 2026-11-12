@@ -1,0 +1,80 @@
+---
+title: Quick start
+description: Create a profile for a host, install it, and open its desktop.
+icon: Zap
+---
+
+This walks through a first host from berth's terminal UI. The example uses an Ubuntu 26.04 server you can already reach over SSH. The other ways to install differ only in step 4.
+
+<Callout title="Try it without a machine">
+  The [container](/docs/deploy/container) runs the same desktop on Docker, and [QEMU](/docs/deploy/qemu) runs a whole host in a VM.
+</Callout>
+
+<Steps>
+<Step>
+
+### Create the host
+
+```bash
+berth studio
+```
+
+A name berth does not know starts a new profile, saved as `~/.config/berth/hosts/studio.json`. Running `berth` alone opens the home screen, where `n` creates a host.
+
+</Step>
+<Step>
+
+### Choose what to install
+
+The profile opens on **Features**, with the coding agents, T3 Code, tool categories, browsers and plugin features. Space on a group heading switches the whole group.
+
+<Screen name="features" alt="The Features tab: Coding Agents, Agent Orchestrator, Development Tools, Browsers, Desktop and System groups with switches" />
+
+</Step>
+<Step>
+
+### Set up the accounts
+
+**Accounts** (key `2`) sets up the *operator*, your account on the host, and the *agent* account the coding agents use. SSH keys found in `~/.ssh` and in ssh-agent are offered as suggestions (Right or F2).
+
+On a password hash field, F4 generates a password and stores its hash, and F5 hashes one you type. Generated passwords are written next to the profile as `studio.credentials.json`.
+
+<Screen name="accounts" alt="The Accounts tab with operator and agent settings" />
+
+</Step>
+<Step>
+
+### Install
+
+On **Install** (key `4`), choose **Existing host over SSH** and enter the address, an IP, a hostname or a `Host` alias from your SSH configuration. Problems that stop the install are listed above **Run**. Fix them and press Enter on Run.
+
+<Screen name="install-cloud" alt="The Install tab listing install methods, the settings of the chosen method, and the problems still open above Run" />
+
+The other methods are on [Deploying](/docs/deploy). Ctrl+S saves the profile at any point.
+
+</Step>
+<Step>
+
+### Use the host
+
+Once the host has an SSH address, `berth studio` opens its **overview**. Run **Status** to check it, then **Access links and desktop password** for the address of the desktop.
+
+<Screen name="overview" alt="The overview of a host with its tasks" />
+
+</Step>
+<Step>
+
+### Sign the agents in
+
+Installing a coding agent does not sign it in. Under **Sign-In**, **Sign in to Claude Code** and the others run the tool's sign-in on the host and show its link, which you open in your own browser. See [Sign-ins](/docs/use/sign-ins).
+
+</Step>
+</Steps>
+
+## Next
+
+<Cards>
+  <Card title="Access and the desktop" href="/docs/use/access">Tailnet addresses, Cockpit and SSH.</Card>
+  <Card title="Secrets" href="/docs/use/secrets">Give the agent a GitHub token.</Card>
+  <Card title="The commands" href="/docs/use/cli">The same tasks without the UI.</Card>
+</Cards>

@@ -1,0 +1,2806 @@
+{
+  "components": {
+    "schemas": {
+      "Argument": {
+        "properties": {
+          "choices": {
+            "description": "A command whose lines are the values to offer.",
+            "type": "string"
+          },
+          "default": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "CallFrame": {
+        "description": "berthd to the serving program.",
+        "properties": {
+          "body": {},
+          "from": {
+            "$ref": "#/components/schemas/From"
+          },
+          "id": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "method",
+          "body",
+          "from"
+        ],
+        "type": "object"
+      },
+      "Choices": {
+        "properties": {
+          "choices": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "choices"
+        ],
+        "type": "object"
+      },
+      "CommandLine": {
+        "description": "A list of arguments, or one string for `sh -c`.",
+        "oneOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "string"
+          }
+        ]
+      },
+      "Config": {
+        "description": "`/etc/berth/berthd.json`.",
+        "properties": {
+          "agent": {
+            "default": "agent",
+            "description": "The agent account.",
+            "type": "string"
+          },
+          "agent_env": {
+            "default": "/usr/local/bin/agent-env",
+            "description": "A wrapper that gives the agent its environment.",
+            "type": "string"
+          },
+          "operator": {
+            "default": "",
+            "description": "The SSH user.",
+            "type": "string"
+          },
+          "roots": {
+            "default": [],
+            "description": "Folders the file calls may touch.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "systemd": {
+            "default": null,
+            "description": "Whether the calls that need systemd work. Off in single-user mode\nunless set.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "units": {
+            "default": [],
+            "description": "Units whose state the stats report.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "Done": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      },
+      "ErrorBody": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "ErrorDetail": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "FileEntry": {
+        "properties": {
+          "kind": {
+            "description": "`file`, `dir`, `link` or `other`.",
+            "type": "string"
+          },
+          "modified": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "size",
+          "modified"
+        ],
+        "type": "object"
+      },
+      "Filesystem": {
+        "properties": {
+          "available": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "device": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "mount": {
+            "type": "string"
+          },
+          "total": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "used": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mount",
+          "device",
+          "kind",
+          "total",
+          "used",
+          "available"
+        ],
+        "type": "object"
+      },
+      "From": {
+        "description": "Who did something, as berthd saw it.",
+        "properties": {
+          "level": {
+            "$ref": "#/components/schemas/Level"
+          },
+          "session": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "uid": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "level",
+          "uid"
+        ],
+        "type": "object"
+      },
+      "Gpu": {
+        "properties": {
+          "memory_total": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "memory_used": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "utilization": {
+            "description": "Percent.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "name",
+          "utilization",
+          "memory_used",
+          "memory_total"
+        ],
+        "type": "object"
+      },
+      "Input": {
+        "properties": {
+          "data_b64": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "eof": {
+            "description": "Close a process's standard input.",
+            "type": "boolean"
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Interface": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "rx_bytes": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tx_bytes": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "rx_bytes",
+          "tx_bytes"
+        ],
+        "type": "object"
+      },
+      "Keep": {
+        "enum": [
+          "none",
+          "last",
+          "log"
+        ],
+        "type": "string"
+      },
+      "Level": {
+        "enum": [
+          "host",
+          "agent"
+        ],
+        "type": "string"
+      },
+      "Listing": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/FileEntry"
+            },
+            "type": "array"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "entries"
+        ],
+        "type": "object"
+      },
+      "LogEntry": {
+        "properties": {
+          "cursor": {
+            "description": "Give it back as `since` to go on from here.",
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "priority": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "time": {
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "time",
+          "unit",
+          "priority",
+          "message",
+          "cursor"
+        ],
+        "type": "object"
+      },
+      "Memory": {
+        "properties": {
+          "available": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "used": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "used",
+          "available"
+        ],
+        "type": "object"
+      },
+      "Message": {
+        "properties": {
+          "body": {},
+          "from": {
+            "$ref": "#/components/schemas/From"
+          },
+          "id": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "keep": {
+            "$ref": "#/components/schemas/Keep"
+          },
+          "time": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "topic",
+          "body",
+          "keep",
+          "from",
+          "time"
+        ],
+        "type": "object"
+      },
+      "Messages": {
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/Message"
+            },
+            "type": "array"
+          },
+          "next": {
+            "description": "Pass as `since` for the rest, when there is more.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "type": "object"
+      },
+      "Method": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "Output": {
+        "properties": {
+          "data_b64": {
+            "type": "string"
+          },
+          "ended": {
+            "description": "Nothing more will come.",
+            "type": "boolean"
+          },
+          "first_offset": {
+            "description": "Where what is still kept begins, when the start was dropped.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lines": {
+            "description": "The same as text, when read by lines.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "next_line": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "next_offset": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "offset": {
+            "description": "The offset this answer starts at.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "data_b64",
+          "offset",
+          "next_offset",
+          "next_line",
+          "ended"
+        ],
+        "type": "object"
+      },
+      "Process": {
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "cpu_time": {
+            "description": "Seconds of CPU used so far.",
+            "format": "double",
+            "type": "number"
+          },
+          "memory": {
+            "description": "Resident memory in bytes.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "parent": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pid": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pid",
+          "parent",
+          "user",
+          "command",
+          "cpu_time",
+          "memory"
+        ],
+        "type": "object"
+      },
+      "Publish": {
+        "properties": {
+          "body": {},
+          "keep": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Keep"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PublishFrame": {
+        "description": "What a client sends over the channel stream to publish.",
+        "properties": {
+          "body": {},
+          "keep": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Keep"
+              }
+            ]
+          },
+          "topic": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic"
+        ],
+        "type": "object"
+      },
+      "ReplyFrame": {
+        "description": "The serving program's answer.",
+        "properties": {
+          "error": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ErrorDetail"
+              }
+            ]
+          },
+          "id": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "result": {}
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "Resize": {
+        "properties": {
+          "cols": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rows": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rows",
+          "cols"
+        ],
+        "type": "object"
+      },
+      "RunTask": {
+        "properties": {
+          "arguments": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "cols": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "input_b64": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rows": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Screen": {
+        "properties": {
+          "cols": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cursor_col": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cursor_row": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rows": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rows",
+          "cols",
+          "text",
+          "cursor_row",
+          "cursor_col"
+        ],
+        "type": "object"
+      },
+      "Service": {
+        "properties": {
+          "agent": {
+            "type": "boolean"
+          },
+          "declared": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": "string"
+          },
+          "methods": {
+            "items": {
+              "$ref": "#/components/schemas/Method"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "uid": {
+            "description": "Who serves it now.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "up": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "agent",
+          "methods",
+          "declared",
+          "up"
+        ],
+        "type": "object"
+      },
+      "ServiceSpec": {
+        "description": "An entry of `/etc/berth/services.json`.",
+        "properties": {
+          "agent": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": "string"
+          },
+          "methods": {
+            "items": {
+              "$ref": "#/components/schemas/Method"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          },
+          "timeout": {
+            "description": "Seconds a call may take.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "user": {
+            "description": "`root` or `agent`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "Session": {
+        "properties": {
+          "cols": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ended": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exit_code": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SessionKind"
+          },
+          "last_output": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lost": {
+            "description": "It ended with berthd or the host, not by itself.",
+            "type": "boolean"
+          },
+          "output_size": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rows": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "started": {
+            "type": "string"
+          },
+          "started_by": {
+            "$ref": "#/components/schemas/From"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/Step"
+            },
+            "type": "array"
+          },
+          "task": {
+            "description": "The task it was started for, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          },
+          "viewers": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "command",
+          "user",
+          "started_by",
+          "started"
+        ],
+        "type": "object"
+      },
+      "SessionKind": {
+        "enum": [
+          "process",
+          "terminal"
+        ],
+        "type": "string"
+      },
+      "Signal": {
+        "properties": {
+          "signal": {
+            "description": "`INT`, `TERM`, `HUP` or `KILL`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "signal"
+        ],
+        "type": "object"
+      },
+      "StartSession": {
+        "properties": {
+          "cols": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "command": {
+            "$ref": "#/components/schemas/CommandLine"
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "input": {
+            "description": "Text for standard input; a process then sees the end of its input.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input_b64": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SessionKind"
+          },
+          "rows": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "timeout": {
+            "description": "Seconds after which the command is ended.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user": {
+            "description": "`agent`, `operator` (the SSH user) or `root`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "command"
+        ],
+        "type": "object"
+      },
+      "Started": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Session"
+          },
+          {
+            "properties": {
+              "output_b64": {
+                "description": "A terminal's bytes.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stderr_b64": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stdout_b64": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "description": "The answer to a start with `wait=`: the session and, when it has ended in\ntime, what it wrote."
+      },
+      "Stats": {
+        "properties": {
+          "cores": {
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "cpu": {
+            "description": "Percent busy over 200 ms, all cores together.",
+            "format": "double",
+            "type": "number"
+          },
+          "filesystems": {
+            "items": {
+              "$ref": "#/components/schemas/Filesystem"
+            },
+            "type": "array"
+          },
+          "gpus": {
+            "items": {
+              "$ref": "#/components/schemas/Gpu"
+            },
+            "type": "array"
+          },
+          "hostname": {
+            "type": "string"
+          },
+          "load": {
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "memory": {
+            "$ref": "#/components/schemas/Memory"
+          },
+          "network": {
+            "items": {
+              "$ref": "#/components/schemas/Interface"
+            },
+            "type": "array"
+          },
+          "reboot_required": {
+            "type": "boolean"
+          },
+          "sessions_running": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "swap": {
+            "$ref": "#/components/schemas/Memory"
+          },
+          "units": {
+            "items": {
+              "$ref": "#/components/schemas/UnitState"
+            },
+            "type": "array"
+          },
+          "uptime": {
+            "description": "Seconds.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "hostname",
+          "load",
+          "cpu",
+          "cores",
+          "memory",
+          "swap",
+          "filesystems",
+          "network",
+          "uptime",
+          "reboot_required",
+          "units",
+          "sessions_running"
+        ],
+        "type": "object"
+      },
+      "Step": {
+        "properties": {
+          "exit_code": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "user"
+        ],
+        "type": "object"
+      },
+      "Task": {
+        "description": "An entry of `/etc/berth/tasks.json`. Listed without `run`.",
+        "properties": {
+          "agent": {
+            "description": "The agent may run it.",
+            "type": "boolean"
+          },
+          "arguments": {
+            "items": {
+              "$ref": "#/components/schemas/Argument"
+            },
+            "type": "array"
+          },
+          "confirm": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extends": {
+            "description": "Tasks it is a step of; it then has no row of its own.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "group": {
+            "type": "string"
+          },
+          "help": {
+            "type": "string"
+          },
+          "input": {
+            "description": "What the workstation sends on standard input: `secrets`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          },
+          "terminal": {
+            "type": "boolean"
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "Topic": {
+        "description": "An entry of `/etc/berth/channels.json`.",
+        "properties": {
+          "days": {
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "keep": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Keep"
+              }
+            ]
+          },
+          "max": {
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "topic": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic"
+        ],
+        "type": "object"
+      },
+      "Unit": {
+        "properties": {
+          "active": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "load": {
+            "type": "string"
+          },
+          "sub": {
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "unit",
+          "load",
+          "active",
+          "sub",
+          "description"
+        ],
+        "type": "object"
+      },
+      "UnitState": {
+        "properties": {
+          "active": {
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "unit",
+          "active"
+        ],
+        "type": "object"
+      },
+      "Version": {
+        "properties": {
+          "api": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mode": {
+            "description": "`system` or `single`.",
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "api"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "The API of a host's berthd, over its unix sockets. Streams are in the AsyncAPI document.",
+    "license": {
+      "name": "MIT"
+    },
+    "title": "berthd",
+    "version": "0.2.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/channel": {
+      "get": {
+        "description": "Host and agent level.",
+        "operationId": "get_v1_channel",
+        "parameters": [
+          {
+            "description": "Only topics starting with this.",
+            "in": "query",
+            "name": "topic",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Messages after this id; default 0.",
+            "in": "query",
+            "name": "since",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Most messages; default 100, at most 1000.",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "With a WebSocket handshake: the stream `channel` of the AsyncAPI document."
+          },
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Messages"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Kept messages after `since`.",
+        "tags": [
+          "channel"
+        ]
+      }
+    },
+    "/v1/channel/{topic}": {
+      "post": {
+        "description": "Host and agent level.",
+        "operationId": "post_v1_channel___topic_",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "topic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Publish"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Message"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Publish a message on a topic.",
+        "tags": [
+          "channel"
+        ]
+      }
+    },
+    "/v1/files": {
+      "delete": {
+        "description": "Host level only.",
+        "operationId": "delete_v1_files",
+        "parameters": [
+          {
+            "description": "An absolute path under a root.",
+            "in": "query",
+            "name": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "true for a folder with its contents.",
+            "in": "query",
+            "name": "recursive",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Done"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Remove a file or an empty folder; never a root itself.",
+        "tags": [
+          "files"
+        ]
+      },
+      "get": {
+        "description": "Host level only.",
+        "operationId": "get_v1_files",
+        "parameters": [
+          {
+            "description": "An absolute path under a root.",
+            "in": "query",
+            "name": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "A folder's entries (a Listing), or a file's content; Range is honoured. As the agent, under the configured roots.",
+        "tags": [
+          "files"
+        ]
+      },
+      "put": {
+        "description": "Host level only.",
+        "operationId": "put_v1_files",
+        "parameters": [
+          {
+            "description": "An absolute path under a root.",
+            "in": "query",
+            "name": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "true to replace an existing file.",
+            "in": "query",
+            "name": "overwrite",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Done"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Write one file, creating its folders.",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/v1/logs": {
+      "get": {
+        "description": "Host level only.",
+        "operationId": "get_v1_logs",
+        "parameters": [
+          {
+            "description": "Only this unit.",
+            "in": "query",
+            "name": "unit",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A cursor from an earlier entry, or a time.",
+            "in": "query",
+            "name": "since",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Most entries; default 100.",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "With a WebSocket handshake: the stream `logs` of the AsyncAPI document."
+          },
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/LogEntry"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Journal entries.",
+        "tags": [
+          "logs"
+        ]
+      }
+    },
+    "/v1/power/{verb}": {
+      "post": {
+        "description": "Host level only.",
+        "operationId": "post_v1_power__verb_",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "verb",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "true to do it although sessions run.",
+            "in": "query",
+            "name": "force",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Done"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Reboot the host or power it off. Refused while sessions run.",
+        "tags": [
+          "power"
+        ]
+      }
+    },
+    "/v1/processes": {
+      "get": {
+        "description": "Host level only.",
+        "operationId": "get_v1_processes",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Process"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "The processes, from /proc.",
+        "tags": [
+          "processes"
+        ]
+      }
+    },
+    "/v1/processes/{pid}/signal": {
+      "post": {
+        "description": "Host level only.",
+        "operationId": "post_v1_processes__pid__signal",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Signal"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Done"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Send a signal to a process.",
+        "tags": [
+          "processes"
+        ]
+      }
+    },
+    "/v1/reload": {
+      "post": {
+        "description": "Host level only.",
+        "operationId": "post_v1_reload",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Done"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Read the configuration files again. Sessions go on.",
+        "tags": [
+          "reload"
+        ]
+      }
+    },
+    "/v1/screenshot": {
+      "get": {
+        "description": "Host level only.",
+        "operationId": "get_v1_screenshot",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "The shared desktop as PNG.",
+        "tags": [
+          "screenshot"
+        ]
+      }
+    },
+    "/v1/services": {
+      "get": {
+        "description": "Host and agent level.",
+        "operationId": "get_v1_services",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Service"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "The services that can be called, and whether each is up.",
+        "tags": [
+          "services"
+        ]
+      }
+    },
+    "/v1/services/{plugin}/{name}/serve": {
+      "get": {
+        "description": "Host and agent level.",
+        "operationId": "get_v1_services__plugin___name__serve",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plugin",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "With a WebSocket handshake: the stream `serve` of the AsyncAPI document."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Only as a WebSocket: for the program that answers the service's calls.",
+        "tags": [
+          "services"
+        ]
+      }
+    },
+    "/v1/services/{plugin}/{name}/{method}": {
+      "post": {
+        "description": "Host and agent level.",
+        "operationId": "post_v1_services__plugin___name___method_",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plugin",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "method",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Call a method of the service PLUGIN/NAME: JSON in, JSON out.",
+        "tags": [
+          "services"
+        ]
+      }
+    },
+    "/v1/sessions": {
+      "get": {
+        "description": "Host level only.",
+        "operationId": "get_v1_sessions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Session"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "All sessions, running and ended.",
+        "tags": [
+          "sessions"
+        ]
+      },
+      "post": {
+        "description": "Host level only.",
+        "operationId": "post_v1_sessions",
+        "parameters": [
+          {
+            "description": "A duration such as 30s, at most 10m: answer when the command has ended, with what it wrote.",
+            "in": "query",
+            "name": "wait",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartSession"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Started"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Start a session.",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/v1/sessions/{id}": {
+      "delete": {
+        "description": "Host level only.",
+        "operationId": "delete_v1_sessions__id_",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Done"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "End it if it runs (HUP, after five seconds KILL) and forget it with its transcript.",
+        "tags": [
+          "sessions"
+        ]
+      },
+      "get": {
+        "description": "Host and agent level.",
+        "operationId": "get_v1_sessions__id_",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "With a WebSocket handshake: the stream `session` of the AsyncAPI document."
+          },
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "One session's state. The agent sees those it started through a task.",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/v1/sessions/{id}/input": {
+      "post": {
+        "description": "Host level only.",
+        "operationId": "post_v1_sessions__id__input",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Done"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Write to standard input or type into the terminal. Never recorded.",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/v1/sessions/{id}/output": {
+      "get": {
+        "description": "Host and agent level.",
+        "operationId": "get_v1_sessions__id__output",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "stdout, stderr or merged (default), for a process.",
+            "in": "query",
+            "name": "stream",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Byte offset to read from.",
+            "in": "query",
+            "name": "since",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Most bytes to return; default 1 MB.",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Read lines from this line number (a process only).",
+            "in": "query",
+            "name": "line",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "How many lines; default 100.",
+            "in": "query",
+            "name": "count",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The last so many lines.",
+            "in": "query",
+            "name": "tail",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Output"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "The transcript, by bytes or by lines.",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/v1/sessions/{id}/resize": {
+      "post": {
+        "description": "Host level only.",
+        "operationId": "post_v1_sessions__id__resize",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Resize"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Done"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Give a terminal a new size.",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/v1/sessions/{id}/screen": {
+      "get": {
+        "description": "Host and agent level.",
+        "operationId": "get_v1_sessions__id__screen",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "text (default) or ansi, which keeps colours.",
+            "in": "query",
+            "name": "format",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "That many lines of screen and scrollback instead.",
+            "in": "query",
+            "name": "tail",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Screen"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "A terminal as it looks now, as text.",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/v1/sessions/{id}/signal": {
+      "post": {
+        "description": "Host level only.",
+        "operationId": "post_v1_sessions__id__signal",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Signal"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Done"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Send INT, TERM, HUP or KILL to the session's process group.",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/v1/stats": {
+      "get": {
+        "description": "Host level only.",
+        "operationId": "get_v1_stats",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Stats"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Load, CPU, memory, filesystems, network, GPU and unit states, read now.",
+        "tags": [
+          "stats"
+        ]
+      }
+    },
+    "/v1/tasks": {
+      "get": {
+        "description": "Host and agent level.",
+        "operationId": "get_v1_tasks",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Task"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "The tasks the caller may run, in the order of the file.",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/v1/tasks/{name}": {
+      "post": {
+        "description": "Host and agent level.",
+        "operationId": "post_v1_tasks__name_",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A duration such as 30s, at most 10m: answer when the command has ended, with what it wrote.",
+            "in": "query",
+            "name": "wait",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunTask"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Started"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Run a task. It and what extends it are the steps of one session.",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/v1/tasks/{name}/choices/{argument}": {
+      "get": {
+        "description": "Host and agent level.",
+        "operationId": "get_v1_tasks__name__choices__argument_",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "argument",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Choices"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "The values to offer for an argument.",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/v1/units": {
+      "get": {
+        "description": "Host level only.",
+        "operationId": "get_v1_units",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Unit"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "The units and their state.",
+        "tags": [
+          "units"
+        ]
+      }
+    },
+    "/v1/units/{unit}": {
+      "get": {
+        "description": "Host level only.",
+        "operationId": "get_v1_units__unit_",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "unit",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "One unit's properties, as systemctl show gives them.",
+        "tags": [
+          "units"
+        ]
+      }
+    },
+    "/v1/units/{unit}/{verb}": {
+      "post": {
+        "description": "Host level only.",
+        "operationId": "post_v1_units__unit___verb_",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "unit",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "verb",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Done"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Start, stop, restart, reload, enable or disable a unit.",
+        "tags": [
+          "units"
+        ]
+      }
+    },
+    "/v1/version": {
+      "get": {
+        "description": "Host and agent level.",
+        "operationId": "get_v1_version",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Version"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "The version of berthd and of its API.",
+        "tags": [
+          "version"
+        ]
+      }
+    }
+  }
+}

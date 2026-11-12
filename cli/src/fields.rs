@@ -4,9 +4,6 @@ pub const PROFILES: &[&str] = &["laptop", "cloud", "qemu"];
 pub const DISK_MODES: &[&str] = &[
     "auto", "serial", "model", "path", "largest", "smallest", "ssd", "hdd",
 ];
-pub const MANAGE_TASKS: &[&str] = &[
-    "status", "access", "publish", "pair", "smoke", "secrets", "update", "reboot",
-];
 pub const DISK_TYPES: &[&str] = &["any", "ssd", "hdd"];
 
 /// The pages of a host: its overview (`Manage`) and the tabs of the set-up flow.
@@ -44,79 +41,32 @@ impl Step {
     }
 }
 
-/// What the overview of a host offers: name, label and help. `terminal` opens
-/// a shell, `apply` runs the installer role again, the rest are tasks of
-/// `bin/manage-host.sh`. Plugins add to `status`, `smoke`, `update` and
-/// `sign-in:status` with actions that extend them.
-/// Sign-ins of the agent account: name, label, help, the command and whether
-/// it needs the terminal. They run as `berth manage HOST sign-in:NAME`. What is
-/// signed in comes from plugins, which extend `sign-in:status` and put their
-/// own sign-in into the Sign-In group.
-pub const SIGN_INS: &[(&str, &str, &str, &str, bool)] = &[(
-    "status",
-    "Show who is signed in",
-    "The accounts the tools on this host are signed in to for the agent: the coding agents, GitHub and whatever else the plugins of this host know about.",
-    "true",
-    false,
-)];
-
-/// The groups of the overview that come with berth and the tasks in each.
-/// Sign-In follows them; plugins add their actions to any of them.
-pub const OVERVIEW: &[(&str, &[&str])] = &[
-    ("System", &["status", "terminal", "smoke", "update", "reboot"]),
-    ("Access", &["access", "publish", "pair"]),
-    ("Sync", &["secrets"]),
-];
-pub const SIGN_IN_GROUP: &str = "Sign-In";
-
+/// The rows of a host's overview that are berth's own: name, label and help.
+/// Everything else there is a task the host lists itself.
 pub const TASKS: &[(&str, &str, &str)] = &[
-    (
-        "status",
-        "Status",
-        "Provisioning state, services, graphics renderer, disk space and failed units, followed by the access links and what the plugins of this host report.",
-    ),
-    (
-        "access",
-        "Access links and desktop password",
-        "Links for the desktop, T3, Cockpit and SSH, and the password of the virtual desktop.",
-    ),
     (
         "terminal",
         "Terminal",
-        "A shell on the host, in a panel here. Space switches between the agent account, with its tools on the PATH and the virtual desktop as its display, and the SSH user. The agent's shell connects as the SSH user and switches with sudo, which may ask for that user's password. Leave it with exit or Ctrl+D; Ctrl+Q closes it. The mouse wheel scrolls back. From the command line: berth ssh HOST, or berth ssh HOST --agent.",
-    ),
-    (
-        "publish",
-        "Publish desktop and T3 on the tailnet",
-        "Run tailscale serve on the host so the desktop and T3 get HTTPS addresses inside your tailnet.",
-    ),
-    (
-        "pair",
-        "Use T3 from another device",
-        "T3 Code asks every new browser to pair once. This gives a link for the phone or computer you want to use it from; it works once, within 10 minutes. T3 has to be published on the tailnet first.",
-    ),
-    (
-        "smoke",
-        "Self-Test",
-        "Run devbox-smoke as the agent: graphics, browser, office tools and the coding agents. The plugins of this host add their own checks.",
-    ),
-    (
-        "secrets",
-        "Secrets and registry logins",
-        "Send this host's secrets and the logins of its registries to the agent account: tokens as environment variables or files, npm and Docker logins. Replaces what was installed before, and is followed by what the plugins of this host bring over. Choose them with: berth host HOST secret ... and berth host HOST registry ...",
-    ),
-    (
-        "update",
-        "Update",
-        "apt update and dist-upgrade on the host, then what the plugins of this host keep up to date. Says whether a reboot is needed afterwards.",
+        "A shell on the host, in a panel here. Space switches between the agent account, with its tools on the PATH and the virtual desktop as its display, and the SSH user. It is a session of the host: Ctrl+Q leaves it running and it can be opened again from Sessions; exit or Ctrl+D ends it. The mouse wheel scrolls back. From the command line: `berth attach HOST`.",
     ),
     (
         "apply",
         "Apply this configuration",
-        "Run the installer role against the host again with the settings of this profile, for example after changing what is installed. Continues in the terminal.",
+        "Run the installer role against the host again with the settings of this profile, for example after changing what is installed. It also installs or updates berth's own tools on the host. Continues in the terminal.",
     ),
-    ("reboot", "Reboot", "Restart the host."),
+    (
+        "connect",
+        "Connect again",
+        "Ask the host again what it can do. A host whose sudo asks for a password needs that password once; it is kept until berth is closed and stored nowhere.",
+    ),
+    (
+        "ssh",
+        "Terminal over SSH",
+        "A shell on the host as the SSH user, over plain SSH, for looking at a host whose controller cannot be reached. From the command line: `berth ssh HOST`.",
+    ),
 ];
+/// How much the agent account may do with sudo.
+pub const PRIVILEGES: &[&str] = &["full", "limited", "none"];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
@@ -172,7 +122,7 @@ impl Action {
                 "Provision a dedicated Ubuntu host using Ansible. Blank inventory applies to this machine."
             }
             Action::Docker => {
-                "Build the desktop image using Docker Compose. Start it afterwards with make docker-up."
+                "Build the desktop image using Docker Compose. Start it afterwards with docker compose."
             }
             Action::Manage => {
                 "Look after a host that is already set up, over SSH: show its status and access links, publish the desktop on the tailnet, run the smoke test, install updates or reboot. Pick the task on Review."
@@ -256,6 +206,7 @@ pub enum Field {
     AgentKey,
     AgentHash,
     AgentSudo,
+    AgentPrivileges,
     ToolsWeb,
     ToolsNative,
     ToolsJvm,
@@ -274,7 +225,6 @@ pub enum Field {
     UsbDevice,
     Inventory,
     AskBecomePass,
-    ManageTask,
     SshHost,
     SshUser,
     SshPort,
@@ -437,6 +387,12 @@ impl Field {
                 Secret,
                 "Optional local password for the agent. F4 generates a password and hash, F5 hashes a password you enter. Empty locks password login.",
             ),
+            AgentPrivileges => (
+                "Agent privileges",
+                "/agent_privileges",
+                Choice(PRIVILEGES),
+                "What the agent may do with sudo. full: everything, for machines you would throw away. limited: install and update packages with apt, and restart its own desktop and services; it cannot touch SSH, Tailscale, the firewall, the SSH user or berth's controller. none: nothing. It guards against accidents, not intent: package scripts run as root.",
+            ),
             AgentSudo => (
                 "Agent passwordless sudo",
                 "/agent_passwordless_sudo",
@@ -539,12 +495,6 @@ impl Field {
                 Path,
                 "Path to an Ansible inventory file. Blank provisions this machine.",
             ),
-            ManageTask => (
-                "Task",
-                "/builder/manage_task",
-                Choice(MANAGE_TASKS),
-                "status: services, graphics, disk and access links. access: links and the desktop password. publish: put the desktop and T3 on the tailnet. smoke: run the host's self-test. update: install package updates. reboot: restart the host.",
-            ),
             AskBecomePass => (
                 "Ask for sudo password",
                 "/builder/ask_become_pass",
@@ -603,7 +553,9 @@ impl Field {
             OperatorUser | OperatorKey | OperatorHash | OperatorSudo => {
                 Group::Heading("Operator Account")
             }
-            AgentUser | AgentKey | AgentHash | AgentSudo => Group::Heading("Agent Account"),
+            AgentUser | AgentKey | AgentHash | AgentSudo | AgentPrivileges => {
+                Group::Heading("Agent Account")
+            }
             ToolsWeb | ToolsNative | ToolsJvm | ToolsDotnet | ToolsScripting | ToolsScientific
             | ToolsChrome => Group::Heading("Development Tools"),
             DiskSerial | DiskModel | DiskPath | DiskType => Group::Under(DiskMode),

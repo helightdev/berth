@@ -1,10 +1,22 @@
 [package]
 name = "berth"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.88"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
+berth-core.workspace = true
+berth-api.workspace = true
+berth-pty.workspace = true
+# For its API document, which berth serve's includes.
+berthd = { path = "../host/berthd" }
+tokio.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+axum.workspace = true
+utoipa.workspace = true
+utoipa-axum.workspace = true
 ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
 crossterm = "=0.29.0"
 serde_json = "1"

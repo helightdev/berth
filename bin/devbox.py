@@ -25,7 +25,7 @@ BUILD = Path(os.environ.get('DEVBOX_BUILD_DIR') or ROOT / 'build').resolve()
 # Explicit allowlist: local profiles, keys and build outputs never enter a release.
 RELEASE_SOURCES = [
     'ansible', 'bin', 'bootstrap', 'container', 'plugins', 'tests',
-    'requirements.txt', 'ansible.cfg', 'README.md', 'LICENSE', 'Makefile',
+    'requirements.txt', 'ansible.cfg', 'README.md', 'LICENSE',
     'cli/Cargo.toml', 'cli/Cargo.lock', 'cli/build.rs', 'cli/src', 'cli/vendor/tui-input',
     'cli/vendor/README.md', 'config/example.json',
 ]
@@ -134,7 +134,10 @@ def checked_config(path, kind):
         check_public_key(c['agent_ssh_public_key'], 'agent')
     if text(c, 'agent_password_hash'):
         check_password_hash(c['agent_password_hash'], 'agent')
-    elif not flag(c, 'agent_passwordless_sudo', True):
+    privileges = text(c, 'agent_privileges')
+    if privileges not in ('', 'full', 'limited', 'none'):
+        raise ValueError('agent_privileges must be full, limited or none')
+    if not text(c, 'agent_password_hash') and not flag(c, 'agent_passwordless_sudo', True) and not privileges:
         raise ValueError('Agent password is required when passwordless sudo is off')
 
     variables = c.setdefault('ansible_vars', {})
@@ -215,6 +218,8 @@ def account_vars(c):
         'devbox_agent_password_hash': c.get('agent_password_hash', ''),
         'devbox_agent_ssh_public_key': c.get('agent_ssh_public_key', ''),
         'devbox_agent_passwordless_sudo': c.get('agent_passwordless_sudo', True),
+        # full, limited or none; a profile without it follows the flag above.
+        'devbox_agent_privileges': c.get('agent_privileges', ''),
         'devbox_operator_user': c.get('operator_username', DEFAULT_OPERATOR),
         'devbox_operator_password_hash': c.get('operator_password_hash', ''),
         'devbox_operator_ssh_public_key': c.get('operator_ssh_public_key', ''),

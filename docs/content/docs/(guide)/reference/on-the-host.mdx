@@ -1,0 +1,107 @@
+---
+title: On the host
+description: Where berth puts things on a host, and what an agent finds there to learn about the machine.
+icon: FolderTree
+---
+
+## Files
+
+<Files>
+  <Folder name="/etc/devbox" defaultOpen>
+    <File name="AGENT.md" />
+    <Folder name="guides">
+      <File name="desktop.md" />
+      <File name="graphics.md" />
+      <File name="PLUGIN-FEATURE.md" />
+    </Folder>
+    <File name="expected-commands" />
+    <File name="mcp.json" />
+    <File name="environment" />
+  </Folder>
+  <Folder name="/etc/berth" defaultOpen>
+    <File name="berthd.json" />
+    <File name="tasks.json" />
+    <File name="services.json" />
+    <File name="channels.json" />
+  </Folder>
+  <Folder name="/var/lib/devbox">
+    <File name="provision-state" />
+    <File name="ready" />
+    <File name="toolchains.json" />
+  </Folder>
+  <Folder name="/run/berth">
+    <File name="control.sock" />
+    <File name="agent.sock" />
+  </Folder>
+  <Folder name="/home/agent">
+    <Folder name=".config/devbox">
+      <File name="secrets.env" />
+    </Folder>
+    <Folder name=".config/tigervnc">
+      <File name="password" />
+    </Folder>
+    <Folder name=".config/mise">
+      <File name="config.toml" />
+    </Folder>
+  </Folder>
+  <Folder name="/srv/agent" defaultOpen>
+    <Folder name="workspaces" />
+    <Folder name="artifacts" />
+  </Folder>
+</Files>
+
+| Path | Holds |
+| --- | --- |
+| `/etc/devbox/AGENT.md` | The description of the machine for agents (below) |
+| `/etc/devbox/guides/` | Longer guides for the desktop, graphics, and each plugin feature with a guide |
+| `/etc/devbox/expected-commands` | Commands the self-test requires, including those plugins list |
+| `/etc/devbox/mcp.json` | The desktop MCP server, to merge into an MCP client's configuration |
+| `/etc/berth/*.json` | berthd's settings, tasks, services and channel topics |
+| `/usr/local/lib/berth/tasks/` | The scripts of berth's own tasks |
+| `/var/lib/devbox/provision-state` | The state of the first-boot provisioning |
+| `/var/lib/devbox/ready` | Written when Ansible converged, with the release's digest |
+| `/var/lib/devbox/toolchains.json` | The runtime versions that were installed |
+| `/var/lib/berth/` | berthd's state: session transcripts and the kept channel messages |
+| `/run/berth/` | berthd's sockets, host level and agent level |
+| `~/.config/devbox/secrets.env` | Secrets given as environment variables |
+| `~/.config/tigervnc/password` | The desktop's password |
+| `/srv/agent/workspaces`, `/srv/agent/artifacts` | Where agents keep projects and output, such as screenshots |
+
+## Services
+
+| Unit | Runs |
+| --- | --- |
+| `berthd.service` | berthd, as root |
+| `berth-svc-PLUGIN-NAME.service` | One per [plugin service](/docs/extend/services) |
+| `devbox-provision.service` | The first-boot provisioning of a USB or cloud install, with a retry timer |
+| The agent's user services | The virtual desktop, noVNC and T3 Code |
+
+## What agents read
+
+`/etc/devbox/AGENT.md` is generated on each host from what was installed there. It lists the tool categories, the coding agents and the CPU or GPU rendering, with one line per plugin feature. It stays short and points to `/etc/devbox/guides/` for the rest.
+
+The agents' own instruction files reference it, without overwriting existing text:
+
+| Agent | File |
+| --- | --- |
+| Claude Code | `~/.claude/CLAUDE.md` |
+| Codex | `~/.codex/AGENTS.md` |
+| Pi | `~/.pi/agent/AGENTS.md` |
+
+GUI programs, T3 Code and the commands it starts share the desktop's `DISPLAY`, Xauthority and session bus. Ordinary shell commands get them with [`box exec`](/docs/reference/box#desktop-environment).
+
+## The self-test
+
+`devbox-smoke` is the **Self-Test** task. It checks:
+
+- that the expected commands exist
+- llvmpipe on the shared desktop and in Xvfb, and lavapipe enumeration
+- that the coding clients start with `--version`
+- the desktop, browsers and artifact tools
+- whatever the host's plugins add
+
+ It saves graphics reports and screenshots in its artifact directory.
+
+```bash
+berth run studio smoke
+```

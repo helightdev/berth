@@ -1,0 +1,56 @@
+---
+title: Graphics
+description: How the agent's desktop renders, on the CPU by default or on the host's GPU.
+icon: MonitorCog
+---
+
+The agent's desktop renders on the CPU by default and works without a GPU. A host with a GPU that Mesa drives can render on it instead.
+
+| | CPU (default) | GPU |
+| --- | --- | --- |
+| Setting | `devbox_software_rendering: true` | `devbox_software_rendering: false` |
+| In berth | **Software graphics** on | **Software graphics** off |
+| OpenGL | Mesa llvmpipe | Mesa on the first usable `/dev/dri/renderD*` |
+| Vulkan | Mesa lavapipe | Mesa |
+| Needs | Nothing | An Intel or AMD GPU with Mesa drivers; apply and reboot |
+
+The setting applies to the virtual desktop, D-Bus-activated GUI programs, T3 and commands started with `box exec`. It does not change the laptop's physical login session.
+
+## Software rendering
+
+Mesa provides OpenGL through llvmpipe and Vulkan through lavapipe; the lavapipe ICD file is discovered, not hard-coded. No GPU, `/dev/dri` passthrough or privileged container is needed. CPU rendering suits headless tools and tests. Measure performance and application support for your own workload.
+
+## Hardware rendering
+
+With software graphics off, the role adds the agent to the `render` and `video` groups. It starts the virtual display with TigerVNC's `-rendernode` on the first usable render node, and OpenGL and Vulkan programs on the agent's desktop run on that GPU through Mesa. Apply the configuration and reboot.
+
+This does not set up NVIDIA's proprietary driver or GPU passthrough into a VM.
+
+## Checking
+
+```bash title="As the agent"
+box exec glxinfo -B
+box exec vulkaninfo --summary
+```
+
+`box exec devbox-smoke` checks llvmpipe on the shared desktop and in Xvfb and lavapipe enumeration, and saves the graphics reports next to its screenshots.
+
+## Separate displays
+
+TigerVNC provides the persistent desktop on `:1`. Xvfb is installed too, for GUI jobs that should not share the agent's desktop:
+
+```bash title="As the agent"
+box exec xvfb-run -a -s '-screen 0 1280x720x24 +extension GLX' glxinfo -B
+# A separately installed and licensed Unity editor and project:
+box exec xvfb-run -a /path/to/Unity -batchmode -force-glcore \
+  -projectPath /srv/agent/workspaces/example -quit -logFile -
+```
+
+The Unity line shows the form of the call. berth does not install or test Unity there. It selects OpenGL explicitly, because software Vulkan support varies between applications.
+
+In the container, Compose runs everything under an init process (`init: true`) so Xvfb jobs and their children are reaped. With `docker run`, pass `--init`. Do not make `xvfb-run` PID 1.
+
+## References
+
+- [Mesa environment variables](https://docs.mesa3d.org/envvars.html) and [llvmpipe](https://docs.mesa3d.org/drivers/llvmpipe.html)
+- [TigerVNC Xvnc](https://tigervnc.org/doc/Xvnc.html)

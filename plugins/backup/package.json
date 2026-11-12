@@ -1,0 +1,77 @@
+{
+  "name": "berth-plugin-backup",
+  "version": "0.1.0",
+  "displayName": "Backup",
+  "description": "Snapshots of the agent's data with restic, sent anywhere rclone reaches.",
+  "license": "MIT",
+  "keywords": [
+    "berth-plugin"
+  ],
+  "files": [
+    "tasks",
+    "files",
+    "guide.md"
+  ],
+  "berth": {
+    "features": [
+      {
+        "id": "restic",
+        "group": "System",
+        "label": "Backups",
+        "description": "Nightly encrypted snapshots of the agent's home and workspaces with restic, stored through rclone. Set the repository as `devbox_backup_repository` in the profile's ansible_vars, for example `rclone:b2:my-bucket/laptop`, and send two file secrets to the host: the repository password as `~/.config/berth-backup/password` and the rclone configuration as `~/.config/rclone/rclone.conf`.",
+        "summary": "Nightly snapshots of your home and `/srv/agent` with restic. Caches, `node_modules` and Unity's `Library` are left out.",
+        "packages": [
+          "restic",
+          "rclone"
+        ],
+        "commands": [
+          "restic",
+          "rclone"
+        ],
+        "tasks": "tasks/install.yml",
+        "guide": "guide.md",
+        "actions": [
+          {
+            "name": "snapshot",
+            "label": "Back up now",
+            "user": "root",
+            "help": "Take a snapshot now and apply the retention policy. The first run creates the repository.",
+            "run": "/usr/local/sbin/berth-backup snapshot"
+          },
+          {
+            "name": "list",
+            "label": "List snapshots",
+            "user": "root",
+            "help": "The snapshots in the repository, of this host and of others that share it.",
+            "run": "/usr/local/sbin/berth-backup list"
+          },
+          {
+            "name": "restore",
+            "label": "Restore a snapshot",
+            "user": "root",
+            "help": "Put the files of a snapshot back where they were taken from, on this host or on a freshly set-up one that was given the same repository and secrets. Files that are not in the snapshot stay as they are.",
+            "confirm": "Restore the snapshot over the files of this host?",
+            "arguments": [
+              {
+                "name": "snapshot",
+                "label": "Snapshot",
+                "required": true,
+                "default": "latest",
+                "choices": "/usr/local/sbin/berth-backup ids"
+              }
+            ],
+            "run": "/usr/local/sbin/berth-backup restore"
+          },
+          {
+            "name": "last-snapshot",
+            "label": "Last snapshot",
+            "user": "root",
+            "help": "When the last snapshot was taken and when the next one is due. Part of Status.",
+            "extends": "status",
+            "run": "/usr/local/sbin/berth-backup last"
+          }
+        ]
+      }
+    ]
+  }
+}

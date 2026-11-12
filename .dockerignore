@@ -6,3 +6,5 @@
 !container/
 !container/Dockerfile
 !container/entrypoint.sh
+!plugins/
+!plugins/**

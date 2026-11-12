@@ -1,0 +1,26 @@
+[package]
+name = "berthd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+berth-api.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+libc.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+berth-pty.workspace = true
+vt100.workspace = true
+axum.workspace = true
+hyper = { workspace = true, features = ["server"] }
+hyper-util = { workspace = true, features = ["service"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower = { version = "0.5", features = ["util"] }
+utoipa.workspace = true
+utoipa-axum.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

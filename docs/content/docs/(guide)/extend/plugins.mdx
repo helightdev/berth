@@ -1,0 +1,66 @@
+---
+title: Plugins
+description: Optional software, tasks and guides for hosts, switched on per host.
+icon: Blocks
+---
+
+A plugin adds optional things to a host. Each thing is a **feature**: packages, set-up steps, a guide for the agents working there, and tasks on the host's overview. A plugin can have several features, each switched on by itself. Even the coding agents are plugins.
+
+## Plugins that come with berth
+
+| Plugin | Features | Adds |
+| --- | --- | --- |
+| `claude` | `claude/cli` | Claude Code, its sign-in, its update, and the desktop MCP server |
+| `codex` | `codex/cli` | Codex, its sign-in, its update, and the desktop MCP server |
+| `pi` | `pi/cli` | The Pi coding agent and its update |
+| `t3` | `t3/server` | T3 Code, a web front end that runs and supervises the coding agents |
+| `github` | `github/cli` | `gh`, its sign-in, and git set up to use its login |
+| `unity` | `unity/cli`, `unity/editor` | The Unity CLI and an editor, with sign-in, license activation and status |
+| `backup` | `backup/restic` | Nightly restic snapshots ([Backups](/docs/use/backups)) |
+
+A host gets the features listed in `devbox_plugin_features`. Unless that is set, it lists the five agent and tool features: `claude/cli`, `codex/cli`, `pi/cli`, `t3/server` and `github/cli`. Older profiles with `devbox_install_agents`, `devbox_agent_*` or `devbox_install_t3` are turned into that list when berth opens them.
+
+## Switching features on
+
+Features are off until chosen. On a host's **Features** tab they are listed in their groups next to the built-in entries. Space on a group's heading switches everything in it. The choice is stored in the profile:
+
+```json title="~/.config/berth/hosts/studio.json"
+{ "ansible_vars": { "devbox_plugin_features": ["unity/cli", "unity/editor"] } }
+```
+
+and reaches a running host with **Apply this configuration**.
+
+## Installing a plugin
+
+| Location | For |
+| --- | --- |
+| `plugins/ID/` in the provisioning source | Plugins that come with berth |
+| `~/.config/berth/plugins/` | Your own |
+
+The **Plugins** tab of the home screen (`5`) lists both with their features. Enter on **+ Add plugin** installs one from a package name, a `.tgz` or a folder, and `x` twice removes one of yours.
+
+<Screen name="home-plugins" alt="The Plugins tab listing the shipped plugins with their features" />
+
+From the command line:
+
+```bash
+berth plugins add @acme/berth-plugin-foo     # from a registry
+berth plugins add ./foo-1.0.0.tgz            # a tarball from npm pack
+berth plugins add ~/src/berth-plugin-foo     # a folder
+berth plugins                                # what is found, and from where
+berth plugins remove @acme/berth-plugin-foo
+```
+
+`add` runs `npm install --ignore-scripts --prefix ~/.config/berth/plugins`, so registries and credentials come from your npm configuration. You can also copy a folder to `~/.config/berth/plugins/NAME/` by hand. Npm is not needed for that.
+
+A plugin of yours with the same id as a built-in one replaces it. berth reads a plugin's `package.json` and hands its tasks to Ansible. It never runs the package's npm scripts.
+
+## Other install methods
+
+| Method | Plugins |
+| --- | --- |
+| USB installer, cloud seed | The release archive contains the built-in plugins, and yours when built through berth |
+| Container | Set `PLUGIN_FEATURES='["unity/cli"]'` for the build. Only plugins in the source's `plugins/` directory are in the build context |
+| Plain Ansible | Pass `devbox_plugin_features`, and `devbox_plugin_dirs` (`{"ID": "/path"}`) for plugins outside the source's `plugins/` |
+
+To write your own, see [Writing a plugin](/docs/extend/writing-plugins).

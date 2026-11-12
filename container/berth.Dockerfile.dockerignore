@@ -1,0 +1,10 @@
+target/
+.git/
+.venv/
+build/
+docs/
+**/node_modules/
+**/__pycache__/
+config/*.json
+!config/example.json
+ansible/roles/devbox/files/bin/

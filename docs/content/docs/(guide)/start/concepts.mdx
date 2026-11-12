@@ -1,0 +1,50 @@
+---
+title: How it fits together
+description: The parts of berth, where each one runs, and the words the rest of the docs use.
+icon: Network
+---
+
+berth has a side on your machine, the *workstation*, and a side on each host.
+
+```text
+ your machine                                  a host
+┌──────────────────────────┐   SSH    ┌──────────────────────────────────┐
+│ berth  (terminal UI, CLI)│ ───────▶ │ berthd        root daemon, API   │
+│ profiles, secrets        │          │ box           for the agent      │
+│ berth serve (local API)  │          │ desktop, agents, T3, plugins     │
+└──────────────────────────┘          └──────────────────────────────────┘
+```
+
+## The parts
+
+| Part | Runs on | Does |
+| --- | --- | --- |
+| `berth` | your machine | Keeps a profile per host and installs it. Manages hosts afterwards from its terminal UI or commands |
+| The role | the host, once per install or apply | The Ansible role that sets up the host. Every install method runs it |
+| `berthd` | the host, as root | Runs tasks, sessions and services and answers the [API](/docs/api/host) |
+| `box` | the host, for the agent | Desktop control, tasks the agent may run, the channel and services, from the agent's side ([box](/docs/reference/box)) |
+| `berth serve` | your machine or a server | One API over all hosts, with an inbox and a key-value store. Other machines' berth can use its hosts ([A berth server](/docs/use/server)) |
+| Plugins | both | Optional software, tasks and services, switched on per host ([Plugins](/docs/extend/plugins)) |
+
+The software berth puts on a host is called *devbox*. The name appears in paths and settings there, such as `/etc/devbox` and `devbox_` variables.
+
+## Words used in these docs
+
+| Term | Meaning |
+| --- | --- |
+| Host | A laptop, server, VM or container that berth sets up and manages |
+| Profile | The JSON file that describes one host, from what to install to how it is reached. See [Profile](/docs/reference/profile) |
+| Operator | Your account on the host, `ops` by default, for SSH and Cockpit |
+| Agent | The account the coding agents work in, `agent` by default. The virtual desktop runs as this account. Its sudo rights are its [privileges](/docs/use/accounts) |
+| Task | Something a host can do, such as Status or a sign-in, run from its overview or with `berth run HOST TASK`. Plugins add tasks |
+| Host level, agent level | berthd answers on two sockets. berth connects at host level, as root. `box` connects at agent level, as the agent. Each call says which levels may use it |
+
+## Connecting to a host
+
+berth connects to a host by running `ssh HOST sudo -n berthd connect` and talking HTTP to berthd over that connection. Several requests share one SSH connection. A profile can name another command instead in `builder.link`, which is how a container is reached:
+
+```json title="~/.config/berth/hosts/NAME.json"
+{ "builder": { "link": ["docker", "exec", "-i", "CONTAINER", "berthd", "connect"] } }
+```
+
+When the SSH user's sudo asks for a password, berth asks you once and keeps it until it closes.

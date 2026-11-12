@@ -1,0 +1,20 @@
+# Managed by berth: what {{ devbox_user }} may do as root ({{ devbox_privileges }}).
+{% if devbox_privileges == 'full' %}
+{{ devbox_user }} ALL=(ALL:ALL) NOPASSWD: ALL
+{% elif devbox_privileges == 'password' %}
+{{ devbox_user }} ALL=(ALL:ALL) ALL
+{% elif devbox_privileges == 'limited' %}
+# Packages, and restarting the services of plugins that run as this account.
+# This guards against accidents, not intent: what a package installs runs as root.
+Defaults:{{ devbox_user }} env_keep += "DEBIAN_FRONTEND"
+{% for apt in ['/usr/bin/apt-get', '/usr/bin/apt'] %}
+{{ devbox_user }} ALL=(root) NOPASSWD: {{ apt }} update
+{{ devbox_user }} ALL=(root) NOPASSWD: {{ apt }} install *, {{ apt }} -y install *
+{% for verb in ['upgrade', 'dist-upgrade', 'full-upgrade', 'autoremove'] %}
+{{ devbox_user }} ALL=(root) NOPASSWD: {{ apt }} {{ verb }}, {{ apt }} -y {{ verb }}, {{ apt }} {{ verb }} -y
+{% endfor %}
+{% endfor %}
+{% for unit in devbox_agent_units | default([]) %}
+{{ devbox_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl restart {{ unit }}
+{% endfor %}
+{% endif %}

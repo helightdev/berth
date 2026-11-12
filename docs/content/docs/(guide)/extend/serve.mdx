@@ -1,0 +1,106 @@
+---
+title: berth serve
+description: One API over all your hosts, with an inbox of their messages and a key-value store, for scripts, user interfaces and other machines' berth.
+icon: Plug
+---
+
+`berth serve` offers one API over every saved host. It reaches each host the way the terminal UI does and passes the host's own operations through, so a program can use all hosts without SSH of its own. Every operation is in the [API reference](/docs/api/serve).
+
+```bash
+berth serve
+```
+
+It prints where it listens and how many hosts it knows. Only one runs per user. To use its hosts from another machine's berth, see [A berth server](/docs/use/server).
+
+## What it adds
+
+| Operations | For |
+| --- | --- |
+| [`hosts.*`](/docs/api/serve/hosts) | The saved hosts, and applying a host's profile as a job |
+| Every [berthd operation](/docs/api/host) | With a host: `"host": "NAME"` on the portal, `/v1/hosts/NAME/…` over HTTP. Only the `secrets` task is refused |
+| [`jobs.*`](/docs/api/serve/jobs) | Jobs such as an apply, with their output |
+| [`inbox.*`](/docs/api/serve/inbox) | Messages the hosts published on their channels and kept, taken in while `berth serve` runs; each can be marked done |
+| [`kv.*`](/docs/api/serve/kv) | A key-value store with revisions, for user interfaces to keep state in |
+| [`events.follow`](/docs/api/serve/events) | One stream of channel messages, jobs and key-value changes, at `/v1/events` |
+
+All of it is also on the [portal](/docs/api/portal), the one WebSocket at `/v1/portal` for calls and streams together.
+
+The inbox, jobs and key-value store are kept in a store in berth's data directory for `retention_days` (90 by default), and are also readable without the server:
+
+```bash
+berth inbox studio --topic ask/        # what is open; --all includes what is done
+berth kv set ui layout '{"columns": 2}'
+berth kv ls ui
+```
+
+## Where it listens
+
+<Tabs items={['Unix socket', 'TCP on this machine', 'TCP for other machines']}>
+<Tab value="Unix socket">
+
+Always: `$XDG_RUNTIME_DIR/berth/serve.sock`, readable by your user only. Requests there do not need the token.
+
+```bash
+curl --unix-socket "$XDG_RUNTIME_DIR/berth/serve.sock" http://berth/v1/hosts
+```
+
+</Tab>
+<Tab value="TCP on this machine">
+
+```bash
+berth serve --listen 127.0.0.1:7777
+```
+
+Requests over TCP, the portal included, send the token as a bearer. The token is made on first use and kept in `serve.token` in berth's data directory:
+
+```bash
+curl -H "Authorization: Bearer $(cat ~/.local/share/berth/serve.token)" http://127.0.0.1:7777/v1/hosts
+```
+
+A browser cannot set a header on a WebSocket, so the token is also accepted as the `Sec-WebSocket-Protocol` value.
+
+</Tab>
+<Tab value="TCP for other machines">
+
+An address other than loopback needs `--expose` as well:
+
+```bash
+berth serve --listen 0.0.0.0:7777 --expose
+```
+
+<Callout type="warn" title="Plain HTTP">
+  The connection is not encrypted, and the token gives full control of every host. Serve it behind a TLS proxy such as Tailscale Serve or Caddy, or keep it on a private network such as your tailnet.
+</Callout>
+
+</Tab>
+</Tabs>
+
+## In a container
+
+The `ghcr.io/helightdev/berth` image runs `berth serve --listen 0.0.0.0:7777 --expose` by default, as user `berth` (uid 1000):
+
+```bash
+docker run -d --name berth -p 127.0.0.1:7777:7777 \
+  -v berth-config:/config -v berth-data:/data \
+  -v ~/.ssh:/home/berth/.ssh:ro \
+  ghcr.io/helightdev/berth
+docker exec berth cat /data/berth/serve.token
+```
+
+| Path | Holds |
+| --- | --- |
+| `/config/berth/` | Settings and host profiles (`/config/berth/hosts`) |
+| `/data/berth/` | The store, `serve.token` and builds |
+| `/home/berth/.ssh` | SSH keys and configuration for reaching hosts |
+
+The image contains ansible-core, the OpenSSH client and Python, so it can also apply configurations. See [A berth server](/docs/use/server) for using it from berth on another machine.
+
+## The API documents
+
+```bash
+berth operations    # every operation, for the portal and HTTP
+berth openapi       # OpenAPI 3 for the HTTP routes
+berth asyncapi      # AsyncAPI 3 for the streams
+```
+
+The [API reference](/docs/api) is generated from them.

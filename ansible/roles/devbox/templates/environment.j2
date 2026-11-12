@@ -17,6 +17,7 @@ export VK_DRIVER_FILES={{ devbox_lvp_icd }}
 
 export DEVBOX_COCKPIT={{ '1' if devbox_install_cockpit and devbox_profile != 'container' else '0' }}
 export DEVBOX_USER={{ devbox_user }}
-export DEVBOX_PASSWORDLESS_SUDO={{ '1' if devbox_agent_passwordless_sudo else '0' }}
+export DEVBOX_PASSWORDLESS_SUDO={{ '1' if devbox_privileges == 'full' else '0' }}
+export DEVBOX_AGENT_PRIVILEGES={{ devbox_privileges }}
 # What the owner installed with berth for this account, if anything.
 if [ -r "$HOME/.config/devbox/secrets.env" ]; then . "$HOME/.config/devbox/secrets.env"; fi

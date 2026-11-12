@@ -1,0 +1,177 @@
+---
+title: Writing a plugin
+description: The plugin package format, from a minimal example to every field of features and actions.
+icon: FileCode
+---
+
+A plugin is a package in npm's format: a folder with a `package.json` that has a `berth` section next to the usual fields. `npm pack` and `npm publish` understand it, so plugins can be shared through npmjs.com or a private registry such as Nexus or Verdaccio. The Unity plugin in `plugins/unity/` is a good one to copy.
+
+## A minimal plugin
+
+```json title="~/.config/berth/plugins/hello/package.json"
+{
+  "name": "berth-plugin-hello",
+  "version": "1.0.0",
+  "displayName": "Hello",
+  "berth": {
+    "features": [
+      {
+        "id": "cowsay",
+        "group": "Development Tools",
+        "label": "cowsay",
+        "description": "Installs cowsay and adds a greeting to the overview.",
+        "summary": "`cowsay` is installed.",
+        "packages": ["cowsay"],
+        "commands": ["cowsay"],
+        "actions": [
+          {"name": "greet", "label": "Say hello", "run": "cowsay hello from $(hostname)"}
+        ]
+      }
+    ]
+  }
+}
+```
+
+Switch it on under Development Tools, apply the configuration, and **Say hello** appears on the host's overview.
+
+## The package
+
+<Files>
+  <Folder name="berth-plugin-unity" defaultOpen>
+    <File name="package.json" />
+    <File name="guide.md" />
+    <Folder name="tasks" defaultOpen>
+      <File name="cli.yml" />
+      <File name="editor.yml" />
+    </Folder>
+  </Folder>
+</Files>
+
+```json title="package.json"
+{
+  "name": "berth-plugin-unity",
+  "version": "0.1.0",
+  "displayName": "Unity",
+  "description": "Unity CLI and editor for berth machines.",
+  "keywords": ["berth-plugin"],
+  "files": ["tasks", "guide.md"],
+  "berth": {
+    "features": [
+      {
+        "id": "cli",
+        "group": "Development Tools",
+        "label": "Unity CLI",
+        "description": "Shown as help in berth.",
+        "summary": "Unity CLI (`unity`) with its agent skills.",
+        "packages": ["libgtk-3-0t64"],
+        "commands": ["unity"],
+        "tasks": "tasks/cli.yml",
+        "guide": "guide.md",
+        "actions": [
+          {"name": "status", "label": "Sign-in and license", "run": "unity auth status"}
+        ]
+      }
+    ]
+  }
+}
+```
+
+The plugin's id is the package name without its scope and without a leading `berth-plugin-`, so `@acme/berth-plugin-unity` is `unity`. `berth.id` overrides that. Ids and feature ids are lower-case letters, digits, `-` and `_`, starting with a letter. `displayName` is the name berth shows.
+
+## Features
+
+<TypeTable
+  type={{
+    id: { type: 'string', required: true, description: 'The feature is referred to as PLUGIN/ID.' },
+    group: { type: 'string', description: 'The group it is listed in on the Features tab.' },
+    label: { type: 'string', description: 'Name in berth.' },
+    description: { type: 'string', description: 'Help text in berth.' },
+    summary: { type: 'string', description: "One line for the host's /etc/devbox/AGENT.md." },
+    packages: { type: 'string[]', description: 'Ubuntu packages to install.' },
+    commands: { type: 'string[]', description: 'Commands the host must have afterwards; added to /etc/devbox/expected-commands, which the self-test checks.' },
+    tasks: { type: 'string', description: 'Path of an Ansible task list in the package.' },
+    guide: { type: 'string', description: 'Path of a guide for agents in the package.' },
+    actions: { type: 'Action[]', description: "Tasks for the host's overview." },
+    services: { type: 'Service[]', description: 'Programs that keep running on the host and answer calls. See Writing a service.' },
+    channels: { type: 'Channel[]', description: "Topics of the host's channel the feature uses, with how long messages are kept." },
+  }}
+/>
+
+## Actions
+
+An action becomes a task of the host named `PLUGIN:ACTION`. Applying the configuration writes the actions of the chosen features to the host, and they appear on the overview in their group. From the command line: `berth run HOST PLUGIN:ACTION`.
+
+<TypeTable
+  type={{
+    name: { type: 'string', required: true, description: 'Identifier, unique within the plugin.' },
+    run: { type: 'string', required: true, description: 'Shell command to run on the host.' },
+    label: { type: 'string', description: 'What berth shows.' },
+    help: { type: 'string', description: 'Help text in berth.' },
+    user: { type: '"agent" | "root" | "operator"', default: '"agent"', description: 'agent runs in its home with the desktop environment; operator is the SSH user.' },
+    agent: { type: 'boolean', default: 'false', description: 'Lets the agent run it itself with box run PLUGIN:ACTION.' },
+    arguments: { type: 'Argument[]', description: 'Values asked for before it runs: {name, label, required, default, choices}.' },
+    confirm: { type: 'string', description: 'A sentence to confirm before it runs, for something that cannot be taken back.' },
+    terminal: { type: 'boolean', default: 'false', description: 'For a command that asks something or shows a link to follow, such as a sign-in.' },
+    group: { type: 'string', description: 'The overview group: System, Access, Sync, Sign-In, or your own. Default: a group named after the plugin.' },
+    extends: { type: 'string | string[]', description: 'Run as a step after status, smoke, update, secrets or sign-in:status instead of having a row of its own.' },
+  }}
+/>
+
+### Arguments
+
+The command finds each argument as `BERTH_ARG_NAME` in its environment, upper-cased, with `_` for anything that is not a letter or digit. Values are never pasted into the command line. `choices` is a command whose output lines are the values to offer.
+
+### Steps of other tasks
+
+An action with `extends` has no row of its own. It runs after the task it extends, every time, and its output follows the task's. Start that output with the plugin's name. A task and its steps run one after another in one session, each as its own user. All steps run even when one fails. `berth run HOST status` includes what plugins add to it.
+
+### Terminal actions
+
+An action with `terminal: true` gets a terminal of its own in a panel, with the same keys as other [panels](/docs/use/overview#panels). From the command line it runs in your terminal over `ssh -t`. Actions without it have no terminal, so make them non-interactive.
+
+Sign-ins should not open a browser on the host. Start them with `env -u DISPLAY BROWSER=echo` so the tool prints its link.
+
+<Callout type="warn">
+  Leave `agent` off for anything the agent should not start, and think twice before setting it on an action that runs as `root`.
+</Callout>
+
+## Tasks
+
+`tasks` is a plain Ansible task list, included while the role runs: after the base tools and coding agents are installed, before the desktop is configured. Features are applied in the order the plugin lists them, so a later one can rely on an earlier one. Everything the role knows is available, most usefully:
+
+| Variable | Value |
+| --- | --- |
+| `devbox_user`, `devbox_home` | The agent's account and home |
+| `devbox_plugin_dir` | The package's directory, for files it brings |
+| `devbox_plugin_features` | Every feature chosen for the host |
+| `devbox_software_rendering`, `devbox_profile` | And the other `devbox_` settings |
+
+A setting of your own, such as a version, can be given per host in the profile's `ansible_vars` as long as its name starts with `devbox_`. Read it with a default:
+
+```yaml
+version: "{{ devbox_unity_cli_version | default('1.0.0-beta.17') }}"
+```
+
+Tasks must be safe to run again, because applying a configuration runs them every time.
+
+## Guide
+
+The guide is installed as `/etc/devbox/guides/PLUGIN-FEATURE.md` and linked from the host's `AGENT.md` ([On the host](/docs/reference/on-the-host#what-agents-read)). It is a Jinja template, so it can adapt to the host:
+
+```md title="guide.md"
+{% if devbox_software_rendering %}
+This machine renders on the CPU; pass `--software`.
+{% endif %}
+```
+
+Write it for an agent that has never seen the tool. Cover what the command is and what has to happen before first use. Then say what needs a person, and what the agent must not ask about again.
+
+## Channels
+
+A feature that publishes on the host's channel lists its topics with how long the host keeps them:
+
+```json
+"channels": [{"topic": "progress", "keep": "none", "max": 1000, "days": 30}]
+```
+
+The topic becomes `PLUGIN/TOPIC`. `keep` is the default for messages published there. With `none` only current listeners see a message, `last` stores the newest one, and `log` stores them for reading later. `max` and `days` limit a log. Publish with `box publish PLUGIN/TOPIC '{"percent": 40}'` and read with `box listen PLUGIN/`.

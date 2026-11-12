@@ -1,0 +1,124 @@
+---
+title: Install berth
+description: Put the berth command on the machine you work from. It is one file.
+icon: Download
+---
+
+berth runs on Linux. The program contains everything it puts on a host, so installing it means placing one file on your `PATH`.
+
+<Tabs items={['Install script', 'Cargo', 'Container image']}>
+<Tab value="Install script">
+
+```bash title="Linux x86_64"
+curl -fsSL https://raw.githubusercontent.com/helightdev/berth/main/install.sh | sh
+```
+
+The script downloads the latest release for Linux x86_64 from GitHub, checks it against its SHA-256 and installs it to `~/.local/bin/berth`.
+
+| Variable | Effect |
+| --- | --- |
+| `BERTH_INSTALL_DIR` | Install somewhere else than `~/.local/bin` |
+| `BERTH_VERSION` | Install a release tag such as `v0.2.0` instead of the latest |
+
+On other architectures, build it with cargo.
+
+</Tab>
+<Tab value="Cargo">
+
+Building needs Rust 1.88 or newer, Python 3 and the musl target, because the build also makes the two static programs every host gets, `berthd` and `box`:
+
+```bash
+rustup target add x86_64-unknown-linux-musl
+cargo install --locked --git https://github.com/helightdev/berth berth
+```
+
+From a checkout, `cargo install --locked --path cli` does the same.
+
+</Tab>
+<Tab value="Container image">
+
+`ghcr.io/helightdev/berth` holds berth with SSH, Python and Ansible beside it. Its default command is `berth serve` on port 7777:
+
+```bash
+docker run -d --name berth -p 127.0.0.1:7777:7777 \
+  -v berth-config:/config -v berth-data:/data \
+  -v ~/.ssh:/home/berth/.ssh:ro \
+  ghcr.io/helightdev/berth
+```
+
+Any other command goes after the image name, and the terminal UI needs the default command cleared:
+
+```bash
+docker run --rm -it -v berth-config:/config -v berth-data:/data ghcr.io/helightdev/berth list
+docker run --rm -it --entrypoint berth -v berth-config:/config -v berth-data:/data \
+  -v ~/.ssh:/home/berth/.ssh:ro ghcr.io/helightdev/berth
+```
+
+See [berth serve](/docs/extend/serve#in-a-container) for the volumes and the token. A berth installed on your machine can use the container's hosts with its token:
+
+```bash
+berth --server http://127.0.0.1:7777 --token "$(docker exec berth cat /data/berth/serve.token)" list
+```
+
+See [A berth server](/docs/use/server).
+
+</Tab>
+</Tabs>
+
+Check it:
+
+```bash
+berth --version
+berth
+```
+
+## What else berth uses
+
+| For | Needs |
+| --- | --- |
+| Setting up a host over SSH or applying its configuration | `ssh`, `python3`, `ansible-playbook` (ansible-core 2.21, which needs Python 3.12 or newer) |
+| Building a USB installer | `python3`, `xorriso`, `curl` |
+| Hashing passwords | `openssl` |
+| Installing plugins from a registry | `npm` |
+
+The install script lists what is missing. A source checkout with a `.venv` gets its own `ansible-playbook` from there:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+```
+
+## Where berth keeps things
+
+| What | Where |
+| --- | --- |
+| Settings | `~/.config/berth/config.json` |
+| One private profile per host, with generated passwords beside it | `~/.config/berth/hosts/NAME.json` |
+| Secret values and registry passwords | `~/.config/berth/secrets.json` |
+| Your own plugins | `~/.config/berth/plugins/` |
+| Provisioning source, unpacked from the program | `~/.local/share/berth/source/` |
+| Build output such as the release archive, seeds and installer images | `~/.local/share/berth/build/` |
+| Downloaded Ubuntu installer ISOs | `~/.local/share/berth/iso/` (setting `iso_dir`) |
+
+`XDG_CONFIG_HOME` and `XDG_DATA_HOME` are honoured. `berth config` prints the paths and settings, and `berth config KEY VALUE` changes one. The Settings tab of the home screen does the same.
+
+<Callout type="warn">
+  Profiles hold Wi-Fi passwords and enrollment keys in clear text. Keep the hosts directory private and out of version control.
+</Callout>
+
+## The provisioning source
+
+The *provisioning source* is what berth puts on a host. It holds the Ansible role with `berthd` and `box`, the bootstrap scripts and the built-in plugins. It is built into the program and unpacked into the data directory the first time it is needed, and again after an update. The program can be copied to another machine as it is.
+
+berth looks for the source in this order:
+
+1. `BERTH_SOURCE`
+2. the `source` setting
+3. a checkout in the current directory, when berth is started inside one
+4. the built-in copy
+
+To work on the role, point berth at your checkout, and clear the setting to go back:
+
+```bash
+berth config source ~/src/berth
+berth config source ""
+```

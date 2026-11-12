@@ -1,0 +1,64 @@
+---
+# berth's own tasks, in the order the overview shows them. berthd reads them
+# from /etc/berth/tasks.json, where the actions of the plugins follow.
+devbox_task_dir: /usr/local/lib/berth/tasks
+devbox_core_tasks:
+  - name: status
+    label: Status
+    group: System
+    user: root
+    help: Provisioning state, services, graphics renderer, disk space and failed units, followed by the access links and what the plugins of this host report.
+    run: "{{ devbox_task_dir }}/status.sh"
+  - name: smoke
+    label: Self-Test
+    group: System
+    user: agent
+    agent: true
+    help: "Run devbox-smoke as the agent: graphics, browser, office tools and the coding agents. The plugins of this host add their own checks."
+    run: devbox-smoke
+  - name: update
+    label: Update
+    group: System
+    user: root
+    help: apt update and dist-upgrade on the host, then what the plugins of this host keep up to date. Says whether a reboot is needed afterwards.
+    run: "{{ devbox_task_dir }}/update.sh"
+  - name: reboot
+    label: Reboot
+    group: System
+    user: root
+    confirm: Restart the host? Everything running on it ends, sessions included.
+    help: Restart the host.
+    run: "{{ devbox_task_dir }}/reboot.sh"
+  - name: access
+    label: Access links and desktop password
+    group: Access
+    user: root
+    help: Links for the desktop, T3, Cockpit and SSH, and the password of the virtual desktop.
+    run: "{{ devbox_task_dir }}/access.sh"
+  - name: publish
+    label: Publish desktop and T3 on the tailnet
+    group: Access
+    user: root
+    help: Run tailscale serve on the host so the desktop and T3 get HTTPS addresses inside your tailnet.
+    run: "{{ devbox_task_dir }}/publish.sh"
+  - name: pair
+    label: Use T3 from another device
+    group: Access
+    user: root
+    help: T3 Code asks every new browser to pair once. This gives a link for the phone or computer you want to use it from; it works once, within 10 minutes. T3 has to be published on the tailnet first.
+    run: "{{ devbox_task_dir }}/pair.sh"
+  - name: secrets
+    label: Secrets and registry logins
+    group: Sync
+    user: agent
+    input: secrets
+    help: "Send this host's secrets and the logins of its registries to the agent account: tokens as environment variables or files, npm and Docker logins. Replaces what was installed before, and is followed by what the plugins of this host bring over."
+    run: /usr/local/bin/devbox-secrets
+  - name: "sign-in:status"
+    label: Show who is signed in
+    group: Sign-In
+    user: agent
+    agent: true
+    help: "The accounts the tools on this host are signed in to for the agent: the coding agents, GitHub and whatever else the plugins of this host know about."
+    run: "true"
+devbox_service_dir: /usr/local/lib/berth/services

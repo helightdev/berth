@@ -12,3 +12,20 @@
   environment:
     HOME: "{{ devbox_home }}"
     DISABLE_AUTOUPDATER: '1'
+# The desktop tools, for every project of the agent. Recorded in ~/.claude.json;
+# the command is only started when Claude Code uses it.
+- name: See whether Claude Code knows the desktop tools
+  ansible.builtin.command:
+    argv: [grep, -qs, /usr/local/bin/box, "{{ devbox_home }}/.claude.json"]
+  register: devbox_claude_mcp
+  changed_when: false
+  failed_when: false
+- name: Register the desktop tools with Claude Code
+  ansible.builtin.command:
+    argv: ["{{ devbox_home }}/.local/bin/claude", mcp, add, --transport, stdio, --scope, user, desktop, --, /usr/local/bin/agent-env, /usr/local/bin/box, mcp]
+    chdir: "{{ devbox_home }}"
+  become_user: "{{ devbox_user }}"
+  environment:
+    HOME: "{{ devbox_home }}"
+    DISABLE_AUTOUPDATER: '1'
+  when: devbox_claude_mcp.rc != 0

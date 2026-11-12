@@ -5,28 +5,30 @@ it through noVNC, so what you open there is visible to them.
 
 ## Running GUI programs
 
-`agent-env COMMAND ...` runs a command inside that session's environment: display,
+`box exec COMMAND ...` runs a command inside that session's environment: display,
 Xauthority, D-Bus session and the tool PATH. Without arguments it opens a shell
 with the same environment. Use it for anything that opens a window and for tools
 that talk to the session, such as the keyring.
 
-    agent-env firefox https://example.com
-    agent-env xvfb-run -a COMMAND ...     # a private display nobody sees
+    box exec firefox https://example.com
+    box exec xvfb-run -a COMMAND ...     # a private display nobody sees
 
 ## Seeing and steering it
 
-    agent-env devbox-desktop screenshot --output /srv/agent/artifacts/screen.png
-    agent-env devbox-desktop click --args '{"x":300,"y":250}'
-    agent-env devbox-desktop type --args '{"text":"Hello"}'
-    agent-env devbox-desktop key --args '{"key":"ctrl+l"}'
+    box desktop screenshot --output /srv/agent/artifacts/screen.png
+    box desktop click --args '{"x":300,"y":250}'
+    box desktop type --args '{"text":"Hello"}'
+    box desktop key --args '{"key":"ctrl+l"}'
 
-`devbox-desktop --help` lists everything. `xdotool` and `wmctrl` are installed too.
-The same tool is a stdio MCP server; its configuration is `/etc/devbox/mcp.json`.
+`box desktop --help` lists everything. `xdotool` and `wmctrl` are installed too.
+`box mcp` is the same as a stdio MCP server; its configuration is
+`/etc/devbox/mcp.json`. `devbox-desktop` is the old name of `box desktop` and
+still works.
 
 ## Sharing it
 
 - Only one task should operate the desktop at a time. Calls are serialized.
-- `devbox-desktop pause` stops automated input while a person takes over, and
+- `box desktop pause` stops automated input while a person takes over, and
   `resume` allows it again. Respect a pause you did not set.
 - A program waiting on a dialog blocks whoever started it. After starting a GUI
   program, take a screenshot and deal with what it shows.

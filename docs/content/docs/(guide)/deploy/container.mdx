@@ -1,0 +1,66 @@
+---
+title: Container
+description: Run the desktop as a Docker container to try berth without a spare machine.
+icon: Container
+---
+
+The container image is the desktop, the agents and T3 Code built with the same role, for trying things out. It is not a full host: there is no systemd, and browsers cannot start under Docker's default seccomp profile.
+
+## Run it
+
+Needs Docker Engine with Compose. From a source checkout:
+
+```bash
+docker compose -f container/compose.yml build
+docker compose -f container/compose.yml up -d
+docker compose -f container/compose.yml logs -f
+```
+
+| Open | For |
+| --- | --- |
+| `http://127.0.0.1:16080/vnc.html` | The desktop |
+| `http://127.0.0.1:13773/` | T3 Code |
+
+The desktop's password is generated when the container starts and is not part of the image:
+
+```bash
+docker compose -f container/compose.yml exec desktop cat /home/agent/.config/tigervnc/password
+```
+
+Run the smoke test and stop it again:
+
+```bash
+docker compose -f container/compose.yml exec -T desktop /usr/local/bin/devbox-smoke
+docker compose -f container/compose.yml down
+```
+
+**Container image** on a host's Install tab builds the same image from the host's profile.
+
+## What it keeps
+
+Ports are published on host loopback only. If Docker runs on another machine, tunnel them with SSH or Tailscale. Named volumes keep `/srv/agent/workspaces` and `/srv/agent/artifacts`, and `down` does not delete them. Credentials and the rest of the home directory go with the container.
+
+## Reaching it from berth
+
+The container runs `berthd` for the agent account, without systemd and without root. Sessions, tasks that run as the agent, the channel and files work. Calls that need systemd or another user are refused. A profile connects to it with a `link` command in its `builder` section:
+
+```json title="~/.config/berth/hosts/NAME.json"
+{ "builder": { "link": ["docker", "exec", "-i", "CONTAINER", "berthd", "connect"] } }
+```
+
+## A smaller build
+
+All tool categories are on by default and a full build downloads several GiB. For a smaller first build without agents or Playwright browsers:
+
+```bash
+PLUGIN_FEATURES='[]' INSTALL_PLAYWRIGHT=false INSTALL_DEV_TOOLS=false \
+  docker compose -f container/compose.yml build
+```
+
+`INSTALL_DEV_TOOLS` switches every tool category; `INSTALL_WEB_TOOLS`, `INSTALL_NATIVE_TOOLS` and the others in [Tools](/docs/reference/tools#tool-categories) switch one each. `PLUGIN_FEATURES` lists the plugin features to build in, such as `'["unity/cli"]'`. Only plugins in the source's `plugins/` directory are in the build context. Firefox and the desktop are always included.
+
+## Limits
+
+- The container is not privileged and does not get the Docker socket. It does not run Docker itself. Use [QEMU](/docs/deploy/qemu) to test Docker on a host.
+- Chromium and Chrome cannot create their sandbox under Docker's default seccomp profile, so browsers do not start and the smoke test lists that check as skipped. Use a VM or a full host for browser work rather than turning the sandbox off.
+- Compose runs the container with `init: true`. With `docker run`, pass `--init`.

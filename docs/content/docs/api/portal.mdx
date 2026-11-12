@@ -1,0 +1,91 @@
+---
+title: The portal
+description: One WebSocket for every operation, calls and streams at once, on berthd and on berth serve.
+icon: Cable
+---
+
+The portal is a WebSocket at `/v1/portal`. A client opens it once and sends operations as JSON frames, each with a number of its own, so many calls and streams share the connection. berth in [server mode](/docs/use/server) reaches the server's hosts this way.
+
+## Opening it
+
+| Program | Where |
+| --- | --- |
+| berthd | `GET /v1/portal` on `/run/berth/control.sock` for host level, or on `agent.sock` for agent level |
+| `berth serve` | `GET /v1/portal` on its unix socket, or over TCP with the token in `Authorization: Bearer`. A browser, which cannot set that header, gives the token as the `Sec-WebSocket-Protocol` value |
+
+## A call
+
+The client numbers each request with `id`, an integer below 2^32 that it does not reuse while that request or its stream is open. The answer comes back under the same number, in any order:
+
+```js
+→ {"id": 7, "op": "sessions.start", "args": {"wait": "30s"}, "data": {"kind": "process", "command": "uname -a"}}
+← {"id": 7, "result": {"id": "k3v9qz2m8w1x", "exit_code": 0, "stdout_b64": "TGludXggc3R1ZGlvIC4uLgo="}}
+```
+
+| Field | Holds | Over HTTP it is |
+| --- | --- | --- |
+| `id` | The request's number | none |
+| `op` | The operation's name | the method and path |
+| `args` | The operation's arguments | the path, the query and some headers |
+| `data` | The operation's input | the body |
+| `host` | On `berth serve` only: the host whose operation this is | the `/v1/hosts/NAME` prefix |
+
+An error comes back instead of a result, with the same fields as an HTTP error ([Errors](/docs/api#errors)):
+
+```js
+← {"id": 8, "error": {"code": "not_found", "message": "No session nothing", "status": 404}}
+```
+
+An unknown operation is `404`, and a missing argument is `400`.
+
+## A host's operation through berth serve
+
+On the portal of `berth serve`, `host` names the host and the rest of the frame is the host's operation, exactly as berthd takes it:
+
+```js
+→ {"id": 9, "host": "studio", "op": "tasks.run", "args": {"name": "status"}}
+← {"id": 9, "result": {"id": "a81kq0wd3m5c"}}
+```
+
+`berth serve` refuses the `secrets` task, because the secrets stay on the machine that runs it.
+
+## A stream
+
+The reply to a streaming operation is `{"open": true}`. The server then sends frames under the same number, as `sub`, until either side ends it:
+
+```js
+→ {"id": 10, "op": "sessions.attach", "args": {"id": "k3v9qz2m8w1x", "since": 0}}
+← {"id": 10, "result": {"open": true}}
+← binary: 00 00 00 0a, then the session's bytes
+→ binary: 00 00 00 0a, then typed bytes
+→ {"sub": 10, "data": {"resize": {"cols": 120, "rows": 40}}}
+← {"sub": 10, "data": {"exited": {"exit_code": 0}}}
+← {"sub": 10, "end": true}
+```
+
+| Frame | Direction | Means |
+| --- | --- | --- |
+| `{"sub": N, "data": …}` | both | A JSON frame of the stream |
+| binary | both | `N` as a big-endian 32-bit integer, then the stream's bytes |
+| `{"sub": N, "end": true}` | both | The last frame. From the server it may include `error` |
+
+The frames inside `data` and the bytes after the four-byte prefix are those of the stream's own WebSocket, listed on each stream's page. Calls go on beside open streams.
+
+## Bytes
+
+Bytes in input or a result are `{"base64": "…"}`, and a result adds `content_type`. The portal takes up to 8 MB of bytes per operation, and a larger result is a `413` error. Use HTTP for larger transfers, such as big files.
+
+```js
+→ {"id": 11, "op": "files.write", "args": {"path": "/srv/agent/workspaces/notes.txt"}, "data": {"base64": "aGVsbG8K"}}
+← {"id": 11, "result": {"ok": true}}
+```
+
+## When to use HTTP instead
+
+- One-off calls from a shell, with `curl`.
+- Transfers of files and screenshots larger than 8 MB.
+- Operations the reference marks as not on the portal, which answer `501` there.
+
+## Clients
+
+berth's own client is `berth_api::portal` in `crates/berth-api/src/portal.rs`. The tests `the_portal_carries_calls_and_streams_together` for berthd and `the_portal_reaches_serve_and_its_hosts` for `berth serve` show calls, streams, bytes and errors in use.

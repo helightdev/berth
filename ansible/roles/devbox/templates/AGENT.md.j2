@@ -4,7 +4,7 @@ Generated when the machine was set up; it lists what this one has. The guides
 under `/etc/devbox/guides/` go into detail. Read the one for a tool before using it.
 
 - Host `{{ ansible_facts.hostname }}`, Ubuntu {{ ansible_facts.distribution_version }}, set up as `{{ devbox_profile }}`.
-- You are `{{ devbox_user }}`. {% if devbox_agent_passwordless_sudo %}`sudo -n` works without a password.{% else %}sudo asks for a password; ask the owner for administration.{% endif %}
+- You are `{{ devbox_user }}`. {% if devbox_privileges == 'full' %}`sudo -n` works without a password.{% elif devbox_privileges == 'limited' %}`sudo -n` works for packages only: `apt-get update`, `apt-get install ...`, `apt-get upgrade` (also as `apt`, also with `-y` first){% if devbox_agent_units | default([]) | length > 0 %}, and `systemctl restart` of {{ devbox_agent_units | join(', ') }}{% endif %}. Nothing else runs as root.{% elif devbox_privileges == 'none' %}You have no sudo. Work inside your home and `/srv/agent`.{% else %}sudo asks for a password you do not have.{% endif %}
 
 - Workspaces: `/srv/agent/workspaces`. Outputs meant for people: `/srv/agent/artifacts`.
 - Use separate git worktrees for parallel work.
@@ -12,8 +12,9 @@ under `/etc/devbox/guides/` go into detail. Read the one for a tool before using
 ## Desktop
 
 XFCE runs on display `:1` and is shared: never start a second desktop session.
-`agent-env COMMAND ...` runs a command with that display, its Xauthority and the
-tool PATH; `devbox-desktop` takes screenshots and sends input.
+`box exec COMMAND ...` runs a command with that display, its Xauthority and the
+tool PATH; `box desktop` takes screenshots and sends input, and `box mcp` offers
+the same as MCP tools.
 Details: `/etc/devbox/guides/desktop.md`.
 
 Graphics: {% if devbox_software_rendering %}CPU rendering (Mesa llvmpipe for OpenGL, lavapipe for Vulkan); there is no GPU acceleration.{% else %}the host's GPU where the driver allows it.{% endif %}
@@ -39,6 +40,13 @@ Graphics: {% if devbox_software_rendering %}CPU rendering (Mesa llvmpipe for Ope
 resolved versions and `/etc/devbox/expected-commands` every command this machine
 is expected to have. `yq` is the Python/jq-based Ubuntu package, not mikefarah/yq.
 Not listed here means not installed; install what a task needs.
+
+## Tasks
+
+`box tasks` lists the named operations of this machine you may run, such as the
+self-test; `box run TASK` runs one and shows its output. `box --help` has the
+rest: publishing and reading messages on the machine's channel, and calling the
+services plugins provide.
 
 ## Rules
 

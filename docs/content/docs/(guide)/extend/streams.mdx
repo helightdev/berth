@@ -1,0 +1,134 @@
+---
+title: Streams
+description: "Frames, resuming, reconnecting and the events stream of the WebSockets in berthd and berth serve."
+icon: Radio
+---
+
+Anything that keeps producing output is a streaming operation, such as `sessions.attach`, `logs.follow` or `channel.listen`. A client opens one as a subscription on the [portal](/docs/api/portal), next to other calls and streams, or as a WebSocket of its own at the operation's path. The frames are the same either way. This page covers what all streams have in common. The [API reference](/docs/api) lists each stream's arguments and frames.
+
+## Opening a stream
+
+On the portal, send the operation as a request and the stream's frames follow under its number ([A stream](/docs/api/portal#a-stream)). On its own, a stream is a WebSocket opened at the path of the thing streamed. A session's
+output is at `/v1/sessions/{id}`, the channel at `/v1/channel`, and a service's
+serving connection at `/v1/services/{service}/serve`. Open it with a `GET` and
+the usual upgrade headers, on the same unix socket as the plain requests.
+
+`berth serve` passes a host's streams through under `/v1/hosts/{name}`, so the
+session above is at `/v1/hosts/{name}/sessions/{id}` there, with the same
+frames. Over TCP the token from `serve.token` goes in an
+`Authorization: Bearer` header. A browser cannot set a header on a WebSocket, so
+the token is also accepted as the `Sec-WebSocket-Protocol` value.
+
+What a client has to say back goes over the same socket. A client never needs a
+second request to type into a session or to resize it.
+
+## Text and binary frames
+
+Text frames are JSON, one message each. Binary frames hold only session bytes
+(and, on the workstation, a job's output bytes). Everything else is a text frame.
+
+Bytes that appear inside JSON are base64, in a field whose name ends in `_b64`.
+
+## The session stream
+
+A session has two kinds, and the binary frames differ.
+
+**A terminal.** Binary frames are the terminal's bytes in both directions. The
+server sends what the program wrote. The client sends what was typed. The attach add-on of
+xterm.js expects exactly this. A browser terminal connects directly.
+
+**A process.** Its streams are separate, so the first byte of every binary
+frame says which one:
+
+| First byte | Direction | Meaning |
+|---|---|---|
+| `0` | client to server | standard input |
+| `1` | server to client | standard output |
+| `2` | server to client | standard error |
+
+The rest of the frame is the bytes.
+
+Text frames are the same for both kinds:
+
+| Frame | From | Meaning |
+|---|---|---|
+| `{"resize":{"cols":120,"rows":40}}` | client | a terminal's new size |
+| `{"signal":"INT"}` | client | `INT`, `TERM`, `HUP` or `KILL` to the process group |
+| `{"eof":true}` | client | close a process's standard input |
+| `{"exited":{"exit_code":0}}` | server | the command ended; this is the last frame |
+| `{"dropped":{"bytes":65536}}` | server | this viewer was too slow and missed output |
+
+Any number of viewers can be connected to one session. A terminal has the size
+that the last viewer to resize it asked for.
+
+## Resuming
+
+A stream that can be resumed takes `since=` and starts there. The page of each
+stream says whether it can. What `since` counts depends on the stream:
+
+| Stream | `since` is |
+|---|---|
+| a session | a byte offset from the start of the session's output |
+| the channel | a message id; messages after it come first |
+| the logs | a journal cursor from an earlier entry, or a time that `journalctl` understands |
+| a job | a byte offset into the job's output |
+
+Without `since`, a terminal starts with a replay of its current screen. A process
+starts at the beginning of its output.
+
+## Reconnecting
+
+A socket ends when the network does, when `berthd` restarts, or when the client
+closes it. To carry on where it stopped:
+
+1. Count the bytes of a session as they arrive, or remember the `id` of the last
+   channel message, or the `cursor` of the last log entry.
+2. Open the stream again with `since=` set to that value.
+3. Wait a little longer after each failure, and start over from a short wait
+   after a connection works.
+
+A session itself does not depend on the connection. It keeps running while
+nobody is connected, and its output is kept in a transcript of up to 16 MB. If
+`berthd` itself restarts, its sessions end. They are listed as ended with
+`lost: true`, and a stream of one of them can still be read from its transcript.
+
+`box serve` does the reconnecting for a service, with a backoff, so a service
+written in shell needs nothing for it.
+
+## A slow listener is dropped
+
+A client that cannot keep up does not slow the others down:
+
+- On a session, the stream carries on, the viewer misses output, and the server
+  sends a `dropped` frame with how much it missed. Read the missing range with
+  `GET /v1/sessions/{id}/output?since=OFFSET`, or reconnect with `since=`.
+- On the channel, a listener that falls 1,000 messages behind is closed. Open it
+  again with `since` set to the last id it saw.
+
+## Events on your machine
+
+`berth serve` has one stream, [`events.follow`](/docs/api/serve/events), that follows several things at once. On the portal it is one subscription; on its own it is the WebSocket at:
+
+```http
+GET /v1/events
+```
+
+The first frame the client sends says what to follow. It is sent once, first:
+
+```json
+{ "hosts": ["studio"], "jobs": true, "kv": ["ui"], "topics": ["myplugin/"] }
+```
+
+`hosts` and `topics` select channel messages by host and by topic prefix. `jobs`
+turns on job starts and ends. `kv` lists the key-value namespaces to watch.
+
+Each frame the server sends names where it came from in `source`, which is
+`channel`, `job` or `kv`:
+
+```json
+{ "source": "kv", "namespace": "ui", "key": "layout", "revision": 4, "value": {} }
+```
+
+A channel frame also has the `host` and the `message`, and a job frame has the
+`job`. Events are not resumable. After a reconnect, read what was missed with
+`inbox.list` and `kv.list`, then follow again. `inbox.follow` and `kv.follow` follow one of them alone.

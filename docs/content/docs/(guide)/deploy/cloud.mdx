@@ -1,0 +1,76 @@
+---
+title: Cloud machine from a seed
+description: Render cloud-init user data that sets up a fresh cloud machine on its first boot.
+icon: Cloud
+---
+
+A cloud seed is cloud-init user data for a fresh Ubuntu 26.04 amd64 instance, at Hetzner or any provider that takes cloud-init. On first boot it creates the operator's access and then downloads, checks and applies the release archive.
+
+berth does not create or pay for cloud machines. Create the instance at your provider and paste the seed in as its user data.
+
+## Render the seed
+
+<Steps>
+<Step>
+
+### Set the profile
+
+Create the host and set **Host profile** to `cloud`.
+
+</Step>
+<Step>
+
+### Choose the release source
+
+The machine downloads the generic release archive on first boot. On **Install** with **Cloud-init seed** chosen:
+
+- **Publish release to** switches between the file servers and raw repositories from the Registries tab. Berth uploads the archive there when it makes the seed. See [Publishing the release archive](/docs/use/registries#publishing-the-release-archive).
+- Or upload it yourself and enter its HTTPS address in **Release HTTPS URL** (`release_url`).
+
+</Step>
+<Step>
+
+### Limit SSH
+
+Enter your network in **Recovery SSH CIDR**, such as `198.51.100.7/32`. It is `devbox_bootstrap_ssh_cidr` under `ansible_vars`.
+
+</Step>
+<Step>
+
+### Make it
+
+Run **Cloud-init seed**, or:
+
+```bash
+berth seed cloud-1
+```
+
+</Step>
+</Steps>
+
+<Screen name="install-cloud" alt="The Install tab of a cloud host with Cloud-init seed chosen, two problems and a warning listed above Run" />
+
+<Callout type="warn" title="No recovery CIDR means SSH from anywhere">
+  Without a recovery SSH CIDR, a cloud host accepts SSH from any address. Keep **SSH hardening** on in that case, so only keys work, and use a provider firewall scoped to your admin IP. Do not open VNC, T3 or Cockpit to the internet.
+</Callout>
+
+## What you get
+
+| File | Use |
+| --- | --- |
+| `~/.local/share/berth/build/HOST/cloud/user-data` | Paste as user data when creating the server |
+| `~/.local/share/berth/build/devbox-release.tar.gz` | Upload unchanged to the release address, unless berth publishes it |
+
+The user data is JSON-form YAML with the `#cloud-config` header. It holds the expected SHA-256 of the archive. Every seed build repackages the release, so the digest in the seed matches the current source. It is limited to 32 KiB, the size of Hetzner's user data field.
+
+The cloud bootstrap does not partition or format disks and keeps the provider's default account and networking. Follow progress on the machine as for the [USB installer](/docs/deploy/usb#boot-it).
+
+## Without berth
+
+From a source checkout:
+
+```bash
+python3 bin/devbox.py render --kind cloud --config config/local.json
+```
+
+The files are written to `build/` in the checkout.

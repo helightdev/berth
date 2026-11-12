@@ -1,0 +1,2476 @@
+{
+  "components": {
+    "schemas": {
+      "Argument": {
+        "properties": {
+          "choices": {
+            "description": "A command whose lines are the values to offer.",
+            "type": "string"
+          },
+          "default": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "CallFrame": {
+        "description": "berthd to the serving program.",
+        "properties": {
+          "body": {},
+          "from": {
+            "$ref": "#/components/schemas/From"
+          },
+          "id": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "method": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "method",
+          "body",
+          "from"
+        ],
+        "type": "object"
+      },
+      "Choices": {
+        "properties": {
+          "choices": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "choices"
+        ],
+        "type": "object"
+      },
+      "CommandLine": {
+        "description": "A list of arguments, or one string for `sh -c`.",
+        "oneOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "string"
+          }
+        ]
+      },
+      "Config": {
+        "description": "`/etc/berth/berthd.json`.",
+        "properties": {
+          "agent": {
+            "default": "agent",
+            "description": "The agent account.",
+            "type": "string"
+          },
+          "agent_env": {
+            "default": "/usr/local/bin/agent-env",
+            "description": "A wrapper that gives the agent its environment.",
+            "type": "string"
+          },
+          "operator": {
+            "default": "",
+            "description": "The SSH user.",
+            "type": "string"
+          },
+          "roots": {
+            "default": [],
+            "description": "Folders the file calls may touch.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "systemd": {
+            "default": null,
+            "description": "Whether the calls that need systemd work. Off in single-user mode\nunless set.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "units": {
+            "default": [],
+            "description": "Units whose state the stats report.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "Done": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      },
+      "ErrorBody": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "ErrorDetail": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "FileEntry": {
+        "properties": {
+          "kind": {
+            "description": "`file`, `dir`, `link` or `other`.",
+            "type": "string"
+          },
+          "modified": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "size",
+          "modified"
+        ],
+        "type": "object"
+      },
+      "Filesystem": {
+        "properties": {
+          "available": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "device": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "mount": {
+            "type": "string"
+          },
+          "total": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "used": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mount",
+          "device",
+          "kind",
+          "total",
+          "used",
+          "available"
+        ],
+        "type": "object"
+      },
+      "From": {
+        "description": "Who did something, as berthd saw it.",
+        "properties": {
+          "level": {
+            "$ref": "#/components/schemas/Level"
+          },
+          "session": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "uid": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "level",
+          "uid"
+        ],
+        "type": "object"
+      },
+      "Gpu": {
+        "properties": {
+          "memory_total": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "memory_used": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "utilization": {
+            "description": "Percent.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "name",
+          "utilization",
+          "memory_used",
+          "memory_total"
+        ],
+        "type": "object"
+      },
+      "Input": {
+        "properties": {
+          "data_b64": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "eof": {
+            "description": "Close a process's standard input.",
+            "type": "boolean"
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Interface": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "rx_bytes": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tx_bytes": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "rx_bytes",
+          "tx_bytes"
+        ],
+        "type": "object"
+      },
+      "Keep": {
+        "enum": [
+          "none",
+          "last",
+          "log"
+        ],
+        "type": "string"
+      },
+      "Level": {
+        "enum": [
+          "host",
+          "agent"
+        ],
+        "type": "string"
+      },
+      "Listing": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/FileEntry"
+            },
+            "type": "array"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "entries"
+        ],
+        "type": "object"
+      },
+      "LogEntry": {
+        "properties": {
+          "cursor": {
+            "description": "Give it back as `since` to go on from here.",
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "priority": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "time": {
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "time",
+          "unit",
+          "priority",
+          "message",
+          "cursor"
+        ],
+        "type": "object"
+      },
+      "Memory": {
+        "properties": {
+          "available": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "used": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "used",
+          "available"
+        ],
+        "type": "object"
+      },
+      "Message": {
+        "properties": {
+          "body": {},
+          "from": {
+            "$ref": "#/components/schemas/From"
+          },
+          "id": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "keep": {
+            "$ref": "#/components/schemas/Keep"
+          },
+          "time": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "topic",
+          "body",
+          "keep",
+          "from",
+          "time"
+        ],
+        "type": "object"
+      },
+      "Messages": {
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/Message"
+            },
+            "type": "array"
+          },
+          "next": {
+            "description": "Pass as `since` for the rest, when there is more.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "type": "object"
+      },
+      "Method": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "Output": {
+        "properties": {
+          "data_b64": {
+            "type": "string"
+          },
+          "ended": {
+            "description": "Nothing more will come.",
+            "type": "boolean"
+          },
+          "first_offset": {
+            "description": "Where what is still kept begins, when the start was dropped.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lines": {
+            "description": "The same as text, when read by lines.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "next_line": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "next_offset": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "offset": {
+            "description": "The offset this answer starts at.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "data_b64",
+          "offset",
+          "next_offset",
+          "next_line",
+          "ended"
+        ],
+        "type": "object"
+      },
+      "Process": {
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "cpu_time": {
+            "description": "Seconds of CPU used so far.",
+            "format": "double",
+            "type": "number"
+          },
+          "memory": {
+            "description": "Resident memory in bytes.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "parent": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pid": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pid",
+          "parent",
+          "user",
+          "command",
+          "cpu_time",
+          "memory"
+        ],
+        "type": "object"
+      },
+      "Publish": {
+        "properties": {
+          "body": {},
+          "keep": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Keep"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PublishFrame": {
+        "description": "What a client sends over the channel stream to publish.",
+        "properties": {
+          "body": {},
+          "keep": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Keep"
+              }
+            ]
+          },
+          "topic": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic"
+        ],
+        "type": "object"
+      },
+      "ReplyFrame": {
+        "description": "The serving program's answer.",
+        "properties": {
+          "error": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ErrorDetail"
+              }
+            ]
+          },
+          "id": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "result": {}
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "Resize": {
+        "properties": {
+          "cols": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rows": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rows",
+          "cols"
+        ],
+        "type": "object"
+      },
+      "RunTask": {
+        "properties": {
+          "arguments": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "cols": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "input_b64": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rows": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Screen": {
+        "properties": {
+          "cols": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cursor_col": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cursor_row": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rows": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rows",
+          "cols",
+          "text",
+          "cursor_row",
+          "cursor_col"
+        ],
+        "type": "object"
+      },
+      "Service": {
+        "properties": {
+          "agent": {
+            "type": "boolean"
+          },
+          "declared": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": "string"
+          },
+          "methods": {
+            "items": {
+              "$ref": "#/components/schemas/Method"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "uid": {
+            "description": "Who serves it now.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "up": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "agent",
+          "methods",
+          "declared",
+          "up"
+        ],
+        "type": "object"
+      },
+      "ServiceSpec": {
+        "description": "An entry of `/etc/berth/services.json`.",
+        "properties": {
+          "agent": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": "string"
+          },
+          "methods": {
+            "items": {
+              "$ref": "#/components/schemas/Method"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          },
+          "timeout": {
+            "description": "Seconds a call may take.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "user": {
+            "description": "`root` or `agent`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "Session": {
+        "properties": {
+          "cols": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ended": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exit_code": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SessionKind"
+          },
+          "last_output": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lost": {
+            "description": "It ended with berthd or the host, not by itself.",
+            "type": "boolean"
+          },
+          "output_size": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rows": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "started": {
+            "type": "string"
+          },
+          "started_by": {
+            "$ref": "#/components/schemas/From"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/Step"
+            },
+            "type": "array"
+          },
+          "task": {
+            "description": "The task it was started for, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          },
+          "viewers": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "command",
+          "user",
+          "started_by",
+          "started"
+        ],
+        "type": "object"
+      },
+      "SessionKind": {
+        "enum": [
+          "process",
+          "terminal"
+        ],
+        "type": "string"
+      },
+      "Signal": {
+        "properties": {
+          "signal": {
+            "description": "`INT`, `TERM`, `HUP` or `KILL`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "signal"
+        ],
+        "type": "object"
+      },
+      "StartSession": {
+        "properties": {
+          "cols": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "command": {
+            "$ref": "#/components/schemas/CommandLine"
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "input": {
+            "description": "Text for standard input; a process then sees the end of its input.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input_b64": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SessionKind"
+          },
+          "rows": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "timeout": {
+            "description": "Seconds after which the command is ended.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user": {
+            "description": "`agent`, `operator` (the SSH user) or `root`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "command"
+        ],
+        "type": "object"
+      },
+      "Started": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Session"
+          },
+          {
+            "properties": {
+              "output_b64": {
+                "description": "A terminal's bytes.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stderr_b64": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stdout_b64": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "description": "The answer to a start with `wait=`: the session and, when it has ended in\ntime, what it wrote."
+      },
+      "Stats": {
+        "properties": {
+          "cores": {
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "cpu": {
+            "description": "Percent busy over 200 ms, all cores together.",
+            "format": "double",
+            "type": "number"
+          },
+          "filesystems": {
+            "items": {
+              "$ref": "#/components/schemas/Filesystem"
+            },
+            "type": "array"
+          },
+          "gpus": {
+            "items": {
+              "$ref": "#/components/schemas/Gpu"
+            },
+            "type": "array"
+          },
+          "hostname": {
+            "type": "string"
+          },
+          "load": {
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "memory": {
+            "$ref": "#/components/schemas/Memory"
+          },
+          "network": {
+            "items": {
+              "$ref": "#/components/schemas/Interface"
+            },
+            "type": "array"
+          },
+          "reboot_required": {
+            "type": "boolean"
+          },
+          "sessions_running": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "swap": {
+            "$ref": "#/components/schemas/Memory"
+          },
+          "units": {
+            "items": {
+              "$ref": "#/components/schemas/UnitState"
+            },
+            "type": "array"
+          },
+          "uptime": {
+            "description": "Seconds.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "hostname",
+          "load",
+          "cpu",
+          "cores",
+          "memory",
+          "swap",
+          "filesystems",
+          "network",
+          "uptime",
+          "reboot_required",
+          "units",
+          "sessions_running"
+        ],
+        "type": "object"
+      },
+      "Step": {
+        "properties": {
+          "exit_code": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "user"
+        ],
+        "type": "object"
+      },
+      "Task": {
+        "description": "An entry of `/etc/berth/tasks.json`. Listed without `run`.",
+        "properties": {
+          "agent": {
+            "description": "The agent may run it.",
+            "type": "boolean"
+          },
+          "arguments": {
+            "items": {
+              "$ref": "#/components/schemas/Argument"
+            },
+            "type": "array"
+          },
+          "confirm": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extends": {
+            "description": "Tasks it is a step of; it then has no row of its own.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "group": {
+            "type": "string"
+          },
+          "help": {
+            "type": "string"
+          },
+          "input": {
+            "description": "What the workstation sends on standard input: `secrets`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          },
+          "terminal": {
+            "type": "boolean"
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "Topic": {
+        "description": "An entry of `/etc/berth/channels.json`.",
+        "properties": {
+          "days": {
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "keep": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Keep"
+              }
+            ]
+          },
+          "max": {
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "topic": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic"
+        ],
+        "type": "object"
+      },
+      "Unit": {
+        "properties": {
+          "active": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "load": {
+            "type": "string"
+          },
+          "sub": {
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "unit",
+          "load",
+          "active",
+          "sub",
+          "description"
+        ],
+        "type": "object"
+      },
+      "UnitState": {
+        "properties": {
+          "active": {
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "unit",
+          "active"
+        ],
+        "type": "object"
+      },
+      "Version": {
+        "properties": {
+          "api": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mode": {
+            "description": "`system` or `single`.",
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "api"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "description": "The operations of a host's berthd, over its unix sockets.",
+  "operations": [
+    {
+      "args": [],
+      "group": "general",
+      "http": {
+        "method": "GET",
+        "path": "/v1/version"
+      },
+      "kind": "call",
+      "level": "Host and agent level.",
+      "name": "version",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Version"
+        }
+      },
+      "summary": "The version of berthd and of its API."
+    },
+    {
+      "args": [],
+      "group": "general",
+      "http": {
+        "method": "POST",
+        "path": "/v1/reload"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "reload",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "summary": "Read the configuration files again. Sessions go on."
+    },
+    {
+      "args": [
+        {
+          "description": "A duration such as 30s, at most 10m: answer when the command has ended, with what it wrote.",
+          "header": null,
+          "in": "query",
+          "name": "wait",
+          "required": false
+        }
+      ],
+      "data": {
+        "description": null,
+        "schema": {
+          "$ref": "#/components/schemas/StartSession"
+        }
+      },
+      "group": "sessions",
+      "http": {
+        "method": "POST",
+        "path": "/v1/sessions"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "sessions.start",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Started"
+        }
+      },
+      "summary": "Start a session."
+    },
+    {
+      "args": [],
+      "group": "sessions",
+      "http": {
+        "method": "GET",
+        "path": "/v1/sessions"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "sessions.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/Session"
+          },
+          "type": "array"
+        }
+      },
+      "summary": "All sessions, running and ended."
+    },
+    {
+      "args": [
+        {
+          "description": "A session's id, as starting it or the list gives it.",
+          "in": "path",
+          "name": "id",
+          "required": true
+        }
+      ],
+      "group": "sessions",
+      "http": {
+        "method": "GET",
+        "path": "/v1/sessions/{id}"
+      },
+      "kind": "call",
+      "level": "Host and agent level.",
+      "name": "sessions.get",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Session"
+        }
+      },
+      "summary": "One session's state. The agent sees those it started through a task."
+    },
+    {
+      "args": [
+        {
+          "description": "A session's id, as starting it or the list gives it.",
+          "in": "path",
+          "name": "id",
+          "required": true
+        },
+        {
+          "description": "Byte offset to start from. Without it a terminal replays its current screen and a process starts at the beginning.",
+          "in": "query",
+          "name": "since",
+          "required": false
+        }
+      ],
+      "group": "sessions",
+      "http": {
+        "method": "GET",
+        "path": "/v1/sessions/{id}"
+      },
+      "kind": "stream",
+      "level": "Host and agent level.",
+      "name": "sessions.attach",
+      "portal": true,
+      "receives": [
+        {
+          "binary": true,
+          "description": "Terminal: the terminal's bytes. Process: the first byte is the stream (1 stdout, 2 stderr), the rest its bytes.",
+          "example": null,
+          "name": "output"
+        },
+        {
+          "binary": false,
+          "description": "The command ended. The last frame.",
+          "example": {
+            "exited": {
+              "exit_code": 0
+            }
+          },
+          "name": "exited"
+        },
+        {
+          "binary": false,
+          "description": "This viewer was too slow and missed output; read it back with the output call.",
+          "example": {
+            "dropped": {
+              "bytes": 65536
+            }
+          },
+          "name": "dropped"
+        }
+      ],
+      "resumable": true,
+      "sends": [
+        {
+          "binary": true,
+          "description": "Terminal: bytes typed. Process: first byte 0, the rest goes to standard input.",
+          "example": null,
+          "name": "input"
+        },
+        {
+          "binary": false,
+          "description": "A terminal's new size.",
+          "example": {
+            "resize": {
+              "cols": 120,
+              "rows": 40
+            }
+          },
+          "name": "resize"
+        },
+        {
+          "binary": false,
+          "description": "INT, TERM, HUP or KILL to the session's process group.",
+          "example": {
+            "signal": "INT"
+          },
+          "name": "signal"
+        },
+        {
+          "binary": false,
+          "description": "Close a process's standard input.",
+          "example": {
+            "eof": true
+          },
+          "name": "eof"
+        }
+      ],
+      "summary": "A session, live: its output as it is produced, and input to it."
+    },
+    {
+      "args": [
+        {
+          "description": "A session's id, as starting it or the list gives it.",
+          "in": "path",
+          "name": "id",
+          "required": true
+        }
+      ],
+      "group": "sessions",
+      "http": {
+        "method": "DELETE",
+        "path": "/v1/sessions/{id}"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "sessions.delete",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "summary": "End it if it runs (HUP, after five seconds KILL) and forget it with its transcript."
+    },
+    {
+      "args": [
+        {
+          "description": "A session's id, as starting it or the list gives it.",
+          "in": "path",
+          "name": "id",
+          "required": true
+        },
+        {
+          "description": "stdout, stderr or merged (default), for a process.",
+          "header": null,
+          "in": "query",
+          "name": "stream",
+          "required": false
+        },
+        {
+          "description": "Byte offset to read from.",
+          "header": null,
+          "in": "query",
+          "name": "since",
+          "required": false
+        },
+        {
+          "description": "Most bytes to return; default 1 MB.",
+          "header": null,
+          "in": "query",
+          "name": "limit",
+          "required": false
+        },
+        {
+          "description": "Read lines from this line number (a process only).",
+          "header": null,
+          "in": "query",
+          "name": "line",
+          "required": false
+        },
+        {
+          "description": "How many lines; default 100.",
+          "header": null,
+          "in": "query",
+          "name": "count",
+          "required": false
+        },
+        {
+          "description": "The last so many lines.",
+          "header": null,
+          "in": "query",
+          "name": "tail",
+          "required": false
+        }
+      ],
+      "group": "sessions",
+      "http": {
+        "method": "GET",
+        "path": "/v1/sessions/{id}/output"
+      },
+      "kind": "call",
+      "level": "Host and agent level.",
+      "name": "sessions.output",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Output"
+        }
+      },
+      "summary": "The transcript, by bytes or by lines."
+    },
+    {
+      "args": [
+        {
+          "description": "A session's id, as starting it or the list gives it.",
+          "in": "path",
+          "name": "id",
+          "required": true
+        },
+        {
+          "description": "text (default) or ansi, which keeps colours.",
+          "header": null,
+          "in": "query",
+          "name": "format",
+          "required": false
+        },
+        {
+          "description": "That many lines of screen and scrollback instead.",
+          "header": null,
+          "in": "query",
+          "name": "tail",
+          "required": false
+        }
+      ],
+      "group": "sessions",
+      "http": {
+        "method": "GET",
+        "path": "/v1/sessions/{id}/screen"
+      },
+      "kind": "call",
+      "level": "Host and agent level.",
+      "name": "sessions.screen",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Screen"
+        }
+      },
+      "summary": "A terminal as it looks now, as text."
+    },
+    {
+      "args": [
+        {
+          "description": "A session's id, as starting it or the list gives it.",
+          "in": "path",
+          "name": "id",
+          "required": true
+        }
+      ],
+      "data": {
+        "description": null,
+        "schema": {
+          "$ref": "#/components/schemas/Input"
+        }
+      },
+      "group": "sessions",
+      "http": {
+        "method": "POST",
+        "path": "/v1/sessions/{id}/input"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "sessions.input",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "summary": "Write to standard input or type into the terminal. Never recorded."
+    },
+    {
+      "args": [
+        {
+          "description": "A session's id, as starting it or the list gives it.",
+          "in": "path",
+          "name": "id",
+          "required": true
+        }
+      ],
+      "data": {
+        "description": null,
+        "schema": {
+          "$ref": "#/components/schemas/Resize"
+        }
+      },
+      "group": "sessions",
+      "http": {
+        "method": "POST",
+        "path": "/v1/sessions/{id}/resize"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "sessions.resize",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "summary": "Give a terminal a new size."
+    },
+    {
+      "args": [
+        {
+          "description": "A session's id, as starting it or the list gives it.",
+          "in": "path",
+          "name": "id",
+          "required": true
+        }
+      ],
+      "data": {
+        "description": null,
+        "schema": {
+          "$ref": "#/components/schemas/Signal"
+        }
+      },
+      "group": "sessions",
+      "http": {
+        "method": "POST",
+        "path": "/v1/sessions/{id}/signal"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "sessions.signal",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "summary": "Send INT, TERM, HUP or KILL to the session's process group."
+    },
+    {
+      "args": [],
+      "group": "tasks",
+      "http": {
+        "method": "GET",
+        "path": "/v1/tasks"
+      },
+      "kind": "call",
+      "level": "Host and agent level.",
+      "name": "tasks.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/Task"
+          },
+          "type": "array"
+        }
+      },
+      "summary": "The tasks the caller may run, in the order of the file."
+    },
+    {
+      "args": [
+        {
+          "description": "A task's name, as the list gives it.",
+          "in": "path",
+          "name": "name",
+          "required": true
+        },
+        {
+          "description": "A duration such as 30s, at most 10m: answer when the command has ended, with what it wrote.",
+          "header": null,
+          "in": "query",
+          "name": "wait",
+          "required": false
+        }
+      ],
+      "data": {
+        "description": null,
+        "schema": {
+          "$ref": "#/components/schemas/RunTask"
+        }
+      },
+      "group": "tasks",
+      "http": {
+        "method": "POST",
+        "path": "/v1/tasks/{name}"
+      },
+      "kind": "call",
+      "level": "Host and agent level.",
+      "name": "tasks.run",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Started"
+        }
+      },
+      "summary": "Run a task. It and what extends it are the steps of one session."
+    },
+    {
+      "args": [
+        {
+          "description": "A task's name, as the list gives it.",
+          "in": "path",
+          "name": "name",
+          "required": true
+        },
+        {
+          "description": "The name of one of the task's arguments.",
+          "in": "path",
+          "name": "argument",
+          "required": true
+        }
+      ],
+      "group": "tasks",
+      "http": {
+        "method": "GET",
+        "path": "/v1/tasks/{name}/choices/{argument}"
+      },
+      "kind": "call",
+      "level": "Host and agent level.",
+      "name": "tasks.choices",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Choices"
+        }
+      },
+      "summary": "The values to offer for an argument."
+    },
+    {
+      "args": [],
+      "group": "system",
+      "http": {
+        "method": "GET",
+        "path": "/v1/stats"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "system.stats",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Stats"
+        }
+      },
+      "summary": "Load, CPU, memory, filesystems, network, GPU and unit states, read now."
+    },
+    {
+      "args": [
+        {
+          "description": "`reboot` or `poweroff`.",
+          "in": "path",
+          "name": "verb",
+          "required": true
+        },
+        {
+          "description": "true to do it although sessions run.",
+          "header": null,
+          "in": "query",
+          "name": "force",
+          "required": false
+        }
+      ],
+      "group": "system",
+      "http": {
+        "method": "POST",
+        "path": "/v1/power/{verb}"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "system.power",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "summary": "Reboot the host or power it off. Refused while sessions run."
+    },
+    {
+      "args": [],
+      "group": "desktop",
+      "http": {
+        "method": "GET",
+        "path": "/v1/screenshot"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "desktop.screenshot",
+      "portal": true,
+      "result": {
+        "bytes": true,
+        "content_type": "image/png"
+      },
+      "summary": "The shared desktop as PNG."
+    },
+    {
+      "args": [
+        {
+          "description": "An absolute path under a root.",
+          "header": null,
+          "in": "query",
+          "name": "path",
+          "required": true
+        }
+      ],
+      "group": "files",
+      "http": {
+        "method": "GET",
+        "path": "/v1/files"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "files.read",
+      "portal": true,
+      "result": {
+        "bytes": true,
+        "content_type": "application/octet-stream"
+      },
+      "summary": "A folder's entries (a Listing), or a file's content; Range is honoured. As the agent, under the configured roots."
+    },
+    {
+      "args": [
+        {
+          "description": "An absolute path under a root.",
+          "header": null,
+          "in": "query",
+          "name": "path",
+          "required": true
+        },
+        {
+          "description": "true to replace an existing file.",
+          "header": null,
+          "in": "query",
+          "name": "overwrite",
+          "required": false
+        }
+      ],
+      "data": {
+        "bytes": true
+      },
+      "group": "files",
+      "http": {
+        "method": "PUT",
+        "path": "/v1/files"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "files.write",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "summary": "Write one file, creating its folders."
+    },
+    {
+      "args": [
+        {
+          "description": "An absolute path under a root.",
+          "header": null,
+          "in": "query",
+          "name": "path",
+          "required": true
+        },
+        {
+          "description": "true for a folder with its contents.",
+          "header": null,
+          "in": "query",
+          "name": "recursive",
+          "required": false
+        }
+      ],
+      "group": "files",
+      "http": {
+        "method": "DELETE",
+        "path": "/v1/files"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "files.delete",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "summary": "Remove a file or an empty folder; never a root itself."
+    },
+    {
+      "args": [],
+      "group": "units",
+      "http": {
+        "method": "GET",
+        "path": "/v1/units"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "units.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/Unit"
+          },
+          "type": "array"
+        }
+      },
+      "summary": "The units and their state."
+    },
+    {
+      "args": [
+        {
+          "description": "A unit's name, such as `ssh.service`. Only the configured units.",
+          "in": "path",
+          "name": "unit",
+          "required": true
+        }
+      ],
+      "group": "units",
+      "http": {
+        "method": "GET",
+        "path": "/v1/units/{unit}"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "units.get",
+      "portal": true,
+      "result": {
+        "schema": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "summary": "One unit's properties, as systemctl show gives them."
+    },
+    {
+      "args": [
+        {
+          "description": "A unit's name, such as `ssh.service`. Only the configured units.",
+          "in": "path",
+          "name": "unit",
+          "required": true
+        },
+        {
+          "description": "`start`, `stop`, `restart`, `reload`, `enable` or `disable`.",
+          "in": "path",
+          "name": "verb",
+          "required": true
+        }
+      ],
+      "group": "units",
+      "http": {
+        "method": "POST",
+        "path": "/v1/units/{unit}/{verb}"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "units.act",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "summary": "Start, stop, restart, reload, enable or disable a unit."
+    },
+    {
+      "args": [
+        {
+          "description": "Only this unit.",
+          "header": null,
+          "in": "query",
+          "name": "unit",
+          "required": false
+        },
+        {
+          "description": "A cursor from an earlier entry, or a time.",
+          "header": null,
+          "in": "query",
+          "name": "since",
+          "required": false
+        },
+        {
+          "description": "Most entries; default 100.",
+          "header": null,
+          "in": "query",
+          "name": "limit",
+          "required": false
+        }
+      ],
+      "group": "logs",
+      "http": {
+        "method": "GET",
+        "path": "/v1/logs"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "logs.read",
+      "portal": true,
+      "result": {
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/LogEntry"
+          },
+          "type": "array"
+        }
+      },
+      "summary": "Journal entries."
+    },
+    {
+      "args": [
+        {
+          "description": "Only this unit.",
+          "in": "query",
+          "name": "unit",
+          "required": false
+        },
+        {
+          "description": "A cursor from an earlier entry, or a time journalctl understands.",
+          "in": "query",
+          "name": "since",
+          "required": false
+        }
+      ],
+      "group": "logs",
+      "http": {
+        "method": "GET",
+        "path": "/v1/logs"
+      },
+      "kind": "stream",
+      "level": "Host level only.",
+      "name": "logs.follow",
+      "portal": true,
+      "receives": [
+        {
+          "binary": false,
+          "description": "One journal entry.",
+          "example": {
+            "cursor": "s=…",
+            "message": "Server listening on 0.0.0.0 port 22.",
+            "priority": 6,
+            "time": "2026-11-12T10:00:00Z",
+            "unit": "ssh.service"
+          },
+          "name": "entry"
+        }
+      ],
+      "resumable": true,
+      "sends": [],
+      "summary": "Journal entries, then what is logged."
+    },
+    {
+      "args": [],
+      "group": "processes",
+      "http": {
+        "method": "GET",
+        "path": "/v1/processes"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "processes.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/Process"
+          },
+          "type": "array"
+        }
+      },
+      "summary": "The processes, from /proc."
+    },
+    {
+      "args": [
+        {
+          "description": "A process id.",
+          "in": "path",
+          "name": "pid",
+          "required": true
+        }
+      ],
+      "data": {
+        "description": null,
+        "schema": {
+          "$ref": "#/components/schemas/Signal"
+        }
+      },
+      "group": "processes",
+      "http": {
+        "method": "POST",
+        "path": "/v1/processes/{pid}/signal"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "processes.signal",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "summary": "Send a signal to a process."
+    },
+    {
+      "args": [
+        {
+          "description": "The topic, with slashes: `plugin/what`.",
+          "in": "path",
+          "name": "topic",
+          "required": true
+        }
+      ],
+      "data": {
+        "description": null,
+        "schema": {
+          "$ref": "#/components/schemas/Publish"
+        }
+      },
+      "group": "channel",
+      "http": {
+        "method": "POST",
+        "path": "/v1/channel/{topic}"
+      },
+      "kind": "call",
+      "level": "Host and agent level.",
+      "name": "channel.publish",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Message"
+        }
+      },
+      "summary": "Publish a message on a topic."
+    },
+    {
+      "args": [
+        {
+          "description": "Only topics starting with this.",
+          "header": null,
+          "in": "query",
+          "name": "topic",
+          "required": false
+        },
+        {
+          "description": "Messages after this id; default 0.",
+          "header": null,
+          "in": "query",
+          "name": "since",
+          "required": false
+        },
+        {
+          "description": "Most messages; default 100, at most 1000.",
+          "header": null,
+          "in": "query",
+          "name": "limit",
+          "required": false
+        }
+      ],
+      "group": "channel",
+      "http": {
+        "method": "GET",
+        "path": "/v1/channel"
+      },
+      "kind": "call",
+      "level": "Host and agent level.",
+      "name": "channel.read",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Messages"
+        }
+      },
+      "summary": "Kept messages after `since`."
+    },
+    {
+      "args": [
+        {
+          "description": "Only topics starting with this.",
+          "in": "query",
+          "name": "topic",
+          "required": false
+        },
+        {
+          "description": "Kept messages after this id come first. Without it, only each topic's `last` message does.",
+          "in": "query",
+          "name": "since",
+          "required": false
+        }
+      ],
+      "group": "channel",
+      "http": {
+        "method": "GET",
+        "path": "/v1/channel"
+      },
+      "kind": "stream",
+      "level": "Host and agent level.",
+      "name": "channel.listen",
+      "portal": true,
+      "receives": [
+        {
+          "binary": false,
+          "description": "One message.",
+          "example": {
+            "body": {
+              "percent": 40
+            },
+            "from": {
+              "level": "agent",
+              "uid": 1001
+            },
+            "id": 4812,
+            "keep": "log",
+            "time": "2026-11-12T10:00:00Z",
+            "topic": "myplugin/progress"
+          },
+          "name": "message"
+        }
+      ],
+      "resumable": true,
+      "sends": [
+        {
+          "binary": false,
+          "description": "Publish a message.",
+          "example": {
+            "body": {
+              "percent": 40
+            },
+            "keep": "none",
+            "topic": "myplugin/progress"
+          },
+          "name": "publish"
+        }
+      ],
+      "summary": "Messages on the channel: the kept ones after `since`, then what arrives."
+    },
+    {
+      "args": [],
+      "group": "services",
+      "http": {
+        "method": "GET",
+        "path": "/v1/services"
+      },
+      "kind": "call",
+      "level": "Host and agent level.",
+      "name": "services.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/Service"
+          },
+          "type": "array"
+        }
+      },
+      "summary": "The services that can be called, and whether each is up."
+    },
+    {
+      "args": [
+        {
+          "description": "The plugin the service belongs to.",
+          "in": "path",
+          "name": "plugin",
+          "required": true
+        },
+        {
+          "description": "The service's name within its plugin.",
+          "in": "path",
+          "name": "name",
+          "required": true
+        },
+        {
+          "description": "One of the service's methods.",
+          "in": "path",
+          "name": "method",
+          "required": true
+        }
+      ],
+      "data": {
+        "description": null,
+        "schema": {}
+      },
+      "group": "services",
+      "http": {
+        "method": "POST",
+        "path": "/v1/services/{plugin}/{name}/{method}"
+      },
+      "kind": "call",
+      "level": "Host and agent level.",
+      "name": "services.call",
+      "portal": true,
+      "result": {
+        "schema": {}
+      },
+      "summary": "Call a method of the service PLUGIN/NAME: JSON in, JSON out."
+    },
+    {
+      "args": [
+        {
+          "description": "The plugin the service belongs to.",
+          "in": "path",
+          "name": "plugin",
+          "required": true
+        },
+        {
+          "description": "The service's name within its plugin.",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "group": "services",
+      "http": {
+        "method": "GET",
+        "path": "/v1/services/{plugin}/{name}/serve"
+      },
+      "kind": "stream",
+      "level": "Host and agent level.",
+      "name": "services.serve",
+      "portal": true,
+      "receives": [
+        {
+          "binary": false,
+          "description": "A call to answer.",
+          "example": {
+            "body": {},
+            "from": {
+              "level": "agent",
+              "uid": 1001
+            },
+            "id": 7,
+            "method": "start"
+          },
+          "name": "call"
+        }
+      ],
+      "resumable": false,
+      "sends": [
+        {
+          "binary": false,
+          "description": "The answer to a call.",
+          "example": {
+            "id": 7,
+            "result": {
+              "ok": true
+            }
+          },
+          "name": "result"
+        },
+        {
+          "binary": false,
+          "description": "A call that failed.",
+          "example": {
+            "error": {
+              "code": "bad_request",
+              "message": "no such thing"
+            },
+            "id": 7
+          },
+          "name": "error"
+        }
+      ],
+      "summary": "For the program that answers a service's calls. While it is open the service is up."
+    }
+  ],
+  "portal": {
+    "bytes": 8388608,
+    "path": "/v1/portal"
+  },
+  "title": "berthd",
+  "version": "0.2.0"
+}

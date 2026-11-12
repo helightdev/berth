@@ -17,7 +17,6 @@ def load(name,path):
 
 builder=load('builder','bin/devbox.py')
 guard=load('guard','bin/check-target-disk.py')
-desktop=load('desktop','ansible/roles/devbox/files/desktop.py')
 
 def config():
     return {'hostname':'test-devbox','profile':'qemu',
@@ -186,6 +185,18 @@ class RenderTests(unittest.TestCase):
             with self.subTest(change=change), tempfile.TemporaryDirectory() as temp:
                 path=Path(temp)/'host.json'; path.write_text(json.dumps({**config(),**change}))
                 with self.assertRaises(ValueError): builder.checked_config(path,'usb')
+    def test_agent_privileges_are_checked_and_passed_on(self):
+        for value,passed in [(None,''),('full','full'),('limited','limited'),('none','none')]:
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as temp:
+                profile={**config(),'agent_passwordless_sudo':False}
+                if value: profile['agent_privileges']=value
+                else: profile['agent_password_hash']='$6$salt$'+'a'*86
+                path=Path(temp)/'host.json'; path.write_text(json.dumps(profile))
+                checked=builder.checked_config(path,'usb')
+                self.assertEqual(builder.deployment(checked,'0'*64)['ansible_vars']['devbox_agent_privileges'],passed)
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'host.json'; path.write_text(json.dumps({**config(),'agent_privileges':'some'}))
+            with self.assertRaises(ValueError): builder.checked_config(path,'usb')
     def test_seed_embeds_the_current_release(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(builder,'BUILD',Path(temp)/'build'):
             path=Path(temp)/'host.json'; path.write_text(json.dumps(config()))
@@ -223,33 +234,29 @@ class RenderTests(unittest.TestCase):
             self.assertIn('autoinstall',json.loads(seed.read_text().split('\n',1)[1]))
             self.assertTrue((result/'agent-bootstrap/release.tar.gz').exists())
 
-class DesktopTests(unittest.TestCase):
-    def test_mcp_handshake_list_and_notifications(self):
-        self.assertIsNone(desktop.handle({'method':'notifications/initialized'}))
-        result=desktop.handle({'id':1,'method':'initialize','params':{'protocolVersion':'2025-03-26'}})
-        self.assertEqual(result['result']['protocolVersion'],'2025-03-26')
-        tools=desktop.handle({'id':2,'method':'tools/list'})['result']['tools']
-        self.assertEqual(len(tools),6)
-    def test_invalid_tool_args_do_not_run_commands(self):
-        with tempfile.TemporaryDirectory() as temp, patch.dict('os.environ',{'XDG_RUNTIME_DIR':temp}), patch.object(desktop,'run') as run:
-            result=desktop.handle({'id':1,'method':'tools/call','params':{'name':'key','arguments':{'key':'--clearmodifiers'}}})
-            self.assertTrue(result['result']['isError']); run.assert_not_called()
-    def test_malformed_tool_name_is_an_error_response(self):
-        result=desktop.handle({'id':1,'method':'tools/call','params':{'name':[]}})
-        self.assertTrue(result['result']['isError'])
-    def test_literal_text_uses_argv_without_shell(self):
-        with tempfile.TemporaryDirectory() as temp, patch.dict('os.environ',{'XDG_RUNTIME_DIR':temp}), patch.object(desktop,'run') as run:
-            desktop.perform('type',{'text':'$(touch /tmp/nope); --help'})
-            self.assertEqual(run.call_args.args[0][-2:],['--','$(touch /tmp/nope); --help'])
-    def test_pause_blocks_input(self):
-        with tempfile.TemporaryDirectory() as temp, patch.dict('os.environ',{'XDG_RUNTIME_DIR':temp}), patch.object(desktop,'run') as run:
-            (Path(temp)/'desktop.paused').touch()
-            with self.assertRaises(ValueError): desktop.perform('click',{'x':1,'y':1})
-            run.assert_not_called()
-    def test_mcp_invalid_json_does_not_kill_server(self):
-        result=subprocess.run(['python3',str(ROOT/'ansible/roles/devbox/files/desktop.py'),'--mcp'],input='bad\n{"id":1,"method":"ping"}\n',text=True,capture_output=True,check=True)
-        lines=[json.loads(line) for line in result.stdout.splitlines()]
-        self.assertEqual(lines[0]['error']['code'],-32700)
-        self.assertEqual(lines[1]['result'],{})
+class HostTaskTests(unittest.TestCase):
+    """The scripts berthd runs for berth's own tasks."""
+    TASKS=ROOT/'ansible/roles/devbox/files/tasks'
+    def test_task_scripts_parse_and_share_the_helpers(self):
+        scripts=sorted(self.TASKS.glob('*.sh'))
+        self.assertEqual({p.stem for p in scripts},{'common','status','access','publish','pair','update','reboot'})
+        for script in scripts+[ROOT/'plugins/backup/files/backup.sh']:
+            with self.subTest(script=script.name):
+                subprocess.run(['bash','-n',str(script)],check=True)
+        for name in ['status','access','publish','pair']:
+            self.assertIn('common.sh',(self.TASKS/f'{name}.sh').read_text())
+    def test_the_old_ways_are_gone(self):
+        self.assertFalse((ROOT/'bin/manage-host.sh').exists())
+        self.assertFalse((ROOT/'ansible/roles/devbox/files/desktop.py').exists())
+    def test_host_programs_travel_in_the_release_when_built(self):
+        built=ROOT/'ansible/roles/devbox/files/bin/berthd'
+        if not built.exists(): self.skipTest('run `cargo build -p berth` first')
+        with tempfile.TemporaryDirectory() as temp, patch.object(builder,'BUILD',Path(temp)):
+            import tarfile
+            with tarfile.open(builder.release()) as archive: names=archive.getnames()
+        for name in ['berthd','box']:
+            self.assertIn(f'ansible/roles/devbox/files/bin/{name}',names)
+        self.assertIn('ansible/roles/devbox/files/tasks/status.sh',names)
+        self.assertIn('plugins/backup/files/backup.sh',names)
 
 if __name__=='__main__': unittest.main()

@@ -7,8 +7,10 @@ use crate::{
     job::{Job, Stage},
     picker::Picker,
     plugins::{self, Plugin},
+    remote::{Arguments, HostView, Pending, State},
     theme,
 };
+use berth_core::{apply, host::Host};
 use ratatui::{
     style::Style,
     text::{Line, Span},
@@ -35,10 +37,10 @@ pub enum Entry {
     Group(usize),
     /// A plugin's feature, switched on or off for this host: plugin and feature index.
     Feature(usize, usize),
-    /// A plugin's action on the host: plugin, feature and action index.
-    PluginAction(usize, usize, usize),
-    /// One of `fields::SIGN_INS`.
-    SignIn(usize),
+    /// A task of the host, by index into what it listed.
+    HostTask(usize),
+    /// A session on the host, by index into what it listed.
+    HostSession(usize),
     /// A registry this host can be given, by index into `App::registry_names`.
     HostRegistry(usize),
     /// A secret this host can be given, by index into `App::secret_names`.
@@ -92,8 +94,13 @@ pub struct App {
     pub action: Action,
     /// Action for the next `execute`, when it differs from the tab's own.
     pub terminal_action: Option<Action>,
-    /// A sign-in, or a plugin action that needs a terminal, running inside the UI.
+    /// A command of this machine in a terminal inside the UI: `ssh` to a host
+    /// that is not set up yet.
     pub session: Option<crate::session::Session>,
+    /// What the host itself says it can do, its sessions, and the panel onto one.
+    pub host: HostView,
+    /// The password dialog for the host was shown; it is not opened by itself again.
+    password_asked: bool,
     /// The Terminal row opens the agent's shell and not the SSH user's.
     pub as_agent: bool,
     /// Plugins found in the source and in the user's plugin directory.
@@ -242,6 +249,8 @@ impl App {
             method: Action::Iso,
             terminal_action: None,
             session: None,
+            host: HostView::default(),
+            password_asked: false,
             as_agent: true,
             links: vec![],
             words: vec![],
@@ -289,13 +298,13 @@ impl App {
     }
 
     /// State of a toggle. Unset feature switches are on, like the role defaults,
-    /// and tool categories follow the older single `devbox_install_boat_tools` switch.
+    /// and tool categories follow the older single `devbox_install_dev_tools` switch.
     pub fn enabled(&self, field: Field) -> bool {
         let pointer = field.spec().pointer;
         let stored = self.config.pointer(pointer).and_then(Value::as_bool);
         stored.unwrap_or_else(|| {
             if pointer.starts_with("/ansible_vars/devbox_tools_") {
-                self.config["ansible_vars"]["devbox_install_boat_tools"]
+                self.config["ansible_vars"]["devbox_install_dev_tools"]
                     .as_bool()
                     .unwrap_or(true)
             } else {
@@ -307,7 +316,12 @@ impl App {
     /// Read which registries and secrets exist. They are kept outside the profile.
     pub fn load_access(&mut self) {
         let store = crate::registry::Store::at(self.config_dir.clone());
-        self.registry_names = store.registries().unwrap_or_default().keys().cloned().collect();
+        self.registry_names = store
+            .registries()
+            .unwrap_or_default()
+            .keys()
+            .cloned()
+            .collect();
         self.secret_names = store.secret_names();
     }
 
@@ -316,7 +330,8 @@ impl App {
     }
 
     pub fn host_registry(&self, index: usize) -> bool {
-        self.names("registries").contains(&json!(self.registry_names[index]))
+        self.names("registries")
+            .contains(&json!(self.registry_names[index]))
     }
 
     pub fn toggle_host_registry(&mut self, index: usize) {
@@ -347,23 +362,33 @@ impl App {
         let name = self.secret_names[index].clone();
         let how = how.trim();
         let mut secrets = self.names("secrets");
-        let known = secrets.iter().position(|entry| entry["name"] == name.as_str());
+        let known = secrets
+            .iter()
+            .position(|entry| entry["name"] == name.as_str());
         let variable = how.starts_with(|ch: char| ch.is_ascii_alphabetic() || ch == '_')
-            && how.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+            && how
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_');
         let entry = if how.is_empty() {
             None
         } else if variable {
             Some(json!({"name": name, "env": how}))
-        } else if how.starts_with('~') || how.starts_with('/') || how.contains('/') || how.starts_with('.') {
+        } else if how.starts_with('~')
+            || how.starts_with('/')
+            || how.contains('/')
+            || how.starts_with('.')
+        {
             // An earlier file keeps the mode given on the command line.
-            let mode = known.and_then(|position| secrets[position]["mode"].as_str().map(str::to_owned));
+            let mode =
+                known.and_then(|position| secrets[position]["mode"].as_str().map(str::to_owned));
             let mut entry = json!({"name": name, "file": how});
             if let Some(mode) = mode {
                 entry["mode"] = json!(mode);
             }
             Some(entry)
         } else {
-            self.status = "A variable name such as GH_TOKEN, or a path such as ~/.config/app/token".into();
+            self.status =
+                "A variable name such as GH_TOKEN, or a path such as ~/.config/app/token".into();
             return;
         };
         if let Some(position) = known {
@@ -378,7 +403,13 @@ impl App {
             Row::info(Line::styled(text, Style::new().fg(theme::ACCENT).bold()))
         };
         let muted = Style::new().fg(theme::MUTED);
-        let branch = |index: usize, count: usize| if index + 1 < count { "  ├─ " } else { "  └─ " };
+        let branch = |index: usize, count: usize| {
+            if index + 1 < count {
+                "  ├─ "
+            } else {
+                "  └─ "
+            }
+        };
         let mut rows = vec![heading("Registries")];
         if self.registry_names.is_empty() {
             rows.push(Row::info(Line::styled(
@@ -388,7 +419,10 @@ impl App {
         }
         for (index, name) in self.registry_names.iter().enumerate() {
             let mut line = value_line(name, &self.host_registry(index).to_string(), Kind::Toggle);
-            line.spans.insert(0, Span::styled(branch(index, self.registry_names.len()), muted));
+            line.spans.insert(
+                0,
+                Span::styled(branch(index, self.registry_names.len()), muted),
+            );
             rows.push(Row::entry(line, Entry::HostRegistry(index)));
         }
         rows.push(heading("Secrets"));
@@ -424,9 +458,16 @@ impl App {
             }
         }
         for name in self.names("registries") {
-            if !self.registry_names.iter().any(|known| name == known.as_str()) {
+            if !self
+                .registry_names
+                .iter()
+                .any(|known| name == known.as_str())
+            {
                 rows.push(Row::info(Line::styled(
-                    format!("✗ Registry {} is given to this host but not configured here", name.as_str().unwrap_or("")),
+                    format!(
+                        "✗ Registry {} is given to this host but not configured here",
+                        name.as_str().unwrap_or("")
+                    ),
                     Style::new().fg(theme::BAD),
                 )));
             }
@@ -437,11 +478,6 @@ impl App {
             muted,
         )));
         rows
-    }
-
-    /// Choose a plugin's action as the task to run; it is not one of the fixed choices.
-    pub fn set_task(&mut self, task: &str) {
-        self.set(Field::ManageTask, json!(task));
     }
 
     /// Read the plugins of the source (the working directory) and the user's own.
@@ -504,7 +540,14 @@ impl App {
             ("Agent Orchestrator", &[]),
             (
                 "Development Tools",
-                &[ToolsWeb, ToolsNative, ToolsJvm, ToolsDotnet, ToolsScripting, ToolsScientific],
+                &[
+                    ToolsWeb,
+                    ToolsNative,
+                    ToolsJvm,
+                    ToolsDotnet,
+                    ToolsScripting,
+                    ToolsScientific,
+                ],
             ),
             ("Browsers", &[ToolsChrome, Playwright]),
             ("Desktop", &[SoftwareRendering]),
@@ -600,11 +643,8 @@ impl App {
                     Item::Field(field) => field.spec().label,
                     Item::Feature(plugin, feature) => &self.plugins[plugin].features[feature].label,
                 };
-                let mut line = value_line(
-                    label,
-                    &self.item_enabled(*item).to_string(),
-                    Kind::Toggle,
-                );
+                let mut line =
+                    value_line(label, &self.item_enabled(*item).to_string(), Kind::Toggle);
                 let prefix = if number + 1 < group.items.len() {
                     "  ├─ "
                 } else {
@@ -632,6 +672,11 @@ impl App {
 
     fn set(&mut self, field: Field, value: Value) {
         set_pointer(&mut self.config, field.spec().pointer, value);
+        // Another address is another host to ask.
+        use Field::*;
+        if matches!(field, SshHost | SshUser | SshPort | SshKey | AskBecomePass) {
+            self.reconnect_host();
+        }
     }
 
     pub fn unsaved(&self) -> bool {
@@ -669,6 +714,7 @@ impl App {
                 AgentUser,
                 AgentHash,
                 AgentKey,
+                AgentPrivileges,
                 AgentSudo,
             ],
         }
@@ -681,6 +727,10 @@ impl App {
             return vec![];
         }
         if action == Action::Manage {
+            // How a server's host is reached is the server's to say.
+            if self.served().is_some() {
+                return vec![];
+            }
             return vec![SshHost, SshUser, SshPort, SshKey, AskBecomePass];
         }
         let mut fields = vec![Profile];
@@ -885,8 +935,34 @@ impl App {
                 rows.extend(self.review_rows());
             }
             Step::Manage => {
+                if let Some(line) = self.host.stats_line() {
+                    rows.push(Row::info(Line::styled(line, Style::new().fg(theme::MUTED))));
+                    rows.push(Row::info(""));
+                }
+                // berthd and box come with berth, so a newer berth has newer ones to give.
+                if let State::Ready(version) = &self.host.state
+                    && version != berth_api::VERSION
+                    && self.served().is_none()
+                {
+                    rows.push(Row::info(Line::styled(
+                        format!(
+                            "The host's tools are {version}, this berth is {}. Apply this configuration updates them.",
+                            berth_api::VERSION
+                        ),
+                        Style::new().fg(theme::WARN),
+                    )));
+                    rows.push(Row::info(""));
+                }
                 rows.push(heading("Connection"));
-                rows.extend(self.field_rows());
+                if let Some(server) = self.served() {
+                    rows.push(Row::info(format!(
+                        "  {} · through the berth server at {server}",
+                        self.text(Field::SshHost)
+                    )));
+                }
+                if self.served().is_none() {
+                    rows.extend(self.field_rows());
+                }
                 for problem in self.problems() {
                     rows.push(Row::info(Line::styled(
                         format!("✗ {problem}"),
@@ -901,71 +977,145 @@ impl App {
                     )));
                     rows.extend(group);
                 }
-                rows.push(Row::info(""));
-                rows.push(heading("Set-Up"));
-                rows.push(Row::entry(
-                    "  ▸ Change what is installed, accounts or install method  ›",
-                    Entry::Setup,
-                ));
-                rows.push(Row::entry(
-                    "  ▸ Apply this configuration",
-                    Entry::Task("apply"),
-                ));
+                // Set-up and applying it happen where the profile is: on the server.
+                if self.served().is_none() {
+                    rows.push(Row::info(""));
+                    rows.push(heading("Set-Up"));
+                    rows.push(Row::entry(
+                        "  ▸ Change what is installed, accounts or install method  ›",
+                        Entry::Setup,
+                    ));
+                    // A host without its controller offers Apply above already.
+                    if !matches!(self.host.state, State::Missing | State::Old(_)) {
+                        rows.push(Row::entry(
+                            "  ▸ Apply this configuration",
+                            Entry::Task("apply"),
+                        ));
+                    }
+                }
             }
         }
         rows
     }
 
-    /// The groups of the overview under the connection: berth's own, with the
-    /// actions plugins put into them, then the groups plugins bring.
+    /// The groups of the overview under the connection, as the host lists its
+    /// tasks: each in the group it names, with the terminal among the first and
+    /// the host's sessions after them. A host that cannot be asked says why.
     fn overview_groups(&self) -> Vec<(String, Vec<Row>)> {
-        use crate::fields::{OVERVIEW, SIGN_IN_GROUP, SIGN_INS};
-        let mut groups: Vec<(String, Vec<Row>)> = vec![];
-        for (title, tasks) in OVERVIEW {
-            let rows = tasks
+        let note = |text: String, colour| {
+            Row::info(Line::styled(format!("  {text}"), Style::new().fg(colour)))
+        };
+        let fixed = |name: &'static str| {
+            let label = TASKS
                 .iter()
-                .filter_map(|name| TASKS.iter().find(|(task, ..)| task == name))
-                .map(|(name, label, _)| {
-                    let label = match *name {
-                        "terminal" if self.as_agent => format!("{label} · as {}", self.agent_label()),
-                        "terminal" => format!("{label} · as {}", self.operator_label()),
-                        _ => (*label).to_owned(),
+                .find(|(task, ..)| *task == name)
+                .map_or(name, |(_, label, _)| label);
+            Row::entry(format!("  ▸ {label}"), Entry::Task(name))
+        };
+        let host = |rows| vec![("Host".to_owned(), rows)];
+        match &self.host.state {
+            State::Ready(_) => {}
+            State::Idle if !self.problems().is_empty() => return vec![],
+            State::Idle | State::Connecting => {
+                return host(vec![note(
+                    "Asking the host what it can do…".into(),
+                    theme::MUTED,
+                )]);
+            }
+            State::Password => {
+                return host(vec![
+                    note(
+                        "The SSH user's sudo password is needed to reach the host.".into(),
+                        theme::WARN,
+                    ),
+                    fixed("connect"),
+                ]);
+            }
+            State::Missing => {
+                return host(vec![
+                    note("berth's controller is not on this host yet. Applying the configuration installs it.".into(), theme::WARN),
+                    fixed("apply"),
+                ]);
+            }
+            State::Old(version) => {
+                return host(vec![
+                    note(
+                        format!(
+                            "The host's tools ({version}) are older than this berth needs. Applying the configuration brings them up to date."
+                        ),
+                        theme::WARN,
+                    ),
+                    fixed("apply"),
+                ]);
+            }
+            State::Unreachable(message) => {
+                let first = message.lines().next().unwrap_or("").to_owned();
+                return host(vec![
+                    note(format!("✗ {first}"), theme::BAD),
+                    fixed("connect"),
+                    fixed("ssh"),
+                ]);
+            }
+        }
+        let mut groups: Vec<(String, Vec<Row>)> = vec![];
+        let add = |groups: &mut Vec<(String, Vec<Row>)>, title: &str, row: Row| match groups
+            .iter_mut()
+            .find(|(known, _)| known.eq_ignore_ascii_case(title))
+        {
+            Some((_, rows)) => rows.push(row),
+            None => groups.push((title.to_owned(), vec![row])),
+        };
+        for (index, task) in self.host.tasks.iter().enumerate() {
+            // A step of another task has no row of its own.
+            if !task.extends.is_empty() {
+                continue;
+            }
+            let title = if task.group.is_empty() {
+                "System"
+            } else {
+                task.group.as_str()
+            };
+            let label = if task.label.is_empty() {
+                &task.name
+            } else {
+                &task.label
+            };
+            add(
+                &mut groups,
+                title,
+                Row::entry(format!("  ▸ {label}"), Entry::HostTask(index)),
+            );
+        }
+        let user = match self.as_agent {
+            true => self.agent_label().to_owned(),
+            false => self.operator_label(),
+        };
+        let terminal = Row::entry(format!("  ▸ Terminal · as {user}"), Entry::Task("terminal"));
+        match groups.iter_mut().find(|(title, _)| title == "System") {
+            Some((_, rows)) => rows.insert(1.min(rows.len()), terminal),
+            None => groups.insert(0, ("System".to_owned(), vec![terminal])),
+        }
+        if !self.host.sessions.is_empty() {
+            let rows = self
+                .host
+                .sessions
+                .iter()
+                .enumerate()
+                .map(|(index, session)| {
+                    let state = match (session.running(), session.lost, session.exit_code) {
+                        (true, ..) => "running".to_owned(),
+                        (_, true, _) => "lost".to_owned(),
+                        (_, _, Some(0)) => "done".to_owned(),
+                        (_, _, Some(code)) => format!("failed ({code})"),
+                        _ => "ended".to_owned(),
                     };
-                    Row::entry(format!("  ▸ {label}"), Entry::Task(name))
+                    Row::entry(
+                        format!("  ▸ {} · {state}", session.title),
+                        Entry::HostSession(index),
+                    )
                 })
                 .collect();
-            groups.push(((*title).to_owned(), rows));
-        }
-        let sign_ins = SIGN_INS
-            .iter()
-            .enumerate()
-            .map(|(index, sign_in)| Row::entry(format!("  ▸ {}", sign_in.1), Entry::SignIn(index)))
-            .collect();
-        groups.push((SIGN_IN_GROUP.to_owned(), sign_ins));
-        // What the plugins add: the actions of the features that are on.
-        for (index, plugin) in self.plugins.iter().enumerate() {
-            for (number, feature) in plugin.features.iter().enumerate() {
-                if !self.item_enabled(Item::Feature(index, number)) {
-                    continue;
-                }
-                for (position, action) in feature.actions.iter().enumerate() {
-                    if !action.extends.is_empty() {
-                        continue;
-                    }
-                    let title = match action.group.as_str() {
-                        "" => plugin.label.as_str(),
-                        group => group,
-                    };
-                    let row = Row::entry(
-                        format!("  ▸ {}", action.label),
-                        Entry::PluginAction(index, number, position),
-                    );
-                    match groups.iter_mut().find(|(known, _)| known.eq_ignore_ascii_case(title)) {
-                        Some((_, rows)) => rows.push(row),
-                        None => groups.push((title.to_owned(), vec![row])),
-                    }
-                }
-            }
+            groups.push(("Sessions".to_owned(), rows));
         }
         groups
     }
@@ -982,24 +1132,6 @@ impl App {
             "" => "the SSH user".into(),
             user => format!("{user}, the SSH user"),
         }
-    }
-
-    /// What plugins add to a task of berth: the actions of the features that
-    /// are on which extend it, as `PLUGIN:ACTION`.
-    fn contributions(&self, task: &str) -> Vec<String> {
-        let id = |label: &str| self.plugins.iter().find(|plugin| plugin.label == label).map(|plugin| &plugin.id);
-        self.contributed(task)
-            .into_iter()
-            .filter_map(|(label, action)| Some(format!("{}:{}", id(label)?, action.name)))
-            .collect()
-    }
-
-    /// The chosen task and what plugins add to it.
-    fn manage_tasks(&self) -> Vec<String> {
-        let task = self.text(Field::ManageTask).to_owned();
-        let mut tasks = self.contributions(&task);
-        tasks.insert(0, task);
-        tasks
     }
 
     pub fn entries(&self) -> Vec<Entry> {
@@ -1022,42 +1154,67 @@ impl App {
         }
     }
 
-    /// The information box for the selected row, as Markdown. A task that
-    /// plugins are part of lists what each of them adds.
+    /// The information box for the selected row, as Markdown. A task that has
+    /// steps from plugins lists what each of them adds.
     pub fn help(&self) -> String {
-        let task = match self.selected_entry() {
-            Some(Entry::Task(name)) => name.to_owned(),
-            Some(Entry::SignIn(index)) => format!("sign-in:{}", crate::fields::SIGN_INS[index].0),
-            _ => return self.entry_help().to_owned(),
-        };
-        let mut help = self.entry_help().to_owned();
-        let added = self.contributed(&task);
-        if !added.is_empty() {
-            help += "\n\n### From plugins\n\n";
-            for (plugin, action) in added {
-                help += &format!("- **{plugin}**: {}\n", action.help.replace('\n', " "));
-            }
-        }
-        help
-    }
-
-    /// The actions of the features that are on which extend a task of berth,
-    /// with the name of their plugin.
-    fn contributed(&self, task: &str) -> Vec<(&str, &plugins::PluginAction)> {
-        let mut found = vec![];
-        for (index, plugin) in self.plugins.iter().enumerate() {
-            for (number, feature) in plugin.features.iter().enumerate() {
-                if !self.item_enabled(Item::Feature(index, number)) {
-                    continue;
+        match self.selected_entry() {
+            Some(Entry::HostTask(index)) => {
+                let Some(task) = self.host.tasks.get(index) else {
+                    return String::new();
+                };
+                let mut help = task.help.clone();
+                if !task.arguments.is_empty() {
+                    help += "\n\nAsks for: ";
+                    let names: Vec<&str> = task
+                        .arguments
+                        .iter()
+                        .map(|argument| {
+                            if argument.label.is_empty() {
+                                &argument.name
+                            } else {
+                                &argument.label
+                            }
+                        })
+                        .map(String::as_str)
+                        .collect();
+                    help += &names.join(", ");
+                    help += ".";
                 }
-                for action in &feature.actions {
-                    if action.extends.iter().any(|extended| extended == task) {
-                        found.push((plugin.label.as_str(), action));
+                let steps: Vec<_> = self
+                    .host
+                    .tasks
+                    .iter()
+                    .filter(|step| step.extends.contains(&task.name))
+                    .collect();
+                if !steps.is_empty() {
+                    help += "\n\n### From plugins\n\n";
+                    for step in steps {
+                        help +=
+                            &format!("- **{}**: {}\n", step.label, step.help.replace('\n', " "));
                     }
                 }
+                help += &format!("\n\nFrom the command line: `berth run HOST {}`", task.name);
+                help
             }
+            Some(Entry::HostSession(index)) => {
+                let Some(session) = self.host.sessions.get(index) else {
+                    return String::new();
+                };
+                let state = match (&session.ended, session.exit_code) {
+                    (None, _) => "still running".to_owned(),
+                    (Some(ended), Some(code)) => format!("ended {ended} with exit code {code}"),
+                    (Some(ended), None) => format!("ended {ended}"),
+                };
+                format!(
+                    "`{}` as {}, started {}, {state}. It lives on the host and goes on while nobody watches.\n\nEnter opens it here. x forgets one that has ended, with its output. From the command line: `berth attach HOST {id}` or `berth output HOST {id}`.",
+                    session.command.join(" "),
+                    session.user,
+                    session.started,
+                    id = session.id,
+                )
+            }
+            _ => self.entry_help().to_owned(),
         }
-        found
     }
 
     fn entry_help(&self) -> &'static str {
@@ -1073,10 +1230,7 @@ impl App {
                 "A group of things to install. Space switches all of it on, or off when all of it is on. Plugins add their own entries to these groups."
             }
             Some(Entry::Feature(plugin, feature)) => self.plugins[plugin].features[feature].help,
-            Some(Entry::PluginAction(plugin, feature, action)) => {
-                self.plugins[plugin].features[feature].actions[action].help
-            }
-            Some(Entry::SignIn(index)) => crate::fields::SIGN_INS[index].2,
+            Some(Entry::HostTask(_) | Entry::HostSession(_)) => "",
             Some(Entry::HostRegistry(_)) => {
                 "Give this host the login of this registry. Its npm repositories become the agent's npm registry with the login in ~/.npmrc, and its Docker addresses get the login in ~/.docker/config.json. Registries are set up on the Registries tab of the home screen."
             }
@@ -1099,7 +1253,18 @@ impl App {
         }
     }
 
+    /// The `berth serve` this host belongs to, when it is not a host of this machine.
+    pub fn served(&self) -> Option<&str> {
+        self.config["builder"]["served"].as_str()
+    }
+
     pub fn set_step(&mut self, step: Step) {
+        if let Some(server) = self.served()
+            && step != Step::Manage
+        {
+            self.status = format!("This host is set up on the berth server at {server}");
+            return;
+        }
         self.step = step;
         // The Manage tab acts on the running host; the others on the install method.
         if step == Step::Manage {
@@ -1111,7 +1276,7 @@ impl App {
             self.action = self.method;
         }
         // A host with an address opens on its tasks rather than the address.
-        let task = |entry: &Entry| matches!(entry, Entry::Task(_));
+        let task = |entry: &Entry| matches!(entry, Entry::Task(_) | Entry::HostTask(_));
         let first = match self.text(Field::SshHost).is_empty() {
             false if step == Step::Manage => self.entries().iter().position(task),
             _ => None,
@@ -1452,7 +1617,8 @@ impl App {
             return;
         };
         if std::mem::take(&mut self.unlock_remote) {
-            self.run_manage(Some(input.value().to_owned()));
+            self.host.password = Some(input.value().to_owned());
+            self.connect_host();
             return;
         }
         if credentials::sudo_unlock(Some(input.value())) {
@@ -1632,7 +1798,9 @@ impl App {
             );
         }
         check(
-            self.enabled(AgentSudo) || !self.text(AgentHash).is_empty(),
+            self.enabled(AgentSudo)
+                || !self.text(AgentPrivileges).is_empty()
+                || !self.text(AgentHash).is_empty(),
             "Agent needs a password when passwordless sudo is off",
         );
         let geometry = self.text(Geometry);
@@ -1732,12 +1900,191 @@ impl App {
     }
 
     fn remote_inventory(&self) -> Result<Value> {
-        remote_inventory(
-            self.text(Field::SshHost),
-            self.text(Field::SshUser),
-            self.text(Field::SshPort),
-            self.text(Field::SshKey),
-        )
+        self.host_profile().inventory()
+    }
+
+    /// This host as its profile describes it, for reaching and applying it.
+    pub fn host_profile(&self) -> Host {
+        let name = self
+            .path
+            .file_stem()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Host {
+            name,
+            path: self.path.clone(),
+            config: self.config.clone(),
+        }
+    }
+
+    /// Start talking to the host's controller. A host whose sudo asks for a
+    /// password gets the dialog first, once.
+    pub fn connect_host(&mut self) {
+        let host = self.host_profile();
+        let own_link = host.config["builder"]["link"].is_array() || host.served().is_some();
+        if host.asks_password() && !own_link && self.host.password.is_none() {
+            self.host.state = State::Password;
+            if !std::mem::replace(&mut self.password_asked, true) {
+                self.ask_host_password(false);
+            }
+            return;
+        }
+        match host.link(self.host.password.as_deref()) {
+            Ok(spec) => {
+                self.host.connect(spec);
+            }
+            Err(error) => self.host.state = State::Unreachable(error.to_string()),
+        }
+    }
+
+    fn ask_host_password(&mut self, failed: bool) {
+        self.unlock_remote = true;
+        self.unlock_failed = failed;
+        self.unlock_reason = "Your sudo password on the host, to reach its controller.";
+        self.unlock = Some(Input::default());
+    }
+
+    /// Connect again from nothing, asking for the password again if needed.
+    pub fn reconnect_host(&mut self) {
+        self.password_asked = false;
+        self.host.disconnect();
+    }
+
+    /// Keep the overview in step with the host: connect when there is an
+    /// address, take in what it said. Called between events.
+    pub fn watch_host(&mut self) {
+        if self.step != Step::Manage {
+            return;
+        }
+        if self.host.state == State::Idle && self.unlock.is_none() && self.problems().is_empty() {
+            self.connect_host();
+        }
+        let had_password = self.host.password.is_some();
+        if let Some(note) = self.host.pump() {
+            self.status = note;
+        }
+        // sudo did not take the password: ask again.
+        if had_password && self.host.password.is_none() && self.unlock.is_none() {
+            self.ask_host_password(true);
+        }
+        let last = self.entries().len().saturating_sub(1);
+        if self.list.selected().unwrap_or(0) > last {
+            self.list.select(Some(last));
+        }
+    }
+
+    /// Run a task of the host: after its question and its arguments, if it has any.
+    pub fn begin_task(&mut self, index: usize, confirmed: bool) {
+        let Some(task) = self.host.tasks.get(index).cloned() else {
+            return;
+        };
+        if let (Some(question), false) = (&task.confirm, confirmed) {
+            self.host.question = Some((question.clone(), Pending::Task(index)));
+            return;
+        }
+        if task.arguments.is_empty() {
+            self.launch_task(index, Default::default());
+            return;
+        }
+        self.host.arguments = Some(Arguments {
+            task: index,
+            index: 0,
+            values: Default::default(),
+            input: Input::new(task.arguments[0].default.clone()),
+            choices: vec![],
+            chosen: None,
+        });
+        self.ask_choices();
+    }
+
+    fn ask_choices(&self) {
+        if let Some(dialog) = &self.host.arguments
+            && let Some(task) = self.host.tasks.get(dialog.task)
+            && let Some(argument) = task.arguments.get(dialog.index)
+            && !argument.choices.is_empty()
+        {
+            self.host.send(crate::remote::Request::Choices {
+                task: task.name.clone(),
+                argument: argument.name.clone(),
+            });
+        }
+    }
+
+    /// Take the value typed for the argument being asked and go on to the
+    /// next, or run the task after the last.
+    pub fn accept_argument(&mut self) {
+        let Some(mut dialog) = self.host.arguments.take() else {
+            return;
+        };
+        let Some(task) = self.host.tasks.get(dialog.task).cloned() else {
+            return;
+        };
+        let argument = &task.arguments[dialog.index];
+        let value = dialog.input.value().to_owned();
+        if value.is_empty() && argument.required {
+            self.status = format!("{} is needed", argument_label(argument));
+            self.host.arguments = Some(dialog);
+            return;
+        }
+        dialog.values.insert(argument.name.clone(), value);
+        dialog.index += 1;
+        match task.arguments.get(dialog.index) {
+            Some(next) => {
+                dialog.input = Input::new(next.default.clone());
+                dialog.choices.clear();
+                dialog.chosen = None;
+                self.host.arguments = Some(dialog);
+                self.ask_choices();
+            }
+            None => self.launch_task(dialog.task, dialog.values),
+        }
+    }
+
+    fn launch_task(&mut self, index: usize, values: std::collections::BTreeMap<String, String>) {
+        let Some(task) = self.host.tasks.get(index).cloned() else {
+            return;
+        };
+        let mut body = json!({"arguments": values});
+        if task.terminal {
+            (body["rows"], body["cols"]) = (json!(self.host.size.0), json!(self.host.size.1));
+        }
+        // Secrets are built here and travel on the task's standard input.
+        if task.input.as_deref() == Some("secrets") {
+            let payload =
+                crate::registry::Store::at(self.config_dir.clone()).host_payload(&self.config);
+            match payload {
+                Ok(payload) => {
+                    body["input_b64"] = json!(berth_api::b64(format!("{payload}\n").as_bytes()))
+                }
+                Err(error) => {
+                    self.status = error.to_string();
+                    return;
+                }
+            }
+        }
+        let _ = self.save();
+        self.status = format!(
+            "Starting {}…",
+            if task.label.is_empty() {
+                &task.name
+            } else {
+                &task.label
+            }
+        );
+        self.host.run(&task.name, body);
+    }
+
+    /// A shell on the host as one of its sessions: the agent's, or the SSH user's.
+    pub fn start_host_shell(&mut self) {
+        let (user, title) = match self.as_agent {
+            true => (
+                "agent",
+                format!("{} on {}", self.agent_label(), self.text(Field::SshHost)),
+            ),
+            false => ("operator", self.ssh_target()),
+        };
+        self.host.shell(user, &title);
+        self.status = "Starting a shell…".into();
     }
 
     pub fn save(&mut self) -> Result<()> {
@@ -1756,46 +2103,9 @@ impl App {
         Ok(())
     }
 
-    /// Variables for a direct Ansible run, matching what the seed builder embeds.
-    fn ansible_vars(&self) -> Value {
-        let mut vars = self.config["ansible_vars"].clone();
-        if !vars.is_object() {
-            vars = json!({});
-        }
-        for (source, dest) in [
-            ("agent_username", "devbox_user"),
-            ("agent_password_hash", "devbox_agent_password_hash"),
-            ("agent_ssh_public_key", "devbox_agent_ssh_public_key"),
-            ("agent_passwordless_sudo", "devbox_agent_passwordless_sudo"),
-            ("operator_username", "devbox_operator_user"),
-            ("operator_password_hash", "devbox_operator_password_hash"),
-            ("operator_ssh_public_key", "devbox_operator_ssh_public_key"),
-            (
-                "operator_passwordless_sudo",
-                "devbox_operator_passwordless_sudo",
-            ),
-        ] {
-            if let Some(value) = self.config.get(source) {
-                vars[dest] = value.clone();
-            }
-        }
-        vars["devbox_profile"] = self.config["profile"].clone();
-        vars["devbox_plugin_dirs"] = self.plugin_dirs();
-        let key = self.text(Field::TailscaleKey);
-        if !key.is_empty() {
-            vars["devbox_tailscale_auth_key"] = json!(key);
-        }
-        vars
-    }
-
     /// Where each plugin is on this machine, by id.
     fn plugin_dirs(&self) -> Value {
-        let dirs: serde_json::Map<String, Value> = self
-            .plugins
-            .iter()
-            .map(|plugin| (plugin.id.clone(), json!(plugin.dir)))
-            .collect();
-        Value::Object(dirs)
+        apply::plugin_dirs(&self.plugins)
     }
 
     /// The command for the chosen action, and the private files it reads.
@@ -1803,7 +2113,7 @@ impl App {
         let action = self.action;
         // Secrets go to private files rather than argv. They live until the command ends.
         let mut extra = tempfile::NamedTempFile::new()?;
-        let mut inventory = tempfile::NamedTempFile::new()?;
+        let inventory = tempfile::NamedTempFile::new()?;
         let mut command;
         match action {
             Action::Save | Action::Manage => return Err("Nothing to run".into()),
@@ -1835,7 +2145,11 @@ impl App {
                 if let (Action::CloudSeed, Some(name)) = (action, login) {
                     let login = crate::registry::Store::at(self.config_dir.clone())
                         .curl_login(name)?
-                        .ok_or_else(|| format!("Registry {name} has no stored login for downloading the release"))?;
+                        .ok_or_else(|| {
+                            format!(
+                                "Registry {name} has no stored login for downloading the release"
+                            )
+                        })?;
                     command.env("BERTH_RELEASE_LOGIN", login);
                 }
             }
@@ -1851,27 +2165,26 @@ impl App {
                     command.args(["--sha256", self.text(Field::IsoSha)]);
                 }
             }
-            Action::Apply | Action::Ssh => {
-                let local = ".venv/bin/ansible-playbook";
-                command = Command::new(if Path::new(local).is_file() {
-                    local
-                } else {
-                    "ansible-playbook"
-                });
-                serde_json::to_writer(&mut extra, &self.ansible_vars())?;
+            // Applying to a host over SSH is berth-core's; the password the
+            // overview was given saves Ansible asking for it again.
+            Action::Ssh => {
+                let paths = crate::paths::Paths::locate()?;
+                let prepared =
+                    apply::prepare(&paths, &self.host_profile(), self.host.password.as_deref())?;
+                return Ok((prepared.command, prepared.files));
+            }
+            Action::Apply => {
+                command = apply::playbook(Path::new("."));
+                serde_json::to_writer(
+                    &mut extra,
+                    &apply::ansible_vars(&self.config, &self.plugin_dirs()),
+                )?;
                 extra.flush()?;
                 command
                     .args(["ansible/site.yml", "--become", "-e"])
                     .arg(format!("@{}", extra.path().display()))
                     .arg("-i");
-                if action == Action::Ssh {
-                    serde_json::to_writer(&mut inventory, &self.remote_inventory()?)?;
-                    inventory.flush()?;
-                    command.arg(inventory.path());
-                    if self.enabled(Field::AskPass) {
-                        command.arg("--ask-pass");
-                    }
-                } else if self.text(Field::Inventory).is_empty() {
+                if self.text(Field::Inventory).is_empty() {
                     command.args(["localhost,", "-c", "local"]);
                 } else {
                     command.arg(expand_path(self.text(Field::Inventory)));
@@ -1916,7 +2229,9 @@ impl App {
             Action::CloudSeed => {
                 "Next: upload the devbox-release.tar.gz shown above unchanged to the release URL, then pass the user-data file when creating the server."
             }
-            Action::Docker => "Next: make docker-up, then open http://127.0.0.1:16080/vnc.html",
+            Action::Docker => {
+                "Next: docker compose -f container/compose.yml up -d in the source directory, then open http://127.0.0.1:16080/vnc.html"
+            }
             Action::Apply | Action::Ssh => {
                 "Next: log in as the agent and run `agent-env devbox-smoke`, then sign in to the coding clients."
             }
@@ -1983,8 +2298,8 @@ impl App {
     /// Run the chosen action inside the UI. Writing a USB drive first asks for
     /// confirmation and for administrator rights.
     pub fn run(&mut self, confirmed: bool) {
+        // The overview has no action of its own: its rows are the host's tasks.
         if self.action == Action::Manage {
-            self.run_manage(None);
             return;
         }
         let mut usb = String::new();
@@ -2034,54 +2349,11 @@ impl App {
         };
     }
 
-    /// The maintenance task as a command for a terminal, where sudo can prompt.
-    pub fn manage_in_terminal(&self) -> Result<Command> {
-        self.task_in_terminal(self.text(Field::ManageTask))
-    }
-
-    /// The chosen task and what plugins add to it, each for the terminal.
-    pub fn manage_commands(&self) -> Result<Vec<Command>> {
-        self.manage_tasks().iter().map(|task| self.task_in_terminal(task)).collect()
-    }
-
-    fn task_in_terminal(&self, task: &str) -> Result<Command> {
-        let stage = self.manage_stage(task, None)?;
-        let mut command = Command::new("ssh");
-        command.arg("-t");
-        for arg in stage.command.get_args() {
-            let text = arg.to_string_lossy();
-            command.arg(match text.strip_prefix("sudo -n ") {
-                Some(rest) => format!("sudo {rest}"),
-                None => text.into_owned(),
-            });
-        }
-        Ok(command)
-    }
-
-    /// Run the chosen task on the host in a terminal inside the UI.
-    pub fn start_session(&mut self, rows: u16, cols: u16) {
-        let started = self.manage_in_terminal().and_then(|command| {
-            let _ = self.save();
-            let title = format!("{} on {}", self.text(Field::ManageTask), self.text(Field::SshHost));
-            crate::session::Session::start(&title, command, rows, cols)
-        });
-        match started {
-            Ok(session) => self.session = Some(session),
-            Err(error) => self.status = error.to_string(),
-        }
-    }
-
-    /// A shell on the host in a terminal inside the UI: the agent's, or the SSH user's.
+    /// A shell over plain SSH in a terminal inside the UI, as the SSH user: for
+    /// a host whose controller cannot be reached.
     pub fn start_shell(&mut self, rows: u16, cols: u16) {
-        let command = match self.as_agent {
-            true => self.agent_terminal(),
-            false => self.terminal(&[]),
-        };
-        let title = match self.as_agent {
-            true => format!("{} on {}", self.agent_label(), self.text(Field::SshHost)),
-            false => self.ssh_target(),
-        };
-        let started = command.and_then(|command| {
+        let title = self.ssh_target();
+        let started = self.terminal(&[]).and_then(|command| {
             let _ = self.save();
             crate::session::Session::start(&title, command, rows, cols)
         });
@@ -2094,43 +2366,13 @@ impl App {
         }
     }
 
-    /// Send the secrets from the command line. They go over standard input, so a
-    /// sudo password is asked here and not by sudo on the host.
-    pub fn send_secrets(&self) -> Result<()> {
-        let password = match self.enabled(Field::AskBecomePass) {
-            true => Some(crate::registry::read_secret("Your sudo password on the host")?),
-            false => None,
-        };
-        let mut stage = self.manage_stage("secrets", password)?;
-        let mut child = stage.command.stdin(std::process::Stdio::piped()).spawn()?;
-        if let (Some(input), Some(mut stdin)) = (stage.input, child.stdin.take()) {
-            use std::io::Write;
-            stdin.write_all(input.as_bytes())?;
-        }
-        if !child.wait()?.success() {
-            return Err("Sending the secrets failed".into());
-        }
-        Ok(())
-    }
-
     /// `ssh` with this host's port and key.
     fn ssh(&self) -> Command {
-        let mut command = Command::new("ssh");
-        if !self.text(Field::SshPort).is_empty() {
-            command.args(["-p", self.text(Field::SshPort)]);
-        }
-        if !self.text(Field::SshKey).is_empty() {
-            command.arg("-i").arg(expand_path(self.text(Field::SshKey)));
-        }
-        command
+        self.host_profile().ssh()
     }
 
     fn ssh_target(&self) -> String {
-        let host = self.text(Field::SshHost);
-        match self.text(Field::SshUser) {
-            "" => host.to_owned(),
-            user => format!("{user}@{host}"),
-        }
+        self.host_profile().target()
     }
 
     /// An interactive shell on the host, or `remote` run there.
@@ -2180,106 +2422,6 @@ impl App {
             }
             self.status = format!("{} unset", field.spec().label);
         }
-    }
-
-    /// Run the chosen maintenance task on the host, asking for its sudo password first.
-    fn run_manage(&mut self, password: Option<String>) {
-        if password.is_none() && self.enabled(Field::AskBecomePass) {
-            self.unlock_remote = true;
-            self.unlock_failed = false;
-            self.unlock_reason = "Your sudo password on the host.";
-            self.unlock = Some(Input::default());
-            return;
-        }
-        let stages: Result<Vec<Stage>> = self
-            .manage_tasks()
-            .iter()
-            .map(|task| self.manage_stage(task, password.clone()))
-            .collect();
-        let started = stages.and_then(|stages| {
-            let _ = self.save();
-            Job::start(stages, "", vec![])
-        });
-        match started {
-            Ok(job) => self.job = Some(job),
-            Err(error) => self.status = error.to_string(),
-        }
-    }
-
-    /// The maintenance script, sent as an argument so stdin stays free for the password.
-    fn manage_stage(&self, task: &str, password: Option<String>) -> Result<Stage> {
-        self.remote_inventory()?;
-        let host = self.text(Field::SshHost);
-        let mut command = self.ssh();
-        command.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
-        command.arg(self.ssh_target());
-        let sudo = if password.is_some() {
-            "sudo -S -p ''"
-        } else {
-            "sudo -n"
-        };
-        let quote = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
-        let mut input = password.map(|password| format!("{password}\n"));
-        // Secrets travel on standard input, after the sudo password if there is one.
-        if task == "secrets" {
-            let payload = crate::registry::Store::at(self.config_dir.clone())
-                .host_payload(&self.config)?;
-            // sudo only reads the password line when it needs one, so the host
-            // takes the last line, which is the secrets either way.
-            command.arg(format!(
-                "{sudo} -H -u {} sh -c 'tail -n 1 | /usr/local/bin/devbox-secrets'",
-                self.agent_name()?
-            ));
-            return Ok(Stage {
-                title: format!("{task} on {host}"),
-                command,
-                source: None,
-                input: Some(format!("{}{payload}\n", input.unwrap_or_default())),
-            });
-        }
-        // `PLUGIN:ACTION` is a plugin's command; anything else a task of the script.
-        if let Some((plugin, name)) = task.split_once(':') {
-            let sign_in = crate::fields::SIGN_INS
-                .iter()
-                .find(|sign_in| plugin == "sign-in" && sign_in.0 == name)
-                .map(|sign_in| (sign_in.3, "agent"));
-            let action = self
-                .plugins
-                .iter()
-                .find(|known| known.id == plugin)
-                .and_then(|known| {
-                    known
-                        .features
-                        .iter()
-                        .flat_map(|feature| &feature.actions)
-                        .find(|action| action.name == name)
-                })
-                .map(|action| (action.run.as_str(), action.user.as_str()));
-            let (run, user) = sign_in
-                .or(action)
-                .ok_or_else(|| format!("No plugin action {task}"))?;
-            command.arg(match user {
-                "root" => format!("{sudo} bash -c {}", quote(run)),
-                "operator" => {
-                    input = None;
-                    format!("bash -c {}", quote(run))
-                }
-                _ => format!(
-                    "{sudo} -H -u {} agent-env bash -c {}",
-                    self.agent_name()?,
-                    quote(&format!("cd; {run}"))
-                ),
-            });
-        } else {
-            let script = fs::read_to_string("bin/manage-host.sh")?;
-            command.arg(format!("{sudo} bash -c {} manage {task}", quote(&script)));
-        }
-        Ok(Stage {
-            title: format!("{task} on {host}"),
-            command,
-            source: None,
-            input,
-        })
     }
 
     /// Write the ISO that was just built to a USB drive: the only one connected,
@@ -2348,33 +2490,12 @@ impl App {
     }
 }
 
-pub fn remote_inventory(host: &str, user: &str, port: &str, key: &str) -> Result<Value> {
-    if host.is_empty()
-        || host.starts_with('-')
-        || host.chars().any(|ch| ch.is_whitespace() || ch.is_control())
-    {
-        return Err("Enter an SSH hostname, IP address or config alias".into());
+pub fn argument_label(argument: &berth_api::Argument) -> &str {
+    if argument.label.is_empty() {
+        &argument.name
+    } else {
+        &argument.label
     }
-    let mut target = json!({"ansible_host": host, "ansible_connection": "ssh"});
-    if !user.is_empty() {
-        target["ansible_user"] = json!(user);
-    }
-    if !port.is_empty() {
-        let port = port
-            .parse::<u16>()
-            .ok()
-            .filter(|port| *port != 0)
-            .ok_or("SSH port must be between 1 and 65535")?;
-        target["ansible_port"] = json!(port);
-    }
-    if !key.is_empty() {
-        let key = expand_path(key);
-        if !key.is_file() {
-            return Err("SSH private key file does not exist".into());
-        }
-        target["ansible_ssh_private_key_file"] = json!(key);
-    }
-    Ok(json!({"all": {"hosts": {"devbox_target": target}}}))
 }
 
 /// Load a profile and fill in everything the UI expects to be present.
@@ -2445,7 +2566,11 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
         .filter(|(_, chosen)| *chosen)
         .map(|(feature, _)| json!(feature))
         .collect();
-        for feature in vars["devbox_plugin_features"].as_array().into_iter().flatten() {
+        for feature in vars["devbox_plugin_features"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
             if !features.contains(feature) {
                 features.push(feature.clone());
             }
@@ -2466,12 +2591,17 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
         vars.insert("devbox_plugin_features".into(), json!(features));
         config["builder"]["shipped_plugins"] = json!(true);
     }
-    // Prompt switches were once stored as the strings "true" and "false".
-    if !crate::fields::MANAGE_TASKS
-        .contains(&config["builder"]["manage_task"].as_str().unwrap_or(""))
-    {
-        config["builder"]["manage_task"] = json!("status");
+    // Profiles from before the privilege levels keep what they had: sudo for
+    // everything without a password is `full`. One whose agent types a
+    // password stays as it is until a level is chosen.
+    if config["agent_privileges"].is_null() && config["agent_passwordless_sudo"] == true {
+        config["agent_privileges"] = json!("full");
     }
+    // The task last run from the overview was kept once; the host lists its own now.
+    if let Some(builder) = config["builder"].as_object_mut() {
+        builder.remove("manage_task");
+    }
+    // Prompt switches were once stored as the strings "true" and "false".
     // Device names change between sessions, so the drive to write is chosen each time.
     if let Some(builder) = config["builder"].as_object_mut() {
         builder.remove("usb_device");

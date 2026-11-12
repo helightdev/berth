@@ -1,0 +1,55 @@
+---
+title: Sign-ins
+description: Sign the coding agents, GitHub and T3 Code in on a host, which installing them does not do.
+icon: KeyRound
+---
+
+A new host has the agents installed but nobody signed in. Each sign-in runs on the host as the agent, and you complete it in your own browser.
+
+## From the overview
+
+Under **Sign-In**:
+
+| Task | Signs in |
+| --- | --- |
+| Sign in to Claude Code | Claude Code, from the `claude` plugin |
+| Sign in to Codex | Codex, from the `codex` plugin |
+| Sign in to GitHub | `gh`, from the `github` plugin |
+| Sign in to Unity | The Unity CLI, from the `unity` plugin |
+| Show who is signed in | The accounts every plugin of the host knows about |
+
+A sign-in opens in a panel. It prints a link: click it to open it on your machine, and right-click to copy a one-time code. The command line does the same in your terminal:
+
+```bash
+berth run studio claude:login
+berth run studio sign-in:status
+```
+
+Pi has no sign-in task. Start `pi` in the terminal and complete its own sign-in.
+
+## GitHub without signing in
+
+A fine-grained token given to the host as `GH_TOKEN` signs `gh` and `git` in for github.com without a browser. See [Secrets](/docs/use/secrets#github).
+
+## T3 Code on another device
+
+T3 Code asks every new browser to pair once. **Use T3 from another device** prints a pairing link for the published tailnet address, and the host and code for the T3 app. The code works once, within 10 minutes. T3 has to be [published on the tailnet](/docs/use/access#joining-the-tailnet) first.
+
+```bash
+berth run studio pair
+```
+
+Keep T3's pairing enabled and use the tailnet HTTPS address, not a loopback pairing address.
+
+## Checking by hand
+
+On the host, as the agent:
+
+```bash title="On the host"
+sudo -iu agent
+claude                  # sign in, then exit
+t3 service status
+box exec devbox-smoke
+```
+
+Run `sudo -n true` from a command T3 started, too, to check the agent's sudo as T3 sees it.

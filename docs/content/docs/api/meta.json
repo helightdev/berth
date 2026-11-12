@@ -1,0 +1,7 @@
+{
+  "title": "API",
+  "description": "berthd and berth serve",
+  "icon": "Plug",
+  "root": true,
+  "pages": ["index", "portal", "host", "serve"]
+}

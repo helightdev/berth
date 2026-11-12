@@ -3,6 +3,9 @@
   ansible.builtin.set_fact:
     devbox_plugin_info: []
     devbox_plugin_commands: []
+    devbox_plugin_tasks: []
+    devbox_plugin_services: []
+    devbox_plugin_channels: []
 - name: Create the directory for detailed guides
   ansible.builtin.file:
     path: /etc/devbox/guides
@@ -13,3 +16,9 @@
   loop: "{{ devbox_plugin_features }}"
   loop_control:
     loop_var: devbox_plugin_feature
+# berth.yml writes these for berthd; the agent's guide and its sudo rules name the units.
+- name: Collect the tasks and service units of this host
+  ansible.builtin.set_fact:
+    devbox_tasks: "{{ (devbox_core_tasks | rejectattr('name', 'in', [] if devbox_install_t3 | bool else ['pair']) | list) + devbox_plugin_tasks }}"
+    devbox_agent_units: "{{ devbox_plugin_services | selectattr('user', 'equalto', 'agent') | map(attribute='name') | map('replace', '/', '-') | map('regex_replace', '^(.*)$', 'berth-svc-\\1.service') | list }}"
+    devbox_service_units: "{{ devbox_plugin_services | map(attribute='name') | map('replace', '/', '-') | map('regex_replace', '^(.*)$', 'berth-svc-\\1.service') | list }}"

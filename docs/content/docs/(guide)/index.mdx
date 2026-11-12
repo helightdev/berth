@@ -1,0 +1,57 @@
+---
+title: Introduction
+description: berth turns a spare laptop, a server or a container into an Ubuntu desktop for coding agents, and looks after it afterwards.
+icon: House
+---
+
+import { Cloud, Container, Server, Usb } from 'lucide-react';
+
+berth sets up Ubuntu 26.04 amd64 machines for coding agents and manages them from your own computer. Each machine, a *host*, gets a desktop you can watch from the browser and the agents you choose. berth's terminal UI has a page per host for status, sign-ins, updates and secrets.
+
+<Screen name="overview" alt="The overview of a host in berth: its connection, and tasks grouped under System, Access, Sync, Sign-In, Backup and Set-Up" />
+
+## On each host
+
+- XFCE on a persistent virtual display, reached in the browser through noVNC
+- Claude Code, Codex and Pi, with T3 Code as a web front end for them
+- Firefox, Chromium, Chrome, LibreOffice, image, PDF and OCR tools
+- Development toolchains for Node, Python, Go, Rust, the JVM, .NET and more ([Tools](/docs/reference/tools))
+- A desktop adapter for agents, as a command and as an MCP server ([box](/docs/reference/box))
+- Tailscale, the Cockpit web console and unattended security updates
+- An *operator* account for you and an *agent* account for the coding agents
+
+A laptop also gets a physical XFCE login. Graphics run on the host's GPU or on the CPU ([Graphics](/docs/reference/graphics)). Optional software, such as the Unity CLI or nightly backups, comes as [plugins](/docs/extend/plugins).
+
+## Ways to deploy
+
+They all run the same Ansible role, so the result is the same.
+
+<Cards>
+  <Card icon={<Usb />} title="Laptop from a USB stick" href="/docs/deploy/usb">
+    An unattended installer that sets up a blank machine without questions.
+  </Card>
+  <Card icon={<Server />} title="Existing server over SSH" href="/docs/deploy/ssh">
+    A host you can already log in to, set up in place.
+  </Card>
+  <Card icon={<Cloud />} title="Cloud machine from a seed" href="/docs/deploy/cloud">
+    cloud-init user data for Hetzner or any provider that takes it.
+  </Card>
+  <Card icon={<Container />} title="Container" href="/docs/deploy/container">
+    The desktop as a Docker image, for trying things out.
+  </Card>
+</Cards>
+
+## Status
+
+<Callout type="warn" title="Early software">
+  [Validation](/docs/reference/validation) lists what is checked and how. Try a profile in the container or a VM before booting the installer on real hardware: **the installer erases the disk it selects.**
+</Callout>
+
+## Where to go next
+
+<Cards>
+  <Card title="Install berth" href="/docs/start/install">One command, or build it with cargo.</Card>
+  <Card title="Quick start" href="/docs/start/quick-start">From an empty profile to a running host.</Card>
+  <Card title="How it fits together" href="/docs/start/concepts">Profiles, the role, berthd and box.</Card>
+  <Card title="Using berth" href="/docs/use">The terminal UI, the commands, access and sign-ins.</Card>
+</Cards>

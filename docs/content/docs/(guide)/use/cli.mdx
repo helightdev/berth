@@ -1,0 +1,109 @@
+---
+title: Commands
+description: berth's commands, grouped by what they are for. Everything the terminal UI does for a running host can be scripted with them.
+icon: Terminal
+---
+
+`berth --help` prints the full list. Commands that take a `HOST` accept a saved host's name or a path to a profile.
+
+With a [berth server](/docs/use/server) set, by `--server` or the `server` setting, the host commands use the server's hosts. Installing, secrets and registries then stay on the server.
+
+<Screen name="tasks" alt="Output of berth tasks studio: tasks grouped under System, Access, Sync, Sign-In and Backup, with plugin steps marked +" />
+
+## Hosts and profiles
+
+| Command | Does |
+| --- | --- |
+| `berth` | The home screen |
+| `berth HOST` | Open a host in the terminal UI; a new name starts a new profile |
+| `berth list` | Saved hosts and their addresses |
+| `berth inventory [HOST…]` | The hosts as an Ansible inventory |
+| `berth config` | Where things are kept, and the settings |
+| `berth config KEY [VALUE]` | Change a setting; no value clears it |
+| `berth --version` | The version |
+| `berth --server URL [--token TOKEN] [COMMAND…]` | Run once with the hosts of a berth serve elsewhere ([A berth server](/docs/use/server)) |
+
+<Screen name="list" alt="Output of berth list with three hosts" />
+
+## Installing
+
+| Command | Does |
+| --- | --- |
+| `berth iso HOST [--write /dev/sdX]` | Build the USB installer, downloading the ISO if none is set; write it to a drive after asking |
+| `berth seed HOST` | Render the cloud-init seed |
+| `berth publish REGISTRY[/REPOSITORY] [HOST [--login [REGISTRY]]]` | Upload the release archive and use it as HOST's release address ([Registries](/docs/use/registries#publishing-the-release-archive)) |
+| `berth image push REGISTRY[/REPOSITORY] [TAG]` | Push the container image |
+
+Both build commands refuse to start while the profile has problems, and list them.
+
+## Tasks
+
+```bash
+berth tasks studio                       # what the host can do
+berth run studio status                  # run a task; its exit code is berth's
+berth run studio backup:restore snapshot=latest --yes
+berth run studio claude:login            # a sign-in runs in your terminal
+```
+
+`berth run HOST TASK` runs a task and its plugin steps and leaves with the task's exit code. A task's arguments are given as `NAME=VALUE`, and `--yes` answers its confirmation. `berth manage HOST TASK` is the same command. Tasks that need a terminal, such as sign-ins, run in your terminal over `ssh -t`.
+
+## Sessions and commands
+
+```bash
+berth exec studio -- id                  # as the agent
+berth exec studio --user root -- journalctl -u berthd -n 20
+berth attach studio                      # a new shell as the agent
+berth sessions studio
+berth output studio ID --tail 50 --follow
+```
+
+<Screen name="exec" alt="Output of berth exec studio -- id, showing the agent account" />
+
+| Command | Does |
+| --- | --- |
+| `berth exec HOST [--user agent\|operator\|root] [--keep] -- COMMAND…` | Run a command on the host and leave with its exit code. The session is removed afterwards unless `--keep` is given |
+| `berth attach HOST [ID]` | Put this terminal onto a terminal session of the host, or onto a new shell as the agent; Ctrl+Q leaves it running |
+| `berth sessions HOST` | The host's sessions, running and ended |
+| `berth output HOST ID [--tail N] [--follow]` | What a session wrote |
+| `berth ssh HOST [COMMAND]` | A shell over plain SSH as the SSH user, or one command |
+| `berth ssh HOST --agent` | The same as the agent account |
+
+<Screen name="sessions" alt="Output of berth sessions studio with one running terminal session" />
+
+## Secrets and registries
+
+| Command | Does |
+| --- | --- |
+| `berth secret [set NAME \| remove NAME]` | Secret values kept on this machine |
+| `berth host HOST` | The secrets and registries a host gets |
+| `berth host HOST secret NAME env VARIABLE \| file PATH [MODE] \| off` | Give a secret to a host, or stop |
+| `berth host HOST registry NAME on\|off` | Give a registry's login to a host, or stop |
+| `berth registry` | The registries |
+| `berth registry add NAME nexus\|npm\|raw\|docker URL [USERNAME]` | Add one |
+| `berth registry repo NAME npm\|raw\|docker REPOSITORY [HOST[:PORT]]` | Add a repository to a Nexus server |
+| `berth registry login NAME` | Store its password or token |
+| `berth registry check [NAME]` | Whether it answers and accepts the login |
+| `berth registry remove NAME` | Remove it |
+
+<Screen name="host" alt="Output of berth host studio: two secrets, one registry" />
+
+See [Secrets](/docs/use/secrets) and [Registries](/docs/use/registries).
+
+## Plugins
+
+| Command | Does |
+| --- | --- |
+| `berth plugins` | Plugins and where they come from |
+| `berth plugins add SPEC` | Install a plugin with npm from a name, a tarball or a folder |
+| `berth plugins remove NAME` | Remove one installed that way, by its npm name |
+
+## Services, channel and the local API
+
+| Command | Does |
+| --- | --- |
+| `berth call HOST SERVICE METHOD [JSON]` | Call a service a plugin runs on the host |
+| `berth channel HOST [TOPIC-PREFIX] [--since ID]` | Messages on the host's channel as they come |
+| `berth serve [--listen ADDRESS:PORT [--expose]]` | The API over all hosts ([berth serve](/docs/extend/serve)); `--expose` allows an address other than loopback |
+| `berth inbox [HOST] [--topic PREFIX] [--all]` | Messages `berth serve` took in from the hosts' channels |
+| `berth kv get\|set\|rm\|ls NAMESPACE [KEY] [JSON]` | The key-value store of `berth serve` |
+| `berth operations`, `berth openapi`, `berth asyncapi` | The API documents of `berth serve` ([API](/docs/api#the-documents)) |

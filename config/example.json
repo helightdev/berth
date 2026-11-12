@@ -9,6 +9,8 @@
   "agent_ssh_public_key": "",
   "agent_password_hash": "",
   "agent_passwordless_sudo": true,
+  "agent_privileges": "limited",
+  "agent_privileges": "limited",
   "target_disk_mode": "auto",
   "target_disk_ssd": "any",
   "target_disk_serial": "",

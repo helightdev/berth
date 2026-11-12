@@ -1,0 +1,100 @@
+---
+title: Registries
+description: npm, Docker, file and Nexus registries, the logins a host gets for them, and publishing the release archive.
+icon: Package
+---
+
+A registry is a server with one address and one login. Hosts get npm and Docker logins from registries, and berth publishes the release archive and the container image to them.
+
+| Kind | What it is | Used for |
+| --- | --- | --- |
+| `nexus` | A Sonatype Nexus server, with repositories under it | Whatever its repositories are for |
+| `npm` | Any npm-compatible registry at an address | The agent's npm registry and its login |
+| `raw` | An address files are uploaded to with HTTP PUT | Publishing the release archive |
+| `docker` | Any container registry, as `HOST` or `HOST:PORT` | Pushing the container image, the agent's Docker login |
+
+A registry with a user name logs in with user name and password. Without a user name, what is stored is used as a token: `_authToken` for npm, a bearer token for uploads.
+
+Addresses and user names are kept in `~/.config/berth/config.json`, passwords and tokens in `~/.config/berth/secrets.json`.
+
+## Adding registries
+
+```bash
+berth registry add nexus nexus https://nexus.example.com ci-user
+berth registry login nexus                      # asks for the password or token
+berth registry repo nexus npm npm-group
+berth registry repo nexus raw berth-releases
+berth registry repo nexus docker docker-hosted nexus.example.com:8083
+
+berth registry add verdaccio npm https://npm.example.com     # token login
+berth registry add files raw https://files.example.com/berth ci-user
+berth registry add ghcr docker ghcr.io my-user
+
+berth registry                                  # the list
+berth registry check                            # do they answer and accept the login?
+```
+
+The **Registries** tab of the home screen (`3`) does the same. Enter changes the selected row, or switches the kind or format; `x` removes a repository, a user name or a stored password. `x` twice on a registry's name removes the registry.
+
+`c` on the tab, or `berth registry check`, checks that the server answers, that each repository exists and is readable with the stored login, and that a Docker address speaks the Docker API. It only reads, so it does not show whether the account may upload.
+
+### Nexus repositories
+
+| Format | Address | Used for |
+| --- | --- | --- |
+| `npm` | `URL/repository/NAME/` | The agent's npm registry and its login |
+| `raw` | `URL/repository/NAME/` | Publishing the release archive |
+| `docker` | `HOST/NAME`, or the address you give | Pushing the container image, the agent's Docker login |
+
+A Docker repository with path-based routing in Nexus does not need an address: images are at `HOST/REPOSITORY/IMAGE`. With a connector on a port or host name of its own, give that address. Maven repositories are not handled.
+
+## Giving a host a registry
+
+```bash
+berth host studio registry nexus on
+berth run studio secrets
+```
+
+Or switch it on the host's **Secrets** set-up tab and run **Secrets and registry logins**. The agent's `~/.npmrc` gets the first npm repository as its registry with the login, in a block berth manages. The rest of the file is kept. `~/.docker/config.json` gets the login of every Docker address.
+
+## Publishing the release archive
+
+A machine set up from a [cloud seed](/docs/deploy/cloud) downloads the release archive. With **Cloud-init seed** chosen on a host's Install tab, **Publish release to** switches between your file servers and raw repositories. **Download with login** decides whether the machine logs in for the download. Making the seed then uploads the archive and points the seed at it. From the command line:
+
+```bash
+berth publish nexus/berth-releases cloud-1
+berth publish files cloud-1
+```
+
+Either way the seed pins the archive's SHA-256, and the archive contains no profiles, keys or secrets. The new machine downloads it with or without a login.
+
+<Tabs items={['Without a login', 'With a login']}>
+<Tab value="Without a login">
+
+The default. The repository has to allow anonymous reads.
+
+</Tab>
+<Tab value="With a login">
+
+```bash
+berth publish nexus/berth-releases cloud-1 --login              # the login of nexus
+berth publish nexus/berth-releases cloud-1 --login nexus-read   # another registry's
+```
+
+The cloud seed then contains that login, in a file only root can read that is deleted after the download. The login is taken from your machine when the seed is rendered, so it is never written into the host's profile.
+
+<Callout type="warn">
+  Whoever can read the seed can read the login: your cloud provider's console, and the machine's metadata service until it is removed. Use an account that may only read that repository. A second registry entry for the same server with such an account does that.
+</Callout>
+
+</Tab>
+</Tabs>
+
+## Pushing the container image
+
+```bash
+berth image push nexus/docker-hosted          # NEXUS-DOCKER-ADDRESS/berth-desktop:latest
+berth image push ghcr v1                      # ghcr.io/berth-desktop:v1
+```
+
+pushes the image built by the **Container image** install method.

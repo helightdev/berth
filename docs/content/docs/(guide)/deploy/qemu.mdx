@@ -1,0 +1,83 @@
+---
+title: Testing in QEMU
+description: Try the USB installer, a cloud seed or the role in a virtual machine before using real hardware.
+icon: FlaskConical
+---
+
+`bin/qemu.py` in the provisioning source boots an installer image, an installed disk or a cloud image in QEMU with UEFI firmware. It is the safe place to test a disk policy or a seed.
+
+## What you need
+
+QEMU, OVMF firmware and `cloud-image-utils` on your machine. Optionally Canonical's autoinstall validator. Image file names and OVMF paths differ between distributions, so pass the files you really have, not the example paths below.
+
+## Make a test host
+
+Create a separate host with `profile: qemu`. For the USB installer, use disk mode `auto`, or `serial` with the virtual serial `DEVBOX_TEST_DISK`. Check the virtio disk's udev identifier in the VM installer if it differs.
+
+<Callout type="warn">
+  Never put a physical machine's disk serial into a VM seed, or a VM's into a physical one.
+</Callout>
+
+## Run it
+
+<Tabs items={['USB installer', 'Cloud seed', 'Role over SSH']}>
+<Tab value="USB installer">
+
+Build the test ISO, then install from it:
+
+```bash
+python3 bin/qemu.py install --directory build/vm-install \
+  --image build/agent-qemu-autoinstall.iso \
+  --code /path/to/OVMF_CODE.fd --vars /path/to/OVMF_VARS.fd
+```
+
+After the installer powers off, boot the installed disk without the ISO:
+
+```bash
+python3 bin/qemu.py boot --directory build/vm-install \
+  --code /path/to/OVMF_CODE.fd --vars /path/to/OVMF_VARS.fd
+```
+
+</Tab>
+<Tab value="Cloud seed">
+
+Publish the release and render a seed for the qemu host with `devbox_bootstrap_ssh_cidr: 10.0.2.2/32`, QEMU's address for your machine. Then:
+
+```bash
+python3 bin/qemu.py cloud --directory build/vm-cloud \
+  --image /path/to/ubuntu-26.04-cloudimg-amd64.img \
+  --user-data build/agent-qemu/cloud/user-data \
+  --code /path/to/OVMF_CODE.fd --vars /path/to/OVMF_VARS.fd
+```
+
+</Tab>
+<Tab value="Role over SSH">
+
+To test the role without publishing a release, boot the cloud image with a minimal user data that only creates your login. Then use **Existing host over SSH** against `127.0.0.1` port 2222 with the `qemu` profile.
+
+</Tab>
+</Tabs>
+
+The runner creates its own qcow2 disk and writable firmware variables and refuses to overwrite an existing test directory. By default the VM has 4 vCPUs and 8 GiB RAM, with port 2222 on loopback forwarded to the guest's SSH.
+
+| Option | Effect |
+| --- | --- |
+| `--headless` | No window; the guest's serial console on standard input and output |
+| `--tcg` | Run without KVM |
+| `--memory`, `--cpus`, `--port` | Change the defaults above |
+| `--serial` | The virtual disk's serial, `DEVBOX_TEST_DISK` by default |
+
+Without the tailnet, reach the desktop and T3 through the forwarded SSH port:
+
+```bash
+ssh -p 2222 -L 16080:127.0.0.1:6080 -L 13773:127.0.0.1:3773 ops@127.0.0.1
+```
+
+## What to check
+
+- Provision twice. The second run should not change anything.
+- Reboot without logging in, and check that the desktop, noVNC, T3 and Docker come back.
+- Reconnect to the same desktop.
+- Run `berth run HOST smoke` and check the sandboxed browser, sudo from a command T3 started, and GUI input.
+- Give a wrong disk serial and check that the installer refuses.
+- On a laptop, also test the lid, AC and battery.

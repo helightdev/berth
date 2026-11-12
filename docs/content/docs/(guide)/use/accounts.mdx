@@ -1,0 +1,49 @@
+---
+title: Accounts and sudo
+description: The operator and agent accounts, their passwords, and how much the agent may do as root.
+icon: Users
+---
+
+Every host has two accounts, set on the **Accounts** tab:
+
+| Account | Default name | For |
+| --- | --- | --- |
+| Operator | `ops` | You: SSH, Cockpit, the console and the laptop's login |
+| Agent | `agent` | The coding agents, T3 Code and the virtual desktop; home `/home/agent` |
+
+Separate accounts keep sessions apart, but they do not isolate data from an agent that can become root.
+
+## Passwords
+
+On a password hash field, F4 generates a password and stores its hash, and F5 hashes a password you type. Generated passwords are written next to the profile as `NAME.credentials.json` with mode 0600. The profile itself only stores hashes.
+
+- An empty agent password locks password login for the agent.
+- Turning off the agent's passwordless sudo requires an agent password.
+
+## Agent privileges
+
+`agent_privileges` in the profile, **Agent privileges** on the Accounts tab:
+
+| Level | The agent's sudo |
+| --- | --- |
+| `full` | Everything, without a password. For machines you can throw away |
+| `limited` | `apt-get` and `apt` with `update`, `install`, `upgrade`, `dist-upgrade`, `full-upgrade` and `autoremove`, and `systemctl restart` of plugin services that run as the agent. New profiles start here |
+| `none` | Nothing |
+
+Under `limited` and `none` the agent cannot change SSH, Tailscale, the firewall, the operator's account or berthd.
+
+<Callout type="warn" title="limited guards against accidents, not intent">
+  What a package installs runs as root, so an agent that may install packages can become root if it tries. An agent with `full` can administer the whole host. Use a dedicated machine or VM either way.
+</Callout>
+
+A profile without the setting keeps what it had before the setting existed: `full`, or sudo with the agent's password when `agent_passwordless_sudo` is off.
+
+## Logging in as the agent
+
+On the host, switch from the operator to the agent:
+
+```bash title="On the host"
+sudo -iu agent
+```
+
+From your machine, `berth ssh HOST --agent` opens a shell as the agent, and the overview's **Terminal** switches between the two accounts with Space.

@@ -1,0 +1,47 @@
+{#- What one plugin feature adds to berthd's files: its actions as tasks, its
+    services and its channel topics. Needs devbox_feature, devbox_plugin_id and
+    devbox_plugin_label. -#}
+{%- set tasks = [] -%}
+{%- set services = [] -%}
+{%- set channels = [] -%}
+{%- for action in devbox_feature.actions | default([]) -%}
+{%- if action.name | default('') is match('^[a-z][a-z0-9_-]*$') and action.run | default('') | length > 0 -%}
+{%- set extends = action.extends | default([]) -%}
+{%- set extends = [extends] if extends is string else extends -%}
+{%- set _ = tasks.append({
+  'name': devbox_plugin_id ~ ':' ~ action.name,
+  'label': action.label | default(action.name),
+  'help': action.help | default(''),
+  'group': action.group | default('') or devbox_plugin_label,
+  'user': action.user if action.user | default('') in ['operator', 'root'] else 'agent',
+  'terminal': action.terminal | default(false) is sameas true,
+  'agent': action.agent | default(false) is sameas true,
+  'extends': extends,
+  'confirm': action.confirm | default(none),
+  'input': none,
+  'arguments': action.arguments | default([]),
+  'run': action.run}) -%}
+{%- endif -%}
+{%- endfor -%}
+{%- for service in devbox_feature.services | default([]) -%}
+{%- if service.name | default('') is match('^[a-z][a-z0-9_-]*$') and service.run | default('') | length > 0 -%}
+{%- set _ = services.append({
+  'name': devbox_plugin_id ~ '/' ~ service.name,
+  'description': service.description | default(''),
+  'user': 'root' if service.user | default('') == 'root' else 'agent',
+  'agent': service.agent | default(false) is sameas true,
+  'run': service.run,
+  'timeout': service.timeout | default(30),
+  'methods': service.methods | default([])}) -%}
+{%- endif -%}
+{%- endfor -%}
+{%- for channel in devbox_feature.channels | default([]) -%}
+{%- if channel.topic | default('') | length > 0 -%}
+{%- set _ = channels.append({
+  'topic': devbox_plugin_id ~ '/' ~ channel.topic,
+  'keep': channel.keep | default(none),
+  'max': channel.max | default(none),
+  'days': channel.days | default(none)}) -%}
+{%- endif -%}
+{%- endfor -%}
+{{ {'tasks': tasks, 'services': services, 'channels': channels} | to_json }}

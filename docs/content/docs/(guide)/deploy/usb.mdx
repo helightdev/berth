@@ -1,0 +1,144 @@
+---
+title: Laptop from a USB stick
+description: Build an unattended installer for a blank machine, write it to a USB drive, and boot it.
+icon: Usb
+---
+
+The USB installer is the Ubuntu Server 26.04 ISO with the host's profile built in. It installs Ubuntu without questions and powers off. The rest of the host is set up on first boot.
+
+<Callout type="error" title="Booting the installer erases the selected disk">
+  The installer chooses the target disk on the machine itself. It skips mounted, removable, USB and read-only disks and stops when the choice is ambiguous, but whatever disk it selects is wiped. Test the disk policy in [QEMU](/docs/deploy/qemu) before booting real hardware.
+</Callout>
+
+## What you need
+
+- `python3` and `xorriso` on your machine
+- A USB drive large enough for the image
+- An official Ubuntu 26.04 Server amd64 ISO, or let berth download it
+
+## Build and write
+
+<Steps>
+<Step>
+
+### Create the host
+
+```bash
+berth garage-laptop
+```
+
+Keep **Host profile** at `laptop`. Fill in the operator's SSH public key and a password on **Accounts**.
+
+</Step>
+<Step>
+
+### Choose the disk
+
+On **Install**, choose **USB installer** and set **Disk selection**. `auto`, the default, takes the only eligible internal disk. The other modes are in the table [below](#disk-selection).
+
+</Step>
+<Step>
+
+### Set up the network
+
+Wired DHCP is always configured. To add Wi-Fi, switch **Wi-Fi** on and give the SSID and password. Networks saved in NetworkManager on your machine are suggested, and F5 unlocks their saved passwords so choosing one fills in its password. Leave the interface blank: the installer finds the wireless interface on the target and falls back to wired networking when there is none.
+
+</Step>
+<Step>
+
+### Optionally, join the tailnet
+
+Give a short-lived, one-use Tailscale key in **Tailscale enrollment key**. With a Tailscale API access token exported as `TS_API_KEY`, F4 on that field creates a one-use, pre-approved key valid for 24 hours. Tailnets that require tags take them from `DEVBOX_TAILSCALE_TAGS=tag:devbox,...`.
+
+Reusable keys and existing machine identities do not belong in installer images.
+
+</Step>
+<Step>
+
+### Choose the ISO
+
+F4 on **Source ISO** downloads the current Ubuntu Server ISO and checks it against Ubuntu's `SHA256SUMS`. When you choose a file you already have, berth computes its SHA-256. Compare that with Ubuntu's signed `SHA256SUMS`, because a checksum taken from the file only proves it has not changed since.
+
+</Step>
+<Step>
+
+### Build and write
+
+Choose the drive under **Then write to USB drive**, or press `w` when the build has finished. berth asks which drive to use when several are connected and asks you to confirm erasing it. It then asks for your `sudo` password and writes the image with a progress bar.
+
+</Step>
+</Steps>
+
+The same from the command line:
+
+```bash
+berth iso garage-laptop                     # downloads the ISO when none is set
+berth iso garage-laptop --write /dev/sdX    # and writes it, after asking
+```
+
+The image is `~/.local/share/berth/build/HOSTNAME-autoinstall.iso`. To write it by hand, use the script from the provisioning source. It accepts only a whole USB disk that is large enough and has no system mount on it, and unmounts anything else first:
+
+```bash
+sudo bin/write-usb.sh HOSTNAME-autoinstall.iso /dev/sdX
+```
+
+## Boot it
+
+1. Boot the target from the USB drive. The installer runs without input and powers off.
+2. Remove the drive and power on. The first-boot service installs the desktop and applications and retries failures that pass. It needs network access.
+3. Follow progress over SSH, or on the console:
+
+```bash title="On the host"
+sudo journalctl -u devbox-provision -f
+cat /var/lib/devbox/provision-state
+sudo systemctl start devbox-provision.service     # start it again after a failure
+```
+
+`configured-needs-enrollment` means the role finished but nobody has signed in yet. The `ready` marker means Ansible converged, not that every acceptance test passed. If a dependency fails, the state is `failed` and a timer retries. The success marker is only written after a successful run.
+
+<Callout type="warn" title="Without a tailnet or recovery CIDR">
+  The installed machine accepts SSH only from the tailnet, unless you set a Tailscale key or a **Recovery SSH CIDR**. Set one of them, or be ready to use the console.
+</Callout>
+
+## Disk selection
+
+`target_disk_mode` sets how the installer picks the disk:
+
+| Mode | Selects |
+| --- | --- |
+| `auto` | The only eligible disk. The default for new profiles |
+| `serial` | The disk whose udev `ID_SERIAL` is exactly `target_disk_serial` |
+| `model` | `target_disk_model` matched against udev `ID_MODEL`, with globs such as `Samsung*` |
+| `path` | `target_disk_path`, with globs; exact `/dev/disk/by-id` links are resolved |
+| `largest` / `smallest` | By capacity among eligible disks |
+| `ssd` / `hdd` | The only eligible non-rotating or rotating disk |
+
+For `auto`, `model`, `path`, `largest` and `smallest`, `target_disk_ssd` narrows the candidates to `any`, `ssd` or `hdd`. Each mode needs exactly one final candidate, including when capacities tie. The Install tab shows the fields of the chosen mode and offers the values in Suggestions.
+
+```json title="In the host profile"
+{
+  "target_disk_mode": "auto",
+  "target_disk_ssd": "ssd"
+}
+```
+
+A serial comes from `udevadm info --query=property --name=/dev/nvme0n1`. The disk is selected during the installer's early commands and the storage configuration is then pinned to its path. Disk selection applies only to the USB installer. Cloud seeds and installs over SSH keep the existing disk layout.
+
+## Image contents
+
+The ISO keeps the source image's boot configuration through `xorriso` replay and patches GRUB to install automatically. It embeds the seed and the release archive. The bootstrap checks the archive against the digest in the seed.
+
+The USB drive and its seed can still hold credentials after the installed copies have been used. One-use enrollment keys limit how long they are useful. Secure Boot with the remastered image has not been qualified.
+
+## Without berth
+
+From a source checkout, copy `config/example.json` to `config/local.json` (ignored by git), fill it in, and run the builder directly:
+
+```bash
+python3 bin/devbox.py render --config config/local.json
+python3 bin/devbox.py iso --config config/local.json \
+  --iso /path/to/ubuntu-26.04-live-server-amd64.iso \
+  --sha256 THE_VERIFIED_SHA256        # optional: fail if the ISO differs
+```
+
+The output is `build/HOSTNAME-autoinstall.iso`. The builder refuses to replace an existing image without `--overwrite`. berth always rebuilds it. Password hashes for a hand-written profile come from `mkpasswd -m sha-512`. In JSON, Wi-Fi is `wifi_enabled: true` and a `wifi` object with `ssid`, `password` and optionally `interface`.

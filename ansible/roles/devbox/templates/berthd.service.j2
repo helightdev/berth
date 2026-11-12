@@ -1,0 +1,15 @@
+[Unit]
+Description=berth host controller
+Documentation=https://github.com/helightdev/berth
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/berthd
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2
+# Sessions are its children and end with it.
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

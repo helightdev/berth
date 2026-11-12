@@ -1,0 +1,84 @@
+---
+title: A berth server
+description: Run berth serve on one machine and use its hosts from berth on other machines.
+icon: ServerCog
+---
+
+A server machine keeps the hosts with their profiles and secrets, and runs `berth serve`. berth on another machine, such as your laptop, then uses that server's hosts instead of its own: the terminal UI, `berth list`, `berth run` and the other host commands go through the server's [portal](/docs/api/portal).
+
+```text
+ your laptop                  the server                       hosts
+┌─────────────┐  HTTPS/HTTP  ┌───────────────────────────┐ SSH ┌─────────┐
+│ berth       │ ───────────▶ │ berth serve               │ ──▶ │ studio  │
+│ --server …  │   + token    │ profiles, secrets, builds │ ──▶ │ cloud-1 │
+└─────────────┘              └───────────────────────────┘     └─────────┘
+```
+
+## Run the server
+
+The server needs SSH access to the hosts. The container image is the shortest way:
+
+```bash title="On the server"
+docker run -d --name berth -p 127.0.0.1:7777:7777 \
+  -v berth-config:/config -v berth-data:/data \
+  -v ~/.ssh:/home/berth/.ssh:ro \
+  ghcr.io/helightdev/berth
+docker exec berth cat /data/berth/serve.token
+```
+
+Without the image, run `berth serve --listen 0.0.0.0:7777 --expose` where berth is installed. The token is in `~/.local/share/berth/serve.token`. Set the hosts up on the server as usual, with the terminal UI there or `docker run --rm -it --entrypoint berth …` for the container.
+
+<Callout type="warn" title="Put TLS in front">
+  `berth serve` speaks plain HTTP, and the token gives full control of every host. Serve it behind a TLS proxy, such as Tailscale Serve or Caddy, and use the `https://` address. Without one, keep the port on loopback or a private network such as your tailnet.
+</Callout>
+
+With Tailscale on the server:
+
+```bash title="On the server"
+sudo tailscale serve --bg --https=443 http://127.0.0.1:7777
+```
+
+## Connect to it
+
+<Tabs items={['Try it once', 'Every time']}>
+<Tab value="Try it once">
+
+`--server` and `--token` apply to one run and leave your own hosts and settings alone:
+
+```bash
+berth --server https://berth.example.ts.net --token "$(cat token)"         # the terminal UI
+berth --server https://berth.example.ts.net --token "$(cat token)" list
+berth --server https://berth.example.ts.net --token "$(cat token)" run studio status
+```
+
+</Tab>
+<Tab value="Every time">
+
+Store the address and token as settings, and berth uses the server on every run:
+
+```bash
+berth config server https://berth.example.ts.net
+berth config server_token "$(cat token)"
+berth config server ""            # back to the hosts of this machine
+```
+
+`BERTH_SERVER` and `BERTH_TOKEN` in the environment take precedence over the settings.
+
+</Tab>
+</Tabs>
+
+| Address | Reaches |
+| --- | --- |
+| `https://HOST[:PORT]` | A server behind a TLS proxy |
+| `http://HOST:PORT` | A server's port directly |
+| `unix:/path/to/serve.sock` | A `berth serve` on this machine, without a token |
+
+## What works from another machine
+
+| Works through the server | Stays on the server |
+| --- | --- |
+| `berth list` and the host list of the home screen | The set-up tabs of a host: features, accounts, secrets, install |
+| The host's overview with its tasks, sessions and terminal panel | Applying a profile, and building installers and seeds |
+| The host commands such as `berth run`, `exec`, `attach` and `channel` | Secrets, registries and the **Secrets and registry logins** task |
+
+Opening a set-up tab of a server's host says *This host is set up on the berth server at URL*. Do that work on the server itself. berth keeps the server's hosts apart from its own. Its own hosts are hidden while a server is set and return when the setting is cleared.

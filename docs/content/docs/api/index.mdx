@@ -1,0 +1,93 @@
+---
+title: API overview
+description: Which programs have an API, how to call an operation, and the documents the reference is made from.
+icon: BookOpen
+---
+
+berthd and `berth serve` answer the same kind of API. Each of their *operations* has a name, such as `sessions.start` or `kv.set`, and can be called in two ways.
+
+| Program | Runs on | Reached at | Reference |
+| --- | --- | --- | --- |
+| berthd | every host, as root | unix sockets in `/run/berth` | [berthd](/docs/api/host) |
+| `berth serve` | your machine, or a server | a unix socket of your user, and optionally TCP | [berth serve](/docs/api/serve) |
+
+`berth serve` passes berthd's operations through to the host it names, so a program that talks to `berth serve` reaches all hosts.
+
+## Ways to call an operation
+
+| Way | For |
+| --- | --- |
+| [The portal](/docs/api/portal) | One WebSocket at `/v1/portal` for many calls and streams at once. berth's server mode uses it |
+| HTTP | One request per call, at the operation's path. Simple to try with `curl`, and the way to move more than 8 MB |
+| A stream's own WebSocket | Each streaming operation is also a WebSocket at its path, for a client that follows only one thing |
+
+Every operation page shows the portal frame and the HTTP request side by side.
+
+## Calls and streams
+
+A *call* takes arguments and input and gives back a result. After it opens, a *stream* keeps sending frames, such as a session's output or new channel messages, and some streams take frames back, such as typed input. On the portal a stream is a subscription. See [Streams](/docs/extend/streams) for what all streams have in common.
+
+## Who may call
+
+berthd answers on two sockets, and each operation says which may use it:
+
+| Socket | Level | Who connects |
+| --- | --- | --- |
+| `/run/berth/control.sock` | host | root. berth reaches it over SSH with `sudo -n berthd connect` |
+| `/run/berth/agent.sock` | agent | the agent account; `box` uses it |
+
+In a container berthd runs for the agent alone, without systemd, and calls that need systemd or another user are refused.
+
+`berth serve` has no levels. Its unix socket is readable by your user only, and over TCP every request and the portal need the token from `serve.token` as a bearer. See [berth serve](/docs/extend/serve).
+
+## Errors
+
+Over HTTP an error is a status code with a JSON body; on the portal the same object comes back under the request's `id`:
+
+```json
+{ "error": { "code": "not_found", "message": "No session k3v9qz2m8w1x", "status": 404 } }
+```
+
+| Status | Code | Means |
+| --- | --- | --- |
+| 400 | `bad_request` | An argument or the input is missing or malformed |
+| 401 | `unauthorized` | No token, or the wrong one |
+| 403 | `forbidden` | This level may not call the operation |
+| 404 | `not_found` | No such operation, session, host or key |
+| 409 | `conflict` | The thing is in a state that does not allow this |
+| 412 | `precondition_failed` | Someone else wrote in between |
+| 413 | `too_large` | The input, or bytes on the portal, are too large |
+| 429 | `limit` | Too many at once |
+| 500 | `internal` | Something failed inside |
+| 501 | `not_available` | Not available here, such as systemd in a container, or this operation on the portal |
+| 502 | `unreachable` | `berth serve` could not reach the host |
+| 503 | `not_served` | Nobody serves that service right now |
+| 504 | `timeout` | A service did not answer in time |
+| 520 | `service_error` | A service answered with an error |
+
+## The documents
+
+The reference is generated from documents that the programs print and the tests keep current. Use them for tooling:
+
+| Document | Printed by | Download |
+| --- | --- | --- |
+| Operations of berthd | `berthd operations` | [berthd.operations.json](/openapi/berthd.operations.json) |
+| Operations of berth serve | `berth operations` | [berth.operations.json](/openapi/berth.operations.json) |
+| OpenAPI 3 of berthd | `berthd openapi` | [berthd.openapi.json](/openapi/berthd.openapi.json) |
+| OpenAPI 3 of berth serve | `berth openapi` | [berth.openapi.json](/openapi/berth.openapi.json) |
+| AsyncAPI 3 of berthd | `berthd asyncapi` | [berthd.asyncapi.json](/openapi/berthd.asyncapi.json) |
+| AsyncAPI 3 of berth serve | `berth asyncapi` | [berth.asyncapi.json](/openapi/berth.asyncapi.json) |
+
+An operations document describes each operation with its name and HTTP route, arguments and errors, and input and result schemas. For streams it adds the frames each way. `components` holds the JSON schemas the `$ref`s point at. The `berth serve` document has `"hosts": true`: every berthd operation is available there with a host.
+
+## For agents
+
+The whole site is also plain Markdown, for an assistant or a script that should learn how to work with berth.
+
+| Address | Holds |
+| --- | --- |
+| `/llms.txt` | Every page with a one-line description and a link to its Markdown |
+| `/llms-full.txt` | Every page in one file |
+| `/md/PAGE.md` | One page, such as `/md/api/portal.md` or `/md/api/host/sessions.md` |
+
+Each page has a button at its top that copies its Markdown.

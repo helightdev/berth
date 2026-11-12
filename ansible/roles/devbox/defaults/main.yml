@@ -4,6 +4,10 @@ devbox_user: agent
 devbox_agent_password_hash: ""
 devbox_agent_ssh_public_key: ""
 devbox_agent_passwordless_sudo: true
+# What the agent may do as root: full (everything, no password), limited
+# (packages, and restarting plugin services that run as the agent) or none.
+# Empty follows devbox_agent_passwordless_sudo, as profiles from before it do.
+devbox_agent_privileges: ""
 devbox_operator_user: ops
 devbox_operator_password_hash: ""
 devbox_operator_ssh_public_key: ""
@@ -22,13 +26,13 @@ devbox_install_agents: "{{ devbox_agent_claude | bool or devbox_agent_codex | bo
 # T3 Code is a front end that runs the agents, not one of them. Its plugin
 # installs it; the role runs it as a service.
 devbox_install_t3: "{{ 't3/server' in devbox_plugin_features }}"
-devbox_tools_web: "{{ devbox_install_boat_tools | default(true) }}"
-devbox_tools_native: "{{ devbox_install_boat_tools | default(true) }}"
-devbox_tools_jvm: "{{ devbox_install_boat_tools | default(true) }}"
-devbox_tools_dotnet: "{{ devbox_install_boat_tools | default(true) }}"
-devbox_tools_scripting: "{{ devbox_install_boat_tools | default(true) }}"
-devbox_tools_scientific: "{{ devbox_install_boat_tools | default(true) }}"
-devbox_tools_chrome: "{{ devbox_install_boat_tools | default(true) }}"
+devbox_tools_web: "{{ devbox_install_dev_tools | default(true) }}"
+devbox_tools_native: "{{ devbox_install_dev_tools | default(true) }}"
+devbox_tools_jvm: "{{ devbox_install_dev_tools | default(true) }}"
+devbox_tools_dotnet: "{{ devbox_install_dev_tools | default(true) }}"
+devbox_tools_scripting: "{{ devbox_install_dev_tools | default(true) }}"
+devbox_tools_scientific: "{{ devbox_install_dev_tools | default(true) }}"
+devbox_tools_chrome: "{{ devbox_install_dev_tools | default(true) }}"
 # Applies to the virtual agent session, not the laptop's physical login.
 devbox_software_rendering: true
 devbox_codex_version: "0.167.1"

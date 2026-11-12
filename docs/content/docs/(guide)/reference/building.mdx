@@ -1,0 +1,78 @@
+---
+title: Building and releasing
+description: Build berth from a checkout, run the checks and the docs, and make a release.
+icon: Hammer
+---
+
+## The repository
+
+| Folder | Holds |
+| --- | --- |
+| `cli/` | `berth`: the terminal UI, the commands and `berth serve` |
+| `crates/` | Shared libraries: `berth-core`, `berth-api`, `berth-pty` |
+| `host/` | `berthd` and `box`, built static for hosts |
+| `ansible/` | The devbox role |
+| `plugins/` | The plugins that come with berth |
+| `bootstrap/` | First-boot provisioning |
+| `bin/` | `devbox.py` (release, seeds, ISO), `qemu.py`, `write-usb.sh` |
+| `container/` | The desktop image and berth's own image |
+| `docs/` | This site |
+| `tests/` | Python tests |
+
+## Build
+
+```bash
+rustup target add x86_64-unknown-linux-musl     # once
+cargo build --release -p berth
+cargo install --locked --path cli                # into ~/.cargo/bin
+```
+
+The build first makes `berthd` and `box` as static musl binaries and places them in the role's files. It then packs the provisioning source and embeds it in `berth`. It needs Python 3 for the packing.
+
+While changing the role or plugins, point berth at the checkout instead of the built-in copy:
+
+```bash
+berth config source "$PWD"
+```
+
+## Check
+
+```bash
+cargo test --locked
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python -m unittest discover -s tests
+.venv/bin/ansible-playbook -i localhost, ansible/site.yml --syntax-check
+vale README.md docs/content/docs
+```
+
+Two of the Rust tests compare the API that berthd and `berth serve` describe with the committed documents in `docs/openapi/`. After changing a route, regenerate them. `BERTH_UPDATE_DOCS=1 cargo test` writes them.
+
+## The release archive
+
+```bash
+python3 bin/devbox.py release
+```
+
+writes `build/devbox-release.tar.gz` and `build/release.sha256`. The archive is deterministic for the same source files and uses an explicit allowlist: it never contains local host profiles, secrets, virtualenvs or build output. Host-specific installer images and seeds are private and must not be published.
+
+## The docs
+
+```bash
+cd docs
+npm install
+npm run dev         # http://localhost:3000
+npm run build       # static site in docs/out
+```
+
+The guide pages are MDX files in `docs/content/docs/(guide)`. The API reference is generated before every build from `docs/openapi/` by `docs/scripts/gather.mjs`. The terminal screenshots in `docs/public/screens/` come from `docs/scripts/screens.py`, which runs the built binary against an invented set-up and a throw-away container. See the comment at its top. Set `DOCS_BASE_PATH` when the site is served from a folder, such as `/berth` on GitHub Pages.
+
+## Releases
+
+GitHub Actions build on every push:
+
+| Workflow | Does |
+| --- | --- |
+| CI | The checks above, the docs build and Vale |
+| Build | The static `berth` for Linux x86_64 as artifact `berth-x86_64-linux`, the host programs as `host-programs-x86_64-linux`; the container image `ghcr.io/helightdev/berth`, tagged `edge` from `main` |
+
+Pushing a `v*` tag also publishes a GitHub release with `berth-x86_64-linux.tar.gz`, its checksum file and `install.sh`. The image gets the version as its tag. `install.sh` installs the latest release.

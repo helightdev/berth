@@ -1,0 +1,74 @@
+---
+title: Access and the desktop
+description: How to reach a host's desktop, T3 Code, Cockpit and SSH, on the tailnet or through a tunnel.
+icon: MonitorSmartphone
+---
+
+A host serves its desktop, T3 Code and Cockpit only to the tailnet or to loopback. **Access links and desktop password** on the overview prints the addresses and the desktop's password, or from the command line:
+
+```bash
+berth run studio access
+```
+
+| Service | Address on the tailnet | Port on the host |
+| --- | --- | --- |
+| Desktop (noVNC) | `https://HOST.TAILNET.ts.net/vnc.html` | 6080 |
+| T3 Code | `https://HOST.TAILNET.ts.net:8443/` | 3773 |
+| Cockpit | `https://HOST.TAILNET.ts.net:9090` | 9090 |
+| SSH | `ssh ops@TAILNET-ADDRESS` | 22 |
+
+The desktop link printed by the task includes the password after `#` and signs in by itself, so treat it like the password. The `ts.net` names need Tailscale DNS on the machine you browse from, while the tailnet address works without it. berth configures no Funnel or public proxy for them.
+
+## Joining the tailnet
+
+With a Tailscale enrollment key in the profile, the host joins the tailnet while it is set up and publishes the desktop and T3 there. That is `devbox_tailscale_serve`, on by default, and it needs HTTPS certificates enabled for the tailnet.
+
+Without a key, enroll by hand and then run **Publish desktop and T3 on the tailnet**, or do it on the host:
+
+```bash title="On the host"
+sudo tailscale up
+sudo tailscale serve --bg --https=443 http://127.0.0.1:6080
+sudo tailscale serve --bg --https=8443 http://127.0.0.1:3773
+```
+
+Enable tailnet HTTPS if Tailscale asks for it. The publish task also gives Cockpit the tailnet's trusted certificate in place of its self-signed one.
+
+## The desktop
+
+The agent's desktop is XFCE on a persistent virtual X display, `:1`, from TigerVNC, which also provides the loopback VNC endpoint. websockify connects the browser to it, and noVNC is the client in the browser. The password is generated on the host by TigerVNC's password utility. The agent can read it at `~/.config/tigervnc/password`.
+
+The desktop keeps running when you close the browser, and agents can drive it with [`box desktop`](/docs/reference/box#desktop). Set its size with **Desktop size** on the Install tab (`devbox_geometry`, such as `1600x900`).
+
+## Cockpit
+
+Full hosts get the [Cockpit](https://cockpit-project.org/) web console by default (`devbox_install_cockpit`, or **Cockpit web console** on the Install tab). It shows logs, systemd services, storage and software updates, and has a file browser and a terminal, plus network settings on laptops. It listens on port 9090 and the firewall only admits it from the tailnet.
+
+Log in as the operator with its password. Cockpit does not accept SSH keys, so give the operator a password in Accounts. The agent has no password unless you set one.
+
+Without a tailnet, tunnel it and open `https://127.0.0.1:9090`:
+
+```bash
+ssh -L 9090:127.0.0.1:9090 ops@HOST
+```
+
+Switching the option off on an existing host stops the console and closes the port but leaves the packages installed.
+
+## SSH
+
+`devbox_harden_ssh` (**SSH hardening** on the Install tab, on by default) makes the SSH server accept keys only and refuse root. It writes `PasswordAuthentication no`, `KbdInteractiveAuthentication no` and `PermitRootLogin no` to `/etc/ssh/sshd_config.d/00-devbox.conf`.
+
+It is applied only when a key login for a non-root account will exist afterwards. That is the case when the operator has an SSH public key in the profile, or the account used for installing has its own authorized keys. Otherwise the run says so and leaves the server as it was.
+
+Passwords remain in use for the console, the laptop's graphical login, Cockpit and `sudo`. Root has no password and is not managed by the role.
+
+For which addresses may reach SSH, see [the firewall](/docs/deploy/ssh#the-firewall).
+
+## Without a tailnet
+
+Tunnel the ports over SSH and open them on your own machine:
+
+```bash
+ssh -L 16080:127.0.0.1:6080 -L 13773:127.0.0.1:3773 ops@HOST
+```
+
+Then the desktop is at `http://127.0.0.1:16080/vnc.html` and T3 at `http://127.0.0.1:13773/`.

@@ -1,0 +1,68 @@
+---
+title: Existing server over SSH
+description: Set up an Ubuntu 26.04 machine you can already log in to, without reinstalling it.
+icon: Server
+---
+
+This method runs the role over SSH against a machine that already has Ubuntu. The role adds accounts, packages and services to the existing system without partitioning or reinstalling.
+
+<Callout type="warn" title="Dedicated machines only">
+  The role installs services, changes the firewall policy and grants the agent sudo for the entire machine. Do not point it at a computer you use for anything else.
+</Callout>
+
+## Requirements
+
+- Ubuntu 26.04 on amd64
+- Python 3
+- SSH access with a login that can use sudo
+
+Your machine needs `ssh` and `ansible-playbook` ([Install](/docs/start/install#what-else-berth-uses)).
+
+## Install
+
+<Steps>
+<Step>
+
+### Choose the method
+
+On the host's **Install** tab, choose **Existing host over SSH**.
+
+</Step>
+<Step>
+
+### Give the address
+
+Enter a hostname, an IP address or a `Host` alias from your SSH configuration in **SSH host**. Machines on your tailnet and aliases from `~/.ssh/config` are suggested. Accepting the host fills blank user, port and private key fields from OpenSSH's effective configuration.
+
+</Step>
+<Step>
+
+### Say how to log in
+
+Choose whether berth asks for an SSH password and for your sudo password on the target. Your ssh-agent and SSH configuration apply as usual. OpenSSH's host key check applies too: if the host is new to you, connect once with `ssh HOST` to accept its key.
+
+</Step>
+<Step>
+
+### Run
+
+berth writes a temporary private Ansible inventory and runs the role against the host in your terminal. When it finishes, the profile keeps the SSH address and `berth HOST` opens the host's [overview](/docs/use/overview).
+
+</Step>
+</Steps>
+
+## The firewall
+
+The role turns on UFW. It keeps SSH open for the address you installed from and for the **Recovery SSH CIDR** if you set one. Everything else, including Cockpit, goes through the tailnet: UFW allows management on `tailscale0`.
+
+<Callout type="warn">
+  Remove a temporary SSH rule only after checking that SSH over the tailnet works.
+</Callout>
+
+Docker's published ports can bypass UFW's input rules. Publish project services on loopback, or set Docker's forwarding policy yourself.
+
+## Applying changes later
+
+The same profile installs the host again with **Apply this configuration** on its overview, such as after switching a feature on. Applying is safe to repeat, and a second run on an unchanged profile does not change anything.
+
+Profiles of other kinds, and installing without berth, are on [Ansible directly](/docs/deploy/ansible).

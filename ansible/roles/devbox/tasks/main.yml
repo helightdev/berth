@@ -12,7 +12,8 @@
       - devbox_operator_user != devbox_user
       - devbox_user not in devbox_reserved_names
       - devbox_operator_user not in devbox_reserved_names
-      - devbox_agent_passwordless_sudo or devbox_agent_password_hash | length > 0
+      - devbox_agent_privileges in ['', 'full', 'limited', 'none']
+      - devbox_agent_privileges | length > 0 or devbox_agent_passwordless_sudo or devbox_agent_password_hash | length > 0
       - devbox_agent_password_hash == '' or devbox_agent_password_hash is match('^\$[6y]\$')
       - devbox_operator_password_hash == '' or devbox_operator_password_hash is match('^\$[6y]\$')
       - devbox_geometry is match('^[0-9]{3,4}x[0-9]{3,4}$')
@@ -36,6 +37,8 @@
   ansible.builtin.import_tasks: plugins.yml
 - name: Configure the shared desktop
   ansible.builtin.import_tasks: desktop.yml
+- name: Install berthd, box and what they read
+  ansible.builtin.import_tasks: berth.yml
 - name: Configure full host services
   ansible.builtin.include_tasks: host.yml
   when: devbox_profile != 'container'
@@ -46,4 +49,4 @@
   ansible.builtin.copy:
     dest: /var/lib/devbox/status.json
     mode: '0644'
-    content: "{{ {'state': 'configured-needs-enrollment', 'profile': devbox_profile, 'agents_installed': devbox_install_agents, 't3': devbox_t3_version, 'claude': devbox_claude_version, 'codex': devbox_codex_version, 'pi': devbox_pi_version, 'tool_categories': devbox_enabled_categories, 'plugin_features': devbox_plugin_features, 'software_rendering': devbox_software_rendering, 'cockpit': devbox_install_cockpit and devbox_profile != 'container', 'ssh_hardened': devbox_ssh_hardened | default(false)} | to_nice_json }}\n"
+    content: "{{ {'state': 'configured-needs-enrollment', 'profile': devbox_profile, 'agents_installed': devbox_install_agents, 't3': devbox_t3_version, 'claude': devbox_claude_version, 'codex': devbox_codex_version, 'pi': devbox_pi_version, 'tool_categories': devbox_enabled_categories, 'plugin_features': devbox_plugin_features, 'agent_privileges': devbox_privileges, 'software_rendering': devbox_software_rendering, 'cockpit': devbox_install_cockpit and devbox_profile != 'container', 'ssh_hardened': devbox_ssh_hardened | default(false)} | to_nice_json }}\n"

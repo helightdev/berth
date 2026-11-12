@@ -7,6 +7,7 @@ next-env.d.ts
 npm-debug.log*
 .env*.local
 
-# the manual, gathered from the README (npm run gather)
-/content/docs/index.md
-/content/docs/manual/
+# the API reference, generated from docs/openapi (npm run gather)
+/content/docs/api/host/
+/content/docs/api/serve/
+/public/openapi/

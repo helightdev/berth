@@ -1,0 +1,80 @@
+---
+# restic comes with the role's packages; the feature adds rclone.
+- name: Install the backup command
+  ansible.builtin.copy:
+    src: "{{ devbox_plugin_dir }}/files/backup.sh"
+    dest: /usr/local/sbin/berth-backup
+    mode: '0755'
+- name: Write the backup settings
+  ansible.builtin.copy:
+    dest: /etc/berth-backup.conf
+    mode: '0644'
+    content: |
+      # Managed by berth's backup plugin. Read by /usr/local/sbin/berth-backup.
+      REPOSITORY={{ devbox_backup_repository | default('') | quote }}
+      AGENT_HOME={{ devbox_home | quote }}
+      PATHS=({{ ([devbox_home, '/srv/agent'] + (devbox_backup_system_paths | default(['/etc/devbox', '/etc/berth', '/var/lib/devbox']))) | map('quote') | join(' ') }})
+      KEEP_DAILY={{ devbox_backup_keep_daily | default(7) | int }}
+      KEEP_WEEKLY={{ devbox_backup_keep_weekly | default(4) | int }}
+      KEEP_MONTHLY={{ devbox_backup_keep_monthly | default(6) | int }}
+- name: Write what backups leave out
+  ansible.builtin.copy:
+    dest: /etc/berth-backup.exclude
+    mode: '0644'
+    content: "{{ (devbox_backup_exclude | default(devbox_backup_exclude_default)) | join('\n') }}\n"
+  vars:
+    devbox_backup_exclude_default:
+      - "**/.cache"
+      - "**/node_modules"
+      - "**/.npm/_cacache"
+      - "**/.cargo/registry"
+      - "**/target/debug"
+      - "**/target/release"
+      - "**/.gradle/caches"
+      - "{{ devbox_home }}/.local/share/Trash"
+      - "{{ devbox_home }}/.local/share/mise/installs"
+      - "{{ devbox_home }}/Unity"
+      - "/srv/agent/workspaces/**/Library"
+      - "/srv/agent/workspaces/**/Temp"
+      - "/srv/agent/workspaces/**/Logs"
+- name: Install the scheduled backup
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    mode: '0644'
+    content: "{{ item.content }}"
+  loop:
+    - name: berth-backup.service
+      content: |
+        [Unit]
+        Description=berth backup snapshot
+        Wants=network-online.target
+        After=network-online.target
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/berth-backup snapshot
+        Nice=10
+        IOSchedulingClass=idle
+    - name: berth-backup.timer
+      content: |
+        [Unit]
+        Description=berth backup schedule
+
+        [Timer]
+        OnCalendar={{ devbox_backup_schedule | default('*-*-* 03:30:00') }}
+        RandomizedDelaySec=30m
+        Persistent=true
+
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.name }}"
+  when: devbox_profile != 'container'
+# Without a repository there is nothing to run on a schedule.
+- name: Switch the schedule on or off
+  ansible.builtin.systemd_service:
+    name: berth-backup.timer
+    daemon_reload: true
+    enabled: "{{ devbox_backup_repository | default('') | length > 0 }}"
+    state: "{{ 'started' if devbox_backup_repository | default('') | length > 0 else 'stopped' }}"
+  when: devbox_profile != 'container' and devbox_start_services

@@ -1,18 +1,17 @@
 mod app;
-mod credentials;
-mod discovery;
+mod commands;
 mod fields;
-mod job;
 mod markdown;
-mod paths;
 mod picker;
-mod plugins;
-mod registry;
+mod remote;
+mod serve;
 mod session;
 mod theme;
 mod ui;
+mod update;
 
 use app::{App, parse_config};
+use berth_core::{credentials, discovery, job, paths, plugins, registry};
 use crossterm::{cursor::SetCursorStyle, event};
 use fields::{Action, Field, Step};
 use paths::Paths;
@@ -30,10 +29,24 @@ Usage:
   berth iso HOST [--write /dev/sdX]
                              build the unattended installer; write it to a USB drive
   berth seed HOST            render the cloud-init seed
-  berth manage HOST TASK     status, access, publish, pair, smoke, update or reboot,
-                             or PLUGIN:ACTION for a plugin's own
-  berth ssh HOST [COMMAND]   a shell on the host, or run a command there
-  berth ssh HOST --agent     a shell on the host as the agent account
+  berth tasks HOST           what the host can do: its tasks and those of its plugins
+  berth run HOST TASK [NAME=VALUE…] [--yes]
+                             run one of them and leave with its exit code
+                             (berth manage HOST TASK is the same)
+  berth exec HOST [--user agent|operator|root] [--keep] -- COMMAND…
+                             run a command on the host; its exit code is berth's
+  berth attach HOST [ID]     this terminal onto a terminal session of the host, or onto
+                             a new shell as the agent; Ctrl+Q leaves it running
+  berth sessions HOST        the host's sessions, running and ended
+  berth output HOST ID [--tail N] [--follow]
+                             what a session wrote
+  berth channel HOST [TOPIC-PREFIX] [--since ID]
+                             messages on the host's channel as they come
+  berth call HOST SERVICE METHOD [JSON]
+                             call a service a plugin runs on the host
+  berth inventory [HOST…]    the hosts as an Ansible inventory
+  berth ssh HOST [COMMAND]   a shell on the host over plain SSH, or run a command there
+  berth ssh HOST --agent     the same as the agent account
   berth registry             registries (also the Registries tab of the home screen):
                              Nexus servers with repositories, npm, file and Docker registries
   berth registry add NAME nexus|npm|raw|docker URL [USERNAME]
@@ -56,8 +69,25 @@ Usage:
   berth plugins              plugins and where they come from
   berth plugins add SPEC     install a plugin with npm: a name, a tarball or a folder
   berth plugins remove NAME  remove one installed that way, by its npm name
+  berth --server URL [--token TOKEN] [COMMAND…]
+                             this once, use the hosts of a berth serve elsewhere
+                             (http://HOST:PORT, https://HOST or unix:/path); the
+                             server setting does the same for every run
+  berth --version            the version
+  berth update [--check]     install the latest release in this program's place; hosts
+                             get its berthd and box when they are applied again
   berth config               show where things are kept and the settings
-  berth config KEY [VALUE]   change a setting; no value clears it";
+  berth config KEY [VALUE]   change a setting; no value clears it
+  berth serve [--listen ADDRESS:PORT [--expose]]
+                             an API over all hosts on a socket of this user; with
+                             --listen also over HTTP behind a token, on this machine
+                             only unless --expose allows another address
+  berth inbox [HOST] [--topic PREFIX] [--all]
+                             messages taken in from the hosts' channels
+  berth kv get|set|rm|ls NAMESPACE [KEY] [JSON]
+                             the key-value store
+  berth openapi | asyncapi | operations
+                             the API documents of berth serve";
 
 fn show_config(paths: &Paths) -> Result<()> {
     let settings = paths.settings()?;
@@ -190,12 +220,15 @@ fn host_command(paths: &Paths, host: &str, args: &[&str]) -> Result<()> {
                     (_, Some(path)) => format!("file {path}"),
                     _ => String::new(),
                 };
-                println!("secret    {}  {place}", secret["name"].as_str().unwrap_or(""));
+                println!(
+                    "secret    {}  {place}",
+                    secret["name"].as_str().unwrap_or("")
+                );
             }
             for name in list(&app.config["registries"]) {
                 println!("registry  {}", name.as_str().unwrap_or(""));
             }
-            println!("Send them with: berth manage {host} secrets");
+            println!("Send them with: berth run {host} secrets");
             return Ok(());
         }
         ["secret", name, ref how @ ..] => {
@@ -204,9 +237,16 @@ fn host_command(paths: &Paths, host: &str, args: &[&str]) -> Result<()> {
             match *how {
                 ["env", variable] => secrets.push(json!({"name": name, "env": variable})),
                 ["file", path] => secrets.push(json!({"name": name, "file": path})),
-                ["file", path, mode] => secrets.push(json!({"name": name, "file": path, "mode": mode})),
+                ["file", path, mode] => {
+                    secrets.push(json!({"name": name, "file": path, "mode": mode}))
+                }
                 ["off"] => {}
-                _ => return Err("Usage: berth host HOST secret NAME env VARIABLE | file PATH [MODE] | off".into()),
+                _ => {
+                    return Err(
+                        "Usage: berth host HOST secret NAME env VARIABLE | file PATH [MODE] | off"
+                            .into(),
+                    );
+                }
             }
             app.config["secrets"] = json!(secrets);
         }
@@ -235,8 +275,38 @@ fn main() {
 
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut args: Vec<&str> = args.iter().map(String::as_str).collect();
+    // `--server URL [--token TOKEN]` first: this run only, through that berth serve.
+    while let [flag @ ("--server" | "--token"), value, ..] = args[..] {
+        let variable = if flag == "--server" {
+            "BERTH_SERVER"
+        } else {
+            "BERTH_TOKEN"
+        };
+        // SAFETY: nothing else runs yet.
+        unsafe { std::env::set_var(variable, value) };
+        args.drain(..2);
+    }
     let paths = Paths::locate()?;
+    // With a server set, the hosts are the server's: fetch them before anything looks.
+    let local = [
+        "config",
+        "serve",
+        "--version",
+        "-V",
+        "version",
+        "openapi",
+        "asyncapi",
+        "operations",
+        "update",
+    ];
+    if let Some(server) = berth_core::server::Server::configured(&paths)
+        && !args.first().is_some_and(|verb| local.contains(verb))
+    {
+        server
+            .mirror(&paths)
+            .map_err(|error| format!("the berth server at {}: {error}", server.url))?;
+    }
     let host = match args[..] {
         ["list"] => {
             for (name, address) in paths.hosts() {
@@ -247,7 +317,8 @@ fn run() -> Result<()> {
         ["registry", ref rest @ ..] => return registry::registry_command(&paths, rest),
         ["secret", ref rest @ ..] => return registry::secret_command(&paths, rest),
         ["image", "push", destination, ref rest @ ..] => {
-            let image = registry::push_image(&paths, destination, rest.first().unwrap_or(&"latest"))?;
+            let image =
+                registry::push_image(&paths, destination, rest.first().unwrap_or(&"latest"))?;
             println!("Pushed {image}");
             return Ok(());
         }
@@ -255,13 +326,17 @@ fn run() -> Result<()> {
             std::env::set_current_dir(paths.source()?)?;
             let url = registry::publish(&paths, destination)?;
             println!("Published {url}");
-            let (host, login) = match *rest {
-                [] => (None, None),
-                [host] => (Some(host), None),
-                [host, "--login"] => (Some(host), destination.split('/').next()),
-                [host, "--login", registry] => (Some(host), Some(registry)),
-                _ => return Err("Usage: berth publish REGISTRY[/REPOSITORY] [HOST [--login [REGISTRY]]]".into()),
-            };
+            let (host, login) =
+                match *rest {
+                    [] => (None, None),
+                    [host] => (Some(host), None),
+                    [host, "--login"] => (Some(host), destination.split('/').next()),
+                    [host, "--login", registry] => (Some(host), Some(registry)),
+                    _ => return Err(
+                        "Usage: berth publish REGISTRY[/REPOSITORY] [HOST [--login [REGISTRY]]]"
+                            .into(),
+                    ),
+                };
             if let Some(host) = host {
                 let mut app = open(&paths, host)?;
                 app.config["release_url"] = json!(url);
@@ -287,6 +362,26 @@ fn run() -> Result<()> {
             return Ok(());
         }
         ["host", host, ref rest @ ..] => return host_command(&paths, host, rest),
+        ["--version" | "-V" | "version"] => {
+            println!("berth {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        ["update", ref rest @ ..] => return update::command(rest),
+        ["serve", ref rest @ ..] => return serve::command(&paths, rest),
+        ["inbox", ref rest @ ..] => return serve::inbox_command(&paths, rest),
+        ["kv", ref rest @ ..] => return serve::kv_command(&paths, rest),
+        ["openapi"] => {
+            println!("{}", serde_json::to_string_pretty(&serve::openapi())?);
+            return Ok(());
+        }
+        ["operations"] => {
+            println!("{}", serde_json::to_string_pretty(&serve::operations())?);
+            return Ok(());
+        }
+        ["asyncapi"] => {
+            println!("{}", serde_json::to_string_pretty(&serve::asyncapi())?);
+            return Ok(());
+        }
         ["plugins"] => {
             std::env::set_current_dir(paths.source()?)?;
             for plugin in plugins::load(&["plugins".into(), paths.config_dir.join("plugins")]) {
@@ -298,7 +393,46 @@ fn run() -> Result<()> {
                     plugin.dir.display()
                 );
                 for feature in &plugin.features {
-                    println!("  {}/{}  {} ({})", plugin.id, feature.id, feature.label, feature.group);
+                    println!(
+                        "  {}/{}  {} ({})",
+                        plugin.id, feature.id, feature.label, feature.group
+                    );
+                    for action in &feature.actions {
+                        let mut notes = vec![format!("as {}", action.user)];
+                        if action.agent {
+                            notes.push("the agent may run it".into());
+                        }
+                        if !action.extends.is_empty() {
+                            notes.push(format!("part of {}", action.extends.join(", ")));
+                        }
+                        for argument in &action.arguments {
+                            notes.push(format!("asks {}", argument.name));
+                        }
+                        println!(
+                            "    task     {}:{}  {} ({})",
+                            plugin.id,
+                            action.name,
+                            action.label,
+                            notes.join("; ")
+                        );
+                    }
+                    for service in &feature.services {
+                        let methods: Vec<&str> = service
+                            .methods
+                            .iter()
+                            .map(|method| method.name.as_str())
+                            .collect();
+                        println!(
+                            "    service  {}/{}  as {}: {}",
+                            plugin.id,
+                            service.name,
+                            service.user,
+                            methods.join(", ")
+                        );
+                    }
+                    for channel in &feature.channels {
+                        println!("    channel  {}/{}", plugin.id, channel.topic);
+                    }
                 }
             }
             return Ok(());
@@ -308,10 +442,14 @@ fn run() -> Result<()> {
             fs::create_dir_all(&dir)?;
             // A plugin is data for berth; nothing of it should run on this machine.
             let mut npm = Command::new("npm");
-            npm.arg(if verb == "add" { "install" } else { "uninstall" })
-                .args(["--ignore-scripts", "--no-audit", "--no-fund", "--prefix"])
-                .arg(&dir)
-                .arg(spec);
+            npm.arg(if verb == "add" {
+                "install"
+            } else {
+                "uninstall"
+            })
+            .args(["--ignore-scripts", "--no-audit", "--no-fund", "--prefix"])
+            .arg(&dir)
+            .arg(spec);
             return succeed(npm);
         }
         ["config"] => return show_config(&paths),
@@ -325,39 +463,23 @@ fn run() -> Result<()> {
             require_ready(&app)?;
             return app.execute();
         }
-        ["manage", host, task] => {
-            let mut app = open(&paths, host)?;
-            app.action = Action::Manage;
-            if !fields::MANAGE_TASKS.contains(&task) && !task.contains(':') {
-                let mut tasks: Vec<String> =
-                    fields::MANAGE_TASKS.iter().map(|task| task.to_string()).collect();
-                for plugin in &app.plugins {
-                    for action in plugin.features.iter().flat_map(|feature| &feature.actions) {
-                        tasks.push(format!("{}:{}", plugin.id, action.name));
-                    }
-                }
-                tasks.extend(fields::SIGN_INS.iter().map(|sign_in| format!("sign-in:{}", sign_in.0)));
-                return Err(format!("Tasks: {}", tasks.join(", ")).into());
-            }
-            app.set_task(task);
-            if task == "secrets" {
-                app.send_secrets()?;
-                // What plugins bring over after them.
-                for mut command in app.manage_commands()?.into_iter().skip(1) {
-                    if !command.status()?.success() {
-                        return Err(format!("{task} failed").into());
-                    }
-                }
-                return Ok(());
-            }
-            // The task, then what plugins add to it.
-            for mut command in app.manage_commands()? {
-                if !command.status()?.success() {
-                    return Err(format!("{task} failed").into());
-                }
-            }
-            return Ok(());
+        ["tasks", host] => return commands::tasks(&paths, host),
+        ["run" | "manage", host, task, ref rest @ ..] => {
+            return commands::run(&paths, host, task, rest);
         }
+        ["exec", host, ref rest @ ..] => return commands::exec(&paths, host, rest),
+        ["attach", host] => return commands::attach(&paths, host, None),
+        ["attach", host, id] => return commands::attach(&paths, host, Some(id)),
+        ["sessions", host] => return commands::sessions(&paths, host),
+        ["output", host, id, ref rest @ ..] => return commands::output(&paths, host, id, rest),
+        ["channel", host, ref rest @ ..] => return commands::channel(&paths, host, rest),
+        ["call", host, service, method] => {
+            return commands::call(&paths, host, service, method, None);
+        }
+        ["call", host, service, method, body] => {
+            return commands::call(&paths, host, service, method, Some(body));
+        }
+        ["inventory", ref hosts @ ..] => return commands::inventory(&paths, hosts),
         ["ssh", host, "--agent"] | ["ssh", "--agent", host] => {
             let status = open(&paths, host)?.agent_terminal()?.status()?;
             std::process::exit(status.code().unwrap_or(1));
@@ -409,10 +531,8 @@ fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        app::remote_inventory,
-        fields::{Action, Field, Step},
-    };
+    use crate::fields::{Action, Field, Step};
+    use berth_core::host::inventory as remote_inventory;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use std::path::PathBuf;
     use tui_input::{Input, backend::crossterm::EventHandler};
@@ -444,7 +564,12 @@ mod tests {
                 terminal: false,
                 group: String::new(),
                 extends: vec![],
+                agent: false,
+                arguments: vec![],
+                confirm: None,
             }],
+            services: vec![],
+            channels: vec![],
         };
         plugins::Plugin {
             id: "demo".into(),
@@ -461,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_features_join_groups_and_offer_their_actions() {
+    fn plugin_features_join_groups() {
         use app::{Entry, Item};
         let mut app = app(r#"{"builder":{"ssh_host":"box","shipped_plugins":true}}"#);
         app.plugins = vec![demo_plugin()];
@@ -474,8 +599,6 @@ mod tests {
         assert_eq!(groups.last().unwrap().title, "Games");
         assert_eq!(groups.last().unwrap().items, [Item::Feature(0, 1)]);
 
-        app.set_step(Step::Manage);
-        assert!(!app.entries().contains(&Entry::PluginAction(0, 0, 0)));
         // Chosen out of order, stored in the plugin's order.
         app.set_item(Item::Feature(0, 1), true);
         app.set_item(Item::Feature(0, 0), true);
@@ -483,35 +606,14 @@ mod tests {
             app.config["ansible_vars"]["devbox_plugin_features"],
             json!(["demo/one", "demo/two"])
         );
-        assert!(app.entries().contains(&Entry::PluginAction(0, 0, 0)));
-        assert!(app.entries().contains(&Entry::PluginAction(0, 1, 0)));
-        app.set_task("demo:hello");
-        let command = app.manage_in_terminal().unwrap();
-        let remote = command.get_args().last().unwrap().to_string_lossy().into_owned();
-        assert_eq!(
-            remote,
-            r#"sudo -H -u agent agent-env bash -c 'cd; echo '\''hi'\''"#.to_owned() + "'"
+        // What the features can do on the host is the host's to say: the
+        // overview has no rows for them until it has been asked.
+        app.set_step(Step::Manage);
+        assert!(
+            !app.entries()
+                .iter()
+                .any(|entry| matches!(entry, Entry::HostTask(_)))
         );
-        app.set_task("demo:missing");
-        assert!(app.manage_in_terminal().is_err());
-        // An action can sit in one of berth's groups instead of the plugin's own.
-        let place = |app: &App, text: &str| {
-            let rows = app.rows();
-            rows.iter().position(|row| row.line.to_string().contains(text)).unwrap()
-        };
-        let before = place(&app, "Say hello");
-        app.plugins[0].features[0].actions[0].group = "sign-in".into();
-        assert!(place(&app, "Sign-In") < place(&app, "Say hello"));
-        assert!(place(&app, "Say hello") < before);
-        // Or be part of one of berth's tasks, without a row of its own.
-        app.plugins[0].features[0].actions[0].extends = vec!["sign-in:status".into()];
-        assert!(!app.entries().contains(&Entry::PluginAction(0, 0, 0)));
-        app.set_task("sign-in:status");
-        let commands = app.manage_commands().unwrap();
-        assert_eq!(commands.len(), 2);
-        assert!(format!("{:?}", commands[1]).contains("echo"));
-        app.set_task("demo:hello");
-        assert_eq!(app.manage_commands().unwrap().len(), 1);
         app.set_item(Item::Feature(0, 0), false);
         assert_eq!(
             app.config["ansible_vars"]["devbox_plugin_features"],
@@ -525,7 +627,13 @@ mod tests {
         let features = |config: &str| app(config).config["ansible_vars"].clone();
         assert_eq!(
             features("{}")["devbox_plugin_features"],
-            json!(["claude/cli", "codex/cli", "github/cli", "pi/cli", "t3/server"])
+            json!([
+                "claude/cli",
+                "codex/cli",
+                "github/cli",
+                "pi/cli",
+                "t3/server"
+            ])
         );
         let old = features(
             r#"{"ansible_vars": {"devbox_agent_codex": false, "devbox_install_t3": false,
@@ -552,7 +660,12 @@ mod tests {
         app.plugins = vec![demo_plugin()];
         app.step = Step::Features;
         let rows = app.rows();
-        assert!(rows[0].line.to_string().starts_with("Development Tools  6 of 7"));
+        assert!(
+            rows[0]
+                .line
+                .to_string()
+                .starts_with("Development Tools  6 of 7")
+        );
         assert_eq!(rows[0].entry, Some(Entry::Group(0)));
         assert!(rows[7].line.to_string().starts_with("  └─ one"));
 
@@ -566,7 +679,10 @@ mod tests {
         );
         app.toggle_group(0);
         assert!(!app.enabled(Field::ToolsWeb) && !app.enabled(Field::ToolsScientific));
-        assert_eq!(app.config["ansible_vars"]["devbox_plugin_features"], json!([]));
+        assert_eq!(
+            app.config["ansible_vars"]["devbox_plugin_features"],
+            json!([])
+        );
 
         app.step = Step::Accounts;
         assert_eq!(selectable(&app)[0], 1);
@@ -613,7 +729,7 @@ mod tests {
 
     #[test]
     fn edits_land_in_the_profile() {
-        let mut app = app(r#"{"ansible_vars":{"devbox_install_boat_tools":false}}"#);
+        let mut app = app(r#"{"ansible_vars":{"devbox_install_dev_tools":false}}"#);
         app.commit(Field::WifiSsid, " home ");
         assert_eq!(app.config["wifi"]["ssid"], "home");
         app.commit(Field::WifiSsid, "");
@@ -653,7 +769,11 @@ mod tests {
         app.config["operator_password_hash"] = json!(format!("$6$salt${}", "a".repeat(86)));
         assert_eq!(app.problems(), Vec::<String>::new());
 
+        // An agent without a privilege level types a password for sudo, so it needs one.
+        app.commit(Field::AgentPrivileges, "limited");
         app.activate(Field::AgentSudo);
+        assert_eq!(app.problems(), Vec::<String>::new());
+        app.config["agent_privileges"] = json!(null);
         assert_eq!(app.problems().len(), 1);
         app.activate(Field::AgentSudo);
         app.commit(Field::AgentUser, "ops");

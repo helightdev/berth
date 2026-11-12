@@ -1,0 +1,35 @@
+---
+title: Updates
+description: What a host updates on its own, what you update from berth, and what berth does not do.
+icon: RefreshCw
+---
+
+## What updates itself
+
+Ubuntu security updates and Firefox's vendor updates install automatically. The host never reboots on its own. **Status** says when a reboot is needed.
+
+## What you update
+
+| How | Updates |
+| --- | --- |
+| **Update** on the overview, or `berth run HOST update` | `apt` update and `dist-upgrade`, then Claude Code, Codex, Pi, T3 Code and the Unity CLI to their latest versions, through their plugins |
+| **Reboot**, or `berth run HOST reboot` | Restarts the host to finish updates |
+| **Apply this configuration** | Runs the role again, which brings new or changed features and settings, berthd and box, and plugin tasks and services |
+
+The versions in the defaults (`devbox_claude_version`, `devbox_codex_version`, `devbox_pi_version`, `devbox_t3_version`) are the least ones, so applying the configuration again does not go back to them after an update. Claude Code's own self-update is off.
+
+## After changing versions
+
+Applying does not restart desktops that are already running or turns an agent is in the middle of. After changing versions, a service's environment or unit files, restart the agent's user services in a quiet moment, or reboot.
+
+Applying restarts berthd only when its program or unit changed, because a restart ends the sessions it holds. New tasks, services and channel topics only need a reload, which applying does.
+
+## What berth does not do
+
+- The bootstrap retries an install that did not finish, but it does not pull Git branches or replace a release that completed. A host changes when you apply the role again.
+- No automatic firmware updates, encrypted unattended boot, swap tuning, offline package bundles, or transactional updates with rollback.
+- Laptop power settings are defaults for fresh physical installs. Settings the user changed in XFCE win. Reboot after the first laptop setup.
+
+## Data
+
+Application data is stored under `/home/agent` and `/srv/agent`. Back both up before upgrades, with the [Backup plugin](/docs/use/backups) or your own tools.

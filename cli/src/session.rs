@@ -7,8 +7,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::{
     fs::File,
     io::{Read, Write},
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
-    os::unix::process::CommandExt,
     process::{Child, Command},
     sync::mpsc::{Receiver, channel},
 };
@@ -31,46 +29,9 @@ pub struct Session {
     pub outcome: Option<bool>,
 }
 
-fn window(rows: u16, cols: u16) -> libc::winsize {
-    libc::winsize {
-        ws_row: rows,
-        ws_col: cols,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    }
-}
-
 impl Session {
-    pub fn start(title: &str, mut command: Command, rows: u16, cols: u16) -> Result<Session> {
-        let (mut ours, mut theirs) = (0, 0);
-        // SAFETY: openpty fills the two descriptors, which are owned from here on.
-        let (ours, theirs) = unsafe {
-            let size = window(rows, cols);
-            if libc::openpty(&mut ours, &mut theirs, std::ptr::null_mut(), std::ptr::null(), &size) != 0 {
-                return Err(std::io::Error::last_os_error().into());
-            }
-            libc::fcntl(ours, libc::F_SETFD, libc::FD_CLOEXEC);
-            (File::from_raw_fd(ours), OwnedFd::from_raw_fd(theirs))
-        };
-        command
-            .stdin(theirs.try_clone()?)
-            .stdout(theirs.try_clone()?)
-            .stderr(theirs)
-            .env("TERM", "xterm-256color");
-        // SAFETY: only async-signal-safe calls between fork and exec. The
-        // command gets a session of its own with the pseudo-terminal as its
-        // terminal, so programs that open /dev/tty reach it.
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let child = command.spawn()?;
-        // The command holds the other end now; ours reports the end when it closes.
-        drop(command);
+    pub fn start(title: &str, command: Command, rows: u16, cols: u16) -> Result<Session> {
+        let (ours, child) = berth_pty::spawn(command, rows, cols)?;
         let (sender, receiver) = channel();
         let mut reader = ours.try_clone()?;
         std::thread::spawn(move || {
@@ -98,7 +59,11 @@ impl Session {
             self.parser.process(&bytes);
             // Prompts ask where the cursor is and wait for the answer.
             self.tail.extend_from_slice(&bytes);
-            let asked = self.tail.windows(4).filter(|window| window == b"\x1b[6n").count();
+            let asked = self
+                .tail
+                .windows(4)
+                .filter(|window| window == b"\x1b[6n")
+                .count();
             let keep = self.tail.len().saturating_sub(3);
             self.tail.drain(..keep);
             for _ in 0..asked {
@@ -125,17 +90,16 @@ impl Session {
     pub fn resize(&mut self, rows: u16, cols: u16) {
         if self.screen().size() != (rows, cols) {
             self.parser.screen_mut().set_size(rows, cols);
-            // SAFETY: the descriptor is open for as long as `self.terminal` is.
-            unsafe {
-                libc::ioctl(self.terminal.as_raw_fd(), libc::TIOCSWINSZ, &window(rows, cols));
-            }
+            berth_pty::resize(&self.terminal, rows, cols);
         }
     }
 
     /// Look further back (positive) or forward again, by `lines`.
     pub fn scroll(&mut self, lines: isize) {
         let now = self.screen().scrollback() as isize;
-        self.parser.screen_mut().set_scrollback((now + lines).max(0) as usize);
+        self.parser
+            .screen_mut()
+            .set_scrollback((now + lines).max(0) as usize);
     }
 
     pub fn send(&mut self, bytes: &[u8]) {
@@ -156,10 +120,7 @@ impl Session {
     /// What a terminal sends for a key, in the mode the command has asked for.
     pub fn key(&mut self, key: &KeyEvent) {
         let mut bytes = key_bytes(key);
-        if self.screen().application_cursor()
-            && bytes.len() == 3
-            && bytes.starts_with(b"\x1b[")
-        {
+        if self.screen().application_cursor() && bytes.len() == 3 && bytes.starts_with(b"\x1b[") {
             bytes[1] = b'O';
         }
         self.send(&bytes);
@@ -225,7 +186,10 @@ mod tests {
     #[test]
     fn a_session_shows_output_and_takes_input() {
         let mut command = Command::new("sh");
-        command.args(["-c", "printf 'code? '; read code; printf 'got %s\\r\\n' \"$code\""]);
+        command.args([
+            "-c",
+            "printf 'code? '; read code; printf 'got %s\\r\\n' \"$code\"",
+        ]);
         let mut session = Session::start("demo", command, 5, 40).unwrap();
         let wait = |session: &mut Session, text: &str| {
             for _ in 0..200 {
@@ -253,7 +217,10 @@ mod tests {
         assert_eq!(session.outcome, Some(true));
         // A question about the cursor position is answered.
         let mut command = Command::new("sh");
-        command.args(["-c", "stty raw -echo; printf 'ab\\033[6n'; dd bs=1 count=6 2>/dev/null | od -c"]);
+        command.args([
+            "-c",
+            "stty raw -echo; printf 'ab\\033[6n'; dd bs=1 count=6 2>/dev/null | od -c",
+        ]);
         let mut session = Session::start("demo", command, 5, 40).unwrap();
         wait(&mut session, "[   1   ;   3");
         // The command sees the size, and a new one.

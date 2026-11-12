@@ -3,7 +3,15 @@ set -euo pipefail
 source /etc/devbox/environment
 if [[ $(id -un) != "$DEVBOX_USER" ]]; then echo "Run this as $DEVBOX_USER" >&2; exit 1; fi
 export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}
-if [[ $DEVBOX_PASSWORDLESS_SUDO == 1 ]]; then sudo -n true; else sudo -v; fi
+# What the agent may do as root is a setting of the host; check that it holds.
+case ${DEVBOX_AGENT_PRIVILEGES:-full} in
+  full) sudo -n true ;;
+  limited)
+    sudo -n -l /usr/bin/apt-get update >/dev/null
+    if sudo -n true 2>/dev/null; then echo 'Agent privileges are limited, but sudo runs anything' >&2; exit 1; fi ;;
+  none) if sudo -n true 2>/dev/null; then echo 'Agent privileges are none, but sudo works' >&2; exit 1; fi ;;
+esac
+printf 'Agent privileges: %s\n' "${DEVBOX_AGENT_PRIVILEGES:-full}"
 while IFS= read -r tool; do
   command -v "$tool" >/dev/null || { echo "Missing expected command: $tool" >&2; exit 1; }
 done </etc/devbox/expected-commands
@@ -26,7 +34,7 @@ xvfb-run -a -s '-screen 0 1280x720x24 +extension GLX' glxinfo -B >"$out/xvfb-ope
 if [[ $DEVBOX_SOFTWARE_RENDERING == 1 ]]; then
   grep -qi llvmpipe "$out/xvfb-opengl.txt"
 fi
-devbox-desktop screenshot --output "$out/desktop.png"
+box desktop screenshot --output "$out/desktop.png"
 xdpyinfo | grep 'dimensions:'
 python - "$out" <<'PY'
 import sys
@@ -78,4 +86,4 @@ if [[ ${DEVBOX_COCKPIT:-0} == 1 ]]; then curl -kfsS https://127.0.0.1:9090/ >/de
 if command -v t3 >/dev/null; then curl -fsS http://127.0.0.1:3773/ >/dev/null; fi
 printf 'Smoke checks passed. Outputs: %s\n' "$out"
 for item in "${skipped[@]}"; do printf 'Skipped in this container: %s\n' "$item"; done
-printf 'Agent authentication and a T3-launched sudo test remain interactive checks.\n'
+printf 'Agent authentication remains an interactive check.\n'

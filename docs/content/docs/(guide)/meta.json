@@ -1,0 +1,7 @@
+{
+  "title": "Guide",
+  "description": "Set up and look after hosts",
+  "icon": "BookOpen",
+  "root": true,
+  "pages": ["index", "start", "deploy", "use", "extend", "reference"]
+}

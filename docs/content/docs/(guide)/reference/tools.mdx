@@ -1,0 +1,84 @@
+---
+title: Tools
+description: The development tools a host gets, how to switch categories off, and how versions are chosen.
+icon: Wrench
+---
+
+The base is Ubuntu 26.04. The coding clients are Claude Code, Codex and Pi, with T3 Code, all from [plugins](/docs/extend/plugins).
+
+## Inventory
+
+| Area | Included |
+| --- | --- |
+| JavaScript | Node 24 by default, Node 22 available; npm, Bun/bunx, Deno, pnpm |
+| Python | Ubuntu Python, pip, venv, pipx, uv, artifact libraries and Playwright |
+| Native | GCC and G++, Clang, CMake and Ninja, pkg-config, Go, Rust with Cargo and rustup |
+| JVM | OpenJDK 21, Maven, Gradle, Kotlin, Scala, sbt |
+| Other languages | Ruby with Bundler, PHP with Composer, Erlang and Elixir, .NET 10 SDK, R |
+| Containers | Docker and Compose on full hosts, with the agent in the `docker` group |
+| Browsers, media, desktop | Chrome, Firefox and Playwright Chromium; FFmpeg; xdotool and wmctrl; XFCE with office and artifact tools |
+| General CLI | Git with LFS and gh; ripgrep and jq; curl, SSH and tmux; archive, search and debugging tools |
+
+The resolved runtime inventory of a host is `/var/lib/devbox/toolchains.json`.
+
+## Tool categories
+
+Each category is a switch on the Features tab. All are on by default.
+
+| Category | Ansible setting | Container build |
+| --- | --- | --- |
+| JavaScript runtimes | `devbox_tools_web` | `INSTALL_WEB_TOOLS` |
+| Native development | `devbox_tools_native` | `INSTALL_NATIVE_TOOLS` |
+| JVM development | `devbox_tools_jvm` | `INSTALL_JVM_TOOLS` |
+| .NET development | `devbox_tools_dotnet` | `INSTALL_DOTNET_TOOLS` |
+| Scripting languages | `devbox_tools_scripting` | `INSTALL_SCRIPTING_TOOLS` |
+| Scientific computing | `devbox_tools_scientific` | `INSTALL_SCIENTIFIC_TOOLS` |
+| Google Chrome | `devbox_tools_chrome` | `INSTALL_CHROME_TOOLS` |
+
+`devbox_install_dev_tools` (`INSTALL_DEV_TOOLS` for the container) sets the default of all of them at once. A category set on its own takes precedence. Playwright (`devbox_install_playwright`) and software graphics have their own switches.
+
+Node and npm, Python, GCC, CMake and Ninja stay as base dependencies. The package lists, runtimes and expected smoke-test commands of each category are defined together in `devbox_tool_categories`. Switching a category off skips its packages and runtimes on a fresh install. Packages already installed stay when a profile is applied again. Anything beyond the categories, such as the Unity CLI, is a plugin.
+
+## Runtimes with mise
+
+[mise](https://mise.jdx.dev/) selects between runtime versions. Nvm is not installed. mise is checksum-pinned and its configuration belongs to the agent at `~/.config/mise/config.toml`. Its shims are on the PATH of shells, the desktop and the T3 service, and project-local mise configurations override the global selection after mise's usual trust step.
+
+```bash title="As the agent"
+mise ls
+mise exec node@22 -- node --version
+box exec node --version
+box exec codex --version
+```
+
+## Versions
+
+| Tool | Version | Source |
+| --- | --- | --- |
+| Claude Code | 2.1.322 | Official installer with an explicit version, fetched over HTTPS at install time |
+| T3 Code | 0.1.8 | Upstream GitHub release, checked against a SHA-256 in the defaults |
+| Codex | 0.167.1 | `@openai/codex` from npm |
+| Pi | 1.5.1 | `@earendil-works/pi-coding-agent` from npm, with `--ignore-scripts` |
+| Playwright | 1.65.0 | With its matching Chromium |
+| ansible-core | 2.21.6 | On your machine. Supports Ubuntu's Python 3.14 on hosts |
+
+Codex and Pi install under `~/.local` as the agent. Change a version in the profile's `ansible_vars` (`devbox_claude_version`, `devbox_codex_version`, `devbox_pi_version`, `devbox_t3_version`) and apply; for T3, change the checksum with the version. **Update** brings the agents to their latest versions, and these settings are the least versions, so applying again does not go back.
+
+Node 22 and .NET 10 use release selectors, so a clean install may get newer patches. Pin full versions in `devbox_node_versions` and `devbox_mise_tools` for closer reproduction. Ubuntu packages, npm's transitive dependencies and Python version ranges also move. The role describes how to set a host up and does not freeze its packages. Defaults for all of this are in [`defaults/main.yml`](https://github.com/helightdev/berth/blob/main/ansible/roles/devbox/defaults/main.yml).
+
+## Prompts an agent would not see
+
+Some programs stop at a dialog on the desktop the first time they run, and an agent working over SSH never notices. The role removes the common ones:
+
+| Program | What the role does |
+| --- | --- |
+| Keyring | Gives the agent a default keyring without a password, so programs using the Secret Service store credentials without asking. Those secrets are unencrypted in `~/.local/share/keyrings`. An existing keyring is left as it is |
+| Chrome | Skips the terms-of-service dialog, the default-browser question and the welcome page, and turns usage statistics off |
+
+Signing in to an agent, to Unity or to a browser profile still needs a person.
+
+## References
+
+- [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) and [its releases](https://learn.chatgpt.com/docs/changelog)
+- [Pi](https://pi.dev/)
+- [mise installation](https://mise.jdx.dev/installing-mise.html), [tool registry](https://mise.jdx.dev/registry.html) and [shims](https://mise.jdx.dev/dev-tools/shims.html)
+- [Google's repository signing](https://www.google.com/linuxrepositories/)

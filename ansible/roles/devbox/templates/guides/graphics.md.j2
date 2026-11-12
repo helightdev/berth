@@ -2,7 +2,7 @@
 
 {% if devbox_software_rendering %}
 This machine renders on the CPU. OpenGL comes from Mesa llvmpipe and Vulkan from
-lavapipe; both are set up in the environment `agent-env` provides. Expect
+lavapipe; both are set up in the environment `box exec` provides. Expect
 correct but slow rendering, and no hardware video encoding.
 
 - Engines and tools that cannot use software Vulkan need their OpenGL path, for
@@ -17,11 +17,11 @@ display, so check before relying on it.
 
 Check what is in use:
 
-    agent-env glxinfo -B
-    agent-env vulkaninfo --summary
+    box exec glxinfo -B
+    box exec vulkaninfo --summary
 
 A display of your own, for a job that should not show on the shared desktop:
 
-    agent-env xvfb-run -a -s '-screen 0 1280x720x24 +extension GLX' COMMAND ...
+    box exec xvfb-run -a -s '-screen 0 1280x720x24 +extension GLX' COMMAND ...
 
 The desktop is {{ devbox_geometry }} pixels.

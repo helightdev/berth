@@ -86,7 +86,10 @@ pub fn render(text: &str) -> Vec<Line<'static>> {
                     flush(&mut lines, &mut spans);
                     styles.pop();
                 }
-                TagEnd::Strong | TagEnd::Emphasis | TagEnd::Strikethrough | TagEnd::BlockQuote(_) => {
+                TagEnd::Strong
+                | TagEnd::Emphasis
+                | TagEnd::Strikethrough
+                | TagEnd::BlockQuote(_) => {
                     styles.pop();
                 }
                 TagEnd::Link => {
@@ -94,7 +97,10 @@ pub fn render(text: &str) -> Vec<Line<'static>> {
                     // An address that is not already what the link says is shown after it.
                     let shown: String = spans.iter().map(|span| span.content.as_ref()).collect();
                     if !link.is_empty() && !shown.ends_with(link.as_str()) {
-                        spans.push(Span::styled(format!(" ({link})"), Style::new().fg(theme::MUTED)));
+                        spans.push(Span::styled(
+                            format!(" ({link})"),
+                            Style::new().fg(theme::MUTED),
+                        ));
                     }
                     link.clear();
                 }
@@ -116,7 +122,10 @@ pub fn render(text: &str) -> Vec<Line<'static>> {
                 spans.push(Span::styled(text.to_string(), style));
             }
             Event::Code(code) => {
-                spans.push(Span::styled(code.to_string(), style.fg(theme::TEXT).bg(theme::RAISED)));
+                spans.push(Span::styled(
+                    code.to_string(),
+                    style.fg(theme::TEXT).bg(theme::RAISED),
+                ));
             }
             Event::SoftBreak => spans.push(Span::styled(" ", style)),
             Event::HardBreak => flush(&mut lines, &mut spans),
@@ -158,9 +167,17 @@ mod tests {
                 "Plain text with snake_case_names and <angle> brackets.",
             ]
         );
-        let bold = lines[2].spans.iter().find(|span| span.content == "agent").unwrap();
+        let bold = lines[2]
+            .spans
+            .iter()
+            .find(|span| span.content == "agent")
+            .unwrap();
         assert!(bold.style.add_modifier.contains(Modifier::BOLD));
-        let code = lines[2].spans.iter().find(|span| span.content == "devbox-smoke").unwrap();
+        let code = lines[2]
+            .spans
+            .iter()
+            .find(|span| span.content == "devbox-smoke")
+            .unwrap();
         assert_eq!(code.style.bg, Some(theme::RAISED));
         assert_eq!(lines[0].spans[0].style.fg, Some(theme::ACCENT));
     }

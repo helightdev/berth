@@ -14,6 +14,12 @@ for ((attempt=0; attempt<100; attempt++)); do
   sleep 0.1
 done
 [[ -S "$XDG_RUNTIME_DIR/bus" ]] || { echo 'Session bus did not start' >&2; exit 1; }
+# berthd in single-user mode: sessions, tasks and the channel for this account,
+# reached from outside with `docker exec -i CONTAINER berthd connect`.
+if command -v berthd >/dev/null && [[ -w /run/berth ]]; then
+  berthd --single /run/berth &
+  pids+=("$!")
+fi
 devbox-desktop-session &
 pids+=("$!")
 devbox-wait-display

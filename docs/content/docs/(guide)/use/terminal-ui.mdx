@@ -1,0 +1,90 @@
+---
+title: The terminal UI
+description: The screens of berth's terminal UI and the keys that move between them.
+icon: AppWindow
+---
+
+`berth` with no arguments opens the home screen. `berth NAME` opens a host directly: its overview when it has an SSH address, its set-up tabs when it is new.
+
+```bash
+berth                  # home screen: pick a host or create one
+berth studio           # open a host directly
+```
+
+## The home screen
+
+The home screen has five tabs, switched with the number keys or Tab.
+
+| Tab | Holds |
+| --- | --- |
+| `1` Hosts | The saved hosts and their addresses. `n` creates one, `d` makes the selected one the default |
+| `2` Settings | The settings of `berth config` |
+| `3` Registries | npm, Docker, file and Nexus registries ([Registries](/docs/use/registries)) |
+| `4` Secrets | Secret values kept on your machine ([Secrets](/docs/use/secrets)) |
+| `5` Plugins | Built-in and installed plugins, and adding your own ([Plugins](/docs/extend/plugins)) |
+
+<Screen name="home-plugins" alt="The Plugins tab of the home screen, listing the shipped plugins and their features" />
+
+## A host
+
+A host has its **overview**, for the running machine, and four **set-up** tabs for its profile. The overview is described in [A host's overview](/docs/use/overview). **Change what is installed, accounts or install method** on the overview opens the set-up tabs, and Esc returns.
+
+| Set-up tab | For |
+| --- | --- |
+| `1` Features | The coding agents and T3 Code, with tool categories, browsers, graphics and plugin features |
+| `2` Accounts | Operator and agent usernames, SSH keys, passwords and sudo policy; can fill in from the keys on this machine |
+| `3` Secrets | Which registries and secrets this host gets, and how |
+| `4` Install | How to install, the settings that method needs, what is still missing, and Run |
+
+The **Information** panel on the right explains the selected row. **Apply this configuration** on the overview sends changes to a running host.
+
+<Screen name="secrets" alt="The Secrets tab of a host: registries switched on or off, and a secret given as the variable GH_TOKEN" />
+
+## Keys
+
+| Key | Action |
+| --- | --- |
+| Up, Down, Enter | Select a row. Enter edits the row or runs it |
+| Tab, Shift+Tab, number keys | Next or previous tab, or a tab by number; also accepts the current edit |
+| Right or F2, Left | Into the *Suggestions* list (detected keys, hosts, choices) and back |
+| F3 | Browse for a file on path fields; Ctrl+Enter picks the directory itself |
+| F4 | Generate a value, such as a hostname, a password hash or a Tailscale key, or download the ISO |
+| F5 | Type a password and store its hash; on Wi-Fi fields, unlock the saved passwords |
+| Ctrl+S | Save the profile |
+| Ctrl+U, Esc | Clear the field being edited, cancel the edit |
+| x or Delete | Unset the selected text, path or secret field |
+| q or Esc | From set-up back to the overview, from there to the home screen; asks again when there are unsaved changes |
+
+Tabs, rows, buttons and suggestions take mouse clicks, and lists scroll with the wheel.
+
+## What berth reads from your machine
+
+berth fills suggestions and blank fields from what it finds locally. It reads, and never changes:
+
+<Accordions>
+<Accordion title="SSH">
+
+Every `.pub` file in `~/.ssh`, keys held by ssh-agent, private key paths, and `Host` aliases from the SSH configuration, including `Include` files.
+
+</Accordion>
+<Accordion title="Tailscale">
+
+The Linux machines in `tailscale status`, as address suggestions. With `TS_API_KEY` set, F4 on the Tailscale key field creates a one-use enrollment key through the Tailscale API.
+
+</Accordion>
+<Accordion title="Wi-Fi">
+
+The names of networks saved in NetworkManager. Their passwords only after F5 on a Wi-Fi field, which asks for your password, passes it to `sudo` once and keeps that authorisation alive while berth runs. berth never asks for it on its own.
+
+</Accordion>
+<Accordion title="USB drives">
+
+Connected USB disks, for **Then write to USB drive**.
+
+</Accordion>
+<Accordion title="Environment">
+
+Blank fields can be filled from `DEVBOX_HOSTNAME`, `DEVBOX_TARGET_DISK_SERIAL`, `DEVBOX_RELEASE_URL`, `DEVBOX_ISO` and `DEVBOX_INVENTORY`.
+
+</Accordion>
+</Accordions>

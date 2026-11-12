@@ -1,0 +1,941 @@
+//! The routes of `berth serve`.
+
+use super::{Event, Remote, Serve};
+use axum::{
+    Json, Router,
+    body::Bytes,
+    extract::{
+        DefaultBodyLimit, Path, Query, RawQuery, Request, State,
+        ws::{
+            Message as WsMessage, WebSocket, WebSocketUpgrade, rejection::WebSocketUpgradeRejection,
+        },
+    },
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::{any, get},
+};
+use berth_api::{
+    Done, ErrorBody, ErrorDetail, Message, Output, Version, b64, client, code, ops, streams,
+};
+use berth_core::{
+    apply,
+    host::Host,
+    store::{self, Filter, When},
+};
+use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{sync::Arc, time::Duration};
+use tokio::sync::broadcast::error::RecvError;
+use utoipa::{IntoParams, ToSchema};
+use utoipa_axum::{router::OpenApiRouter, routes};
+
+type App = State<Arc<Serve>>;
+/// The upgrade when the request asks for a stream, at a path that also answers plainly.
+type Ws = std::result::Result<WebSocketUpgrade, WebSocketUpgradeRejection>;
+
+/// An error on its way out: status, code, message.
+pub struct Fail(u16, String, String);
+
+impl Fail {
+    pub fn new(kind: (u16, &str), message: impl Into<String>) -> Fail {
+        Fail(kind.0, kind.1.to_owned(), message.into())
+    }
+}
+
+impl IntoResponse for Fail {
+    fn into_response(self) -> Response {
+        let status = StatusCode::from_u16(self.0).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let body = ErrorBody {
+            error: ErrorDetail {
+                code: self.1,
+                message: self.2,
+            },
+        };
+        (status, Json(body)).into_response()
+    }
+}
+
+impl From<store::Error> for Fail {
+    fn from(error: store::Error) -> Fail {
+        let kind = match error {
+            store::Error::Conflict(_) => code::PRECONDITION,
+            store::Error::TooLarge => code::TOO_LARGE,
+            store::Error::Database(_) => code::INTERNAL,
+        };
+        Fail::new(kind, error.to_string())
+    }
+}
+
+impl From<client::Error> for Fail {
+    fn from(error: client::Error) -> Fail {
+        Fail(error.status(), error.code().to_owned(), error.to_string())
+    }
+}
+
+type Answer<T> = std::result::Result<T, Fail>;
+
+fn internal(error: impl std::fmt::Display) -> Fail {
+    Fail::new(code::INTERNAL, error.to_string())
+}
+
+// ── What the answers look like ──────────────────────────────────────────────
+
+#[derive(Serialize, ToSchema)]
+pub struct HostInfo {
+    pub name: String,
+    /// Its SSH address.
+    pub address: String,
+    pub reachable: bool,
+    /// The version of its berthd.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api: Option<u32>,
+    /// Why it is not reachable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct JobInfo {
+    pub id: String,
+    pub host: String,
+    /// What it does: `apply`.
+    pub what: String,
+    pub started: String,
+    pub ended: Option<String>,
+    pub exit_code: Option<i32>,
+}
+
+/// A stored message: the host's message with where it came from.
+#[derive(Serialize, ToSchema)]
+pub struct InboxMessage {
+    #[serde(flatten)]
+    pub message: Message,
+    pub host: String,
+    pub done: bool,
+    /// The order it was taken in; what `before` counts in.
+    pub seq: i64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct Inbox {
+    pub messages: Vec<InboxMessage>,
+    /// Pass as `before` for older ones, when there are more.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next: Option<i64>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct KvEntry {
+    pub key: String,
+    pub value: Value,
+    pub revision: i64,
+    pub updated: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct KvList {
+    pub entries: Vec<KvEntry>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct KvWritten {
+    pub key: String,
+    pub revision: i64,
+}
+
+fn job_info(job: store::Job) -> JobInfo {
+    JobInfo {
+        id: job.id,
+        host: job.host,
+        what: job.what,
+        started: job.started,
+        ended: job.ended,
+        exit_code: job.exit_code,
+    }
+}
+
+fn kv_entry(entry: store::Entry) -> KvEntry {
+    KvEntry {
+        key: entry.key,
+        value: entry.value,
+        revision: entry.revision,
+        updated: entry.updated,
+    }
+}
+
+// ── The router ──────────────────────────────────────────────────────────────
+
+/// The routes that are plain requests, with their descriptions.
+pub fn documented() -> OpenApiRouter<Arc<Serve>> {
+    OpenApiRouter::new()
+        .routes(routes!(version))
+        .routes(routes!(hosts))
+        .routes(routes!(host))
+        .routes(routes!(apply_host))
+        .routes(routes!(jobs))
+        .routes(routes!(job))
+        .routes(routes!(job_output))
+        .routes(routes!(inbox))
+        .routes(routes!(mark_done, mark_open))
+        .routes(routes!(kv_list))
+        .routes(routes!(kv_get, kv_put, kv_delete))
+}
+
+pub fn router(state: Arc<Serve>, guarded: bool) -> Router {
+    let (mut router, _) = documented().split_for_parts();
+    // Every stream of the table gets its route here, so none can exist undescribed.
+    for stream in streams::SERVE {
+        router = match stream.id {
+            // At the path of a plain GET, whose handler upgrades when asked to.
+            "job" | "inbox" | "kv" => router,
+            "events" => router.route(stream.path, get(events)),
+            other => panic!("no handler for the stream {other}"),
+        };
+    }
+    router = router.route("/v1/hosts/{name}/{*rest}", any(proxy));
+    router = router.route(ops::PORTAL, get(portal));
+    if guarded {
+        router = router.layer(middleware::from_fn_with_state(state.clone(), guard));
+    }
+    router
+        .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
+        .with_state(state)
+}
+
+fn same(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0, |all, (x, y)| all | (x ^ y))
+            == 0
+}
+
+/// Over TCP every request shows the token: as a bearer, or as the WebSocket
+/// protocol, because a browser cannot set a header on a WebSocket.
+async fn guard(State(state): App, request: Request, next: Next) -> Response {
+    if !shows_token(&state, request.headers()) {
+        return Fail::new(
+            code::UNAUTHORIZED,
+            "Send the token of berth serve as a bearer",
+        )
+        .into_response();
+    }
+    next.run(request).await
+}
+
+fn shows_token(state: &Serve, headers: &HeaderMap) -> bool {
+    let token = state.token.as_deref().unwrap_or("");
+    let header = |name| {
+        headers
+            .get(name)
+            .and_then(|value: &HeaderValue| value.to_str().ok())
+    };
+    let bearer = header(header::AUTHORIZATION)
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|given| same(given.trim(), token));
+    let protocol = header(header::SEC_WEBSOCKET_PROTOCOL)
+        .is_some_and(|value| value.split(',').any(|given| same(given.trim(), token)));
+    !token.is_empty() && (bearer || protocol)
+}
+
+/// Answer the handshake with the token as protocol when it was offered as one.
+fn upgrade(state: &Serve, ws: WebSocketUpgrade) -> WebSocketUpgrade {
+    match &state.token {
+        Some(token) => ws.protocols([token.clone()]),
+        None => ws,
+    }
+}
+
+/// The portal: every operation over one WebSocket. With `host` an operation
+/// is that host's, and goes the way a request under `/v1/hosts/NAME` does.
+async fn portal(State(state): App, ws: WebSocketUpgrade) -> Response {
+    // The token was shown when the portal was opened.
+    let inner = router(state.clone(), false);
+    let resolve: berthd::portal::Resolve = Arc::new(|name, host| {
+        let (table, prefix) = match host {
+            Some(host) => (ops::HOST, format!("/hosts/{}", client::encode(host))),
+            None => (ops::SERVE, String::new()),
+        };
+        match ops::find(table, name) {
+            Some(op) => Ok(berthd::portal::Target { op, prefix }),
+            None => Err((code::NOT_FOUND, format!("No operation {name}"))),
+        }
+    });
+    upgrade(&state, ws).on_upgrade(move |socket| berthd::portal::run(socket, inner, resolve))
+}
+
+// ── Hosts ───────────────────────────────────────────────────────────────────
+
+async fn info(remote: Arc<Remote>) -> HostInfo {
+    let seen = remote.version().await;
+    HostInfo {
+        name: remote.name.clone(),
+        address: remote.address.clone(),
+        reachable: seen.is_ok(),
+        version: seen.as_ref().ok().map(|version| version.version.clone()),
+        api: seen.as_ref().ok().map(|version| version.api),
+        error: seen.err(),
+    }
+}
+
+fn remote(state: &Serve, name: &str) -> Answer<Arc<Remote>> {
+    state
+        .host(name)
+        .ok_or_else(|| Fail::new(code::NOT_FOUND, format!("No host {name}")))
+}
+
+#[utoipa::path(get, path = "/v1/version", summary = "The version of berth serve and of its API.", tag = "serve",
+    responses((status = 200, description = "The version of berth serve", body = Version)))]
+async fn version() -> Json<Version> {
+    Json(Version {
+        version: berth_api::VERSION.into(),
+        api: berth_api::API,
+        mode: "serve".into(),
+    })
+}
+
+#[utoipa::path(get, path = "/v1/hosts", summary = "The saved hosts and whether each answers.", tag = "hosts",
+    responses((status = 200, description = "The saved hosts and whether each answers", body = Vec<HostInfo>)))]
+async fn hosts(State(state): App) -> Json<Vec<HostInfo>> {
+    state.refresh(false);
+    let remotes: Vec<_> = state.hosts.read().unwrap().values().cloned().collect();
+    Json(futures_util::future::join_all(remotes.into_iter().map(info)).await)
+}
+
+#[utoipa::path(get, path = "/v1/hosts/{name}", summary = "One host: its address, and whether it answers.", tag = "hosts",
+    params(("name" = String, Path, description = "A saved host")),
+    responses((status = 200, description = "One host", body = HostInfo),
+              (status = 404, description = "No such host", body = ErrorBody)))]
+async fn host(State(state): App, Path(name): Path<String>) -> Answer<Json<HostInfo>> {
+    state.refresh(false);
+    Ok(Json(info(remote(&state, &name)?).await))
+}
+
+fn new_id() -> std::io::Result<String> {
+    let mut bytes = [0u8; 12];
+    std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut bytes)?;
+    let letters = b"abcdefghijklmnopqrstuvwxyz234567";
+    Ok(format!(
+        "j{}",
+        bytes
+            .iter()
+            .map(|byte| letters[(byte & 31) as usize] as char)
+            .collect::<String>()
+    ))
+}
+
+#[utoipa::path(post, path = "/v1/hosts/{name}/apply", summary = "Apply the host's profile to it, as a job.", tag = "hosts",
+    params(("name" = String, Path, description = "A saved host")),
+    responses((status = 200, description = "The job that applies the host's configuration", body = JobInfo),
+              (status = 404, description = "No such host", body = ErrorBody)))]
+async fn apply_host(State(state): App, Path(name): Path<String>) -> Answer<Json<JobInfo>> {
+    let remote = remote(&state, &name)?;
+    let bad = |error: Box<dyn std::error::Error>| Fail::new(code::BAD_REQUEST, error.to_string());
+    let host = Host::load(&state.paths, &name).map_err(bad)?;
+    if host.asks_password() && remote.password.is_none() {
+        return Err(Fail::new(
+            code::NOT_AVAILABLE,
+            format!("{name} asks for a sudo password that berth serve was not given"),
+        ));
+    }
+    let prepared = apply::prepare(&state.paths, &host, remote.password.as_deref()).map_err(bad)?;
+    let id = new_id().map_err(internal)?;
+    std::fs::create_dir_all(&state.jobs_dir).map_err(internal)?;
+    let path = state.jobs_dir.join(format!("{id}.log"));
+    let output = std::fs::File::create(&path).map_err(internal)?;
+    let mut command = tokio::process::Command::from(prepared.command);
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(output.try_clone().map_err(internal)?)
+        .stderr(output);
+    let mut child = command
+        .spawn()
+        .map_err(|error| internal(format!("ansible-playbook: {error}")))?;
+    let job = store::Job {
+        id: id.clone(),
+        host: name,
+        what: "apply".into(),
+        started: berth_api::now(),
+        ended: None,
+        exit_code: None,
+        output_path: path.to_string_lossy().into_owned(),
+    };
+    state.store.lock().unwrap().add_job(&job)?;
+    let _ = state.events.send(Event::Job(job.json()));
+    let files = prepared.files;
+    let watcher = state.clone();
+    tokio::spawn(async move {
+        let exit_code = child.wait().await.ok().and_then(|status| status.code());
+        // The private files the run read live until here.
+        drop(files);
+        let mut store = watcher.store.lock().unwrap();
+        let _ = store.end_job(&id, exit_code);
+        if let Ok(Some(job)) = store.job(&id) {
+            let _ = watcher.events.send(Event::Job(job.json()));
+        }
+    });
+    Ok(Json(job_info(job)))
+}
+
+// ── Jobs ────────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct Limit {
+    /// At most this many (default 100, at most 1,000).
+    limit: Option<usize>,
+}
+
+#[utoipa::path(get, path = "/v1/jobs", summary = "The jobs, newest first.", tag = "jobs", params(Limit),
+    responses((status = 200, description = "Jobs, newest first", body = Vec<JobInfo>)))]
+async fn jobs(State(state): App, Query(query): Query<Limit>) -> Answer<Json<Vec<JobInfo>>> {
+    let jobs = state
+        .store
+        .lock()
+        .unwrap()
+        .jobs(query.limit.unwrap_or(100))?;
+    Ok(Json(jobs.into_iter().map(job_info).collect()))
+}
+
+fn find_job(state: &Serve, id: &str) -> Answer<store::Job> {
+    let job = state.store.lock().unwrap().job(id)?;
+    job.ok_or_else(|| Fail::new(code::NOT_FOUND, format!("No job {id}")))
+}
+
+#[derive(Deserialize)]
+struct Since {
+    since: Option<u64>,
+}
+
+#[utoipa::path(get, path = "/v1/jobs/{id}", summary = "One job's state.", tag = "jobs",
+    params(("id" = String, Path, description = "A job's id")),
+    responses((status = 200, description = "One job", body = JobInfo),
+              (status = 101, description = "As a WebSocket: its output as it is produced"),
+              (status = 404, description = "No such job", body = ErrorBody)))]
+async fn job(
+    State(state): App,
+    Path(id): Path<String>,
+    Query(query): Query<Since>,
+    ws: Ws,
+) -> Answer<Response> {
+    let job = find_job(&state, &id)?;
+    Ok(match ws {
+        Ok(ws) => {
+            let offset = query.since.unwrap_or(0);
+            upgrade(&state, ws).on_upgrade(move |socket| follow_job(state, id, offset, socket))
+        }
+        Err(_) => Json(job_info(job)).into_response(),
+    })
+}
+
+/// A job's output from an offset, then what it writes, then how it ended.
+async fn follow_job(state: Arc<Serve>, id: String, mut offset: u64, mut socket: WebSocket) {
+    loop {
+        // Whether it has ended is read first, so nothing written before the end is missed.
+        let Ok(Some(job)) = state.store.lock().unwrap().job(&id) else {
+            return;
+        };
+        let data = read_from(&job.output_path, offset);
+        if !data.is_empty() {
+            offset += data.len() as u64;
+            if socket.send(WsMessage::Binary(data.into())).await.is_err() {
+                return;
+            }
+            continue;
+        }
+        if job.ended.is_some() {
+            let last = json!({"exited": {"exit_code": job.exit_code}}).to_string();
+            let _ = socket.send(WsMessage::Text(last.into())).await;
+            let _ = socket.send(WsMessage::Close(None)).await;
+            return;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+            frame = socket.recv() => if !matches!(frame, Some(Ok(_))) { return },
+        }
+    }
+}
+
+fn read_from(path: &str, offset: u64) -> Vec<u8> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut data = vec![];
+    if let Ok(mut file) = std::fs::File::open(path)
+        && file.seek(SeekFrom::Start(offset)).is_ok()
+    {
+        let _ = file.take(1024 * 1024).read_to_end(&mut data);
+    }
+    data
+}
+
+#[derive(Deserialize, IntoParams, Default)]
+#[into_params(parameter_in = Query)]
+pub struct OutputQuery {
+    /// By bytes: start at this offset.
+    pub since: Option<u64>,
+    /// By bytes: at most this many (default and most 1 MB).
+    pub limit: Option<u64>,
+    /// By lines: start at this line, from 0.
+    pub line: Option<u64>,
+    /// By lines: this many (default 100).
+    pub count: Option<u64>,
+    /// The last lines.
+    pub tail: Option<u64>,
+}
+
+/// A piece of output by bytes or by lines, with where to go on in both.
+pub fn piece(data: &[u8], query: &OutputQuery, ended: bool) -> Output {
+    let total = data.len() as u64;
+    // Where each line starts; a last line without its end is not one yet.
+    let mut starts = vec![0u64];
+    starts.extend(
+        data.iter()
+            .enumerate()
+            .filter(|(_, byte)| **byte == b'\n')
+            .map(|(at, _)| at as u64 + 1),
+    );
+    let complete = starts.len() as u64 - 1;
+    let by_lines = query.tail.is_some() || query.line.is_some();
+    let (from, to) = if let Some(tail) = query.tail {
+        (
+            starts[complete.saturating_sub(tail) as usize],
+            starts[complete as usize],
+        )
+    } else if let Some(line) = query.line {
+        let first = line.min(complete);
+        let last = first
+            .saturating_add(query.count.unwrap_or(100))
+            .min(complete);
+        (starts[first as usize], starts[last as usize])
+    } else {
+        let from = query.since.unwrap_or(0).min(total);
+        (
+            from,
+            from.saturating_add(query.limit.unwrap_or(1 << 20).min(1 << 20))
+                .min(total),
+        )
+    };
+    let chunk = &data[from as usize..to as usize];
+    Output {
+        data_b64: b64(chunk),
+        lines: by_lines.then(|| {
+            String::from_utf8_lossy(chunk)
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }),
+        first_offset: None,
+        offset: from,
+        next_offset: to,
+        next_line: starts.iter().skip(1).filter(|start| **start <= to).count() as u64,
+        ended: ended && to == total,
+    }
+}
+
+#[utoipa::path(get, path = "/v1/jobs/{id}/output", summary = "What a job wrote, by bytes or by lines.", tag = "jobs",
+    params(("id" = String, Path, description = "A job's id"), OutputQuery),
+    responses((status = 200, description = "A piece of the job's output, by bytes or by lines", body = Output),
+              (status = 404, description = "No such job", body = ErrorBody)))]
+async fn job_output(
+    State(state): App,
+    Path(id): Path<String>,
+    Query(query): Query<OutputQuery>,
+) -> Answer<Json<Output>> {
+    let job = find_job(&state, &id)?;
+    let data = std::fs::read(&job.output_path).unwrap_or_default();
+    Ok(Json(piece(&data, &query, job.ended.is_some())))
+}
+
+// ── Inbox ───────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct InboxQuery {
+    /// Only this host.
+    host: Option<String>,
+    /// Only topics starting with this.
+    topic: Option<String>,
+    /// Only messages taken in before this `seq`.
+    before: Option<i64>,
+    /// Only done ones, or only those that are not.
+    done: Option<bool>,
+    /// At most this many (default 100, at most 1,000).
+    limit: Option<usize>,
+}
+
+fn inbox_message(stored: store::Stored) -> InboxMessage {
+    InboxMessage {
+        message: stored.message,
+        host: stored.host,
+        done: stored.done,
+        seq: stored.seq,
+    }
+}
+
+#[utoipa::path(get, path = "/v1/inbox", summary = "Messages taken in from the hosts' channels.", tag = "inbox", params(InboxQuery),
+    responses((status = 200, description = "Stored messages, newest first", body = Inbox),
+              (status = 101, description = "As a WebSocket: messages as they are taken in")))]
+async fn inbox(State(state): App, Query(query): Query<InboxQuery>, ws: Ws) -> Answer<Response> {
+    if let Ok(ws) = ws {
+        let events = state.events.subscribe();
+        return Ok(upgrade(&state, ws).on_upgrade(move |socket| {
+            forward(socket, events, move |event| match event {
+                Event::Inbox(stored)
+                    if query.host.as_ref().is_none_or(|host| *host == stored.host)
+                        && stored
+                            .message
+                            .topic
+                            .starts_with(query.topic.as_deref().unwrap_or("")) =>
+                {
+                    Some(stored.json())
+                }
+                _ => None,
+            })
+        }));
+    }
+    let filter = Filter {
+        host: query.host.as_deref(),
+        topic: query.topic.as_deref(),
+        before: query.before,
+        done: query.done,
+        limit: query.limit.unwrap_or(100),
+    };
+    let (messages, next) = state.store.lock().unwrap().inbox(&filter)?;
+    Ok(Json(Inbox {
+        messages: messages.into_iter().map(inbox_message).collect(),
+        next,
+    })
+    .into_response())
+}
+
+/// Send what `pick` makes of each event until the client goes away.
+async fn forward(
+    mut socket: WebSocket,
+    mut events: tokio::sync::broadcast::Receiver<Event>,
+    pick: impl Fn(Event) -> Option<Value>,
+) {
+    loop {
+        tokio::select! {
+            event = events.recv() => match event {
+                Ok(event) => {
+                    if let Some(frame) = pick(event)
+                        && socket.send(WsMessage::Text(frame.to_string().into())).await.is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => return,
+            },
+            frame = socket.recv() => if !matches!(frame, Some(Ok(_))) { return },
+        }
+    }
+}
+
+fn mark(state: &Serve, host: &str, id: u64, done: bool) -> Answer<Json<Done>> {
+    if !state.store.lock().unwrap().set_done(host, id, done)? {
+        return Err(Fail::new(
+            code::NOT_FOUND,
+            format!("No message {id} from {host}"),
+        ));
+    }
+    Ok(Json(Done { ok: true }))
+}
+
+#[utoipa::path(post, path = "/v1/inbox/{host}/{id}/done", summary = "Mark a message as done.", tag = "inbox",
+    params(("host" = String, Path, description = "The host it came from"), ("id" = u64, Path, description = "The message's id on that host")),
+    responses((status = 200, description = "Marked done", body = Done),
+              (status = 404, description = "No such message", body = ErrorBody)))]
+async fn mark_done(State(state): App, Path((host, id)): Path<(String, u64)>) -> Answer<Json<Done>> {
+    mark(&state, &host, id, true)
+}
+
+#[utoipa::path(delete, path = "/v1/inbox/{host}/{id}/done", summary = "Mark a message as open again.", tag = "inbox",
+    params(("host" = String, Path, description = "The host it came from"), ("id" = u64, Path, description = "The message's id on that host")),
+    responses((status = 200, description = "No longer marked done", body = Done),
+              (status = 404, description = "No such message", body = ErrorBody)))]
+async fn mark_open(State(state): App, Path((host, id)): Path<(String, u64)>) -> Answer<Json<Done>> {
+    mark(&state, &host, id, false)
+}
+
+// ── Key-value ───────────────────────────────────────────────────────────────
+
+#[utoipa::path(get, path = "/v1/kv/{namespace}", summary = "The keys of a namespace with their values.", tag = "kv",
+    params(("namespace" = String, Path, description = "A namespace")),
+    responses((status = 200, description = "The namespace's keys with their values", body = KvList),
+              (status = 101, description = "As a WebSocket: changes to the namespace")))]
+async fn kv_list(State(state): App, Path(namespace): Path<String>, ws: Ws) -> Answer<Response> {
+    if let Ok(ws) = ws {
+        let events = state.events.subscribe();
+        return Ok(upgrade(&state, ws).on_upgrade(move |socket| {
+            forward(socket, events, move |event| match event {
+                Event::Kv {
+                    namespace: changed,
+                    key,
+                    value: Some(value),
+                    revision,
+                } if changed == namespace => {
+                    Some(json!({"key": key, "value": value, "revision": revision}))
+                }
+                Event::Kv {
+                    namespace: changed,
+                    key,
+                    value: None,
+                    ..
+                } if changed == namespace => Some(json!({"key": key, "removed": true})),
+                _ => None,
+            })
+        }));
+    }
+    let entries = state.store.lock().unwrap().list(&namespace)?;
+    Ok(Json(KvList {
+        entries: entries.into_iter().map(kv_entry).collect(),
+    })
+    .into_response())
+}
+
+fn etag(revision: i64) -> [(header::HeaderName, String); 1] {
+    [(header::ETAG, format!("\"{revision}\""))]
+}
+
+/// `If-Match: REVISION` and `If-None-Match: *` as the condition of a write.
+fn condition(headers: &HeaderMap) -> Answer<When> {
+    let text = |name| {
+        headers
+            .get(name)
+            .and_then(|value: &HeaderValue| value.to_str().ok())
+    };
+    if let Some(value) = text(header::IF_MATCH) {
+        let revision = value
+            .trim()
+            .trim_start_matches("W/")
+            .trim_matches('"')
+            .parse();
+        return revision
+            .map(When::At)
+            .map_err(|_| Fail::new(code::BAD_REQUEST, "If-Match takes a revision"));
+    }
+    match text(header::IF_NONE_MATCH) {
+        Some(value) if value.trim() == "*" => Ok(When::New),
+        Some(_) => Err(Fail::new(code::BAD_REQUEST, "If-None-Match takes only *")),
+        None => Ok(When::Always),
+    }
+}
+
+#[utoipa::path(get, path = "/v1/kv/{namespace}/{key}", summary = "One key's value and revision.", tag = "kv",
+    params(("namespace" = String, Path, description = "A namespace"), ("key" = String, Path, description = "A key")),
+    responses((status = 200, description = "The value and its revision, which is also the ETag", body = KvEntry),
+              (status = 404, description = "No such key", body = ErrorBody)))]
+async fn kv_get(
+    State(state): App,
+    Path((namespace, key)): Path<(String, String)>,
+) -> Answer<Response> {
+    let entry = state.store.lock().unwrap().get(&namespace, &key)?;
+    let entry =
+        entry.ok_or_else(|| Fail::new(code::NOT_FOUND, format!("No {key} in {namespace}")))?;
+    Ok((etag(entry.revision), Json(kv_entry(entry))).into_response())
+}
+
+#[utoipa::path(put, path = "/v1/kv/{namespace}/{key}", summary = "Write a key, optionally only if nobody wrote in between.", tag = "kv",
+    params(("namespace" = String, Path, description = "A namespace"), ("key" = String, Path, description = "A key"),
+           ("If-Match" = Option<String>, Header, description = "Write only if the key is at this revision"),
+           ("If-None-Match" = Option<String>, Header, description = "`*`: write only if the key is new")),
+    request_body(content = Value, description = "The value: any JSON, at most 64 KB"),
+    responses((status = 200, description = "Written", body = KvWritten),
+              (status = 412, description = "Someone else wrote in between", body = ErrorBody),
+              (status = 413, description = "The value is too large", body = ErrorBody)))]
+async fn kv_put(
+    State(state): App,
+    Path((namespace, key)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(value): Json<Value>,
+) -> Answer<Response> {
+    let when = condition(&headers)?;
+    let revision = state
+        .store
+        .lock()
+        .unwrap()
+        .put(&namespace, &key, &value, when)?;
+    let _ = state.events.send(Event::Kv {
+        namespace,
+        key: key.clone(),
+        value: Some(value),
+        revision,
+    });
+    Ok((etag(revision), Json(KvWritten { key, revision })).into_response())
+}
+
+#[utoipa::path(delete, path = "/v1/kv/{namespace}/{key}", summary = "Remove a key.", tag = "kv",
+    params(("namespace" = String, Path, description = "A namespace"), ("key" = String, Path, description = "A key"),
+           ("If-Match" = Option<String>, Header, description = "Remove only if the key is at this revision")),
+    responses((status = 200, description = "Removed", body = Done),
+              (status = 404, description = "No such key", body = ErrorBody),
+              (status = 412, description = "Someone else wrote in between", body = ErrorBody)))]
+async fn kv_delete(
+    State(state): App,
+    Path((namespace, key)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Answer<Json<Done>> {
+    let when = condition(&headers)?;
+    if !state.store.lock().unwrap().remove(&namespace, &key, when)? {
+        return Err(Fail::new(
+            code::NOT_FOUND,
+            format!("No {key} in {namespace}"),
+        ));
+    }
+    let _ = state.events.send(Event::Kv {
+        namespace,
+        key,
+        value: None,
+        revision: 0,
+    });
+    Ok(Json(Done { ok: true }))
+}
+
+// ── Events ──────────────────────────────────────────────────────────────────
+
+/// What a client of `/v1/events` asks to be told, in its first frame.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct Follow {
+    /// Channel messages of these hosts only; of all when empty.
+    hosts: Vec<String>,
+    /// Channel messages whose topic starts with one of these. None without it.
+    topics: Vec<String>,
+    jobs: bool,
+    /// Changes in these namespaces of the key-value store.
+    kv: Vec<String>,
+}
+
+async fn events(State(state): App, ws: WebSocketUpgrade) -> Response {
+    let events = state.events.subscribe();
+    upgrade(&state, ws).on_upgrade(move |mut socket| async move {
+        let follow: Follow = loop {
+            match socket.recv().await {
+                Some(Ok(WsMessage::Text(text))) => match serde_json::from_str(text.as_str()) {
+                    Ok(follow) => break follow,
+                    Err(error) => {
+                        let complaint = json!({"error": {"code": code::BAD_REQUEST.1, "message": error.to_string()}});
+                        let _ = socket.send(WsMessage::Text(complaint.to_string().into())).await;
+                        return;
+                    }
+                },
+                Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => {}
+                _ => return,
+            }
+        };
+        forward(socket, events, move |event| match event {
+            Event::Channel { host, message }
+                if (follow.hosts.is_empty() || follow.hosts.contains(&host))
+                    && follow.topics.iter().any(|prefix| message.topic.starts_with(prefix.as_str())) =>
+            {
+                Some(json!({"source": "channel", "host": host, "message": message}))
+            }
+            Event::Job(job) if follow.jobs => Some(json!({"source": "job", "job": job})),
+            Event::Kv { namespace, key, value, revision } if follow.kv.contains(&namespace) => Some(match value {
+                Some(value) => json!({"source": "kv", "namespace": namespace, "key": key, "value": value, "revision": revision}),
+                None => json!({"source": "kv", "namespace": namespace, "key": key, "removed": true}),
+            }),
+            _ => None,
+        })
+        .await;
+    })
+}
+
+// ── A host's own API, passed through ────────────────────────────────────────
+
+/// Headers that mean something to the host, and those of its answer worth passing back.
+const REQUEST_HEADERS: &[&str] = &[
+    "content-type",
+    "range",
+    "if-match",
+    "if-none-match",
+    "accept",
+];
+const RESPONSE_HEADERS: &[&str] = &[
+    "content-type",
+    "content-range",
+    "accept-ranges",
+    "etag",
+    "content-disposition",
+    "last-modified",
+];
+
+async fn proxy(
+    State(state): App,
+    Path((name, rest)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
+    method: Method,
+    headers: HeaderMap,
+    ws: Ws,
+    body: Bytes,
+) -> Answer<Response> {
+    let remote = remote(&state, &name)?;
+    // The one thing left out: secrets leave the workstation only by its owner's hand.
+    if method == Method::POST && rest.trim_end_matches('/') == "tasks/secrets" {
+        return Err(Fail::new(
+            code::FORBIDDEN,
+            "berth serve does not send secrets; use berth itself",
+        ));
+    }
+    let Some(link) = &remote.link else {
+        let problem = remote.problem.clone().unwrap_or_else(|| "no link".into());
+        return Err(Fail::new(code::UNREACHABLE, problem));
+    };
+    // The path as it came, so what was encoded stays encoded.
+    let target = match query {
+        Some(query) => format!("/v1/{}?{query}", client::encode_path(&rest)),
+        None => format!("/v1/{}", client::encode_path(&rest)),
+    };
+    if let Ok(ws) = ws {
+        let upstream = link.stream(&target).await?;
+        return Ok(upgrade(&state, ws).on_upgrade(move |socket| pump(socket, upstream)));
+    }
+    let passed: Vec<(&str, &str)> = REQUEST_HEADERS
+        .iter()
+        .filter_map(|name| Some((*name, headers.get(*name)?.to_str().ok()?)))
+        .collect();
+    let answer = link.send(method.as_str(), &target, &passed, &body).await?;
+    let mut response = Response::new(axum::body::Body::from(answer.body));
+    *response.status_mut() = StatusCode::from_u16(answer.status).unwrap_or(StatusCode::BAD_GATEWAY);
+    for name in RESPONSE_HEADERS {
+        if let Some(value) = answer.headers.get(*name) {
+            response.headers_mut().insert(*name, value.clone());
+        }
+    }
+    Ok(response)
+}
+
+/// Frames both ways until either side closes.
+async fn pump(socket: WebSocket, upstream: berth_core::link::LinkStream) {
+    use client::Frame;
+    let (mut to_client, mut from_client) = socket.split();
+    let (mut to_host, mut from_host) = upstream.split();
+    loop {
+        tokio::select! {
+            frame = from_client.next() => {
+                let sent = match frame {
+                    Some(Ok(WsMessage::Text(text))) => to_host.send(Frame::Text(text.as_str().into())).await,
+                    Some(Ok(WsMessage::Binary(data))) => to_host.send(Frame::Binary(data)).await,
+                    Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => Ok(()),
+                    _ => break,
+                };
+                if sent.is_err() { break }
+            }
+            frame = from_host.next() => {
+                let sent = match frame {
+                    Some(Ok(Frame::Text(text))) => to_client.send(WsMessage::Text(text.as_str().into())).await,
+                    Some(Ok(Frame::Binary(data))) => to_client.send(WsMessage::Binary(data)).await,
+                    Some(Ok(Frame::Ping(_) | Frame::Pong(_) | Frame::Frame(_))) => Ok(()),
+                    _ => break,
+                };
+                if sent.is_err() { break }
+            }
+        }
+    }
+    let _ = to_host.send(Frame::Close(None)).await;
+    let _ = to_client.send(WsMessage::Close(None)).await;
+}

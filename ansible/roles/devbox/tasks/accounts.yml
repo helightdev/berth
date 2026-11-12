@@ -35,14 +35,11 @@
     password: "{{ devbox_agent_password_hash if devbox_agent_password_hash else '!' }}"
     password_lock: "{{ not (devbox_agent_password_hash | length > 0) }}"
   no_log: true
-- name: Allow noninteractive administration
-  ansible.builtin.copy:
-    dest: /etc/sudoers.d/90-devbox-agent
-    content: "{{ devbox_user }} ALL=(ALL:ALL) {{ 'NOPASSWD: ' if devbox_agent_passwordless_sudo else '' }}ALL\n"
-    owner: root
-    group: root
-    mode: '0440'
-    validate: /usr/sbin/visudo -cf %s
+# `devbox_agent_privileges` is full, limited or none. A profile from before it
+# existed says only whether sudo asks for a password, and keeps that meaning.
+- name: Settle what the agent may do as root
+  ansible.builtin.set_fact:
+    devbox_privileges: "{{ devbox_agent_privileges if devbox_agent_privileges | length > 0 else ('full' if devbox_agent_passwordless_sudo else 'password') }}"
 - name: Read agent identity
   ansible.builtin.getent:
     database: passwd

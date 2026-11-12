@@ -8,7 +8,7 @@ keywords = ["tui", "terminal", "input"]
 repository = "https://github.com/sayanarijit/tui-input"
 readme = "README.md"
 license = "MIT"
-autoexamples = true
+autoexamples = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -27,16 +27,4 @@ ratatui = { version = "0.30.2", optional = true, features = ["crossterm"] }
 
 [dev-dependencies]
 serde_json = "1.0"
-
-[[example]]
-name = "crossterm_input"
-required-features = ["crossterm"]
-
-[[example]]
-name = "termion_input"
-required-features = ["termion"]
-
-[[example]]
-name = "ratatui_crossterm_input"
-required-features = ["ratatui-crossterm"]
 

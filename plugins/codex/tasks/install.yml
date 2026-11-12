@@ -3,3 +3,16 @@
   ansible.builtin.include_tasks: "{{ role_path }}/tasks/npm-agent.yml"
   vars:
     item: {command: codex, package: '@openai/codex', version: '{{ devbox_codex_version }}'}
+# The desktop tools, as an MCP server in Codex's own configuration.
+- name: Register the desktop tools with Codex
+  ansible.builtin.blockinfile:
+    path: "{{ devbox_home }}/.codex/config.toml"
+    create: true
+    owner: "{{ devbox_user }}"
+    group: "{{ devbox_user }}"
+    mode: '0600'
+    marker: '# {mark} BERTH DESKTOP TOOLS'
+    block: |
+      [mcp_servers.desktop]
+      command = "/usr/local/bin/agent-env"
+      args = ["/usr/local/bin/box", "mcp"]

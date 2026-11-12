@@ -1,0 +1,1106 @@
+{
+  "components": {
+    "schemas": {
+      "Done": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      },
+      "ErrorBody": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "ErrorDetail": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "From": {
+        "description": "Who did something, as berthd saw it.",
+        "properties": {
+          "level": {
+            "$ref": "#/components/schemas/Level"
+          },
+          "session": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "uid": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "level",
+          "uid"
+        ],
+        "type": "object"
+      },
+      "HostInfo": {
+        "properties": {
+          "address": {
+            "description": "Its SSH address.",
+            "type": "string"
+          },
+          "api": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "error": {
+            "description": "Why it is not reachable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "reachable": {
+            "type": "boolean"
+          },
+          "version": {
+            "description": "The version of its berthd.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "address",
+          "reachable"
+        ],
+        "type": "object"
+      },
+      "Inbox": {
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/InboxMessage"
+            },
+            "type": "array"
+          },
+          "next": {
+            "description": "Pass as `before` for older ones, when there are more.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "type": "object"
+      },
+      "InboxMessage": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Message"
+          },
+          {
+            "properties": {
+              "done": {
+                "type": "boolean"
+              },
+              "host": {
+                "type": "string"
+              },
+              "seq": {
+                "description": "The order it was taken in; what `before` counts in.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "host",
+              "done",
+              "seq"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "A stored message: the host's message with where it came from."
+      },
+      "JobInfo": {
+        "properties": {
+          "ended": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exit_code": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "host": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "started": {
+            "type": "string"
+          },
+          "what": {
+            "description": "What it does: `apply`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "host",
+          "what",
+          "started"
+        ],
+        "type": "object"
+      },
+      "Keep": {
+        "enum": [
+          "none",
+          "last",
+          "log"
+        ],
+        "type": "string"
+      },
+      "KvEntry": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "updated": {
+            "type": "string"
+          },
+          "value": {}
+        },
+        "required": [
+          "key",
+          "value",
+          "revision",
+          "updated"
+        ],
+        "type": "object"
+      },
+      "KvList": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/KvEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "entries"
+        ],
+        "type": "object"
+      },
+      "KvWritten": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "Level": {
+        "enum": [
+          "host",
+          "agent"
+        ],
+        "type": "string"
+      },
+      "Message": {
+        "properties": {
+          "body": {},
+          "from": {
+            "$ref": "#/components/schemas/From"
+          },
+          "id": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "keep": {
+            "$ref": "#/components/schemas/Keep"
+          },
+          "time": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "topic",
+          "body",
+          "keep",
+          "from",
+          "time"
+        ],
+        "type": "object"
+      },
+      "Output": {
+        "properties": {
+          "data_b64": {
+            "type": "string"
+          },
+          "ended": {
+            "description": "Nothing more will come.",
+            "type": "boolean"
+          },
+          "first_offset": {
+            "description": "Where what is still kept begins, when the start was dropped.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lines": {
+            "description": "The same as text, when read by lines.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "next_line": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "next_offset": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "offset": {
+            "description": "The offset this answer starts at.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "data_b64",
+          "offset",
+          "next_offset",
+          "next_line",
+          "ended"
+        ],
+        "type": "object"
+      },
+      "Version": {
+        "properties": {
+          "api": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mode": {
+            "description": "`system` or `single`.",
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "api"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "description": "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME. Only the `secrets` task is refused.",
+  "hosts": true,
+  "operations": [
+    {
+      "args": [],
+      "group": "general",
+      "http": {
+        "method": "GET",
+        "path": "/v1/version"
+      },
+      "kind": "call",
+      "name": "version",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Version"
+        }
+      },
+      "summary": "The version of berth serve and of its API."
+    },
+    {
+      "args": [],
+      "group": "hosts",
+      "http": {
+        "method": "GET",
+        "path": "/v1/hosts"
+      },
+      "kind": "call",
+      "name": "hosts.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/HostInfo"
+          },
+          "type": "array"
+        }
+      },
+      "summary": "The saved hosts and whether each answers."
+    },
+    {
+      "args": [
+        {
+          "description": "A saved host",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such host",
+          "status": "404"
+        }
+      ],
+      "group": "hosts",
+      "http": {
+        "method": "GET",
+        "path": "/v1/hosts/{name}"
+      },
+      "kind": "call",
+      "name": "hosts.get",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/HostInfo"
+        }
+      },
+      "summary": "One host: its address, and whether it answers."
+    },
+    {
+      "args": [
+        {
+          "description": "A saved host",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such host",
+          "status": "404"
+        }
+      ],
+      "group": "hosts",
+      "http": {
+        "method": "POST",
+        "path": "/v1/hosts/{name}/apply"
+      },
+      "kind": "call",
+      "name": "hosts.apply",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/JobInfo"
+        }
+      },
+      "summary": "Apply the host's profile to it, as a job."
+    },
+    {
+      "args": [
+        {
+          "description": "At most this many (default 100, at most 1,000).",
+          "header": null,
+          "in": "query",
+          "name": "limit",
+          "required": false
+        }
+      ],
+      "group": "jobs",
+      "http": {
+        "method": "GET",
+        "path": "/v1/jobs"
+      },
+      "kind": "call",
+      "name": "jobs.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/JobInfo"
+          },
+          "type": "array"
+        }
+      },
+      "summary": "The jobs, newest first."
+    },
+    {
+      "args": [
+        {
+          "description": "A job's id",
+          "in": "path",
+          "name": "id",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such job",
+          "status": "404"
+        }
+      ],
+      "group": "jobs",
+      "http": {
+        "method": "GET",
+        "path": "/v1/jobs/{id}"
+      },
+      "kind": "call",
+      "name": "jobs.get",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/JobInfo"
+        }
+      },
+      "summary": "One job's state."
+    },
+    {
+      "args": [
+        {
+          "description": "A job's id.",
+          "in": "path",
+          "name": "id",
+          "required": true
+        },
+        {
+          "description": "Byte offset to start from.",
+          "in": "query",
+          "name": "since",
+          "required": false
+        }
+      ],
+      "group": "jobs",
+      "http": {
+        "method": "GET",
+        "path": "/v1/jobs/{id}"
+      },
+      "kind": "stream",
+      "name": "jobs.follow",
+      "portal": true,
+      "receives": [
+        {
+          "binary": true,
+          "description": "The job's output.",
+          "example": null,
+          "name": "output"
+        },
+        {
+          "binary": false,
+          "description": "The job ended. The last frame.",
+          "example": {
+            "exited": {
+              "exit_code": 0
+            }
+          },
+          "name": "exited"
+        }
+      ],
+      "resumable": true,
+      "sends": [],
+      "summary": "A job's output as it is produced."
+    },
+    {
+      "args": [
+        {
+          "description": "A job's id",
+          "in": "path",
+          "name": "id",
+          "required": true
+        },
+        {
+          "description": "By bytes: start at this offset.",
+          "header": null,
+          "in": "query",
+          "name": "since",
+          "required": false
+        },
+        {
+          "description": "By bytes: at most this many (default and most 1 MB).",
+          "header": null,
+          "in": "query",
+          "name": "limit",
+          "required": false
+        },
+        {
+          "description": "By lines: start at this line, from 0.",
+          "header": null,
+          "in": "query",
+          "name": "line",
+          "required": false
+        },
+        {
+          "description": "By lines: this many (default 100).",
+          "header": null,
+          "in": "query",
+          "name": "count",
+          "required": false
+        },
+        {
+          "description": "The last lines.",
+          "header": null,
+          "in": "query",
+          "name": "tail",
+          "required": false
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such job",
+          "status": "404"
+        }
+      ],
+      "group": "jobs",
+      "http": {
+        "method": "GET",
+        "path": "/v1/jobs/{id}/output"
+      },
+      "kind": "call",
+      "name": "jobs.output",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Output"
+        }
+      },
+      "summary": "What a job wrote, by bytes or by lines."
+    },
+    {
+      "args": [
+        {
+          "description": "Only this host.",
+          "header": null,
+          "in": "query",
+          "name": "host",
+          "required": false
+        },
+        {
+          "description": "Only topics starting with this.",
+          "header": null,
+          "in": "query",
+          "name": "topic",
+          "required": false
+        },
+        {
+          "description": "Only messages taken in before this `seq`.",
+          "header": null,
+          "in": "query",
+          "name": "before",
+          "required": false
+        },
+        {
+          "description": "Only done ones, or only those that are not.",
+          "header": null,
+          "in": "query",
+          "name": "done",
+          "required": false
+        },
+        {
+          "description": "At most this many (default 100, at most 1,000).",
+          "header": null,
+          "in": "query",
+          "name": "limit",
+          "required": false
+        }
+      ],
+      "group": "inbox",
+      "http": {
+        "method": "GET",
+        "path": "/v1/inbox"
+      },
+      "kind": "call",
+      "name": "inbox.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Inbox"
+        }
+      },
+      "summary": "Messages taken in from the hosts' channels."
+    },
+    {
+      "args": [
+        {
+          "description": "Only this host.",
+          "in": "query",
+          "name": "host",
+          "required": false
+        },
+        {
+          "description": "Only topics starting with this.",
+          "in": "query",
+          "name": "topic",
+          "required": false
+        }
+      ],
+      "group": "inbox",
+      "http": {
+        "method": "GET",
+        "path": "/v1/inbox"
+      },
+      "kind": "stream",
+      "name": "inbox.follow",
+      "portal": true,
+      "receives": [
+        {
+          "binary": false,
+          "description": "A stored message with its host.",
+          "example": {
+            "body": {},
+            "done": false,
+            "from": {
+              "level": "agent",
+              "uid": 1001
+            },
+            "host": "ovh",
+            "id": 4812,
+            "keep": "log",
+            "time": "2026-11-12T10:00:00Z",
+            "topic": "myplugin/progress"
+          },
+          "name": "message"
+        }
+      ],
+      "resumable": false,
+      "sends": [],
+      "summary": "Messages as they are taken in from the hosts."
+    },
+    {
+      "args": [
+        {
+          "description": "The host it came from",
+          "in": "path",
+          "name": "host",
+          "required": true
+        },
+        {
+          "description": "The message's id on that host",
+          "in": "path",
+          "name": "id",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such message",
+          "status": "404"
+        }
+      ],
+      "group": "inbox",
+      "http": {
+        "method": "POST",
+        "path": "/v1/inbox/{host}/{id}/done"
+      },
+      "kind": "call",
+      "name": "inbox.done",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "summary": "Mark a message as done."
+    },
+    {
+      "args": [
+        {
+          "description": "The host it came from",
+          "in": "path",
+          "name": "host",
+          "required": true
+        },
+        {
+          "description": "The message's id on that host",
+          "in": "path",
+          "name": "id",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such message",
+          "status": "404"
+        }
+      ],
+      "group": "inbox",
+      "http": {
+        "method": "DELETE",
+        "path": "/v1/inbox/{host}/{id}/done"
+      },
+      "kind": "call",
+      "name": "inbox.reopen",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "summary": "Mark a message as open again."
+    },
+    {
+      "args": [
+        {
+          "description": "A namespace",
+          "in": "path",
+          "name": "namespace",
+          "required": true
+        }
+      ],
+      "group": "kv",
+      "http": {
+        "method": "GET",
+        "path": "/v1/kv/{namespace}"
+      },
+      "kind": "call",
+      "name": "kv.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/KvList"
+        }
+      },
+      "summary": "The keys of a namespace with their values."
+    },
+    {
+      "args": [
+        {
+          "description": "A namespace.",
+          "in": "path",
+          "name": "namespace",
+          "required": true
+        }
+      ],
+      "group": "kv",
+      "http": {
+        "method": "GET",
+        "path": "/v1/kv/{namespace}"
+      },
+      "kind": "stream",
+      "name": "kv.follow",
+      "portal": true,
+      "receives": [
+        {
+          "binary": false,
+          "description": "A key was written.",
+          "example": {
+            "key": "layout",
+            "revision": 4,
+            "value": {
+              "columns": 3
+            }
+          },
+          "name": "set"
+        },
+        {
+          "binary": false,
+          "description": "A key was removed.",
+          "example": {
+            "key": "layout",
+            "removed": true
+          },
+          "name": "removed"
+        }
+      ],
+      "resumable": false,
+      "sends": [],
+      "summary": "Changes to a namespace of the key-value store."
+    },
+    {
+      "args": [
+        {
+          "description": "A namespace",
+          "in": "path",
+          "name": "namespace",
+          "required": true
+        },
+        {
+          "description": "A key",
+          "in": "path",
+          "name": "key",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such key",
+          "status": "404"
+        }
+      ],
+      "group": "kv",
+      "http": {
+        "method": "GET",
+        "path": "/v1/kv/{namespace}/{key}"
+      },
+      "kind": "call",
+      "name": "kv.get",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/KvEntry"
+        }
+      },
+      "summary": "One key's value and revision."
+    },
+    {
+      "args": [
+        {
+          "description": "A namespace",
+          "in": "path",
+          "name": "namespace",
+          "required": true
+        },
+        {
+          "description": "A key",
+          "in": "path",
+          "name": "key",
+          "required": true
+        },
+        {
+          "description": "Write only if the key is at this revision",
+          "header": "If-Match",
+          "in": "header",
+          "name": "if_match",
+          "required": false
+        },
+        {
+          "description": "`*`: write only if the key is new",
+          "header": "If-None-Match",
+          "in": "header",
+          "name": "if_none_match",
+          "required": false
+        }
+      ],
+      "data": {
+        "description": "The value: any JSON, at most 64 KB",
+        "schema": {}
+      },
+      "errors": [
+        {
+          "description": "Someone else wrote in between",
+          "status": "412"
+        },
+        {
+          "description": "The value is too large",
+          "status": "413"
+        }
+      ],
+      "group": "kv",
+      "http": {
+        "method": "PUT",
+        "path": "/v1/kv/{namespace}/{key}"
+      },
+      "kind": "call",
+      "name": "kv.set",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/KvWritten"
+        }
+      },
+      "summary": "Write a key, optionally only if nobody wrote in between."
+    },
+    {
+      "args": [
+        {
+          "description": "A namespace",
+          "in": "path",
+          "name": "namespace",
+          "required": true
+        },
+        {
+          "description": "A key",
+          "in": "path",
+          "name": "key",
+          "required": true
+        },
+        {
+          "description": "Remove only if the key is at this revision",
+          "header": "If-Match",
+          "in": "header",
+          "name": "if_match",
+          "required": false
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such key",
+          "status": "404"
+        },
+        {
+          "description": "Someone else wrote in between",
+          "status": "412"
+        }
+      ],
+      "group": "kv",
+      "http": {
+        "method": "DELETE",
+        "path": "/v1/kv/{namespace}/{key}"
+      },
+      "kind": "call",
+      "name": "kv.delete",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "summary": "Remove a key."
+    },
+    {
+      "args": [],
+      "group": "events",
+      "http": {
+        "method": "GET",
+        "path": "/v1/events"
+      },
+      "kind": "stream",
+      "name": "events.follow",
+      "portal": true,
+      "receives": [
+        {
+          "binary": false,
+          "description": "A message from a host's channel.",
+          "example": {
+            "host": "ovh",
+            "message": {
+              "body": {},
+              "from": {
+                "level": "host",
+                "uid": 0
+              },
+              "id": 1,
+              "keep": "log",
+              "time": "2026-11-12T10:00:00Z",
+              "topic": "a/b"
+            },
+            "source": "channel"
+          },
+          "name": "channel"
+        },
+        {
+          "binary": false,
+          "description": "A job started or ended.",
+          "example": {
+            "job": {
+              "host": "ovh",
+              "id": "j1",
+              "started": "2026-11-12T10:00:00Z",
+              "what": "apply"
+            },
+            "source": "job"
+          },
+          "name": "job"
+        },
+        {
+          "binary": false,
+          "description": "A key changed.",
+          "example": {
+            "key": "layout",
+            "namespace": "ui",
+            "revision": 4,
+            "source": "kv",
+            "value": {}
+          },
+          "name": "kv"
+        }
+      ],
+      "resumable": false,
+      "sends": [
+        {
+          "binary": false,
+          "description": "What to follow. Sent once, first.",
+          "example": {
+            "hosts": [
+              "ovh"
+            ],
+            "jobs": true,
+            "kv": [
+              "ui"
+            ],
+            "topics": [
+              "myplugin/"
+            ]
+          },
+          "name": "follow"
+        }
+      ],
+      "summary": "Channel messages of chosen hosts, jobs and key-value changes together. The first frame sent names what to follow; each frame received says where it came from."
+    }
+  ],
+  "portal": {
+    "bytes": 8388608,
+    "path": "/v1/portal"
+  },
+  "title": "berth serve",
+  "version": "0.2.0"
+}

@@ -1,0 +1,76 @@
+---
+title: Ansible directly
+description: Run the role on this machine or against your own inventory, from berth or without it.
+icon: Terminal
+---
+
+berth's install methods are wrappers around one Ansible role, `ansible/roles/devbox` in the provisioning source. It can also run on its own.
+
+<Callout type="warn" title="Dedicated machines only">
+  Ansible does not partition anything, but the role installs services, changes the firewall policy and grants host-wide sudo. Run it only on a machine set aside for agents, not on your everyday computer.
+</Callout>
+
+## From berth
+
+**This machine or an inventory** on the Install tab runs the role with the host's profile. With **Ansible inventory** blank it provisions the machine berth runs on, and the tab says so. With a path, it runs against the hosts in that inventory.
+
+## Without berth
+
+Install Ansible into a virtualenv in a source checkout first:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+```
+
+<Tabs items={['This machine', 'Remote inventory']}>
+<Tab value="This machine">
+
+On the target itself:
+
+```bash
+.venv/bin/ansible-playbook -i localhost, -c local ansible/site.yml \
+  --become --ask-become-pass -e devbox_profile=qemu
+```
+
+</Tab>
+<Tab value="Remote inventory">
+
+Put the inventory and its variables in a private file:
+
+```yaml title="secrets/hosts.yml"
+all:
+  hosts:
+    agent-cloud:
+      ansible_host: 203.0.113.10
+      ansible_user: ops
+      devbox_profile: cloud
+      devbox_bootstrap_ssh_cidr: 198.51.100.7/32
+```
+
+```bash
+.venv/bin/ansible-playbook -i secrets/hosts.yml ansible/site.yml --become
+```
+
+Remote runs also leave the current SSH source address open in the firewall when it is known.
+
+</Tab>
+</Tabs>
+
+## Profiles
+
+`devbox_profile` selects defaults for the kind of machine:
+
+| Profile | For |
+| --- | --- |
+| `laptop` | Physical machines, with the LightDM login and power defaults |
+| `cloud` | Cloud instances. Set a bootstrap SSH CIDR to limit SSH |
+| `qemu` | VMs and tests |
+| `container` | The container image |
+
+Cloud networking and disks are left as they are in every profile. The agent's username and home are configurable, and its UID is discovered rather than assumed.
+
+## Settings
+
+Every `devbox_` setting has its default in [`ansible/roles/devbox/defaults/main.yml`](https://github.com/helightdev/berth/blob/main/ansible/roles/devbox/defaults/main.yml). In a berth profile they go under `ansible_vars`; with plain Ansible, in the inventory or with `-e`. Plugins are chosen with `devbox_plugin_features`, and plugins outside the source's `plugins/` folder are found through `devbox_plugin_dirs` (`{"ID": "/path"}`).
+
+External programs are installed as the agent. Versions are pinned where upstream allows it. See [Tools](/docs/reference/tools#versions) and [Validation](/docs/reference/validation).

@@ -1,0 +1,66 @@
+---
+title: Validation and sources
+description: What the automated checks cover, how to check a build by hand, and the upstream sources the role relies on.
+icon: ShieldCheck
+---
+
+## Checked automatically
+
+CI runs these on every push, without network access to hosts:
+
+| Check | Covers |
+| --- | --- |
+| `cargo test --locked` | The terminal UI's fields, profile edits, checks before Run, SSH discovery and rendered screens. The APIs of berthd and berth serve against the committed documents. Links to a local berthd |
+| `python3 -m unittest discover -s tests` | Disk selection and its refusals, profile validation, release packaging, seed generation and GRUB patching. With Ansible installed, also the rendered templates for every profile |
+| `bash -n` | The install script, bootstrap, container, role and plugin scripts |
+| `ansible-playbook --syntax-check` | The role |
+| `cargo fmt`, `cargo clippy` | Formatting and lints |
+| `vale` | The prose of the README, these docs and the plugin guides |
+
+See [Building and releasing](/docs/reference/building) for running them locally.
+
+## Checking a build by hand
+
+<Accordions>
+<Accordion title="Container">
+
+`docker compose -f container/compose.yml build` runs the whole role with every feature on, `up -d` serves the desktop through noVNC and T3 on loopback ports, and `exec -T desktop /usr/local/bin/devbox-smoke` runs the smoke test. Under Docker's default seccomp profile Chromium cannot create its sandbox, and the smoke test reports the sandboxed browser launch as skipped.
+
+</Accordion>
+<Accordion title="Full host in QEMU">
+
+`bin/qemu.py cloud` boots the Ubuntu cloud image. Apply the role over SSH with the `qemu` profile, then run `berth run HOST smoke`. A second apply should not change anything, and after a reboot the desktop, noVNC, T3 and Docker should be up without anyone logging in. See [Testing in QEMU](/docs/deploy/qemu#what-to-check).
+
+</Accordion>
+<Accordion title="Unattended ISO in QEMU">
+
+`bin/qemu.py install` boots the remastered ISO with disk mode `auto`. It selects the virtual disk, installs without input and powers off. Test the selected disk policy this way before booting a physical machine.
+
+</Accordion>
+<Accordion title="SSH hardening">
+
+After an apply, `sshd -T` reports password, keyboard-interactive and root logins off, and key login still works.
+
+</Accordion>
+</Accordions>
+
+Secure Boot with the remastered image is not covered by any of these checks.
+
+Package availability and external installers change over time. If a dependency fails, provisioning records `failed`, retries from its timer, and never writes the success marker.
+
+## Primary references
+
+- [Ubuntu autoinstall](https://canonical-subiquity.readthedocs-hosted.com/en/latest/reference/autoinstall-reference.html) and [its validation](https://canonical-subiquity.readthedocs-hosted.com/en/latest/howto/autoinstall-validation.html)
+- [cloud-init NoCloud datasource](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html)
+- [T3 v0.1.8 release](https://github.com/pingdotgg/t3code/releases/tag/v0.1.8), Linux x64 archive SHA-256 `b9c49dc00c23fbbc5961bdaff2d88e556d96c8dbd638c4501e2937c70650a9e5`
+- [T3 installer at the release commit](https://github.com/pingdotgg/t3code/blob/bf469bb19669671d0df2efda74ed73867a7137c0/scripts/install.sh) and [its background services](https://github.com/pingdotgg/t3code/blob/bf469bb19669671d0df2efda74ed73867a7137c0/docs/user/background-service.md)
+- [Claude Code installation](https://code.claude.com/docs/en/setup) and [v2.1.322](https://github.com/anthropics/claude-code/releases/tag/v2.1.322)
+- [Playwright for Python v1.65.0](https://github.com/microsoft/playwright-python/releases/tag/v1.65.0)
+- [ansible-core 2.21.6](https://pypi.org/project/ansible-core/2.21.6/) and [Ansible's Python support matrix](https://docs.ansible.com/projects/ansible/latest/reference_appendices/release_and_maintenance.html)
+- [Mozilla's native Firefox packages](https://support.mozilla.org/en-US/kb/install-firefox-linux)
+- [TigerVNC Xvnc](https://tigervnc.org/doc/Xvnc.html)
+- [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve)
+- [noVNC server requirements](https://github.com/novnc/noVNC#server-requirements)
+- The references on [Tools](/docs/reference/tools#references) and [Graphics](/docs/reference/graphics#references)
+
+Docker comes from Ubuntu's packages rather than Docker's own repository. The cloud-init document is generated directly rather than from templates, so the seed builder has no dependencies.
