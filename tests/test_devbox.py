@@ -273,6 +273,20 @@ class RenderTests(unittest.TestCase):
             variables=builder.deployment(builder.checked_config(path,'cloud'),'0'*64)['ansible_vars']
             self.assertEqual(variables['devbox_tailscale_auth_key'],'tskey-auth-old')
             self.assertNotIn('devbox_tailscale_login_server',variables)
+    def test_release_carries_plugins_berth_installed(self):
+        # berth plugins add puts a plugin in node_modules of berth's plugins folder.
+        with tempfile.TemporaryDirectory() as temp, patch.object(builder,'BUILD',Path(temp)/'build'):
+            plugin=Path(temp)/'plugins/node_modules/berth-plugin-demo'
+            (plugin/'tasks').mkdir(parents=True); (plugin/'node_modules/dep').mkdir(parents=True)
+            (plugin/'package.json').write_text('{}'); (plugin/'tasks/install.yml').write_text('---\n')
+            (plugin/'node_modules/dep/index.js').write_text('')
+            with patch.dict(os.environ,{'BERTH_PLUGINS':json.dumps({'demo':str(plugin)})}):
+                import tarfile
+                with tarfile.open(builder.release()) as archive:
+                    names=archive.getnames()
+            self.assertIn('plugins/demo/package.json',names)
+            self.assertIn('plugins/demo/tasks/install.yml',names)
+            self.assertFalse(any(name.startswith('plugins/demo/node_modules') for name in names))
     def test_rendered_seeds_roundtrip_and_are_private(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(builder,'BUILD',Path(temp)/'build'):
             path=Path(temp)/'host.json'; path.write_text(json.dumps(config()))

@@ -225,7 +225,8 @@ def release():
         for entry in stale:
             del entries[entry]
         for p in directory.rglob('*'):
-            if p.is_file() and not {'node_modules', '__pycache__'} & set(p.parts):
+            # Only the plugin's own dependencies: berth installs the plugin itself in a node_modules.
+            if p.is_file() and not {'node_modules', '__pycache__'} & set(p.relative_to(directory).parts):
                 entries[str(Path('plugins') / name / p.relative_to(directory))] = p
     with target.open('wb') as stream, \
             gzip.GzipFile(fileobj=stream, mode='wb', mtime=0, filename='') as gz, \
