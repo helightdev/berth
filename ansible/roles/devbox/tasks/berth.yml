@@ -5,7 +5,7 @@
 - name: Require the host programs in the role's files
   ansible.builtin.assert:
     that: query('ansible.builtin.fileglob', role_path ~ '/files/bin/berthd', role_path ~ '/files/bin/box') | length == 2
-    fail_msg: berthd and box are missing from the role's files. Building berth puts them there: cargo build -p berth.
+    fail_msg: "berthd and box are missing from the role's files. Building berth puts them there: cargo build -p berth."
 - name: Install berthd and box
   ansible.builtin.copy:
     src: "bin/{{ item }}"
