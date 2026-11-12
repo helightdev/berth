@@ -39,6 +39,8 @@ const groups = {
   channel: ['Channel', 'Messages between programs on the host and berth.'],
   services: ['Services', 'Programs of plugins that answer calls.'],
   hosts: ['Hosts', 'The hosts berth serve knows, and applying their profiles.'],
+  provisioners: ['Provisioners', 'What the plugins can create machines with, and the machines they have.'],
+  instances: ['Machines', 'The machine berth created for a host: creating, starting, stopping and deleting it.'],
   jobs: ['Jobs', 'Long-running work of berth serve, such as an apply.'],
   inbox: ['Inbox', "Messages taken in from the hosts' channels."],
   kv: ['Key-value store', 'Small JSON values with revisions, for user interfaces.'],

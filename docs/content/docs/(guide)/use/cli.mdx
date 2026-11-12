@@ -33,13 +33,26 @@ With a [berth server](/docs/use/server) set, by `--server` or the `server` setti
 | `berth seed HOST` | Render the cloud-init seed |
 | `berth apply HOST` | Apply the host's profile to it over SSH. With a [berth server](/docs/use/server) set, as a job there |
 | `berth apply --behind [--update] [--reboot [--force]]` | Apply every host that is behind, one at a time ([Updates](/docs/use/updates#bringing-hosts-up-to-date)). `--all` takes the current ones too |
-| `berth remove HOST` | Forget a host. The machine itself is left as it is |
+| `berth remove HOST` | Forget a host. The machine itself is left as it is, and a machine berth created for the host must be deleted first |
 | `berth key` | Print the SSH public key of this berth, which the operator of a host it sets up [takes](/docs/reference/profile#the-key-of-berth-itself) |
 | `berth login`, `berth logout` | Log in to a [berth server](/docs/use/server#with-a-login-in-place-of-the-token) through its OAuth 2.0 issuer, and forget that login |
 | `berth publish REGISTRY[/REPOSITORY] [HOST [--login [REGISTRY]]]` | Upload the release archive and use it as HOST's release address ([Registries](/docs/use/registries#publishing-the-release-archive)) |
 | `berth image push REGISTRY[/REPOSITORY] [TAG]` | Push the container image |
 
 Both build commands refuse to start while the profile has problems, and list them.
+
+## Machines
+
+| Command | Does |
+| --- | --- |
+| `berth provisioners` | The provisioners of the plugins, and what each asks for |
+| `berth provisioners PLUGIN/ID [NAME=VALUE…]` | The machines that provisioner has and berth created, when it can list them |
+| `berth provision HOST PLUGIN/ID [NAME=VALUE…] [--yes]` | Create the machine for a saved host and set it up |
+| `berth instance HOST` | The machine berth created for the host, and its state |
+| `berth instance HOST start\|stop` | Start or stop it, when the provisioner can |
+| `berth instance HOST destroy [--yes]` | Delete the machine. The profile stays |
+
+With a [berth server](/docs/use/server) set, the server's provisioners and plugins are used and the role `admin` is needed. See [Machine from a provisioner](/docs/deploy/provisioners).
 
 ## Tasks
 
