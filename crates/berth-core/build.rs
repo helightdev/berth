@@ -5,6 +5,10 @@
 //! programs that need nothing from the system they land on, and put among the
 //! role's files. That makes `cargo build -p berth` the whole build. It needs
 //! the musl target once: `rustup target add x86_64-unknown-linux-musl`.
+//!
+//! A release build of berth carries release builds of them. Any other build
+//! carries quicker ones from the `host-dev` profile, which do for development
+//! and the tests.
 
 use std::{env, fs, path::Path, process::Command};
 
@@ -31,12 +35,17 @@ fn host_programs(root: &Path) {
     for entry in ["host", "crates/berth-api", "crates/berth-pty", "Cargo.lock"] {
         println!("cargo:rerun-if-changed=../../{entry}");
     }
+    let profile = match env::var("PROFILE").as_deref() {
+        Ok("release") => "release",
+        _ => "host-dev",
+    };
     // Its own target directory: the outer build holds the lock on the usual one.
     let target = root.join("target/host");
     let mut build = cargo();
     build
         .current_dir(root)
-        .args(["build", "--release", "--locked", "--target", HOST_TARGET])
+        .args(["build", "--locked", "--target", HOST_TARGET])
+        .args(["--profile", profile])
         .args(["-p", "berthd", "-p", "box", "--target-dir"])
         .arg(&target);
     // Flags and wrappers of the outer build (clippy's among them) are for another target.
@@ -60,7 +69,7 @@ fn host_programs(root: &Path) {
     let bin = root.join("ansible/roles/devbox/files/bin");
     fs::create_dir_all(&bin).expect("the role's bin directory");
     for name in ["berthd", "box"] {
-        let built = target.join(HOST_TARGET).join("release").join(name);
+        let built = target.join(HOST_TARGET).join(profile).join(name);
         let placed = bin.join(name);
         // Left alone when unchanged, so the archive is not packed again for nothing.
         if fs::read(&built).ok() != fs::read(&placed).ok() {

@@ -2,6 +2,10 @@
 //! browser: berth-web for wasm32, and the JavaScript that loads it, into
 //! OUT_DIR for the program to carry. It needs the target once:
 //! `rustup target add wasm32-unknown-unknown`.
+//!
+//! A release build of berth carries the page of the `web` profile. Any other
+//! build carries that of `web-dev`, which is built in seconds rather than
+//! linked whole again after each change. BERTH_WEB_PROFILE names another.
 
 #[cfg(not(feature = "web"))]
 fn main() {}
@@ -53,12 +57,21 @@ mod page {
         ] {
             println!("cargo:rerun-if-changed=../{entry}");
         }
+        println!("cargo:rerun-if-env-changed=BERTH_WEB_PROFILE");
+        let profile = env::var("BERTH_WEB_PROFILE").unwrap_or_else(|_| {
+            match env::var("PROFILE").as_deref() {
+                Ok("release") => "web",
+                _ => "web-dev",
+            }
+            .into()
+        });
         // Its own target directory: the outer build holds the lock on the usual one.
         let target = root.join("target/web");
         let mut build = cargo();
         build
             .current_dir(root)
-            .args(["build", "--profile", "web", "--locked", "--target", TARGET])
+            .args(["build", "--locked", "--target", TARGET])
+            .args(["--profile", &profile])
             .args(["-p", "berth-web", "--target-dir"])
             .arg(&target);
         // Flags and wrappers of the outer build (clippy's among them) are for another target.
@@ -77,7 +90,12 @@ mod page {
             status.success(),
             "building the page failed; the target is added with: rustup target add {TARGET}"
         );
-        let wasm = target.join(TARGET).join("web/berth-web.wasm");
+        // Cargo puts what the dev and test profiles build in debug/.
+        let folder = match profile.as_str() {
+            "dev" | "test" => "debug",
+            other => other,
+        };
+        let wasm = target.join(TARGET).join(folder).join("berth-web.wasm");
         let page = Path::new(&out).join("web");
         let _ = fs::remove_dir_all(&page);
         wasm_bindgen_cli_support::Bindgen::new()

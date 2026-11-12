@@ -16,7 +16,12 @@ const built = () => files.every((file) => existsSync(join(dist, file)));
 
 if (!built() && process.env.BERTH_WEB_BUILD !== '0') {
   try {
-    execFileSync('cargo', ['build', '--locked', '-p', 'berth', '--features', 'web'], { cwd: root, stdio: 'inherit' });
+    // The page of a release, though berth itself is a development build.
+    execFileSync('cargo', ['build', '--locked', '-p', 'berth', '--features', 'web'], {
+      cwd: root,
+      stdio: 'inherit',
+      env: { ...process.env, BERTH_WEB_PROFILE: 'web' },
+    });
   } catch {
     // No Rust here, or no wasm target: the site is built without the page.
   }

@@ -41,3 +41,19 @@ inherits = "release"
 opt-level = "s"
 lto = "fat"
 codegen-units = 1
+
+# What a development or test build of berth carries. berthd and box are built
+# incrementally, and small, as berth packs them. The page keeps its
+# optimisation without the whole-program link that takes most of its build
+# time after a change.
+[profile.host-dev]
+inherits = "dev"
+opt-level = "s"
+debug = false
+strip = true
+
+[profile.web-dev]
+inherits = "web"
+lto = false
+codegen-units = 16
+incremental = true
