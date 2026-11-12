@@ -4,6 +4,19 @@
     url: https://claude.ai/install.sh
     dest: /opt/devbox-tools/claude-install.sh
     mode: '0644'
+# The selected version is the least one: a newer one from Update stays, even
+# after claude update has cleaned up the older version's files.
+- name: Read the Claude Code version in use
+  ansible.builtin.command:
+    argv: ["{{ devbox_home }}/.local/bin/claude", --version]
+    chdir: "{{ devbox_home }}"
+  become_user: "{{ devbox_user }}"
+  environment:
+    HOME: "{{ devbox_home }}"
+    DISABLE_AUTOUPDATER: '1'
+  register: devbox_claude_current
+  changed_when: false
+  failed_when: false
 - name: Install selected Claude version without a root-owned profile
   ansible.builtin.command:
     argv: [/bin/bash, /opt/devbox-tools/claude-install.sh, "{{ devbox_claude_version }}"]
@@ -12,6 +25,7 @@
   environment:
     HOME: "{{ devbox_home }}"
     DISABLE_AUTOUPDATER: '1'
+  when: devbox_claude_current.rc != 0 or (devbox_claude_current.stdout | regex_search('[0-9]+[.][0-9]+[.][0-9]+') | default('0', true)) is version(devbox_claude_version, '<')
 # The desktop tools, for every project of the agent. Recorded in ~/.claude.json;
 # the command is only started when Claude Code uses it.
 - name: See whether Claude Code knows the desktop tools

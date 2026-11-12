@@ -13,6 +13,7 @@ done
 echo "Graphics    $(as_agent glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p' || true)"
 echo "Disk        $(df -h --output=avail,pcent / | tail -1 | xargs) free/used on /"
 [[ -f /var/run/reboot-required ]] && echo 'Reboot      required by installed updates'
-systemctl --failed --no-legend | sed 's/^/Failed      /'
+# Without systemd, as in a container, there are no failed units to list.
+{ systemctl --failed --no-legend 2>/dev/null || true; } | sed 's/^/Failed      /'
 echo
 access

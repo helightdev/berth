@@ -27,4 +27,5 @@
     PATH: "{{ devbox_tool_path }}"
     UNITY_CLI_VERSION: "{{ devbox_unity_cli_version | default('1.0.0-beta.17') }}"
     UNITY_NON_INTERACTIVE: '1'
-  when: devbox_unity_cli_installed.stdout | default('') | trim != devbox_unity_cli_version | default('1.0.0-beta.17')
+  # The selected version is the least one: a newer one from Update stays.
+  when: not (devbox_unity_cli_installed.stdout | default('') | trim is match('^[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?$') and devbox_unity_cli_installed.stdout | trim is version(devbox_unity_cli_version | default('1.0.0-beta.17'), '>=', version_type='semver'))

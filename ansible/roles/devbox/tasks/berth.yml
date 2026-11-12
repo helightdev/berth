@@ -144,11 +144,23 @@
         path: "{{ item }}"
         state: absent
       loop: "{{ devbox_service_found.files | map(attribute='path') | reject('in', devbox_service_units | map('regex_replace', '^', '/etc/systemd/system/') | list) | list }}"
+    # Only a service whose script or unit changed restarts; the others keep
+    # running as they are.
     - name: Start the plugin services
       ansible.builtin.systemd_service:
         name: "{{ item }}"
         daemon_reload: true
         enabled: true
-        state: "{{ 'restarted' if devbox_service_scripts.changed or devbox_service_unit_files.changed else 'started' }}"
+        state: "{{ 'restarted' if item in devbox_services_changed else 'started' }}"
       loop: "{{ devbox_service_units }}"
       when: devbox_start_services
+      vars:
+        devbox_services_changed: "{{ (devbox_service_scripts.results + devbox_service_unit_files.results) | selectattr('changed') | map(attribute='item.name') | map('replace', '/', '-') | map('regex_replace', '^(.*)$', 'berth-svc-\\1.service') | list }}"
+    - name: Say which plugin services were restarted
+      ansible.builtin.debug:
+        msg: "Restarted {{ devbox_services_restarted | join(', ') }}, whose definition changed"
+      when:
+        - devbox_start_services
+        - devbox_services_restarted | length > 0
+      vars:
+        devbox_services_restarted: "{{ (devbox_service_scripts.results + devbox_service_unit_files.results) | selectattr('changed') | map(attribute='item.name') | unique | list }}"
