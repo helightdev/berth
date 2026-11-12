@@ -603,14 +603,26 @@ pub fn run(paths: &Paths, name: &str, task: &str, args: &[&str]) -> Result<()> {
         let (rows, cols) = terminal_size();
         (body["rows"], body["cols"]) = (json!(rows), json!(cols));
     }
-    // Secrets are built here and travel on the task's standard input.
-    if found.input.as_deref() == Some("secrets") {
+    // Secrets are built here and travel on the task's standard input. A
+    // server builds them from its own, and starts the task itself.
+    let served = match found.input.as_deref() {
+        Some("secrets") => reach.host.served(),
+        _ => None,
+    };
+    let started = match &served {
+        Some(server) => Some(server.call("hosts.secrets", json!({"name": name}), None)?),
+        None => None,
+    };
+    if found.input.as_deref() == Some("secrets") && served.is_none() {
         let payload = registry::Store::new(paths).host_payload(&reach.host.config)?;
         body["input_b64"] = json!(api::b64(format!("{payload}\n").as_bytes()));
     }
     let code = reach.wait(async {
         let path = format!("/v1/tasks/{}", encode(task));
-        let session: api::Session = reach.link.post(&path, &body).await?;
+        let session: api::Session = match started {
+            Some(session) => serde_json::from_value(session)?,
+            None => reach.link.post(&path, &body).await?,
+        };
         let ended = match session.kind {
             api::SessionKind::Terminal => follow_terminal(&reach.link, &session.id).await?,
             api::SessionKind::Process => follow_process(&reach.link, &session.id, 0, false).await?,
@@ -680,6 +692,151 @@ pub fn call(
         .wait(reach.link.post(&path, &body))
         .map_err(|error| explain(error, name))?;
     println!("{}", serde_json::to_string_pretty(&answer)?);
+    Ok(())
+}
+
+/// `berth apply HOST`: apply the host's profile to it. On a berth server that
+/// is a job of the server, whose output is shown as it comes.
+pub fn apply(paths: &Paths, name: &str) -> Result<()> {
+    let host = Host::load(paths, name)?;
+    let Some(server) = host.served() else {
+        let password = host.sudo_password()?;
+        let mut prepared = berth_core::apply::prepare(paths, &host, password.as_deref())?;
+        let status = prepared.command.status()?;
+        std::process::exit(status.code().unwrap_or(1));
+    };
+    // The server has no terminal to ask on: a password it needs is asked for here.
+    let with = host
+        .sudo_password()?
+        .map(|password| json!({"sudo_password": password}));
+    let code = link::runtime()?.block_on(async {
+        let portal = server.portal().await?;
+        let job = portal
+            .call("hosts.apply", None, json!({"name": name}), with)
+            .await?;
+        let id = job["id"].as_str().unwrap_or("").to_owned();
+        eprintln!("Job {id} on the berth server at {}", server.url);
+        let mut output = portal.open("jobs.follow", None, json!({"id": id})).await?;
+        let mut code = None;
+        while let Some(piece) = output.recv().await {
+            match piece? {
+                api::portal::Piece::Binary(data) => {
+                    let mut out = std::io::stdout();
+                    out.write_all(&data)?;
+                    out.flush()?;
+                }
+                api::portal::Piece::Text(said) => {
+                    if let Some(exited) = said.get("exited") {
+                        code = Some(exited["exit_code"].as_i64().unwrap_or(1) as i32);
+                    }
+                }
+            }
+        }
+        Ok::<i32, Box<dyn std::error::Error>>(code.unwrap_or(1))
+    })?;
+    std::process::exit(code);
+}
+
+/// `berth seed HOST` with a berth server: the server renders the seed, and it
+/// is written here.
+pub fn seed(paths: &Paths, name: &str) -> Result<()> {
+    let host = Host::load(paths, name)?;
+    let server = host.served().ok_or("Not a host of a berth server")?;
+    let seed = server.call("hosts.seed", json!({"name": name}), None)?;
+    let dir = paths.build_dir().join(name).join("cloud");
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)?;
+    }
+    let file = dir.join("user-data");
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut out = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&file)?;
+        out.write_all(seed["user_data"].as_str().unwrap_or("").as_bytes())?;
+    }
+    println!("{}", file.display());
+    Ok(())
+}
+
+/// `berth remove HOST`: forget a host. The machine itself is left as it is.
+pub fn remove(paths: &Paths, name: &str) -> Result<()> {
+    let host = Host::load(paths, name).map_err(|_| format!("No host {name}"))?;
+    if let Some(server) = host.served() {
+        server.call("hosts.remove", json!({"name": name}), None)?;
+    }
+    std::fs::remove_file(&host.path)?;
+    let _ = std::fs::remove_file(host.path.with_extension("credentials.json"));
+    println!("Removed {name}");
+    Ok(())
+}
+
+/// `berth login`: get an access token for the berth server from its issuer.
+/// A person approves in a browser on any device; a client with a secret
+/// needs nobody.
+pub fn login(paths: &Paths) -> Result<()> {
+    use berth_core::{oauth, server::Server};
+    let server =
+        Server::configured(paths).ok_or("Set the berth server first: berth config server URL")?;
+    if server.token.is_some() {
+        eprintln!(
+            "server_token is set and is used before a login. Clear it: berth config server_token"
+        );
+    }
+    let role = link::runtime()?.block_on(async {
+        let client = oauth::Client::configured(paths, &server.url)
+            .await?
+            .ok_or("Say which client berth is at the issuer: berth config oauth_client_id ID")?;
+        let tokens = match client.secret {
+            Some(_) => client.credentials().await?,
+            None => {
+                client
+                    .device(|asked| {
+                        let text = |name: &str| asked[name].as_str().unwrap_or("").to_owned();
+                        match text("verification_uri_complete").as_str() {
+                            "" => println!(
+                                "Open {} and enter {}",
+                                text("verification_uri"),
+                                text("user_code")
+                            ),
+                            link => println!(
+                                "Open {link}\nThe code there should be {}",
+                                text("user_code")
+                            ),
+                        }
+                        println!("Waiting for you to approve…");
+                    })
+                    .await?
+            }
+        };
+        oauth::save(paths, &server.url, Some(&tokens))?;
+        let own = Server {
+            url: server.url.clone(),
+            token: None,
+        };
+        let access = own
+            .portal()
+            .await?
+            .call("access", None, Value::Null, None)
+            .await?;
+        Ok::<String, Box<dyn std::error::Error>>(access["role"].as_str().unwrap_or("?").to_owned())
+    })?;
+    println!("Logged in to {} with the role {role}", server.url);
+    Ok(())
+}
+
+/// `berth logout`: forget the login at the berth server.
+pub fn logout(paths: &Paths) -> Result<()> {
+    let server = berth_core::server::Server::configured(paths).ok_or("No berth server is set")?;
+    berth_core::oauth::save(paths, &server.url, None)?;
+    println!("Forgot the login at {}", server.url);
     Ok(())
 }
 

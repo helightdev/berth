@@ -67,6 +67,46 @@ berth config server ""            # back to the hosts of this machine
 </Tab>
 </Tabs>
 
+### With a login in place of the token
+
+A server that takes [access tokens of an OAuth 2.0 issuer](/docs/extend/serve#access-tokens-from-an-oauth-20-issuer) lets berth log in there. berth has to be registered at the issuer as a client, and the server tells berth which issuer it is.
+
+<Tabs items={['You, at a terminal', 'A service']}>
+<Tab value="You, at a terminal">
+
+```bash
+berth config server https://berth.example.ts.net
+berth config oauth_client_id berth-cli
+berth config oauth_scope "offline_access berth:operate"
+berth login
+```
+
+`berth login` prints an address and a code. Open the address in a browser on any device and approve. This is the device grant, which works on a machine without a browser. berth renews the token by itself from then on, and `berth logout` forgets the login.
+
+</Tab>
+<Tab value="A service">
+
+With the client's secret, berth gets a token whenever it needs one, and nobody has to approve. This is the client credentials grant:
+
+```bash
+export BERTH_SERVER=https://berth.example.ts.net
+export BERTH_OAUTH_CLIENT_ID=berth-ci
+export BERTH_OAUTH_CLIENT_SECRET=…
+berth run studio status
+```
+
+</Tab>
+</Tabs>
+
+| Setting | Meaning |
+| --- | --- |
+| `oauth_client_id` | The client berth is at the issuer |
+| `oauth_client_secret` | The client's secret, for a service |
+| `oauth_scope` | The scope of the request. It has to give the token its role, and many issuers want `offline_access` for a login that renews |
+| `oauth_issuer`, `oauth_audience` | Only when the server doesn't say them itself |
+
+A `server_token` or `--token` is used before a login. Tokens are kept in `oauth.json` in berth's data directory, readable by your user only.
+
 | Address | Reaches |
 | --- | --- |
 | `https://HOST[:PORT]` | A server behind a TLS proxy |
@@ -111,10 +151,25 @@ Your browser talks to the server you name, and to nothing else. It keeps the ser
 
 ## What works from another machine
 
-| Works through the server | Stays on the server |
+| Works through the server | Stays on a machine with the host's profile |
 | --- | --- |
-| `berth list`, and the host list of the home screen and of the page | The set-up tabs of a host: features, accounts, secrets, install |
-| The host's overview with its tasks, sessions and terminal panel | Applying a profile, and building installers and seeds |
-| The host commands such as `berth run`, `exec`, `attach` and `channel` | Secrets, registries and the **Secrets and registry logins** task |
+| `berth list`, and the host list of the home screen and of the page | USB installers: `berth iso` and writing a drive |
+| The host's overview with its tasks, sessions and terminal panel | Applying to this machine or an inventory, and container images |
+| The host commands such as `berth run`, `exec`, `attach` and `channel` | Publishing a release or an image by hand |
+| The set-up tabs of a host, new hosts, and `berth remove` | |
+| `berth apply`, `berth seed`, and the **Secrets and registry logins** task | |
+| `berth secret`, `berth registry` and `berth host` | |
 
-Opening a set-up tab of a server's host says *This host is set up on the berth server at URL*. Do that work on the server itself. berth keeps the server's hosts apart from its own. Its own hosts are hidden while a server is set and return when the setting is cleared.
+berth keeps the server's hosts apart from its own. Its own hosts are hidden while a server is set and return when the setting is cleared.
+
+### Setting the server up from here
+
+With the role `admin` on the server, which its token has, berth sets the server up as if the hosts were its own. What you change is saved on the server:
+
+- A host's set-up tabs, and a new host from the home screen, save the profile there.
+- **Apply this configuration** and `berth apply HOST` run as a job on the server. Its output is shown as it comes.
+- `berth seed HOST` has the server render the cloud-init seed, and writes it here.
+- A secret's value is sent to the server and kept only there. Here berth knows its name.
+- The SSH key of a host is a file on the server, and the server needs SSH access to the host.
+
+With a lesser role the set-up tabs say *This host is set up on the berth server at URL*, and the host's overview works as before. The roles, access tokens of an OAuth 2.0 issuer in place of the token, and how to keep set-up on the server itself are in [berth serve](/docs/extend/serve#who-gets-in).

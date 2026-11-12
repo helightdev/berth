@@ -410,6 +410,7 @@ pub fn operations_of(
             "kind": if op.kind == ops::Kind::Stream { "stream" } else { "call" },
             "http": {"method": op.method, "path": path},
             "portal": op.http_only.is_empty(),
+            "role": op.role.name(),
         });
         if !op.http_only.is_empty() {
             entry["http_only"] = json!(op.http_only);

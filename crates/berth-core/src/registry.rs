@@ -6,7 +6,12 @@
 //! repositories under it. Secret values are kept apart from everything else in
 //! `secrets.json`, private to this user.
 
-use crate::{Result, paths::Paths, plugins::valid_name};
+use crate::{
+    Result,
+    paths::Paths,
+    plugins::valid_name,
+    server::{KEPT, Server},
+};
 use serde_json::{Map, Value, json};
 use std::{
     fs,
@@ -31,6 +36,9 @@ pub const FORMATS: &[&str] = &["npm", "raw", "docker"];
 
 pub struct Store {
     dir: PathBuf,
+    /// The berth serve these are the registries and secrets of. Changes go
+    /// there, and the values of its secrets stay there.
+    server: Option<Server>,
 }
 
 fn read(path: PathBuf) -> Result<Map<String, Value>> {
@@ -113,12 +121,34 @@ pub fn repository_url(registry: &Value, name: &str) -> String {
 impl Store {
     pub fn new(paths: &Paths) -> Self {
         Store {
-            dir: paths.config_dir.clone(),
+            dir: paths.store_dir(),
+            server: Server::configured(paths),
         }
     }
 
+    /// The store in a directory: a server's when it is where berth keeps one.
     pub fn at(dir: PathBuf) -> Self {
-        Store { dir }
+        let server = Paths::locate().ok().and_then(|paths| {
+            Server::configured(&paths).filter(|server| server.dir(&paths) == dir)
+        });
+        Store { dir, server }
+    }
+
+    /// The server whose store this is.
+    pub fn server(&self) -> Option<&Server> {
+        self.server.as_ref()
+    }
+
+    /// Fails for a server's store, whose secrets have their values there.
+    fn own(&self, what: &str) -> Result<()> {
+        match &self.server {
+            Some(server) => Err(format!(
+                "{what} needs the secrets, which stay on the berth server at {}",
+                server.url
+            )
+            .into()),
+            None => Ok(()),
+        }
     }
 
     pub fn registries(&self) -> Result<Map<String, Value>> {
@@ -131,6 +161,21 @@ impl Store {
     }
 
     pub fn save_registries(&self, registries: Map<String, Value>) -> Result<()> {
+        if let Some(server) = &self.server {
+            let known = self.registries()?;
+            for (name, registry) in &registries {
+                if known.get(name) != Some(registry) {
+                    server.call(
+                        "registries.save",
+                        json!({"name": name}),
+                        Some(registry.clone()),
+                    )?;
+                }
+            }
+            for name in known.keys().filter(|name| !registries.contains_key(*name)) {
+                server.call("registries.remove", json!({"name": name}), None)?;
+            }
+        }
         let mut settings = read(self.dir.join("config.json"))?;
         settings.insert("registries".into(), Value::Object(registries));
         write(self.dir.join("config.json"), &settings)
@@ -166,6 +211,20 @@ impl Store {
 
     pub fn set_secret(&self, name: &str, value: Option<&str>) -> Result<()> {
         let mut secrets = self.secrets()?;
+        let value = match (&self.server, value) {
+            (Some(server), Some(value)) => {
+                let data = Some(json!({"value": value}));
+                server.call("secrets.set", json!({"name": name}), data)?;
+                Some(KEPT)
+            }
+            (Some(server), None) => {
+                if secrets.contains_key(name) {
+                    server.call("secrets.remove", json!({"name": name}), None)?;
+                }
+                None
+            }
+            (None, value) => value,
+        };
         match value {
             Some(value) => secrets.insert(name.into(), json!(value)),
             None => secrets.remove(name),
@@ -216,6 +275,7 @@ impl Store {
     /// What `devbox-secrets` on a host installs for a profile: the profile's
     /// secrets as environment variables and files, and the logins of its registries.
     pub fn host_payload(&self, profile: &Value) -> Result<Value> {
+        self.own("Sending secrets to a host")?;
         let list = |value: &Value| value.as_array().cloned().unwrap_or_default();
         let mut env = Map::new();
         let mut files = vec![];
@@ -343,6 +403,7 @@ fn http_status(url: &str, login: &Option<String>) -> std::result::Result<u16, St
 impl Store {
     /// A registry's login as a line of curl configuration, when one is stored.
     pub fn curl_login(&self, name: &str) -> Result<Option<String>> {
+        self.own("Logging in to a registry")?;
         let registry = self.registry(name)?;
         let quote = |text: &str| text.replace('\\', "\\\\").replace('"', "\\\"");
         Ok(
@@ -368,6 +429,16 @@ impl Store {
 /// the account may also upload is not tried. One line per thing checked,
 /// starting with ✓, ! or ✗.
 pub fn check(store: &Store, name: &str) -> Result<Vec<String>> {
+    // A server's registry is checked from the server, which has its login.
+    if let Some(server) = &store.server {
+        let checked = server.call("registries.check", json!({"name": name}), None)?;
+        return Ok(checked["lines"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|line| line.as_str().map(str::to_owned))
+            .collect());
+    }
     let registry = store.registry(name)?;
     let login = store.curl_login(name)?;
     let with_login = if login.is_some() {

@@ -1326,6 +1326,7 @@
           "$ref": "#/components/schemas/Version"
         }
       },
+      "role": "view",
       "summary": "The version of berthd and of its API."
     },
     {
@@ -1344,6 +1345,7 @@
           "$ref": "#/components/schemas/Done"
         }
       },
+      "role": "operate",
       "summary": "Read the configuration files again. Sessions go on."
     },
     {
@@ -1376,6 +1378,7 @@
           "$ref": "#/components/schemas/Started"
         }
       },
+      "role": "operate",
       "summary": "Start a session."
     },
     {
@@ -1397,6 +1400,7 @@
           "type": "array"
         }
       },
+      "role": "view",
       "summary": "All sessions, running and ended."
     },
     {
@@ -1422,6 +1426,7 @@
           "$ref": "#/components/schemas/Session"
         }
       },
+      "role": "view",
       "summary": "One session's state. The agent sees those it started through a task."
     },
     {
@@ -1477,6 +1482,7 @@
         }
       ],
       "resumable": true,
+      "role": "operate",
       "sends": [
         {
           "binary": true,
@@ -1537,6 +1543,7 @@
           "$ref": "#/components/schemas/Done"
         }
       },
+      "role": "operate",
       "summary": "End it if it runs (HUP, after five seconds KILL) and forget it with its transcript."
     },
     {
@@ -1604,6 +1611,7 @@
           "$ref": "#/components/schemas/Output"
         }
       },
+      "role": "view",
       "summary": "The transcript, by bytes or by lines."
     },
     {
@@ -1643,6 +1651,7 @@
           "$ref": "#/components/schemas/Screen"
         }
       },
+      "role": "view",
       "summary": "A terminal as it looks now, as text."
     },
     {
@@ -1674,6 +1683,7 @@
           "$ref": "#/components/schemas/Done"
         }
       },
+      "role": "operate",
       "summary": "Write to standard input or type into the terminal. Never recorded."
     },
     {
@@ -1705,6 +1715,7 @@
           "$ref": "#/components/schemas/Done"
         }
       },
+      "role": "operate",
       "summary": "Give a terminal a new size."
     },
     {
@@ -1736,6 +1747,7 @@
           "$ref": "#/components/schemas/Done"
         }
       },
+      "role": "operate",
       "summary": "Send INT, TERM, HUP or KILL to the session's process group."
     },
     {
@@ -1757,6 +1769,7 @@
           "type": "array"
         }
       },
+      "role": "view",
       "summary": "The tasks the caller may run, in the order of the file."
     },
     {
@@ -1795,6 +1808,7 @@
           "$ref": "#/components/schemas/Started"
         }
       },
+      "role": "operate",
       "summary": "Run a task. It and what extends it are the steps of one session."
     },
     {
@@ -1826,6 +1840,7 @@
           "$ref": "#/components/schemas/Choices"
         }
       },
+      "role": "view",
       "summary": "The values to offer for an argument."
     },
     {
@@ -1844,6 +1859,7 @@
           "$ref": "#/components/schemas/Stats"
         }
       },
+      "role": "view",
       "summary": "Load, CPU, memory, filesystems, network, GPU and unit states, read now."
     },
     {
@@ -1876,6 +1892,7 @@
           "$ref": "#/components/schemas/Done"
         }
       },
+      "role": "operate",
       "summary": "Reboot the host or power it off. Refused while sessions run."
     },
     {
@@ -1893,6 +1910,7 @@
         "bytes": true,
         "content_type": "image/png"
       },
+      "role": "view",
       "summary": "The shared desktop as PNG."
     },
     {
@@ -1918,6 +1936,7 @@
         "bytes": true,
         "content_type": "application/octet-stream"
       },
+      "role": "operate",
       "summary": "A folder's entries (a Listing), or a file's content; Range is honoured. As the agent, under the configured roots."
     },
     {
@@ -1954,6 +1973,7 @@
           "$ref": "#/components/schemas/Done"
         }
       },
+      "role": "operate",
       "summary": "Write one file, creating its folders."
     },
     {
@@ -1987,6 +2007,7 @@
           "$ref": "#/components/schemas/Done"
         }
       },
+      "role": "operate",
       "summary": "Remove a file or an empty folder; never a root itself."
     },
     {
@@ -2008,6 +2029,7 @@
           "type": "array"
         }
       },
+      "role": "view",
       "summary": "The units and their state."
     },
     {
@@ -2036,6 +2058,7 @@
           "type": "object"
         }
       },
+      "role": "view",
       "summary": "One unit's properties, as systemctl show gives them."
     },
     {
@@ -2067,6 +2090,7 @@
           "$ref": "#/components/schemas/Done"
         }
       },
+      "role": "operate",
       "summary": "Start, stop, restart, reload, enable or disable a unit."
     },
     {
@@ -2110,6 +2134,7 @@
           "type": "array"
         }
       },
+      "role": "view",
       "summary": "Journal entries."
     },
     {
@@ -2151,6 +2176,7 @@
         }
       ],
       "resumable": true,
+      "role": "view",
       "sends": [],
       "summary": "Journal entries, then what is logged."
     },
@@ -2173,6 +2199,7 @@
           "type": "array"
         }
       },
+      "role": "view",
       "summary": "The processes, from /proc."
     },
     {
@@ -2204,6 +2231,7 @@
           "$ref": "#/components/schemas/Done"
         }
       },
+      "role": "operate",
       "summary": "Send a signal to a process."
     },
     {
@@ -2235,6 +2263,7 @@
           "$ref": "#/components/schemas/Message"
         }
       },
+      "role": "operate",
       "summary": "Publish a message on a topic."
     },
     {
@@ -2275,6 +2304,7 @@
           "$ref": "#/components/schemas/Messages"
         }
       },
+      "role": "view",
       "summary": "Kept messages after `since`."
     },
     {
@@ -2322,6 +2352,7 @@
         }
       ],
       "resumable": true,
+      "role": "view",
       "sends": [
         {
           "binary": false,
@@ -2357,6 +2388,7 @@
           "type": "array"
         }
       },
+      "role": "view",
       "summary": "The services that can be called, and whether each is up."
     },
     {
@@ -2396,6 +2428,7 @@
       "result": {
         "schema": {}
       },
+      "role": "operate",
       "summary": "Call a method of the service PLUGIN/NAME: JSON in, JSON out."
     },
     {
@@ -2439,6 +2472,7 @@
         }
       ],
       "resumable": false,
+      "role": "operate",
       "sends": [
         {
           "binary": false,

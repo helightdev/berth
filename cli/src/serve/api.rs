@@ -1,11 +1,15 @@
 //! The routes of `berth serve`.
 
-use super::{Event, Remote, Serve};
+use super::{
+    Event, Remote, Serve,
+    auth::{self, Access},
+    setup,
+};
 use axum::{
     Json, Router,
     body::Bytes,
     extract::{
-        DefaultBodyLimit, Path, Query, RawQuery, Request, State,
+        DefaultBodyLimit, Extension, Path, Query, RawQuery, Request, State,
         ws::{
             Message as WsMessage, WebSocket, WebSocketUpgrade, rejection::WebSocketUpgradeRejection,
         },
@@ -16,7 +20,9 @@ use axum::{
     routing::{any, get},
 };
 use berth_api::{
-    Done, ErrorBody, ErrorDetail, Message, Output, Version, b64, client, code, ops, streams,
+    Done, ErrorBody, ErrorDetail, Message, Output, Version, b64, client, code,
+    ops::{self, Role},
+    streams,
 };
 use berth_core::{
     apply,
@@ -31,7 +37,7 @@ use tokio::sync::broadcast::error::RecvError;
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
 
-type App = State<Arc<Serve>>;
+pub(super) type App = State<Arc<Serve>>;
 /// The upgrade when the request asks for a stream, at a path that also answers plainly.
 type Ws = std::result::Result<WebSocketUpgrade, WebSocketUpgradeRejection>;
 
@@ -74,9 +80,9 @@ impl From<client::Error> for Fail {
     }
 }
 
-type Answer<T> = std::result::Result<T, Fail>;
+pub(super) type Answer<T> = std::result::Result<T, Fail>;
 
-fn internal(error: impl std::fmt::Display) -> Fail {
+pub(super) fn internal(error: impl std::fmt::Display) -> Fail {
     Fail::new(code::INTERNAL, error.to_string())
 }
 
@@ -173,9 +179,20 @@ fn kv_entry(entry: store::Entry) -> KvEntry {
 pub fn documented() -> OpenApiRouter<Arc<Serve>> {
     OpenApiRouter::new()
         .routes(routes!(version))
+        .routes(routes!(access))
         .routes(routes!(hosts))
-        .routes(routes!(host))
+        .routes(routes!(host, setup::remove_host))
+        .routes(routes!(setup::profile, setup::save_profile))
         .routes(routes!(apply_host))
+        .routes(routes!(setup::seed))
+        .routes(routes!(setup::send_secrets))
+        .routes(routes!(setup::secrets))
+        .routes(routes!(setup::set_secret, setup::remove_secret))
+        .routes(routes!(setup::registries))
+        .routes(routes!(setup::save_registry, setup::remove_registry))
+        .routes(routes!(setup::check_registry))
+        .routes(routes!(setup::settings))
+        .routes(routes!(setup::set_setting))
         .routes(routes!(jobs))
         .routes(routes!(job))
         .routes(routes!(job_output))
@@ -200,72 +217,132 @@ pub fn router(state: Arc<Serve>, guarded: bool) -> Router {
     router = router.route(ops::PORTAL, get(portal));
     if guarded {
         router = router.layer(middleware::from_fn_with_state(state.clone(), guard));
+        // Asked before a caller has a token: which issuer gives one.
+        if let Some(resource) = state.auth.resource() {
+            router = router.route(
+                berth_core::oauth::RESOURCE,
+                get(move || std::future::ready(Json(resource.clone()))),
+            );
+        }
     }
     router
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state)
 }
 
-fn same(a: &str, b: &str) -> bool {
-    a.len() == b.len()
-        && a.bytes()
-            .zip(b.bytes())
-            .fold(0, |all, (x, y)| all | (x ^ y))
-            == 0
-}
-
-/// Over TCP every request shows the token: as a bearer, or as the WebSocket
-/// protocol, because a browser cannot set a header on a WebSocket.
-async fn guard(State(state): App, request: Request, next: Next) -> Response {
-    if !shows_token(&state, request.headers()) {
-        return Fail::new(
-            code::UNAUTHORIZED,
-            "Send the token of berth serve as a bearer",
-        )
-        .into_response();
-    }
-    next.run(request).await
-}
-
-fn shows_token(state: &Serve, headers: &HeaderMap) -> bool {
-    let token = state.token.as_deref().unwrap_or("");
+/// What a request shows to be let in: a bearer, and the protocols of a
+/// WebSocket, because a browser cannot set a header on one.
+fn shown(headers: &HeaderMap) -> Vec<String> {
     let header = |name| {
         headers
             .get(name)
             .and_then(|value: &HeaderValue| value.to_str().ok())
     };
-    let bearer = header(header::AUTHORIZATION)
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|given| same(given.trim(), token));
-    let protocol = header(header::SEC_WEBSOCKET_PROTOCOL)
-        .is_some_and(|value| value.split(',').any(|given| same(given.trim(), token)));
-    !token.is_empty() && (bearer || protocol)
+    let bearer = header(header::AUTHORIZATION).and_then(|value| value.strip_prefix("Bearer "));
+    let protocols = header(header::SEC_WEBSOCKET_PROTOCOL)
+        .into_iter()
+        .flat_map(|value| value.split(','));
+    bearer
+        .into_iter()
+        .chain(protocols)
+        .map(|given| given.trim().to_owned())
+        .filter(|given| !given.is_empty())
+        .collect()
 }
 
-/// Answer the handshake with the token as protocol when it was offered as one.
-fn upgrade(state: &Serve, ws: WebSocketUpgrade) -> WebSocketUpgrade {
-    match &state.token {
-        Some(token) => ws.protocols([token.clone()]),
-        None => ws,
+/// Over TCP every request shows who it is from, and is one the caller's role
+/// allows. What a handshake offered as its protocol is named in the answer.
+async fn guard(State(state): App, mut request: Request, next: Next) -> Response {
+    let refuse = |(kind, message): auth::Refusal| Fail::new(kind, message).into_response();
+    let (access, given) = match state.auth.admit(&shown(request.headers())).await {
+        Ok(admitted) => admitted,
+        Err(refusal) => return refuse(refusal),
+    };
+    let stream = request
+        .headers()
+        .get(header::UPGRADE)
+        .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"));
+    let allowed = match auth::operation(request.method().as_str(), request.uri().path(), stream) {
+        Ok(Some(op)) => state.auth.allows(&access, op),
+        // The portal and the documents: each operation on the portal is asked about there.
+        Ok(None) => Ok(()),
+        Err(()) if state.auth.role(&access) == Role::Admin => Ok(()),
+        Err(()) => Err((
+            code::FORBIDDEN,
+            "No operation is known for this request, which only an admin may then send".into(),
+        )),
+    };
+    if let Err(refusal) = allowed {
+        return refuse(refusal);
     }
+    let offered = request
+        .headers()
+        .get(header::SEC_WEBSOCKET_PROTOCOL)
+        .is_some();
+    request.extensions_mut().insert(access);
+    let mut response = next.run(request).await;
+    if offered
+        && response.status() == StatusCode::SWITCHING_PROTOCOLS
+        && let Ok(value) = HeaderValue::from_str(&given)
+    {
+        response
+            .headers_mut()
+            .insert(header::SEC_WEBSOCKET_PROTOCOL, value);
+    }
+    response
+}
+
+/// Who a request is from: whoever the guard let in, or this machine's user.
+pub fn caller(access: Option<Extension<Access>>) -> Access {
+    access.map_or_else(Access::local, |Extension(access)| access)
 }
 
 /// The portal: every operation over one WebSocket. With `host` an operation
 /// is that host's, and goes the way a request under `/v1/hosts/NAME` does.
-async fn portal(State(state): App, ws: WebSocketUpgrade) -> Response {
-    // The token was shown when the portal was opened.
+async fn portal(
+    State(state): App,
+    access: Option<Extension<Access>>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    // Who it is was shown when the portal was opened; what they may do is
+    // asked for each operation.
+    let access = caller(access);
     let inner = router(state.clone(), false);
-    let resolve: berthd::portal::Resolve = Arc::new(|name, host| {
+    let asked = state.clone();
+    let resolve: berthd::portal::Resolve = Arc::new(move |name, host| {
         let (table, prefix) = match host {
             Some(host) => (ops::HOST, format!("/hosts/{}", client::encode(host))),
             None => (ops::SERVE, String::new()),
         };
-        match ops::find(table, name) {
-            Some(op) => Ok(berthd::portal::Target { op, prefix }),
-            None => Err((code::NOT_FOUND, format!("No operation {name}"))),
-        }
+        let op = ops::find(table, name)
+            .ok_or_else(|| (code::NOT_FOUND, format!("No operation {name}")))?;
+        asked.auth.allows(&access, op)?;
+        Ok(berthd::portal::Target { op, prefix })
     });
-    upgrade(&state, ws).on_upgrade(move |socket| berthd::portal::run(socket, inner, resolve))
+    ws.on_upgrade(move |socket| berthd::portal::run(socket, inner, resolve))
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct AccessInfo {
+    /// `view`, `operate` or `admin`: each includes the ones before.
+    pub role: String,
+    /// Whether an admin may set the server up over the network.
+    pub setup: bool,
+    /// Whose access token it is, when it is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+}
+
+#[utoipa::path(get, path = "/v1/access", summary = "What the caller may do here.", tag = "serve",
+    responses((status = 200, description = "The caller's role", body = AccessInfo)))]
+async fn access(State(state): App, access: Option<Extension<Access>>) -> Json<AccessInfo> {
+    let local = access.is_none();
+    let access = caller(access);
+    Json(AccessInfo {
+        role: state.auth.role(&access).name().into(),
+        setup: local || state.auth.setup(),
+        subject: access.subject,
+    })
 }
 
 // ── Hosts ───────────────────────────────────────────────────────────────────
@@ -282,7 +359,7 @@ async fn info(remote: Arc<Remote>) -> HostInfo {
     }
 }
 
-fn remote(state: &Serve, name: &str) -> Answer<Arc<Remote>> {
+pub(super) fn remote(state: &Serve, name: &str) -> Answer<Arc<Remote>> {
     state
         .host(name)
         .ok_or_else(|| Fail::new(code::NOT_FOUND, format!("No host {name}")))
@@ -315,6 +392,13 @@ async fn host(State(state): App, Path(name): Path<String>) -> Answer<Json<HostIn
     Ok(Json(info(remote(&state, &name)?).await))
 }
 
+/// What applying may be given.
+#[derive(Deserialize, ToSchema, Default)]
+pub struct ApplyWith {
+    /// The SSH user's sudo password, for a host that asks for one.
+    pub sudo_password: Option<String>,
+}
+
 fn new_id() -> std::io::Result<String> {
     let mut bytes = [0u8; 12];
     std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut bytes)?;
@@ -330,19 +414,42 @@ fn new_id() -> std::io::Result<String> {
 
 #[utoipa::path(post, path = "/v1/hosts/{name}/apply", summary = "Apply the host's profile to it, as a job.", tag = "hosts",
     params(("name" = String, Path, description = "A saved host")),
+    request_body(content = Option<ApplyWith>, description = "Nothing, or what the run needs that the server does not have"),
     responses((status = 200, description = "The job that applies the host's configuration", body = JobInfo),
               (status = 404, description = "No such host", body = ErrorBody)))]
-async fn apply_host(State(state): App, Path(name): Path<String>) -> Answer<Json<JobInfo>> {
+async fn apply_host(
+    State(state): App,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> Answer<Json<JobInfo>> {
+    state.refresh(false);
     let remote = remote(&state, &name)?;
     let bad = |error: Box<dyn std::error::Error>| Fail::new(code::BAD_REQUEST, error.to_string());
+    let with: ApplyWith = match body.is_empty() {
+        true => ApplyWith::default(),
+        false => serde_json::from_slice(&body)
+            .map_err(|error| Fail::new(code::BAD_REQUEST, error.to_string()))?,
+    };
     let host = Host::load(&state.paths, &name).map_err(bad)?;
-    if host.asks_password() && remote.password.is_none() {
+    let password = with.sudo_password.or_else(|| remote.password.clone());
+    if host.asks_password() && password.is_none() {
         return Err(Fail::new(
             code::NOT_AVAILABLE,
-            format!("{name} asks for a sudo password that berth serve was not given"),
+            format!("{name} asks for a sudo password: send it as sudo_password"),
         ));
     }
-    let prepared = apply::prepare(&state.paths, &host, remote.password.as_deref()).map_err(bad)?;
+    if host.config["builder"]["ask_pass"]
+        .as_bool()
+        .unwrap_or(false)
+    {
+        return Err(Fail::new(
+            code::NOT_AVAILABLE,
+            format!(
+                "{name} is set to log in with an SSH password, which a job cannot type: give the server a key for it"
+            ),
+        ));
+    }
+    let prepared = apply::prepare(&state.paths, &host, password.as_deref()).map_err(bad)?;
     let id = new_id().map_err(internal)?;
     std::fs::create_dir_all(&state.jobs_dir).map_err(internal)?;
     let path = state.jobs_dir.join(format!("{id}.log"));
@@ -426,7 +533,7 @@ async fn job(
     Ok(match ws {
         Ok(ws) => {
             let offset = query.since.unwrap_or(0);
-            upgrade(&state, ws).on_upgrade(move |socket| follow_job(state, id, offset, socket))
+            ws.on_upgrade(move |socket| follow_job(state, id, offset, socket))
         }
         Err(_) => Json(job_info(job)).into_response(),
     })
@@ -581,7 +688,7 @@ fn inbox_message(stored: store::Stored) -> InboxMessage {
 async fn inbox(State(state): App, Query(query): Query<InboxQuery>, ws: Ws) -> Answer<Response> {
     if let Ok(ws) = ws {
         let events = state.events.subscribe();
-        return Ok(upgrade(&state, ws).on_upgrade(move |socket| {
+        return Ok(ws.on_upgrade(move |socket| {
             forward(socket, events, move |event| match event {
                 Event::Inbox(stored)
                     if query.host.as_ref().is_none_or(|host| *host == stored.host)
@@ -670,7 +777,7 @@ async fn mark_open(State(state): App, Path((host, id)): Path<(String, u64)>) -> 
 async fn kv_list(State(state): App, Path(namespace): Path<String>, ws: Ws) -> Answer<Response> {
     if let Ok(ws) = ws {
         let events = state.events.subscribe();
-        return Ok(upgrade(&state, ws).on_upgrade(move |socket| {
+        return Ok(ws.on_upgrade(move |socket| {
             forward(socket, events, move |event| match event {
                 Event::Kv {
                     namespace: changed,
@@ -812,7 +919,7 @@ struct Follow {
 
 async fn events(State(state): App, ws: WebSocketUpgrade) -> Response {
     let events = state.events.subscribe();
-    upgrade(&state, ws).on_upgrade(move |mut socket| async move {
+    ws.on_upgrade(move |mut socket| async move {
         let follow: Follow = loop {
             match socket.recv().await {
                 Some(Ok(WsMessage::Text(text))) => match serde_json::from_str(text.as_str()) {
@@ -874,11 +981,11 @@ async fn proxy(
     body: Bytes,
 ) -> Answer<Response> {
     let remote = remote(&state, &name)?;
-    // The one thing left out: secrets leave the workstation only by its owner's hand.
+    // The secrets a host gets are the server's own: a caller cannot hand it others.
     if method == Method::POST && rest.trim_end_matches('/') == "tasks/secrets" {
         return Err(Fail::new(
             code::FORBIDDEN,
-            "berth serve does not send secrets; use berth itself",
+            "The secrets task takes the server's secrets: call hosts.secrets (POST /v1/hosts/NAME/secrets)",
         ));
     }
     let Some(link) = &remote.link else {
@@ -892,7 +999,7 @@ async fn proxy(
     };
     if let Ok(ws) = ws {
         let upstream = link.stream(&target).await?;
-        return Ok(upgrade(&state, ws).on_upgrade(move |socket| pump(socket, upstream)));
+        return Ok(ws.on_upgrade(move |socket| pump(socket, upstream)));
     }
     let passed: Vec<(&str, &str)> = REQUEST_HEADERS
         .iter()

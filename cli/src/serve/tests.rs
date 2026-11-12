@@ -812,3 +812,674 @@ async fn the_page_is_given_without_the_token() {
         .unwrap();
     assert!(wasm.status == 200 && wasm.body.starts_with(b"\0asm"));
 }
+
+async fn send(client: &mut Client, method: &str, path: &str, body: Value) -> (u16, Value) {
+    let body = match body {
+        Value::Null => String::new(),
+        body => body.to_string(),
+    };
+    let headers = [("content-type", "application/json")];
+    let answer = client
+        .send(method, path, &headers, body.into())
+        .await
+        .unwrap();
+    let said = serde_json::from_slice(&answer.body).unwrap_or(Value::Null);
+    (answer.status, said)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_is_set_up_through_the_api() {
+    let served = served().await;
+    let mut client = served.client().await;
+    let client = &mut client;
+    let profile = json!({"hostname": "studio", "builder": {"ssh_host": "192.0.2.7", "ssh_user": "ops", "served": "x"}});
+
+    // A profile makes a host, and what it says is what comes back.
+    assert_eq!(
+        send(client, "GET", "/v1/hosts/studio/profile", Value::Null)
+            .await
+            .0,
+        404
+    );
+    assert_eq!(
+        send(client, "PUT", "/v1/hosts/studio/profile", profile)
+            .await
+            .0,
+        200
+    );
+    let (_, kept) = send(client, "GET", "/v1/hosts/studio/profile", Value::Null).await;
+    assert_eq!(kept["builder"]["ssh_host"], "192.0.2.7");
+    assert!(kept["builder"].get("served").is_none());
+    let (_, hosts) = send(client, "GET", "/v1/hosts", Value::Null).await;
+    assert_eq!(
+        (&hosts[0]["name"], &hosts[0]["address"]),
+        (&json!("studio"), &json!("192.0.2.7"))
+    );
+    // A profile without an address is a host too, one that cannot be reached yet.
+    assert_eq!(
+        send(
+            client,
+            "PUT",
+            "/v1/hosts/draft/profile",
+            json!({"builder": {}})
+        )
+        .await
+        .0,
+        200
+    );
+    let (_, draft) = send(client, "GET", "/v1/hosts/draft", Value::Null).await;
+    assert_eq!(draft["reachable"], false);
+    // A name is never a path, and a command to run is not taken from a caller.
+    for name in ["..%2Fx", "a.json", ".hidden"] {
+        let path = format!("/v1/hosts/{name}/profile");
+        assert_eq!(
+            send(client, "PUT", &path, json!({"builder": {}})).await.0,
+            400,
+            "{name}"
+        );
+    }
+    let linked = json!({"builder": {"link": ["sh", "-c", "id"]}});
+    assert_eq!(
+        send(client, "PUT", "/v1/hosts/studio/profile", linked)
+            .await
+            .0,
+        400
+    );
+    assert_eq!(
+        send(client, "PUT", "/v1/hosts/studio/profile", json!([]))
+            .await
+            .0,
+        400
+    );
+
+    // Secrets are kept by name; their values do not come back.
+    assert_eq!(
+        send(
+            client,
+            "PUT",
+            "/v1/secrets/github",
+            json!({"value": "ghp_x"})
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        send(
+            client,
+            "PUT",
+            "/v1/secrets/registry%2Fmain",
+            json!({"value": "pw"})
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        send(
+            client,
+            "PUT",
+            "/v1/secrets/Bad%20Name",
+            json!({"value": "x"})
+        )
+        .await
+        .0,
+        400
+    );
+    let (_, secrets) = send(client, "GET", "/v1/secrets", Value::Null).await;
+    assert_eq!(secrets, json!({"names": ["github", "registry/main"]}));
+    assert_eq!(
+        send(client, "DELETE", "/v1/secrets/github", Value::Null)
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        send(client, "DELETE", "/v1/secrets/github", Value::Null)
+            .await
+            .0,
+        404
+    );
+
+    // Registries, and their login goes with them.
+    let registry = json!({"type": "npm", "url": "https://npm.example"});
+    assert_eq!(
+        send(client, "PUT", "/v1/registries/main", registry.clone())
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        send(
+            client,
+            "PUT",
+            "/v1/registries/main",
+            json!({"type": "ftp", "url": "x"})
+        )
+        .await
+        .0,
+        400
+    );
+    let (_, registries) = send(client, "GET", "/v1/registries", Value::Null).await;
+    assert_eq!(registries["registries"]["main"], registry);
+    assert_eq!(
+        send(client, "DELETE", "/v1/registries/main", Value::Null)
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        send(client, "GET", "/v1/secrets", Value::Null).await.1,
+        json!({"names": []})
+    );
+
+    // Sending secrets needs their values and the host.
+    let wanting = json!({"builder": {"ssh_host": "192.0.2.7"}, "secrets": [{"name": "github", "env": "GH_TOKEN"}]});
+    assert_eq!(
+        send(client, "PUT", "/v1/hosts/studio/profile", wanting)
+            .await
+            .0,
+        200
+    );
+    let (status, said) = send(client, "POST", "/v1/hosts/studio/secrets", Value::Null).await;
+    assert_eq!(status, 400);
+    assert!(
+        said["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("github")
+    );
+
+    // Some settings are a caller's to change, who gets in is not.
+    let value = |value: &str| json!({"value": value});
+    assert_eq!(
+        send(client, "PUT", "/v1/settings/retention_days", value("30"))
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        send(
+            client,
+            "PUT",
+            "/v1/settings/oauth_issuer",
+            value("https://x")
+        )
+        .await
+        .0,
+        403
+    );
+    let (_, settings) = send(client, "GET", "/v1/settings", Value::Null).await;
+    let days = settings
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|setting| setting["key"] == "retention_days")
+        .unwrap();
+    assert_eq!(
+        (&days["value"], &days["open"]),
+        (&json!("30"), &json!(true))
+    );
+
+    assert_eq!(
+        send(client, "DELETE", "/v1/hosts/studio", Value::Null)
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        send(client, "DELETE", "/v1/hosts/studio", Value::Null)
+            .await
+            .0,
+        404
+    );
+    assert!(served.state.host("studio").is_none());
+    // On this machine's socket the caller is its user, who may do everything.
+    let (_, access) = send(client, "GET", "/v1/access", Value::Null).await;
+    assert_eq!(access, json!({"role": "admin", "setup": true}));
+}
+
+/// An issuer for the tests: a key pair, and its public half as a key set.
+struct Issuer {
+    key: jsonwebtoken::EncodingKey,
+    keys: Value,
+}
+
+fn url64(data: &[u8]) -> String {
+    berth_api::b64(data)
+        .replace('+', "-")
+        .replace('/', "_")
+        .trim_end_matches('=')
+        .to_owned()
+}
+
+impl Issuer {
+    fn new() -> Issuer {
+        use ring::signature::KeyPair;
+        let random = ring::rand::SystemRandom::new();
+        let pair = ring::signature::Ed25519KeyPair::generate_pkcs8(&random).unwrap();
+        let public = ring::signature::Ed25519KeyPair::from_pkcs8(pair.as_ref()).unwrap();
+        Issuer {
+            key: jsonwebtoken::EncodingKey::from_ed_der(pair.as_ref()),
+            keys: json!({"keys": [
+                {"kty": "RSA", "kid": "unreadable"},
+                {"kty": "OKP", "crv": "Ed25519", "kid": "k1", "alg": "EdDSA",
+                 "x": url64(public.public_key().as_ref())},
+            ]}),
+        }
+    }
+
+    fn token(&self, claims: Value) -> String {
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
+        header.kid = Some("k1".into());
+        let now = jsonwebtoken::get_current_timestamp();
+        let mut all =
+            json!({"iss": "https://id.example", "aud": "berth", "sub": "ada", "exp": now + 600});
+        for (name, value) in claims.as_object().unwrap() {
+            all[name] = value.clone();
+        }
+        jsonwebtoken::encode(&header, &all, &self.key).unwrap()
+    }
+}
+
+/// A `berth serve` over TCP that trusts the issuer, and its address.
+async fn trusting(issuer: &Issuer, setup: bool) -> (tempfile::TempDir, std::net::SocketAddr) {
+    let keys = issuer.keys.clone();
+    let key_server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let jwks = format!("http://{}/keys", key_server.local_addr().unwrap());
+    let routes = axum::Router::new().route(
+        "/keys",
+        axum::routing::get(move || std::future::ready(axum::Json(keys.clone()))),
+    );
+    tokio::spawn(async move { axum::serve(key_server, routes).await });
+
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        config_dir: dir.path().join("config"),
+        data_dir: dir.path().join("data"),
+    };
+    let store = Store::open(&super::store_path(&paths)).unwrap();
+    let auth = super::auth::Auth::trusting("s3cret-token", "https://id.example", &jwks, setup);
+    let state = Serve::with(paths, store, auth);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = api::router(state, true);
+    tokio::spawn(async move { axum::serve(listener, router).await });
+    (dir, address)
+}
+
+async fn as_bearer(
+    address: std::net::SocketAddr,
+    token: &str,
+    method: &str,
+    path: &str,
+    body: Value,
+) -> (u16, Value) {
+    let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    let mut client = Client::over(stream).await.unwrap();
+    let bearer = format!("Bearer {token}");
+    let body = match body {
+        Value::Null => String::new(),
+        body => body.to_string(),
+    };
+    let headers = [
+        ("authorization", bearer.as_str()),
+        ("content-type", "application/json"),
+    ];
+    let answer = client
+        .send(method, path, &headers, body.into())
+        .await
+        .unwrap();
+    (
+        answer.status,
+        serde_json::from_slice(&answer.body).unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_access_token_gets_in_with_the_role_it_names() {
+    let issuer = Issuer::new();
+    let (_dir, address) = trusting(&issuer, true).await;
+    let with = |scope: &str| issuer.token(json!({"scope": scope}));
+    let (viewer, operator, admin) = (
+        with("openid berth:view"),
+        with("berth:operate"),
+        with("berth:admin"),
+    );
+    let profile = json!({"builder": {"ssh_host": "192.0.2.7"}});
+
+    // Looking is for every role, using for two, set-up for one.
+    assert_eq!(
+        as_bearer(address, &viewer, "GET", "/v1/hosts", Value::Null)
+            .await
+            .0,
+        200
+    );
+    let (status, said) = as_bearer(address, &viewer, "PUT", "/v1/kv/ui/x", json!(1)).await;
+    assert_eq!((status, &said["error"]["code"]), (403, &json!("forbidden")));
+    assert!(
+        said["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("operate")
+    );
+    assert_eq!(
+        as_bearer(address, &viewer, "POST", "/v1/hosts/a/tasks/x", json!({}))
+            .await
+            .0,
+        403
+    );
+    assert_eq!(
+        as_bearer(
+            address,
+            &viewer,
+            "GET",
+            "/v1/hosts/a/files?path=x",
+            Value::Null
+        )
+        .await
+        .0,
+        403
+    );
+    assert_eq!(
+        as_bearer(address, &operator, "PUT", "/v1/kv/ui/x", json!(1))
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        as_bearer(
+            address,
+            &operator,
+            "PUT",
+            "/v1/hosts/a/profile",
+            profile.clone()
+        )
+        .await
+        .0,
+        403
+    );
+    assert_eq!(
+        as_bearer(address, &operator, "GET", "/v1/secrets", Value::Null)
+            .await
+            .0,
+        403
+    );
+    assert_eq!(
+        as_bearer(
+            address,
+            &admin,
+            "PUT",
+            "/v1/hosts/a/profile",
+            profile.clone()
+        )
+        .await
+        .0,
+        200
+    );
+    let (_, access) = as_bearer(address, &operator, "GET", "/v1/access", Value::Null).await;
+    assert_eq!(
+        access,
+        json!({"role": "operate", "setup": true, "subject": "ada"})
+    );
+    // The server's own token still does everything.
+    assert_eq!(
+        as_bearer(address, "s3cret-token", "GET", "/v1/secrets", Value::Null)
+            .await
+            .0,
+        200
+    );
+
+    // A token has to be the issuer's, for this server, in time, and name a role.
+    let now = jsonwebtoken::get_current_timestamp();
+    let refused = [
+        issuer.token(json!({"scope": "berth:admin", "exp": now - 600})),
+        issuer.token(json!({"scope": "berth:admin", "aud": "another"})),
+        issuer.token(json!({"scope": "berth:admin", "iss": "https://evil.example"})),
+        Issuer::new().token(json!({"scope": "berth:admin"})),
+    ];
+    for token in &refused {
+        assert_eq!(
+            as_bearer(address, token, "GET", "/v1/hosts", Value::Null)
+                .await
+                .0,
+            401
+        );
+    }
+    let roleless = issuer.token(json!({"scope": "openid admin"}));
+    assert_eq!(
+        as_bearer(address, &roleless, "GET", "/v1/hosts", Value::Null)
+            .await
+            .0,
+        403
+    );
+
+    // On the portal each operation is asked about, and a token is a protocol.
+    let connect = || async { tokio::net::TcpStream::connect(address).await.unwrap() };
+    let socket = client::websocket(connect().await, "/v1/portal", &viewer)
+        .await
+        .unwrap();
+    let portal = berth_api::portal::Portal::over(socket);
+    assert!(
+        portal
+            .call("hosts.list", None, Value::Null, None)
+            .await
+            .is_ok()
+    );
+    let saved = portal
+        .call(
+            "hosts.save",
+            None,
+            json!({"name": "b"}),
+            Some(profile.clone()),
+        )
+        .await;
+    assert_eq!(saved.unwrap_err().status(), 403);
+    let run = portal
+        .call(
+            "tasks.run",
+            Some("a"),
+            json!({"name": "x"}),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(run.unwrap_err().status(), 403);
+    assert!(
+        client::websocket(connect().await, "/v1/hosts/a/sessions/x", &viewer)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn set_up_can_be_closed_to_the_network() {
+    let issuer = Issuer::new();
+    let (_dir, address) = trusting(&issuer, false).await;
+    let admin = issuer.token(json!({"scope": "berth:admin"}));
+    let profile = json!({"builder": {"ssh_host": "192.0.2.7"}});
+    for token in [admin.as_str(), "s3cret-token"] {
+        let (status, said) = as_bearer(
+            address,
+            token,
+            "PUT",
+            "/v1/hosts/a/profile",
+            profile.clone(),
+        )
+        .await;
+        assert_eq!(status, 403);
+        assert!(
+            said["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("set-up")
+        );
+        assert_eq!(
+            as_bearer(address, token, "PUT", "/v1/kv/ui/x", json!(1))
+                .await
+                .0,
+            200
+        );
+        let (_, access) = as_bearer(address, token, "GET", "/v1/access", Value::Null).await;
+        assert_eq!(
+            (&access["role"], &access["setup"]),
+            (&json!("operate"), &json!(false))
+        );
+    }
+}
+
+/// An issuer's endpoints, as far as berth as a client uses them.
+async fn issuer_endpoints(issuer: Arc<Issuer>) -> String {
+    use axum::{Json, http::StatusCode, routing};
+    // A form as an issuer is sent one.
+    fn fields(body: &str) -> std::collections::HashMap<String, String> {
+        body.split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .map(|(name, value)| (name.to_owned(), berth_api::escape::decode(value)))
+            .collect()
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let metadata = json!({
+        "issuer": base,
+        "token_endpoint": format!("{base}/token"),
+        "device_authorization_endpoint": format!("{base}/device"),
+    });
+    let asked = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let token = move |body: String| {
+        let form = fields(&body);
+        let field = |name: &str| form.get(name).map(String::as_str).unwrap_or("").to_owned();
+        let grant = |scope: &str, refresh: &str, left: u64| {
+            let access = issuer.token(json!({"scope": scope}));
+            (
+                StatusCode::OK,
+                Json(json!({"access_token": access, "refresh_token": refresh, "expires_in": left})),
+            )
+        };
+        let refused = |error: &str| (StatusCode::BAD_REQUEST, Json(json!({"error": error})));
+        let answer = match (field("grant_type").as_str(), field("client_id").as_str()) {
+            (_, id) if id != "berth-cli" => refused("invalid_client"),
+            ("urn:ietf:params:oauth:grant-type:device_code", _)
+                if field("device_code") == "dc 1" =>
+            {
+                // Nobody has approved the first time berth asks.
+                match asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                    0 => refused("authorization_pending"),
+                    _ => grant(&field("scope"), "r1", 600),
+                }
+            }
+            ("refresh_token", _) if field("refresh_token") == "r1" => {
+                grant("berth:view", "r2", 600)
+            }
+            ("client_credentials", _) if field("client_secret") == "s3cret" => {
+                grant("berth:admin", "", 600)
+            }
+            _ => refused("invalid_grant"),
+        };
+        std::future::ready(answer)
+    };
+    let device = |body: String| {
+        let form = fields(&body);
+        assert_eq!(form.get("scope").map(String::as_str), Some("berth:operate"));
+        std::future::ready(Json(json!({
+            "device_code": "dc 1", "user_code": "WDJB-MJHT", "interval": 0,
+            "verification_uri": "https://id.example/device", "expires_in": 60,
+        })))
+    };
+    let routes = axum::Router::new()
+        .route(
+            "/.well-known/openid-configuration",
+            routing::get(move || std::future::ready(Json(metadata.clone()))),
+        )
+        .route("/device", routing::post(device))
+        .route("/token", routing::post(token));
+    tokio::spawn(async move { axum::serve(listener, routes).await });
+    base
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn berth_gets_access_tokens_as_a_client() {
+    use berth_core::oauth::{self, Client};
+    let issuer = Arc::new(Issuer::new());
+    let (dir, address) = trusting(&issuer, true).await;
+    let base = issuer_endpoints(issuer.clone()).await;
+    let role = |token: String| async move {
+        as_bearer(address, &token, "GET", "/v1/access", Value::Null)
+            .await
+            .1["role"]
+            .clone()
+    };
+
+    // The server says whose tokens it takes, to anyone who asks.
+    let server = format!("http://{address}");
+    let named = berth_core::server::fetch(&format!("{server}{}", oauth::RESOURCE))
+        .await
+        .unwrap();
+    let named: Value = serde_json::from_slice(&named).unwrap();
+    assert_eq!(
+        named["authorization_servers"],
+        json!(["https://id.example"])
+    );
+    assert_eq!(named["resource"], "berth");
+
+    // A person approves on another device, and berth has waited for it.
+    let client = Client {
+        issuer: base,
+        id: "berth-cli".into(),
+        secret: None,
+        scope: Some("berth:operate".into()),
+        audience: None,
+    };
+    let mut shown = None;
+    let tokens = client
+        .device(|asked| shown = asked["user_code"].as_str().map(str::to_owned))
+        .await
+        .unwrap();
+    assert_eq!(shown.as_deref(), Some("WDJB-MJHT"));
+    assert_eq!(tokens.refresh.as_deref(), Some("r1"));
+    assert!(tokens.expires > jsonwebtoken::get_current_timestamp());
+    assert_eq!(role(tokens.access.clone()).await, "operate");
+    // The login is renewed without them, and a refresh token is used once.
+    let renewed = client.refresh("r1").await.unwrap();
+    assert_eq!(renewed.refresh.as_deref(), Some("r2"));
+    assert_eq!(role(renewed.access).await, "view");
+    assert!(
+        client
+            .refresh("stale")
+            .await
+            .unwrap_err()
+            .contains("invalid_grant")
+    );
+
+    // A client with a secret needs nobody.
+    assert!(client.credentials().await.is_err());
+    let service = Client {
+        secret: Some("s3cret".into()),
+        ..client.clone()
+    };
+    assert_eq!(
+        role(service.credentials().await.unwrap().access).await,
+        "admin"
+    );
+    let stranger = Client {
+        id: "other".into(),
+        ..client
+    };
+    assert!(stranger.device(|_| {}).await.is_err());
+
+    // Tokens are kept per server, private to the user.
+    let paths = Paths {
+        config_dir: dir.path().join("config"),
+        data_dir: dir.path().join("client"),
+    };
+    oauth::save(&paths, &server, Some(&tokens)).unwrap();
+    assert_eq!(oauth::load(&paths, &server), Some(tokens));
+    assert_eq!(oauth::load(&paths, "http://another"), None);
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(paths.data_dir.join("oauth.json"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+    oauth::save(&paths, &server, None).unwrap();
+    assert_eq!(oauth::load(&paths, &server), None);
+}

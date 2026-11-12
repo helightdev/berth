@@ -3,9 +3,11 @@
 //! The commands that only read the store (`inbox`, `kv`) are here too.
 
 mod api;
+mod auth;
 mod docs;
 #[cfg(feature = "web")]
 mod page;
+mod setup;
 #[cfg(test)]
 mod tests;
 
@@ -103,21 +105,33 @@ pub struct Serve {
     pub store: Mutex<Store>,
     pub hosts: RwLock<BTreeMap<String, Arc<Remote>>>,
     pub events: broadcast::Sender<Event>,
-    /// Asked of clients that come over TCP.
-    pub token: Option<String>,
+    /// Who is let in over TCP, and as what.
+    pub auth: auth::Auth,
     pub jobs_dir: PathBuf,
+    /// The tasks that take in the hosts' channels, by host.
+    followers: Mutex<BTreeMap<String, tokio::task::AbortHandle>>,
+    /// The sudo passwords given at the start, which outlive a changed profile.
+    passwords: Mutex<BTreeMap<String, String>>,
 }
 
 impl Serve {
+    /// With only the server's own token to get in by.
+    #[cfg(test)]
     pub fn new(paths: Paths, store: Store, token: Option<String>) -> Arc<Serve> {
+        Serve::with(paths, store, auth::Auth::token(token))
+    }
+
+    pub fn with(paths: Paths, store: Store, auth: auth::Auth) -> Arc<Serve> {
         let jobs_dir = paths.data_dir.join("jobs");
         Arc::new(Serve {
             paths,
             store: Mutex::new(store),
             hosts: RwLock::new(BTreeMap::new()),
             events: broadcast::channel(1024).0,
-            token,
+            auth,
             jobs_dir,
+            followers: Mutex::new(BTreeMap::new()),
+            passwords: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -133,31 +147,68 @@ impl Serve {
             .unwrap()
             .insert(remote.name.clone(), remote.clone());
         if remote.link.is_some() {
-            tokio::spawn(take_in(self.clone(), remote.clone()));
+            let follower = tokio::spawn(take_in(self.clone(), remote.clone()));
+            let before = self
+                .followers
+                .lock()
+                .unwrap()
+                .insert(remote.name.clone(), follower.abort_handle());
+            if let Some(before) = before {
+                before.abort();
+            }
         }
         remote
+    }
+
+    /// Drop what is known of a host, as after its profile changed or went.
+    /// [`Serve::refresh`] takes it up again from its profile.
+    pub fn forget(&self, name: &str) {
+        self.hosts.write().unwrap().remove(name);
+        if let Some(follower) = self.followers.lock().unwrap().remove(name) {
+            follower.abort();
+        }
     }
 
     /// Take up saved hosts that are not known yet. Only at the start may a
     /// password be asked for on the terminal.
     pub fn refresh(self: &Arc<Self>, start: bool) {
-        for host in Host::all(&self.paths) {
-            if self.host(&host.name).is_some() {
+        for (name, _) in self.paths.hosts() {
+            if self.host(&name).is_some() {
                 continue;
             }
-            let password = match (start, host.asks_password()) {
+            let Ok(host) = Host::load(&self.paths, &name) else {
+                continue;
+            };
+            // A link that is a command of its own goes through no sudo of ours.
+            let asks = host.asks_password() && !host.config["builder"]["link"].is_array();
+            let password = match (start, asks) {
                 (_, false) => Ok(None),
                 (true, true) => host.sudo_password().map_err(|error| error.to_string()),
-                (false, true) => std::env::var("BERTH_SUDO_PASSWORD").map(Some).map_err(|_| {
-                    format!(
-                        "{} asks for a sudo password: start berth serve again",
-                        host.name
-                    )
-                }),
+                (false, true) => self
+                    .passwords
+                    .lock()
+                    .unwrap()
+                    .get(&host.name)
+                    .cloned()
+                    .or_else(|| std::env::var("BERTH_SUDO_PASSWORD").ok())
+                    .map(Some)
+                    .ok_or_else(|| {
+                        format!(
+                            "{} asks for a sudo password: start berth serve again",
+                            host.name
+                        )
+                    }),
             };
-            let link = password.clone().and_then(|password| {
-                host.link(password.as_deref())
-                    .map_err(|error| error.to_string())
+            if let Ok(Some(password)) = &password {
+                let mut passwords = self.passwords.lock().unwrap();
+                passwords.insert(host.name.clone(), password.clone());
+            }
+            let reachable = !host.address().is_empty() || host.config["builder"]["link"].is_array();
+            let link = password.clone().and_then(|password| match reachable {
+                true => host
+                    .link(password.as_deref())
+                    .map_err(|error| error.to_string()),
+                false => Err("its profile has no SSH address yet".into()),
             });
             let remote = match link {
                 Ok(spec) => Remote::new(&host.name, host.address(), spec),
@@ -340,7 +391,9 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
         Some(_) => Some(token(paths)?),
         None => None,
     };
-    let state = Serve::new(copy(paths), store, token);
+    let auth = auth::Auth::configured(paths, token)?;
+    let admitted = auth.describe();
+    let state = Serve::with(copy(paths), store, auth);
     std::fs::create_dir_all(&state.jobs_dir)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -370,7 +423,7 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
             Some(address) => {
                 let tcp = tokio::net::TcpListener::bind(address).await?;
                 println!(
-                    "Listening on http://{} (token in {})",
+                    "Listening on http://{} for {admitted} (token in {})",
                     tcp.local_addr()?,
                     state.paths.data_dir.join("serve.token").display()
                 );

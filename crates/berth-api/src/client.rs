@@ -149,10 +149,14 @@ impl Client {
         headers: &[(&str, &str)],
         body: Bytes,
     ) -> Result<Response> {
-        let mut request = hyper::Request::builder()
-            .method(method)
-            .uri(path)
-            .header("host", "berth");
+        let mut request = hyper::Request::builder().method(method).uri(path);
+        // Over a socket the name means nothing; a server on the network wants its own.
+        if !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("host"))
+        {
+            request = request.header("host", "berth");
+        }
         for (name, value) in headers {
             request = request.header(*name, *value);
         }

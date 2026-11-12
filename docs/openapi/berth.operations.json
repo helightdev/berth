@@ -1,6 +1,58 @@
 {
   "components": {
     "schemas": {
+      "AccessInfo": {
+        "properties": {
+          "role": {
+            "description": "`view`, `operate` or `admin`: each includes the ones before.",
+            "type": "string"
+          },
+          "setup": {
+            "description": "Whether an admin may set the server up over the network.",
+            "type": "boolean"
+          },
+          "subject": {
+            "description": "Whose access token it is, when it is one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "role",
+          "setup"
+        ],
+        "type": "object"
+      },
+      "ApplyWith": {
+        "description": "What applying may be given.",
+        "properties": {
+          "sudo_password": {
+            "description": "The SSH user's sudo password, for a host that asks for one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Checked": {
+        "properties": {
+          "lines": {
+            "description": "One line per thing checked, starting with ✓, ! or ✗.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "lines"
+        ],
+        "type": "object"
+      },
       "Done": {
         "properties": {
           "ok": {
@@ -344,6 +396,228 @@
         ],
         "type": "object"
       },
+      "Registries": {
+        "properties": {
+          "registries": {
+            "additionalProperties": {},
+            "description": "By name: `type` (nexus, npm, raw or docker), `url`, `username` and, for\na Nexus server, its `repositories`.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "registries"
+        ],
+        "type": "object"
+      },
+      "SecretNames": {
+        "description": "The names of the secrets the server keeps. Their values never leave it\nexcept to a host.",
+        "properties": {
+          "names": {
+            "description": "A registry's password or token is `registry/NAME`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "names"
+        ],
+        "type": "object"
+      },
+      "SecretValue": {
+        "properties": {
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "type": "object"
+      },
+      "Seed": {
+        "description": "What a new machine is started with to become the host.",
+        "properties": {
+          "user_data": {
+            "description": "cloud-init user data, for the provider's field of that name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_data"
+        ],
+        "type": "object"
+      },
+      "Session": {
+        "properties": {
+          "cols": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ended": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exit_code": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SessionKind"
+          },
+          "last_output": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lost": {
+            "description": "It ended with berthd or the host, not by itself.",
+            "type": "boolean"
+          },
+          "output_size": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rows": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "started": {
+            "type": "string"
+          },
+          "started_by": {
+            "$ref": "#/components/schemas/From"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/Step"
+            },
+            "type": "array"
+          },
+          "task": {
+            "description": "The task it was started for, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          },
+          "viewers": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "command",
+          "user",
+          "started_by",
+          "started"
+        ],
+        "type": "object"
+      },
+      "SessionKind": {
+        "enum": [
+          "process",
+          "terminal"
+        ],
+        "type": "string"
+      },
+      "Setting": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "meaning": {
+            "type": "string"
+          },
+          "open": {
+            "description": "Whether `settings.set` takes it.",
+            "type": "boolean"
+          },
+          "value": {
+            "description": "Empty when it is not set, and for a token.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "value",
+          "meaning",
+          "open"
+        ],
+        "type": "object"
+      },
+      "SettingValue": {
+        "properties": {
+          "value": {
+            "description": "Empty to go back to the default.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "type": "object"
+      },
+      "Step": {
+        "properties": {
+          "exit_code": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "user"
+        ],
+        "type": "object"
+      },
       "Version": {
         "properties": {
           "api": {
@@ -367,7 +641,7 @@
       }
     }
   },
-  "description": "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME. Only the `secrets` task is refused.",
+  "description": "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME. Only the `secrets` task is refused; `hosts.secrets` sends the server's own. Each operation names the least role a caller over TCP needs: view, operate or admin.",
   "hosts": true,
   "operations": [
     {
@@ -385,7 +659,26 @@
           "$ref": "#/components/schemas/Version"
         }
       },
+      "role": "view",
       "summary": "The version of berth serve and of its API."
+    },
+    {
+      "args": [],
+      "group": "general",
+      "http": {
+        "method": "GET",
+        "path": "/v1/access"
+      },
+      "kind": "call",
+      "name": "access",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/AccessInfo"
+        }
+      },
+      "role": "view",
+      "summary": "What the caller may do here."
     },
     {
       "args": [],
@@ -405,6 +698,7 @@
           "type": "array"
         }
       },
+      "role": "view",
       "summary": "The saved hosts and whether each answers."
     },
     {
@@ -435,6 +729,7 @@
           "$ref": "#/components/schemas/HostInfo"
         }
       },
+      "role": "view",
       "summary": "One host: its address, and whether it answers."
     },
     {
@@ -454,6 +749,114 @@
       ],
       "group": "hosts",
       "http": {
+        "method": "DELETE",
+        "path": "/v1/hosts/{name}"
+      },
+      "kind": "call",
+      "name": "hosts.remove",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "role": "admin",
+      "summary": "Remove a host's profile. The host itself is left as it is."
+    },
+    {
+      "args": [
+        {
+          "description": "A saved host",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such host",
+          "status": "404"
+        }
+      ],
+      "group": "hosts",
+      "http": {
+        "method": "GET",
+        "path": "/v1/hosts/{name}/profile"
+      },
+      "kind": "call",
+      "name": "hosts.profile",
+      "portal": true,
+      "result": {
+        "schema": {}
+      },
+      "role": "admin",
+      "summary": "A host's profile, as it is saved."
+    },
+    {
+      "args": [
+        {
+          "description": "The name to save it under: letters, digits, `-`, `_` and `.`",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "data": {
+        "description": "The whole profile",
+        "schema": {}
+      },
+      "errors": [
+        {
+          "description": "Not a profile, or not a name",
+          "status": "400"
+        }
+      ],
+      "group": "hosts",
+      "http": {
+        "method": "PUT",
+        "path": "/v1/hosts/{name}/profile"
+      },
+      "kind": "call",
+      "name": "hosts.save",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "role": "admin",
+      "summary": "Save a host's profile: a new host, or a changed one."
+    },
+    {
+      "args": [
+        {
+          "description": "A saved host",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "data": {
+        "description": "Nothing, or what the run needs that the server does not have",
+        "schema": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/components/schemas/ApplyWith"
+            }
+          ]
+        }
+      },
+      "errors": [
+        {
+          "description": "No such host",
+          "status": "404"
+        }
+      ],
+      "group": "hosts",
+      "http": {
         "method": "POST",
         "path": "/v1/hosts/{name}/apply"
       },
@@ -465,7 +868,337 @@
           "$ref": "#/components/schemas/JobInfo"
         }
       },
+      "role": "admin",
       "summary": "Apply the host's profile to it, as a job."
+    },
+    {
+      "args": [
+        {
+          "description": "A saved host",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "The profile cannot be installed this way; the message says why",
+          "status": "400"
+        },
+        {
+          "description": "No such host",
+          "status": "404"
+        }
+      ],
+      "group": "hosts",
+      "http": {
+        "method": "POST",
+        "path": "/v1/hosts/{name}/seed"
+      },
+      "kind": "call",
+      "name": "hosts.seed",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Seed"
+        }
+      },
+      "role": "admin",
+      "summary": "Render the cloud-init seed that installs the host on a new machine."
+    },
+    {
+      "args": [
+        {
+          "description": "A saved host",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "A secret has no value, or a registry is not known",
+          "status": "400"
+        },
+        {
+          "description": "No such host",
+          "status": "404"
+        }
+      ],
+      "group": "hosts",
+      "http": {
+        "method": "POST",
+        "path": "/v1/hosts/{name}/secrets"
+      },
+      "kind": "call",
+      "name": "hosts.secrets",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Session"
+        }
+      },
+      "role": "admin",
+      "summary": "Send the host the secrets and registry logins its profile names."
+    },
+    {
+      "args": [],
+      "group": "secrets",
+      "http": {
+        "method": "GET",
+        "path": "/v1/secrets"
+      },
+      "kind": "call",
+      "name": "secrets.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/SecretNames"
+        }
+      },
+      "role": "admin",
+      "summary": "The names of the secrets."
+    },
+    {
+      "args": [
+        {
+          "description": "The secret; `registry/NAME` is a registry's login",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "data": {
+        "description": "The value",
+        "schema": {
+          "$ref": "#/components/schemas/SecretValue"
+        }
+      },
+      "errors": [
+        {
+          "description": "Not a name",
+          "status": "400"
+        }
+      ],
+      "group": "secrets",
+      "http": {
+        "method": "PUT",
+        "path": "/v1/secrets/{name}"
+      },
+      "kind": "call",
+      "name": "secrets.set",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "role": "admin",
+      "summary": "Set a secret's value."
+    },
+    {
+      "args": [
+        {
+          "description": "The secret",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such secret",
+          "status": "404"
+        }
+      ],
+      "group": "secrets",
+      "http": {
+        "method": "DELETE",
+        "path": "/v1/secrets/{name}"
+      },
+      "kind": "call",
+      "name": "secrets.remove",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "role": "admin",
+      "summary": "Remove a secret."
+    },
+    {
+      "args": [],
+      "group": "registries",
+      "http": {
+        "method": "GET",
+        "path": "/v1/registries"
+      },
+      "kind": "call",
+      "name": "registries.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Registries"
+        }
+      },
+      "role": "admin",
+      "summary": "The registries."
+    },
+    {
+      "args": [
+        {
+          "description": "The registry's name here",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "data": {
+        "description": "`type`, `url`, and optionally `username` and `repositories`",
+        "schema": {}
+      },
+      "errors": [
+        {
+          "description": "Not a registry",
+          "status": "400"
+        }
+      ],
+      "group": "registries",
+      "http": {
+        "method": "PUT",
+        "path": "/v1/registries/{name}"
+      },
+      "kind": "call",
+      "name": "registries.save",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "role": "admin",
+      "summary": "Add a registry, or change one."
+    },
+    {
+      "args": [
+        {
+          "description": "A registry",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such registry",
+          "status": "404"
+        }
+      ],
+      "group": "registries",
+      "http": {
+        "method": "DELETE",
+        "path": "/v1/registries/{name}"
+      },
+      "kind": "call",
+      "name": "registries.remove",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "role": "admin",
+      "summary": "Remove a registry with its stored login."
+    },
+    {
+      "args": [
+        {
+          "description": "A registry",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such registry",
+          "status": "404"
+        }
+      ],
+      "group": "registries",
+      "http": {
+        "method": "POST",
+        "path": "/v1/registries/{name}/check"
+      },
+      "kind": "call",
+      "name": "registries.check",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Checked"
+        }
+      },
+      "role": "admin",
+      "summary": "Whether a registry answers and takes its login."
+    },
+    {
+      "args": [],
+      "group": "settings",
+      "http": {
+        "method": "GET",
+        "path": "/v1/settings"
+      },
+      "kind": "call",
+      "name": "settings.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/Setting"
+          },
+          "type": "array"
+        }
+      },
+      "role": "admin",
+      "summary": "The server's settings."
+    },
+    {
+      "args": [
+        {
+          "description": "The setting",
+          "in": "path",
+          "name": "key",
+          "required": true
+        }
+      ],
+      "data": {
+        "description": "The value",
+        "schema": {
+          "$ref": "#/components/schemas/SettingValue"
+        }
+      },
+      "errors": [
+        {
+          "description": "This one is set on the server itself",
+          "status": "403"
+        }
+      ],
+      "group": "settings",
+      "http": {
+        "method": "PUT",
+        "path": "/v1/settings/{key}"
+      },
+      "kind": "call",
+      "name": "settings.set",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "role": "admin",
+      "summary": "Change one of the settings that are open to callers."
     },
     {
       "args": [
@@ -493,6 +1226,7 @@
           "type": "array"
         }
       },
+      "role": "view",
       "summary": "The jobs, newest first."
     },
     {
@@ -523,6 +1257,7 @@
           "$ref": "#/components/schemas/JobInfo"
         }
       },
+      "role": "view",
       "summary": "One job's state."
     },
     {
@@ -567,6 +1302,7 @@
         }
       ],
       "resumable": true,
+      "role": "view",
       "sends": [],
       "summary": "A job's output as it is produced."
     },
@@ -633,6 +1369,7 @@
           "$ref": "#/components/schemas/Output"
         }
       },
+      "role": "view",
       "summary": "What a job wrote, by bytes or by lines."
     },
     {
@@ -686,6 +1423,7 @@
           "$ref": "#/components/schemas/Inbox"
         }
       },
+      "role": "view",
       "summary": "Messages taken in from the hosts' channels."
     },
     {
@@ -732,6 +1470,7 @@
         }
       ],
       "resumable": false,
+      "role": "view",
       "sends": [],
       "summary": "Messages as they are taken in from the hosts."
     },
@@ -769,6 +1508,7 @@
           "$ref": "#/components/schemas/Done"
         }
       },
+      "role": "operate",
       "summary": "Mark a message as done."
     },
     {
@@ -805,6 +1545,7 @@
           "$ref": "#/components/schemas/Done"
         }
       },
+      "role": "operate",
       "summary": "Mark a message as open again."
     },
     {
@@ -829,6 +1570,7 @@
           "$ref": "#/components/schemas/KvList"
         }
       },
+      "role": "view",
       "summary": "The keys of a namespace with their values."
     },
     {
@@ -872,6 +1614,7 @@
         }
       ],
       "resumable": false,
+      "role": "view",
       "sends": [],
       "summary": "Changes to a namespace of the key-value store."
     },
@@ -909,6 +1652,7 @@
           "$ref": "#/components/schemas/KvEntry"
         }
       },
+      "role": "view",
       "summary": "One key's value and revision."
     },
     {
@@ -967,6 +1711,7 @@
           "$ref": "#/components/schemas/KvWritten"
         }
       },
+      "role": "operate",
       "summary": "Write a key, optionally only if nobody wrote in between."
     },
     {
@@ -1014,6 +1759,7 @@
           "$ref": "#/components/schemas/Done"
         }
       },
+      "role": "operate",
       "summary": "Remove a key."
     },
     {
@@ -1075,6 +1821,7 @@
         }
       ],
       "resumable": false,
+      "role": "view",
       "sends": [
         {
           "binary": false,

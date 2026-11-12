@@ -728,8 +728,8 @@ impl App {
             return vec![];
         }
         if action == Action::Manage {
-            // How a server's host is reached is the server's to say.
-            if self.served().is_some() {
+            // How a server's host is reached is for whoever sets the server up.
+            if self.locked() {
                 return vec![];
             }
             return vec![SshHost, SshUser, SshPort, SshKey, AskBecomePass];
@@ -923,7 +923,7 @@ impl App {
             }
             Step::Install => {
                 rows.push(heading("How To Install"));
-                for action in Action::METHODS {
+                for action in self.methods().iter().copied() {
                     let mark = if action == self.action { "●" } else { "○" };
                     rows.push(Row::entry(
                         format!("  {mark} {}", action.label()),
@@ -961,7 +961,7 @@ impl App {
                         self.text(Field::SshHost)
                     )));
                 }
-                if self.served().is_none() {
+                if !self.locked() {
                     rows.extend(self.field_rows());
                 }
                 for problem in self.problems() {
@@ -978,8 +978,8 @@ impl App {
                     )));
                     rows.extend(group);
                 }
-                // Set-up and applying it happen where the profile is: on the server.
-                if self.served().is_none() {
+                // Set-up and applying it are for whoever may set the server up.
+                if !self.locked() {
                     rows.push(Row::info(""));
                     rows.push(heading("Set-Up"));
                     rows.push(Row::entry(
@@ -1166,11 +1166,40 @@ impl App {
         self.config["builder"]["served"].as_str()
     }
 
+    /// A server's host that this berth may use and not set up.
+    pub fn locked(&self) -> bool {
+        self.config["builder"]["served_only"] == true
+    }
+
+    /// The server a host is set up on through this berth.
+    fn server(&self) -> Option<berth_core::server::Server> {
+        self.served()?;
+        (!self.locked())
+            .then(|| self.host_profile().served())
+            .flatten()
+    }
+
+    fn name(&self) -> String {
+        self.host_profile().name
+    }
+
+    /// The ways to install this host: for a server's host those the server
+    /// does itself.
+    pub fn methods(&self) -> &'static [Action] {
+        match self.served() {
+            Some(_) => &[Action::CloudSeed, Action::Ssh],
+            None => &Action::METHODS,
+        }
+    }
+
     pub fn set_step(&mut self, step: Step) {
         if let Some(server) = self.served()
+            && self.locked()
             && step != Step::Manage
         {
-            self.status = format!("This host is set up on the berth server at {server}");
+            self.status = format!(
+                "This host is set up on the berth server at {server}, by whoever has the role admin there"
+            );
             return;
         }
         self.step = step;
@@ -1903,6 +1932,18 @@ impl App {
             return;
         };
         let mut body = self.host.task_body(&task, &values);
+        // A server sends its own secrets, as a session of the host like any other.
+        if task.input.as_deref() == Some("secrets")
+            && let Some(server) = self.server()
+        {
+            let _ = self.save();
+            let sent = server.call("hosts.secrets", json!({"name": self.name()}), None);
+            self.status = match sent {
+                Ok(_) => "The berth server is sending the secrets. The session is below.".into(),
+                Err(error) => error.to_string(),
+            };
+            return;
+        }
         // Secrets are built here and travel on the task's standard input.
         if task.input.as_deref() == Some("secrets") {
             let payload =
@@ -1947,6 +1988,12 @@ impl App {
         serde_json::to_writer_pretty(&mut file, &self.config)?;
         writeln!(file)?;
         file.persist(&self.path)?;
+        // A server's host is the server's to keep.
+        if let Some(server) = self.server() {
+            server
+                .save_host(&self.name(), &self.config)
+                .map_err(|error| format!("The berth server did not take the profile: {error}"))?;
+        }
         self.saved = self.config.clone();
         Ok(())
     }
@@ -1959,6 +2006,23 @@ impl App {
     /// The command for the chosen action, and the private files it reads.
     fn command(&self) -> Result<(Command, Vec<tempfile::NamedTempFile>)> {
         let action = self.action;
+        // A server's host is installed by the server: berth itself asks it to.
+        if let Some(server) = self.served() {
+            let verb = match action {
+                Action::Ssh => "apply",
+                Action::CloudSeed => "seed",
+                _ => {
+                    return Err(format!(
+                        "{} is done on a machine that keeps the host itself, not through the berth server at {server}",
+                        action.label()
+                    )
+                    .into());
+                }
+            };
+            let mut command = Command::new(std::env::current_exe()?);
+            command.arg(verb).arg(self.name());
+            return Ok((command, vec![]));
+        }
         // Secrets go to private files rather than argv. They live until the command ends.
         let mut extra = tempfile::NamedTempFile::new()?;
         let inventory = tempfile::NamedTempFile::new()?;
@@ -2108,7 +2172,8 @@ impl App {
     /// its address, so the seed points at what was just published.
     fn publish_release(&mut self) -> Result<()> {
         let store = self.text(Field::ReleaseStore).to_owned();
-        if self.action != Action::CloudSeed || store.is_empty() {
+        // A server publishes the release itself when it renders the seed.
+        if self.action != Action::CloudSeed || store.is_empty() || self.served().is_some() {
             return Ok(());
         }
         let url = crate::registry::publish_from(

@@ -29,6 +29,10 @@ Usage:
   berth iso HOST [--write /dev/sdX]
                              build the unattended installer; write it to a USB drive
   berth seed HOST            render the cloud-init seed
+  berth apply HOST           apply the host's profile to it over SSH
+  berth login                log in to a berth server that takes access tokens of an
+                             OAuth 2.0 issuer; berth logout forgets the login
+  berth remove HOST          forget a host; the machine is left as it is
   berth tasks HOST           what the host can do: its tasks and those of its plugins
   berth run HOST TASK [NAME=VALUE…] [--yes]
                              run one of them and leave with its exit code
@@ -100,7 +104,11 @@ fn show_config(paths: &Paths) -> Result<()> {
     }
     println!();
     for (key, help) in paths::SETTINGS {
-        let value = settings.get(*key).and_then(|value| value.as_str());
+        // What lets someone in is not for a screen.
+        let value = match settings.get(*key).and_then(|value| value.as_str()) {
+            Some(_) if key.ends_with("token") || key.ends_with("secret") => Some("(set)"),
+            value => value,
+        };
         println!("{key} = {}\n    {help}", value.unwrap_or("(not set)"));
     }
     Ok(())
@@ -141,10 +149,21 @@ fn open(paths: &Paths, host: &str) -> Result<App> {
         Err(error) => return Err(error.into()),
     };
     let mut app = App::new(path, parse_config(&data)?);
+    // With a server set, a new host is one of the server's.
+    if let (false, Some(server)) = (existing, berth_core::server::Server::configured(paths)) {
+        if !server.admin(paths) {
+            return Err(format!(
+                "No host {host} on the berth server at {}. Adding one needs the role admin there.",
+                server.url
+            )
+            .into());
+        }
+        app.config["builder"]["served"] = json!(server.url);
+    }
     app.build_dir = paths.build_dir();
     app.iso_dir = paths.iso_dir();
     app.load_plugins(paths.config_dir.join("plugins"));
-    app.config_dir = paths.config_dir.clone();
+    app.config_dir = paths.store_dir();
     app.load_access();
     app.detect();
     // A host that is installed opens on its maintenance tab.
@@ -299,6 +318,8 @@ fn run() -> Result<()> {
         "asyncapi",
         "operations",
         "update",
+        "login",
+        "logout",
     ];
     if let Some(server) = berth_core::server::Server::configured(&paths)
         && !args.first().is_some_and(|verb| local.contains(verb))
@@ -457,6 +478,13 @@ fn run() -> Result<()> {
         ["config", key, value] => return paths.set(key, value),
         ["iso", host] => return build_installer(&paths, host, None),
         ["iso", host, "--write", device] => return build_installer(&paths, host, Some(device)),
+        ["login"] => return commands::login(&paths),
+        ["logout"] => return commands::logout(&paths),
+        ["apply", host] => return commands::apply(&paths, host),
+        ["remove", host] => return commands::remove(&paths, host),
+        ["seed", host] if berth_core::server::Server::configured(&paths).is_some() => {
+            return commands::seed(&paths, host);
+        }
         ["seed", host] => {
             let mut app = open(&paths, host)?;
             app.action = Action::CloudSeed;

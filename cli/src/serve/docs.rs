@@ -19,7 +19,8 @@ pub fn openapi() -> Value {
     api.info.description = Some(
         "One API over all hosts, with the inbox and a key-value store. Everything under \
          /v1/hosts/{name}/ that is not named here is that host's own API, passed through unchanged; \
-         only the `secrets` task is refused. Over TCP every request carries the token as a bearer."
+         only the `secrets` task is refused, which `hosts.secrets` stands in for. Over TCP every request \
+         carries the server's token or an OAuth 2.0 access token as a bearer, and needs the role its operation names."
             .into(),
     );
     api.info.license = None;
@@ -119,7 +120,7 @@ pub fn operations() -> Value {
     let own = serde_json::to_value(own).expect("the document is JSON");
     let mut document = berthd::http::operations_of(
         "berth serve",
-        "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME. Only the `secrets` task is refused.",
+        "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME. Only the `secrets` task is refused; `hosts.secrets` sends the server's own. Each operation names the least role a caller over TCP needs: view, operate or admin.",
         berth_api::ops::SERVE,
         &own,
         &|op| streams::SERVE.iter().find(|stream| stream.path == op.path),

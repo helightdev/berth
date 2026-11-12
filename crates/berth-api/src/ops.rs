@@ -54,6 +54,34 @@ pub enum Body {
     Bytes,
 }
 
+/// What a caller has to be allowed for an operation. Each role includes the
+/// ones before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Role {
+    /// Look: hosts, sessions and their output, logs, the inbox, the store.
+    View,
+    /// Use the hosts: run tasks and commands, write files, control units.
+    Operate,
+    /// Set up: profiles, secrets, registries, and applying them to hosts.
+    Admin,
+}
+
+impl Role {
+    pub const ALL: [Role; 3] = [Role::View, Role::Operate, Role::Admin];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Role::View => "view",
+            Role::Operate => "operate",
+            Role::Admin => "admin",
+        }
+    }
+
+    pub fn named(name: &str) -> Option<Role> {
+        Role::ALL.into_iter().find(|role| role.name() == name)
+    }
+}
+
 #[derive(Debug)]
 pub struct Op {
     /// `group.verb`; the part before the dot groups the reference.
@@ -66,6 +94,8 @@ pub struct Op {
     pub headers: &'static [(&'static str, &'static str)],
     /// Why the portal does not carry it, when it does not.
     pub http_only: &'static str,
+    /// The least role that may call it on `berth serve`.
+    pub role: Role,
 }
 
 const fn call(name: &'static str, method: &'static str, path: &'static str) -> Op {
@@ -77,6 +107,11 @@ const fn call(name: &'static str, method: &'static str, path: &'static str) -> O
         body: Body::Json,
         headers: &[],
         http_only: "",
+        // Reading is looking, anything else is using.
+        role: match method.as_bytes() {
+            b"GET" => Role::View,
+            _ => Role::Operate,
+        },
     }
 }
 
@@ -89,7 +124,17 @@ const fn stream(name: &'static str, path: &'static str) -> Op {
         body: Body::Json,
         headers: &[],
         http_only: "",
+        role: Role::Operate,
     }
+}
+
+const fn role(mut op: Op, role: Role) -> Op {
+    op.role = role;
+    op
+}
+
+const fn admin(op: Op) -> Op {
+    role(op, Role::Admin)
 }
 
 const fn bytes(mut op: Op) -> Op {
@@ -126,19 +171,19 @@ pub const HOST: &[Op] = &[
     call("system.stats", "GET", "/v1/stats"),
     call("system.power", "POST", "/v1/power/{verb}"),
     call("desktop.screenshot", "GET", "/v1/screenshot"),
-    call("files.read", "GET", "/v1/files"),
+    role(call("files.read", "GET", "/v1/files"), Role::Operate),
     bytes(call("files.write", "PUT", "/v1/files")),
     call("files.delete", "DELETE", "/v1/files"),
     call("units.list", "GET", "/v1/units"),
     call("units.get", "GET", "/v1/units/{unit}"),
     call("units.act", "POST", "/v1/units/{unit}/{verb}"),
     call("logs.read", "GET", "/v1/logs"),
-    stream("logs.follow", "/v1/logs"),
+    role(stream("logs.follow", "/v1/logs"), Role::View),
     call("processes.list", "GET", "/v1/processes"),
     call("processes.signal", "POST", "/v1/processes/{pid}/signal"),
     call("channel.publish", "POST", "/v1/channel/{*topic}"),
     call("channel.read", "GET", "/v1/channel"),
-    stream("channel.listen", "/v1/channel"),
+    role(stream("channel.listen", "/v1/channel"), Role::View),
     call("services.list", "GET", "/v1/services"),
     call(
         "services.call",
@@ -153,19 +198,38 @@ const IF_MATCH: (&str, &str) = ("if_match", "if-match");
 /// The operations of `berth serve` itself. A host's are reached with `host`.
 pub const SERVE: &[Op] = &[
     call("version", "GET", "/v1/version"),
+    call("access", "GET", "/v1/access"),
     call("hosts.list", "GET", "/v1/hosts"),
     call("hosts.get", "GET", "/v1/hosts/{name}"),
-    call("hosts.apply", "POST", "/v1/hosts/{name}/apply"),
+    admin(call("hosts.remove", "DELETE", "/v1/hosts/{name}")),
+    admin(call("hosts.profile", "GET", "/v1/hosts/{name}/profile")),
+    admin(call("hosts.save", "PUT", "/v1/hosts/{name}/profile")),
+    admin(call("hosts.apply", "POST", "/v1/hosts/{name}/apply")),
+    admin(call("hosts.seed", "POST", "/v1/hosts/{name}/seed")),
+    admin(call("hosts.secrets", "POST", "/v1/hosts/{name}/secrets")),
+    admin(call("secrets.list", "GET", "/v1/secrets")),
+    admin(call("secrets.set", "PUT", "/v1/secrets/{name}")),
+    admin(call("secrets.remove", "DELETE", "/v1/secrets/{name}")),
+    admin(call("registries.list", "GET", "/v1/registries")),
+    admin(call("registries.save", "PUT", "/v1/registries/{name}")),
+    admin(call("registries.remove", "DELETE", "/v1/registries/{name}")),
+    admin(call(
+        "registries.check",
+        "POST",
+        "/v1/registries/{name}/check",
+    )),
+    admin(call("settings.list", "GET", "/v1/settings")),
+    admin(call("settings.set", "PUT", "/v1/settings/{key}")),
     call("jobs.list", "GET", "/v1/jobs"),
     call("jobs.get", "GET", "/v1/jobs/{id}"),
-    stream("jobs.follow", "/v1/jobs/{id}"),
+    role(stream("jobs.follow", "/v1/jobs/{id}"), Role::View),
     call("jobs.output", "GET", "/v1/jobs/{id}/output"),
     call("inbox.list", "GET", "/v1/inbox"),
-    stream("inbox.follow", "/v1/inbox"),
+    role(stream("inbox.follow", "/v1/inbox"), Role::View),
     call("inbox.done", "POST", "/v1/inbox/{host}/{id}/done"),
     call("inbox.reopen", "DELETE", "/v1/inbox/{host}/{id}/done"),
     call("kv.list", "GET", "/v1/kv/{namespace}"),
-    stream("kv.follow", "/v1/kv/{namespace}"),
+    role(stream("kv.follow", "/v1/kv/{namespace}"), Role::View),
     call("kv.get", "GET", "/v1/kv/{namespace}/{key}"),
     headers(
         call("kv.set", "PUT", "/v1/kv/{namespace}/{key}"),
@@ -175,7 +239,7 @@ pub const SERVE: &[Op] = &[
         call("kv.delete", "DELETE", "/v1/kv/{namespace}/{key}"),
         &[IF_MATCH],
     ),
-    stream("events.follow", "/v1/events"),
+    role(stream("events.follow", "/v1/events"), Role::View),
 ];
 
 pub fn find<'a>(table: &'a [Op], name: &str) -> Option<&'a Op> {
@@ -274,6 +338,15 @@ mod tests {
             "sessions.list"
         );
         assert!(recognise(HOST, Kind::Call, "GET", "/v1/nothing").is_none());
+        // Looking is for everyone who is let in, set-up only for an admin.
+        let role = |table, name| find(table, name).unwrap().role;
+        assert_eq!(role(HOST, "sessions.list"), Role::View);
+        assert_eq!(role(HOST, "files.read"), Role::Operate);
+        assert_eq!(role(HOST, "sessions.attach"), Role::Operate);
+        assert_eq!(role(SERVE, "hosts.apply"), Role::Admin);
+        assert_eq!(role(SERVE, "kv.set"), Role::Operate);
+        assert!(Role::View < Role::Operate && Role::Operate < Role::Admin);
+        assert_eq!(Role::named("operate"), Some(Role::Operate));
         assert_eq!(
             names("/v1/channel/{*topic}").collect::<Vec<_>>(),
             vec![("topic", true)]

@@ -232,6 +232,13 @@ function operationSection(op, program, schemas, used) {
     facts.push(op.resumable ? 'It resumes from `since`.' : 'It does not resume.');
   }
   if (op.portal === false) facts.push(`Not on the portal${op.http_only ? `, because ${md(op.http_only)}` : ''}.`);
+  if (op.role) {
+    facts.push(
+      program.serve
+        ? `Needs the role \`${op.role}\`.`
+        : `Through \`berth serve\` it needs the role \`${op.role}\`.`,
+    );
+  }
   if (facts.length) text += facts.join(' ') + '\n\n';
 
   if (op.args?.length) {

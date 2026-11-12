@@ -44,6 +44,42 @@ pub const SETTINGS: &[(&str, &str)] = &[
         "retention_days",
         "days berth serve keeps messages and jobs in its store (default: 90)",
     ),
+    (
+        "serve_setup",
+        "off: berth serve lets nobody over the network change hosts, secrets, registries or settings",
+    ),
+    (
+        "serve_token",
+        "off: berth serve takes no serve.token over the network, only OAuth 2.0 access tokens",
+    ),
+    (
+        "oauth_issuer",
+        "berth serve takes access tokens (JWTs) of this OAuth 2.0 issuer: its address, as in the tokens' iss",
+    ),
+    (
+        "oauth_jwks",
+        "address of the issuer's keys, when its metadata is not at the usual place",
+    ),
+    (
+        "oauth_audience",
+        "the aud an access token needs for berth serve to take it",
+    ),
+    (
+        "oauth_client_id",
+        "the client berth is at the issuer, for getting access tokens of its own: berth login, or with oauth_client_secret",
+    ),
+    (
+        "oauth_client_secret",
+        "the client's secret: with it berth gets access tokens by itself, as a service does",
+    ),
+    (
+        "oauth_scope",
+        "the scope berth asks the issuer for, such as: openid offline_access berth:operate",
+    ),
+    (
+        "oauth_claim",
+        "the claim with the roles berth:view, berth:operate and berth:admin (default: scope; dots go into objects, as in realm_access.roles)",
+    ),
 ];
 
 pub struct Paths {
@@ -77,6 +113,14 @@ impl Paths {
             None => self.config_dir.join("hosts"),
         }
     }
+    /// Where the registries and secrets are: of this machine, or what is
+    /// known of a server's.
+    pub fn store_dir(&self) -> PathBuf {
+        match crate::server::Server::configured(self) {
+            Some(server) => server.dir(self),
+            None => self.config_dir.clone(),
+        }
+    }
     pub fn iso_dir(&self) -> PathBuf {
         let configured = self.settings().unwrap_or_default();
         match configured.get("iso_dir").and_then(|dir| dir.as_str()) {
@@ -105,6 +149,16 @@ impl Paths {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// A setting from the environment, as `BERTH_` and its name in capitals,
+    /// or as it is saved: for a container, or inside another program.
+    pub fn setting(&self, key: &str) -> Option<String> {
+        let variable = format!("BERTH_{}", key.to_uppercase());
+        std::env::var(variable)
+            .ok()
+            .or_else(|| Some(self.settings().ok()?.get(key)?.as_str()?.to_owned()))
+            .filter(|value| !value.is_empty())
     }
 
     pub fn set(&self, key: &str, value: &str) -> Result<()> {

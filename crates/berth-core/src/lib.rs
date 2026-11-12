@@ -7,6 +7,7 @@ pub mod discovery;
 pub mod host;
 pub mod job;
 pub mod link;
+pub mod oauth;
 pub mod paths;
 pub mod plugins;
 pub mod registry;

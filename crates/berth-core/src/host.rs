@@ -96,7 +96,11 @@ impl Host {
             self.builder("ssh_host"),
             self.builder("ssh_user"),
             self.builder("ssh_port"),
-            self.builder("ssh_key"),
+            // A server's host is reached with a key on the server.
+            match self.config["builder"]["served"].is_string() {
+                true => "",
+                false => self.builder("ssh_key"),
+            },
         )
     }
 
