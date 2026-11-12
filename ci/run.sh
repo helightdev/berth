@@ -8,6 +8,8 @@
 #                               end-to-end tests against it (names as in
 #                               unittest: e2e_serve, e2e_serve.Roles)
 #   ci/run.sh all               check, then e2e
+#   ci/run.sh boot [cloud|iso]  boot real installs in QEMU and test them; needs
+#                               KVM and takes a while (see ci/boot.sh)
 #   ci/run.sh shell             a shell in the dev container
 #   ci/run.sh run COMMAND…      a command in the dev container
 #   ci/run.sh build             build the images
@@ -101,11 +103,16 @@ case $command in
   all) build && dev ci/checks.sh && e2e ;;
   shell) build dev && dev bash ;;
   run) build dev && dev "$@" ;;
+  boot)
+    # shellcheck source=ci/boot.sh
+    source ci/boot.sh
+    boot "$@"
+    ;;
   clean)
     e2e_down
     compose --profile dev down --remove-orphans >/dev/null 2>&1 || true
     "$engine" volume rm -f berth-ci-target berth-ci-cargo >/dev/null
-    "$engine" image rm -f berth-ci-dev berth-ci-host >/dev/null
+    "$engine" image rm -f berth-ci-dev berth-ci-host berth-ci-boot >/dev/null
     ;;
-  *) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac
