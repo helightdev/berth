@@ -2,42 +2,89 @@ name: CI
 on:
   push:
   pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+# The checks and the end-to-end tests run container/ci.sh, as on a developer's
+# machine. Image layers are kept in GitHub's cache; cargo's downloads and the
+# target directory are a directory the cache action keeps.
+env:
+  BERTH_CI_NO_BUILD: '1'
 jobs:
-  validate:
+  checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - run: echo "BERTH_CI_CACHE=$RUNNER_TEMP/berth-ci-cache" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the dev image
+        uses: docker/build-push-action@v6
         with:
-          components: clippy, rustfmt
-          targets: x86_64-unknown-linux-musl, wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
+          context: .
+          file: container/ci.Dockerfile
+          tags: berth-ci-dev
+          load: true
+          cache-from: type=gha,scope=berth-ci-dev
+          cache-to: type=gha,scope=berth-ci-dev,mode=max
+      - uses: actions/cache@v4
         with:
-          python-version: '3.12'
-      - name: Install Ansible for the template and syntax checks
-        run: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-      - name: Rust tests (the build makes berthd and box for the hosts; with the web feature, the page too)
-        run: |
-          cargo test --locked
-          cargo test --locked -p berth --features web
-      - name: Python tests
-        run: .venv/bin/python -m unittest discover -s tests -v
-      - name: Shell syntax
-        run: |
-          for script in install.sh bin/*.sh bootstrap/*.sh container/*.sh ansible/roles/devbox/files/*.sh ansible/roles/devbox/files/tasks/*.sh plugins/*/files/*.sh; do
-            bash -n "$script"
-          done
-      - name: Ansible syntax
-        run: .venv/bin/ansible-playbook -i localhost, ansible/site.yml --syntax-check
-      - name: Formatting and lints
-        run: |
-          cargo fmt --check -p berth-api -p berth-pty -p berth-core -p berth-tui -p berth -p berthd -p box -p berth-web
-          cargo clippy --locked --all-targets -- -D warnings
-          cargo clippy --locked --all-targets -p berth --features web -- -D warnings
-          cargo clippy --locked -p berth-web --target wasm32-unknown-unknown -- -D warnings
+          path: ${{ env.BERTH_CI_CACHE }}
+          key: checks-${{ hashFiles('Cargo.lock', 'container/ci.Dockerfile') }}-${{ github.sha }}
+          restore-keys: checks-${{ hashFiles('Cargo.lock', 'container/ci.Dockerfile') }}-
+      - name: Checks
+        run: container/ci.sh check
+      - name: Keep the cache small
+        if: always()
+        run: rm -rf "$BERTH_CI_CACHE/target/debug/incremental" "$BERTH_CI_CACHE/target/tmp"
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "BERTH_CI_CACHE=$RUNNER_TEMP/berth-ci-cache" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the dev image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: container/ci.Dockerfile
+          tags: berth-ci-dev
+          load: true
+          cache-from: type=gha,scope=berth-ci-dev
+      - name: Build the test host's image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: container/ci-host.Dockerfile
+          tags: berth-ci-host
+          load: true
+          cache-from: type=gha,scope=berth-ci-host
+          cache-to: type=gha,scope=berth-ci-host,mode=max
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.BERTH_CI_CACHE }}
+          key: e2e-${{ hashFiles('Cargo.lock', 'container/ci.Dockerfile') }}-${{ github.sha }}
+          restore-keys: e2e-${{ hashFiles('Cargo.lock', 'container/ci.Dockerfile') }}-
+      - name: End-to-end tests
+        run: container/ci.sh e2e
+      - name: Upload the test host's logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: build/ci/logs
+          if-no-files-found: ignore
+      - name: Keep the cache small
+        if: always()
+        run: rm -rf "$BERTH_CI_CACHE/target/debug/incremental" "$BERTH_CI_CACHE/target/tmp"
+
   prose:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       VALE_VERSION: 3.25.1
     steps:
