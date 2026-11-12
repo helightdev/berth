@@ -757,7 +757,9 @@ mod tests {
         let mut old = message(1, "a", Keep::Log);
         old.time = rfc3339(unix_now() - 100 * 86400);
         store.take_in("server", &old).unwrap();
-        store.take_in("server", &message(2, "a", Keep::Log)).unwrap();
+        store
+            .take_in("server", &message(2, "a", Keep::Log))
+            .unwrap();
         store.put("ui", "k", &json!(1), When::Always).unwrap();
         let job = |id: &str, age: u64, ended: bool| Job {
             id: id.into(),
@@ -809,7 +811,9 @@ mod tests {
         assert_eq!(store.schema_version().unwrap(), MIGRATIONS.len() as i64);
         assert_eq!(store.get("ui", "k").unwrap().unwrap().revision, 4);
         assert!(store.jobs(10).unwrap().is_empty());
-        store.take_in("server", &message(1, "a", Keep::Log)).unwrap();
+        store
+            .take_in("server", &message(1, "a", Keep::Log))
+            .unwrap();
         drop(store);
         // Opening again changes nothing.
         let store = Store::open(&path).unwrap();
