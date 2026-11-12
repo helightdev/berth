@@ -9,6 +9,8 @@ pub struct Host {
     pub name: String,
     pub path: PathBuf,
     pub config: Value,
+    /// This berth's own SSH key, offered to the host besides the user's.
+    pub key: Option<PathBuf>,
 }
 
 impl Host {
@@ -21,6 +23,7 @@ impl Host {
             name: name.to_owned(),
             path,
             config,
+            key: paths.own_key().ok(),
         })
     }
 
@@ -92,16 +95,34 @@ impl Host {
 
     /// The host as an Ansible inventory.
     pub fn inventory(&self) -> Result<Value> {
-        inventory(
+        // A server's host is reached with a key on the server.
+        let served = self.config["builder"]["served"].is_string();
+        let mut inventory = inventory(
             self.builder("ssh_host"),
             self.builder("ssh_user"),
             self.builder("ssh_port"),
-            // A server's host is reached with a key on the server.
-            match self.config["builder"]["served"].is_string() {
+            match served {
                 true => "",
                 false => self.builder("ssh_key"),
             },
-        )
+        )?;
+        if let (false, Some(own)) = (served, self.own_identity()) {
+            inventory["all"]["hosts"]["devbox_target"]["ansible_ssh_extra_args"] =
+                json!(format!("-o IdentityFile={own}"));
+        }
+        Ok(inventory)
+    }
+
+    /// This berth's own key, when the profile names no key: ssh then tries
+    /// it besides the user's own keys and the agent's.
+    fn own_identity(&self) -> Option<String> {
+        let key = self
+            .key
+            .as_ref()
+            .filter(|_| self.builder("ssh_key").is_empty())?;
+        let key = key.to_str()?;
+        // It is one word of a command line.
+        (!key.contains(char::is_whitespace)).then(|| key.to_owned())
     }
 
     /// `user@host`, or the host alone.
@@ -111,7 +132,11 @@ impl Host {
 
     /// `ssh` with this host's port and key.
     pub fn ssh(&self) -> Command {
-        ssh(self.builder("ssh_port"), self.builder("ssh_key"))
+        let mut command = ssh(self.builder("ssh_port"), self.builder("ssh_key"));
+        if let Some(own) = self.own_identity() {
+            command.arg("-o").arg(format!("IdentityFile={own}"));
+        }
+        command
     }
 
     /// How to open a connection to the host's berthd. `password` is the SSH
@@ -138,13 +163,18 @@ impl Host {
             });
         }
         self.inventory()?;
-        Ok(link(
+        let mut spec = link(
             self.builder("ssh_host"),
             self.builder("ssh_user"),
             self.builder("ssh_port"),
             self.builder("ssh_key"),
             password,
-        ))
+        );
+        if let Some(own) = self.own_identity() {
+            spec.args
+                .splice(0..0, ["-o".to_owned(), format!("IdentityFile={own}")]);
+        }
+        Ok(spec)
     }
 }
 
@@ -256,6 +286,7 @@ mod tests {
         let host = Host {
             name: "c".into(),
             path: "c.json".into(),
+            key: None,
             config: json!({"builder": {"link": ["docker", "exec", "-i", "c", "berthd", "connect"]}}),
         };
         let spec = host.link(None).unwrap();

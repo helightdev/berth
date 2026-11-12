@@ -7,6 +7,7 @@ pub mod escape;
 pub mod ops;
 #[cfg(feature = "client")]
 pub mod portal;
+pub mod profile;
 pub mod streams;
 mod types;
 

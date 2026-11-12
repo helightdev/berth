@@ -146,7 +146,7 @@ def make_demo(root: Path) -> dict:
     fake_hash = "$6$demo$" + "x" * 86
     features = ["claude/cli", "codex/cli", "t3/server", "github/cli", "backup/restic"]
     studio = profile(
-        "studio", profile="laptop", operator_ssh_public_key=key, operator_password_hash=fake_hash,
+        "studio", profile="laptop", operator_ssh_public_keys=[key], operator_password_hash=fake_hash,
         keyboard="us",
         ansible_vars={"devbox_plugin_features": features},
         builder={"ssh_host": "100.64.0.12", "ssh_user": "ops", "ask_become_pass": False,
@@ -154,12 +154,12 @@ def make_demo(root: Path) -> dict:
                  "link": ["docker", "exec", "-i", CONTAINER, "berthd", "connect"]},
     )
     cloud = profile(
-        "cloud-1", profile="cloud", operator_ssh_public_key=key, keyboard="us",
+        "cloud-1", profile="cloud", operator_ssh_public_keys=[key], keyboard="us",
         ansible_vars={"devbox_plugin_features": features[:4]},
         builder={},
     )
     laptop = profile(
-        "garage-laptop", profile="laptop", operator_ssh_public_key=key, keyboard="us",
+        "garage-laptop", profile="laptop", operator_ssh_public_keys=[key], keyboard="us",
         ansible_vars={"devbox_plugin_features": features[:4]},
         builder={"ssh_host": "192.0.2.31", "ssh_user": "ops"},
     )

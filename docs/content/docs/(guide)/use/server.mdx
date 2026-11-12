@@ -184,6 +184,6 @@ With the role `admin` on the server, which its token has, berth sets the server 
 - **Apply this configuration** and `berth apply HOST` run as a job on the server. Its output is shown as it comes.
 - `berth seed HOST` has the server render the cloud-init seed, and writes it here.
 - A secret's value is sent to the server and kept only there. Here berth knows its name.
-- The SSH key of a host is a file on the server, and the server needs SSH access to the host.
+- The server logs in to hosts with [its own SSH key](/docs/reference/profile#the-key-of-berth-itself), which a host it installs takes. For a host that was set up elsewhere, add that key to the operator first. The Accounts tab shows it.
 
 With a lesser role the set-up tabs say *This host is set up on the berth server at URL*, and the host's overview works as before. The roles, access tokens of an OAuth 2.0 issuer in place of the token, and how to keep set-up on the server itself are in [berth serve](/docs/extend/serve#who-gets-in).

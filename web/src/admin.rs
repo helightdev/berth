@@ -36,6 +36,8 @@ pub struct Data {
     /// The profile a new host starts from.
     pub template: Value,
     pub features: Vec<Feature>,
+    /// The server's own SSH public key; empty when it has none to give.
+    pub own_key: String,
     pub registries: Map<String, Value>,
     /// Every secret's name; a registry's login is `registry/NAME`.
     pub secrets: Vec<String>,
@@ -115,6 +117,7 @@ impl Admin {
                 admin.call("setup.catalogue", json!({}), Value::Null, |admin, found| {
                     let mut data = admin.data.borrow_mut();
                     data.template = found["template"].clone();
+                    data.own_key = found["key"].as_str().unwrap_or("").to_owned();
                     data.features = found["features"]
                         .as_array()
                         .into_iter()

@@ -200,6 +200,7 @@ pub enum Field {
     WifiPassword,
     OperatorUser,
     OperatorKey,
+    BerthKey,
     OperatorHash,
     OperatorSudo,
     AgentUser,
@@ -352,10 +353,16 @@ impl Field {
                 "Account for human login and management. Ubuntu reserves names such as operator, admin and root.",
             ),
             OperatorKey => (
-                "Operator SSH public key",
-                "/operator_ssh_public_key",
+                "SSH key",
+                "/operator_ssh_public_keys",
                 Text,
-                "OpenSSH public key for the operator account. Detected keys are listed in Suggestions.",
+                "An OpenSSH public key the operator account takes. Enter changes it, x removes it. The account can have several: one for each person or machine that logs in.",
+            ),
+            BerthKey => (
+                "This berth's SSH key",
+                "/berth_ssh_key",
+                Toggle,
+                "The operator also takes the SSH key of the berth that sets the host up. berth makes that key itself, an ed25519 one, and offers it when it connects, so it reaches the host without a key of yours. For a host set up from a berth server it is the server's key.",
             ),
             OperatorHash => (
                 "Operator password hash",
@@ -376,10 +383,10 @@ impl Field {
                 "Account used by coding agents and the virtual desktop. Home is /home/USERNAME.",
             ),
             AgentKey => (
-                "Agent SSH public key",
-                "/agent_ssh_public_key",
+                "SSH key",
+                "/agent_ssh_public_keys",
                 Text,
-                "Optional public key for SSH access to the agent account.",
+                "An OpenSSH public key for SSH access to the agent account. Enter changes it, x removes it. The account can have several, or none.",
             ),
             AgentHash => (
                 "Agent password hash",
@@ -550,7 +557,7 @@ impl Field {
     pub fn group(self) -> Option<Group> {
         use Field::*;
         Some(match self {
-            OperatorUser | OperatorKey | OperatorHash | OperatorSudo => {
+            OperatorUser | OperatorKey | BerthKey | OperatorHash | OperatorSudo => {
                 Group::Heading("Operator Account")
             }
             AgentUser | AgentKey | AgentHash | AgentSudo | AgentPrivileges => {

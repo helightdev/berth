@@ -132,6 +132,52 @@ impl Paths {
         self.data_dir.join("build")
     }
 
+    /// The private half of this berth's own SSH key, an ed25519 one made the
+    /// first time it is asked for. Hosts it sets up take the public half for
+    /// their operator, so this berth reaches them without a key of the user's.
+    pub fn own_key(&self) -> Result<PathBuf> {
+        let key = self.data_dir.join("id_ed25519");
+        if key.is_file() && key.with_extension("pub").is_file() {
+            return Ok(key);
+        }
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&self.data_dir)?;
+        // A half without the other is of no use, and ssh-keygen asks before it overwrites.
+        let _ = fs::remove_file(&key);
+        let _ = fs::remove_file(key.with_extension("pub"));
+        // The comment only tells the keys of several berths apart in authorized_keys.
+        let machine = fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
+        let machine = machine.trim().split('.').next().unwrap_or("");
+        let comment = match machine {
+            "" => "berth".to_owned(),
+            machine => format!("berth@{machine}"),
+        };
+        let made = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-C"])
+            .arg(comment)
+            .arg("-f")
+            .arg(&key)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|error| format!("ssh-keygen: {error}"))?;
+        if !made.status.success() {
+            return Err(String::from_utf8_lossy(&made.stderr)
+                .trim()
+                .to_owned()
+                .into());
+        }
+        Ok(key)
+    }
+
+    /// The public half of this berth's own SSH key.
+    pub fn own_public_key(&self) -> Option<String> {
+        let key = self.own_key().ok()?;
+        let public = fs::read_to_string(key.with_extension("pub")).ok()?;
+        Some(public.trim().to_owned()).filter(|public| !public.is_empty())
+    }
+
     /// Create the private directories berth writes to.
     pub fn prepare(&self) -> Result<()> {
         for dir in [self.hosts_dir(), self.build_dir()] {

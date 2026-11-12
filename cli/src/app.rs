@@ -44,6 +44,8 @@ pub enum Entry {
     HostRegistry(usize),
     /// A secret this host can be given, by index into `App::secret_names`.
     HostSecret(usize),
+    /// One of an account's SSH keys, or the row that adds one.
+    Key(setup::Account, Option<usize>),
     /// Open the set-up flow.
     Setup,
     Run,
@@ -91,6 +93,10 @@ pub struct App {
     pub as_agent: bool,
     /// Plugins found in the source and in the user's plugin directory.
     pub plugins: Vec<Plugin>,
+    /// This berth's own SSH key: the private half's path, and the public half
+    /// that hosts take. For a server's host the public half is the server's.
+    pub own_key: Option<PathBuf>,
+    pub own_public: String,
     /// What those plugins can install, for the Features page.
     catalogue: Vec<setup::Feature>,
     /// Where berth keeps its settings, for the registries and secret values.
@@ -163,6 +169,7 @@ fn lift(rows: Vec<setup::Row>) -> Vec<Row> {
                 setup::Entry::Feature(index) => Entry::Feature(index),
                 setup::Entry::Registry(index) => Entry::HostRegistry(index),
                 setup::Entry::Secret(index) => Entry::HostSecret(index),
+                setup::Entry::Key(account, index) => Entry::Key(account, index),
                 setup::Entry::Run => Entry::Run,
             }),
         })
@@ -197,6 +204,8 @@ impl App {
             tailnet_hosts: vec![],
             wifi_networks: vec![],
             plugins: vec![],
+            own_key: None,
+            own_public: String::new(),
             catalogue: vec![],
             config_dir: PathBuf::new(),
             registry_names: vec![],
@@ -231,6 +240,7 @@ impl App {
             features: &self.catalogue,
             registries: &self.registry_names,
             secrets: &self.secret_names,
+            own_key: &self.own_public,
         }
     }
 
@@ -636,6 +646,10 @@ impl App {
     pub fn help(&self) -> String {
         match self.selected_entry() {
             Some(Entry::Feature(index)) => self.catalogue[index].help.clone(),
+            // The key itself, to give to a host that was not set up from here.
+            Some(Entry::Field(Field::BerthKey)) if !self.own_public.is_empty() => {
+                format!("{}\n\n`{}`", Field::BerthKey.spec().help, self.own_public)
+            }
             Some(Entry::HostTask(index)) => berth_tui::host::task_help(&self.host, index),
             Some(Entry::HostSession(index)) => berth_tui::host::session_help(&self.host, index),
             _ => self.entry_help().to_owned(),
@@ -657,6 +671,11 @@ impl App {
             Some(Entry::HostRegistry(_)) => {
                 "Give this host the login of this registry. Its npm repositories become the agent's npm registry with the login in ~/.npmrc, and its Docker addresses get the login in ~/.docker/config.json. Registries are set up on the Registries tab of the home screen."
             }
+            Some(Entry::Key(account, Some(_))) => match account {
+                setup::Account::Operator => Field::OperatorKey.spec().help,
+                setup::Account::Agent => Field::AgentKey.spec().help,
+            },
+            Some(Entry::Key(_, None)) => setup::ADD_KEY_HELP,
             Some(Entry::HostSecret(_)) => {
                 "How this host gets the secret. Enter, then type a variable name such as GH_TOKEN to put it in the agent's environment, or a path such as ~/.config/app/token to write it to a file. Empty, or x, means the host does not get it. A secret given as GH_TOKEN also logs git in to GitHub through gh. Values are set on the Secrets tab of the home screen."
             }
@@ -866,9 +885,9 @@ impl App {
                 .filter(|(label, _)| !label.starts_with("ssh-agent"))
                 .map(|(label, _)| (label.clone(), label.clone()))
                 .collect(),
+            Some(Entry::Key(..)) => self.public_keys.clone(),
             Some(Entry::Field(field)) => match (field, field.spec().kind) {
                 (_, Kind::Choice(values)) => own(values),
-                (Field::OperatorKey | Field::AgentKey, _) => self.public_keys.clone(),
                 (Field::SshHost, _) => self
                     .tailnet_hosts
                     .iter()
@@ -926,6 +945,15 @@ impl App {
                 }
             }
             Some(Entry::HostSecret(index)) => self.set_host_secret(index, input.value()),
+            Some(Entry::Key(account, index)) => {
+                // Nothing typed changes nothing: x is what removes a key.
+                if !input.value().trim().is_empty()
+                    && let Err(why) =
+                        setup::set_key(&mut self.config, account, index, input.value())
+                {
+                    self.status = why;
+                }
+            }
             _ => {}
         }
     }
@@ -1149,7 +1177,6 @@ impl App {
         let mut filled = Vec::new();
         for (label, field, detected) in [
             ("hostname", Field::Hostname, env("DEVBOX_HOSTNAME")),
-            ("public key", Field::OperatorKey, only_key),
             (
                 "disk serial",
                 Field::DiskSerial,
@@ -1170,6 +1197,14 @@ impl App {
                 self.set(field, json!(value));
                 filled.push(label);
             }
+        }
+        // Without this berth's own key the operator needs one of the user's.
+        if let Some(key) = only_key
+            && self.view().keys(setup::Account::Operator).is_empty()
+            && self.own_public.is_empty()
+            && setup::set_key(&mut self.config, setup::Account::Operator, None, &key).is_ok()
+        {
+            filled.push("public key");
         }
         self.status = if filled.is_empty() {
             format!(
@@ -1193,7 +1228,7 @@ impl App {
             if !discovery::is_public_key(key) {
                 return Err("Expected a supported OpenSSH public key".into());
             }
-            self.set(Field::OperatorKey, json!(key));
+            setup::set_key(&mut self.config, setup::Account::Operator, None, key)?;
             self.status = "SSH public key imported".into();
         }
         Ok(())
@@ -1270,6 +1305,7 @@ impl App {
             name,
             path: self.path.clone(),
             config: self.config.clone(),
+            key: self.own_key.clone(),
         }
     }
 
@@ -1508,7 +1544,11 @@ impl App {
                 command = apply::playbook(Path::new("."));
                 serde_json::to_writer(
                     &mut extra,
-                    &apply::ansible_vars(&self.config, &self.plugin_dirs()),
+                    &apply::ansible_vars(
+                        &self.config,
+                        &self.plugin_dirs(),
+                        Some(self.own_public.as_str()),
+                    ),
                 )?;
                 extra.flush()?;
                 command
@@ -1551,6 +1591,7 @@ impl App {
         command.env("DEVBOX_BUILD_DIR", &self.build_dir);
         // The release archive packs the user's plugins next to the source's.
         command.env("BERTH_PLUGINS", self.plugin_dirs().to_string());
+        command.env("BERTH_SSH_PUBLIC_KEY", &self.own_public);
         Ok((command, vec![extra, inventory]))
     }
 
@@ -1856,7 +1897,6 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
     }
     // Placeholders from older example profiles count as unset.
     for key in [
-        "operator_ssh_public_key",
         "operator_password_hash",
         "target_disk_serial",
         "release_url",

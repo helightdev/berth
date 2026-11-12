@@ -976,6 +976,8 @@ fn choose(app: &mut App, entry: Entry) -> Flow {
         Entry::Setup => app.set_step(Step::Features),
         Entry::HostRegistry(index) => app.toggle_host_registry(index),
         Entry::HostSecret(index) => app.editing = Some(Input::new(app.host_secret(index))),
+        // A key is pasted whole, not changed letter by letter.
+        Entry::Key(..) => app.editing = Some(Input::default()),
         Entry::Group(_) => app.status = "Space switches the whole group".into(),
         Entry::Feature(index) => {
             let item = Item::Feature(index);
@@ -1114,6 +1116,11 @@ fn key_event(app: &mut App, key: KeyEvent, quit_armed: &mut bool) -> Flow {
             _ => {}
         },
         KeyCode::Char('x') | KeyCode::Delete => {
+            if let Some(Entry::Key(account, Some(index))) = app.selected_entry()
+                && berth_tui::setup::set_key(&mut app.config, account, Some(index), "").is_ok()
+            {
+                app.status = "SSH key removed".into();
+            }
             if let Some(Entry::HostSecret(index)) = app.selected_entry() {
                 app.set_host_secret(index, "");
             }

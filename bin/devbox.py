@@ -104,6 +104,24 @@ def check_public_key(value, account):
         raise ValueError(f'{account} SSH public key is too short')
 
 
+def account_keys(config, account):
+    """The public keys an account takes: the profile's list, the single key of
+    an older profile, and for the operator the key of the berth that builds
+    this, unless the profile turns that off."""
+    listed = config.get(f'{account}_ssh_public_keys') or []
+    if not isinstance(listed, list) or not all(isinstance(key, str) for key in listed):
+        raise ValueError(f'{account}_ssh_public_keys must be a list of keys')
+    keys = [key.strip() for key in listed]
+    keys += [key.strip() for key in text(config, f'{account}_ssh_public_key').splitlines()]
+    if account == 'operator' and flag(config, 'berth_ssh_key', True):
+        keys.append(os.environ.get('BERTH_SSH_PUBLIC_KEY', '').strip())
+    unique = []
+    for key in keys:
+        if key and key not in unique:
+            unique.append(key)
+    return unique
+
+
 def wifi_enabled(config):
     return flag(config, 'wifi_enabled', bool(config.get('wifi')))
 
@@ -127,11 +145,13 @@ def checked_config(path, kind):
             raise ValueError(f'Account name {name!r} is reserved by Ubuntu; choose another')
     if operator == agent:
         raise ValueError('Operator and agent need distinct account names')
-    check_public_key(text(c, 'operator_ssh_public_key'), 'operator')
+    if not account_keys(c, 'operator'):
+        raise ValueError('Provide a real operator SSH public key')
+    for account in ('operator', 'agent'):
+        for key in account_keys(c, account):
+            check_public_key(key, account)
     check_password_hash(text(c, 'operator_password_hash'), 'operator')
     flag(c, 'operator_passwordless_sudo', False)
-    if text(c, 'agent_ssh_public_key'):
-        check_public_key(c['agent_ssh_public_key'], 'agent')
     if text(c, 'agent_password_hash'):
         check_password_hash(c['agent_password_hash'], 'agent')
     privileges = text(c, 'agent_privileges')
@@ -216,13 +236,13 @@ def account_vars(c):
     return {
         'devbox_user': c.get('agent_username', 'agent'),
         'devbox_agent_password_hash': c.get('agent_password_hash', ''),
-        'devbox_agent_ssh_public_key': c.get('agent_ssh_public_key', ''),
+        'devbox_agent_ssh_public_key': '\n'.join(account_keys(c, 'agent')),
         'devbox_agent_passwordless_sudo': c.get('agent_passwordless_sudo', True),
         # full, limited or none; a profile without it follows the flag above.
         'devbox_agent_privileges': c.get('agent_privileges', ''),
         'devbox_operator_user': c.get('operator_username', DEFAULT_OPERATOR),
         'devbox_operator_password_hash': c.get('operator_password_hash', ''),
-        'devbox_operator_ssh_public_key': c.get('operator_ssh_public_key', ''),
+        'devbox_operator_ssh_public_key': '\n'.join(account_keys(c, 'operator')),
         'devbox_operator_passwordless_sudo': c.get('operator_passwordless_sudo', False),
     }
 
@@ -255,7 +275,7 @@ def autoinstall(c):
                      'username': c.get('operator_username', DEFAULT_OPERATOR),
                      'password': c['operator_password_hash']},
         'ssh': {'install-server': True, 'allow-pw': False,
-                'authorized-keys': [c['operator_ssh_public_key']]},
+                'authorized-keys': account_keys(c, 'operator')},
         'early-commands': [[
             'python3', f'{payload}/check-target-disk.py',
             '--policy', f'{payload}/disk-policy.json',
@@ -293,7 +313,7 @@ def cloud_config(c, sha):
     operator = {
         'name': c.get('operator_username', DEFAULT_OPERATOR), 'shell': '/bin/bash', 'groups': ['sudo'],
         'sudo': [f'ALL=(ALL) {sudo}'], 'lock_passwd': False, 'passwd': c['operator_password_hash'],
-        'ssh_authorized_keys': [c['operator_ssh_public_key']],
+        'ssh_authorized_keys': account_keys(c, 'operator'),
     }
     files = [
         {'path': '/opt/devbox-bootstrap/bootstrap.sh', 'encoding': 'b64',

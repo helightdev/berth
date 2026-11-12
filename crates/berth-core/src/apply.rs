@@ -22,7 +22,8 @@ pub fn plugin_dirs(plugins: &[plugins::Plugin]) -> Value {
 }
 
 /// Variables for a direct Ansible run, matching what the seed builder embeds.
-pub fn ansible_vars(config: &Value, plugin_dirs: &Value) -> Value {
+/// `own` is the public key of the berth that applies them.
+pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: Option<&str>) -> Value {
     let mut vars = config["ansible_vars"].clone();
     if !vars.is_object() {
         vars = json!({});
@@ -30,12 +31,10 @@ pub fn ansible_vars(config: &Value, plugin_dirs: &Value) -> Value {
     for (source, dest) in [
         ("agent_username", "devbox_user"),
         ("agent_password_hash", "devbox_agent_password_hash"),
-        ("agent_ssh_public_key", "devbox_agent_ssh_public_key"),
         ("agent_passwordless_sudo", "devbox_agent_passwordless_sudo"),
         ("agent_privileges", "devbox_agent_privileges"),
         ("operator_username", "devbox_operator_user"),
         ("operator_password_hash", "devbox_operator_password_hash"),
-        ("operator_ssh_public_key", "devbox_operator_ssh_public_key"),
         (
             "operator_passwordless_sudo",
             "devbox_operator_passwordless_sudo",
@@ -45,6 +44,11 @@ pub fn ansible_vars(config: &Value, plugin_dirs: &Value) -> Value {
             vars[dest] = value.clone();
         }
     }
+    // The role writes each account's keys as one block, a key to a line.
+    vars["devbox_agent_ssh_public_key"] =
+        json!(berth_api::profile::account_keys(config, "agent").join("\n"));
+    vars["devbox_operator_ssh_public_key"] =
+        json!(berth_api::profile::operator_keys(config, own).join("\n"));
     vars["devbox_profile"] = config["profile"].clone();
     vars["devbox_plugin_dirs"] = plugin_dirs.clone();
     if let Some(key) = config["tailscale_auth_key"]
@@ -73,7 +77,8 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
     let source = paths.source()?;
     let plugins = plugins::load(&[source.join("plugins"), paths.config_dir.join("plugins")]);
     let dirs = plugin_dirs(&plugins);
-    let mut vars = ansible_vars(&host.config, &dirs);
+    let own = paths.own_public_key();
+    let mut vars = ansible_vars(&host.config, &dirs, own.as_deref());
     if let Some(password) = become_password {
         vars["ansible_become_password"] = json!(password);
     }
@@ -102,6 +107,9 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
     }
     command.env("DEVBOX_BUILD_DIR", paths.build_dir());
     command.env("BERTH_PLUGINS", dirs.to_string());
+    if let Some(own) = own {
+        command.env("BERTH_SSH_PUBLIC_KEY", own);
+    }
     Ok(Prepared {
         command,
         files: vec![extra, inventory],
@@ -117,8 +125,18 @@ mod tests {
         let config = json!({
             "profile": "cloud", "agent_username": "bot", "agent_privileges": "limited",
             "tailscale_auth_key": "tskey", "ansible_vars": {"devbox_geometry": "1x1"},
+            "operator_ssh_public_key": "ssh-ed25519 ME",
         });
-        let vars = ansible_vars(&config, &json!({"demo": "/p/demo"}));
+        let vars = ansible_vars(
+            &config,
+            &json!({"demo": "/p/demo"}),
+            Some("ssh-ed25519 OWN"),
+        );
+        assert_eq!(
+            vars["devbox_operator_ssh_public_key"],
+            "ssh-ed25519 ME\nssh-ed25519 OWN"
+        );
+        assert_eq!(vars["devbox_agent_ssh_public_key"], "");
         assert_eq!(vars["devbox_user"], "bot");
         assert_eq!(vars["devbox_agent_privileges"], "limited");
         assert_eq!(vars["devbox_profile"], "cloud");
@@ -126,7 +144,7 @@ mod tests {
         assert_eq!(vars["devbox_plugin_dirs"]["demo"], "/p/demo");
         assert_eq!(vars["devbox_tailscale_auth_key"], "tskey");
         assert!(
-            ansible_vars(&json!({}), &json!({}))
+            ansible_vars(&json!({}), &json!({}), None)
                 .get("devbox_tailscale_auth_key")
                 .is_none()
         );
@@ -147,6 +165,7 @@ mod tests {
         let host = Host {
             name: "box".into(),
             path: "box.json".into(),
+            key: None,
             config: json!({"profile": "cloud", "builder": {"ssh_host": "box", "ssh_user": "ops", "ask_become_pass": true}}),
         };
         let prepared = prepare(&paths, &host, Some("hunter2")).unwrap();

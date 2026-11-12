@@ -33,6 +33,8 @@ Usage:
   berth login                log in to a berth server that takes access tokens of an
                              OAuth 2.0 issuer; berth logout forgets the login
   berth remove HOST          forget a host; the machine is left as it is
+  berth key                  this berth's own SSH public key, which the operator of a
+                             host it sets up takes
   berth tasks HOST           what the host can do: its tasks and those of its plugins
   berth run HOST TASK [NAME=VALUE…] [--yes]
                              run one of them and leave with its exit code
@@ -164,6 +166,22 @@ fn open(paths: &Paths, host: &str) -> Result<App> {
     app.iso_dir = paths.iso_dir();
     app.load_plugins(paths.config_dir.join("plugins"));
     app.config_dir = paths.store_dir();
+    // A server's host is set up from the server, and takes the server's key.
+    match app.served() {
+        Some(_) => {
+            let known = app
+                .host_profile()
+                .served()
+                .and_then(|server| server.call("setup.catalogue", json!({}), None).ok());
+            app.own_public = known
+                .and_then(|found| found["key"].as_str().map(str::to_owned))
+                .unwrap_or_default();
+        }
+        None => {
+            app.own_key = paths.own_key().ok();
+            app.own_public = paths.own_public_key().unwrap_or_default();
+        }
+    }
     app.load_access();
     app.detect();
     // A host that is installed opens on its maintenance tab.
@@ -320,6 +338,7 @@ fn run() -> Result<()> {
         "update",
         "login",
         "logout",
+        "key",
     ];
     if let Some(server) = berth_core::server::Server::configured(&paths)
         && !args.first().is_some_and(|verb| local.contains(verb))
@@ -480,6 +499,13 @@ fn run() -> Result<()> {
         ["iso", host, "--write", device] => return build_installer(&paths, host, Some(device)),
         ["login"] => return commands::login(&paths),
         ["logout"] => return commands::logout(&paths),
+        ["key"] => {
+            println!(
+                "{}",
+                fs::read_to_string(paths.own_key()?.with_extension("pub"))?.trim()
+            );
+            return Ok(());
+        }
         ["apply", host] => return commands::apply(&paths, host),
         ["remove", host] => return commands::remove(&paths, host),
         ["seed", host] if berth_core::server::Server::configured(&paths).is_some() => {
@@ -789,8 +815,19 @@ mod tests {
         app.action = Action::UsbSeed;
         let problems = app.problems().join("\n");
         assert!(problems.contains("Hostname"));
-        assert!(problems.contains("Operator SSH public key is required"));
+        assert!(problems.contains("Operator needs an SSH key"));
         assert!(problems.contains("Operator password is required"));
+        // The key of this berth is one, unless the profile turns it down.
+        app.own_public = "ssh-ed25519 AAAA berth@here".into();
+        assert!(!app.problems().join("\n").contains("SSH key"));
+        app.config["berth_ssh_key"] = json!(false);
+        assert!(
+            app.problems()
+                .join("\n")
+                .contains("Operator needs an SSH key")
+        );
+        app.config["berth_ssh_key"] = json!(true);
+        app.own_public.clear();
 
         app.config["hostname"] = json!("devbox-1");
         app.config["operator_ssh_public_key"] = json!("ssh-ed25519 AAAA me");

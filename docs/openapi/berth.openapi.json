@@ -95,6 +95,13 @@
             },
             "type": "array"
           },
+          "key": {
+            "description": "The server's own SSH public key, which the operator of a host it sets\nup takes unless the profile says otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "template": {
             "description": "The profile a new host starts from."
           }

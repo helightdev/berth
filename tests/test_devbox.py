@@ -177,6 +177,22 @@ class RenderTests(unittest.TestCase):
             builder.checked_config(path,'cloud')
             c['ansible_vars']={'devbox_bootstrap_ssh_cidr':'not a network'}; path.write_text(json.dumps(c))
             with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
+    def test_accounts_take_several_keys_and_the_operator_this_berths(self):
+        key=lambda byte:'ssh-ed25519 '+base64.b64encode(bytes([byte])*64).decode()
+        c={**config(),'operator_ssh_public_keys':[key(1),key(1)],'agent_ssh_public_keys':[key(2),key(3)]}
+        own=patch.dict(os.environ,{'BERTH_SSH_PUBLIC_KEY':key(4)})
+        with own:
+            self.assertEqual(builder.account_keys(c,'operator'),[key(1),c['operator_ssh_public_key'],key(4)])
+            self.assertEqual(builder.account_keys(c,'agent'),[key(2),key(3)])
+            self.assertEqual(builder.account_keys({**c,'berth_ssh_key':False},'operator'),[key(1),c['operator_ssh_public_key']])
+            only={k:v for k,v in config().items() if k!='operator_ssh_public_key'}
+            with tempfile.TemporaryDirectory() as temp:
+                path=Path(temp)/'host.json'; path.write_text(json.dumps(only))
+                builder.checked_config(path,'cloud')
+                path.write_text(json.dumps({**only,'berth_ssh_key':False}))
+                with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
+                path.write_text(json.dumps({**c,'agent_ssh_public_keys':[key(2),'not a key']}))
+                with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
     def test_malformed_profiles_are_rejected_cleanly(self):
         for change in [{'hostname':None},{'hostname':'trailing-'},{'profile':'container'},
                        {'agent_ssh_public_key':'not a key'},{'operator_username':'root'},

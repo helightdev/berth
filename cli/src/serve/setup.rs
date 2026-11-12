@@ -164,6 +164,10 @@ pub async fn seed(State(state): App, Path(name): Path<String>) -> Answer<Json<Se
         .arg(&path)
         .env("DEVBOX_BUILD_DIR", state.paths.build_dir())
         .env("BERTH_PLUGINS", dirs.to_string())
+        .env(
+            "BERTH_SSH_PUBLIC_KEY",
+            state.paths.own_public_key().unwrap_or_default(),
+        )
         .stdin(std::process::Stdio::null());
     // A release that is not public: the seed carries the login of the registry it is in.
     let private = host.config["release_private"].as_bool().unwrap_or(false);
@@ -440,6 +444,10 @@ pub struct Catalogue {
     pub template: Value,
     /// What the server's plugins can install, in the order they are applied.
     pub features: Vec<FeatureInfo>,
+    /// The server's own SSH public key, which the operator of a host it sets
+    /// up takes unless the profile says otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 #[utoipa::path(get, path = "/v1/setup", summary = "What a new host starts from, and what plugins can install on one.", tag = "set-up",
@@ -467,7 +475,11 @@ pub async fn catalogue(State(state): App) -> Answer<Json<Catalogue>> {
     if !template["builder"].is_object() {
         template["builder"] = json!({});
     }
-    Ok(Json(Catalogue { template, features }))
+    Ok(Json(Catalogue {
+        template,
+        features,
+        key: state.paths.own_public_key(),
+    }))
 }
 
 /// Something for the server to make up for a profile.

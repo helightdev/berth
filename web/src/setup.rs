@@ -5,7 +5,7 @@
 use crate::admin::{Admin, Data};
 use berth_tui::fields::{Action, Field, Kind, Step};
 use berth_tui::screen::{draw_footer, draw_header, inside};
-use berth_tui::setup::{self, Entry, Feature, Item, Profile, Row};
+use berth_tui::setup::{self, Account, Entry, Feature, Item, Profile, Row};
 use berth_tui::{Click, Code, Event, Key, event, markdown, theme};
 use ratzilla::ratatui::{
     Frame,
@@ -65,6 +65,8 @@ pub struct Setup {
     secrets: Vec<String>,
     /// Where a release can be published.
     stores: Vec<String>,
+    /// The server's own SSH public key.
+    own_key: String,
     list: ListState,
     display: ListState,
     editing: Option<Input>,
@@ -109,6 +111,7 @@ impl Setup {
             registries: vec![],
             secrets: vec![],
             stores: vec![],
+            own_key: String::new(),
             list: ListState::default().with_selected(Some(0)),
             display: ListState::default(),
             editing: None,
@@ -159,6 +162,7 @@ impl Setup {
         self.registries = data.registry_names();
         self.secrets = data.secret_names();
         self.stores = setup::release_stores(&data.registries);
+        self.own_key = data.own_key.clone();
     }
 
     fn view(&self) -> Profile<'_> {
@@ -169,6 +173,7 @@ impl Setup {
             features: &self.features,
             registries: &self.registries,
             secrets: &self.secrets,
+            own_key: &self.own_key,
         }
     }
 
@@ -252,7 +257,14 @@ impl Setup {
     fn help(&self) -> String {
         match self.selected() {
             // F5 is the browser's own, so the letters do what berth's F4 and F5 do.
+            // The key itself, to give to a host that was not set up from here.
+            Some(Entry::Field(Field::BerthKey)) if !self.own_key.is_empty() => {
+                format!("{}\n\n`{}`", Field::BerthKey.spec().help, self.own_key)
+            }
             Some(Entry::Field(field)) => field.spec().help.replace("F4", "g").replace("F5", "p"),
+            Some(Entry::Key(Account::Operator, Some(_))) => Field::OperatorKey.spec().help.into(),
+            Some(Entry::Key(Account::Agent, Some(_))) => Field::AgentKey.spec().help.into(),
+            Some(Entry::Key(_, None)) => setup::ADD_KEY_HELP.into(),
             Some(Entry::Action(Action::CloudSeed)) => "For a new machine at a cloud provider: the server renders cloud-init user data that installs the host on first boot. With a place to publish to chosen, it publishes the release there first.".into(),
             Some(Entry::Action(Action::Ssh)) => "Install on an existing Ubuntu host over SSH, from the server: it needs a key of the server's that the host takes. The output is shown here as it runs.".into(),
             Some(Entry::Action(action)) => action.help().to_owned(),
@@ -335,6 +347,9 @@ impl Setup {
                     .err()
                     .map(str::to_owned)
             }
+            Some(Entry::Key(account, index)) if !input.value().trim().is_empty() => {
+                setup::set_key(&mut self.config, account, index, input.value()).err()
+            }
             _ => None,
         }
     }
@@ -391,6 +406,7 @@ impl Setup {
                 setup::toggle_registry(&mut self.config, &self.registries[index])
             }
             Entry::Secret(index) => self.editing = Some(Input::new(self.view().secret_how(index))),
+            Entry::Key(..) => self.editing = Some(Input::default()),
             Entry::Group(_) => return Some("Space switches the whole group".into()),
             Entry::Feature(index) => {
                 let on = !self.view().item_enabled(Item::Feature(index));
@@ -486,6 +502,10 @@ impl Setup {
             Code::Char('x') | Code::Delete => match self.selected() {
                 Some(Entry::Secret(index)) => {
                     let _ = setup::set_secret(&mut self.config, &self.secrets[index], "");
+                }
+                Some(Entry::Key(account, Some(index))) => {
+                    let _ = setup::set_key(&mut self.config, account, Some(index), "");
+                    say(Some("SSH key removed".into()));
                 }
                 Some(Entry::Field(field)) if field.can_clear() => {
                     let _ = setup::commit(&mut self.config, field, "");
@@ -652,6 +672,7 @@ impl Setup {
             let (title, masked) = match (self.password_entry, self.selected()) {
                 (true, _) => (" Password, hashed on the server ", true),
                 (_, Some(Entry::Secret(_))) => (" Variable name or file path ", false),
+                (_, Some(Entry::Key(..))) => (" OpenSSH public key ", false),
                 _ => (
                     " Edit ",
                     field.is_some_and(|field| field.spec().kind == Kind::Secret),

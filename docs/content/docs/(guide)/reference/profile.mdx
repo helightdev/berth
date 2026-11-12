@@ -11,7 +11,7 @@ A profile is a JSON file that describes one host. berth writes it from the set-u
   "hostname": "studio",
   "profile": "laptop",
   "operator_username": "ops",
-  "operator_ssh_public_key": "ssh-ed25519 AAAA... you@workstation",
+  "operator_ssh_public_keys": ["ssh-ed25519 AAAA... you@workstation"],
   "agent_username": "agent",
   "agent_privileges": "limited",
   "target_disk_mode": "auto",
@@ -42,16 +42,25 @@ A profile is a JSON file that describes one host. berth writes it from the set-u
 <TypeTable
   type={{
     operator_username: { type: 'string', default: '"ops"', description: 'Your account on the host.' },
-    operator_ssh_public_key: { type: 'string', description: 'OpenSSH public key for the operator.' },
+    operator_ssh_public_keys: { type: 'string[]', description: 'OpenSSH public keys that log in as the operator.' },
+    berth_ssh_key: { type: 'boolean', default: 'true', description: 'Whether the operator also takes the key of the berth that installs or applies the host.' },
     operator_password_hash: { type: 'string', description: 'SHA-512 crypt or yescrypt hash. Needed for Cockpit and the console.' },
     operator_passwordless_sudo: { type: 'boolean', default: 'false', description: 'sudo without a password for the operator.' },
     agent_username: { type: 'string', default: '"agent"', description: 'The agents\' account; home is /home/USERNAME.' },
-    agent_ssh_public_key: { type: 'string', description: 'Optional key for SSH to the agent account.' },
+    agent_ssh_public_keys: { type: 'string[]', description: 'Optional keys for SSH to the agent account.' },
     agent_password_hash: { type: 'string', description: 'Optional; empty locks password login.' },
     agent_passwordless_sudo: { type: 'boolean', default: 'true', description: 'Turning it off requires an agent password.' },
     agent_privileges: { type: '"full" | "limited" | "none"', default: '"limited"', description: 'What the agent may do with sudo. See Accounts and sudo.' },
   }}
 />
+
+A profile written before the lists has one key in `operator_ssh_public_key` or `agent_ssh_public_key`. berth still reads it, and moves it into the list when the keys are next changed.
+
+### The key of berth itself
+
+Each berth makes an ed25519 key of its own the first time it needs one, and keeps it as `id_ed25519` in its data directory. The operator of a host takes it along with the keys in the profile, so the berth that set a host up can log in to it without a key of yours. That matters most for a [berth server](/docs/use/server), which has no keys until you give it some. berth offers the key over SSH unless the profile has a key file set.
+
+`berth key` prints the public half. Turn **This berth's SSH key** off in Accounts, or set `berth_ssh_key` to `false`, for a host that should only take the listed keys.
 
 ## USB installer
 

@@ -35,7 +35,74 @@ pub enum Entry {
     Registry(usize),
     /// A secret this host can be given, by index into the secrets there are.
     Secret(usize),
+    /// One of an account's SSH keys by its place among them, or the row that
+    /// adds one.
+    Key(Account, Option<usize>),
     Run,
+}
+
+/// An account of a host that takes SSH keys.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Account {
+    Operator,
+    Agent,
+}
+
+impl Account {
+    /// Its name in a profile's fields.
+    pub fn name(self) -> &'static str {
+        match self {
+            Account::Operator => "operator",
+            Account::Agent => "agent",
+        }
+    }
+
+    fn field(self) -> Field {
+        match self {
+            Account::Operator => Field::OperatorKey,
+            Account::Agent => Field::AgentKey,
+        }
+    }
+}
+
+pub use berth_api::profile::account_keys;
+
+/// What the row that adds a key is for.
+pub const ADD_KEY_HELP: &str = "Add an OpenSSH public key to the account: the line of a `.pub` file, such as `ssh-ed25519 AAAA… you@machine`. Paste it and press Enter.";
+
+/// Set one of an account's keys, add one (`index` is `None`), or with
+/// nothing typed remove it. The message says why it was not taken.
+pub fn set_key(
+    config: &mut Value,
+    account: Account,
+    index: Option<usize>,
+    value: &str,
+) -> Result<(), String> {
+    let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut keys = account_keys(config, account.name());
+    if value.is_empty() {
+        if let Some(index) = index.filter(|index| *index < keys.len()) {
+            keys.remove(index);
+        }
+    } else if !is_public_key(&value) {
+        return Err(
+            "Not an OpenSSH public key: it starts with ssh-ed25519, ssh-rsa or ecdsa-sha2-nistp256"
+                .into(),
+        );
+    } else if keys
+        .iter()
+        .enumerate()
+        .any(|(place, known)| *known == value && Some(place) != index)
+    {
+        return Err("The account has that key already".into());
+    } else {
+        match index.filter(|index| *index < keys.len()) {
+            Some(index) => keys[index] = value,
+            None => keys.push(value),
+        }
+    }
+    berth_api::profile::set_account_keys(config, account.name(), &keys);
+    Ok(())
 }
 
 /// Something a group of the Features page switches.
@@ -353,9 +420,16 @@ pub struct Profile<'a> {
     /// The registries and secrets there are to give.
     pub registries: &'a [String],
     pub secrets: &'a [String],
+    /// The public SSH key of the berth that sets the host up; empty when it
+    /// is not known.
+    pub own_key: &'a str,
 }
 
 impl<'a> Profile<'a> {
+    pub fn keys(&self, account: Account) -> Vec<String> {
+        account_keys(self.config, account.name())
+    }
+
     pub fn text(&self, field: Field) -> &'a str {
         self.config
             .pointer(field.spec().pointer)
@@ -369,7 +443,9 @@ impl<'a> Profile<'a> {
         let pointer = field.spec().pointer;
         let stored = self.config.pointer(pointer).and_then(Value::as_bool);
         stored.unwrap_or_else(|| {
-            if pointer.starts_with("/ansible_vars/devbox_tools_") {
+            if pointer == "/berth_ssh_key" {
+                true
+            } else if pointer.starts_with("/ansible_vars/devbox_tools_") {
                 self.config["ansible_vars"]["devbox_install_dev_tools"]
                     .as_bool()
                     .unwrap_or(true)
@@ -601,6 +677,7 @@ impl<'a> Profile<'a> {
             Step::Accounts => vec![
                 OperatorUser,
                 OperatorKey,
+                BerthKey,
                 OperatorHash,
                 OperatorSudo,
                 AgentUser,
@@ -695,6 +772,26 @@ impl<'a> Profile<'a> {
                 }
                 Some(_) => "  └─ ",
             };
+            // An account's keys are a row each, and one more that adds a key.
+            let account = [Account::Operator, Account::Agent]
+                .into_iter()
+                .find(|account| account.field() == field);
+            if let Some(account) = account {
+                let muted = Style::new().fg(theme::MUTED);
+                for (place, key) in self.keys(account).iter().enumerate() {
+                    let mut line = value_line("SSH key", &short_key(key), Kind::Text);
+                    line.spans.insert(0, Span::styled(prefix, muted));
+                    rows.push(Row::entry(line, Entry::Key(account, Some(place))));
+                }
+                rows.push(Row::entry(
+                    Line::from(vec![
+                        Span::styled(prefix, muted),
+                        Span::styled("+ Add SSH key", Style::new().fg(theme::ACCENT)),
+                    ]),
+                    Entry::Key(account, None),
+                ));
+                continue;
+            }
             let spec = field.spec();
             let value = if spec.kind == Kind::Toggle {
                 self.enabled(field).to_string()
@@ -702,7 +799,6 @@ impl<'a> Profile<'a> {
                 self.text(field).to_owned()
             };
             let (value, kind) = match field {
-                Field::OperatorKey | Field::AgentKey => (short_key(&value), spec.kind),
                 // Enough of the key to recognise it, not enough to use it.
                 Field::TailscaleKey if value.len() > 24 && value.is_ascii() => (
                     format!(
@@ -797,11 +893,10 @@ impl<'a> Profile<'a> {
                 &format!("{name} password hash is not SHA-512 crypt or yescrypt"),
             );
         }
-        for (field, name) in [(OperatorKey, "Operator"), (AgentKey, "Agent")] {
-            let key = self.text(field);
+        for (account, name) in [(Account::Operator, "Operator"), (Account::Agent, "Agent")] {
             check(
-                key.is_empty() || is_public_key(key),
-                &format!("{name} SSH public key is not a supported OpenSSH key"),
+                self.keys(account).iter().all(|key| is_public_key(key)),
+                &format!("{name} has an SSH public key that is not a supported OpenSSH key"),
             );
         }
         check(
@@ -827,8 +922,9 @@ impl<'a> Profile<'a> {
                 "Hostname is missing or invalid (F4 generates)",
             );
             check(
-                !self.text(OperatorKey).is_empty(),
-                "Operator SSH public key is required",
+                !self.keys(Account::Operator).is_empty()
+                    || self.enabled(BerthKey) && !self.own_key.is_empty(),
+                "Operator needs an SSH key: add one, or let it take this berth's",
             );
             check(
                 !self.text(OperatorHash).is_empty(),
@@ -907,6 +1003,7 @@ mod tests {
             features: &features,
             registries: &[],
             secrets: &[],
+            own_key: "",
         };
         let groups = profile.feature_groups();
         assert_eq!(groups[0].title, "Coding Agents");
@@ -937,13 +1034,35 @@ mod tests {
             features: &[],
             registries: &[],
             secrets: &[],
+            own_key: "",
         };
         let problems = profile.problems();
         assert!(problems.iter().any(|problem| problem.contains("Hostname")));
-        assert!(
+        let lacks_key = |problems: Vec<String>| {
             problems
                 .iter()
-                .any(|problem| problem.contains("public key"))
+                .any(|problem| problem.contains("needs an SSH key"))
+        };
+        assert!(lacks_key(problems));
+        // This berth's own key is a way in.
+        let own = Profile {
+            own_key: "ssh-ed25519 AAAA berth@here",
+            ..profile
+        };
+        assert!(!lacks_key(own.problems()));
+    }
+
+    #[test]
+    fn an_account_takes_several_keys() {
+        let mut config = json!({"operator_ssh_public_key": "ssh-ed25519 AAAA one"});
+        let operator = Account::Operator;
+        set_key(&mut config, operator, None, "ssh-ed25519 BBBB two").unwrap();
+        assert!(set_key(&mut config, operator, None, "ssh-ed25519 AAAA one").is_err());
+        assert!(set_key(&mut config, Account::Agent, None, "not a key").is_err());
+        set_key(&mut config, operator, Some(0), "").unwrap();
+        assert_eq!(
+            config,
+            json!({"operator_ssh_public_keys": ["ssh-ed25519 BBBB two"]})
         );
     }
 }
