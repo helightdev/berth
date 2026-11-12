@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security problem
+    url: https://github.com/helightdev/berth/security/advisories/new
+    about: Report a vulnerability privately. Don't open an issue for it.
+  - name: Documentation
+    url: https://berth.helight.dev/
+    about: How to install and use berth.

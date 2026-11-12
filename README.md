@@ -2,13 +2,14 @@
 
 # berth
 
-berth turns a spare laptop, a server or a container into an Ubuntu 26.04 desktop
-for coding agents, and looks after it from your terminal.
+berth sets up Ubuntu 26.04 desktops for coding agents on a spare laptop, a
+server or a container, and manages them from your terminal.
 
-Each host gets XFCE on a virtual display you open in the browser. Claude Code,
-Codex and Pi come with T3 Code as their web front end, along with development
-toolchains, Tailscale and Cockpit. berth keeps a profile per host and installs
-it. Afterwards every host has a page for status, sign-ins, updates and secrets.
+A host runs XFCE on a virtual display that you open in a browser. Plugins add
+the agents, such as Claude Code, Codex and Pi with T3 Code as their web front
+end, and the toolchains they work with. Each host has a profile that berth
+installs and can apply again. Once the host runs, its page in berth has the
+status, sign-ins, updates and secrets.
 
 <img src="docs/public/screens/overview.svg" alt="berth's terminal UI showing the overview of a host with its tasks">
 
@@ -59,7 +60,18 @@ The documentation site is built from [`docs/`](docs) (`cd docs && npm install &&
 - [Reference](docs/content/docs/%28guide%29/reference/index.mdx): tools, `box`, profile fields, building and releasing.
 - The API reference of berthd and `berth serve`, generated from [`docs/openapi/`](docs/openapi).
 
+## Contributing and security
+
+[CONTRIBUTING.md](CONTRIBUTING.md) says what berth is meant to be and how changes
+get in. Open an issue before a pull request. [SECURITY.md](SECURITY.md) says how
+to report a vulnerability and where berth's API is meant to be reachable from.
+
 ## License
 
-MIT, see [LICENSE](LICENSE). The vendored `tui-input` crate under `cli/vendor`
-has its own MIT license.
+Licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or
+the [MIT license](LICENSE-MIT), at your option. Contributions are licensed the same way.
+
+The vendored `tui-input` crate under `cli/vendor` has its own MIT license. The
+agents and tools that plugins install, such as Claude Code, Codex and Unity,
+are separate products under their vendors' terms. berth downloads them from
+their vendors and doesn't include them.

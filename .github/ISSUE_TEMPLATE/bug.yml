@@ -1,0 +1,33 @@
+name: Bug
+description: Something berth does wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected and what you got. Your own words are best, even if short.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The relevant output, and `berth run HOST status` if a host is involved. Take addresses, tokens and passwords out first.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: berth --version
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: How the host was installed
+      options:
+        - Not about a host
+        - USB installer
+        - Cloud seed
+        - SSH to an existing server
+        - Container

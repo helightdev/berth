@@ -1,0 +1,33 @@
+name: Proposal
+description: A feature or a change in behaviour. This comes before the pull request.
+labels: [proposal]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read [CONTRIBUTING.md](https://github.com/helightdev/berth/blob/main/CONTRIBUTING.md) first, in particular what berth is and isn't. Keep one proposal to one change.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you ran into
+      description: The situation that made you want this, in your own words.
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: What you propose
+      description: What berth would do differently. Say if it could be a plugin instead of a change to berth itself.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What is in and what is left out. Smaller is better.
+  - type: checkboxes
+    id: work
+    attributes:
+      label: Who does it
+      options:
+        - label: I'd like to write this myself
