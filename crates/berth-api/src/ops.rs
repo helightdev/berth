@@ -148,7 +148,7 @@ const fn headers(mut op: Op, headers: &'static [(&'static str, &'static str)]) -
 }
 
 /// The operations of berthd.
-pub const HOST: &[Op] = &[
+pub static HOST: &[Op] = &[
     call("version", "GET", "/v1/version"),
     call("reload", "POST", "/v1/reload"),
     call("sessions.start", "POST", "/v1/sessions"),
@@ -196,7 +196,7 @@ pub const HOST: &[Op] = &[
 const IF_MATCH: (&str, &str) = ("if_match", "if-match");
 
 /// The operations of `berth serve` itself. A host's are reached with `host`.
-pub const SERVE: &[Op] = &[
+pub static SERVE: &[Op] = &[
     call("version", "GET", "/v1/version"),
     call("access", "GET", "/v1/access"),
     call("hosts.list", "GET", "/v1/hosts"),
