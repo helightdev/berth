@@ -35,6 +35,18 @@ vale --minAlertLevel=warning README.md docs/content/docs plugins/*/guide.md
 
 The `web` feature needs the `wasm32-unknown-unknown` target. The Python tests skip their YAML checks without PyYAML, so install `requirements.txt` in a virtual environment to run them all.
 
+### In containers
+
+With only Docker or Podman, `container/ci.sh` runs the same checks in an image that has the toolchain. CI uses it too.
+
+```bash
+container/ci.sh check [CHECK…]   # fmt, shell-syntax, ansible-syntax, vale, python-tests, rust-tests, clippy
+container/ci.sh e2e [TEST…]      # the end-to-end tests, such as e2e_serve.Roles
+container/ci.sh shell            # a shell in the dev container
+```
+
+The end-to-end tests in `tests/e2e/` apply a profile to a throw-away Ubuntu container over SSH and then use it with berth, berthd and `berth serve`. They run on a network with nothing else on it, in scratch directories. The order of the modules is in `tests/e2e/run.py`. The test host's logs from a failed run are in `build/ci/logs/`.
+
 ## API changes
 
 - Add the operation to `crates/berth-api/src/ops.rs` with the role it needs. A test fails when a route has no operation or the other way round.

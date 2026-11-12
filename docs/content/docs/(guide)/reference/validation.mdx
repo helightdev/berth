@@ -16,8 +16,9 @@ CI runs these on every push, without network access to hosts:
 | `ansible-playbook --syntax-check` | The role |
 | `cargo fmt`, `cargo clippy` | Formatting and lints |
 | `vale` | The prose of the README, these docs and the plugin guides |
+| `tests/e2e` | berth against a test host in a container. A profile is applied over SSH, and a second time without changes. Then the tests use the host with SSH keys, tasks, terminals, files, secrets and a plugin from a folder. `berth serve` is tested with its roles, its set-up and its page |
 
-See [Building and releasing](/docs/reference/building) for running them locally.
+See [Building and releasing](/docs/reference/building#in-containers) for running them locally.
 
 ## Checking a build by hand
 

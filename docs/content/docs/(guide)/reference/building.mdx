@@ -16,9 +16,9 @@ icon: Hammer
 | `plugins/` | The plugins that come with berth |
 | `bootstrap/` | First-boot provisioning |
 | `bin/` | `devbox.py` (release, seeds, ISO), `qemu.py`, `write-usb.sh` |
-| `container/` | The desktop image and berth's own image |
+| `container/` | The desktop image, berth's own image, and the images and script for checks and tests |
 | `docs/` | This site |
-| `tests/` | Python tests |
+| `tests/` | Python tests, and the end-to-end tests in `tests/e2e/` |
 
 ## Build
 
@@ -48,6 +48,23 @@ vale README.md docs/content/docs
 
 Two of the Rust tests compare the API that berthd and `berth serve` describe with the committed documents in `docs/openapi/`. After changing a route, regenerate them. `BERTH_UPDATE_DOCS=1 cargo test` writes them.
 
+## In containers
+
+With Docker or Podman you need nothing else on your machine. `container/ci.sh` builds an image with Rust and its targets, Python with Ansible, and Vale. Everything runs in it. CI runs the same script.
+
+```bash
+container/ci.sh check              # what CI checks
+container/ci.sh check clippy vale  # some of it
+container/ci.sh e2e                # the end-to-end tests
+container/ci.sh shell              # a shell with the toolchain, the checkout at /src
+```
+
+The checkout is mounted, and files are written as you. Cargo's downloads and the target directory stay in the volumes `berth-ci-cargo` and `berth-ci-target`, so later runs are fast. `container/ci.sh clean` removes them and the images.
+
+The test host of the end-to-end tests is an Ubuntu container with SSH and an operator account. A profile is applied to it over SSH, with the role's tasks for the accounts, the plugins and berthd. The tests then use the host through berth's commands, berthd's API and `berth serve`. The desktop packages, toolchains and browsers are left out. The test host and the tests are on an internal network with no way out. Each run starts from a new host and removes it afterwards. After a failure the host's logs are in `build/ci/logs/`.
+
+To run one module or one test case, name it: `container/ci.sh e2e e2e_serve.Roles`. The modules are listed in order in `tests/e2e/run.py`. A new one goes there, after the ones whose state it uses.
+
 ## The release archive
 
 ```bash
@@ -73,7 +90,8 @@ GitHub Actions build on every push:
 
 | Workflow | Does |
 | --- | --- |
-| CI | The checks above, the docs build and Vale |
+| CI | The checks above and the end-to-end tests, both with `container/ci.sh`, and Vale |
+| Docs | The docs build, and publishing it to GitHub Pages from `main` |
 | Build | The static `berth` for Linux x86_64 as artifact `berth-x86_64-linux`, the host programs as `host-programs-x86_64-linux`; the container image `ghcr.io/helightdev/berth`, tagged `edge` from `main` |
 
 Pushing a `v*` tag also publishes a GitHub release with `berth-x86_64-linux.tar.gz`, its checksum file and `install.sh`. The image gets the version as its tag. `install.sh` installs the latest release.
