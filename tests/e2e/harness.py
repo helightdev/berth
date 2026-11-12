@@ -25,6 +25,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -826,6 +827,64 @@ def package_registry():
     if not _registry:
         _registry.append(PackageRegistry())
     return _registry[0]
+
+
+# ---------------------------------------------------------------------------
+# The Headscale server of ci/compose.yml, which the test host can join
+
+
+HEADSCALE = os.environ.get('BERTH_E2E_HEADSCALE', 'headscale')
+
+
+class Headscale:
+    """The `headscale` service of ci/compose.yml: its login server, the API key
+    it hands out at start, and its API. It has one user, `berth`, number 1."""
+
+    def __init__(self):
+        self.url = f'http://{HEADSCALE}:8080'
+        self.user = 'berth'
+
+        def ready():
+            with urllib.request.urlopen(f'http://{HEADSCALE}:8081/api-key', timeout=5) as answer:
+                key = answer.read().decode().strip()
+            # A key from an earlier start is refused until the new one is there.
+            self.api_key = key
+            return key and self.api('GET', '/api/v1/user') is not None
+        wait_for('Headscale handing out its API key', ready, timeout=60)
+
+    def api(self, method, path, body=None):
+        data = None if body is None else json.dumps(body).encode()
+        request = urllib.request.Request(self.url + path, data=data, method=method, headers={
+            'Authorization': f'Bearer {self.api_key}', 'Content-Type': 'application/json'})
+        with urllib.request.urlopen(request, timeout=20) as answer:
+            return json.loads(answer.read() or b'null')
+
+    def nodes(self):
+        return self.api('GET', '/api/v1/node').get('nodes', [])
+
+    def keys(self):
+        return self.api('GET', '/api/v1/preauthkey').get('preAuthKeys', [])
+
+    def new_key(self, hours=1):
+        """A one-use key of the user, as an admin makes one by hand."""
+        expiry = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() + hours * 3600))
+        made = self.api('POST', '/api/v1/preauthkey', {'user': '1', 'reusable': False, 'ephemeral': False,
+                                                     'expiration': expiry})
+        return made['preAuthKey']['key']
+
+    def forget_nodes(self):
+        for node in self.nodes():
+            self.api('DELETE', f'/api/v1/node/{node["id"]}')
+
+
+_headscale = []
+
+
+def headscale():
+    """The Headscale server, once it is ready."""
+    if not _headscale:
+        _headscale.append(Headscale())
+    return _headscale[0]
 
 
 # ---------------------------------------------------------------------------

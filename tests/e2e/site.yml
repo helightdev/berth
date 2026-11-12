@@ -29,6 +29,11 @@
       ansible.builtin.include_role:
         name: devbox
         tasks_from: berth.yml
+    - name: Join the tailnet
+      ansible.builtin.include_role:
+        name: devbox
+        tasks_from: tailnet.yml
+      when: devbox_install_tailscale | default(false)
     - name: Record what this configuration came from
       ansible.builtin.include_role:
         name: devbox

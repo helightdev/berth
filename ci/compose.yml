@@ -3,6 +3,7 @@
 # dev     the toolchain, with the checkout at /src, as the user who owns it
 # runner  the same image on a network of its own, which drives the tests
 # studio  the test host the tests set up over SSH
+# headscale  a Headscale server the test host can join (see below)
 #
 # The e2e network is internal: nothing on it reaches beyond it.
 name: ${BERTH_CI_PROJECT:-berth-ci}
@@ -37,7 +38,7 @@ services:
     # the checkout, which is mounted read-only.
     user: "0:0"
     networks: [e2e]
-    depends_on: [studio]
+    depends_on: [studio, headscale]
     volumes:
       - ..:/src:ro
       - ${BERTH_CI_TARGET:-target}:/src/target:ro
@@ -57,6 +58,77 @@ services:
     networks: [e2e]
     volumes:
       - seed:/seed:ro
+
+  # A Headscale server for joining a tailnet, with nothing of the internet:
+  # its DERP map names a relay that does not exist. At start it makes the user
+  # `berth` and an API key, and hands the key out over plain HTTP:
+  #
+  #   login server  http://headscale:8080 (its API is there too, under /api/v1)
+  #   API key       GET http://headscale:8081/api-key (empty until it is ready)
+  #
+  # A tailscale client joins it with `tailscale up --login-server
+  # http://headscale:8080 --auth-key=...`; in a container without a tun
+  # device, tailscaled runs with --tun=userspace-networking. Another test
+  # can use it as it is: add `headscale` to its depends_on, and see
+  # headscale() in tests/e2e/harness.py.
+  headscale:
+    image: headscale/headscale:0.29.6-debug
+    profiles: [e2e]
+    hostname: headscale
+    networks: [e2e]
+    entrypoint: ["/busybox/sh", "-c"]
+    command:
+      - |
+        set -e
+        mkdir -p /etc/headscale /var/lib/headscale /var/run/headscale /www
+        cat >/etc/headscale/derp.yaml <<'EOF'
+        regions:
+          900:
+            regionid: 900
+            regioncode: none
+            regionname: Nowhere
+            nodes:
+              - name: 900a
+                regionid: 900
+                hostname: derp.invalid
+                stunport: -1
+        EOF
+        cat >/etc/headscale/config.yaml <<'EOF'
+        server_url: http://headscale:8080
+        listen_addr: 0.0.0.0:8080
+        metrics_listen_addr: 127.0.0.1:9090
+        grpc_listen_addr: 127.0.0.1:50443
+        noise:
+          private_key_path: /var/lib/headscale/noise_private.key
+        prefixes:
+          v4: 100.64.0.0/10
+          v6: fd7a:115c:a1e0::/48
+        derp:
+          server:
+            enabled: false
+          urls: []
+          paths: [/etc/headscale/derp.yaml]
+          auto_update_enabled: false
+        database:
+          type: sqlite
+          sqlite:
+            path: /var/lib/headscale/db.sqlite
+        dns:
+          magic_dns: true
+          base_domain: tailnet.test
+          override_local_dns: false
+        unix_socket: /var/run/headscale/headscale.sock
+        unix_socket_permission: "0770"
+        EOF
+        : >/www/api-key
+        busybox httpd -p 8081 -h /www
+        headscale serve &
+        until headscale users list >/dev/null 2>&1; do sleep 0.2; done
+        headscale users create berth >/dev/null
+        headscale apikeys create --expiration 1d >/www/api-key.new
+        mv /www/api-key.new /www/api-key
+        echo "headscale: ready"
+        wait
 
 networks:
   e2e:
