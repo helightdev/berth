@@ -17,7 +17,7 @@ x-dev: &dev
   security_opt: [label=disable]
   environment:
     PYTHONDONTWRITEBYTECODE: "1"
-    CARGO_INCREMENTAL: "0"
+    CARGO_INCREMENTAL: ${BERTH_CI_INCREMENTAL:-0}
     CI: ${CI:-}
 
 services:
