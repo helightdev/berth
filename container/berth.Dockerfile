@@ -16,7 +16,7 @@ RUN cargo build --release --locked --target x86_64-unknown-linux-musl -p berth -
 FROM debian:trixie-slim
 COPY requirements.txt /tmp/requirements.txt
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl openssh-client openssl python3 python3-pip tar tini \
+      ca-certificates curl npm openssh-client openssl python3 python3-pip tar tini \
     && pip install --no-cache-dir --break-system-packages -r /tmp/requirements.txt \
     && apt-get purge -y python3-pip && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/* /tmp/requirements.txt \
