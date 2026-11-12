@@ -87,7 +87,9 @@ export default function Home() {
 
       <section className="mx-auto w-full max-w-5xl px-4">
         <img
-          src={asset('/screens/overview.svg')}
+          src={asset('/screens/overview.png')}
+          width={1036}
+          height={886}
           alt="berth's terminal UI showing a host's overview with its tasks"
           className="w-full rounded-xl border shadow-2xl"
         />

@@ -11,7 +11,7 @@ const config = {
   trailingSlash: true,
   reactStrictMode: true,
   basePath,
-  // No image server on a static host; the screenshots are SVG anyway.
+  // No image server on a static host; the screenshots are PNG files made at twice their size.
   images: { unoptimized: true },
   // Pages that name files in public/ add the folder themselves.
   env: { NEXT_PUBLIC_BASE_PATH: basePath ?? '' },

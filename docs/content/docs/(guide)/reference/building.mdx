@@ -92,7 +92,7 @@ npm run dev         # http://localhost:3000
 npm run build       # static site in docs/out
 ```
 
-The guide pages are MDX files in `docs/content/docs/(guide)`. The API reference is generated before every build from `docs/openapi/` by `docs/scripts/gather.mjs`. The terminal screenshots in `docs/public/screens/` come from `docs/scripts/screens.py`, which runs the built binary against an invented set-up and a throw-away container. See the comment at its top. Set `DOCS_BASE_PATH` when the site is served from a folder, such as `/berth` on GitHub Pages.
+The guide pages are MDX files in `docs/content/docs/(guide)`. The API reference is generated before every build from `docs/openapi/` by `docs/scripts/gather.mjs`. The terminal screenshots in `docs/public/screens/` are PNG files rendered with headless Chrome. They come from `docs/scripts/screens.py`, which runs the built binary against an invented set-up and a throw-away container. See the comment at its top, which also says how to render the PNG files again. Set `DOCS_BASE_PATH` when the site is served from a folder, such as `/berth` on GitHub Pages.
 
 ## Releases
 

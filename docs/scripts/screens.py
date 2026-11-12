@@ -2,7 +2,10 @@
 """Terminal screenshots for the documentation, in docs/public/screens/.
 
 Runs the built berth binary (target/debug/berth) in a pseudo-terminal against an
-invented set-up and writes what the terminal shows as SVG, in the UI's colours.
+invented set-up and writes what the terminal shows as PNG, in the UI's colours.
+Each picture is drawn as SVG first, then rendered by headless Chrome at twice the
+size with JetBrains Mono (docs/scripts/fonts, SIL OFL) embedded, so the text looks
+the same wherever the PNG is shown. Only the PNGs are kept.
 
 Nothing comes from your own machine: HOME, the XDG directories and the runtime
 directory point into a scratch directory, the PATH starts with stand-ins for
@@ -14,11 +17,19 @@ running berthd. No other host is contacted.
     cargo build                     # berth, and the static berthd and box it embeds
     /tmp/screens-venv/bin/python docs/scripts/screens.py [--only NAME…] [--keep]
 
+Needs Chrome or Chromium (set CHROME to its path if it is not on the PATH). To
+render SVG files that already exist, without berth or Docker:
+
+    python3 docs/scripts/screens.py --from-svg DIR [--only NAME…]
+
 Needs Docker and the ubuntu:26.04 image for the pictures of a connected host;
 without them only the others are made.
 """
 
+from __future__ import annotations
+
 import argparse
+import base64
 import html
 import json
 import os
@@ -30,12 +41,16 @@ import signal
 import struct
 import subprocess
 import sys
+import tempfile
 import termios
 import fcntl
 import time
 from pathlib import Path
 
-import pyte
+try:
+    import pyte
+except ImportError:  # only the --from-svg mode works without it
+    pyte = None
 
 REPO = Path(__file__).resolve().parents[2]
 BERTH = REPO / "target/debug/berth"
@@ -50,6 +65,9 @@ TEXT = "#cdd6f4"
 MUTED = "#7c89b0"
 LINE = "#344264"
 ACCENT = "#74b2ff"
+
+FONTS = Path(__file__).resolve().parent / "fonts"
+SCALE = 2
 
 ANSI = {
     "black": "#1b2235", "red": "#f28096", "green": "#9ed88c", "brown": "#f0c674",
@@ -424,14 +442,64 @@ def svg(screen: pyte.Screen, title: str, trim=True) -> str:
 FORBIDDEN = [re.compile(p) for p in (r"helight", r"/home/", r"/phome", r"\bovh\b")]
 
 
+def chrome() -> str:
+    for candidate in (os.environ.get("CHROME"), "google-chrome", "google-chrome-stable",
+                      "chromium", "chromium-browser", "chrome"):
+        if candidate and shutil.which(candidate):
+            return shutil.which(candidate)
+    raise SystemExit("no Chrome or Chromium found: install one, or set CHROME to its path")
+
+
+def render_png(svg_text: str, target: Path):
+    """Render an SVG picture to a PNG at SCALE times its size, on a transparent
+    background (the picture has rounded corners), with the mono font embedded."""
+    size = re.search(r'viewBox="0 0 (\d+) (\d+)"', svg_text)
+    if not size:
+        raise SystemExit(f"{target.name}: the SVG has no viewBox")
+    width, height = int(size[1]), int(size[2])
+    faces = ""
+    for weight, file in ((400, "JetBrainsMono-Regular.woff2"), (700, "JetBrainsMono-Bold.woff2")):
+        path = FONTS / file
+        if not path.is_file():
+            raise SystemExit(f"missing font {path}")
+        data = base64.b64encode(path.read_bytes()).decode()
+        faces += (f"@font-face{{font-family:'JetBrains Mono';font-weight:{weight};"
+                  f"src:url(data:font/woff2;base64,{data}) format('woff2')}}")
+    page = (f"<!doctype html><meta charset=utf-8><style>{faces}"
+            "html,body{margin:0;background:transparent}svg{display:block}</style>" + svg_text)
+    with tempfile.TemporaryDirectory() as tmp:
+        source, shot = Path(tmp) / "page.html", Path(tmp) / "shot.png"
+        source.write_text(page)
+        result = subprocess.run(
+            [chrome(), "--headless", "--no-sandbox", "--disable-gpu", "--hide-scrollbars",
+             "--disable-lcd-text", "--font-render-hinting=none",
+             "--default-background-color=00000000", f"--force-device-scale-factor={SCALE}",
+             f"--window-size={width},{height}", "--virtual-time-budget=3000",
+             f"--screenshot={shot}", source.as_uri()],
+            capture_output=True, text=True, timeout=120)
+        if not shot.is_file():
+            raise SystemExit(f"{target.name}: Chrome made no picture\n{result.stderr[-800:]}")
+        optimise(shot, target)
+    print(f"wrote {target.relative_to(REPO)}")
+
+
+def optimise(source: Path, target: Path):
+    """Smaller PNG: oxipng or pngquant when installed, else a plain re-save."""
+    shutil.copyfile(source, target)
+    if shutil.which("pngquant"):
+        subprocess.run(["pngquant", "--force", "--quality=90-100", "--output", str(target), str(source)],
+                       check=False)
+    if shutil.which("oxipng"):
+        subprocess.run(["oxipng", "-q", "-o", "4", "--strip", "safe", str(target)], check=False)
+
+
 def save(name: str, screen: pyte.Screen, title: str, trim=True):
     text = svg(screen, title, trim)
     for pattern in FORBIDDEN:
         if pattern.search(text):
             raise SystemExit(f"{name}: the picture contains {pattern.pattern!r}; not saved")
     OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / f"{name}.svg").write_text(text)
-    print(f"wrote docs/public/screens/{name}.svg")
+    render_png(text, OUT / f"{name}.png")
 
 
 # ---------------------------------------------------------------------------
@@ -500,7 +568,21 @@ def main():
                         help="scratch directory for the invented set-up (it is replaced)")
     parser.add_argument("--keep", action="store_true", help="leave the demo container running")
     parser.add_argument("--list", action="store_true", help="list the pictures")
+    parser.add_argument("--from-svg", metavar="DIR", help="only render the NAME.svg files in DIR to PNG")
     args = parser.parse_args()
+    if pyte is None and not args.from_svg:
+        raise SystemExit("pip install pyte pyyaml first (see the top of this file)")
+    if args.from_svg:
+        OUT.mkdir(parents=True, exist_ok=True)
+        for file in sorted(Path(args.from_svg).glob("*.svg")):
+            if args.only and file.stem not in args.only:
+                continue
+            text = file.read_text()
+            for pattern in FORBIDDEN:
+                if pattern.search(text):
+                    raise SystemExit(f"{file.name}: the picture contains {pattern.pattern!r}; not rendered")
+            render_png(text, OUT / f"{file.stem}.png")
+        return
     root = Path(args.demo)
     real = Path.home() / ".config"
     if root.resolve() == Path.home() or real in root.resolve().parents:

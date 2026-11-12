@@ -11,7 +11,7 @@ end, and the toolchains they work with. Each host has a profile that berth
 installs and can apply again. Once the host runs, its page in berth has the
 status, sign-ins, updates and secrets.
 
-<img src="docs/public/screens/overview.svg" alt="berth's terminal UI showing the overview of a host with its tasks">
+<img src="docs/public/screens/overview.png" alt="berth's terminal UI showing the overview of a host with its tasks">
 
 **Status:** early. Try a profile in the container or a VM before booting the
 installer on real hardware: **the installer erases the disk it selects.**

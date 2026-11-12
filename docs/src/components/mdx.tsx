@@ -13,7 +13,7 @@ export function Screen({ name, alt, caption }: { name: string; alt: string; capt
   return (
     <figure className="not-prose my-6">
       <ImageZoom
-        src={asset(`/screens/${name}.svg`)}
+        src={asset(`/screens/${name}.png`)}
         alt={alt}
         width={1000}
         height={600}
