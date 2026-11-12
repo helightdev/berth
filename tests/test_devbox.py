@@ -229,6 +229,21 @@ class RenderTests(unittest.TestCase):
             deployment=json.loads((result/'agent-bootstrap/deployment.json').read_text())
             self.assertEqual(deployment['release_sha256'],builder.digest(result/'agent-bootstrap/release.tar.gz'))
             self.assertEqual(deployment['release_sha256'],builder.digest(stale))
+    def test_cloud_seed_without_url_when_the_release_is_delivered(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(builder,'BUILD',Path(temp)/'build'):
+            path=Path(temp)/'host.json'
+            path.write_text(json.dumps({k:v for k,v in config().items() if k!='release_url'}))
+            with self.assertRaisesRegex(ValueError,'HTTPS release_url'): builder.render(path,'cloud')
+            with patch.dict(os.environ,{'BERTH_RELEASE_DELIVERED':'1'}):
+                result=builder.render(path,'cloud')
+                # A URL in the profile is not used either: the machine waits for its copy.
+                self.assertEqual(builder.deployment(config(),'0'*64)['release_url'],'')
+            seed=json.loads((result/'user-data').read_text().split('\n',1)[1])
+            files={f['path']:f for f in seed['write_files']}
+            deployment=json.loads(files['/opt/devbox-bootstrap/deployment.json']['content'])
+            self.assertEqual(deployment['release_url'],'')
+            self.assertEqual(deployment['release_sha256'],builder.digest(Path(temp)/'build/devbox-release.tar.gz'))
+            self.assertEqual(result,Path(temp)/'build/test-devbox/cloud')
     def test_installed_bootstrap_copy_is_root_only(self):
         commands=builder.autoinstall(config())['autoinstall']['late-commands']
         self.assertIn('chown -R root:root /target/opt/devbox-bootstrap',commands)
@@ -247,6 +262,9 @@ class RenderTests(unittest.TestCase):
             import tarfile
             with tarfile.open(Path(temp)/'devbox-release.tar.gz') as archive:
                 names=archive.getnames()
+                # berth runs a provisioner's command straight from the unpacked release.
+                self.assertEqual(archive.getmember('plugins/incus/bin/provision').mode,0o755)
+                self.assertEqual(archive.getmember('plugins/incus/package.json').mode,0o644)
             self.assertIn('provision/bootstrap/bootstrap.sh',names)
             # What bootstrap.sh and berth look for in an unpacked release.
             for need in ['provision/bin/devbox.py','provision/requirements.txt','provision/ansible.cfg',

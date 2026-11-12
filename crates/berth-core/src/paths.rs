@@ -1,7 +1,8 @@
 //! Where berth keeps things on this machine, and its own settings.
 //!
 //! - `~/.config/berth/config.json`: the tool's settings
-//! - `~/.config/berth/hosts/NAME.json`: one profile per host, private
+//! - `~/.config/berth/hosts/NAME.json`: one profile per host, private, with
+//!   `NAME.credentials.json` and `NAME.instance.json` beside it
 //! - `~/.local/share/berth/source/`: the provisioning source, unpacked from the
 //!   program itself whenever a new version runs. It is laid out as a checkout
 //!   is, with the paths in [`layout`]
@@ -352,7 +353,7 @@ impl Paths {
             .filter_map(|entry| {
                 let name = entry.file_name().into_string().ok()?;
                 let name = name.strip_suffix(".json")?;
-                if name.ends_with(".credentials") {
+                if name.ends_with(".credentials") || name.ends_with(".instance") {
                     return None;
                 }
                 let profile: Value = serde_json::from_slice(&fs::read(entry.path()).ok()?).ok()?;
@@ -407,6 +408,7 @@ mod tests {
         )
         .unwrap();
         fs::write(paths.hosts_dir().join("laptop.credentials.json"), "{}").unwrap();
+        fs::write(paths.hosts_dir().join("laptop.instance.json"), "{}").unwrap();
         assert_eq!(paths.hosts(), [("laptop".into(), "100.64.0.1".into())]);
 
         assert!(paths.set("colour", "blue").is_err());

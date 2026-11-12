@@ -225,7 +225,7 @@ pub struct Signal {
 
 // ── Tasks ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct Argument {
     pub name: String,
     #[serde(default)]
@@ -631,6 +631,9 @@ pub struct PluginInfo {
     pub dir: String,
     #[serde(default)]
     pub features: Vec<PluginFeature>,
+    /// What it can create machines with.
+    #[serde(default)]
+    pub provisioners: Vec<ProvisionerInfo>,
 }
 
 /// The plugins a berth serve has, and where it keeps its own.
@@ -677,6 +680,76 @@ pub struct PluginUpdates {
 pub struct PluginUpdateSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+}
+
+// ── Provisioners ────────────────────────────────────────────────────────────
+
+/// Something a plugin creates machines with, for a saved host's profile.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ProvisionerInfo {
+    /// `PLUGIN/ID`.
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    /// `seed`: the machine boots with berth's cloud seed and sets itself up.
+    /// `apply`: berth applies the profile over SSH once the machine answers.
+    pub setup: String,
+    /// What it can do besides `create`, `status` and `destroy`: `start`,
+    /// `stop`, `list`.
+    #[serde(default)]
+    pub verbs: Vec<String>,
+    /// The berth secrets it is given.
+    #[serde(default)]
+    pub secrets: Vec<String>,
+    /// The required ones that have no value. Not looked at in a plugin's listing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_secrets: Vec<String>,
+    #[serde(default)]
+    pub arguments: Vec<Argument>,
+}
+
+/// What to create a host's machine with.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct Provision {
+    /// `PLUGIN/ID`.
+    pub provisioner: String,
+    /// Values of its arguments; the others take their defaults.
+    #[serde(default)]
+    pub arguments: BTreeMap<String, String>,
+}
+
+/// The machine berth created for a host.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct Instance {
+    /// `PLUGIN/ID`.
+    pub provisioner: String,
+    /// The provisioner's id of the machine; empty until `create` said it.
+    pub id: String,
+    /// `running`, `stopped`, `gone`, `unknown` or `creating`.
+    pub state: String,
+    #[serde(default)]
+    pub address: String,
+    /// When it was asked for, RFC 3339.
+    #[serde(default)]
+    pub created: String,
+    #[serde(default)]
+    pub arguments: BTreeMap<String, String>,
+    /// What can be done to it besides `destroy`: `start`, `stop`.
+    #[serde(default)]
+    pub verbs: Vec<String>,
+    /// Why the state is `unknown`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub problem: String,
+}
+
+/// A machine a provisioner has that berth created.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ListedInstance {
+    pub id: String,
+    /// The host it was created for, as its labels say.
+    pub host: String,
+    pub state: String,
 }
 
 // ── What a host was applied from ────────────────────────────────────────────
