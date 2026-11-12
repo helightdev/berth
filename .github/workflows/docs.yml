@@ -31,10 +31,9 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/out
-  # Runs once Pages is switched on for the repository: Settings, Pages, source
-  # "GitHub Actions", and the repository variable DOCS_PAGES set to true.
+  # Needs Pages with the source "GitHub Actions" in the repository's settings.
   deploy:
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.DOCS_PAGES == 'true'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     permissions:
