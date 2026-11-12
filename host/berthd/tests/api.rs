@@ -773,12 +773,20 @@ async fn system_calls_go_to_the_systems_own_tools() {
         .await
         .unwrap();
     assert_eq!(code(host.post("/v1/power/reboot", &json!({})).await).0, 409);
-    let child: api::Process = {
+    // The session has started once it answers, but its shell may not have
+    // become sleep yet.
+    let mut child = None;
+    for _ in 0..100 {
         let all: Vec<api::Process> = host.get("/v1/processes").await.unwrap();
-        all.into_iter()
-            .find(|process| process.command == "sleep 61.5")
-            .unwrap()
-    };
+        child = all
+            .into_iter()
+            .find(|process| process.command == "sleep 61.5");
+        if child.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let child = child.expect("the session's sleep among the processes");
     let _: Value = host
         .post(
             &format!("/v1/processes/{}/signal", child.pid),
