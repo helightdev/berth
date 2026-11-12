@@ -81,3 +81,5 @@ ssh -p 2222 -L 16080:127.0.0.1:6080 -L 13773:127.0.0.1:3773 ops@127.0.0.1
 - Run `berth run HOST smoke` and check the sandboxed browser, sudo from a command T3 started, and GUI input.
 - Give a wrong disk serial and check that the installer refuses.
 - On a laptop, also test the lid, AC and battery.
+
+From a source checkout, `ci/run.sh boot cloud` and `ci/run.sh boot iso` run the cloud seed and the installer this way unattended and check most of the list above. See [Validation](/docs/reference/validation#boot-tests).

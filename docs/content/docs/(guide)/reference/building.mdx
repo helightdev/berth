@@ -78,6 +78,26 @@ The test host of the end-to-end tests is an Ubuntu container with SSH and an ope
 
 To run one module or one test case, name it: `ci/run.sh e2e e2e_serve.Roles`. The modules are listed in order in `tests/e2e/run.py`. A new one goes there, after the ones whose state it uses.
 
+### Boot tests
+
+```bash
+ci/run.sh boot cloud                 # the cloud seed in QEMU
+ci/run.sh boot iso                   # the USB installer on a blank virtual disk
+ci/run.sh boot cloud --keep          # and leave the guest running afterwards
+ci/run.sh boot cloud -- boot_host.Reboot
+```
+
+They need `/dev/kvm`. `--tcg` runs without it, but takes hours. QEMU runs in a container of its own, `ci/boot.Dockerfile`, which also holds the package cache, the release server and the tests. The guest's disks are files under `build/boot/`. No block device is ever attached. With `--keep` the run ends with the commands to log in over SSH or to reach the serial console.
+
+| Setting | Effect |
+| --- | --- |
+| `BERTH_CI_BOOT_ISO` | An Ubuntu Server ISO already on your machine, used read-only. Without it the ISO is downloaded to `build/boot/images` |
+| `BERTH_CI_BOOT_ISO_SHA256` | The checksum it must have. Without it, Ubuntu's `SHA256SUMS` |
+| `BERTH_CI_BOOT_MEMORY`, `BERTH_CI_BOOT_CPUS` | The guest's memory in MiB and its vCPUs, 4096 and 4 by default |
+| `BERTH_CI_BOOT_SSH_PORT` | The loopback port of the guest's SSH with `--keep`, 22722 by default |
+
+The cloud image and the ISO are checked against Ubuntu's `SHA256SUMS` on every run. `build/boot/KIND/report.json` has the time of each step, the disk and memory used and how much came from the package cache. The modules are listed in order in `tests/e2e/boot.py`.
+
 ## The release archive
 
 ```bash
@@ -104,12 +124,13 @@ GitHub Actions build on every push:
 | Workflow | Does |
 | --- | --- |
 | CI | The checks above and the end-to-end tests, both with `ci/run.sh`, and Vale |
+| Boot | The boot tests, `boot cloud` and `boot iso`, when started by hand |
 | Docs | The docs build, and publishing it to GitHub Pages from `main` |
 | Build | The static `berth` for Linux x86_64 as artifact `berth-x86_64-linux`, the host programs as `host-programs-x86_64-linux`; the container image `ghcr.io/helightdev/berth`, tagged `edge` from `main` |
 
 To release, push a tag such as `v0.3.0`, or create the release on GitHub's release page with a new tag. Build then:
 
-1. Builds `berth`, `berthd`, `box` and the page with the version of the tag, and checks that each says it.
+1. Builds `berth`, `berthd`, `box` and the page with the version of the tag, and checks that each says it. Runs `boot cloud`. When it fails, nothing is published.
 2. Publishes the release with both archives, their checksum files, `install.sh` and `VERSION`. A release made on the page gets the files added.
 3. Pushes the image tagged `0.3.0`, `0.3` and `latest`.
 4. Commits the version to `main` in `Cargo.toml`, `Cargo.lock` and `docs/openapi/`, and starts CI, Build and Docs for that commit.
