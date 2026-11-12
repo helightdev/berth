@@ -110,7 +110,8 @@ fn main() {
         "requirements.txt",
         "ansible.cfg",
         "README.md",
-        "LICENSE",
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
         "config/example.json",
     ] {
         println!("cargo:rerun-if-changed=../../{entry}");
