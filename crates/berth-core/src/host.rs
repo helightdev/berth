@@ -106,23 +106,43 @@ impl Host {
                 false => self.builder("ssh_key"),
             },
         )?;
-        if let (false, Some(own)) = (served, self.own_identity()) {
+        let own = self.own_identity();
+        if !served && !own.is_empty() {
             inventory["all"]["hosts"]["devbox_target"]["ansible_ssh_extra_args"] =
-                json!(format!("-o IdentityFile={own}"));
+                json!(own.join(" "));
         }
         Ok(inventory)
     }
 
-    /// This berth's own key, when the profile names no key: ssh then tries
-    /// it besides the user's own keys and the agent's.
-    fn own_identity(&self) -> Option<String> {
-        let key = self
+    /// The ssh options that offer this berth's own key, when the profile
+    /// names no key. Naming an identity makes ssh leave out the ones it tries
+    /// by default, so those that exist are named with it.
+    fn own_identity(&self) -> Vec<String> {
+        let Some(key) = self
             .key
             .as_ref()
-            .filter(|_| self.builder("ssh_key").is_empty())?;
-        let key = key.to_str()?;
-        // It is one word of a command line.
-        (!key.contains(char::is_whitespace)).then(|| key.to_owned())
+            .filter(|_| self.builder("ssh_key").is_empty())
+        else {
+            return vec![];
+        };
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let usual = [
+            "id_rsa",
+            "id_ecdsa",
+            "id_ecdsa_sk",
+            "id_ed25519",
+            "id_ed25519_sk",
+        ]
+        .iter()
+        .filter_map(|name| Some(home.as_ref()?.join(".ssh").join(name)))
+        .filter(|path| path.is_file());
+        usual
+            .chain([key.clone()])
+            .filter_map(|path| path.to_str().map(str::to_owned))
+            // Each is one word of a command line.
+            .filter(|path| !path.contains(char::is_whitespace))
+            .flat_map(|path| ["-o".to_owned(), format!("IdentityFile={path}")])
+            .collect()
     }
 
     /// `user@host`, or the host alone.
@@ -133,9 +153,7 @@ impl Host {
     /// `ssh` with this host's port and key.
     pub fn ssh(&self) -> Command {
         let mut command = ssh(self.builder("ssh_port"), self.builder("ssh_key"));
-        if let Some(own) = self.own_identity() {
-            command.arg("-o").arg(format!("IdentityFile={own}"));
-        }
+        command.args(self.own_identity());
         command
     }
 
@@ -170,10 +188,7 @@ impl Host {
             self.builder("ssh_key"),
             password,
         );
-        if let Some(own) = self.own_identity() {
-            spec.args
-                .splice(0..0, ["-o".to_owned(), format!("IdentityFile={own}")]);
-        }
+        spec.args.splice(0..0, self.own_identity());
         Ok(spec)
     }
 }
