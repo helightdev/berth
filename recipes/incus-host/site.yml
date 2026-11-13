@@ -48,6 +48,46 @@
         - incus.service
         - docker.service
 
+    # ── Sysbox, when asked for ──────────────────────────────────────────────
+
+    # Its package restarts Docker and refuses while containers run, so it comes
+    # before the berth server's container. A host that has it is left as it is.
+    - name: Install Sysbox beside Docker
+      when: sysbox | bool
+      vars:
+        sysbox_arch: "{{ 'arm64' if ansible_facts['architecture'] == 'aarch64' else 'amd64' }}"
+        sysbox_package: "/root/sysbox-ce_{{ sysbox_version }}_{{ sysbox_arch }}.deb"
+      block:
+        - name: See which Sysbox is installed
+          ansible.builtin.command: dpkg-query -W -f=${Version} sysbox-ce
+          register: sysbox_installed
+          changed_when: false
+          failed_when: false
+
+        - name: Download Sysbox
+          ansible.builtin.get_url:
+            url: "https://downloads.nestybox.com/sysbox/releases/v{{ sysbox_version }}/sysbox-ce_{{ sysbox_version }}-0.linux_{{ sysbox_arch }}.deb"
+            dest: "{{ sysbox_package }}"
+            mode: "0600"
+            checksum: "{{ ('sha256:' ~ sysbox_checksum) if sysbox_checksum else omit }}"
+          when: not sysbox_installed.stdout.startswith(sysbox_version)
+
+        - name: Install Sysbox
+          ansible.builtin.apt:
+            deb: "{{ sysbox_package }}"
+          when: not sysbox_installed.stdout.startswith(sysbox_version)
+
+        - name: Remove the package file
+          ansible.builtin.file:
+            path: "{{ sysbox_package }}"
+            state: absent
+
+        - name: Start Sysbox now and at boot
+          ansible.builtin.systemd_service:
+            name: sysbox.service
+            enabled: true
+            state: started
+
     # ── The tailnet ─────────────────────────────────────────────────────────
 
     - name: Join the tailnet
@@ -180,9 +220,7 @@
 
     - name: Ask Incus and Docker how they are
       ansible.builtin.command: "{{ item }}"
-      loop:
-        - incus info
-        - docker info
+      loop: "{{ ['incus info', 'docker info'] + (['sysbox-runc --version'] if sysbox | bool else []) }}"
       changed_when: false
       register: answers
       loop_control:

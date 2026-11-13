@@ -28,6 +28,16 @@ pub enum Arrived {
     Provisioners(Result<Vec<berth_api::ProvisionerInfo>, String>),
     /// The machine berth created for the host, if it has one.
     Instance(Result<Option<berth_api::Instance>, String>),
+    /// A provisioner's page: how it is, and its actions.
+    ProvisionerPage(
+        String,
+        Result<berth_api::ProvisionerState, String>,
+        Result<Vec<berth_api::Action>, String>,
+    ),
+    /// What an action of a provisioner that answers at once said.
+    ProvisionerAnswer(String, Result<Vec<String>, String>),
+    /// What the server lists as a host's actions.
+    Actions(String, Vec<berth_api::Action>),
 }
 
 #[derive(Default)]
@@ -48,6 +58,8 @@ pub struct Data {
     pub secrets: Vec<String>,
     pub settings: Vec<Value>,
     pub plugins: Vec<PluginInfo>,
+    /// The server's provisioners, as it last listed them.
+    pub provisioners: Vec<berth_api::ProvisionerInfo>,
     /// Where the server keeps its own plugins.
     pub plugin_dir: String,
     /// Something to say on the status line.
@@ -198,6 +210,7 @@ impl Admin {
                 .map(|(_, public)| public.clone())
                 .unwrap_or_default();
         });
+        self.provisioners();
         self.call("plugins.list", json!({}), Value::Null, |admin, found| {
             let listing: PluginList = serde_json::from_value(found).unwrap_or_default();
             let mut data = admin.data.borrow_mut();
@@ -555,8 +568,48 @@ impl Admin {
         self.job("apply", name, body, title, size, |_| {});
     }
 
+    /// What the server lists as the host's actions: its tasks and berth's own.
+    pub fn actions(&self, name: &str) {
+        let admin = self.clone();
+        let host = name.to_owned();
+        self.portal.call(
+            "hosts.actions",
+            None,
+            json!({"name": name}),
+            Value::Null,
+            move |result| {
+                let listed = result
+                    .ok()
+                    .and_then(|listed| serde_json::from_value(listed).ok())
+                    .unwrap_or_default();
+                admin.arrive(Arrived::Actions(host.clone(), listed));
+            },
+        );
+    }
+
+    /// Run one of berth's own actions on a host, with its arguments: a job
+    /// is followed in a panel, a result shown there.
+    pub fn act(
+        &self,
+        name: &str,
+        action: &berth_api::Action,
+        arguments: &std::collections::BTreeMap<String, String>,
+        size: (u16, u16),
+    ) {
+        let title = format!("{} · {name}", action.title());
+        self.job(
+            &action.name,
+            name,
+            json!({"arguments": arguments}),
+            title,
+            size,
+            |_| {},
+        );
+    }
+
     /// Run an action of a host that is a job of the server, and follow the
-    /// job in a panel; `ended` is run when it has ended.
+    /// job in a panel; `ended` is run when it has ended. One that answers at
+    /// once shows what it said.
     fn job(
         &self,
         action: &str,
@@ -574,6 +627,15 @@ impl Admin {
             json!({"name": name, "action": action}),
             body,
             move |result| match result {
+                Ok(acted) if acted["job"].is_null() => {
+                    admin.say("");
+                    let mut view = View::plain(&title, size.0, size.1);
+                    let said = serde_json::to_string_pretty(&acted["result"]).unwrap_or_default();
+                    view.feed(format!("{said}\n").as_bytes());
+                    view.ended = Some(Some(0));
+                    admin.data.borrow_mut().job = Some(view);
+                    admin.data.borrow_mut().hosts_changed = true;
+                }
                 Ok(acted) => {
                     let job = &acted["job"];
                     admin.say("");
@@ -692,5 +754,130 @@ impl Admin {
                 admin.machine(&host);
             },
         );
+    }
+
+    // ── Provisioners ────────────────────────────────────────────────────────
+
+    /// Ask for the server's provisioners again.
+    pub fn provisioners(&self) {
+        self.call(
+            "provisioners.list",
+            json!({}),
+            Value::Null,
+            |admin, found| {
+                admin.data.borrow_mut().provisioners =
+                    serde_json::from_value(found).unwrap_or_default();
+            },
+        );
+    }
+
+    /// Ask a provisioner how it is and what it can do, for its page.
+    pub fn provisioner(&self, name: &str) {
+        let Some((plugin, id)) = name.split_once('/') else {
+            return;
+        };
+        let (admin, name) = (self.clone(), name.to_owned());
+        let args = json!({"plugin": plugin, "id": id});
+        self.portal.call(
+            "provisioners.get",
+            None,
+            args.clone(),
+            Value::Null,
+            move |state| {
+                let state = state.and_then(|found| {
+                    serde_json::from_value(found).map_err(|error| error.to_string())
+                });
+                let asker = admin.clone();
+                admin.portal.call(
+                    "provisioners.actions",
+                    None,
+                    args,
+                    Value::Null,
+                    move |actions| {
+                        let actions = actions.and_then(|found| {
+                            serde_json::from_value(found).map_err(|error| error.to_string())
+                        });
+                        asker.arrive(Arrived::ProvisionerPage(name, state, actions));
+                    },
+                );
+            },
+        );
+    }
+
+    /// Run an action of a provisioner: one that answers at once says so on
+    /// its page, a job is followed in a panel and its page asked for again.
+    pub fn provisioner_act(
+        &self,
+        name: &str,
+        action: &berth_api::Action,
+        values: &std::collections::BTreeMap<String, String>,
+        size: (u16, u16),
+    ) {
+        let Some((plugin, id)) = name.split_once('/') else {
+            return;
+        };
+        let (admin, name) = (self.clone(), name.to_owned());
+        let title = format!("{} · {name}", action.title());
+        self.say(match action.changes {
+            true => "Starting…".to_owned(),
+            false => format!("Asking {name}…"),
+        });
+        self.portal.call(
+            "provisioners.act",
+            None,
+            json!({"plugin": plugin, "id": id, "action": action.name}),
+            json!({"arguments": values}),
+            move |result| match result {
+                Ok(acted) if acted["job"].is_null() => {
+                    let lines = berth_tui::provisioners::answer_lines(&acted["result"]);
+                    admin.say(lines.first().cloned().unwrap_or_default());
+                    admin.arrive(Arrived::ProvisionerAnswer(name, Ok(lines)));
+                }
+                Ok(acted) => {
+                    admin.say("");
+                    let again = name.clone();
+                    admin.follow(acted["job"]["id"].clone(), &title, size, move |admin| {
+                        admin.provisioner(&again)
+                    });
+                }
+                Err(error) => {
+                    admin.say(format!("✗ {error}"));
+                    admin.arrive(Arrived::ProvisionerAnswer(name, Err(error)));
+                }
+            },
+        );
+    }
+
+    /// Follow a job of the server in a panel; `ended` is run when it has ended.
+    fn follow(&self, id: Value, title: &str, size: (u16, u16), ended: impl Fn(&Admin) + 'static) {
+        self.data.borrow_mut().job = Some(View::plain(title, size.0, size.1));
+        let follower = self.clone();
+        self.portal
+            .stream("jobs.follow", None, json!({"id": id}), move |frame| {
+                let mut data = follower.data.borrow_mut();
+                let Some(view) = &mut data.job else {
+                    return;
+                };
+                match frame {
+                    Frame::Bytes(bytes) => {
+                        view.feed(&bytes);
+                    }
+                    Frame::Data(said) => {
+                        if let Some(code) = berth_tui::host::exited(&said) {
+                            view.ended = Some(code);
+                        }
+                    }
+                    Frame::End(why) => {
+                        if view.ended.is_none() {
+                            if let Some(why) = why {
+                                view.feed(format!("\n{why}\n").as_bytes());
+                            }
+                            view.ended = Some(None);
+                        }
+                        drop(data);
+                        ended(&follower);
+                    }
+                }
+            });
     }
 }

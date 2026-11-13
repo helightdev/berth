@@ -110,6 +110,8 @@ def source():
     (overlay / 'provision/ansible').mkdir()
     (overlay / 'provision/ansible/roles').symlink_to(SRC / 'provision/ansible/roles')
     (overlay / 'provision/ansible/site.yml').symlink_to(SRC / 'tests/e2e/site.yml')
+    # The controller alone is installed by the role's own playbook for it.
+    (overlay / 'provision/ansible/controller.yml').symlink_to(SRC / 'provision/ansible/controller.yml')
     return overlay
 
 

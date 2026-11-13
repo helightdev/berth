@@ -112,6 +112,23 @@ Any `devbox_` setting of the role. The ones the terminal UI edits:
 
 Others, such as `devbox_tailscale_serve`, the agent versions and the backup settings, are described where they are used. All defaults are in [`defaults/main.yml`](https://github.com/helightdev/berth/blob/main/ansible/roles/devbox/defaults/main.yml).
 
+## Level
+
+<TypeTable
+  type={{
+    level: { type: '"reachable" | "controller" | "workstation"', default: '"workstation"', description: 'How much of berth the host is meant to have: nothing, berthd and box alone, or the whole profile. Only a workstation is applied.' },
+  }}
+/>
+
+A host below a workstation needs only its level and `access`. The other fields are for a workstation. See [Host levels](/docs/use/levels).
+
+```json title="dock's profile"
+{
+  "level": "reachable",
+  "access": { "address": "192.0.2.4", "user": "ops", "auth": "berth" }
+}
+```
+
 ## Access (`access`)
 
 Where the host is and how berth logs in to it. Every host has it. See [Logging in to hosts](/docs/use/accounts#logging-in-to-hosts).

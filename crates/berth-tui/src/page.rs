@@ -42,13 +42,25 @@ pub fn group_of(action: &Action) -> &str {
     }
 }
 
+/// What a row says of an action that cannot run now; its help says why.
+pub const UNAVAILABLE: &str = " · not now";
+
+/// The line of an action's row.
+pub fn row_line(action: &Action) -> String {
+    match action.available {
+        true => format!("  ▸ {}", action.title()),
+        false => format!("  ▸ {}{UNAVAILABLE}", action.title()),
+    }
+}
+
 /// The actions in their groups, in the order they come; groups are matched
 /// whatever their case. `entry` makes a row's entry from the action's index.
+/// One that cannot run now is listed too, marked, so its reason can be read.
 pub fn groups<E>(actions: &[Action], entry: impl Fn(usize) -> E) -> Vec<Group<E>> {
     let mut groups: Vec<Group<E>> = vec![];
     for (index, action) in actions.iter().enumerate() {
         let title = group_of(action);
-        let row = (format!("  ▸ {}", action.title()), entry(index));
+        let row = (row_line(action), entry(index));
         match groups
             .iter_mut()
             .find(|known| known.title.eq_ignore_ascii_case(title))
@@ -312,7 +324,7 @@ mod tests {
         assert_eq!(items[2], Item::Heading("Storage".into()));
         assert_eq!(
             items.last(),
-            Some(&Item::Pick("  ▸ Resize a pool".into(), 2))
+            Some(&Item::Pick("  ▸ Resize a pool · not now".into(), 2))
         );
         let said = help(&actions[2], "berth provisioner incus/vm resize");
         assert!(said.starts_with("Grows the pool.") && said.contains("Asks for: pool, New size."));

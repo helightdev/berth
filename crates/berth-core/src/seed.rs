@@ -33,6 +33,8 @@ pub struct Archive {
 /// needs no `release_url`.
 pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Result<Seed> {
     let host = Host::load(paths, name)?;
+    // A seed installs a whole workstation.
+    crate::level::guard(&host, crate::level::Capability::Apply)?;
     let source = paths.source()?;
     let dirs = apply::plugin_dirs(&plugins::found(
         &source,

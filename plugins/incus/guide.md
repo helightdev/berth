@@ -49,6 +49,11 @@ In berth each argument has a short label, and its row's Information panel
 says what it means. The server is on the Install tab. CPUs, memory and disk
 size are under Machine on the Settings tab.
 
+`server` and `project` are the provisioner's own arguments. berth keeps them as
+its settings, which every machine and action uses unless the call gives a value:
+
+    berth provisioner incus/vm run settings server=https://192.0.2.10:8443
+
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `server` | | The address of the Incus API, such as `https://192.0.2.10:8443`. Required. |
@@ -59,6 +64,26 @@ size are under Machine on the Settings tab.
 | `pool` | `default` | Storage pool for the root disk. |
 | `network` | | Network for the machine. Left empty, the machine uses the network of the `default` profile. |
 | `project` | `default` | Incus project the machine goes in. |
+
+## Machines
+
+Besides creating, starting, stopping and deleting, the plugin changes a
+machine's CPU and memory limits and grows its root disk. Its log is the
+console log Incus keeps.
+
+## Actions
+
+The provisioner's page in berth, and `berth provisioner incus/vm`, list these
+actions. They only read.
+
+| Action | What it does |
+| --- | --- |
+| `server` | Says the server's version, its kernel and storage drivers, and whether it trusts berth. |
+| `pools` | The storage pools, with how much of each is used. |
+| `images` | The images the server keeps in the project, with their sizes. |
+| `networks` | The networks a machine can be attached to. |
+
+The page also offers the server's pools and networks for `pool` and `network`.
 
 ## Limits
 

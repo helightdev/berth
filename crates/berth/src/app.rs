@@ -13,6 +13,7 @@ use crate::{
 use berth_core::{
     apply,
     host::Host,
+    level,
     paths::{Paths, layout},
     profiles::Place,
 };
@@ -176,6 +177,11 @@ pub struct App {
     machine_answers: Option<mpsc::Receiver<Answers>>,
     /// The running job is one of the machine's.
     pub machine_job: bool,
+    /// What a berth server lists of its own actions on the host, until it answers.
+    own_answers: Option<mpsc::Receiver<Vec<berth_api::Action>>>,
+    /// The berth command one of berth's own actions on the host runs, in
+    /// the normal terminal, the next time the screen is left.
+    pub own_command: Option<Vec<String>>,
 }
 
 /// What the provisioners there are, and the host's machine, came back as.
@@ -290,6 +296,8 @@ impl App {
             machine: Machine::default(),
             machine_answers: None,
             machine_job: false,
+            own_answers: None,
+            own_command: None,
         };
         app.saved = app.config.clone();
         app
@@ -600,6 +608,10 @@ impl App {
                     rows.push(Row::info(""));
                 }
                 rows.push(heading("Connection"));
+                rows.push(Row::info(Line::styled(
+                    format!("  {}", berth_tui::host::level_line(&self.host)),
+                    Style::new().fg(theme::MUTED),
+                )));
                 if let Some(server) = self.served() {
                     rows.push(Row::info(format!(
                         "  {} · through the berth server at {server}",
@@ -615,29 +627,39 @@ impl App {
                         Style::new().fg(theme::BAD),
                     )));
                 }
-                for (title, group) in self.overview_groups() {
+                let mut groups = self.overview_groups();
+                // Set-up and applying it are for whoever may set the server up,
+                // in the group berth's own actions of set-up are in.
+                if !self.locked() {
+                    let mut setup = vec![Row::entry(
+                        "  ▸ Change what is installed, accounts or install method  ›",
+                        Entry::Setup,
+                    )];
+                    // A host without its controller offers Apply above already;
+                    // only a workstation is applied.
+                    if !matches!(self.host.state, State::Missing | State::Old(_))
+                        && self.host.level == level::Level::Workstation
+                    {
+                        setup.push(Row::entry(
+                            "  ▸ Apply this configuration",
+                            Entry::Task("apply"),
+                        ));
+                    }
+                    match groups.iter_mut().find(|(title, _)| title == "Set-Up") {
+                        Some((_, rows)) => {
+                            setup.append(rows);
+                            *rows = setup;
+                        }
+                        None => groups.push(("Set-Up".to_owned(), setup)),
+                    }
+                }
+                for (title, group) in groups {
                     rows.push(Row::info(""));
                     rows.push(Row::info(Line::styled(
                         title,
                         Style::new().fg(theme::ACCENT).bold(),
                     )));
                     rows.extend(group);
-                }
-                // Set-up and applying it are for whoever may set the server up.
-                if !self.locked() {
-                    rows.push(Row::info(""));
-                    rows.push(heading("Set-Up"));
-                    rows.push(Row::entry(
-                        "  ▸ Change what is installed, accounts or install method  ›",
-                        Entry::Setup,
-                    ));
-                    // A host without its controller offers Apply above already.
-                    if !matches!(self.host.state, State::Missing | State::Old(_)) {
-                        rows.push(Row::entry(
-                            "  ▸ Apply this configuration",
-                            Entry::Task("apply"),
-                        ));
-                    }
                 }
             }
         }
@@ -677,6 +699,15 @@ impl App {
                     fixed("connect"),
                 ]);
             }
+            // Below a workstation the controller is installed alone.
+            State::Missing if self.host.level != level::Level::Workstation => {
+                let rows = vec![
+                    note("berth's controller is not on this host. Install it for sessions, tasks and files here; berth reaches the host over SSH meanwhile.".into(), theme::MUTED),
+                    fixed("install-controller"),
+                    fixed("ssh"),
+                ];
+                return host(rows);
+            }
             State::Missing => {
                 return host(vec![
                     note("berth's controller is not on this host yet. Applying the configuration installs it.".into(), theme::WARN),
@@ -684,14 +715,22 @@ impl App {
                 ]);
             }
             State::Old(version) => {
+                let raise = match self.host.level {
+                    level::Level::Workstation => "apply",
+                    _ => "install-controller",
+                };
                 return host(vec![
                     note(
                         format!(
-                            "The host's tools ({version}) are older than this berth needs. Applying the configuration brings them up to date."
+                            "The host's tools ({version}) are older than this berth needs. {} brings them up to date.",
+                            TASKS
+                                .iter()
+                                .find(|(name, ..)| *name == raise)
+                                .map_or(raise, |(_, label, _)| label)
                         ),
                         theme::WARN,
                     ),
-                    fixed("apply"),
+                    fixed(raise),
                 ]);
             }
             State::Unreachable(message) => {
@@ -722,10 +761,14 @@ impl App {
             true => self.agent_label().to_owned(),
             false => self.operator_label(),
         };
+        let raise = match self.host.level {
+            level::Level::Workstation => "apply",
+            _ => "install-controller",
+        };
         let behind = berth_tui::host::behind_note(&self.host).map(|text| {
             (
                 "Configuration".to_owned(),
-                vec![note(text, theme::WARN), fixed("apply")],
+                vec![note(text, theme::WARN), fixed(raise)],
             )
         });
         behind
@@ -1472,6 +1515,15 @@ impl App {
                 .into_iter()
                 .collect();
         }
+        // A host below a workstation needs only to be reached.
+        if action == Action::Ssh && level::of(&self.config) != level::Level::Workstation {
+            let access = self.host_profile().access();
+            return berth_core::keys::check(&access.address, &access.port)
+                .err()
+                .map(|error| Problem::new(Step::Install, error.to_string()))
+                .into_iter()
+                .collect();
+        }
         let mut problems = self.view().problems_with(&self.machine);
         let mut check = |ok: bool, step: Step, message: &str| {
             if !ok {
@@ -1555,6 +1607,8 @@ impl App {
     /// password gets the dialog first, once.
     pub fn connect_host(&mut self) {
         let host = self.host_profile();
+        self.host.level = level::of(&self.config);
+        self.ask_own_actions();
         let own_link = host.access().link.is_some() || host.served(&self.paths).is_some();
         if host.asks_password() && !own_link && self.host.password.is_none() {
             self.host.state = State::Password;
@@ -1568,6 +1622,47 @@ impl App {
                 crate::remote::connect_with(&mut self.host, spec, compare(&self.paths, &host));
             }
             Err(error) => self.host.state = State::Unreachable(error.to_string()),
+        }
+    }
+
+    /// berth's own actions on the host: those of this berth, or what the
+    /// server lists, asked for in the background, as the server asks the host.
+    fn ask_own_actions(&mut self) {
+        let host = self.host_profile();
+        let Some(server) = host.served(&self.paths) else {
+            self.host.own = level::local_actions(&host.name, self.host.level);
+            return;
+        };
+        let (sender, receiver) = mpsc::channel();
+        let name = host.name.clone();
+        std::thread::spawn(move || {
+            let listed = server
+                .call("hosts.actions", json!({"name": name}), None)
+                .ok()
+                .and_then(|listed| serde_json::from_value::<Vec<berth_api::Action>>(listed).ok());
+            let _ = sender.send(listed.unwrap_or_default());
+        });
+        self.own_answers = Some(receiver);
+    }
+
+    /// Of what a server lists, berth's own that the overview has no row of:
+    /// applying and the seed are on the set-up, sending secrets is a task.
+    fn take_own_actions(&mut self) {
+        let Some(answers) = &self.own_answers else {
+            return;
+        };
+        if let Ok(listed) = answers.try_recv() {
+            self.own_answers = None;
+            // A secret is asked for by the command that runs it, not typed here.
+            self.host.own = listed
+                .into_iter()
+                .filter(|action| action.runs == berth_api::Runs::Berth)
+                .filter(|action| !["apply", "seed"].contains(&action.name.as_str()))
+                .map(|mut action| {
+                    action.arguments.retain(|argument| !argument.secret);
+                    action
+                })
+                .collect();
         }
     }
 
@@ -1616,6 +1711,7 @@ impl App {
         if self.host.state == State::Idle && self.unlock.is_none() && self.problems().is_empty() {
             self.connect_host();
         }
+        self.take_own_actions();
         let had_password = self.host.password.is_some();
         if let Some(note) = self.host.pump() {
             self.status = note;
@@ -1632,6 +1728,12 @@ impl App {
 
     /// Run a task of the host: after its question and its arguments, if it has any.
     pub fn begin_task(&mut self, index: usize, confirmed: bool) {
+        if let Some(action) = self.host.actions().get(index)
+            && !action.available
+        {
+            self.status = format!("{} cannot run now: {}", action.title(), action.why);
+            return;
+        }
         if let Some((index, values)) = self.host.begin_task(index, confirmed) {
             self.launch_task(index, values);
         }
@@ -1651,6 +1753,11 @@ impl App {
         let Some(action) = self.host.actions().get(index).cloned() else {
             return;
         };
+        if self.host.is_own(index) {
+            let _ = self.save();
+            self.own_command = Some(own_command(&self.place.argument(), &action, &values));
+            return;
+        }
         let mut body = self.host.task_body(&action, &values);
         // Secrets are built here and travel on the task's standard input. A
         // server's host is given the server's own, which its action sends.
@@ -1896,6 +2003,9 @@ impl App {
 
     /// Save the profile and run the chosen action in the normal terminal.
     pub fn execute(&mut self) -> Result<()> {
+        if let Some(words) = self.own_command.take() {
+            return self.run_own(&words);
+        }
         let tab_action = self.action;
         if let Some(action) = self.terminal_action.take() {
             self.action = action;
@@ -1924,12 +2034,48 @@ impl App {
         Ok(())
     }
 
+    /// Run berth with these words in the normal terminal, as one of berth's
+    /// own actions on the host does.
+    fn run_own(&mut self, words: &[String]) -> Result<()> {
+        println!("berth {}", words.join(" "));
+        let status = Command::new(std::env::current_exe()?)
+            .args(words)
+            .status()?;
+        // What the host is and can do may be different afterwards.
+        if let Ok(Some(saved)) = self.place.load(&self.paths) {
+            self.config = saved.clone();
+            self.saved = saved;
+        }
+        self.host.disconnect();
+        match status.success() {
+            true => Ok(()),
+            false => Err(format!("berth {} failed ({status})", words.join(" ")).into()),
+        }
+    }
+
     fn execute_action(&mut self) -> Result<()> {
         self.publish_release()?;
         self.save()?;
         println!("{}", self.saved_note());
         if self.action == Action::Save {
             return Ok(());
+        }
+        // Over SSH, a host below a workstation gets the controller alone, or nothing.
+        if self.action == Action::Ssh {
+            match level::of(&self.config) {
+                level::Level::Workstation => {}
+                level::Level::Controller => {
+                    let words = ["host", "install", &self.place.argument()].map(str::to_owned);
+                    return self.run_own(&words);
+                }
+                level::Level::Reachable => {
+                    println!(
+                        "Nothing is installed on a reachable host. If it does not take berth's key yet: berth key trust {}",
+                        self.place.argument()
+                    );
+                    return Ok(());
+                }
+            }
         }
         let (command, files) = self.command()?;
         self.run_command(command, files)?;
@@ -2450,4 +2596,47 @@ fn compare(paths: &Paths, host: &Host) -> Option<crate::remote::Compare> {
     Some(std::sync::Arc::new(move |version: &berth_api::Version| {
         now(version.applied.as_ref()?)
     }))
+}
+
+/// The berth command that runs one of berth's own actions on a host, with
+/// the values given. A secret is asked for by the command itself.
+fn own_command(
+    host: &str,
+    action: &berth_api::Action,
+    values: &std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    let given = |name: &str| values.get(name).map(String::as_str).unwrap_or("").trim();
+    let mut words: Vec<String> = match action.name.as_str() {
+        "install-controller" => vec!["host".into(), "install".into(), host.into()],
+        "trust-key" => {
+            let mut words = vec!["key".into(), "trust".into(), host.into()];
+            if !given("key").is_empty() {
+                words.extend(["--key".into(), given("key").into()]);
+            }
+            if given("keep_password") == "yes" {
+                words.push("--keep-password".into());
+            }
+            return words;
+        }
+        "host-key" => {
+            let mut words = vec!["key".into(), "host".into(), host.into()];
+            if given("accept") == "yes" {
+                words.push("--accept".into());
+            }
+            return words;
+        }
+        name => vec!["run".into(), host.into(), name.into()],
+    };
+    if words[0] == "run" {
+        words.extend(
+            action
+                .arguments
+                .iter()
+                .filter(|argument| !argument.secret && !given(&argument.name).is_empty())
+                .map(|argument| format!("{}={}", argument.name, given(&argument.name))),
+        );
+        // The question was answered on the screen.
+        words.push("--yes".into());
+    }
+    words
 }

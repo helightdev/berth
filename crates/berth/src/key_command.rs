@@ -194,7 +194,7 @@ fn local_host(paths: &Paths, name: &str) -> Result<Host> {
 }
 
 /// `berth key trust HOST`: first contact.
-fn trust(paths: &Paths, name: &str, rest: &[&str]) -> Result<()> {
+pub(crate) fn trust(paths: &Paths, name: &str, rest: &[&str]) -> Result<()> {
     let mut key_file = None;
     let mut keep = false;
     let mut rest = rest.iter();

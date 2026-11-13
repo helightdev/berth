@@ -243,6 +243,30 @@ pub fn chosen(all: Vec<String>, asked: &[String]) -> Result<Vec<String>> {
     Ok(asked.to_vec())
 }
 
+/// The hosts a roll-out applies, and the names of those it leaves because
+/// they are not workstations: only a workstation is applied.
+pub fn workstations(hosts: Vec<Host>) -> (Vec<Host>, Vec<String>) {
+    let (taken, left): (Vec<Host>, Vec<Host>) = hosts
+        .into_iter()
+        .partition(|host| crate::level::of(&host.config) == crate::level::Level::Workstation);
+    (taken, left.into_iter().map(|host| host.name).collect())
+}
+
+/// What a roll-out says of the hosts it left out, when it left any.
+pub fn skipped_note(skipped: &[String]) -> Option<String> {
+    match skipped.len() {
+        0 => None,
+        1 => Some(format!(
+            "! Skipped 1 host that is not a workstation: {}",
+            skipped[0]
+        )),
+        count => Some(format!(
+            "! Skipped {count} hosts that are not workstations: {}",
+            skipped.join(", ")
+        )),
+    }
+}
+
 /// How this berth compares a host with what it would apply now.
 pub fn comparer(paths: &Paths) -> impl Fn(&Applied) -> Option<Behind> + use<> {
     let found = match paths.source() {
@@ -413,9 +437,16 @@ pub fn local(
 ) -> Result<RolloutReport> {
     let all: Vec<String> = Host::all(paths).into_iter().map(|host| host.name).collect();
     let names = chosen(all, &options.hosts)?;
-    let mut targets: Vec<Box<dyn Target + '_>> = vec![];
+    let mut hosts = vec![];
     for name in names {
-        let host = Host::load(paths, &name)?;
+        hosts.push(Host::load(paths, &name)?);
+    }
+    let (hosts, skipped) = workstations(hosts);
+    if let Some(note) = skipped_note(&skipped) {
+        say(out, &note);
+    }
+    let mut targets: Vec<Box<dyn Target + '_>> = vec![];
+    for host in hosts {
         let password = password(&host);
         targets.push(Box::new(Live::new(paths, host, password)?));
     }
@@ -493,6 +524,7 @@ mod tests {
                 api: api::API,
                 mode: "system".into(),
                 applied: self.applied.clone(),
+                level: None,
             }))
         }
         fn apply(&mut self, _out: &mut dyn Write) -> std::result::Result<(), String> {
@@ -787,5 +819,26 @@ mod tests {
         assert_eq!(chosen(all.clone(), &[]).unwrap(), ["a", "b"]);
         assert_eq!(chosen(all.clone(), &["b".into()]).unwrap(), ["b"]);
         assert!(chosen(all, &["c".into()]).is_err());
+    }
+
+    #[test]
+    fn a_roll_out_leaves_hosts_that_are_not_workstations() {
+        let host = |name: &str, config: Value| Host {
+            name: name.into(),
+            place: crate::profiles::Place::File(format!("/{name}.json").into()),
+            config,
+        };
+        let (taken, skipped) = workstations(vec![
+            host("studio", json!({"builder": {}})),
+            host("dock", json!({"level": "controller"})),
+            host("pier", json!({"level": "reachable"})),
+        ]);
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken[0].name, "studio");
+        assert_eq!(
+            skipped_note(&skipped).unwrap(),
+            "! Skipped 2 hosts that are not workstations: dock, pier"
+        );
+        assert!(skipped_note(&[]).is_none());
     }
 }

@@ -10,6 +10,7 @@ pub mod machine;
 pub mod markdown;
 pub mod page;
 pub mod plugins;
+pub mod provisioners;
 pub mod qr;
 pub mod screen;
 pub mod setup;

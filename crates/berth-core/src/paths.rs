@@ -45,6 +45,8 @@ pub mod layout {
     pub const WRITE_USB: &str = "provision/bin/write-usb.sh";
     /// The playbook that applies a profile.
     pub const PLAYBOOK: &str = "provision/ansible/site.yml";
+    /// The playbook that installs berth's controller alone.
+    pub const CONTROLLER_PLAYBOOK: &str = "provision/ansible/controller.yml";
     /// Ansible's settings for that playbook.
     pub const ANSIBLE_CONFIG: &str = "provision/ansible.cfg";
     /// The profile a new host starts from.
@@ -426,6 +428,11 @@ impl Paths {
     /// berth's own copy of the provisioning source, unpacked from the program
     /// when it is missing or from another build.
     fn own_source(&self) -> Result<PathBuf> {
+        // Two threads that unpack at once would each remove the other's copy.
+        static UNPACKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one = UNPACKING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = self.data_dir.join("source");
         let marker = dir.join(".berth-release");
         let digest = SOURCE_DIGEST.trim();

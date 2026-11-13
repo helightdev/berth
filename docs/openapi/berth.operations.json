@@ -357,6 +357,21 @@
         ],
         "type": "object"
       },
+      "Detail": {
+        "description": "A row of what a provisioner says, shown as it is given.",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "type": "object"
+      },
       "Done": {
         "properties": {
           "ok": {
@@ -558,11 +573,30 @@
               "null"
             ]
           },
+          "level": {
+            "$ref": "#/components/schemas/HostLevel",
+            "description": "The level its profile means it to have."
+          },
           "name": {
             "type": "string"
           },
           "reachable": {
             "type": "boolean"
+          },
+          "rotating": {
+            "description": "A rotation of a key it logs in with is not done on it yet.",
+            "type": "boolean"
+          },
+          "seen": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HostLevel",
+                "description": "The level it was seen to have: what its controller's record says,\n`reachable` when berth logged in and found no controller. Absent\nwhen it could not be asked."
+              }
+            ]
           },
           "version": {
             "description": "The version of its berthd.",
@@ -575,9 +609,19 @@
         "required": [
           "name",
           "address",
-          "reachable"
+          "reachable",
+          "level"
         ],
         "type": "object"
+      },
+      "HostLevel": {
+        "description": "How much of berth a host has: what its profile means it to have, or\nwhat it was seen to have. Each level can do what the ones before it can.",
+        "enum": [
+          "reachable",
+          "controller",
+          "workstation"
+        ],
+        "type": "string"
       },
       "Inbox": {
         "properties": {
@@ -871,6 +915,31 @@
           "id",
           "host",
           "state"
+        ],
+        "type": "object"
+      },
+      "MadeMachine": {
+        "description": "A machine a provisioner made, as berth's records and the provisioner's\nown list have it.",
+        "properties": {
+          "host": {
+            "description": "The host it was made for.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The provisioner's id of it; empty while it is being made.",
+            "type": "string"
+          },
+          "recorded": {
+            "description": "Whether berth has a record of it. One the provisioner lists without\na record carries berth's labels, but berth has lost track of it.",
+            "type": "boolean"
+          },
+          "state": {
+            "description": "What the provisioner's list says: `running`, `stopped`, or empty\nwhen it was not asked or cannot list.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "host"
         ],
         "type": "object"
       },
@@ -1265,7 +1334,15 @@
       "ProvisionerInfo": {
         "description": "Something a plugin creates machines with, for a saved host's profile.",
         "properties": {
+          "actions": {
+            "description": "Its plugin's own actions, such as listing images or pruning.",
+            "items": {
+              "$ref": "#/components/schemas/Action"
+            },
+            "type": "array"
+          },
           "arguments": {
+            "description": "What creating a machine takes: the provisioner's own arguments first,\nthen those of its machines.",
             "items": {
               "$ref": "#/components/schemas/Argument"
             },
@@ -1278,6 +1355,13 @@
             "description": "`PLUGIN/ID`.",
             "type": "string"
           },
+          "kinds": {
+            "description": "What it can make: `machine`, and kinds its plugin names.",
+            "items": {
+              "$ref": "#/components/schemas/ProvisionerKind"
+            },
+            "type": "array"
+          },
           "label": {
             "type": "string"
           },
@@ -1288,12 +1372,33 @@
             },
             "type": "array"
           },
+          "own": {
+            "description": "The names of the provisioner's own arguments, which say where it is,\nsuch as an Incus server. Their values are kept as its settings.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "problem": {
+            "description": "Why it cannot be used here, as a sentence that says what to change.\nEmpty when it can.",
+            "type": "string"
+          },
           "secrets": {
             "description": "The berth secrets it is given.",
             "items": {
               "type": "string"
             },
             "type": "array"
+          },
+          "settings": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The values of its own arguments that are kept, by name.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
           },
           "setup": {
             "description": "`seed`: the machine boots with berth's cloud seed and sets itself up.\n`apply`: berth applies the profile over SSH once the machine answers.",
@@ -1311,6 +1416,88 @@
           "id",
           "label",
           "setup"
+        ],
+        "type": "object"
+      },
+      "ProvisionerKind": {
+        "description": "A kind of thing a provisioner makes.",
+        "properties": {
+          "arguments": {
+            "items": {
+              "$ref": "#/components/schemas/Argument"
+            },
+            "type": "array"
+          },
+          "id": {
+            "description": "`machine`, or a kind the plugin names, such as `deployment`.",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "setup": {
+            "description": "For a machine: `seed` or `apply`, as for the provisioner.",
+            "type": "string"
+          },
+          "spec": {
+            "description": "The specification one is made from, for a kind that has one: its\n`format` and `label`, as the plugin declares them."
+          },
+          "verbs": {
+            "description": "What can be done to one besides `create`, `status` and `destroy`:\n`start`, `stop`, `change`, `logs`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "ProvisionerState": {
+        "description": "A provisioner's page: what it is, what it says of itself now, and the\nmachines it made.",
+        "properties": {
+          "details": {
+            "items": {
+              "$ref": "#/components/schemas/Detail"
+            },
+            "type": "array"
+          },
+          "machines": {
+            "items": {
+              "$ref": "#/components/schemas/MadeMachine"
+            },
+            "type": "array"
+          },
+          "message": {
+            "description": "What it said of itself, or why it could not be asked.",
+            "type": "string"
+          },
+          "provisioner": {
+            "$ref": "#/components/schemas/ProvisionerInfo"
+          },
+          "state": {
+            "description": "`ready`, `unreachable` or `unusable`, or what the provisioner said.",
+            "type": "string"
+          },
+          "values": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "The values an argument takes here, by its name, where the\nprovisioner narrows what it declares, such as the pools there are.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "provisioner",
+          "state"
         ],
         "type": "object"
       },
@@ -1676,6 +1863,17 @@
               }
             ]
           },
+          "level": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HostLevel",
+                "description": "What was installed on the host, by that record: `controller` when\nonly the controller was, `workstation` for a whole profile. Absent\nwhen the host keeps no record."
+              }
+            ]
+          },
           "mode": {
             "description": "`system` or `single`.",
             "type": "string"
@@ -1936,7 +2134,7 @@
         }
       ],
       "data": {
-        "description": "The whole profile",
+        "description": "The whole profile. A workstation's has a builder object; a reachable or controller host's needs only level and access",
         "schema": {}
       },
       "errors": [
@@ -1959,7 +2157,7 @@
         }
       },
       "role": "admin",
-      "summary": "Save a host's profile: a new host, or a changed one."
+      "summary": "Save a host's profile: a new host, or a changed one. A host below a workstation needs only its level and access."
     },
     {
       "args": [
@@ -2795,8 +2993,168 @@
           "type": "array"
         }
       },
-      "role": "admin",
-      "summary": "What the plugins can create machines with, and what each asks for."
+      "role": "view",
+      "summary": "What the plugins can create machines with, what each asks for and can do, and whether it can be used here."
+    },
+    {
+      "args": [
+        {
+          "description": "The plugin",
+          "in": "path",
+          "name": "plugin",
+          "required": true
+        },
+        {
+          "description": "The provisioner within the plugin",
+          "in": "path",
+          "name": "id",
+          "required": true
+        },
+        {
+          "description": "Values of the provisioner's own arguments as `NAME=VALUE` for this once, such as another server to ask; the others are its settings",
+          "header": null,
+          "in": "query",
+          "name": "arguments",
+          "required": false
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such provisioner",
+          "status": "404"
+        }
+      ],
+      "group": "provisioners",
+      "http": {
+        "method": "GET",
+        "path": "/v1/provisioners/{plugin}/{id}"
+      },
+      "kind": "call",
+      "name": "provisioners.get",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/ProvisionerState"
+        }
+      },
+      "role": "view",
+      "summary": "A provisioner's page: what it says of itself now, such as whether its engine answers, and the machines berth made with it."
+    },
+    {
+      "args": [
+        {
+          "description": "The plugin",
+          "in": "path",
+          "name": "plugin",
+          "required": true
+        },
+        {
+          "description": "The provisioner within the plugin",
+          "in": "path",
+          "name": "id",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such provisioner",
+          "status": "404"
+        }
+      ],
+      "group": "provisioners",
+      "http": {
+        "method": "GET",
+        "path": "/v1/provisioners/{plugin}/{id}/actions"
+      },
+      "kind": "call",
+      "name": "provisioners.actions",
+      "portal": true,
+      "result": {
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/Action"
+          },
+          "type": "array"
+        }
+      },
+      "role": "view",
+      "summary": "What can be done to a provisioner: its plugin's actions, and berth's own settings of it."
+    },
+    {
+      "args": [
+        {
+          "description": "The plugin",
+          "in": "path",
+          "name": "plugin",
+          "required": true
+        },
+        {
+          "description": "The provisioner within the plugin",
+          "in": "path",
+          "name": "id",
+          "required": true
+        },
+        {
+          "description": "The action, as provisioners.actions names it",
+          "in": "path",
+          "name": "action",
+          "required": true
+        }
+      ],
+      "data": {
+        "description": "Its arguments, which may also give the provisioner's own for this once, and a token that makes asking again safe",
+        "schema": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/components/schemas/Act"
+            }
+          ]
+        }
+      },
+      "errors": [
+        {
+          "description": "An argument is missing or unknown, or the body is not one",
+          "status": "400"
+        },
+        {
+          "description": "The caller's role is below the action's",
+          "status": "403"
+        },
+        {
+          "description": "No such provisioner or action",
+          "status": "404"
+        },
+        {
+          "description": "Something else is being done to the provisioner",
+          "status": "409"
+        },
+        {
+          "description": "It cannot run here now; the message says why",
+          "status": "501"
+        },
+        {
+          "description": "The provisioner failed, as when its engine does not answer",
+          "status": "502"
+        }
+      ],
+      "group": "provisioners",
+      "http": {
+        "method": "POST",
+        "path": "/v1/provisioners/{plugin}/{id}/actions/{action}"
+      },
+      "kind": "call",
+      "name": "provisioners.act",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Acted"
+        }
+      },
+      "role": "view",
+      "summary": "Run one of a provisioner's actions. One that changes something is a job, which holds the provisioner's lock; one that only reads answers at once."
     },
     {
       "args": [

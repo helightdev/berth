@@ -25,6 +25,7 @@ use berth_core::{
     apply,
     host::Host,
     keys::{self, Once, contact, ring},
+    level::{self, Capability, Level},
     profiles::Place,
     registry::Store,
     rollout,
@@ -46,6 +47,8 @@ pub(super) struct Seen<'a> {
     pub tasks: Option<&'a [Task]>,
     /// The names of the secrets the server keeps.
     pub secrets: &'a [String],
+    /// The level the host's profile means it to have.
+    pub level: Level,
 }
 
 /// One of berth's own actions.
@@ -64,6 +67,11 @@ pub(super) static HOST: &[Builtin] = &[
         name: "apply",
         describe: apply_action,
         run: apply,
+    },
+    Builtin {
+        name: "install-controller",
+        describe: install_controller_action,
+        run: install_controller,
     },
     Builtin {
         name: "seed",
@@ -110,7 +118,7 @@ fn unavailable(mut action: Action, why: Option<String>) -> Action {
 }
 
 /// What a request to run an action carries; nothing is an empty one.
-fn parse(body: &Bytes) -> Answer<Act> {
+pub(super) fn parse(body: &Bytes) -> Answer<Act> {
     match body.is_empty() {
         true => Ok(Act::default()),
         false => serde_json::from_slice(body)
@@ -119,7 +127,7 @@ fn parse(body: &Bytes) -> Answer<Act> {
 }
 
 /// A job's answer is 202, with the job to follow; anything else is 200.
-fn answer(acted: Acted) -> (StatusCode, Json<Acted>) {
+pub(super) fn answer(acted: Acted) -> (StatusCode, Json<Acted>) {
     let status = match acted.job {
         Some(_) => StatusCode::ACCEPTED,
         None => StatusCode::OK,
@@ -174,7 +182,7 @@ fn profile_of(state: &Serve, name: &str) -> Value {
 
 /// Check that the caller may run the action and that it can run now, with
 /// the arguments it needs.
-fn admit(state: &Serve, access: &Access, action: &Action, act: &Act) -> Answer<()> {
+pub(super) fn admit(state: &Serve, access: &Access, action: &Action, act: &Act) -> Answer<()> {
     state
         .auth
         .permits(access, &action.name, action.role)
@@ -219,13 +227,18 @@ pub async fn host_actions(
     state.refresh(false);
     let remote = remote(&state, &name)?;
     let profile = profile_of(&state, &name);
-    let tasks = host_tasks(&remote).await.ok();
+    // A host that is only reachable has no controller to ask.
+    let tasks = match level::of(&profile) {
+        Level::Reachable => None,
+        _ => host_tasks(&remote).await.ok(),
+    };
     let secrets = secret_names(&state);
     Ok(Json(host_list(&Seen {
         name: &name,
         profile: &profile,
         tasks: tasks.as_deref(),
         secrets: &secrets,
+        level: level::of(&profile),
     })))
 }
 
@@ -255,6 +268,7 @@ pub async fn host_act(
     let builtin = HOST.iter().find(|builtin| builtin.name == action);
     let tasks = match builtin {
         Some(_) => None,
+        None if level::of(&profile) == Level::Reachable => Some(vec![]),
         None => Some(
             host_tasks(&remote)
                 .await
@@ -267,6 +281,7 @@ pub async fn host_act(
         profile: &profile,
         tasks: tasks.as_deref(),
         secrets: &secrets,
+        level: level::of(&profile),
     });
     let found = actions
         .iter()
@@ -292,6 +307,7 @@ fn installation_list() -> Vec<Action> {
         profile: &Value::Null,
         tasks: None,
         secrets: &[],
+        level: Level::Workstation,
     };
     INSTALLATION
         .iter()
@@ -328,7 +344,7 @@ pub async fn act(
 }
 
 /// Why a job did not start: its subject's lock is taken, or something broke.
-fn refused(error: Box<dyn std::error::Error>) -> Fail {
+pub(super) fn refused(error: Box<dyn std::error::Error>) -> Fail {
     let message = error.to_string();
     match message.starts_with("Something else is being done to") {
         true => Fail::new(code::CONFLICT, message),
@@ -447,7 +463,16 @@ fn apply_action(seen: &Seen) -> Action {
             "Run the installer role against the host again, from the server, with the settings of its profile: for example after changing what is installed. It also installs or updates berth's own tools on the host. It runs as a job of the server.",
         )
     };
-    // A job cannot type a password: one it logs in with is the server's secret.
+    let action = level::fit(action, seen.name, seen.level, Capability::Apply);
+    logs_in_alone(seen, action)
+}
+
+/// An action whose job logs in to the host, unavailable when it would need
+/// a password typed: a job cannot type one, so it is the server's secret.
+fn logs_in_alone(seen: &Seen, action: Action) -> Action {
+    if !action.available {
+        return action;
+    }
     let wants = profile::Access::of(seen.profile).auth == Auth::Password;
     let kept = Place::own(seen.name)
         .is_ok_and(|place| seen.secrets.contains(&keys::password_secret(&place)));
@@ -460,6 +485,50 @@ fn apply_action(seen: &Seen) -> Action {
             )
         }),
     )
+}
+
+fn install_controller_action(seen: &Seen) -> Action {
+    let action = level::install_controller_action(seen.name, seen.level);
+    let action = match seen.profile.is_null() {
+        true => unavailable(
+            action,
+            Some(format!("{} has no profile on the server", seen.name)),
+        ),
+        false => action,
+    };
+    logs_in_alone(seen, action)
+}
+
+fn install_controller(state: Arc<Serve>, name: String, act: Act) -> Run {
+    Box::pin(async move {
+        let remote = remote(&state, &name)?;
+        let bad =
+            |error: Box<dyn std::error::Error>| Fail::new(code::BAD_REQUEST, error.to_string());
+        let host =
+            own_place(&name).and_then(|place| Host::load_at(&state.paths, place).map_err(bad))?;
+        let password = act
+            .sudo_password
+            .or_else(|| remote.password.clone())
+            .or_else(|| host.kept_sudo_password(&state.paths));
+        if host.asks_password() && password.is_none() {
+            return Err(Fail::new(
+                code::NOT_AVAILABLE,
+                format!("{name} asks for a sudo password: send it as sudo_password"),
+            ));
+        }
+        let mut request = Request::new(Subject::Host(name), "install-controller");
+        request.token = act.token;
+        request.secrets = password.iter().cloned().collect();
+        let paths = state.paths.clone();
+        let work = Work::Function(Box::new(move |out| {
+            apply::install_controller(&paths, &host, password.as_deref(), out)
+        }));
+        let job = state.runner.start(request, work).map_err(refused)?;
+        Ok(Acted {
+            job: Some(job_info(job)),
+            ..Acted::default()
+        })
+    })
 }
 
 fn apply(state: Arc<Serve>, name: String, act: Act) -> Run {
@@ -496,15 +565,16 @@ fn apply(state: Arc<Serve>, name: String, act: Act) -> Run {
     })
 }
 
-fn seed_action(_: &Seen) -> Action {
-    Action {
+fn seed_action(seen: &Seen) -> Action {
+    let action = Action {
         changes: false,
         ..set_up(
             "seed",
             "Render the cloud seed",
             "Render the cloud-init user data that installs the host on a new machine, for a provider's field of that name. It answers with the seed.",
         )
-    }
+    };
+    level::fit(action, seen.name, seen.level, Capability::Apply)
 }
 
 fn seed(state: Arc<Serve>, name: String, _: Act) -> Run {
@@ -539,6 +609,9 @@ fn secrets_action(seen: &Seen) -> Action {
         action.label = task.label.clone();
         action.help = task.help.clone();
         action.group = task.group.clone();
+    }
+    if let Err(refusal) = level::check(seen.name, seen.level, Capability::Secrets) {
+        return unavailable(action, Some(refusal.why));
     }
     // A host that did not answer is asked when it runs, which says why not.
     let why = match (seen.tasks, task) {
@@ -624,13 +697,25 @@ fn rollout(state: Arc<Serve>, _: String, act: Act) -> Run {
         let work = Work::Function(Box::new(move |out| {
             let mut targets: Vec<Box<dyn rollout::Target + '_>> = vec![];
             let mut problem = None;
+            let mut skipped = vec![];
             for (name, password) in names.iter().zip(passwords) {
                 let host = berth_core::profiles::Place::own(name)
                     .and_then(|place| Host::load_at(&paths, place));
+                // Only a workstation is applied; the others are said and left.
+                let host = match host {
+                    Ok(host) if level::of(&host.config) != Level::Workstation => {
+                        skipped.push(host.name);
+                        continue;
+                    }
+                    host => host,
+                };
                 match host.and_then(|host| rollout::Live::new(&paths, host, password)) {
                     Ok(target) => targets.push(Box::new(target)),
                     Err(error) => problem = Some(format!("✗ {name}: {error}")),
                 }
+            }
+            if let Some(note) = rollout::skipped_note(&skipped) {
+                let _ = writeln!(out, "{note}");
             }
             let report = match problem {
                 Some(problem) => {

@@ -49,7 +49,14 @@ enum Screen {
 }
 
 /// The tabs of the home screen, for whoever may set the server up.
-const TABS: [&str; 5] = ["Hosts", "Settings", "Registries", "Secrets", "Plugins"];
+const TABS: [&str; 6] = [
+    "Hosts",
+    "Settings",
+    "Registries",
+    "Secrets",
+    "Plugins",
+    "Provisioners",
+];
 
 /// What the server last said of its hosts.
 #[derive(Default)]
@@ -472,6 +479,23 @@ impl App {
                         setup.machine.found(found);
                     }
                 }
+                // berth's own actions are beside the host's tasks; applying
+                // and the seed have rows of their own.
+                Arrived::Actions(name, listed) if name == self.name => {
+                    self.host.own = listed
+                        .into_iter()
+                        .filter(|action| action.runs == berth_api::Runs::Berth)
+                        .filter(|action| !["apply", "seed"].contains(&action.name.as_str()))
+                        .collect();
+                }
+                Arrived::Actions(..) => {}
+                Arrived::ProvisionerPage(name, state, actions) => {
+                    self.home.provisioners.opened(&name, state, actions);
+                }
+                Arrived::ProvisionerAnswer(name, said) => {
+                    let lines = said.unwrap_or_else(|error| vec![format!("✗ {error}")]);
+                    self.home.provisioners.answered(&name, lines);
+                }
             }
         }
         if let Some(setup) = &mut self.setup {
@@ -514,32 +538,73 @@ impl App {
             self.address,
             browser::shown(&self.server)
         )));
+        rows.push(Row::info(Line::styled(
+            format!("  {}", host::level_line(&self.host)),
+            Style::new().fg(theme::MUTED),
+        )));
+        let workstation = self.host.level == berth_api::HostLevel::Workstation;
         let said = match &self.host.state {
             State::Ready(_) => {
                 if let Some(text) = host::behind_note(&self.host) {
                     rows.push(Row::info(""));
                     rows.push(heading("Configuration"));
                     rows.push(note(text, theme::WARN));
-                    if self.is_admin() {
+                    if self.is_admin() && workstation {
                         rows.push(Row {
                             line: "  ▸ Apply this configuration".into(),
                             entry: Some(Entry::Apply),
                         });
                     }
                 }
-                for (title, group) in host::groups(&self.host, self.terminal_user()) {
+                let mut groups: Vec<(String, Vec<Row>)> =
+                    host::groups(&self.host, self.terminal_user())
+                        .into_iter()
+                        .map(|(title, group)| {
+                            let group = group.into_iter().map(|(line, pick)| Row {
+                                line: line.into(),
+                                entry: Some(Entry::Pick(pick)),
+                            });
+                            (title, group.collect())
+                        })
+                        .collect();
+                self.add_setup(&mut groups, workstation);
+                for (title, group) in groups {
                     rows.push(Row::info(""));
                     rows.push(heading(&title));
-                    rows.extend(group.into_iter().map(|(line, pick)| Row {
-                        line: line.into(),
-                        entry: Some(Entry::Pick(pick)),
-                    }));
+                    rows.extend(group);
                 }
-                rows.extend(self.setup_rows(true));
                 return rows;
             }
             State::Idle | State::Connecting | State::Password => {
                 vec![note("Asking the host what it can do…".into(), theme::MUTED)]
+            }
+            // Below a workstation the controller is installed alone, by berth's own action.
+            State::Missing if !workstation => {
+                rows.push(Row::info(""));
+                rows.push(heading("Host"));
+                rows.push(note(
+                    "berth's controller is not on this host. Install it for sessions, tasks and files here.".into(),
+                    theme::MUTED,
+                ));
+                rows.push(again());
+                let mut groups: Vec<(String, Vec<Row>)> =
+                    berth_tui::page::groups(&self.host.actions(), Pick::Task)
+                        .into_iter()
+                        .map(|group| {
+                            let picks = group.rows.into_iter().map(|(line, pick)| Row {
+                                line: line.into(),
+                                entry: Some(Entry::Pick(pick)),
+                            });
+                            (group.title, picks.collect())
+                        })
+                        .collect();
+                self.add_setup(&mut groups, false);
+                for (title, group) in groups {
+                    rows.push(Row::info(""));
+                    rows.push(heading(&title));
+                    rows.extend(group);
+                }
+                return rows;
             }
             State::Missing => vec![
                 note(
@@ -568,10 +633,13 @@ impl App {
         rows.push(Row::info(""));
         rows.push(heading("Host"));
         rows.extend(said);
-        rows.extend(self.setup_rows(!matches!(
-            self.host.state,
-            State::Idle | State::Connecting | State::Password
-        )));
+        rows.extend(self.setup_rows(
+            workstation
+                && !matches!(
+                    self.host.state,
+                    State::Idle | State::Connecting | State::Password
+                ),
+        ));
         rows
     }
 
@@ -586,11 +654,33 @@ impl App {
                 "Set-Up",
                 Style::new().fg(theme::ACCENT).bold(),
             )),
-            Row {
-                line: "  ▸ Change what is installed, accounts or install method  ›".into(),
-                entry: Some(Entry::Setup),
-            },
         ];
+        rows.extend(self.setup_entries(apply));
+        rows
+    }
+
+    /// Put the set-up's rows first in the group of berth's own actions of
+    /// set-up, for whoever may set the server up.
+    fn add_setup(&self, groups: &mut Vec<(String, Vec<Row>)>, apply: bool) {
+        if !self.is_admin() {
+            return;
+        }
+        let mut setup = self.setup_entries(apply);
+        match groups.iter_mut().find(|(title, _)| title == "Set-Up") {
+            Some((_, rows)) => {
+                setup.append(rows);
+                *rows = setup;
+            }
+            None => groups.push(("Set-Up".into(), setup)),
+        }
+    }
+
+    /// The rows of the set-up group: changing what is installed, and applying it.
+    fn setup_entries(&self, apply: bool) -> Vec<Row> {
+        let mut rows = vec![Row {
+            line: "  ▸ Change what is installed, accounts or install method  ›".into(),
+            entry: Some(Entry::Setup),
+        }];
         if apply {
             rows.push(Row {
                 line: "  ▸ Apply this configuration".into(),
@@ -631,6 +721,19 @@ impl App {
         self.name = name.to_owned();
         self.address = address.to_owned();
         self.host.disconnect();
+        let listed = self.hosts.borrow();
+        let found = listed.list.iter().find(|host| host["name"] == name);
+        let level = |key: &str| {
+            found
+                .and_then(|host| host[key].as_str())
+                .and_then(berth_api::HostLevel::parse)
+        };
+        self.host.level = level("level").unwrap_or_default();
+        drop(listed);
+        self.host.own.clear();
+        if let Some(admin) = &self.admin {
+            admin.actions(name);
+        }
         self.list.select(Some(0));
         self.display = ListState::default();
         self.status.clear();
@@ -643,6 +746,12 @@ impl App {
         let Some(action) = self.host.actions().get(index).cloned() else {
             return;
         };
+        if self.host.is_own(index) {
+            if let Some(admin) = &self.admin {
+                admin.act(&self.name, &action, &values, self.panel_size());
+            }
+            return;
+        }
         let body = self.host.task_body(&action, &values);
         self.status = format!("Starting {}…", action.title());
         self.host.run(&action.name, body);
@@ -651,6 +760,12 @@ impl App {
     fn choose(&mut self, entry: Entry) {
         match entry {
             Entry::Pick(Pick::Task(index)) => {
+                if let Some(action) = self.host.actions().get(index)
+                    && !action.available
+                {
+                    self.status = format!("{} cannot run now: {}", action.title(), action.why);
+                    return;
+                }
                 if let Some((index, values)) = self.host.begin_task(index, false) {
                     self.launch(index, values);
                 }
@@ -1004,7 +1119,9 @@ impl App {
     }
 
     fn home_event(&mut self, event: Event) {
-        let typing = self.naming.is_some() || self.home.editor.is_some();
+        let typing = self.naming.is_some()
+            || self.home.editor.is_some()
+            || (self.tab > 0 && self.home.takes(self.tab - 1, &Key::plain(Code::Enter)));
         if let Event::Mouse(mouse) = &event {
             if mouse.click != Click::Left {
                 return;
@@ -1046,16 +1163,18 @@ impl App {
         if let Event::Paste(text) = &event {
             if let Some(input) = self.naming.as_mut().or(self.home.editor.as_mut()) {
                 event::paste(input, text.trim());
+            } else if self.tab == crate::home::PROVISIONERS + 1 {
+                self.home.provisioners.paste(text.trim());
             }
             return;
         }
         let Event::Key(key) = event else {
             return;
         };
-        if !typing {
+        if !typing && !(self.tab > 0 && self.home.takes(self.tab - 1, &key)) {
             self.status.clear();
             match key.code {
-                Code::Char(digit @ '1'..='5') => {
+                Code::Char(digit @ '1'..='6') => {
                     return self.open_tab(digit as usize - '1' as usize);
                 }
                 Code::Tab if self.is_admin() => return self.open_tab((self.tab + 1) % TABS.len()),
@@ -1149,6 +1268,14 @@ impl App {
             draw_editor(frame, edit, title, input, masked);
         }
         draw_footer(frame, footer, shown.keys, &self.status, theme::ACCENT);
+        if self.tab == crate::home::PROVISIONERS + 1 {
+            if let Some(question) = self.home.provisioners.question() {
+                draw_question(frame, question);
+            }
+            if let Some((actions, asked)) = self.home.provisioners.arguments() {
+                screen::draw_action_arguments(frame, actions, asked);
+            }
+        }
     }
 
     fn draw_hosts(&mut self, frame: &mut Frame, main: Rect, footer: Rect) {
@@ -1196,6 +1323,18 @@ impl App {
             if host["behind"].is_object() {
                 line.push(Span::styled("  behind", Style::new().fg(theme::WARN)));
             }
+            if let Some(level) = host["level"]
+                .as_str()
+                .filter(|level| *level != "workstation")
+            {
+                line.push(Span::styled(format!("  {level}"), muted));
+            }
+            if host["rotating"] == true {
+                line.push(Span::styled(
+                    "  key rotation pending",
+                    Style::new().fg(theme::WARN),
+                ));
+            }
             if !preferred.is_empty() && name == preferred {
                 line.push(Span::styled("  default", Style::new().fg(theme::STEEL)));
             }
@@ -1241,7 +1380,7 @@ impl App {
         let keys = match (admin, self.naming.is_some()) {
             (_, true) => "Enter create · Esc cancel · Ctrl+O copy",
             (true, false) => {
-                "↑↓ select · Enter open · n new host · d default · x remove · 2 settings · 3 registries · 4 secrets · 5 plugins · r refresh · o sign out"
+                "↑↓ select · Enter open · n new host · d default · x remove · 2 settings · 3 registries · 4 secrets · 5 plugins · 6 provisioners · r refresh · o sign out"
             }
             (false, false) => "↑↓ select · Enter open · r refresh · o sign out",
         };

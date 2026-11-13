@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Creates the container for a berth host: systemd as PID 1 and an SSH server.
 
-One JSON request on stdin, one JSON answer on stdout, progress on stderr.
+Version 2 of berth's provisioner protocol: one JSON request on stdin, one JSON
+answer on stdout, progress on stderr. `logs` writes the container's log on
+stdout instead.
 """
 import json
 import os
@@ -14,6 +16,11 @@ from pathlib import Path
 PACKAGE = Path(__file__).resolve().parent.parent
 IMAGE_NAME = 'berth-docker-host'
 SSH_WAIT = 180
+PROTOCOL = 2
+SYSBOX = 'sysbox-runc'
+RUNTIMES = ('privileged', 'sysbox')
+# Rows of a listing an action answers with, at most.
+ROWS = 60
 
 # Runs inside the container with the public keys on stdin. It does not depend on
 # the image, so a custom one needs only sh, useradd, sudo and sshd.
@@ -85,6 +92,35 @@ class Docker:
             args += ['--filter', item]
         return [line for line in self.run(*args).stdout.splitlines() if line.strip()]
 
+    def json_lines(self, *args):
+        """What a command with --format '{{json .}}' printed, one object a line."""
+        found = []
+        for line in self.run(*args, '--format', '{{json .}}').stdout.splitlines():
+            if line.strip():
+                try:
+                    found.append(json.loads(line))
+                except ValueError:
+                    pass
+        return found
+
+    def runtimes(self):
+        """The names of the runtimes the engine has."""
+        done = self.run('info', '--format', '{{json .Runtimes}}')
+        try:
+            return sorted(json.loads(done.stdout or '{}') or {})
+        except ValueError:
+            return []
+
+    def version(self):
+        done = self.run('version', '--format', '{{json .}}')
+        try:
+            return json.loads(done.stdout or '{}') or {}
+        except ValueError:
+            return {}
+
+    def where(self):
+        return self.env.get('DOCKER_HOST') or 'the local Docker'
+
 
 def valid_name(host):
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', host or ''):
@@ -122,6 +158,7 @@ def settings(request):
         'cpus': (arguments.get('cpus') or '').strip(),
         'memory': (arguments.get('memory') or '').strip(),
         'keep': (arguments.get('keep_volume') or 'no').strip().lower() == 'yes',
+        'runtime': (arguments.get('runtime') or 'privileged').strip().lower(),
     }
 
 
@@ -153,12 +190,12 @@ def package_version():
     return json.loads((PACKAGE / 'package.json').read_text())['version']
 
 
-def ensure_image(cfg):
+def ensure_image(cfg, again=False):
     docker = cfg['docker']
     if cfg['image']:
         return cfg['image']
     tag = f'{IMAGE_NAME}:{package_version()}'
-    if docker.run('image', 'inspect', tag, check=False).returncode == 0:
+    if not again and docker.run('image', 'inspect', tag, check=False).returncode == 0:
         return tag
     say(f'Building {tag}, once. This takes a few minutes.')
     try:
@@ -206,12 +243,29 @@ def setup_access(docker, name, access):
     wait_for_ssh(docker, name)
 
 
+def isolation(cfg):
+    """How the container gets the rights systemd and the role need: the
+    arguments of docker run for the runtime asked for."""
+    if cfg['runtime'] not in RUNTIMES:
+        raise Failure(f'runtime is privileged or sysbox, not {cfg["runtime"]!r}')
+    if cfg['runtime'] == 'sysbox':
+        if SYSBOX not in cfg['docker'].runtimes():
+            raise Failure(f'{cfg["docker"].where()} has no {SYSBOX} runtime. Install Sysbox on the Docker '
+                          'host (see the plugin\'s guide), or create the machine with runtime=privileged')
+        # Sysbox gives the container a cgroup tree of its own, and mounts what systemd needs.
+        return ['--runtime', SYSBOX]
+    # systemd needs a cgroup tree of its own that it can write, and the role sets up a
+    # firewall. Docker gives both only to a privileged container.
+    return ['--privileged', '--cgroupns', 'private', '--tmpfs', '/run', '--tmpfs', '/run/lock']
+
+
 def create(request):
     cfg = settings(request)
     docker = cfg['docker']
     name = container_name(request)
     cpus = parse_cpus(cfg['cpus']) if cfg['cpus'] else ''
     memory = parse_memory(cfg['memory']) if cfg['memory'] else ''
+    isolated = isolation(cfg)
     labels = request.get('labels') or {}
     token = request.get('token') or labels.get('berth-instance') or ''
     if not token:
@@ -239,11 +293,7 @@ def create(request):
     if docker.run('volume', 'inspect', cfg['volume'], check=False).returncode != 0:
         docker.run('volume', 'create', '--label', f'berth-host={request["host"]}', cfg['volume'])
     args = ['run', '--detach', '--name', name, '--hostname', request['host'],
-            '--restart', 'unless-stopped', '--stop-signal', 'SIGRTMIN+3',
-            # systemd needs a cgroup tree of its own that it can write, and the role sets up a
-            # firewall. Docker gives both only to a privileged container.
-            '--privileged', '--cgroupns', 'private',
-            '--tmpfs', '/run', '--tmpfs', '/run/lock',
+            '--restart', 'unless-stopped', '--stop-signal', 'SIGRTMIN+3', *isolated,
             '--volume', f'{cfg["volume"]}:/srv/agent']
     for key in ('berth-host', 'berth-instance'):
         if labels.get(key):
@@ -280,8 +330,33 @@ def identify(request):
     return name
 
 
+def engine_status(cfg):
+    """What the engine is, for the provisioner's own status."""
+    docker = cfg['docker']
+    version = docker.version()
+    server = version.get('Server') or {}
+    runtimes = docker.runtimes()
+    made = docker.names('label=berth-host')
+    details = [
+        {'label': 'Endpoint', 'value': docker.where()},
+        {'label': 'Engine', 'value': server.get('Version') or 'unknown'},
+        {'label': 'API', 'value': server.get('ApiVersion') or ''},
+        {'label': 'System', 'value': f'{server.get("Os") or "?"}/{server.get("Arch") or "?"}'},
+        {'label': 'Runtimes', 'value': ', '.join(runtimes)},
+        {'label': 'Machines berth made', 'value': str(len(made))},
+    ]
+    return {
+        'state': 'ready',
+        'message': f'Docker {server.get("Version") or ""} answers at {docker.where()}'.replace('  ', ' '),
+        'details': details,
+        'values': {'runtime': ['privileged', 'sysbox'] if SYSBOX in runtimes else ['privileged']},
+    }
+
+
 def status(request):
     cfg = settings(request)
+    if not request.get('id'):
+        return engine_status(cfg)
     info = cfg['docker'].inspect(identify(request))
     if info is None:
         return {'state': 'gone'}
@@ -340,19 +415,144 @@ def destroy(request):
 
 def list_all(request):
     docker = settings(request)['docker']
-    instances = []
+    if (request.get('kind') or 'machine') != 'machine':
+        return {'resources': []}
+    resources = []
     for name in docker.names('label=berth-host'):
         info = docker.inspect(name)
         if info is None:
             continue
         host = (info['Config'].get('Labels') or {}).get('berth-host', '')
         running = info.get('State', {}).get('Running')
-        instances.append({'id': name, 'host': host, 'state': 'running' if running else 'stopped'})
-    return {'instances': instances}
+        resources.append({'id': name, 'kind': 'machine', 'name': host, 'host': host,
+                          'state': 'running' if running else 'stopped'})
+    return {'resources': resources}
+
+
+def change(request):
+    """New limits for a machine that runs on: its CPUs and memory."""
+    cfg = settings(request)
+    docker = cfg['docker']
+    name = identify(request)
+    if ours(docker, name) is None:
+        raise Failure(f'{name} does not exist')
+    args = []
+    if cfg['cpus']:
+        args += ['--cpus', parse_cpus(cfg['cpus'])]
+    if cfg['memory']:
+        memory = parse_memory(cfg['memory'])
+        # Docker refuses a memory limit above the swap limit it set beside the old one.
+        args += ['--memory', memory, '--memory-swap', str(int(memory) * 2)]
+    if args:
+        say(f'Changing the limits of {name}.')
+        docker.run('update', *args, name)
+    running = (docker.inspect(name) or {}).get('State', {}).get('Running')
+    return {'state': 'running' if running else 'stopped'}
+
+
+def logs(request):
+    """The container's log on standard output, until it ends or berth stops it."""
+    cfg = settings(request)
+    name = identify(request)
+    if ours(cfg['docker'], name) is None:
+        raise Failure(f'{name} does not exist')
+    args = ['docker', 'logs', '--tail', str(int(request.get('tail') or 100))]
+    if request.get('follow'):
+        args.append('--follow')
+    sys.stdout.flush()
+    try:
+        done = subprocess.run([*args, name], env=cfg['docker'].env, stderr=subprocess.STDOUT)
+    except FileNotFoundError:
+        raise Failure('docker is not installed or not on the PATH')
+    if done.returncode != 0:
+        raise Failure(f'docker logs ended with {done.returncode}')
+    return None
+
+
+def counted(count, word):
+    return f'{count} {word}' + ('' if count == 1 else 's')
+
+
+def act_engine(cfg, arguments):
+    status = engine_status(cfg)
+    return {'message': status['message'], 'details': status['details']}
+
+
+def act_images(cfg, arguments):
+    images = cfg['docker'].json_lines('image', 'ls')
+    rows = [{'label': f'{image.get("Repository")}:{image.get("Tag")}',
+             'value': f'{image.get("Size", "")} · {image.get("ID", "")}'} for image in images[:ROWS]]
+    message = f'{counted(len(images), "image")} at {cfg["docker"].where()}'
+    if len(images) > ROWS:
+        message += f', the first {ROWS} shown'
+    return {'message': message, 'details': rows}
+
+
+def berth_volumes(docker):
+    """The volumes berth made, each with the containers that use it."""
+    found = []
+    for volume in docker.json_lines('volume', 'ls', '--filter', 'label=berth-host'):
+        name = volume.get('Name') or ''
+        if not name:
+            continue
+        users = docker.names(f'volume={name}')
+        labels = dict(part.split('=', 1) for part in (volume.get('Labels') or '').split(',') if '=' in part)
+        found.append((name, labels.get('berth-host', ''), users))
+    return found
+
+
+def act_volumes(cfg, arguments):
+    volumes = berth_volumes(cfg['docker'])
+    rows = [{'label': name, 'value': f'for {host or "?"} · ' + (f'used by {", ".join(users)}' if users else 'unused')}
+            for name, host, users in volumes]
+    return {'message': f'{counted(len(volumes), "volume")} berth made at {cfg["docker"].where()}', 'details': rows}
+
+
+def act_build(cfg, arguments):
+    tag = ensure_image(dict(cfg, image=''), again=True)
+    return {'message': f'Built {tag} at {cfg["docker"].where()}'}
+
+
+def act_prune(cfg, arguments):
+    docker = cfg['docker']
+    current = f'{IMAGE_NAME}:{package_version()}'
+    removed = []
+    for image in docker.json_lines('image', 'ls', IMAGE_NAME):
+        tag = f'{image.get("Repository")}:{image.get("Tag")}'
+        if tag == current or image.get('Repository') != IMAGE_NAME:
+            continue
+        if docker.names(f'ancestor={image.get("ID")}'):
+            say(f'{tag} is kept: a container uses it.')
+            continue
+        say(f'Removing {tag}.')
+        if docker.run('image', 'rm', tag, check=False).returncode == 0:
+            removed.append(tag)
+    if (arguments.get('volumes') or 'no').strip().lower() == 'yes':
+        for name, _, users in berth_volumes(docker):
+            if users:
+                continue
+            say(f'Removing the volume {name}.')
+            if docker.run('volume', 'rm', name, check=False).returncode == 0:
+                removed.append(f'volume {name}')
+    if not removed:
+        return {'message': 'Nothing berth left behind is there'}
+    return {'message': f'Removed {len(removed)}', 'details': [{'label': item, 'value': 'removed'} for item in removed]}
+
+
+ACTIONS = {'engine': act_engine, 'images': act_images, 'volumes': act_volumes,
+           'build': act_build, 'prune': act_prune}
+
+
+def act(request):
+    action = request.get('action') or {}
+    name = action.get('name') or ''
+    if name not in ACTIONS:
+        raise Failure(f'there is no action {name!r}; there are {", ".join(ACTIONS)}')
+    return ACTIONS[name](settings(request), action.get('arguments') or {})
 
 
 VERBS = {'create': create, 'status': status, 'start': start, 'stop': stop,
-         'destroy': destroy, 'list': list_all}
+         'destroy': destroy, 'list': list_all, 'change': change, 'logs': logs, 'act': act}
 
 
 def main():
@@ -361,6 +561,9 @@ def main():
         if verb not in VERBS:
             raise Failure(f'unknown verb {verb!r}')
         request = json.load(sys.stdin)
+        if request.get('version') != PROTOCOL:
+            raise Failure(f'this plugin speaks version {PROTOCOL} of the provisioner protocol, '
+                          f'not {request.get("version")!r}: update berth')
         answer = VERBS[verb](request)
     except Failure as error:
         say(f'docker/container: {error}')
@@ -368,7 +571,8 @@ def main():
     except (json.JSONDecodeError, KeyError) as error:
         say(f'docker/container: bad request: {error}')
         return 1
-    print(json.dumps(answer))
+    if answer is not None:
+        print(json.dumps(answer))
     return 0
 
 

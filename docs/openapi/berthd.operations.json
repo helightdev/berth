@@ -337,6 +337,15 @@
         ],
         "type": "object"
       },
+      "HostLevel": {
+        "description": "How much of berth a host has: what its profile means it to have, or\nwhat it was seen to have. Each level can do what the ones before it can.",
+        "enum": [
+          "reachable",
+          "controller",
+          "workstation"
+        ],
+        "type": "string"
+      },
       "Input": {
         "properties": {
           "data_b64": {
@@ -1362,6 +1371,17 @@
               {
                 "$ref": "#/components/schemas/Applied",
                 "description": "What the host's configuration was last applied from, when berth\nrecorded it. An older berthd does not say."
+              }
+            ]
+          },
+          "level": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HostLevel",
+                "description": "What was installed on the host, by that record: `controller` when\nonly the controller was, `workstation` for a whole profile. Absent\nwhen the host keeps no record."
               }
             ]
           },

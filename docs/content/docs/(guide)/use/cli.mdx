@@ -17,6 +17,7 @@ With a [berth server](/docs/use/server) set, by `--server` or the `server` setti
 | `berth` | The home screen |
 | `berth HOST` | Open a host in the terminal UI; a new name starts a new profile |
 | `berth list` | Saved hosts and their addresses |
+| `berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH] [--level LEVEL] [--no-contact]` | Save a machine that exists by its address, reachable unless `--level` says otherwise, and install berth's key there ([Host levels](/docs/use/levels#adding-a-machine-that-exists)) |
 | `berth profile HOST` | The host's profile, as JSON on standard output |
 | `berth profile HOST --set FILE` | Save the profile in FILE as the host's, checked as the terminal UI reads one. `-` reads standard input. With a [berth server](/docs/use/server) set, it is saved on the server |
 | `berth credentials HOST [--show]` | The passwords berth generated for the host's accounts, an account and its password to a line. Only to a terminal unless `--show` is given. For a server's host they come from the server |
@@ -34,7 +35,8 @@ With a [berth server](/docs/use/server) set, by `--server` or the `server` setti
 | --- | --- |
 | `berth iso HOST [--write /dev/sdX]` | Build the USB installer, downloading the ISO if none is set; write it to a drive after asking |
 | `berth seed HOST` | Render the cloud-init seed |
-| `berth apply HOST` | Apply the host's profile to it over SSH. With a [berth server](/docs/use/server) set, as a job there |
+| `berth apply HOST` | Apply the host's profile to it over SSH. With a [berth server](/docs/use/server) set, as a job there. Only a workstation is applied |
+| `berth host install HOST` | Install berth's controller alone on a host below a workstation ([Installing the controller](/docs/use/levels#installing-the-controller)) |
 | `berth apply --behind [--update] [--reboot [--force]]` | Apply every host that is behind, one at a time ([Updates](/docs/use/updates#bringing-hosts-up-to-date)). `--all` takes the current ones too |
 | `berth remove HOST` | Forget a host. The machine itself is left as it is, and a machine berth created for the host must be deleted first |
 | `berth key` | The SSH keys of berth's [key ring](/docs/use/accounts#keys), with their public halves, the hosts that use each, and what is being replaced. With a berth server set, the server's |
@@ -50,10 +52,14 @@ With a [berth server](/docs/use/server) set, by `--server` or the `server` setti
 
 Both build commands refuse to start while the profile has problems, and list them.
 
-## Machines
+## Machines and provisioners
 
 | Command | Does |
 | --- | --- |
+| `berth provisioner` | The provisioners of the plugins, and whether each can be used here |
+| `berth provisioner PLUGIN/ID [NAME=VALUE…]` | How it is now and what it can do, with the machines berth made with it. The values are of its own arguments, for this once |
+| `berth provisioner PLUGIN/ID actions` | Its actions, with their arguments |
+| `berth provisioner PLUGIN/ID run ACTION [NAME=VALUE…] [--yes]` | Run one. `settings` keeps the values of its own arguments. One that changes something runs as a job, and berth ends with its exit code |
 | `berth provisioners` | The provisioners of the plugins, and what each asks for |
 | `berth provisioners PLUGIN/ID [NAME=VALUE…]` | The machines that provisioner has and berth created, when it can list them |
 | `berth provision HOST PLUGIN/ID [NAME=VALUE…] [--yes]` | Create the machine for a saved host and set it up |
@@ -61,7 +67,7 @@ Both build commands refuse to start while the profile has problems, and list the
 | `berth instance HOST start\|stop` | Start or stop it, when the provisioner can |
 | `berth instance HOST destroy [--yes]` | Delete the machine. The profile stays |
 
-With a [berth server](/docs/use/server) set, the server's provisioners and plugins are used and the role `admin` is needed. See [Machine from a provisioner](/docs/deploy/provisioners).
+With a [berth server](/docs/use/server) set, the server's provisioners and plugins are used. A host's machine needs the role `admin`, and an action of a provisioner its own role. See [Provisioners](/docs/deploy/provisioners).
 
 ## Tasks
 
@@ -73,6 +79,8 @@ berth run studio claude:login            # a sign-in runs in your terminal
 ```
 
 `berth run HOST TASK` runs a task and its plugin steps and leaves with the task's exit code. A task's arguments are given as `NAME=VALUE`, and `--yes` answers its confirmation. `berth manage HOST TASK` is the same command. Tasks that need a terminal, such as sign-ins, run in your terminal over `ssh -t`.
+
+`berth tasks` lists berth's own actions beside the host's tasks, such as `install-controller`, and says why one cannot run now. A host that is only reachable has no tasks yet.
 
 When a [berth server](/docs/use/server) keeps the host, `berth tasks` lists the server's actions for the host: its tasks, and berth's own such as `apply` and `seed`. `berth run` runs any of them through the server, which keeps a job of each run ([Actions](/docs/extend/serve#actions)).
 

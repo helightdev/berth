@@ -17,6 +17,7 @@ It was run on Ubuntu 26.04 and needs 24.04 or later.
 | Default profile | Nesting is on. A container's systemd needs it, and so does Docker in a guest |
 | Incus API | Port 8444, open on the tailnet interface only |
 | Docker | `docker.io` with Compose and Buildx, from Ubuntu's packages |
+| Sysbox | On request, the Sysbox runtime beside Docker, for containers that run systemd without `--privileged` |
 | Firewall | `ufw`: incoming traffic is refused except SSH, the tailnet and the guests' bridge |
 | Tailscale | Installed and joined when you pass an enrollment key |
 | berth server | On request, berth's server in a Docker container, set up to create machines on this Incus |
@@ -69,6 +70,9 @@ there, or keep your own file and pass it with `-e @my-vars.yml`.
 | `incus_api_address` | `[::]:8444` | Where the Incus API listens |
 | `incus_api_interface` | `tailscale0` | The one interface the firewall opens the API on. Empty opens it nowhere |
 | `incus_trusted_clients` | none | Clients that may use the API, each with a name and a certificate file |
+| `sysbox` | `false` | Also install Sysbox, for berth's Docker provisioner with `runtime=sysbox` |
+| `sysbox_version` | `0.6.7` | The Sysbox release to install |
+| `sysbox_checksum` | empty | The SHA-256 of its package, to check the download against |
 | `berth_server` | `false` | Also run a berth server here. See below |
 | `tailscale_auth_key` | empty | An enrollment key. Without one Tailscale is not installed |
 | `tailscale_login_server` | empty | The address of a Headscale server |
@@ -116,6 +120,23 @@ new machine there before it has joined a tailnet.
 The tailnet address needs HTTPS certificates switched on for your tailnet.
 Set `berth_server_tailscale_serve` to `false` to leave the server on this
 machine only. A private image needs `docker login ghcr.io` before the run.
+
+## Sysbox for Docker machines
+
+berth's Docker provisioner runs its containers privileged, which gives root in
+them the rights of root on the server. With `sysbox` set, the recipe installs
+[Sysbox](https://github.com/nestybox/sysbox) from its release package, and a
+machine made with `runtime=sysbox` runs without `--privileged`:
+
+```bash
+sudo ./install.sh -e sysbox=true
+berth provision studio-2 docker/container host=ssh://root@192.0.2.10 runtime=sysbox
+```
+
+The Sysbox package restarts Docker, and it does not install while containers
+run. Set it on the first run, before the recipe starts any container. Its
+documentation lists the Ubuntu releases and kernels it supports. Check that
+it lists yours before you turn it on.
 
 ## Let another berth create machines here
 

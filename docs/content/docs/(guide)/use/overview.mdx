@@ -8,7 +8,7 @@ Opening an installed host shows its overview, with the connection at the top and
 
 <Screen name="overview" alt="The overview of a host: connection settings, then System, Access, Sync, Sign-In, Backup and Set-Up groups" />
 
-The line under the title is the host's load, CPU, memory, disk and uptime.
+The line under the title is the host's load, CPU, memory, disk and uptime. Under **Connection**, a line says the host's [level](/docs/use/levels), and what the host itself was seen to be when that differs.
 
 ## Tasks
 
@@ -29,6 +29,8 @@ The line under the title is the host's load, CPU, memory, disk and uptime.
 | | Apply this configuration | Runs the role again with this profile, such as after changing what is installed |
 
 When the host was applied before a plugin or berth itself changed, a **Configuration** group at the top says which, such as `claude 1.0.0 → 1.1.0`, with **Apply this configuration** below it ([Updates](/docs/use/updates#hosts-that-are-behind)).
+
+berth's own actions on the host are listed beside its tasks, such as **Install the controller** for a host below a workstation. One the host's level or state rules out is marked `not now`, and the Information panel says why and what to do first. A host with the controller alone has only Status, Update, Reboot and the secrets.
 
 Plugins add tasks to these groups or bring groups of their own, such as **Backup**. They also add steps to built-in tasks such as Status and Update. A task's output stays on the page.
 

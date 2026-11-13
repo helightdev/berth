@@ -63,13 +63,15 @@ class Provision(unittest.TestCase):
 
     def run_verb(self, verb, extra=None, arguments=None, rules=None, path=None):
         (self.state / 'rules.json').write_text(json.dumps(rules or []))
-        request = {'version': 1, 'verb': verb, 'host': 'studio', 'provisioner': 'container',
+        request = {'version': 2, 'verb': verb, 'host': 'studio', 'provisioner': 'container',
                    'arguments': {'host': '', 'image': '', 'ssh_port': '', 'publish_address': '127.0.0.1',
                                  'volume': '', 'keep_volume': 'no'},
                    'secrets': {}}
         request['arguments'].update(arguments or {})
         request.update(extra or {})
         env = dict(os.environ, PATH=path or self.path, FAKE_DIR=str(self.state))
+        # The endpoint is the request's, not that of whoever runs the tests.
+        env.pop('DOCKER_HOST', None)
         done = subprocess.run([sys.executable, str(PLUGIN / 'bin/provision'), verb], input=json.dumps(request),
                               text=True, capture_output=True, env=env, cwd=PLUGIN)
         return done
@@ -100,11 +102,22 @@ class Provision(unittest.TestCase):
         package = json.loads((PLUGIN / 'package.json').read_text())
         self.assertNotIn('features', package['berth'])
         [entry] = package['berth']['provisioners']
-        self.assertEqual((entry['id'], entry['setup'], entry['command']), ('container', 'apply', 'bin/provision'))
-        self.assertEqual(entry['verbs'], ['start', 'stop', 'list'])
+        self.assertEqual((entry['id'], entry['protocol'], entry['command']), ('container', 2, 'bin/provision'))
+        self.assertEqual(entry['verbs'], ['list'])
         self.assertNotIn('secrets', entry)
-        self.assertEqual([a['name'] for a in entry['arguments']],
-                         ['host', 'image', 'ssh_port', 'publish_address', 'volume', 'cpus', 'memory', 'keep_volume'])
+        self.assertEqual([a['name'] for a in entry['arguments']], ['host'])
+        [machine] = entry['kinds']
+        self.assertEqual((machine['id'], machine['setup']), ('machine', 'apply'))
+        self.assertEqual(machine['verbs'], ['start', 'stop', 'change', 'logs'])
+        self.assertEqual([a['name'] for a in machine['arguments']],
+                         ['image', 'runtime', 'ssh_port', 'publish_address', 'volume', 'cpus', 'memory', 'keep_volume'])
+        # Every action the manifest declares is one the program answers, and what changes asks first.
+        source = (PLUGIN / 'bin/provision').read_text()
+        for action in entry['actions']:
+            self.assertIn(f"'{action['name']}': act_", source)
+        self.assertEqual([a['name'] for a in entry['actions'] if a.get('changes', True)], ['build', 'prune'])
+        prune = [a for a in entry['actions'] if a['name'] == 'prune'][0]
+        self.assertTrue(prune['confirm'])
         self.assertTrue(os.access(PLUGIN / 'bin/provision', os.X_OK))
 
     def test_create_runs_systemd_container_with_labels(self):
@@ -119,7 +132,8 @@ class Provision(unittest.TestCase):
             self.assertIn(flag, [run[i:i + 2] for i in range(len(run) - 1)], flag)
         self.assertIn('--privileged', run)
         self.assertNotIn('--publish', run)
-        self.assertEqual(run[-2:], ['berth-docker-host:0.1.0', '/sbin/init'])
+        self.assertEqual(run[-2:], ['berth-docker-host:0.2.0', '/sbin/init'])
+        self.assertEqual(self.argv('info'), [])
         self.assertEqual(self.argv('volume', 'create')[0][-2:], ['berth-host=studio', 'berth-studio-data'])
 
     def test_keys_travel_on_stdin_only(self):
@@ -156,7 +170,7 @@ class Provision(unittest.TestCase):
         done = self.run_verb('create', self.create_request(), rules=rules)
         self.assertEqual(done.returncode, 0, done.stderr)
         [build] = self.argv('build')
-        self.assertEqual(build[:3], ['build', '--tag', 'berth-docker-host:0.1.0'])
+        self.assertEqual(build[:3], ['build', '--tag', 'berth-docker-host:0.2.0'])
 
     def test_create_is_idempotent(self):
         rules = [{'prefix': ['container', 'inspect'], 'results': [inspect(OURS, running=False), inspect(OURS)]}]
@@ -246,10 +260,125 @@ class Provision(unittest.TestCase):
                   'results': [inspect({'berth-host': 'studio-2'}, running=False)]}]
         done = self.run_verb('list', rules=rules)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(json.loads(done.stdout), {'instances': [
-            {'id': 'berth-studio', 'host': 'studio', 'state': 'running'},
-            {'id': 'berth-studio-2', 'host': 'studio-2', 'state': 'stopped'}]})
+        self.assertEqual(json.loads(done.stdout), {'resources': [
+            {'id': 'berth-studio', 'kind': 'machine', 'name': 'studio', 'host': 'studio', 'state': 'running'},
+            {'id': 'berth-studio-2', 'kind': 'machine', 'name': 'studio-2', 'host': 'studio-2', 'state': 'stopped'}]})
         self.assertIn('label=berth-host', self.argv('ps')[0])
+        # It makes no other kind.
+        done = self.run_verb('list', {'kind': 'deployment'}, rules=rules)
+        self.assertEqual(json.loads(done.stdout), {'resources': []})
+
+    def test_sysbox_runs_without_privileges(self):
+        rules = self.fresh_rules() + [
+            {'prefix': ['info'], 'results': [[0, json.dumps({'runc': {}, 'sysbox-runc': {}}), '']]}]
+        done = self.run_verb('create', self.create_request(), rules=rules, arguments={'runtime': 'sysbox'})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        [run] = self.argv('run')
+        self.assertIn(['--runtime', 'sysbox-runc'], [run[i:i + 2] for i in range(len(run) - 1)])
+        for flag in ('--privileged', '--cgroupns', '--tmpfs'):
+            self.assertNotIn(flag, run)
+        self.assertEqual(run[-2:], ['berth-docker-host:0.2.0', '/sbin/init'])
+
+    def test_sysbox_is_refused_before_anything_is_made_where_the_engine_lacks_it(self):
+        rules = self.fresh_rules() + [{'prefix': ['info'], 'results': [[0, json.dumps({'runc': {}}), '']]}]
+        done = self.run_verb('create', self.create_request(), rules=rules,
+                             arguments={'runtime': 'sysbox', 'host': 'ssh://ops@192.0.2.9'})
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('ssh://ops@192.0.2.9 has no sysbox-runc runtime', done.stderr)
+        self.assertIn('Install Sysbox', done.stderr)
+        self.assertEqual(self.argv('run') + self.argv('volume', 'create') + self.argv('build'), [])
+        done = self.run_verb('create', self.create_request(), rules=rules, arguments={'runtime': 'gvisor'})
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('privileged or sysbox', done.stderr)
+
+    def test_status_without_an_id_is_the_engine(self):
+        version = {'Server': {'Version': '27.1.0', 'ApiVersion': '1.46', 'Os': 'linux', 'Arch': 'amd64'}}
+        rules = [{'prefix': ['version'], 'results': [[0, json.dumps(version), '']]},
+                 {'prefix': ['info'], 'results': [[0, json.dumps({'runc': {}, 'sysbox-runc': {}}), '']]},
+                 {'prefix': ['ps'], 'results': [[0, 'berth-studio\n', '']]}]
+        done = self.run_verb('status', rules=rules, arguments={'host': 'ssh://ops@192.0.2.9'})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        answer = json.loads(done.stdout)
+        self.assertEqual(answer['state'], 'ready')
+        self.assertEqual(answer['message'], 'Docker 27.1.0 answers at ssh://ops@192.0.2.9')
+        self.assertEqual(answer['values'], {'runtime': ['privileged', 'sysbox']})
+        rows = {row['label']: row['value'] for row in answer['details']}
+        self.assertEqual((rows['Engine'], rows['Runtimes'], rows['Machines berth made']),
+                         ('27.1.0', 'runc, sysbox-runc', '1'))
+        # Without Sysbox only privileged is offered; one that does not answer says so.
+        rules[1] = {'prefix': ['info'], 'results': [[0, json.dumps({'runc': {}}), '']]}
+        done = self.run_verb('status', rules=rules)
+        self.assertEqual(json.loads(done.stdout)['values'], {'runtime': ['privileged']})
+        done = self.run_verb('status', rules=[{'prefix': ['version'], 'results': [
+            [1, '', 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock.']]}])
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('not reachable', done.stderr)
+
+    def test_change_sets_new_limits(self):
+        rules = [{'prefix': ['container', 'inspect'], 'results': [inspect(OURS)]}]
+        done = self.run_verb('change', {'id': 'berth-studio'}, arguments={'cpus': '2', 'memory': '1GiB'}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {'state': 'running'})
+        self.assertEqual(self.argv('update'), [['update', '--cpus', '2', '--memory', str(1024 ** 3),
+                                                '--memory-swap', str(2 * 1024 ** 3), 'berth-studio']])
+        done = self.run_verb('change', {'id': 'berth-studio'}, rules=[
+            {'prefix': ['container', 'inspect'], 'results': [inspect({})]}])
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('not created by berth', done.stderr)
+
+    def test_logs_are_written_as_they_come(self):
+        rules = [{'prefix': ['container', 'inspect'], 'results': [inspect(OURS)]},
+                 {'prefix': ['logs'], 'results': [[0, 'booted\nready\n', '']]}]
+        done = self.run_verb('logs', {'id': 'berth-studio', 'tail': 20, 'follow': True}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout, 'booted\nready\n')
+        self.assertEqual(self.argv('logs'), [['logs', '--tail', '20', '--follow', 'berth-studio']])
+
+    def test_actions_answer_with_a_message_and_rows(self):
+        images = [{'Repository': 'berth-docker-host', 'Tag': '0.2.0', 'Size': '900MB', 'ID': 'a1'},
+                  {'Repository': 'ubuntu', 'Tag': '26.04', 'Size': '80MB', 'ID': 'b2'}]
+        rules = [{'prefix': ['image', 'ls'], 'results': [[0, ''.join(json.dumps(i) + '\n' for i in images), '']]}]
+        done = self.run_verb('act', {'action': {'name': 'images', 'arguments': {}}}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        answer = json.loads(done.stdout)
+        self.assertEqual(answer['message'], '2 images at the local Docker')
+        self.assertEqual(answer['details'][1], {'label': 'ubuntu:26.04', 'value': '80MB · b2'})
+        done = self.run_verb('act', {'action': {'name': 'dance'}})
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('no action', done.stderr)
+
+    def test_prune_removes_only_what_berth_left_and_nothing_in_use(self):
+        images = [{'Repository': 'berth-docker-host', 'Tag': '0.2.0', 'ID': 'now'},
+                  {'Repository': 'berth-docker-host', 'Tag': '0.1.0', 'ID': 'old'},
+                  {'Repository': 'berth-docker-host', 'Tag': '0.0.9', 'ID': 'used'}]
+        volumes = [{'Name': 'berth-studio-data', 'Labels': 'berth-host=studio'},
+                   {'Name': 'berth-attic-data', 'Labels': 'berth-host=attic'}]
+        rules = [{'prefix': ['image', 'ls'], 'results': [[0, ''.join(json.dumps(i) + '\n' for i in images), '']]},
+                 {'prefix': ['volume', 'ls'], 'results': [[0, ''.join(json.dumps(v) + '\n' for v in volumes), '']]},
+                 {'prefix': ['ps', '--all', '--format', '{{.Names}}', '--filter', 'ancestor=used'],
+                  'results': [[0, 'someones-container\n', '']]},
+                 {'prefix': ['ps', '--all', '--format', '{{.Names}}', '--filter', 'volume=berth-studio-data'],
+                  'results': [[0, 'berth-studio\n', '']]}]
+        done = self.run_verb('act', {'action': {'name': 'prune', 'arguments': {'volumes': 'no'}}}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.argv('image', 'rm'), [['image', 'rm', 'berth-docker-host:0.1.0']])
+        self.assertEqual(self.argv('volume', 'rm'), [])
+        self.assertEqual(self.argv('ls'), [])
+        done = self.run_verb('act', {'action': {'name': 'prune', 'arguments': {'volumes': 'yes'}}}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.argv('volume', 'rm'), [['volume', 'rm', 'berth-attic-data']])
+        self.assertEqual(self.argv('image', 'ls')[0][:3], ['image', 'ls', 'berth-docker-host'])
+        self.assertEqual(self.argv('rm') + self.argv('container', 'rm'), [])
+
+    def test_another_version_of_the_protocol_is_refused(self):
+        (self.state / 'rules.json').write_text('[]')
+        env = dict(os.environ, PATH=self.path, FAKE_DIR=str(self.state))
+        done = subprocess.run([sys.executable, str(PLUGIN / 'bin/provision'), 'status'],
+                              input=json.dumps({'version': 1, 'id': 'x'}), text=True, capture_output=True,
+                              env=env, cwd=PLUGIN)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('version 2', done.stderr)
+        self.assertEqual(self.calls(), [])
 
     def test_errors_are_one_line_and_exit_1(self):
         done = self.run_verb('status', {'id': 'berth-studio'}, path='/nonexistent')

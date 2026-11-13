@@ -16,11 +16,11 @@ It prints where it listens and how many hosts it knows. Only one runs per user. 
 
 | Operations | For |
 | --- | --- |
-| [`hosts.*`](/docs/api/serve/hosts) | The saved hosts and their profiles, and whether each is behind. `hosts.actions` lists what can be done to a host and `hosts.act` runs one of those [actions](#actions) |
+| [`hosts.*`](/docs/api/serve/hosts) | The saved hosts and their profiles, and whether each is behind. Each says its [level](/docs/use/levels), the level it was seen to have, and whether a key rotation has yet to reach it. `hosts.save` takes a host below a workstation with only `level` and `access`. `hosts.actions` lists what can be done to a host and `hosts.act` runs one of those [actions](#actions) |
 | [`actions.*`](/docs/api/serve/actions) | The actions of the installation itself, such as `rollout`, which applies the hosts that are behind one after another |
 | [`secrets.*`](/docs/api/serve/secrets), [`registries.*`](/docs/api/serve/registries), [`settings.*`](/docs/api/serve/settings) | What the server keeps beside the hosts. A secret's value goes in and never comes back out |
 | [`plugins.*`](/docs/api/serve/plugins) | The server's plugins. One is installed from its npm registry, from an `https://` address, or from a `.tgz` that is sent, and one of its own is removed. `plugins.check` asks the registries for newer versions and `plugins.update` installs them. `setup.catalogue` lists the new features straight away |
-| [`provisioners.*`](/docs/api/serve/provisioners), [`instances.*`](/docs/api/serve/instances) | The provisioners of the plugins, and the machine berth created for a host. A machine is created and deleted as a job, and started and stopped with `instances.power`. The role `admin` is needed ([Machine from a provisioner](/docs/deploy/provisioners)) |
+| [`provisioners.*`](/docs/api/serve/provisioners), [`instances.*`](/docs/api/serve/instances) | The provisioners of the plugins with their pages and actions, and the machine berth created for a host. A machine is created and deleted as a job, and started and stopped with `instances.power`, which need the role `admin`. An action of a provisioner has its own role ([Provisioners](/docs/deploy/provisioners#with-a-berth-server)) |
 | Every [berthd operation](/docs/api/host) | With a host: `"host": "NAME"` on the portal, `/v1/hosts/NAME/…` over HTTP. Only the `secrets` task is refused; the host's `secrets` action sends the server's own |
 | [`jobs.*`](/docs/api/serve/jobs) | Jobs, one for each run of an action that runs here or follows a task, with their output. Each says its subject and its action. A roll-out's job has a report, host by host |
 | [`inbox.*`](/docs/api/serve/inbox) | Messages the hosts published on their channels and kept, taken in while `berth serve` runs; each can be marked done |
@@ -37,9 +37,12 @@ What berth does to a host or to the installation is an *action*. `GET /v1/hosts/
 | --- | --- | --- | --- |
 | A task of the host, such as `status` | The host | On the host, as a session | `202` with the session and a job that copies its output. A task that needs a terminal answers `200` with the session alone, to attach to |
 | `apply` | The host | Here, as a job | `202` with the job |
+| `install-controller` | The host | Here, as a job | `202` with the job. It installs berthd and box alone on a host below a workstation |
 | `seed` | The host | Here, at once | `200` with the seed's `user_data` as the result |
 | `secrets` | The host | On the host, with the server's secrets | `202` with the session and its job |
 | `rollout` | The installation | Here, as a job | `202` with the job; its report says how each host went |
+
+An action that the host's level rules out is listed with `available` false, and its `why` says which action raises the level. Run anyway, it is refused with `501 not_available`.
 
 To run one, POST to its name with its arguments:
 

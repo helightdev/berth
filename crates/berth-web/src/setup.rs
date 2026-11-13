@@ -444,9 +444,22 @@ impl Setup {
             return Some("Fix the listed problems first".into());
         }
         let (name, action, size) = (self.name.clone(), self.action, self.panel);
-        admin.save(&self.name, &self.config, move |admin| match action {
-            Action::CloudSeed => admin.seed(&name),
-            _ => admin.apply(&name, None, size),
+        // Over SSH a host below a workstation gets the controller alone, or nothing.
+        let level = berth_api::profile::level(&self.config);
+        let install = berth_api::Action {
+            name: "install-controller".into(),
+            label: "Install the controller".into(),
+            ..berth_api::Action::default()
+        };
+        admin.save(&self.name, &self.config, move |admin| {
+            match (action, level) {
+                (Action::CloudSeed, _) => admin.seed(&name),
+                (Action::Ssh, berth_api::HostLevel::Controller) => {
+                    admin.act(&name, &install, &Default::default(), size)
+                }
+                (Action::Ssh, berth_api::HostLevel::Reachable) => {}
+                _ => admin.apply(&name, None, size),
+            }
         });
         Some("Saving…".into())
     }

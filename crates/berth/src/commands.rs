@@ -11,6 +11,7 @@ use berth_api::{
 };
 use berth_core::{
     host::Host,
+    level,
     link::{self, Link},
     paths::Paths,
     profiles::Place,
@@ -61,11 +62,19 @@ fn reach(paths: &Paths, name: &str) -> Result<Reach> {
     })
 }
 
+/// The way to a host's controller, for what needs one: a host meant to be
+/// only reachable is refused with the action that installs it.
+fn controlled(paths: &Paths, name: &str) -> Result<Reach> {
+    let reach = reach(paths, name)?;
+    level::guard(&reach.host, level::Capability::Sessions)?;
+    Ok(reach)
+}
+
 /// An error of the link in words that say what to do about it.
 fn explain(error: Error, host: &str) -> Box<dyn std::error::Error> {
     if Link::missing(&error) {
         return format!(
-            "berth's controller is not on {host} yet. Apply its configuration first: berth {host}, then Apply this configuration."
+            "berth's controller is not on {host} yet. Install it alone with: berth host install {host}. For a workstation, apply its configuration: berth apply {host}"
         )
         .into();
     }
@@ -369,7 +378,7 @@ async fn finish(reach: &Reach, id: &str, ended: Ended, forget: bool) -> i32 {
 /// host as a process session and leave with its exit code.
 pub fn exec(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
     let exec = parse_exec(args)?;
-    let reach = reach(paths, name)?;
+    let reach = controlled(paths, name)?;
     let code = reach.wait(async {
         let body = json!({
             "kind": "process", "command": exec.command, "user": exec.user,
@@ -389,7 +398,7 @@ pub fn exec(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
 /// `berth attach HOST [ID]`: this terminal onto a terminal session; without
 /// an id, onto a new shell as the agent.
 pub fn attach(paths: &Paths, name: &str, id: Option<&str>) -> Result<()> {
-    let reach = reach(paths, name)?;
+    let reach = controlled(paths, name)?;
     let code = reach.wait(async {
         let (rows, cols) = terminal_size();
         let session: api::Session = match id {
@@ -415,7 +424,7 @@ pub fn attach(paths: &Paths, name: &str, id: Option<&str>) -> Result<()> {
 
 /// `berth sessions HOST`
 pub fn sessions(paths: &Paths, name: &str) -> Result<()> {
-    let reach = reach(paths, name)?;
+    let reach = controlled(paths, name)?;
     let sessions: Vec<api::Session> = reach
         .wait(reach.link.get::<Value>("/v1/sessions"))
         .map(|value| list(value, "sessions"))
@@ -453,7 +462,7 @@ pub fn output(paths: &Paths, name: &str, id: &str, args: &[&str]) -> Result<()> 
             _ => return Err("Usage: berth output HOST ID [--tail N] [--follow]".into()),
         }
     }
-    let reach = reach(paths, name)?;
+    let reach = controlled(paths, name)?;
     let id = encode(id);
     let code = reach.wait(async {
         let link = &reach.link;
@@ -520,8 +529,17 @@ fn host_actions(paths: &Paths, reach: &Reach) -> Result<(Vec<api::Action>, Vec<a
             Ok((serde_json::from_value(listed)?, vec![]))
         }
         None => {
-            let tasks = host_tasks(reach)?;
-            Ok((api::Action::of_tasks(&tasks), tasks))
+            // A host that is only reachable has no controller to ask.
+            let host_level = level::of(&reach.host.config);
+            let tasks = match host_level {
+                level::Level::Reachable => vec![],
+                _ => host_tasks(reach)?,
+            };
+            let mut actions = api::Action::of_tasks(&tasks);
+            let own = level::local_actions(&reach.host.name, host_level);
+            actions.retain(|action| !own.iter().any(|known| known.name == action.name));
+            actions.extend(own);
+            Ok((actions, tasks))
         }
     }
 }
@@ -585,7 +603,7 @@ fn ask(question: &str) -> Result<String> {
 /// The action of that name, with the values of its arguments: those given,
 /// and the required ones asked for on a terminal. Its question is asked
 /// unless `yes`.
-fn ready(
+pub(crate) fn ready(
     subject: &str,
     actions: &[api::Action],
     name: &str,
@@ -648,9 +666,147 @@ pub fn run(paths: &Paths, name: &str, task: &str, args: &[&str]) -> Result<()> {
             let acted = act_on(&server, Some(name), &action.name, &act)?;
             follow_acted(&server, Some(&reach), acted, &mut std::io::stdout())?
         }
+        None if action.runs == api::Runs::Berth => run_own(paths, &reach.host, &action.name)?,
         None => run_here(paths, &reach, &tasks, &action, act)?,
     };
     std::process::exit(code);
+}
+
+/// Run one of berth's own actions on a host of this machine: the exit code.
+fn run_own(paths: &Paths, host: &Host, action: &str) -> Result<i32> {
+    match action {
+        "install-controller" => install_controller_here(paths, host),
+        other => Err(format!("{other} is not an action of berth on {}", host.name).into()),
+    }
+}
+
+/// `berth host install HOST`: put berth's controller alone on the host. On
+/// a berth server that is a job of the server, whose output is shown.
+pub fn install_controller(paths: &Paths, name: &str) -> Result<()> {
+    let host = Host::load(paths, name)?;
+    let Some(server) = host.served(paths) else {
+        let code = install_controller_here(paths, &host)?;
+        std::process::exit(code);
+    };
+    let act = api::Act {
+        sudo_password: host.sudo_password(paths)?,
+        ..api::Act::default()
+    };
+    let acted = act_on(&server, Some(name), "install-controller", &act)?;
+    let code = follow_acted(&server, None, acted, &mut std::io::stdout())?;
+    std::process::exit(code);
+}
+
+/// Install the controller from here, holding the host's lock as an apply
+/// does: the exit code.
+fn install_controller_here(paths: &Paths, host: &Host) -> Result<i32> {
+    level::guard(host, level::Capability::InstallController)?;
+    let password = host.sudo_password(paths)?;
+    let request = runner::Request {
+        secrets: password.iter().cloned().collect(),
+        ..runner::Request::new(
+            runner::Subject::Host(host.name.clone()),
+            "install-controller",
+        )
+    };
+    let (owned, place) = (paths.clone(), host.place.clone());
+    let host = Host {
+        name: host.name.clone(),
+        place,
+        config: host.config.clone(),
+    };
+    let work = runner::Work::Function(Box::new(move |out| {
+        berth_core::apply::install_controller(&owned, &host, password.as_deref(), out)
+    }));
+    let code = runner::here(paths, request, work, &mut std::io::stdout())?;
+    Ok(code.unwrap_or(1))
+}
+
+/// `berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH]
+/// [--level LEVEL] [--no-contact]`: save a host that exists already, by
+/// where it is and how berth logs in, with nothing of a workstation. Then
+/// first contact, unless told not to: berth's key is tried, and a host that
+/// refuses it is logged in to once with a password or key to install it.
+pub fn add_host(paths: &Paths, name: &str, address: &str, args: &[&str]) -> Result<()> {
+    const USAGE: &str = "Usage: berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth berth|key:NAME|password|ssh] [--level reachable|controller|workstation] [--no-contact]";
+    let mut access = api::profile::Access {
+        address: address.to_owned(),
+        ..api::profile::Access::default()
+    };
+    let (mut host_level, mut contact) = (level::Level::Reachable, true);
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let mut value = || rest.next().copied().ok_or(USAGE);
+        match *arg {
+            "--user" => access.user = value()?.to_owned(),
+            "--port" => access.port = value()?.to_owned(),
+            "--auth" => {
+                let given = value()?;
+                access.auth = api::profile::Auth::parse(given).ok_or_else(|| {
+                    format!("--auth is berth, key:NAME, password or ssh, not {given}")
+                })?;
+            }
+            "--level" => {
+                let given = value()?;
+                host_level = level::Level::parse(given).ok_or_else(|| {
+                    format!("--level is reachable, controller or workstation, not {given}")
+                })?;
+            }
+            "--no-contact" => contact = false,
+            _ => return Err(USAGE.into()),
+        }
+    }
+    if !berth_core::profiles::valid_name(name) {
+        return Err(
+            format!("{name} cannot be a host's name: letters, digits, -, _ and . only").into(),
+        );
+    }
+    let mut profile = api::profile::minimal(host_level, &access);
+    // A workstation keeps what its set-up fills in; it starts empty.
+    if host_level == level::Level::Workstation {
+        profile["builder"] = json!({});
+    }
+    let problems = api::profile::problems(&profile);
+    if !problems.is_empty() {
+        return Err(problems.join("; ").into());
+    }
+    let place = Place::resolve(paths, name)?;
+    if place.load(paths)?.is_some() {
+        return Err(format!(
+            "There is a host {name} already. Change it with: berth profile {name} --set FILE"
+        )
+        .into());
+    }
+    match berth_core::server::Server::configured(paths) {
+        Some(server) => {
+            server.save_host(name, &profile)?;
+            server.mirror(paths)?;
+            println!("Added {name} on the berth server at {}", server.url);
+        }
+        None => {
+            if let Some(key) = access.auth.key() {
+                let store = berth_core::store::shared(paths)?;
+                if key != api::profile::BERTH_KEY
+                    && !berth_core::keys::ring::names(&store)?
+                        .iter()
+                        .any(|known| known == key)
+                {
+                    return Err(format!(
+                        "There is no key {key}. Add it with: berth key add {key} FILE"
+                    )
+                    .into());
+                }
+            }
+            place.save(paths, &profile)?;
+            println!("Added {name} as a {host_level} host: {}", place.describe());
+        }
+    }
+    if !contact {
+        return Ok(());
+    }
+    crate::key_command::trust(paths, name, &[]).map_err(|error| {
+        format!("{name} is saved, but logging in to it did not work yet: {error}. Try again with: berth key trust {name}").into()
+    })
 }
 
 /// Run a task of a host of this machine as a session there and follow it.
@@ -704,7 +860,7 @@ pub fn channel(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
             _ => return Err("Usage: berth channel HOST [TOPIC-PREFIX] [--since ID]".into()),
         }
     }
-    let reach = reach(paths, name)?;
+    let reach = controlled(paths, name)?;
     let mut path = format!("/v1/channel?topic={}", encode(prefix));
     if let Some(since) = since {
         path += &format!("&since={since}");
@@ -740,7 +896,7 @@ pub fn call(
         }
         None => json!({}),
     };
-    let reach = reach(paths, name)?;
+    let reach = controlled(paths, name)?;
     let path = format!("/v1/services/{}/{}", encode_path(service), encode(method));
     let answer: Value = reach
         .wait(reach.link.post(&path, &body))
@@ -862,7 +1018,11 @@ async fn start_job(
 }
 
 /// A job's output to `out` as it comes, until it ends, and its exit code.
-async fn follow_job(portal: &api::portal::Portal, id: &str, out: &mut dyn Write) -> Result<i32> {
+pub(crate) async fn follow_job(
+    portal: &api::portal::Portal,
+    id: &str,
+    out: &mut dyn Write,
+) -> Result<i32> {
     let mut output = portal.open("jobs.follow", None, json!({"id": id})).await?;
     let mut code = None;
     while let Some(piece) = output.recv().await {
@@ -1518,6 +1678,42 @@ mod tests {
         assert_eq!(values["empty"], "");
         assert!(parse_arguments(&["folder"]).is_err());
         assert!(parse_arguments(&["=x"]).is_err());
+    }
+
+    #[test]
+    fn a_machine_is_added_by_its_address_with_nothing_of_a_workstation() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: home.path().join("config"),
+            data_dir: home.path().join("data"),
+        };
+        paths.prepare().unwrap();
+        let add = |name: &str, args: &[&str]| add_host(&paths, name, "192.0.2.4", args);
+        add("dock", &["--user", "ops", "--port", "2222", "--no-contact"]).unwrap();
+        let saved = Place::resolve(&paths, "dock")
+            .unwrap()
+            .load(&paths)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            saved,
+            json!({"level": "reachable", "access": {"address": "192.0.2.4", "user": "ops", "port": "2222", "auth": "berth"}})
+        );
+        let said = |result: Result<()>| result.unwrap_err().to_string();
+        assert!(said(add("dock", &["--no-contact"])).contains("already"));
+        assert!(said(add("pier", &["--level", "server", "--no-contact"])).contains("--level"));
+        assert!(said(add("pier", &["--auth", "key:none", "--no-contact"])).contains("no key none"));
+        assert!(said(add("../pier", &["--no-contact"])).contains("name"));
+        // A workstation starts with the part its set-up fills in.
+        add("studio", &["--level", "workstation", "--no-contact"]).unwrap();
+        let studio = Host::load(&paths, "studio").unwrap();
+        assert!(studio.config["builder"].is_object());
+        // Applying is refused below a workstation, before anything runs.
+        let dock = Host::load(&paths, "dock").unwrap();
+        let refused = berth_core::apply::prepare(&paths, &dock, None);
+        assert!(said(refused.map(|_| ())).contains("not a workstation"));
+        let refused = install_controller_here(&paths, &studio);
+        assert!(said(refused.map(|_| ())).contains("berth apply studio"));
     }
 
     #[test]

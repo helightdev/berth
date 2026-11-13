@@ -79,7 +79,12 @@ pub struct ProvisionerSecret {
     pub required: bool,
 }
 
-/// A program of a plugin that creates machines.
+/// The version of the provisioner protocol berth speaks; a provisioner
+/// declares it as `protocol` in its manifest.
+pub const PROTOCOL: u64 = 2;
+
+/// A program of a plugin that creates machines, and maybe other kinds of
+/// things, and has actions of its own.
 #[derive(Debug, Clone)]
 pub struct Provisioner {
     pub id: String,
@@ -87,19 +92,35 @@ pub struct Provisioner {
     pub description: String,
     /// The executable, resolved and inside the package.
     pub command: PathBuf,
+    /// How a machine it makes is set up; `Apply` for one that makes none.
     pub setup: Setup,
     /// The plugin puts the release archive into the machine, so the seed
     /// needs no `release_url`.
     pub archive: bool,
-    /// Of `start`, `stop` and `list`, those it answers.
+    /// Of `start`, `stop` and `list`, those it answers for machines.
     pub verbs: Vec<String>,
     pub secrets: Vec<ProvisionerSecret>,
-    /// Values are strings; `choices` is not used.
+    /// What creating a machine takes: its own arguments, then its
+    /// machines'. Values are strings; `choices` is not used.
     pub arguments: Vec<berth_api::Argument>,
+    /// The names of its own arguments, which say where it is.
+    pub own: Vec<String>,
+    /// What it can make, the machine kind among them when it makes machines.
+    pub kinds: Vec<berth_api::ProvisionerKind>,
+    /// Its own actions, each run with the verb `act`.
+    pub actions: Vec<berth_api::Action>,
+    /// Why berth does not run it, as a sentence that says what to change.
+    pub refused: Option<String>,
 }
 
 /// The verbs a provisioner may answer besides `create`, `status` and `destroy`.
 pub const OPTIONAL_VERBS: &[&str] = &["start", "stop", "list"];
+
+/// The verbs a kind may answer besides `create`, `status` and `destroy`.
+pub const KIND_VERBS: &[&str] = &["start", "stop", "change", "logs"];
+
+/// The kind of the machines a provisioner makes for hosts.
+pub const MACHINE: &str = "machine";
 
 impl Provisioner {
     /// What is said of it, as `PLUGIN/ID`, with the required secrets that
@@ -118,7 +139,17 @@ impl Provisioner {
                 .collect(),
             missing_secrets,
             arguments: self.arguments.clone(),
+            own: self.own.clone(),
+            settings: Default::default(),
+            kinds: self.kinds.clone(),
+            actions: self.actions.clone(),
+            problem: self.refused.clone().unwrap_or_default(),
         }
+    }
+
+    /// Its machine kind, when it makes machines for hosts.
+    pub fn machine(&self) -> Option<&berth_api::ProvisionerKind> {
+        self.kinds.iter().find(|kind| kind.id == MACHINE)
     }
 }
 
@@ -283,7 +314,7 @@ fn read(dir: &Path) -> Option<Plugin> {
     let real = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_owned());
     let provisioners = list(&berth["provisioners"])
         .iter()
-        .filter_map(|provisioner| read_provisioner(provisioner, &real))
+        .filter_map(|provisioner| read_provisioner(&id, provisioner, &real))
         .collect();
     Some(Plugin {
         id,
@@ -298,15 +329,111 @@ fn read(dir: &Path) -> Option<Plugin> {
     })
 }
 
-/// A provisioner of a manifest, or None when it is not usable: a bad id or
-/// set-up, or a command that is not a file inside the package.
-fn read_provisioner(entry: &Value, dir: &Path) -> Option<Provisioner> {
+/// The arguments of a provisioner's manifest that berth uses. A kind berth
+/// does not know makes an ordinary argument, and `choices` is not run: a
+/// provisioner offers values with its status instead.
+fn provisioner_arguments(entries: &Value) -> Vec<berth_api::Argument> {
+    entries
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|argument| serde_json::from_value::<berth_api::Argument>(argument).ok())
+        .filter(|argument| valid_name(&argument.name))
+        .map(|argument| berth_api::Argument {
+            choices: String::new(),
+            kind: match argument.is_resource() {
+                true => argument.kind.clone(),
+                false => String::new(),
+            },
+            ..argument
+        })
+        .collect()
+}
+
+/// The kinds a provisioner of protocol 2 makes. A machine kind needs a set-up.
+fn provisioner_kinds(entries: &Value) -> Vec<berth_api::ProvisionerKind> {
+    let mut kinds: Vec<berth_api::ProvisionerKind> = vec![];
+    for entry in entries.as_array().cloned().unwrap_or_default() {
+        let text = |key: &str| entry[key].as_str().unwrap_or("").to_owned();
+        let id = text("id");
+        let setup = text("setup");
+        if !valid_name(&id)
+            || kinds.iter().any(|known| known.id == id)
+            || (id == MACHINE && !matches!(setup.as_str(), "seed" | "apply"))
+        {
+            continue;
+        }
+        let declared = entry["verbs"].as_array().cloned().unwrap_or_default();
+        kinds.push(berth_api::ProvisionerKind {
+            label: match text("label") {
+                label if label.is_empty() => id.clone(),
+                label => label,
+            },
+            setup: match id == MACHINE {
+                true => setup,
+                false => String::new(),
+            },
+            verbs: KIND_VERBS
+                .iter()
+                .filter(|verb| declared.iter().any(|known| known == **verb))
+                .map(|verb| (*verb).to_owned())
+                .collect(),
+            arguments: provisioner_arguments(&entry["arguments"]),
+            spec: entry.get("spec").filter(|spec| spec.is_object()).cloned(),
+            id,
+        });
+    }
+    kinds
+}
+
+/// The actions of a provisioner's manifest. Each runs where berth runs; one
+/// that changes something needs an admin unless it says otherwise, one that
+/// only reads anyone let in.
+fn provisioner_actions(entries: &Value) -> Vec<berth_api::Action> {
+    let mut actions: Vec<berth_api::Action> = vec![];
+    for entry in entries.as_array().cloned().unwrap_or_default() {
+        let Ok(action) = serde_json::from_value::<berth_api::Action>(entry.clone()) else {
+            continue;
+        };
+        if !valid_name(&action.name) || actions.iter().any(|known| known.name == action.name) {
+            continue;
+        }
+        let role = match (entry.get("role"), action.changes) {
+            (Some(_), _) => action.role,
+            (None, true) => berth_api::ops::Role::Admin,
+            (None, false) => berth_api::ops::Role::View,
+        };
+        actions.push(berth_api::Action {
+            arguments: provisioner_arguments(&entry["arguments"]),
+            runs: berth_api::Runs::Berth,
+            terminal: false,
+            available: true,
+            why: String::new(),
+            steps: vec![],
+            role,
+            ..action
+        });
+    }
+    actions
+}
+
+/// A provisioner of a manifest, or None when it cannot be run at all: a bad
+/// id, or a command that is not a file inside the package. One of another
+/// version of the protocol is kept, refused, so that it can say why.
+fn read_provisioner(plugin: &str, entry: &Value, dir: &Path) -> Option<Provisioner> {
     let text = |key: &str| entry[key].as_str().unwrap_or("").to_owned();
     let id = text("id");
-    let setup = match entry["setup"].as_str() {
-        Some("seed") => Setup::Seed,
-        Some("apply") => Setup::Apply,
-        _ => return None,
+    let protocol = entry["protocol"].as_u64();
+    let refused = match protocol {
+        Some(PROTOCOL) => None,
+        other => Some(format!(
+            "{plugin}/{id} speaks {} of the provisioner protocol, and berth reads only version {PROTOCOL}: update the plugin, or have its manifest declare \"protocol\": {PROTOCOL} with its kinds and actions",
+            match other {
+                Some(version) => format!("version {version}"),
+                None => "version 1".to_owned(),
+            }
+        )),
     };
     let relative = PathBuf::from(text("command"));
     // berth runs it as itself, so it must be the package's own file.
@@ -337,6 +464,40 @@ fn read_provisioner(entry: &Value, dir: &Path) -> Option<Provisioner> {
             secrets.push(ProvisionerSecret { name, required });
         }
     }
+    let mut own = provisioner_arguments(&entry["arguments"]);
+    let (kinds, actions) = match refused {
+        Some(_) => (vec![], vec![]),
+        None => (
+            provisioner_kinds(&entry["kinds"]),
+            provisioner_actions(&entry["actions"]),
+        ),
+    };
+    let machine = kinds.iter().find(|kind| kind.id == MACHINE);
+    let setup = match machine.map(|kind| kind.setup.as_str()) {
+        Some("seed") => Setup::Seed,
+        _ => Setup::Apply,
+    };
+    let lists = list("verbs").iter().any(|verb| verb == "list");
+    let mut verbs: Vec<String> = OPTIONAL_VERBS
+        .iter()
+        .filter(|verb| {
+            (**verb == "list" && lists)
+                || machine.is_some_and(|kind| kind.verbs.iter().any(|known| known == **verb))
+        })
+        .map(|verb| (*verb).to_owned())
+        .collect();
+    verbs.sort_by_key(|verb| OPTIONAL_VERBS.iter().position(|known| known == verb));
+    let names: Vec<String> = own.iter().map(|argument| argument.name.clone()).collect();
+    // A machine's argument of the same name as one of the provisioner's is the provisioner's.
+    if let Some(machine) = machine {
+        own.extend(
+            machine
+                .arguments
+                .iter()
+                .filter(|argument| !names.contains(&argument.name))
+                .cloned(),
+        );
+    }
     Some(Provisioner {
         label: match text("label") {
             label if label.is_empty() => id.clone(),
@@ -346,27 +507,22 @@ fn read_provisioner(entry: &Value, dir: &Path) -> Option<Provisioner> {
         description: text("description"),
         command,
         setup,
-        archive: setup == Setup::Seed && entry["archive"].as_bool().unwrap_or(false),
-        verbs: OPTIONAL_VERBS
-            .iter()
-            .filter(|verb| list("verbs").iter().any(|known| known == **verb))
-            .map(|verb| (*verb).to_owned())
-            .collect(),
+        archive: setup == Setup::Seed
+            && machine.is_some_and(|_| {
+                entry["kinds"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|kind| kind["id"] == MACHINE)
+                    .is_some_and(|kind| kind["archive"].as_bool().unwrap_or(false))
+            }),
+        verbs,
         secrets,
-        arguments: list("arguments")
-            .into_iter()
-            .filter_map(|argument| serde_json::from_value::<berth_api::Argument>(argument).ok())
-            .filter(|argument| valid_name(&argument.name))
-            .map(|argument| berth_api::Argument {
-                choices: String::new(),
-                // A kind berth does not know makes an ordinary argument.
-                kind: match argument.is_resource() {
-                    true => argument.kind.clone(),
-                    false => String::new(),
-                },
-                ..argument
-            })
-            .collect(),
+        arguments: own,
+        own: names,
+        kinds,
+        actions,
+        refused,
     })
 }
 
@@ -516,18 +672,37 @@ pub fn describe(plugins: &[PluginInfo]) -> String {
 
 /// What a provisioner does and asks for, in a few words each.
 pub fn provisioner_notes(provisioner: &ProvisionerInfo) -> Vec<String> {
-    let mut notes = vec![match provisioner.setup.as_str() {
-        "seed" => "sets itself up from the cloud seed".to_owned(),
-        _ => "berth applies the profile over SSH".to_owned(),
-    }];
+    if !provisioner.problem.is_empty() && provisioner.kinds.is_empty() {
+        return vec![provisioner.problem.clone()];
+    }
+    let makes = |kind: &berth_api::ProvisionerKind| match (kind.id.as_str(), kind.setup.as_str()) {
+        (MACHINE, "seed") => "machines that set themselves up from the cloud seed".to_owned(),
+        (MACHINE, _) => "machines berth applies the profile to over SSH".to_owned(),
+        _ => kind.label.clone(),
+    };
+    let kinds: Vec<String> = provisioner.kinds.iter().map(makes).collect();
+    let mut notes = vec![];
+    if !kinds.is_empty() {
+        notes.push(format!("makes {}", kinds.join(" and ")));
+    }
+    if !provisioner.actions.is_empty() {
+        let names: Vec<&str> = provisioner
+            .actions
+            .iter()
+            .map(|action| action.name.as_str())
+            .collect();
+        notes.push(format!("actions {}", names.join(", ")));
+    }
     if !provisioner.verbs.is_empty() {
         notes.push(format!("also {}", provisioner.verbs.join(", ")));
     }
     for argument in &provisioner.arguments {
-        let mut note = match (argument.required, argument.default.as_str()) {
-            (true, _) => format!("asks {}", argument.name),
-            (false, "") => format!("may ask {}", argument.name),
-            (false, default) => format!("asks {} (default {default})", argument.name),
+        let kept = provisioner.settings.get(&argument.name);
+        let mut note = match (argument.required, argument.default.as_str(), kept) {
+            (_, _, Some(value)) => format!("asks {} (set to {value})", argument.name),
+            (true, _, None) => format!("asks {}", argument.name),
+            (false, "", None) => format!("may ask {}", argument.name),
+            (false, default, None) => format!("asks {} (default {default})", argument.name),
         };
         if !argument.values.is_empty() {
             note += &format!(": {}", argument.values.join(" or "));
@@ -540,6 +715,9 @@ pub fn provisioner_notes(provisioner: &ProvisionerInfo) -> Vec<String> {
             true => format!("secret {secret}, not set"),
             false => format!("secret {secret}"),
         });
+    }
+    if !provisioner.problem.is_empty() {
+        notes.push(format!("not usable: {}", provisioner.problem));
     }
     notes
 }
@@ -1175,20 +1353,36 @@ mod tests {
             dir.join("package.json"),
             r#"{"name": "berth-plugin-cloud", "berth": {"provisioners": [
                 {"id": "vm", "label": "A VM", "description": "One machine.", "command": "bin/provision",
-                 "setup": "seed", "archive": true, "verbs": ["stop", "list", "reboot"],
+                 "protocol": 2, "verbs": ["list", "reboot"],
                  "secrets": ["key", {"name": "cert", "required": false}, {"name": "Bad Name"}, "key"],
-                 "arguments": [{"name": "server", "label": "Server", "required": true},
-                               {"name": "cpus", "default": "4", "choices": "seq 8", "kind": "resource"},
-                               {"name": "image", "kind": "colour", "help": "What it starts from.",
-                                "values": ["a", "b"]}, {"name": "Bad"}]},
-                {"id": "ssh", "command": "./bin/provision", "setup": "apply", "archive": true},
-                {"id": "up", "command": "../outside", "setup": "apply"},
-                {"id": "absolute", "command": "/bin/sh", "setup": "apply"},
-                {"id": "linked", "command": "bin/out", "setup": "apply"},
-                {"id": "missing", "command": "bin/none", "setup": "apply"},
-                {"id": "folder", "command": "bin", "setup": "apply"},
-                {"id": "odd", "command": "bin/provision", "setup": "magic"},
-                {"id": "Bad Id", "command": "bin/provision", "setup": "seed"}]}}"#,
+                 "arguments": [{"name": "server", "label": "Server", "required": true}],
+                 "kinds": [
+                   {"id": "machine", "setup": "seed", "archive": true, "verbs": ["stop", "logs", "fly"],
+                    "arguments": [{"name": "server"},
+                                  {"name": "cpus", "default": "4", "choices": "seq 8", "kind": "resource"},
+                                  {"name": "image", "kind": "colour", "help": "What it starts from.",
+                                   "values": ["a", "b"]}, {"name": "Bad"}]},
+                   {"id": "deployment", "label": "Compose project", "verbs": ["change"],
+                    "spec": {"format": "compose", "label": "Compose file"}},
+                   {"id": "machine", "setup": "apply"}],
+                 "actions": [
+                   {"name": "prune", "label": "Remove unused images", "group": "Storage",
+                    "confirm": "Remove them?", "runs": "host", "terminal": true},
+                   {"name": "images", "changes": false, "arguments": [{"name": "filter", "choices": "ls"}]},
+                   {"name": "grow", "role": "operate"},
+                   {"name": "Bad Name"}, {"name": "images"}]},
+                {"id": "ssh", "command": "./bin/provision", "protocol": 2,
+                 "kinds": [{"id": "machine", "setup": "apply", "archive": true}]},
+                {"id": "old", "command": "bin/provision", "setup": "apply", "verbs": ["start"]},
+                {"id": "three", "command": "bin/provision", "protocol": 3},
+                {"id": "up", "command": "../outside", "protocol": 2},
+                {"id": "absolute", "command": "/bin/sh", "protocol": 2},
+                {"id": "linked", "command": "bin/out", "protocol": 2},
+                {"id": "missing", "command": "bin/none", "protocol": 2},
+                {"id": "folder", "command": "bin", "protocol": 2},
+                {"id": "odd", "command": "bin/provision", "protocol": 2,
+                 "kinds": [{"id": "machine", "setup": "magic"}]},
+                {"id": "Bad Id", "command": "bin/provision", "protocol": 2}]}}"#,
         )
         .unwrap();
         // Provisioners and no features is a plugin too.
@@ -1199,11 +1393,69 @@ mod tests {
             .iter()
             .map(|provisioner| provisioner.id.as_str())
             .collect();
-        assert_eq!(ids, ["vm", "ssh"]);
+        assert_eq!(ids, ["vm", "ssh", "old", "three", "odd"]);
         let vm = &plugins[0].provisioners[0];
         assert_eq!(vm.command, plugins[0].dir.join("bin/provision"));
         assert_eq!((vm.setup, vm.archive), (Setup::Seed, true));
         assert_eq!(vm.verbs, ["stop", "list"]);
+        assert!(vm.refused.is_none());
+        // The machine kind's own verbs, the first machine kind, and the kinds berth does not know yet.
+        let kinds: Vec<(&str, &str, Vec<String>)> = vm
+            .kinds
+            .iter()
+            .map(|kind| (kind.id.as_str(), kind.setup.as_str(), kind.verbs.clone()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                (
+                    "machine",
+                    "seed",
+                    vec!["stop".to_owned(), "logs".to_owned()]
+                ),
+                ("deployment", "", vec!["change".to_owned()])
+            ]
+        );
+        assert_eq!(vm.kinds[1].spec.as_ref().unwrap()["format"], "compose");
+        assert_eq!(vm.own, ["server"]);
+        // Actions run where berth runs, and an admin runs what changes something.
+        let actions: Vec<_> = vm
+            .actions
+            .iter()
+            .map(|action| {
+                (
+                    action.name.as_str(),
+                    action.role,
+                    action.runs,
+                    action.terminal,
+                )
+            })
+            .collect();
+        use berth_api::{Runs, ops::Role};
+        assert_eq!(
+            actions,
+            [
+                ("prune", Role::Admin, Runs::Berth, false),
+                ("images", Role::View, Runs::Berth, false),
+                ("grow", Role::Operate, Runs::Berth, false)
+            ]
+        );
+        assert_eq!(vm.actions[0].confirm.as_deref(), Some("Remove them?"));
+        assert!(vm.actions[1].arguments[0].choices.is_empty());
+        // Another version is kept, refused with what to change.
+        let old = &plugins[0].provisioners[2];
+        let said = old.refused.as_deref().unwrap();
+        assert!(said.starts_with("cloud/old speaks version 1"), "{said}");
+        assert!(said.contains("\"protocol\": 2") && old.kinds.is_empty());
+        assert!(
+            plugins[0].provisioners[3]
+                .refused
+                .as_deref()
+                .unwrap()
+                .contains("version 3")
+        );
+        // A machine kind needs a set-up berth knows; without one it makes nothing.
+        assert!(plugins[0].provisioners[4].machine().is_none());
         assert_eq!(
             vm.secrets,
             [
@@ -1245,6 +1497,8 @@ mod tests {
         );
         let info = plugins[0].info(base.path());
         assert_eq!(info.provisioners[0].id, "cloud/vm");
+        assert!(info.provisioners[0].problem.is_empty());
+        assert!(info.provisioners[2].problem.contains("version 1"));
         // A provisioner's argument keeps its help and its values.
         assert_eq!(vm.arguments[2].help, "What it starts from.");
         assert_eq!(vm.arguments[2].values, ["a", "b"]);
@@ -1257,7 +1511,7 @@ mod tests {
         assert_eq!(info.provisioners[0].secrets, ["key", "cert"]);
         let listing = describe(&[info]);
         assert!(
-            listing.contains("  provisioner  cloud/vm  A VM (sets itself up from the cloud seed; also stop, list; asks server; asks cpus (default 4); may ask image: a or b; secret key; secret cert)"),
+            listing.contains("  provisioner  cloud/vm  A VM (makes machines that set themselves up from the cloud seed and Compose project; actions prune, images, grow; also stop, list; asks server; asks cpus (default 4); may ask image: a or b; secret key; secret cert)"),
             "{listing}"
         );
     }

@@ -35,6 +35,9 @@ use tokio::sync::broadcast;
 
 pub use docs::{asyncapi, openapi, operations};
 
+/// How a host's answer starts when berth logged in and found no berthd.
+pub(crate) const NO_BERTHD: &str = "no berthd on the host yet";
+
 /// How long an answer about a host's reachability is used again.
 const SEEN_FOR: Duration = Duration::from_secs(10);
 
@@ -93,9 +96,7 @@ impl Remote {
             tokio::time::timeout(Duration::from_secs(15), link.get::<Version>("/v1/version")).await;
         let answer = match asked {
             Ok(Ok(version)) => Ok(version),
-            Ok(Err(error)) if Link::missing(&error) => {
-                Err(format!("no berthd on the host yet: {error}"))
-            }
+            Ok(Err(error)) if Link::missing(&error) => Err(format!("{NO_BERTHD}: {error}")),
             Ok(Err(error)) => Err(error.to_string()),
             Err(_) => Err("no answer in time".into()),
         };

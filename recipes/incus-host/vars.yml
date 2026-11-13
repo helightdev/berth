@@ -30,6 +30,18 @@ incus_api_interface: tailscale0
 #     certificate: ~/berth.crt
 incus_trusted_clients: []
 
+# ── Docker ────────────────────────────────────────────────────────────────
+
+# Also install Sysbox, a runtime under which a container runs systemd and
+# Docker without --privileged. berth's Docker provisioner uses it with
+# runtime=sysbox. The Sysbox package restarts Docker, so it is installed
+# before any container of the recipe runs.
+sysbox: false
+sysbox_version: 0.6.7
+# The SHA-256 of the package, to check it against. Empty checks nothing
+# beyond the HTTPS download.
+sysbox_checksum: ""
+
 # ── A berth server ────────────────────────────────────────────────────────
 
 # Also run a berth server on this machine, in a Docker container. It is

@@ -20,8 +20,8 @@ use axum::{
     routing::{any, get},
 };
 use berth_api::{
-    Applied, Behind, Done, ErrorBody, ErrorDetail, HostBehind, JobInfo, Message, Output, Version,
-    b64, client, code,
+    Applied, Behind, Done, ErrorBody, ErrorDetail, HostBehind, HostLevel, JobInfo, Message, Output,
+    Version, b64, client, code,
     ops::{self, Role},
     streams,
 };
@@ -112,6 +112,16 @@ pub struct HostInfo {
     /// What changed since then, when the server would apply something else now.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub behind: Option<Behind>,
+    /// The level its profile means it to have.
+    pub level: HostLevel,
+    /// The level it was seen to have: what its controller's record says,
+    /// `reachable` when berth logged in and found no controller. Absent
+    /// when it could not be asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seen: Option<HostLevel>,
+    /// A rotation of a key it logs in with is not done on it yet.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub rotating: bool,
 }
 
 /// A stored message: the host's message with where it came from.
@@ -229,6 +239,9 @@ fn guarded_routes() -> OpenApiRouter<Arc<Serve>> {
         .routes(routes!(setup::catalogue))
         .routes(routes!(setup::generate))
         .routes(routes!(provisioners::list))
+        .routes(routes!(provisioners::provisioner))
+        .routes(routes!(provisioners::provisioner_actions))
+        .routes(routes!(provisioners::provisioner_act))
         .routes(routes!(provisioners::instances))
         .routes(routes!(
             provisioners::get,
@@ -403,12 +416,35 @@ pub(super) fn compare(state: &Serve) -> Compare {
     Arc::new(rollout::comparer(&state.paths))
 }
 
-async fn info(remote: Arc<Remote>, compare: Compare) -> HostInfo {
+/// What the server knows of a host apart from asking it: the level of its
+/// profile, and whether a key it logs in with is being rotated.
+pub(super) fn known(state: &Serve, name: &str) -> (HostLevel, bool) {
+    let profile = super::setup::saved_profile(state, name).map(|(_, profile)| profile);
+    let level = profile
+        .as_ref()
+        .map_or(HostLevel::Workstation, berth_api::profile::level);
+    let rotating = profile.is_ok_and(|profile| {
+        let place = berth_core::profiles::Place::own(name);
+        let store = berth_core::store::shared(&state.paths);
+        match (place, store) {
+            (Ok(place), Ok(store)) => berth_core::keys::contact::waiting(&store, &place, &profile)
+                .is_ok_and(|keys| !keys.is_empty()),
+            _ => false,
+        }
+    });
+    (level, rotating)
+}
+
+async fn info(remote: Arc<Remote>, compare: Compare, known: (HostLevel, bool)) -> HostInfo {
     let seen = remote.version().await;
     let applied = seen
         .as_ref()
         .ok()
         .and_then(|version| version.applied.clone());
+    let observed = berth_core::level::seen(
+        seen.as_ref()
+            .map_err(|error| error.starts_with(super::NO_BERTHD)),
+    );
     HostInfo {
         name: remote.name.clone(),
         address: remote.address.clone(),
@@ -418,6 +454,9 @@ async fn info(remote: Arc<Remote>, compare: Compare) -> HostInfo {
         error: seen.err(),
         behind: applied.as_ref().and_then(|applied| compare(applied)),
         applied: applied.map(|applied| applied.berth),
+        level: known.0,
+        seen: observed,
+        rotating: known.1,
     }
 }
 
@@ -426,11 +465,10 @@ pub(super) async fn behind_hosts(state: &Arc<Serve>) -> Vec<HostBehind> {
     state.refresh(false);
     let compare = compare(state);
     let remotes: Vec<_> = state.hosts.read().unwrap().values().cloned().collect();
-    let infos = futures_util::future::join_all(
-        remotes
-            .into_iter()
-            .map(|remote| info(remote, compare.clone())),
-    )
+    let infos = futures_util::future::join_all(remotes.into_iter().map(|remote| {
+        let known = known(state, &remote.name);
+        info(remote, compare.clone(), known)
+    }))
     .await;
     infos
         .into_iter()
@@ -457,6 +495,7 @@ async fn version() -> Json<Version> {
         api: berth_api::API,
         mode: "serve".into(),
         applied: None,
+        level: None,
     })
 }
 
@@ -467,11 +506,10 @@ async fn hosts(State(state): App) -> Json<Vec<HostInfo>> {
     let compare = compare(&state);
     let remotes: Vec<_> = state.hosts.read().unwrap().values().cloned().collect();
     Json(
-        futures_util::future::join_all(
-            remotes
-                .into_iter()
-                .map(|remote| info(remote, compare.clone())),
-        )
+        futures_util::future::join_all(remotes.into_iter().map(|remote| {
+            let known = known(&state, &remote.name);
+            info(remote, compare.clone(), known)
+        }))
         .await,
     )
 }
@@ -482,7 +520,10 @@ async fn hosts(State(state): App) -> Json<Vec<HostInfo>> {
               (status = 404, description = "No such host", body = ErrorBody)))]
 async fn host(State(state): App, Path(name): Path<String>) -> Answer<Json<HostInfo>> {
     state.refresh(false);
-    Ok(Json(info(remote(&state, &name)?, compare(&state)).await))
+    let known = known(&state, &name);
+    Ok(Json(
+        info(remote(&state, &name)?, compare(&state), known).await,
+    ))
 }
 
 // ── Jobs ────────────────────────────────────────────────────────────────────

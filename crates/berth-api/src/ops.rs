@@ -276,7 +276,22 @@ pub static SERVE: &[Op] = &[
     admin(call("plugins.update", "POST", "/v1/plugins/update")),
     admin(call("setup.catalogue", "GET", "/v1/setup")),
     admin(call("setup.generate", "POST", "/v1/setup/generate")),
-    admin(call("provisioners.list", "GET", "/v1/provisioners")),
+    call("provisioners.list", "GET", "/v1/provisioners"),
+    call("provisioners.get", "GET", "/v1/provisioners/{plugin}/{id}"),
+    call(
+        "provisioners.actions",
+        "GET",
+        "/v1/provisioners/{plugin}/{id}/actions",
+    ),
+    // Anyone let in may ask; the action's own role is checked when it is run.
+    role(
+        call(
+            "provisioners.act",
+            "POST",
+            "/v1/provisioners/{plugin}/{id}/actions/{action}",
+        ),
+        Role::View,
+    ),
     admin(call(
         "provisioners.instances",
         "GET",
@@ -423,6 +438,18 @@ mod tests {
         assert_eq!(role(HOST, "sessions.attach"), Role::Operate);
         assert_eq!(role(SERVE, "hosts.save"), Role::Admin);
         assert_eq!(role(SERVE, "hosts.act"), Role::View);
+        assert_eq!(role(SERVE, "provisioners.get"), Role::View);
+        assert_eq!(role(SERVE, "provisioners.act"), Role::View);
+        assert_eq!(role(SERVE, "provisioners.instances"), Role::Admin);
+        let (op, args) = recognise(
+            SERVE,
+            Kind::Call,
+            "POST",
+            "/v1/provisioners/docker/container/actions/prune",
+        )
+        .unwrap();
+        assert_eq!(op.name, "provisioners.act");
+        assert_eq!(args[2], ("action", "prune".to_owned()));
         assert_eq!(role(SERVE, "plugins.upload"), Role::Admin);
         assert_eq!(role(SERVE, "kv.set"), Role::Operate);
         assert!(Role::View < Role::Operate && Role::Operate < Role::Admin);

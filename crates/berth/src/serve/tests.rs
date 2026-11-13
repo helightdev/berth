@@ -729,6 +729,7 @@ async fn a_hosts_actions_are_its_tasks_and_berths_own() {
             "ask",
             "elevated",
             "apply",
+            "install-controller",
             "seed",
             "secrets",
             "trust-key",
@@ -741,7 +742,7 @@ async fn a_hosts_actions_are_its_tasks_and_berths_own() {
         (berth_api::Runs::Host, Role::Operate)
     );
     assert_eq!(status.steps[0].label, "Demo");
-    let secrets = &actions[6];
+    let secrets = &actions[7];
     assert_eq!(
         (secrets.label.as_str(), secrets.role),
         ("Send the secrets", Role::Admin)
@@ -1582,7 +1583,8 @@ async fn as_bearer(
 #[tokio::test(flavor = "multi_thread")]
 async fn an_access_token_gets_in_with_the_role_it_names() {
     let issuer = Issuer::new();
-    let (_dir, address) = trusting(&issuer, true).await;
+    let (dir, address) = trusting(&issuer, true).await;
+    write_fake_provisioner(dir.path());
     let with = |scope: &str| issuer.token(json!({"scope": scope}));
     let (viewer, operator, admin) = (
         with("openid berth:view"),
@@ -1676,9 +1678,30 @@ async fn an_access_token_gets_in_with_the_role_it_names() {
     let (status, said) = as_bearer(address, &viewer, "GET", "/v1/actions", Value::Null).await;
     assert_eq!((status, &said[0]["name"]), (200, &json!("rollout")));
     assert_eq!(said[0]["role"], "admin");
+    // A provisioner is looked at by anyone, and each of its actions has its own role.
+    for path in [
+        "/v1/provisioners",
+        "/v1/provisioners/fake/vm/actions",
+        "/v1/provisioners/fake/vm",
+    ] {
+        let (status, said) = as_bearer(address, &viewer, "GET", path, Value::Null).await;
+        assert_eq!(status, 200, "{path}: {said}");
+    }
+    for (token, action, wanted) in [
+        (&viewer, "prune", 403),
+        (&operator, "prune", 403),
+        (&viewer, "restart", 403),
+        // Let in, it cannot run yet: the provisioner's secret has no value.
+        (&operator, "restart", 501),
+        (&viewer, "images", 501),
+        (&admin, "prune", 501),
+    ] {
+        let path = format!("/v1/provisioners/fake/vm/actions/{action}");
+        let (status, said) = as_bearer(address, token, "POST", &path, Value::Null).await;
+        assert_eq!(status, wanted, "{action}: {said}");
+    }
     // Machines are created with the server's secrets: set-up too.
     for (method, path) in [
-        ("GET", "/v1/provisioners"),
         ("GET", "/v1/provisioners/fake/vm/instances"),
         ("POST", "/v1/hosts/a/instance"),
         ("GET", "/v1/hosts/a/instance"),
@@ -1801,7 +1824,6 @@ async fn set_up_can_be_closed_to_the_network() {
             403
         );
         for (method, path) in [
-            ("GET", "/v1/provisioners"),
             ("POST", "/v1/hosts/a/instance"),
             ("DELETE", "/v1/hosts/a/instance"),
             ("POST", "/v1/actions/rollout"),
@@ -2019,8 +2041,13 @@ fn quick() -> berth_core::provision::Options {
 
 /// The fake provisioner as a plugin of the server's own, and its folder.
 fn fake_provisioner(served: &Served) -> PathBuf {
+    write_fake_provisioner(served.dir.path())
+}
+
+/// The fake provisioner in the plugins of the server whose folder is `home`.
+fn write_fake_provisioner(home: &std::path::Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
-    let dir = served.dir.path().join("config/plugins/fake");
+    let dir = home.join("config/plugins/fake");
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::write(dir.join("bin/provision"), FAKE_PROVISIONER).unwrap();
     std::fs::set_permissions(
@@ -2031,9 +2058,17 @@ fn fake_provisioner(served: &Served) -> PathBuf {
     std::fs::write(
         dir.join("package.json"),
         r#"{"name": "berth-plugin-fake", "berth": {"provisioners": [
-            {"id": "vm", "label": "Fake VM", "command": "bin/provision", "setup": "apply",
-             "verbs": ["start", "list"], "secrets": ["api_token"],
-             "arguments": [{"name": "server", "required": true}, {"name": "cpus", "default": "4"}]}]}}"#,
+            {"id": "vm", "label": "Fake VM", "command": "bin/provision", "protocol": 2,
+             "verbs": ["list"], "secrets": ["api_token"],
+             "arguments": [{"name": "server", "required": true}],
+             "kinds": [{"id": "machine", "setup": "apply", "verbs": ["start"],
+                        "arguments": [{"name": "cpus", "default": "4"}]}],
+             "actions": [
+               {"name": "images", "label": "Images", "changes": false},
+               {"name": "prune", "label": "Prune", "confirm": "Prune?",
+                "arguments": [{"name": "password", "secret": true}]},
+               {"name": "restart", "role": "operate"}]},
+            {"id": "old", "command": "bin/provision", "setup": "apply"}]}}"#,
     )
     .unwrap();
     dir
@@ -2059,6 +2094,254 @@ async fn job_ended(socket: &std::path::Path, id: &str) -> (String, Value) {
             other => panic!("the job's stream ended after {output:?}: {other:?}"),
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
+    let served = served_with(quick).await;
+    let fake = fake_provisioner(&served);
+    let mut client = served.client().await;
+    let client = &mut client;
+    served.state.paths.prepare().unwrap();
+    let message = |said: &Value| said["error"]["message"].as_str().unwrap_or("").to_owned();
+
+    // Listed with why it cannot be used, and one of the first protocol refused.
+    let (_, listed) = send(client, "GET", "/v1/provisioners", Value::Null).await;
+    let find = |id: &str| {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|known| known["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert!(
+        find("fake/vm")["problem"]
+            .as_str()
+            .unwrap()
+            .contains("api_token")
+    );
+    assert!(
+        find("fake/old")["problem"]
+            .as_str()
+            .unwrap()
+            .contains("version 1")
+    );
+    assert_eq!(find("fake/vm")["own"], json!(["server"]));
+    assert_eq!(find("fake/vm")["kinds"][0]["id"], "machine");
+    assert_eq!(find("fake/vm")["actions"][0]["name"], "images");
+    let (status, page) = send(client, "GET", "/v1/provisioners/fake/vm", Value::Null).await;
+    assert_eq!(
+        (status, &page["state"]),
+        (200, &json!("unusable")),
+        "{page}"
+    );
+    assert_eq!(
+        send(client, "GET", "/v1/provisioners/fake/none", Value::Null)
+            .await
+            .0,
+        404
+    );
+    send(
+        client,
+        "PUT",
+        "/v1/secrets/api_token",
+        json!({"value": "tok-s3cret"}),
+    )
+    .await;
+
+    // Its settings are an action of berth's, a job like any that changes something.
+    let (status, actions) = send(
+        client,
+        "GET",
+        "/v1/provisioners/fake/vm/actions",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{actions}");
+    let names: Vec<&str> = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|action| action["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["images", "prune", "restart", "settings"]);
+    assert_eq!(actions[0]["arguments"][0]["name"], "server");
+    let (status, said) = send(
+        client,
+        "POST",
+        "/v1/provisioners/fake/vm/actions/dance",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 404, "{said}");
+    assert!(
+        message(&said).contains("Its actions: images, prune"),
+        "{said}"
+    );
+    let (status, said) = send(
+        client,
+        "POST",
+        "/v1/provisioners/fake/vm/actions/images",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 400, "{said}");
+    assert!(message(&said).contains("server=VALUE"), "{said}");
+    let settings = json!({"arguments": {"server": "https://192.0.2.10:8443"}, "token": "set-1"});
+    let (status, acted) = send(
+        client,
+        "POST",
+        "/v1/provisioners/fake/vm/actions/settings",
+        settings.clone(),
+    )
+    .await;
+    assert_eq!(status, 202, "{acted}");
+    assert_eq!(
+        (&acted["job"]["subject"], &acted["job"]["action"]),
+        (&json!("provisioner:fake/vm"), &json!("settings"))
+    );
+    let (output, code) = job_ended(&served.socket, acted["job"]["id"].as_str().unwrap()).await;
+    assert_eq!(code, 0, "{output}");
+    assert!(
+        output.contains("fake/vm uses server=https://192.0.2.10:8443"),
+        "{output}"
+    );
+    // The same token again is the same job.
+    let (_, again) = send(
+        client,
+        "POST",
+        "/v1/provisioners/fake/vm/actions/settings",
+        settings,
+    )
+    .await;
+    assert_eq!(again["job"]["id"], acted["job"]["id"]);
+
+    // An action that only reads answers at once.
+    std::fs::write(
+        fake.join("answer.act"),
+        r#"{"message": "1 image", "details": [{"label": "ubuntu", "value": "80 MB"}]}"#,
+    )
+    .unwrap();
+    let (status, acted) = send(
+        client,
+        "POST",
+        "/v1/provisioners/fake/vm/actions/images",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{acted}");
+    assert_eq!(acted["result"]["message"], "1 image");
+    assert_eq!(acted["result"]["details"][0]["value"], "80 MB");
+    assert!(acted.get("job").is_none());
+    // One that changes something is a job, with its secret masked.
+    std::fs::write(fake.join("say.act"), "using hunter2-pass\n").unwrap();
+    let (status, acted) = send(
+        client,
+        "POST",
+        "/v1/provisioners/fake/vm/actions/prune",
+        json!({"arguments": {"password": "hunter2-pass"}}),
+    )
+    .await;
+    assert_eq!(status, 202, "{acted}");
+    let (output, code) = job_ended(&served.socket, acted["job"]["id"].as_str().unwrap()).await;
+    assert_eq!(code, 0, "{output}");
+    assert!(
+        output.contains("using [secret]") && !output.contains("hunter2"),
+        "{output}"
+    );
+    assert!(
+        output.contains("✓ 1 image") && output.contains("ubuntu  80 MB"),
+        "{output}"
+    );
+    let (_, job) = send(
+        client,
+        "GET",
+        &format!("/v1/jobs/{}", acted["job"]["id"].as_str().unwrap()),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(job["subject"], "provisioner:fake/vm");
+    // One that fails says why, in the job or as the answer.
+    std::fs::write(fake.join("code.act"), "1").unwrap();
+    std::fs::write(fake.join("say.act"), "engine gone\n").unwrap();
+    let (status, said) = send(
+        client,
+        "POST",
+        "/v1/provisioners/fake/vm/actions/images",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 502, "{said}");
+    assert!(message(&said).contains("engine gone"), "{said}");
+    // Two changes to one provisioner do not overlap.
+    let held = berth_core::runner::lock(
+        &served.state.paths,
+        &berth_core::runner::Subject::Provisioner("fake/vm".into()),
+        "prune",
+    )
+    .unwrap();
+    let (status, said) = send(
+        client,
+        "POST",
+        "/v1/provisioners/fake/vm/actions/prune",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 409, "{said}");
+    drop(held);
+    std::fs::remove_file(fake.join("code.act")).unwrap();
+
+    // The page: what it says of itself, and the machines berth made with it.
+    std::fs::write(
+        fake.join("answer.status"),
+        r#"{"message": "It answers", "details": [{"label": "Version", "value": "2"}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        fake.join("answer.list"),
+        r#"{"resources": [{"id": "vm-7", "kind": "machine", "name": "attic", "state": "running"}]}"#,
+    )
+    .unwrap();
+    let (status, page) = send(client, "GET", "/v1/provisioners/fake/vm", Value::Null).await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(
+        (&page["state"], &page["message"]),
+        (&json!("ready"), &json!("It answers"))
+    );
+    assert_eq!(
+        page["provisioner"]["settings"]["server"],
+        "https://192.0.2.10:8443"
+    );
+    assert_eq!(page["machines"][0]["host"], "attic");
+    assert_eq!(page["machines"][0]["recorded"], false);
+    // Also over the portal.
+    let portal = berth_api::portal::Portal::over(
+        client::websocket_unix(&served.socket, "/v1/portal")
+            .await
+            .unwrap(),
+    );
+    let acted = portal
+        .call(
+            "provisioners.act",
+            None,
+            json!({"plugin": "fake", "id": "vm", "action": "images"}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(acted["result"]["message"], "1 image");
+    let got = portal
+        .call(
+            "provisioners.get",
+            None,
+            json!({"plugin": "fake", "id": "vm"}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(got["state"], "ready");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2220,7 +2503,7 @@ async fn machines_are_created_and_deleted_through_the_api() {
     // The machines it has, as it lists them, also over the portal.
     std::fs::write(
         fake.join("answer.list"),
-        r#"{"instances": [{"id": "vm-1", "host": "studio", "state": "running"}]}"#,
+        r#"{"resources": [{"id": "vm-1", "kind": "machine", "name": "studio", "state": "running"}]}"#,
     )
     .unwrap();
     let path = "/v1/provisioners/fake/vm/instances?server=https%3A%2F%2F192.0.2.10%3A8443";
@@ -2748,4 +3031,137 @@ async fn first_contact_and_keys_are_actions_of_the_server() {
     assert!(output.contains("Replacing the key berth"), "{output}");
     let (_, again) = send(client, "POST", "/v1/actions/rotate-key", asked).await;
     assert_eq!(again["job"]["id"], json!(id));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_added_by_its_address_has_a_level_and_actions_to_match() {
+    let served = served().await;
+    let mut client = served.client().await;
+    let client = &mut client;
+    // Its level and how it is reached are all a host below a workstation needs.
+    let reachable =
+        json!({"level": "reachable", "access": {"address": "192.0.2.8", "user": "ops"}});
+    let (status, said) = send(client, "PUT", "/v1/hosts/dock/profile", reachable).await;
+    assert_eq!(status, 200, "{said}");
+    for (refused, why) in [
+        (
+            json!({"level": "server", "access": {"address": "192.0.2.9"}}),
+            "level",
+        ),
+        (json!({"level": "controller"}), "access.address"),
+        (json!({"access": {"address": "192.0.2.9"}}), "builder"),
+    ] {
+        let (status, said) = send(client, "PUT", "/v1/hosts/pier/profile", refused).await;
+        assert_eq!(status, 400, "{said}");
+        assert!(
+            said["error"]["message"].as_str().unwrap().contains(why),
+            "{said}"
+        );
+    }
+    let (_, dock) = send(client, "GET", "/v1/hosts/dock", Value::Null).await;
+    assert_eq!(dock["level"], "reachable", "{dock}");
+
+    // berth's own actions say what the level allows, and how to raise it.
+    let (_, actions) = send(client, "GET", "/v1/hosts/dock/actions", Value::Null).await;
+    let find = |name: &str| {
+        actions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|action| action["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {name} in {actions}"))
+    };
+    let install = find("install-controller");
+    assert_eq!(
+        (&install["available"], &install["label"]),
+        (&json!(true), &json!("Install the controller"))
+    );
+    for (name, why) in [
+        ("apply", "not a workstation"),
+        ("seed", "not a workstation"),
+        ("secrets", "berth host install dock"),
+    ] {
+        let action = find(name);
+        assert_eq!(action["available"], false, "{action}");
+        assert!(action["why"].as_str().unwrap().contains(why), "{action}");
+    }
+    // Asked anyway, it is refused with the reason, before any job.
+    let (status, said) = send(client, "POST", "/v1/hosts/dock/actions/apply", Value::Null).await;
+    assert_eq!(
+        (status, &said["error"]["code"]),
+        (501, &json!("not_available"))
+    );
+    assert!(
+        said["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Set its level to workstation")
+    );
+    let (status, _) = send(client, "POST", "/v1/hosts/dock/actions/seed", Value::Null).await;
+    assert_eq!(status, 501);
+
+    // A roll-out leaves it, and says so.
+    let (status, acted) = send(client, "POST", "/v1/actions/rollout", Value::Null).await;
+    assert_eq!(status, 202, "{acted}");
+    let id = acted["job"]["id"].as_str().unwrap().to_owned();
+    let (output, code) = job_ended(&served.socket, &id).await;
+    assert_eq!(code, 0, "{output}");
+    assert!(
+        output.contains("Skipped 1 host that is not a workstation: dock"),
+        "{output}"
+    );
+
+    // A controller host is offered an update of its controller, a
+    // workstation none, as applying installs it.
+    let mut profile = said_profile(client, "dock").await;
+    profile["level"] = json!("controller");
+    assert_eq!(
+        send(client, "PUT", "/v1/hosts/dock/profile", profile.clone())
+            .await
+            .0,
+        200
+    );
+    let (_, actions) = send(client, "GET", "/v1/hosts/dock/actions", Value::Null).await;
+    let install = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["name"] == "install-controller")
+        .cloned()
+        .unwrap();
+    assert_eq!(install["label"], "Update the controller");
+    profile.as_object_mut().unwrap().remove("level");
+    profile["builder"] = json!({});
+    assert_eq!(
+        send(client, "PUT", "/v1/hosts/dock/profile", profile)
+            .await
+            .0,
+        200
+    );
+    let (status, said) = send(
+        client,
+        "POST",
+        "/v1/hosts/dock/actions/install-controller",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 501, "{said}");
+    assert!(
+        said["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("berth apply dock")
+    );
+}
+
+async fn said_profile(client: &mut Client, name: &str) -> Value {
+    send(
+        client,
+        "GET",
+        &format!("/v1/hosts/{name}/profile"),
+        Value::Null,
+    )
+    .await
+    .1
 }

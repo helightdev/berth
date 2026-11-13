@@ -1,12 +1,13 @@
 //! The tabs of the home screen that set the server up: its settings, its
-//! registries, its secrets and its plugins. What they show is what the server
-//! last said; what they change goes to the server.
+//! registries, its secrets, its plugins and its provisioners. What they show
+//! is what the server last said; what they change goes to the server.
 
 use crate::admin::{Admin, Data};
 use crate::browser::Browser;
 use berth_tui::berth_key;
 use berth_tui::fields::Kind;
 use berth_tui::plugins::{self, Asked, Place};
+use berth_tui::provisioners;
 use berth_tui::screen;
 use berth_tui::setup::{valid_name, value_line};
 use berth_tui::{Code, Key, event, theme};
@@ -225,6 +226,7 @@ pub struct Home {
     /// A new or renamed registry, to select once the rows have it.
     go_to: Option<String>,
     plugins: plugins::Tab,
+    pub provisioners: provisioners::Tab,
     /// The server, and the link that opens this page signed in, when there
     /// is one to give: a row of the Settings tab.
     pub connect: Option<(String, String)>,
@@ -247,6 +249,7 @@ pub const SETTINGS: usize = 0;
 pub const REGISTRIES: usize = 1;
 pub const SECRETS: usize = 2;
 pub const PLUGINS: usize = 3;
+pub const PROVISIONERS: usize = 4;
 
 fn cycle(all: &[&str], current: &str) -> String {
     let index = all
@@ -260,6 +263,7 @@ impl Home {
     pub fn select(&mut self, tab: usize, row: usize) {
         match tab {
             PLUGINS => self.plugins.selected = row,
+            PROVISIONERS => self.provisioners.select_row(row),
             tab => self.selected[tab] = row,
         }
     }
@@ -267,7 +271,21 @@ impl Home {
     pub fn selected(&self, tab: usize) -> usize {
         match tab {
             PLUGINS => self.plugins.selected,
+            PROVISIONERS => self.provisioners.selected_row(),
             tab => self.selected[tab],
+        }
+    }
+
+    /// Whether the tab takes this key itself rather than the home screen:
+    /// every key while a dialog is open, and Esc on a provisioner's page,
+    /// which goes back to the list.
+    pub fn takes(&self, tab: usize, key: &Key) -> bool {
+        match tab {
+            PROVISIONERS => {
+                self.provisioners.typing()
+                    || (self.provisioners.page.is_some() && key.code == Code::Esc)
+            }
+            _ => false,
         }
     }
 
@@ -277,6 +295,7 @@ impl Home {
         self.naming = None;
         self.armed = false;
         self.plugins.leave();
+        self.provisioners.leave();
     }
 
     pub fn shown(&mut self, tab: usize, data: &Data) -> Shown {
@@ -284,6 +303,16 @@ impl Home {
             SETTINGS => self.settings_shown(data),
             REGISTRIES => self.registries_shown(data),
             PLUGINS => self.plugins_shown(data),
+            PROVISIONERS => {
+                let shown = self.provisioners.shown(&data.provisioners, "the server");
+                Shown {
+                    rows: shown.rows,
+                    selected: shown.selected,
+                    editor: None,
+                    help: shown.help,
+                    keys: shown.keys,
+                }
+            }
             _ => self.secrets_shown(data),
         }
     }
@@ -294,8 +323,28 @@ impl Home {
             SETTINGS => self.settings_key(key, admin),
             REGISTRIES => self.registries_key(key, admin),
             PLUGINS => self.plugins_key(key, admin),
+            PROVISIONERS => self.provisioners_key(key, admin),
             _ => self.secrets_key(key, admin),
         }
+    }
+
+    // ── Provisioners ────────────────────────────────────────────────────────
+
+    fn provisioners_key(&mut self, key: Key, admin: &Admin) -> Option<String> {
+        let listed = admin.data.borrow().provisioners.clone();
+        match self.provisioners.key(key, &listed, &mut Browser) {
+            provisioners::Asked::Nothing(said) => return said,
+            provisioners::Asked::List => admin.provisioners(),
+            provisioners::Asked::Open(name) => admin.provisioner(&name),
+            // The panel takes its size from the page once it is shown.
+            provisioners::Asked::Run {
+                provisioner,
+                action,
+                values,
+            } => admin.provisioner_act(&provisioner, &action, &values, (24, 80)),
+            provisioners::Asked::Other => {}
+        }
+        None
     }
 
     // ── Settings ────────────────────────────────────────────────────────────

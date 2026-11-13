@@ -251,6 +251,7 @@ impl Server {
                         "reachable": host["reachable"] == true,
                         "error": host["error"],
                         "version": host["version"],
+                        "rotating": host["rotating"] == true,
                     }),
                 );
             }
@@ -338,6 +339,7 @@ impl Server {
                         reachable: host["reachable"] == true,
                         error: text("error"),
                         version: text("version"),
+                        rotating: host["rotating"] == true,
                     },
                 )
             })
@@ -430,6 +432,8 @@ pub struct Reach {
     pub error: Option<String>,
     /// The version of its berthd.
     pub version: Option<String>,
+    /// A rotation of a key it logs in with has not reached it yet.
+    pub rotating: bool,
 }
 
 /// What a mirror kept of the server beside the profiles.

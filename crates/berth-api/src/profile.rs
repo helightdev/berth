@@ -240,6 +240,73 @@ impl Access {
     }
 }
 
+/// The level a profile means its host to have: `level`, a workstation when
+/// it does not say, so profiles from before levels keep their meaning.
+pub fn level(config: &Value) -> crate::HostLevel {
+    config["level"]
+        .as_str()
+        .and_then(crate::HostLevel::parse)
+        .unwrap_or_default()
+}
+
+/// Set the level a profile means its host to have. A workstation is left
+/// unsaid, as profiles from before levels are.
+pub fn set_level(config: &mut Value, level: crate::HostLevel) {
+    if !config.is_object() {
+        *config = json!({});
+    }
+    match level {
+        crate::HostLevel::Workstation => {
+            if let Some(profile) = config.as_object_mut() {
+                profile.remove("level");
+            }
+        }
+        other => config["level"] = json!(other.name()),
+    }
+}
+
+/// The profile of a host berth only reaches or only controls: its level and
+/// how it is reached, nothing of a workstation.
+pub fn minimal(level: crate::HostLevel, access: &Access) -> Value {
+    let mut config = json!({});
+    set_level(&mut config, level);
+    access.write(&mut config);
+    config
+}
+
+/// What is wrong with a profile as a whole, in sentences: its level, its
+/// `access`, and for a workstation the `builder` its set-up keeps. A host
+/// of a lower level needs only to be reachable.
+pub fn problems(config: &Value) -> Vec<String> {
+    if !config.is_object() {
+        return vec!["A profile is an object".into()];
+    }
+    let mut problems = vec![];
+    let level = match &config["level"] {
+        Value::Null => Some(crate::HostLevel::Workstation),
+        Value::String(text) => crate::HostLevel::parse(text),
+        _ => None,
+    };
+    let Some(level) = level else {
+        return vec![format!(
+            "level is reachable, controller or workstation, not {}",
+            config["level"]
+        )];
+    };
+    problems.extend(Access::problems(config));
+    match level {
+        crate::HostLevel::Workstation if !config["builder"].is_object() => {
+            problems.push("A workstation's profile has a builder object".into())
+        }
+        crate::HostLevel::Workstation => {}
+        _ if !Access::of(config).reachable() => problems.push(format!(
+            "A {level} host needs access.address, where berth reaches it"
+        )),
+        _ => {}
+    }
+    problems
+}
+
 /// What a profile of berth 0.4 said under `builder` of how it is reached,
 /// taken out of there by [`take_builder_access`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -510,6 +577,39 @@ mod tests {
             written["access"],
             json!({"address": "studio", "port": "2222", "auth": "berth"})
         );
+    }
+
+    #[test]
+    fn a_profile_without_a_level_is_a_workstation() {
+        use crate::HostLevel;
+        assert_eq!(level(&json!({"builder": {}})), HostLevel::Workstation);
+        assert_eq!(
+            level(&json!({"level": "controller"})),
+            HostLevel::Controller
+        );
+        // One berth does not know reads as the default, and is named a problem.
+        assert_eq!(level(&json!({"level": "server"})), HostLevel::Workstation);
+        assert!(problems(&json!({"level": "server"}))[0].contains("not \"server\""));
+        let access = Access {
+            address: "192.0.2.10".into(),
+            user: "ops".into(),
+            ..Access::default()
+        };
+        let reachable = minimal(HostLevel::Reachable, &access);
+        assert_eq!(
+            reachable,
+            json!({"level": "reachable", "access": {"address": "192.0.2.10", "user": "ops", "auth": "berth"}})
+        );
+        assert!(problems(&reachable).is_empty());
+        // Only a workstation needs the set-up's part; a lower level needs an address.
+        assert_eq!(
+            problems(&json!({"access": {"address": "studio"}})),
+            ["A workstation's profile has a builder object"]
+        );
+        assert!(problems(&json!({"level": "controller"}))[0].contains("access.address"));
+        let mut changed = reachable.clone();
+        set_level(&mut changed, HostLevel::Workstation);
+        assert!(changed.get("level").is_none());
     }
 
     #[test]

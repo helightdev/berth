@@ -107,8 +107,10 @@ pub fn playbook(source: &std::path::Path) -> Command {
 
 /// The Ansible run that applies `host`'s profile to it over SSH. With a
 /// password it becomes root with it, taken from a private file; without one a
-/// host that asks for a password is asked for on the terminal.
+/// host that asks for a password is asked for on the terminal. Only a
+/// workstation is applied: every way to apply comes through here.
 pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Result<Prepared> {
+    crate::level::guard(host, crate::level::Capability::Apply)?;
     let source = paths.source()?;
     let plugins = plugins::load(&[source.join("plugins"), paths.config_dir.join("plugins")]);
     let dirs = plugin_dirs(&plugins);
@@ -121,6 +123,50 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
         "berth": berth_api::VERSION,
         "plugins": plugins::records(&plugins),
     });
+    let mut prepared = run(paths, host, layout::PLAYBOOK, vars, become_password)?;
+    prepared.command.env("BERTH_PLUGINS", dirs.to_string());
+    if !own.is_empty() {
+        prepared.command.env("BERTH_SSH_PUBLIC_KEY", own.join("\n"));
+    }
+    Ok(prepared)
+}
+
+/// The Ansible run that puts berth's controller alone on a host below a
+/// workstation: berthd and box, what they read, and the record of what was
+/// installed. The SSH user is the account sessions run as.
+pub fn prepare_controller(
+    paths: &Paths,
+    host: &Host,
+    become_password: Option<&str>,
+) -> Result<Prepared> {
+    crate::level::guard(host, crate::level::Capability::InstallController)?;
+    let mut vars = json!({
+        "devbox_level": "controller",
+        "devbox_berth_applied": {"berth": berth_api::VERSION, "plugins": []},
+    });
+    let user = host.access().user;
+    if !user.is_empty() {
+        vars["devbox_controller_user"] = json!(user);
+    }
+    run(
+        paths,
+        host,
+        layout::CONTROLLER_PLAYBOOK,
+        vars,
+        become_password,
+    )
+}
+
+/// The run of `playbook` against `host` with these variables, the passwords
+/// it needs in them.
+fn run(
+    paths: &Paths,
+    host: &Host,
+    playbook_path: &str,
+    mut vars: Value,
+    become_password: Option<&str>,
+) -> Result<Prepared> {
+    let source = paths.source()?;
     if let Some(password) = become_password {
         vars["ansible_become_password"] = json!(password);
     }
@@ -147,7 +193,7 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
     let mut command = playbook(&source);
     command
         .current_dir(&source)
-        .args([layout::PLAYBOOK, "--become", "-e"])
+        .args([playbook_path, "--become", "-e"])
         .arg(format!("@{}", extra.path().display()))
         .arg("-i")
         .arg(inventory.path());
@@ -161,14 +207,103 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
     // other program, such as the desktop's dialog, is ever asked for one.
     command.env("SSH_ASKPASS_REQUIRE", "never");
     command.env("DEVBOX_BUILD_DIR", paths.build_dir());
-    command.env("BERTH_PLUGINS", dirs.to_string());
-    if !own.is_empty() {
-        command.env("BERTH_SSH_PUBLIC_KEY", own.join("\n"));
-    }
     Ok(Prepared {
         command,
         files: vec![extra, inventory],
     })
+}
+
+/// How long a controller just installed has to answer.
+const CONTROLLER_PATIENCE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Install berth's controller alone on a host from where berth runs, its
+/// output to `out`, and wait for it to answer: whether all went well. A
+/// reachable host becomes a controller in its profile once the controller
+/// is there.
+pub fn install_controller(
+    paths: &Paths,
+    host: &Host,
+    become_password: Option<&str>,
+    out: &mut crate::runner::Output,
+) -> bool {
+    let fail = |out: &mut crate::runner::Output, error: &dyn std::fmt::Display| {
+        let _ = writeln!(out, "✗ {error}");
+        false
+    };
+    let prepared = match prepare_controller(paths, host, become_password) {
+        Ok(prepared) => prepared,
+        Err(error) => return fail(out, &error),
+    };
+    let program = crate::runner::Program {
+        command: prepared.command,
+        input: None,
+        files: prepared.files,
+    };
+    match crate::runner::run_program(program, out) {
+        Some(0) => {}
+        Some(code) => {
+            return fail(
+                out,
+                &format!("Installing the controller failed (ansible-playbook ended with {code})"),
+            );
+        }
+        None => return fail(out, &"Installing the controller was ended by a signal"),
+    }
+    if crate::level::of(&host.config) != crate::level::Level::Controller {
+        let mut config = host.config.clone();
+        berth_api::profile::set_level(&mut config, crate::level::Level::Controller);
+        if let Err(error) = host.place.save(paths, &config) {
+            return fail(
+                out,
+                &format!("The controller is installed, but the profile was not saved: {error}"),
+            );
+        }
+        let _ = writeln!(out, "✓ {} is a controller host now", host.name);
+    }
+    match answers(paths, host, become_password) {
+        Ok(version) => {
+            let _ = writeln!(
+                out,
+                "✓ berth's controller answers on {}: berthd {version}",
+                host.name
+            );
+            true
+        }
+        Err(error) => fail(
+            out,
+            &format!(
+                "berthd is installed on {}, but it does not answer ({error}). On a host without systemd something there has to start /usr/local/bin/berthd",
+                host.name
+            ),
+        ),
+    }
+}
+
+/// The version of the host's berthd, asked until it answers or the
+/// patience is spent.
+fn answers(paths: &Paths, host: &Host, password: Option<&str>) -> Result<String> {
+    let link = crate::link::Link::new(host.link(paths, password)?);
+    let runtime = crate::link::runtime()?;
+    let started = std::time::Instant::now();
+    loop {
+        let asked = runtime.block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                link.get::<berth_api::Version>("/v1/version"),
+            )
+            .await
+        });
+        match asked {
+            Ok(Ok(version)) => return Ok(version.version),
+            Ok(Err(error)) if started.elapsed() >= CONTROLLER_PATIENCE => {
+                return Err(error.to_string().into());
+            }
+            Err(_) if started.elapsed() >= CONTROLLER_PATIENCE => {
+                return Err("no answer in time".into());
+            }
+            _ => std::thread::sleep(std::time::Duration::from_secs(1)),
+        }
+    }
 }
 
 #[cfg(test)]

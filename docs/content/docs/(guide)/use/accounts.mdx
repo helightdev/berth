@@ -110,7 +110,7 @@ The SSH host key of studio is not the one berth recorded: the machine was set up
 
 1. berth makes a new key and stores it beside the current one as pending.
 2. On each host that takes the key, it logs in and adds the new key. Once a login with the new key works, it removes the old one.
-3. A host that does not answer stays pending. berth offers it both keys until then, and an apply gives the operator both.
+3. A host that does not answer stays pending. berth offers it both keys until then, and an apply gives the operator both. The Hosts tab marks it, in the terminal UI and on the browser page.
 4. When no host is pending, the new key replaces the old one, which is deleted.
 
 Running it again goes on where it stopped. With a berth server set, the rotation runs as a job on the server, and its output is shown as it comes.

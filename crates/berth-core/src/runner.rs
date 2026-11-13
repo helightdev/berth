@@ -357,7 +357,9 @@ fn execute(work: Work, out: &mut Output) -> Option<i32> {
     }
 }
 
-fn run_program(program: Program, out: &mut Output) -> Option<i32> {
+/// Run a program to its end with its output to `out`: its exit code. A
+/// function of berth that runs one as a step uses this too.
+pub fn run_program(program: Program, out: &mut Output) -> Option<i32> {
     let Program {
         mut command,
         input,

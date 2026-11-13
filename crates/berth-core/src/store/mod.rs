@@ -25,6 +25,8 @@ pub mod kind {
     pub const PROFILE: &str = "profile";
     pub const CREDENTIALS: &str = "credentials";
     pub const INSTANCE: &str = "instance";
+    /// The values of a provisioner's own arguments, by `PLUGIN/ID`.
+    pub const PROVISIONER: &str = "provisioner";
     pub const SETTING: &str = "setting";
     pub const REGISTRY: &str = "registry";
     pub const SECRET: &str = "secret";

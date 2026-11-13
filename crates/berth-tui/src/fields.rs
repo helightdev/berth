@@ -8,6 +8,8 @@ pub const DISK_TYPES: &[&str] = &["any", "ssd", "hdd"];
 /// The ways to log in that are not a key of the ring; `key:NAME` is offered
 /// for each of those.
 pub const LOGINS: &[&str] = &["berth", "password", "ssh"];
+/// The levels a host can be meant to have, the whole profile first.
+pub const LEVELS: &[&str] = &["workstation", "controller", "reachable"];
 
 /// The pages of a host: its overview (`Manage`) and the tabs of the set-up
 /// flow. Each tab depends only on the ones before it.
@@ -69,6 +71,11 @@ pub const TASKS: &[(&str, &str, &str)] = &[
         "address",
         "Change the SSH address",
         "Edit the address berth reaches this host at, for a host that has a new one, and try again once it is saved.",
+    ),
+    (
+        "install-controller",
+        "Install the controller",
+        "Put berthd and box on the host and start berth's controller, so that sessions, tasks and files work there, without the rest of a workstation. The host's level becomes controller. Continues in the terminal. From the command line: `berth host install HOST`.",
     ),
     (
         "ssh",
@@ -238,6 +245,7 @@ pub enum Field {
     SshUser,
     SshPort,
     Login,
+    Level,
 }
 
 impl Field {
@@ -550,6 +558,12 @@ impl Field {
                 "/access/auth",
                 Choice(LOGINS),
                 "How berth logs in. berth: the installation's own key, which hosts it sets up take. key:NAME: another key of berth's key ring (the Settings tab of the home screen lists them). password: a password, kept as the secret ssh/HOST or asked for. ssh: your own SSH configuration and agent, with berth's key offered after them. A host that does not take its key yet gets it with: berth key trust HOST.",
+            ),
+            Level => (
+                "Level",
+                "/level",
+                Choice(LEVELS),
+                "How much of berth the host gets. workstation: the whole profile, with the desktop, the agents and plugins. controller: berthd and box alone, for sessions, tasks and files on a machine that stays as it is. reachable: nothing is installed; berth logs in over SSH. A lower level can be raised later: install the controller, or set workstation and apply.",
             ),
             UsbDevice => (
                 "Then write to USB drive",

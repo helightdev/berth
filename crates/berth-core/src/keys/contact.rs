@@ -235,16 +235,45 @@ fn rotated(store: &Store, name: &str, old: &str, new: &str) -> Result<Vec<(Place
             continue;
         };
         let record = known::Record::load(store, &place)?;
-        let trusts = |fingerprint: &str| record.trusts.iter().any(|known| known == fingerprint);
-        let access = Access::of(&config);
-        let uses = access.auth.key() == Some(name);
-        let ssh = access.link.is_none() && !access.address.is_empty();
-        let wanted = trusts(old) || (uses && ssh && !trusts(new));
-        if wanted {
+        if wanted(&record, &config, name, old, new) {
             hosts.push((place, config));
         }
     }
     Ok(hosts)
+}
+
+/// Whether a rotation of `name` from `old` to `new` has a host still to do:
+/// one known to take the old key, or one that logs in with the key over
+/// SSH and is not known to take the new one.
+fn wanted(record: &known::Record, config: &Value, name: &str, old: &str, new: &str) -> bool {
+    let trusts = |fingerprint: &str| record.trusts.iter().any(|known| known == fingerprint);
+    let access = Access::of(config);
+    let uses = access.auth.key() == Some(name);
+    let ssh = access.link.is_none() && !access.address.is_empty();
+    trusts(old) || (uses && ssh && !trusts(new))
+}
+
+/// The keys whose rotation has not reached this host yet, for the Hosts
+/// tab to mark it: it is offered both keys until it is done.
+pub fn waiting(store: &Store, place: &Place, config: &Value) -> Result<Vec<String>> {
+    let mut keys = vec![];
+    for name in ring::names(store)? {
+        let Some(next) = ring::read(store, &name, true)? else {
+            continue;
+        };
+        let Some(old) = ring::read(store, &name, false)? else {
+            continue;
+        };
+        let record = known::Record::load(store, place)?;
+        let (old, new) = (
+            ring::fingerprint(&old.public),
+            ring::fingerprint(&next.public),
+        );
+        if wanted(&record, config, &name, &old, &new) {
+            keys.push(name);
+        }
+    }
+    Ok(keys)
 }
 
 /// Replace a key of the ring on every host that takes it: a new key is made

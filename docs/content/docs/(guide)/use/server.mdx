@@ -213,7 +213,7 @@ With the role `admin` on the server, which its token has, berth sets the server 
 - A password generated on the set-up tabs is made and kept by the server. `berth credentials HOST` asks the server for it.
 - **Apply this configuration** and `berth apply HOST` run as a job on the server. Its output is shown as it comes.
 - `berth seed HOST` has the server render the cloud-init seed, and writes it here.
-- `berth provision HOST` and `berth instance HOST` use the server's provisioners and secrets, and create the machine from the server ([Machine from a provisioner](/docs/deploy/provisioners#with-a-berth-server)).
+- `berth provision HOST` and `berth instance HOST` use the server's provisioners and secrets, and create the machine from the server ([Provisioners](/docs/deploy/provisioners#with-a-berth-server)). `berth provisioner` shows the server's provisioners, and their actions run there.
 - A secret's value is sent to the server and kept only there. Here berth knows its name.
 - The `tailnet_` settings and the secret `tailnet_api_key` are the server's, which creates the [enrollment keys](/docs/use/access#automatic-enrollment-keys) for its hosts. Settings and `berth config` change them there.
 - A plugin is installed on the server, and its features show on the Features tab of the server's hosts. A `.tgz` or folder of yours is sent there first.

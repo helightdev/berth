@@ -5,6 +5,8 @@ mod key_command;
 mod keys;
 mod mirror;
 mod picker;
+mod provisioner_command;
+mod provisioner_tab;
 mod remote;
 mod serve;
 mod session;
@@ -29,6 +31,12 @@ Usage:
   berth                      choose a host, or create one
   berth HOST                 open a host (a saved name, or a path to a profile)
   berth list                 saved hosts
+  berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH]
+          [--level reachable|controller|workstation] [--no-contact]
+                             save a machine that exists already, by its address, and
+                             install berth's key there; it is reachable unless told
+  berth host install HOST    install berth's controller alone on a host below a
+                             workstation: sessions, tasks and files, no desktop
   berth iso HOST [--write /dev/sdX]
                              build the unattended installer; write it to a USB drive
   berth seed HOST            render the cloud-init seed
@@ -51,6 +59,14 @@ Usage:
                              the passwords berth generated for the host's accounts;
                              only to a terminal, unless --show
   berth provisioners         what can create machines, and what each asks for
+  berth provisioner          the provisioners, and whether each can be used here
+  berth provisioner PLUGIN/ID [NAME=VALUE…]
+                             how it is now, the machines berth made with it, and its
+                             actions; the values are of its own arguments, this once
+  berth provisioner PLUGIN/ID actions
+  berth provisioner PLUGIN/ID run ACTION [NAME=VALUE…] [--yes]
+                             run one of its actions, such as settings, which keeps
+                             where it is, or the plugin's own
   berth provisioners PLUGIN/ID [NAME=VALUE…]
                              the machines it has that berth created
   berth provision HOST PLUGIN/ID [NAME=VALUE…] [--yes]
@@ -233,6 +249,7 @@ fn opens_screen(args: &[&str]) -> bool {
         "secret",
         "plugins",
         "provisioners",
+        "provisioner",
         "inventory",
         "inbox",
         "kv",
@@ -253,6 +270,7 @@ fn loads_plugins(args: &[&str]) -> bool {
         "apply",
         "plugins",
         "provisioners",
+        "provisioner",
         "provision",
         "instance",
         "seed",
@@ -354,6 +372,8 @@ fn open(paths: &Paths, host: &str) -> Result<App> {
 
 /// Stop with the list of problems when the profile cannot run the action.
 fn require_ready(app: &App) -> Result<()> {
+    // A seed and an installer make a whole workstation.
+    berth_core::level::guard(&app.host_profile(), berth_core::level::Capability::Apply)?;
     let problems = app.problems();
     if problems.is_empty() {
         return Ok(());
@@ -610,6 +630,13 @@ fn run() -> Result<()> {
             }
             return Ok(());
         }
+        // A host's own subcommands start with secret or registry.
+        ["host", "add", name, address, ref rest @ ..]
+            if !["secret", "registry"].contains(&name) =>
+        {
+            return commands::add_host(&paths, name, address, rest);
+        }
+        ["host", "install", host] => return commands::install_controller(&paths, host),
         ["host", host, ref rest @ ..] => return host_command(&paths, host, rest),
         ["--version" | "-V" | "version"] => {
             println!("berth {}", berth_api::VERSION);
@@ -700,6 +727,7 @@ fn run() -> Result<()> {
         ["apply", host] => return commands::apply(&paths, host),
         ["remove", host] => return commands::remove(&paths, host),
         ["provisioners"] => return commands::provisioners(&paths),
+        ["provisioner", ref rest @ ..] => return provisioner_command::command(&paths, rest),
         ["provisioners", name, ref rest @ ..] => {
             return commands::provisioner_instances(&paths, name, rest);
         }

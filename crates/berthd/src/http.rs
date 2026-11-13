@@ -86,14 +86,23 @@ async fn version(AppState(state): AppState<Arc<State>>) -> Json<api::Version> {
     };
     // Written by the role at the end of an apply; read each time, as it
     // changes without a reload.
-    let applied = std::fs::read(state.config_dir.join("applied.json"))
+    let record: Option<serde_json::Value> = std::fs::read(state.config_dir.join("applied.json"))
         .ok()
         .and_then(|data| serde_json::from_slice(&data).ok());
+    let applied = record
+        .clone()
+        .and_then(|record| serde_json::from_value(record).ok());
+    // A record without a level is of a whole profile, as before levels.
+    let level = record.map(|record| match record["level"].as_str() {
+        Some(level) => api::HostLevel::parse(level).unwrap_or_default(),
+        None => api::HostLevel::Workstation,
+    });
     Json(api::Version {
         version: api::VERSION.into(),
         api: api::API,
         mode: mode.into(),
         applied,
+        level,
     })
 }
 

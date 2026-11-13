@@ -1052,6 +1052,14 @@ fn choose(app: &mut App, entry: Entry) -> Flow {
         Entry::Task("connect") => app.reconnect_host(),
         Entry::Task("address") => app.edit_address(),
         Entry::Task("apply") => return apply(app, false),
+        Entry::Task("install-controller") => {
+            let _ = app.save();
+            app.own_command = Some(
+                ["host", "install", &app.place.argument()]
+                    .map(str::to_owned)
+                    .to_vec(),
+            );
+        }
         Entry::Machine(pick) => app.machine_enter(pick),
         Entry::Save => {
             save(app);
@@ -1266,6 +1274,7 @@ enum HomeMode {
     Registries(RegistryView),
     Secrets(SecretView),
     Plugins(PluginView),
+    Provisioners(Box<crate::provisioner_tab::View>),
 }
 
 /// A clickable region of the home screen.
@@ -1630,10 +1639,11 @@ fn plugins_key(
         }
         Asked::Rollout(options) => view.roll_out(paths, options),
         Asked::Other => match key.code {
-            KeyCode::Char('1') | KeyCode::Tab | KeyCode::Esc => return Outcome::Tab(0),
+            KeyCode::Char('1') | KeyCode::Esc => return Outcome::Tab(0),
             KeyCode::Char('2') => return Outcome::Tab(1),
             KeyCode::Char('3') => return Outcome::Tab(2),
             KeyCode::Char('4') | KeyCode::BackTab => return Outcome::Tab(3),
+            KeyCode::Char('6') | KeyCode::Tab => return Outcome::Tab(5),
             KeyCode::Char('q') => return Outcome::Quit,
             _ => {}
         },
@@ -1736,6 +1746,7 @@ fn secrets_key(
         KeyCode::Char('2') => return Outcome::Tab(1),
         KeyCode::Char('3') | KeyCode::BackTab => return Outcome::Tab(2),
         KeyCode::Char('5') | KeyCode::Tab => return Outcome::Tab(4),
+        KeyCode::Char('6') => return Outcome::Tab(5),
         KeyCode::Char('q') => return Outcome::Quit,
         _ => {}
     }
@@ -1746,10 +1757,10 @@ fn secrets_key(
 /// count, so the screen is not stuck there. `here` is the tab's number.
 fn leave_tab(key: KeyEvent, here: usize) -> Outcome {
     match key.code {
-        KeyCode::Char(digit @ '1'..='5') => Outcome::Tab(digit as usize - '1' as usize),
+        KeyCode::Char(digit @ '1'..='6') => Outcome::Tab(digit as usize - '1' as usize),
         KeyCode::Esc => Outcome::Tab(0),
-        KeyCode::Tab => Outcome::Tab((here + 1) % 5),
-        KeyCode::BackTab => Outcome::Tab((here + 4) % 5),
+        KeyCode::Tab => Outcome::Tab((here + 1) % 6),
+        KeyCode::BackTab => Outcome::Tab((here + 5) % 6),
         KeyCode::Char('q') => Outcome::Quit,
         _ => Outcome::Stay,
     }
@@ -2041,6 +2052,7 @@ fn registries_key(
         KeyCode::Char('2') | KeyCode::BackTab => return Outcome::Tab(1),
         KeyCode::Char('4') | KeyCode::Tab => return Outcome::Tab(3),
         KeyCode::Char('5') => return Outcome::Tab(4),
+        KeyCode::Char('6') => return Outcome::Tab(5),
         KeyCode::Char('q') => return Outcome::Quit,
         _ => {}
     }
@@ -2054,6 +2066,7 @@ fn open_tab(home: &mut Home, tab: usize) {
         2 => HomeMode::Registries(RegistryView::default()),
         3 => HomeMode::Secrets(SecretView::default()),
         4 => HomeMode::Plugins(PluginView::default()),
+        5 => HomeMode::Provisioners(Default::default()),
         _ => HomeMode::Hosts,
     };
 }
@@ -2078,6 +2091,11 @@ fn host_help(home: &Home) -> String {
     let mut help = String::new();
     if let Some(note) = server_note(known) {
         help = format!("{note}\n\n");
+    }
+    if let Some((name, _)) = home.hosts.get(home.selected)
+        && known.hosts.get(name).is_some_and(|reach| reach.rotating)
+    {
+        help.push_str(&format!("A key rotation has not reached {name} yet: it is offered the old key and the new one until it has. Run the rotation again when it answers.\n\n"));
     }
     help.push_str(&match home.hosts.get(home.selected) {
         None => "● answers, ● does not answer, ○ not known yet: what the berth server found when it last asked.".to_owned(),
@@ -2119,6 +2137,8 @@ struct Home {
     asking: bool,
     /// `r` was pressed on the Hosts tab: the loop reloads, which needs the mirror.
     refresh: bool,
+    /// The hosts of this berth a key rotation has not reached yet.
+    rotating: Vec<String>,
 }
 
 /// The status line while a mirror is being made, if nothing else is said.
@@ -2177,8 +2197,37 @@ fn reload_hosts(home: &mut Home, paths: &Paths) {
         .and_then(|name| home.hosts.iter().position(|(known, _)| *known == name))
         .unwrap_or(home.selected.min(home.hosts.len()));
     home.known = known_of(paths);
+    home.rotating = rotating(paths);
     home.berth_key = None;
     home.served = None;
+}
+
+/// The hosts of this berth that a key rotation has not reached yet: they
+/// are offered both keys until it has. A server's hosts are the server's.
+fn rotating(paths: &Paths) -> Vec<String> {
+    if berth_core::server::Server::configured(paths).is_some() {
+        return vec![];
+    }
+    let Ok(store) = berth_core::store::shared(paths) else {
+        return vec![];
+    };
+    // Nothing to look at while no key is being replaced.
+    let pending = berth_core::keys::ring::names(&store).is_ok_and(|names| {
+        names.iter().any(|name| {
+            berth_core::keys::ring::read(&store, name, true).is_ok_and(|next| next.is_some())
+        })
+    });
+    if !pending {
+        return vec![];
+    }
+    berth_core::host::Host::all(paths)
+        .into_iter()
+        .filter(|host| {
+            berth_core::keys::contact::waiting(&store, &host.place, &host.config)
+                .is_ok_and(|keys| !keys.is_empty())
+        })
+        .map(|host| host.name)
+        .collect()
 }
 
 /// The keys of a key ring by name and public half, and the berth server
@@ -2393,6 +2442,7 @@ fn home_loop(
         known: None,
         asking: false,
         refresh: false,
+        rotating: rotating(paths),
     };
     let mut hits = vec![];
     let mut fade = Fade::default();
@@ -2407,6 +2457,10 @@ fn home_loop(
         if let HomeMode::Plugins(view) = &mut home.mode {
             view.load(paths);
             view.pump(&mut home.status);
+        }
+        if let HomeMode::Provisioners(view) = &mut home.mode {
+            view.load(paths);
+            view.pump(paths, &mut home.status);
         }
         // The water redraws many times a second. Each frame is applied at once,
         // so the text cursor is not seen travelling to the water and back.
@@ -2462,7 +2516,7 @@ fn home_editor(mode: &mut HomeMode) -> Option<&mut Input> {
         HomeMode::Registries(view) => view.editor.as_mut(),
         HomeMode::Secrets(view) => view.editor.as_mut(),
         HomeMode::Plugins(view) => view.editor.as_mut(),
-        HomeMode::Hosts => None,
+        HomeMode::Hosts | HomeMode::Provisioners(_) => None,
     }
 }
 
@@ -2488,6 +2542,7 @@ fn home_mouse(
                 HomeTarget::Tab(2) if matches!(home.mode, HomeMode::Registries(..)) => None,
                 HomeTarget::Tab(3) if matches!(home.mode, HomeMode::Secrets(..)) => None,
                 HomeTarget::Tab(4) if matches!(home.mode, HomeMode::Plugins(..)) => None,
+                HomeTarget::Tab(5) if matches!(home.mode, HomeMode::Provisioners(..)) => None,
                 HomeTarget::Tab(tab) => {
                     open_tab(home, tab);
                     None
@@ -2507,6 +2562,17 @@ fn home_mouse(
                         HomeMode::Plugins(view) => {
                             view.tab.selected = index;
                             view.editor = None;
+                        }
+                        // A click selects a row, and on the row selected chooses it.
+                        HomeMode::Provisioners(view) => {
+                            if view.typing() {
+                                return None;
+                            }
+                            let before = view.tab.selected_row();
+                            view.tab.select_row(index);
+                            if view.tab.page.is_some() && before != index {
+                                return None;
+                            }
                         }
                         HomeMode::Settings(selected, editor) => {
                             *selected = index;
@@ -2551,6 +2617,13 @@ fn home_key(
         HomeMode::Registries(view) => Some(registries_key(view, paths, key, &mut home.status)),
         HomeMode::Secrets(view) => Some(secrets_key(view, paths, key, &mut home.status)),
         HomeMode::Plugins(view) => Some(plugins_key(view, paths, key, &mut home.status)),
+        HomeMode::Provisioners(view) => {
+            Some(match view.key(paths, key, &mut home.status, platform) {
+                crate::provisioner_tab::Left::Stay => Outcome::Stay,
+                crate::provisioner_tab::Left::Tab(tab) => Outcome::Tab(tab),
+                crate::provisioner_tab::Left::Quit => Outcome::Quit,
+            })
+        }
         _ => None,
     };
     match outcome {
@@ -2563,7 +2636,10 @@ fn home_key(
         None => {}
     }
     match &mut home.mode {
-        HomeMode::Registries(_) | HomeMode::Secrets(_) | HomeMode::Plugins(_) => {}
+        HomeMode::Registries(_)
+        | HomeMode::Secrets(_)
+        | HomeMode::Plugins(_)
+        | HomeMode::Provisioners(_) => {}
         HomeMode::Naming(input) => match key.code {
             KeyCode::Esc => home.mode = HomeMode::Hosts,
             KeyCode::Enter => {
@@ -2632,6 +2708,7 @@ fn home_key(
             }
             KeyCode::Char('4') => home.mode = HomeMode::Secrets(SecretView::default()),
             KeyCode::Char('5') => home.mode = HomeMode::Plugins(PluginView::default()),
+            KeyCode::Char('6') => home.mode = HomeMode::Provisioners(Default::default()),
             KeyCode::Char('1') | KeyCode::BackTab | KeyCode::Esc => home.mode = HomeMode::Hosts,
             KeyCode::Char('q') => return Some(None),
             _ => {}
@@ -2644,8 +2721,9 @@ fn home_key(
             KeyCode::Char('r') => home.refresh = true,
             KeyCode::Char('3') => home.mode = HomeMode::Registries(RegistryView::default()),
             KeyCode::Char('4') => home.mode = HomeMode::Secrets(SecretView::default()),
-            KeyCode::Char('5') | KeyCode::BackTab => {
-                home.mode = HomeMode::Plugins(PluginView::default())
+            KeyCode::Char('5') => home.mode = HomeMode::Plugins(PluginView::default()),
+            KeyCode::Char('6') | KeyCode::BackTab => {
+                home.mode = HomeMode::Provisioners(Default::default())
             }
             KeyCode::Char('d') => {
                 if let Some((name, _)) = home.hosts.get(home.selected) {
@@ -2688,6 +2766,7 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
         HomeMode::Registries(..) => 2,
         HomeMode::Secrets(..) => 3,
         HomeMode::Plugins(..) => 4,
+        HomeMode::Provisioners(..) => 5,
         _ => 0,
     };
     // The Information panel is for the settings, and for a host with a server's word on it.
@@ -2695,7 +2774,14 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
     let tabs = draw_header(
         frame,
         header,
-        &["Hosts", "Settings", "Registries", "Secrets", "Plugins"],
+        &[
+            "Hosts",
+            "Settings",
+            "Registries",
+            "Secrets",
+            "Plugins",
+            "Provisioners",
+        ],
         tab,
         home.known
             .as_ref()
@@ -2902,6 +2988,10 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                 },
             )
         }
+        HomeMode::Provisioners(view) => {
+            let shown = view.shown(paths);
+            (shown.rows, shown.selected, None, shown.help, shown.keys)
+        }
         HomeMode::Plugins(view) => {
             let plugins = view.plugins();
             let listed = berth_tui::plugins::rows(plugins, &view.tab.updates);
@@ -2933,7 +3023,7 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                 if view.editor.is_some() {
                     "Enter install · Esc cancel · Ctrl+O copy"
                 } else {
-                    "↑↓ select · Enter add · c check · U update · A all · x remove · Tab hosts · q quit"
+                    "↑↓ select · Enter add · c check · U update · A all · x remove · Tab provisioners · q quit"
                 },
             )
         }
@@ -2954,7 +3044,18 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                         Span::styled(format!("{address:<28}"), muted),
                     ];
                     if *name == preferred {
-                        line.push(Span::styled("default", Style::new().fg(theme::STEEL)));
+                        line.push(Span::styled("default ", Style::new().fg(theme::STEEL)));
+                    }
+                    let served = home
+                        .known
+                        .as_ref()
+                        .and_then(|known| known.hosts.get(name))
+                        .is_some_and(|reach| reach.rotating);
+                    if served || home.rotating.contains(name) {
+                        line.push(Span::styled(
+                            "key rotation pending",
+                            Style::new().fg(theme::WARN),
+                        ));
                     }
                     Line::from(line)
                 })
@@ -2973,7 +3074,7 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                 if naming.is_some() {
                     "Enter create · Esc cancel · Ctrl+O copy"
                 } else {
-                    "↑↓ select · Enter open · n new host · d default · r refresh · 2 settings · 3 registries · 4 secrets · 5 plugins · q quit"
+                    "↑↓ select · Enter open · n new host · d default · r refresh · 2 settings · 3 registries · 4 secrets · 5 plugins · 6 provisioners · q quit"
                 },
             )
         }
@@ -3027,6 +3128,9 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
         false => &home.status,
     };
     draw_footer(frame, footer, keys, status, theme::WARN);
+    if let HomeMode::Provisioners(view) = &home.mode {
+        view.draw_over(frame);
+    }
     if let Some(qr) = &home.qr {
         qr.draw(frame);
     }
@@ -3053,6 +3157,10 @@ pub fn run(
         app.update_suggestions();
         app.watch_host();
         app.watch_machine();
+        // One of berth's own actions on the host runs in the normal terminal.
+        if app.own_command.is_some() {
+            return Ok(true);
+        }
         let (panel_rows, panel_cols) = session_size();
         app.host.resize(panel_rows, panel_cols);
         let rows = app.rows();
@@ -3334,6 +3442,7 @@ mod tests {
             known: None,
             asking: false,
             refresh: false,
+            rotating: vec![],
         };
         let keys = |home: &mut Home, codes: &[KeyCode]| {
             for &code in codes {
@@ -3439,6 +3548,7 @@ mod tests {
             known: None,
             asking: false,
             refresh: false,
+            rotating: vec![],
         };
         let key = |home: &mut Home, code| {
             home_key(
@@ -3472,6 +3582,126 @@ mod tests {
         assert!(!own.exists());
         key(&mut home, KeyCode::Char('x'));
         assert!(home.status.contains("comes with berth"));
+    }
+
+    #[test]
+    fn the_provisioners_tab_opens_a_page_and_runs_its_actions_here() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: directory.path().join("config"),
+            data_dir: directory.path().join("data"),
+        };
+        paths.prepare().unwrap();
+        // The checkout is the provisioning source, so none is unpacked behind the test's back.
+        let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        paths
+            .set("source", checkout.canonicalize().unwrap().to_str().unwrap())
+            .unwrap();
+        let own = paths.config_dir.join("plugins/aa-lab");
+        std::fs::create_dir_all(own.join("bin")).unwrap();
+        std::fs::write(
+            own.join("bin/provision"),
+            "#!/bin/sh\ncat > /dev/null\n[ -f \"say.$1\" ] && cat \"say.$1\" >&2\n[ -f \"answer.$1\" ] && cat \"answer.$1\"\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            own.join("bin/provision"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::fs::write(
+            own.join("package.json"),
+            r#"{"name": "berth-plugin-aa-lab", "berth": {"provisioners": [
+                {"id": "box", "label": "Lab box", "command": "bin/provision", "protocol": 2,
+                 "kinds": [{"id": "machine", "setup": "apply"}],
+                 "actions": [{"name": "look", "label": "Look around", "changes": false},
+                             {"name": "sweep", "label": "Sweep", "confirm": "Sweep the lab?"}]}]}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            own.join("answer.status"),
+            r#"{"message": "The lab answers", "details": [{"label": "Benches", "value": "3"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(own.join("answer.act"), r#"{"message": "All clean"}"#).unwrap();
+        std::fs::write(own.join("say.act"), "sweeping\n").unwrap();
+        let mut home = Home {
+            hosts: vec![],
+            selected: 0,
+            mode: HomeMode::Hosts,
+            status: String::new(),
+            started: std::time::Instant::now(),
+            qr: None,
+            berth_key: None,
+            served: None,
+            known: None,
+            asking: false,
+            refresh: false,
+            rotating: vec![],
+        };
+        let key = |home: &mut Home, code| {
+            home_key(
+                home,
+                &paths,
+                KeyEvent::new(code, KeyModifiers::NONE),
+                &mut Clipboard::default(),
+            );
+        };
+        // What runs in a thread is taken in as the screen would, until `done` says so.
+        let settle = |home: &mut Home, done: &dyn Fn(&str) -> bool| -> String {
+            for _ in 0..500 {
+                if let HomeMode::Provisioners(view) = &mut home.mode {
+                    view.load(&paths);
+                    view.pump(&paths, &mut home.status);
+                }
+                let screen = home_screen(&paths, home).join("\n");
+                if done(&screen) {
+                    return screen;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!(
+                "the screen did not settle:\n{}",
+                home_screen(&paths, home).join("\n")
+            );
+        };
+        key(&mut home, KeyCode::Char('6'));
+        let screen = settle(&mut home, &|screen| screen.contains("Lab box"));
+        assert!(screen.contains("Provisioners") && screen.contains("aa-lab/box"));
+        // The lab sorts first; its page asks it how it is.
+        key(&mut home, KeyCode::Enter);
+        let screen = settle(&mut home, &|screen| screen.contains("The lab answers"));
+        assert!(
+            screen.contains("● ready") && screen.contains("Benches  3"),
+            "{screen}"
+        );
+        assert!(screen.contains("▸ Look around") && screen.contains("▸ Sweep"));
+        // One that only reads answers on the page.
+        key(&mut home, KeyCode::Enter);
+        let screen = settle(&mut home, &|screen| screen.contains("All clean"));
+        assert!(!screen.contains("sweeping"), "{screen}");
+        // One that changes something asks first, and is a job in a panel.
+        key(&mut home, KeyCode::Down);
+        key(&mut home, KeyCode::Enter);
+        assert!(
+            home_screen(&paths, &home)
+                .join("\n")
+                .contains("Sweep the lab?")
+        );
+        key(&mut home, KeyCode::Char('y'));
+        let screen = settle(&mut home, &|screen| screen.contains("✓ Done"));
+        assert!(
+            screen.contains("sweeping") && screen.contains("✓ All clean"),
+            "{screen}"
+        );
+        // Keys go to the panel until it is closed, and then back to the page.
+        key(&mut home, KeyCode::Char('1'));
+        assert!(matches!(home.mode, HomeMode::Provisioners(_)));
+        key(&mut home, KeyCode::Enter);
+        key(&mut home, KeyCode::Esc);
+        key(&mut home, KeyCode::Esc);
+        assert!(matches!(home.mode, HomeMode::Hosts));
     }
 
     #[test]
@@ -3555,6 +3785,7 @@ mod tests {
             known: None,
             asking: false,
             refresh: false,
+            rotating: vec![],
         };
         let keys = |home: &mut Home, codes: &[KeyCode]| {
             for &code in codes {
@@ -3673,6 +3904,7 @@ mod tests {
             known: None,
             asking: false,
             refresh: false,
+            rotating: vec![],
         };
         let last = berth_core::paths::SETTINGS.len();
         let down = |home: &mut Home| {
@@ -3766,6 +3998,7 @@ mod tests {
             known: None,
             asking: false,
             refresh: false,
+            rotating: vec![],
         };
         let press = |home: &mut Home, code| {
             home_key(
@@ -3834,6 +4067,7 @@ mod tests {
             known: None,
             asking: false,
             refresh: false,
+            rotating: vec![],
         };
         (paths, home)
     }
@@ -4472,6 +4706,73 @@ mod tests {
     }
 
     #[test]
+    fn a_host_below_a_workstation_is_offered_the_controller_and_no_apply() {
+        use crate::remote::State;
+        let mut app = unsaved_app(br#"{"level": "reachable", "access": {"address": "192.0.2.4"}}"#);
+        app.set_step(Step::Manage);
+        app.host.level = berth_api::HostLevel::Reachable;
+        app.host.state = State::Missing;
+        app.host.seen = Some(berth_api::HostLevel::Reachable);
+        let text = screen_text(&mut app);
+        assert!(text.contains("Level · reachable"), "{text}");
+        assert!(text.contains("▸ Install the controller") && text.contains("▸ Terminal over SSH"));
+        assert!(!app.entries().contains(&Entry::Task("apply")));
+        // Choosing it runs berth host install in the normal terminal.
+        let at = app
+            .entries()
+            .iter()
+            .position(|entry| *entry == Entry::Task("install-controller"))
+            .unwrap();
+        app.list.select(Some(at));
+        press(&mut app, &[KeyCode::Enter]);
+        let words = app.own_command.clone().unwrap();
+        assert_eq!(words[..2], ["host".to_owned(), "install".to_owned()]);
+
+        // A controller host lists berth's own beside its tasks; one it cannot
+        // run is marked, and its reason is in the information box.
+        app.own_command = None;
+        app.config["level"] = json!("controller");
+        app.host.level = berth_api::HostLevel::Controller;
+        app.host.state = State::Ready(berth_api::VERSION.into());
+        app.host.tasks = host_tasks();
+        app.host.own = vec![
+            berth_core::level::install_controller_action(
+                "devbox",
+                berth_api::HostLevel::Controller,
+            ),
+            berth_api::Action {
+                name: "host-key".into(),
+                label: "Host key".into(),
+                group: "Access".into(),
+                available: false,
+                why: "devbox has no profile on the server".into(),
+                ..berth_api::Action::default()
+            },
+        ];
+        let rows: Vec<String> = app.rows().iter().map(|row| row.line.to_string()).collect();
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("▸ Update the controller"))
+        );
+        assert!(rows.iter().any(|row| row.contains("▸ Host key · not now")));
+        assert_eq!(
+            rows.iter().filter(|row| row.as_str() == "Set-Up").count(),
+            1,
+            "{rows:?}"
+        );
+        assert!(!app.entries().contains(&Entry::Task("apply")));
+        let index = app
+            .host
+            .actions()
+            .iter()
+            .position(|action| action.name == "host-key")
+            .unwrap();
+        app.begin_task(index, false);
+        assert!(app.status.contains("cannot run now: devbox has no profile"));
+        assert!(app.own_command.is_none());
+    }
+
+    #[test]
     fn the_overview_is_what_the_host_lists() {
         use crate::remote::{Pending, State};
         let mut app = unsaved_app(b"{}");
@@ -4671,6 +4972,7 @@ mod tests {
             known: None,
             asking: false,
             refresh: false,
+            rotating: vec![],
         };
         let mut clipboard = Clipboard::default();
         let settings = berth_core::paths::SETTINGS.len();

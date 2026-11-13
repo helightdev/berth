@@ -35,8 +35,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// The version of the protocol in each request.
-const PROTOCOL: u64 = 1;
+use crate::plugins::PROTOCOL;
 /// Where a seeded machine says how far it has set itself up.
 const PROVISION_STATE: &str = "/var/lib/devbox/provision-state";
 
@@ -161,7 +160,7 @@ pub fn busy(paths: &Paths, host: &str) -> bool {
 
 // ── Finding provisioners ────────────────────────────────────────────────────
 
-fn found(paths: &Paths) -> Vec<Plugin> {
+pub(crate) fn found(paths: &Paths) -> Vec<Plugin> {
     let own = plugins::own_dir(&paths.config_dir);
     match paths.source() {
         Ok(source) => plugins::found(&source, &own),
@@ -169,7 +168,7 @@ fn found(paths: &Paths) -> Vec<Plugin> {
     }
 }
 
-fn find<'a>(plugins: &'a [Plugin], name: &str) -> Result<(&'a Plugin, &'a Provisioner)> {
+pub(crate) fn find<'a>(plugins: &'a [Plugin], name: &str) -> Result<(&'a Plugin, &'a Provisioner)> {
     let (plugin, id) = name.split_once('/').unwrap_or((name, ""));
     plugins
         .iter()
@@ -191,7 +190,10 @@ fn secret(store: &Store, name: &str) -> Option<String> {
 }
 
 /// The secrets a provisioner is given, and the required ones without a value.
-fn secrets(store: &Store, provisioner: &Provisioner) -> (Map<String, Value>, Vec<String>) {
+pub(crate) fn secrets(
+    store: &Store,
+    provisioner: &Provisioner,
+) -> (Map<String, Value>, Vec<String>) {
     let (mut given, mut missing) = (Map::new(), vec![]);
     for wanted in &provisioner.secrets {
         match secret(store, &wanted.name) {
@@ -205,7 +207,7 @@ fn secrets(store: &Store, provisioner: &Provisioner) -> (Map<String, Value>, Vec
     (given, missing)
 }
 
-fn needs_secrets(name: &str, missing: &[String]) -> Result<()> {
+pub(crate) fn needs_secrets(name: &str, missing: &[String]) -> Result<()> {
     match missing {
         [] => Ok(()),
         missing => Err(format!(
@@ -217,24 +219,28 @@ fn needs_secrets(name: &str, missing: &[String]) -> Result<()> {
     }
 }
 
-/// Every argument the provisioner declares, given or with its default.
-/// Names it does not declare and required ones without a value are refused.
-fn arguments(
+/// Why berth does not run a provisioner: one of another protocol.
+pub(crate) fn runnable(provisioner: &Provisioner) -> Result<()> {
+    match &provisioner.refused {
+        Some(refused) => Err(refused.clone().into()),
+        None => Ok(()),
+    }
+}
+
+/// The value of each of `declared`: given, else kept in `settings`, else
+/// its default. Names it does not declare, required ones without a value,
+/// and values outside a few it takes are refused.
+pub(crate) fn values_of(
     name: &str,
-    provisioner: &Provisioner,
+    declared: &[berth_api::Argument],
     given: &BTreeMap<String, String>,
+    settings: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>> {
-    if let Some(unknown) = given.keys().find(|asked| {
-        !provisioner
-            .arguments
-            .iter()
-            .any(|known| &known.name == *asked)
-    }) {
-        let known: Vec<&str> = provisioner
-            .arguments
-            .iter()
-            .map(|known| known.name.as_str())
-            .collect();
+    if let Some(unknown) = given
+        .keys()
+        .find(|asked| !declared.iter().any(|known| &known.name == *asked))
+    {
+        let known: Vec<&str> = declared.iter().map(|known| known.name.as_str()).collect();
         return Err(format!(
             "{name} has no argument {unknown}. It takes: {}",
             match known.is_empty() {
@@ -245,9 +251,10 @@ fn arguments(
         .into());
     }
     let mut values = BTreeMap::new();
-    for argument in &provisioner.arguments {
+    for argument in declared {
         let value = given
             .get(&argument.name)
+            .or_else(|| settings.get(&argument.name))
             .cloned()
             .unwrap_or_else(|| argument.default.clone());
         if argument.required && value.is_empty() {
@@ -267,7 +274,7 @@ fn arguments(
 }
 
 /// What every verb is sent. `list` is about no host.
-fn request(
+pub(crate) fn request(
     verb: &str,
     provisioner: &Provisioner,
     host: Option<(&str, &str)>,
@@ -282,21 +289,23 @@ fn request(
         "secrets": secrets,
     });
     if let Some((host, token)) = host {
+        request["kind"] = json!(crate::plugins::MACHINE);
+        request["name"] = json!(host);
         request["host"] = json!(host);
         request["labels"] = json!({"berth-host": host, "berth-instance": token});
     }
     request
 }
 
-/// The provisioners there are, with the required secrets that are not set.
+/// The provisioners there are, with the required secrets that are not set,
+/// the settings kept for each, and why one cannot be used here.
 pub fn list(paths: &Paths, store: &Store) -> Vec<ProvisionerInfo> {
     found(paths)
         .iter()
         .flat_map(|plugin| {
-            plugin
-                .provisioners
-                .iter()
-                .map(|provisioner| provisioner.info(&plugin.id, secrets(store, provisioner).1))
+            plugin.provisioners.iter().map(|provisioner| {
+                crate::provisioner::describe(paths, store, &plugin.id, provisioner)
+            })
         })
         .collect()
 }
@@ -309,11 +318,11 @@ fn say(out: &mut dyn Write, line: &str) {
 }
 
 /// The texts of the secrets a request carries, which are never shown.
-fn hidden(secrets: &Map<String, Value>) -> Vec<String> {
+pub(crate) fn hidden(secrets: &Map<String, Value>) -> Vec<String> {
     crate::runner::hidden(secrets.values().filter_map(Value::as_str))
 }
 
-fn hide(line: String, hidden: &[String]) -> String {
+pub(crate) fn hide(line: String, hidden: &[String]) -> String {
     String::from_utf8_lossy(&crate::runner::mask(line.as_bytes(), hidden)).into_owned()
 }
 
@@ -334,7 +343,7 @@ fn kill_group(group: i32) {
 /// Run one verb of a provisioner: its progress, with secrets hidden, goes
 /// to `out`, and its answer is returned. One that runs out of time is
 /// killed with everything it started.
-fn call(
+pub(crate) fn call(
     plugin: &Path,
     provisioner: &Provisioner,
     verb: &str,
@@ -485,7 +494,17 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &Provision) -> R
     }
     let plugins = found(paths);
     let (plugin, provisioner) = find(&plugins, &asked.provisioner)?;
-    let arguments = arguments(&asked.provisioner, provisioner, &asked.arguments)?;
+    runnable(provisioner)?;
+    if provisioner.machine().is_none() {
+        return Err(format!("{} makes no machines for hosts", asked.provisioner).into());
+    }
+    let settings = crate::provisioner::settings(paths, &asked.provisioner)?;
+    let arguments = values_of(
+        &asked.provisioner,
+        &provisioner.arguments,
+        &asked.arguments,
+        &settings,
+    )?;
     let (secrets, missing) = secrets(store, provisioner);
     needs_secrets(&asked.provisioner, &missing)?;
     if provisioner.setup == Setup::Apply && profile.access().user.is_empty() {
@@ -959,6 +978,7 @@ impl Made {
         store: &Store,
     ) -> Result<(PathBuf, Provisioner, Value)> {
         let (plugin, provisioner) = self.provisioner()?;
+        runnable(provisioner)?;
         let (secrets, missing) = secrets(store, provisioner);
         needs_secrets(&self.record.provisioner, &missing)?;
         let mut arguments = self.record.arguments.clone();
@@ -1152,13 +1172,16 @@ pub fn instances(
 ) -> Result<Vec<ListedInstance>> {
     let plugins = found(paths);
     let (plugin, provisioner) = find(&plugins, name)?;
+    runnable(provisioner)?;
     if !provisioner.verbs.iter().any(|verb| verb == "list") {
         return Err(format!("{name} cannot list its machines").into());
     }
-    let arguments = arguments(name, provisioner, given)?;
+    let settings = crate::provisioner::settings(paths, name)?;
+    let arguments = values_of(name, &provisioner.arguments, given, &settings)?;
     let (secrets, missing) = secrets(store, provisioner);
     needs_secrets(name, &missing)?;
-    let request = request("list", provisioner, None, &arguments, &secrets);
+    let mut request = request("list", provisioner, None, &arguments, &secrets);
+    request["kind"] = json!(crate::plugins::MACHINE);
     let answer = call(
         &plugin.dir,
         provisioner,
@@ -1167,17 +1190,27 @@ pub fn instances(
         options.quick,
         &mut std::io::sink(),
     )?;
-    let listed = answer["instances"].as_array().cloned().unwrap_or_default();
+    Ok(listed_machines(&answer))
+}
+
+/// The machines in what `list` answered: its resources of the machine
+/// kind, or of no kind, each by the host it was made for.
+pub(crate) fn listed_machines(answer: &Value) -> Vec<ListedInstance> {
+    let listed = answer["resources"].as_array().cloned().unwrap_or_default();
     let text = |entry: &Value, key: &str| entry[key].as_str().unwrap_or("").to_owned();
-    Ok(listed
+    listed
         .iter()
         .filter(|entry| !text(entry, "id").is_empty())
+        .filter(|entry| matches!(text(entry, "kind").as_str(), "" | crate::plugins::MACHINE))
         .map(|entry| ListedInstance {
             id: text(entry, "id"),
-            host: text(entry, "host"),
+            host: match text(entry, "host") {
+                host if host.is_empty() => text(entry, "name"),
+                host => host,
+            },
             state: text(entry, "state"),
         })
-        .collect())
+        .collect()
 }
 
 #[cfg(test)]
@@ -1246,11 +1279,20 @@ print(out)
             fs::write(
                 plugin.join("package.json"),
                 r#"{"name": "berth-plugin-fake", "berth": {"provisioners": [
-                    {"id": "vm", "label": "Fake VM", "command": "bin/provision", "setup": "apply",
-                     "verbs": ["start", "list", "dance"],
+                    {"id": "vm", "label": "Fake VM", "command": "bin/provision", "protocol": 2,
+                     "verbs": ["list"],
                      "secrets": ["api_token", {"name": "extra", "required": false}],
-                     "arguments": [{"name": "server", "required": true}, {"name": "cpus", "default": "4"}]},
-                    {"id": "seeded", "command": "bin/provision", "setup": "seed", "archive": true}]}}"#,
+                     "arguments": [{"name": "server", "required": true}],
+                     "kinds": [{"id": "machine", "setup": "apply", "verbs": ["start", "dance", "logs"],
+                                "arguments": [{"name": "cpus", "default": "4"}]}],
+                     "actions": [
+                       {"name": "images", "label": "Images", "changes": false,
+                        "arguments": [{"name": "filter"}]},
+                       {"name": "prune", "confirm": "Prune?",
+                        "arguments": [{"name": "password", "secret": true}]}]},
+                    {"id": "seeded", "command": "bin/provision", "protocol": 2,
+                     "kinds": [{"id": "machine", "setup": "seed", "archive": true}]},
+                    {"id": "old", "command": "bin/provision", "setup": "apply"}]}}"#,
             )
             .unwrap();
             let world = World {
@@ -1394,7 +1436,11 @@ print(out)
         assert_eq!(creates[0]["token"], creates[1]["token"]);
         assert_eq!(creates[1]["token"], json!(kept.token));
         let create = &creates[1];
-        assert_eq!(create["version"], 1);
+        assert_eq!(create["version"], 2);
+        assert_eq!(
+            (create["kind"].as_str(), create["name"].as_str()),
+            (Some("machine"), Some("studio"))
+        );
         assert_eq!(create["host"], "studio");
         assert_eq!(create["provisioner"], "vm");
         assert_eq!(
@@ -1428,6 +1474,12 @@ print(out)
             world.provision(name, arguments).0.unwrap_err().to_string()
         };
         assert!(refused("fake/none", &[]).contains("No provisioner fake/none"));
+        // One of the first protocol says what to change.
+        let said = refused("fake/old", &[]);
+        assert!(
+            said.contains("version 1") && said.contains("\"protocol\": 2"),
+            "{said}"
+        );
         assert!(refused("fake/vm", &[("server", "x")]).contains("api_token"));
         let listed = list(&world.paths, &world.store());
         assert_eq!(listed[0].id, "fake/vm");
@@ -1702,7 +1754,8 @@ print(out)
 
         world.file(
             "answer.list",
-            r#"{"instances": [{"id": "vm-1", "host": "studio", "state": "running"}, {"host": "no id"}]}"#,
+            r#"{"resources": [{"id": "vm-1", "kind": "machine", "name": "studio", "state": "running"},
+                {"name": "no id"}, {"id": "wiki-1", "kind": "deployment", "name": "wiki"}]}"#,
         );
         let listed = instances(
             &world.paths,
@@ -1853,34 +1906,341 @@ print(out)
 
     #[test]
     fn an_argument_of_a_few_values_takes_only_those() {
-        let provisioner = Provisioner {
-            id: "box".into(),
-            label: "Box".into(),
-            description: String::new(),
-            command: PathBuf::from("/bin/true"),
-            setup: Setup::Apply,
-            archive: false,
-            verbs: vec![],
-            secrets: vec![],
-            arguments: vec![berth_api::Argument {
-                name: "keep_volume".into(),
-                default: "no".into(),
-                values: vec!["no".into(), "yes".into()],
-                ..Default::default()
-            }],
-        };
+        let declared = [berth_api::Argument {
+            name: "keep_volume".into(),
+            default: "no".into(),
+            values: vec!["no".into(), "yes".into()],
+            ..Default::default()
+        }];
         let given = |value: &str| BTreeMap::from([("keep_volume".to_owned(), value.to_owned())]);
-        assert_eq!(
-            arguments("lab/box", &provisioner, &BTreeMap::new()).unwrap()["keep_volume"],
-            "no"
-        );
-        assert_eq!(
-            arguments("lab/box", &provisioner, &given("yes")).unwrap()["keep_volume"],
-            "yes"
-        );
-        let said = arguments("lab/box", &provisioner, &given("maybe"))
-            .unwrap_err()
-            .to_string();
+        let none = BTreeMap::new();
+        let of = |given: &BTreeMap<String, String>, kept: &BTreeMap<String, String>| {
+            values_of("lab/box", &declared, given, kept)
+        };
+        assert_eq!(of(&none, &none).unwrap()["keep_volume"], "no");
+        assert_eq!(of(&given("yes"), &none).unwrap()["keep_volume"], "yes");
+        // A kept setting comes before the default, and what is given before both.
+        assert_eq!(of(&none, &given("yes")).unwrap()["keep_volume"], "yes");
+        let kept = given("yes");
+        assert_eq!(of(&given("no"), &kept).unwrap()["keep_volume"], "no");
+        let said = of(&given("maybe"), &none).unwrap_err().to_string();
         assert_eq!(said, "lab/box takes keep_volume=no or yes only");
+    }
+
+    #[test]
+    fn a_kept_setting_is_where_a_machine_is_made_unless_another_is_given() {
+        let world = World::new();
+        with_secret(&world);
+        world.file(
+            "answer.create",
+            r#"{"id": "vm-1", "address": "192.0.2.20"}"#,
+        );
+        crate::provisioner::save_settings(
+            &world.paths,
+            "fake/vm",
+            &BTreeMap::from([("server".to_owned(), "https://192.0.2.10:8443".to_owned())]),
+        )
+        .unwrap();
+        world.provision("fake/vm", &[]).0.unwrap();
+        let (_, create) = world.requests().pop().unwrap();
+        assert_eq!(create["arguments"]["server"], "https://192.0.2.10:8443");
+        // The record keeps where it was made, whatever the setting says later.
+        assert_eq!(
+            world.record().unwrap().arguments["server"],
+            "https://192.0.2.10:8443"
+        );
+        let listed = list(&world.paths, &world.store());
+        assert_eq!(listed[0].settings["server"], "https://192.0.2.10:8443");
+        assert!(listed[0].problem.is_empty(), "{}", listed[0].problem);
+        // An empty value is forgotten.
+        crate::provisioner::save_settings(
+            &world.paths,
+            "fake/vm",
+            &BTreeMap::from([("server".to_owned(), " ".to_owned())]),
+        )
+        .unwrap();
+        let listed = list(&world.paths, &world.store());
+        assert!(listed[0].settings.is_empty());
+        assert!(
+            listed[0]
+                .problem
+                .contains("berth provisioner fake/vm run settings server=VALUE"),
+            "{}",
+            listed[0].problem
+        );
+    }
+
+    #[test]
+    fn a_provisioner_says_how_it_is_and_lists_the_machines_berth_made() {
+        use crate::provisioner::state;
+        let world = World::new();
+        let server = BTreeMap::from([("server".to_owned(), "x".to_owned())]);
+        // Without its secret it is not asked.
+        let page = state(&world.paths, &world.store(), "fake/vm", &server, &quick()).unwrap();
+        assert_eq!(page.state, "unusable");
+        assert!(page.message.contains("api_token"), "{}", page.message);
+        assert!(world.requests().is_empty());
+        with_secret(&world);
+        // Nor without where it is.
+        let page = state(
+            &world.paths,
+            &world.store(),
+            "fake/vm",
+            &BTreeMap::new(),
+            &quick(),
+        )
+        .unwrap();
+        assert_eq!(page.state, "unusable");
+        assert!(
+            page.message.contains("needs server=VALUE"),
+            "{}",
+            page.message
+        );
+        let refused = state(
+            &world.paths,
+            &world.store(),
+            "fake/old",
+            &BTreeMap::new(),
+            &quick(),
+        )
+        .unwrap();
+        assert!(refused.message.contains("version 1"));
+
+        world.file(
+            "answer.create",
+            r#"{"id": "vm-1", "address": "192.0.2.20"}"#,
+        );
+        world.provision("fake/vm", &[("server", "x")]).0.unwrap();
+        world.file(
+            "answer.status",
+            r#"{"message": "Engine 27.1 answers", "details": [{"label": "Version", "value": "27.1"},
+                {"label": "Containers", "value": 3}, {"value": "no label"}],
+               "values": {"runtime": ["privileged"], "odd": "x"}}"#,
+        );
+        world.file(
+            "answer.list",
+            r#"{"resources": [{"id": "vm-1", "kind": "machine", "name": "studio", "state": "running"},
+                {"id": "vm-9", "kind": "machine", "name": "attic", "state": "stopped"}]}"#,
+        );
+        let page = state(&world.paths, &world.store(), "fake/vm", &server, &quick()).unwrap();
+        assert_eq!(
+            (page.state.as_str(), page.message.as_str()),
+            ("ready", "Engine 27.1 answers")
+        );
+        assert_eq!(
+            page.details,
+            [
+                berth_api::Detail {
+                    label: "Version".into(),
+                    value: "27.1".into()
+                },
+                berth_api::Detail {
+                    label: "Containers".into(),
+                    value: "3".into()
+                },
+            ]
+        );
+        assert_eq!(page.values["runtime"], ["privileged"]);
+        assert!(page.values["odd"].is_empty());
+        let machines: Vec<_> = page
+            .machines
+            .iter()
+            .map(|made| {
+                (
+                    made.host.as_str(),
+                    made.id.as_str(),
+                    made.state.as_str(),
+                    made.recorded,
+                )
+            })
+            .collect();
+        assert_eq!(
+            machines,
+            [
+                ("studio", "vm-1", "running", true),
+                ("attic", "vm-9", "stopped", false)
+            ]
+        );
+        // status about the provisioner itself names no machine.
+        let (verb, status) = world
+            .requests()
+            .into_iter()
+            .rfind(|(verb, _)| verb == "status")
+            .unwrap();
+        assert_eq!(verb, "status");
+        assert!(status.get("id").is_none() && status.get("host").is_none());
+        assert_eq!(status["version"], 2);
+        assert_eq!(status["arguments"], json!({"server": "x"}));
+        // One that does not answer is unreachable, with why.
+        world.file("code.status", "1");
+        world.file("say.status", "cannot reach 192.0.2.10\n");
+        let page = state(&world.paths, &world.store(), "fake/vm", &server, &quick()).unwrap();
+        assert_eq!(page.state, "unreachable");
+        assert!(
+            page.message.contains("cannot reach 192.0.2.10"),
+            "{}",
+            page.message
+        );
+        assert_eq!(page.machines.len(), 1);
+    }
+
+    #[test]
+    fn an_action_is_checked_and_sent_with_its_arguments_apart_from_the_provisioners() {
+        use crate::provisioner::{SETTINGS, actions, prepare};
+        let world = World::new();
+        let listed = actions(&world.paths, &world.store(), "fake/vm").unwrap();
+        let names: Vec<&str> = listed.iter().map(|action| action.name.as_str()).collect();
+        assert_eq!(names, ["images", "prune", SETTINGS]);
+        // Without its secret its own actions cannot run, and say why; its settings can.
+        assert!(!listed[0].available && listed[0].why.contains("api_token"));
+        assert!(listed[2].available);
+        // Until it is set, an action asks for where the provisioner is.
+        let asks: Vec<&str> = listed[0]
+            .arguments
+            .iter()
+            .map(|argument| argument.name.as_str())
+            .collect();
+        assert_eq!(asks, ["server", "filter"]);
+        assert!(
+            actions(&world.paths, &world.store(), "fake/old")
+                .unwrap()
+                .is_empty()
+        );
+        with_secret(&world);
+        let given = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+            pairs
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect()
+        };
+        let refused = |action: &str, pairs: &[(&str, &str)]| {
+            prepare(
+                &world.paths,
+                &world.store(),
+                "fake/vm",
+                action,
+                &given(pairs),
+            )
+            .err()
+            .unwrap()
+            .to_string()
+        };
+        assert!(refused("dance", &[]).contains("Its actions: images, prune, settings"));
+        let said = refused("images", &[("colour", "red")]);
+        assert!(said.contains("It takes: filter, server"), "{said}");
+        assert!(refused("images", &[]).contains("needs server=VALUE"));
+
+        world.file(
+            "answer.act",
+            r#"{"message": "2 images", "details": [{"label": "ubuntu", "value": "80 MB"}]}"#,
+        );
+        world.file("say.act", "using hunter2-pass and tok-s3cret-value\n");
+        let acting = prepare(
+            &world.paths,
+            &world.store(),
+            "fake/vm",
+            "prune",
+            &given(&[("server", "x"), ("password", "hunter2-pass")]),
+        )
+        .unwrap();
+        assert!(acting.changes());
+        let secrets = acting.secrets();
+        assert!(secrets.contains(&"hunter2-pass".to_owned()));
+        let mut out = vec![];
+        let answered = acting.run(&world.paths, &quick(), &mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert_eq!(out, "using hunter2-pass and [secret]\n");
+        assert_eq!(answered.message, "2 images");
+        assert_eq!(answered.lines(), ["✓ 2 images", "  ubuntu  80 MB"]);
+        let (verb, act) = world.requests().pop().unwrap();
+        assert_eq!(verb, "act");
+        assert_eq!(act["arguments"], json!({"server": "x"}));
+        assert_eq!(
+            act["action"],
+            json!({"name": "prune", "arguments": {"password": "hunter2-pass"}})
+        );
+        assert!(act.get("id").is_none());
+        assert_eq!(act["secrets"]["api_token"], "tok-s3cret-value");
+
+        // Settings are berth's own, and kept for every call after.
+        let acting = prepare(
+            &world.paths,
+            &world.store(),
+            "fake/vm",
+            SETTINGS,
+            &given(&[("server", "https://192.0.2.11:8443")]),
+        )
+        .unwrap();
+        let answered = acting.run(&world.paths, &quick(), &mut vec![]).unwrap();
+        assert_eq!(
+            answered.message,
+            "fake/vm uses server=https://192.0.2.11:8443"
+        );
+        assert!(refused(SETTINGS, &[("cpus", "2")]).contains("no argument cpus"));
+        let acting = prepare(
+            &world.paths,
+            &world.store(),
+            "fake/vm",
+            "images",
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(!acting.changes());
+        acting.run(&world.paths, &quick(), &mut vec![]).unwrap();
+        let (_, act) = world.requests().pop().unwrap();
+        assert_eq!(act["arguments"]["server"], "https://192.0.2.11:8443");
+        assert_eq!(act["action"]["arguments"], json!({"filter": ""}));
+        let listed = actions(&world.paths, &world.store(), "fake/vm").unwrap();
+        assert_eq!(listed[2].arguments[0].default, "https://192.0.2.11:8443");
+        assert_eq!(listed[0].arguments.len(), 1);
+    }
+
+    #[test]
+    fn a_machines_log_is_streamed_with_secrets_masked() {
+        let world = World::new();
+        with_secret(&world);
+        world.file(
+            "answer.create",
+            r#"{"id": "vm-1", "address": "192.0.2.20"}"#,
+        );
+        world.provision("fake/vm", &[("server", "x")]).0.unwrap();
+        world.file("answer.logs", "booted\nkey tok-s3cret-value\n");
+        let mut out = vec![];
+        crate::provisioner::logs(
+            &world.paths,
+            &world.store(),
+            "studio",
+            20,
+            false,
+            Duration::from_secs(5),
+            &mut out,
+        )
+        .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains("booted\n") && out.contains("key [secret]"),
+            "{out}"
+        );
+        let (verb, asked) = world.requests().pop().unwrap();
+        assert_eq!(verb, "logs");
+        assert_eq!(
+            (asked["id"].as_str(), asked["tail"].as_u64()),
+            (Some("vm-1"), Some(20))
+        );
+        assert_eq!(asked["follow"], false);
+        // One that follows is stopped when the time is up.
+        world.file("hang.logs", "");
+        let started = Instant::now();
+        crate::provisioner::logs(
+            &world.paths,
+            &world.store(),
+            "studio",
+            0,
+            true,
+            Duration::from_millis(300),
+            &mut vec![],
+        )
+        .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 }

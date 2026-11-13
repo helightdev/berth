@@ -527,6 +527,7 @@ impl<'a> Profile<'a> {
             .unwrap_or("");
         match (field, text) {
             (Field::Login, "") => "berth",
+            (Field::Level, "") => "workstation",
             _ => text,
         }
     }
@@ -813,7 +814,7 @@ impl<'a> Profile<'a> {
         if self.locked() {
             return vec![];
         }
-        vec![SshHost, SshUser, SshPort, Login, AskBecomePass]
+        vec![Level, SshHost, SshUser, SshPort, Login, AskBecomePass]
     }
 
     /// The fields of the Install tab: those before the provisioner's rows,
@@ -824,6 +825,14 @@ impl<'a> Profile<'a> {
         if !self.serves_host() {
             return (vec![], vec![]);
         }
+        // A host below a workstation needs only to be reached.
+        let level = berth_api::profile::level(self.config);
+        if action == Action::Ssh && level != berth_api::HostLevel::Workstation {
+            return (
+                vec![],
+                vec![Level, SshHost, SshUser, SshPort, Login, AskBecomePass],
+            );
+        }
         // A created machine is always a cloud host, so there is no profile to choose.
         let before = match action {
             Action::Machine => vec![],
@@ -831,7 +840,7 @@ impl<'a> Profile<'a> {
         };
         let mut after = vec![];
         if action == Action::Ssh {
-            after.extend([SshHost, SshUser, SshPort, Login, AskBecomePass]);
+            after.extend([Level, SshHost, SshUser, SshPort, Login, AskBecomePass]);
         }
         if action.installer() || action.seeds() {
             after.push(Hostname);
@@ -1181,6 +1190,12 @@ impl<'a> Profile<'a> {
 
     /// Every problem the profile and the machine show, each on its tab.
     pub fn problems_with(&self, machine: &crate::machine::Machine) -> Vec<Problem> {
+        // A host below a workstation is only reached: the workstation's settings do not apply.
+        if self.action == Action::Ssh
+            && berth_api::profile::level(self.config) != berth_api::HostLevel::Workstation
+        {
+            return vec![];
+        }
         let mut problems = self.placed_problems();
         if self.action == Action::Machine && !machine.exists() {
             problems.extend(machine.problems());

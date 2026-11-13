@@ -235,6 +235,13 @@ pub struct HostView {
     pub stats: Option<api::Stats>,
     /// What changed since the host was applied, when berth knows.
     pub behind: Option<api::Behind>,
+    /// The level the host's profile means it to have.
+    pub level: api::HostLevel,
+    /// The level the host was seen to have, once it was asked.
+    pub seen: Option<api::HostLevel>,
+    /// berth's own actions on the host, beside its tasks: what a berth
+    /// server lists for its host, or what this berth does itself.
+    pub own: Vec<api::Action>,
     pub view: Option<View>,
     /// The SSH user's sudo password, kept for this run of the UI.
     pub password: Option<String>,
@@ -256,6 +263,9 @@ impl Default for HostView {
             sessions: vec![],
             stats: None,
             behind: None,
+            level: api::HostLevel::Workstation,
+            seen: None,
+            own: vec![],
             view: None,
             password: None,
             question: None,
@@ -294,6 +304,7 @@ impl HostView {
         self.sessions.clear();
         self.stats = None;
         self.behind = None;
+        self.seen = None;
         self.state = State::Idle;
     }
 
@@ -313,9 +324,26 @@ impl HostView {
     }
 
     /// What can be done on the host: its tasks as actions, each task that
-    /// is no step of another, with the steps plugins add to it.
+    /// is no step of another, with the steps plugins add to it, and then
+    /// berth's own that are no task of the host.
     pub fn actions(&self) -> Vec<api::Action> {
-        api::Action::of_tasks(&self.tasks)
+        let mut actions = api::Action::of_tasks(&self.tasks);
+        let own = self
+            .own
+            .iter()
+            .filter(|action| !actions.iter().any(|task| task.name == action.name))
+            .cloned()
+            .collect::<Vec<_>>();
+        actions.extend(own);
+        actions
+    }
+
+    /// Whether the action at `index` is one of berth's own, run by berth and
+    /// not by the host.
+    pub fn is_own(&self, index: usize) -> bool {
+        self.actions()
+            .get(index)
+            .is_some_and(|action| self.task(action).is_none())
     }
 
     /// Begin an action: its question first, then its arguments. Returns the
@@ -438,7 +466,11 @@ impl HostView {
                 Event::Version(version) if version.api < NEEDS_API => {
                     self.state = State::Old(version.version);
                 }
-                Event::Version(version) => self.state = State::Ready(version.version),
+                Event::Version(version) => {
+                    // A controller without a record was installed outside berth.
+                    self.seen = Some(version.level.unwrap_or(api::HostLevel::Controller));
+                    self.state = State::Ready(version.version);
+                }
                 Event::Failed { message, missing } => {
                     // A wrong password is asked for again.
                     if self.password.is_some()
@@ -448,6 +480,7 @@ impl HostView {
                         self.state = State::Password;
                         note = Some("sudo on the host did not take that password".to_owned());
                     } else if missing {
+                        self.seen = Some(api::HostLevel::Reachable);
                         self.state = State::Missing;
                     } else if message.contains("a password is required") {
                         self.state = State::Password;
@@ -613,6 +646,16 @@ pub fn groups(host: &HostView, terminal_user: &str) -> Vec<(String, Vec<(String,
     groups
 }
 
+/// The line the overview shows of the host's level, with what the host
+/// itself was seen to be when that is different.
+pub fn level_line(host: &HostView) -> String {
+    let mut line = format!("Level · {}: {}", host.level, host.level.describe());
+    if let Some(seen) = host.seen.filter(|seen| *seen != host.level) {
+        line += &format!(". The host itself is {seen} now");
+    }
+    line
+}
+
 /// What the overview says of a host whose configuration is behind.
 pub fn behind_note(host: &HostView) -> Option<String> {
     let behind = host.behind.as_ref()?;
@@ -670,4 +713,58 @@ pub fn session_help(host: &HostView, index: usize) -> String {
         session.started,
         id = session.id,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn berths_own_actions_follow_the_tasks_and_say_when_they_cannot_run() {
+        let mut host = HostView {
+            tasks: vec![api::Task {
+                name: "status".into(),
+                label: "Status".into(),
+                group: "System".into(),
+                ..api::Task::default()
+            }],
+            ..HostView::default()
+        };
+        host.own = vec![
+            api::Action {
+                name: "status".into(),
+                ..api::Action::default()
+            },
+            api::Action {
+                name: "install-controller".into(),
+                label: "Update the controller".into(),
+                group: "Set-Up".into(),
+                available: false,
+                why: "studio is a workstation".into(),
+                ..api::Action::default()
+            },
+        ];
+        let actions = host.actions();
+        let names: Vec<&str> = actions.iter().map(|action| action.name.as_str()).collect();
+        // A task of the host wins over one of berth's of the same name.
+        assert_eq!(names, ["status", "install-controller"]);
+        assert!(!host.is_own(0) && host.is_own(1));
+        let groups = groups(&host, "agent");
+        let setup = groups.iter().find(|(title, _)| title == "Set-Up").unwrap();
+        assert_eq!(setup.1[0].0, "  ▸ Update the controller · not now");
+        assert!(task_help(&host, 1).contains("It cannot run now: studio is a workstation"));
+    }
+
+    #[test]
+    fn the_level_line_says_what_the_host_was_seen_to_be() {
+        let mut host = HostView {
+            level: api::HostLevel::Reachable,
+            ..HostView::default()
+        };
+        assert!(level_line(&host).starts_with("Level · reachable: berth logs in over SSH"));
+        host.seen = Some(api::HostLevel::Controller);
+        assert!(level_line(&host).ends_with("The host itself is controller now"));
+        host.seen = Some(api::HostLevel::Reachable);
+        assert!(!level_line(&host).contains("now"));
+    }
 }

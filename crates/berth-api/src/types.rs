@@ -44,6 +44,77 @@ pub struct Version {
     /// recorded it. An older berthd does not say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied: Option<Applied>,
+    /// What was installed on the host, by that record: `controller` when
+    /// only the controller was, `workstation` for a whole profile. Absent
+    /// when the host keeps no record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<HostLevel>,
+}
+
+/// How much of berth a host has: what its profile means it to have, or
+/// what it was seen to have. Each level can do what the ones before it can.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum HostLevel {
+    /// berth logs in over SSH. Nothing of berth is installed.
+    Reachable,
+    /// berthd and box are installed and answer: sessions, tasks and files.
+    Controller,
+    /// The whole profile is applied: desktop, agents and plugins.
+    #[default]
+    Workstation,
+}
+
+impl HostLevel {
+    pub const ALL: [HostLevel; 3] = [
+        HostLevel::Reachable,
+        HostLevel::Controller,
+        HostLevel::Workstation,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            HostLevel::Reachable => "reachable",
+            HostLevel::Controller => "controller",
+            HostLevel::Workstation => "workstation",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<HostLevel> {
+        HostLevel::ALL
+            .into_iter()
+            .find(|level| level.name() == text.trim())
+    }
+
+    /// What a host of this level has, in a few words.
+    pub fn describe(self) -> &'static str {
+        match self {
+            HostLevel::Reachable => "berth logs in over SSH; nothing of berth is installed",
+            HostLevel::Controller => {
+                "berth's controller runs there: sessions, tasks and files, no desktop"
+            }
+            HostLevel::Workstation => "the whole profile is applied: desktop, agents and plugins",
+        }
+    }
+}
+
+impl std::fmt::Display for HostLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
 }
 
 /// What a setup key says of the server it is for.
@@ -934,8 +1005,96 @@ pub struct ProvisionerInfo {
     /// The required ones that have no value. Not looked at in a plugin's listing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing_secrets: Vec<String>,
+    /// What creating a machine takes: the provisioner's own arguments first,
+    /// then those of its machines.
     #[serde(default)]
     pub arguments: Vec<Argument>,
+    /// The names of the provisioner's own arguments, which say where it is,
+    /// such as an Incus server. Their values are kept as its settings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub own: Vec<String>,
+    /// The values of its own arguments that are kept, by name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub settings: BTreeMap<String, String>,
+    /// What it can make: `machine`, and kinds its plugin names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<ProvisionerKind>,
+    /// Its plugin's own actions, such as listing images or pruning.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<Action>,
+    /// Why it cannot be used here, as a sentence that says what to change.
+    /// Empty when it can.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub problem: String,
+}
+
+/// A kind of thing a provisioner makes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ProvisionerKind {
+    /// `machine`, or a kind the plugin names, such as `deployment`.
+    pub id: String,
+    #[serde(default)]
+    pub label: String,
+    /// For a machine: `seed` or `apply`, as for the provisioner.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub setup: String,
+    /// What can be done to one besides `create`, `status` and `destroy`:
+    /// `start`, `stop`, `change`, `logs`.
+    #[serde(default)]
+    pub verbs: Vec<String>,
+    #[serde(default)]
+    pub arguments: Vec<Argument>,
+    /// The specification one is made from, for a kind that has one: its
+    /// `format` and `label`, as the plugin declares them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<Value>,
+}
+
+/// A row of what a provisioner says, shown as it is given.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct Detail {
+    pub label: String,
+    #[serde(default)]
+    pub value: String,
+}
+
+/// A machine a provisioner made, as berth's records and the provisioner's
+/// own list have it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct MadeMachine {
+    /// The host it was made for.
+    pub host: String,
+    /// The provisioner's id of it; empty while it is being made.
+    #[serde(default)]
+    pub id: String,
+    /// What the provisioner's list says: `running`, `stopped`, or empty
+    /// when it was not asked or cannot list.
+    #[serde(default)]
+    pub state: String,
+    /// Whether berth has a record of it. One the provisioner lists without
+    /// a record carries berth's labels, but berth has lost track of it.
+    #[serde(default)]
+    pub recorded: bool,
+}
+
+/// A provisioner's page: what it is, what it says of itself now, and the
+/// machines it made.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ProvisionerState {
+    pub provisioner: ProvisionerInfo,
+    /// `ready`, `unreachable` or `unusable`, or what the provisioner said.
+    pub state: String,
+    /// What it said of itself, or why it could not be asked.
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub details: Vec<Detail>,
+    /// The values an argument takes here, by its name, where the
+    /// provisioner narrows what it declares, such as the pools there are.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub values: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub machines: Vec<MadeMachine>,
 }
 
 /// What to create a host's machine with.
