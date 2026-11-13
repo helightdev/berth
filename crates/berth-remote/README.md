@@ -4,9 +4,19 @@ berth-remote shows the hosts of a `berth serve` on another machine, in a termina
 
 It is only a client. Setting up hosts, Ansible and SSH stay on the server.
 
+## Install
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex
+```
+
+The script checks the download against its SHA-256 and installs it to `%LOCALAPPDATA%\Programs\berth-remote`.
+
 ## Use
 
-Start the server with an address that others can reach:
+Start the server on an address of your network:
 
 ```bash
 berth serve --listen 0.0.0.0:7878
@@ -25,7 +35,7 @@ berth-remote asks for the token and keeps it for the next run. The token is in `
 | `--server ADDRESS`, `BERTH_SERVER` | The server. An address without a scheme is https, or http for `localhost` |
 | `BERTH_TOKEN` | The token, so that it is not asked for |
 | `BERTH_SETUP_KEY` | A setup key, which collects the token once |
-| `--forget` | Keep neither the server nor the token |
+| `--forget` | Keep the server and the token for this run only |
 | `BERTH_REMOTE_FILE` | The plugin package to send, on a system without a file dialog |
 
 A token or a setup key never goes on the command line, where other users of the machine could read it.
@@ -54,4 +64,4 @@ The program is `target/x86_64-pc-windows-gnu/release/berth-remote.exe`. It needs
 
 On Windows itself, with Rust from rustup and the Visual Studio build tools, the first command builds `target\release\berth-remote.exe`.
 
-Use Windows Terminal or the console of Windows 10 or later. Older consoles do not draw the colours.
+Use Windows Terminal or the console of Windows 10 or later, which draw its colours.

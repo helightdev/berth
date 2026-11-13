@@ -126,12 +126,12 @@ GitHub Actions build on every push:
 | CI | The checks above and the end-to-end tests, both with `ci/run.sh`, and Vale |
 | Boot | The boot tests, `boot cloud` and `boot iso`, when started by hand |
 | Docs | The docs build, and publishing it to GitHub Pages from `main` |
-| Build | The static `berth` for Linux x86_64 as artifact `berth-x86_64-linux`, the host programs as `host-programs-x86_64-linux`; the container image `ghcr.io/helightdev/berth`, tagged `edge` from `main` |
+| Build | The static `berth` for Linux x86_64 as artifact `berth-x86_64-linux`, the host programs as `host-programs-x86_64-linux`, `berth-remote` for Windows as `berth-remote-x86_64-windows`; the container image `ghcr.io/helightdev/berth`, tagged `edge` from `main` |
 
 To release, push a tag such as `v0.3.0`, or create the release on GitHub's release page with a new tag. Build then:
 
 1. Builds `berth`, `berthd`, `box` and the page with the version of the tag, and checks that each says it. Runs `boot cloud`. When it fails, nothing is published.
-2. Publishes the release with both archives, their checksum files, `install.sh` and `VERSION`. A release made on the page gets the files added.
+2. Publishes the release with both archives, `berth-remote-x86_64-windows.zip`, their checksum files, `install.sh`, `install.ps1` and `VERSION`. A release made on the page gets the files added.
 3. Pushes the image tagged `0.3.0`, `0.3` and `latest`.
 4. Commits the version to `main` in `Cargo.toml`, `Cargo.lock` and `docs/openapi/`, and starts CI, Build and Docs for that commit.
 
@@ -154,3 +154,15 @@ cargo build --release -p berth --features web
 | With the page | `berth-web-x86_64-linux.tar.gz` | `BERTH_VARIANT=web` |
 
 `berth update` stays with the build it is. The container image is the one with the page. The docs build takes the page from `target/web-dist` for `/web`. It builds the page with the `web` profile, as a release does, by setting `BERTH_WEB_PROFILE=web`.
+
+## A client for Windows
+
+`berth-remote` is the client for a [berth server](/docs/use/server#from-windows) in a terminal. It builds the screens of `crates/berth-web/` for a terminal, from `crates/berth-remote/`. It runs on Linux, macOS and Windows. A release builds it for Windows on Linux, with MinGW:
+
+```bash
+sudo apt-get install gcc-mingw-w64-x86-64        # once
+rustup target add x86_64-pc-windows-gnu          # once
+cargo build --release --locked -p berth-remote --target x86_64-pc-windows-gnu
+```
+
+The program is `target/x86_64-pc-windows-gnu/release/berth-remote.exe`. On Windows itself, with Rust and the Visual Studio build tools, `cargo build --release -p berth-remote` builds it.
