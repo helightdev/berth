@@ -20,7 +20,7 @@
         "description": "An Ubuntu 26.04 container with systemd and an SSH server, on the local Docker or on the engine named by host. berth applies its role to it over SSH.",
         "command": "bin/provision",
         "setup": "apply",
-        "verbs": ["start", "stop", "list"],
+        "verbs": ["start", "stop", "list", "log"],
         "arguments": [
           {"name": "host", "label": "Docker endpoint", "default": "", "help": "The Docker engine to run it on, such as ssh://ops@192.0.2.10. Empty uses the local default."},
           {"name": "image", "label": "Image", "default": "", "help": "The image to start from. Empty builds the one that comes with the plugin."},

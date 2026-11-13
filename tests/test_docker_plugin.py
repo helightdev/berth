@@ -101,7 +101,7 @@ class Provision(unittest.TestCase):
         self.assertNotIn('features', package['berth'])
         [entry] = package['berth']['provisioners']
         self.assertEqual((entry['id'], entry['setup'], entry['command']), ('container', 'apply', 'bin/provision'))
-        self.assertEqual(entry['verbs'], ['start', 'stop', 'list'])
+        self.assertEqual(entry['verbs'], ['start', 'stop', 'list', 'log'])
         self.assertNotIn('secrets', entry)
         self.assertEqual([a['name'] for a in entry['arguments']],
                          ['host', 'image', 'ssh_port', 'publish_address', 'volume', 'cpus', 'memory', 'keep_volume'])
@@ -191,6 +191,38 @@ class Provision(unittest.TestCase):
         done = self.run_verb('status', {'id': 'berth-studio'}, arguments={'ssh_port': '2222', 'publish_address': '192.0.2.5'},
                              rules=[{'prefix': ['container', 'inspect'], 'results': [inspect(OURS)]}])
         self.assertEqual(json.loads(done.stdout), {'state': 'running', 'address': '192.0.2.5'})
+
+    def test_log_answers_the_latest_console_lines(self):
+        console = ''.join(f'[  OK  ] Started unit-{n}.service.\n' for n in range(150)) + '\n'
+        rules = [{'prefix': ['container', 'inspect'], 'results': [inspect(OURS)]},
+                 {'prefix': ['logs'], 'results': [[0, console, '']]}]
+        done = self.run_verb('log', {'id': 'berth-studio'}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        lines = json.loads(done.stdout)['lines']
+        self.assertEqual(len(lines), 100)
+        self.assertEqual(lines[-1], '[  OK  ] Started unit-149.service.')
+        self.assertEqual(self.argv('logs'), [['logs', '--tail', '100', 'berth-studio']])
+
+    def test_log_reads_the_journal_when_the_console_is_empty(self):
+        rules = [{'prefix': ['container', 'inspect'], 'results': [inspect(OURS)]},
+                 {'prefix': ['logs'], 'results': [[0, '', '']]},
+                 {'prefix': ['exec', 'berth-studio', 'journalctl'],
+                  'results': [[0, 'Started ssh.service - OpenBSD Secure Shell server.\n', '']]}]
+        done = self.run_verb('log', {'id': 'berth-studio'}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {'lines': ['Started ssh.service - OpenBSD Secure Shell server.']})
+        # A container without a journal has no lines, which is no failure.
+        rules[2]['results'] = [[1, '', 'OCI runtime exec failed']]
+        (self.state / 'seen-2').unlink(missing_ok=True)
+        done = self.run_verb('log', {'id': 'berth-studio'}, rules=rules)
+        self.assertEqual((done.returncode, json.loads(done.stdout)), (0, {'lines': []}))
+
+    def test_log_of_a_container_that_is_gone_is_empty(self):
+        done = self.run_verb('log', {'id': 'berth-studio'},
+                             rules=[{'prefix': ['container', 'inspect'], 'results': [MISSING]}])
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {'lines': []})
+        self.assertEqual(self.argv('logs'), [])
 
     def test_start_and_stop(self):
         rules = [{'prefix': ['container', 'inspect'], 'results': [inspect(OURS)]}]

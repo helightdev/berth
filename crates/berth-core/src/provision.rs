@@ -16,7 +16,7 @@ use crate::{
     paths::Paths,
     plugins::{self, Plugin, Provisioner, Setup},
     registry::Store,
-    seed,
+    relay, seed,
     server::KEPT,
 };
 use berth_api::{Instance, ListedInstance, Provision, ProvisionerInfo};
@@ -52,9 +52,15 @@ pub struct Options {
     pub ssh: Duration,
     /// How long to wait between asking whether it answers.
     pub every: Duration,
-    /// Whether the new machine answers: its berthd for a seeded one, SSH
-    /// for one berth applies the profile to.
-    pub answers: fn(&Paths, &Host, Setup) -> bool,
+    /// How long berth stays quiet while it waits before it says it still does.
+    pub alive: Duration,
+    /// Whether SSH lets berth in.
+    pub reaches: fn(&Host) -> bool,
+    /// Whether a seeded machine's berthd answers.
+    pub answers: fn(&Paths, &Host) -> bool,
+    /// What a seeded machine's first boot has written since a cursor of its
+    /// log, read over SSH, as [`relay::FirstBoot::take`] reads it.
+    pub first_boot: fn(&Host, &str) -> Result<String>,
     /// What is done once it answers: a seeded one's provision state is
     /// told, and the profile is applied to the other.
     pub finish: fn(&Paths, &Host, Setup, &mut dyn Write) -> Result<()>,
@@ -72,7 +78,10 @@ impl Default for Options {
             boot: Duration::from_secs(30 * 60),
             ssh: Duration::from_secs(5 * 60),
             every: Duration::from_secs(10),
+            alive: Duration::from_secs(60),
+            reaches: ssh_answers,
             answers,
+            first_boot,
             finish,
             forget,
         }
@@ -496,6 +505,9 @@ pub struct Prepared {
     dir: PathBuf,
     provisioner: Provisioner,
     secrets: Map<String, Value>,
+    /// What is never shown of what the machine prints: the provisioner's
+    /// secrets and those the seed carries.
+    hidden: Vec<String>,
     record: Record,
     _lock: Lock,
 }
@@ -552,6 +564,7 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &Provision) -> R
         name: asked.provisioner.clone(),
         dir: plugin.dir.clone(),
         provisioner: provisioner.clone(),
+        hidden: hidden(&secrets),
         secrets,
         record: Record {
             provisioner: asked.provisioner.clone(),
@@ -622,6 +635,10 @@ impl Prepared {
             Setup::Seed => {
                 say(out, &format!("▸ {host}: rendering the cloud seed"));
                 let seed = seed::cloud(paths, store, &host, self.provisioner.archive)?;
+                self.hidden.extend(seed_secrets(&seed.user_data));
+                // The longest first, so a part does not leave the rest of a whole.
+                self.hidden
+                    .sort_by_key(|text| std::cmp::Reverse(text.len()));
                 let hostname = match profile.config["hostname"].as_str() {
                     Some(hostname) if !hostname.is_empty() => hostname.to_owned(),
                     _ => host.clone(),
@@ -714,21 +731,55 @@ impl Prepared {
                 words(limit)
             ),
         );
-        if !host.address().is_empty() {
+        let over_ssh = !host.address().is_empty();
+        if over_ssh {
             (options.forget)(&host);
         }
-        let deadline = Instant::now() + limit;
-        let status = request(
+        let started = Instant::now();
+        let deadline = started + limit;
+        let mut status = request(
             "status",
             &self.provisioner,
             Some((name, &self.record.token)),
             &self.record.arguments,
             &self.secrets,
         );
-        let mut status = status;
         status["id"] = json!(self.record.id);
+        let mut log = status.clone();
+        log["verb"] = json!("log");
+        let logs = self.provisioner.verbs.iter().any(|verb| verb == "log");
+        let mut out = Noted::new(out);
+        let mut seen = Seen::default();
+        // A host reached only through its link command has no SSH to wait for.
+        let mut in_reach = !over_ssh;
         loop {
-            if (options.answers)(paths, &host, setup) {
+            if !in_reach && (options.reaches)(&host) {
+                in_reach = true;
+                say(&mut out, &format!("✓ {name}: SSH answers"));
+            }
+            if in_reach && setup == Setup::Apply {
+                break;
+            }
+            if in_reach && over_ssh {
+                // A look that fails is tried again the next time round.
+                if let Ok(printed) = (options.first_boot)(&host, &seen.boot.cursor) {
+                    let said = seen.boot.take(&printed, &self.hidden);
+                    relayed(&mut out, said);
+                }
+                if seen.boot.failed() {
+                    say(
+                        &mut out,
+                        &format!("! {name}: its first boot failed. The end of its log:"),
+                    );
+                    relayed(&mut out, seen.boot.last_lines());
+                    return Err(format!(
+                        "{name}'s first boot failed, as the lines above show. It tries again by itself every 10 minutes"
+                    )
+                    .into());
+                }
+            }
+            if in_reach && (options.answers)(paths, &host) {
+                say(&mut out, &format!("✓ {name}: berthd answers"));
                 break;
             }
             if Instant::now() >= deadline {
@@ -746,15 +797,161 @@ impl Prepared {
                     if let Some(state @ ("gone" | "stopped")) = answer["state"].as_str() {
                         return Err(format!("{name}'s machine is {state}").into());
                     }
+                    seen.machine(name, &answer, &mut out);
                 }
-                Err(error) => say(out, &format!("! {error}")),
+                Err(error) => say(&mut out, &format!("! {error}")),
+            }
+            // Once SSH answers, the first boot tells more than the console.
+            if logs && !in_reach {
+                match call(
+                    &self.dir,
+                    &self.provisioner,
+                    "log",
+                    &log,
+                    options.quick,
+                    &mut std::io::sink(),
+                ) {
+                    Ok(answer) => {
+                        let lines = answer["lines"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str)
+                            .map(|line| relay::scrub(relay::clean(line), &self.hidden))
+                            .filter(|line| !line.is_empty())
+                            .collect();
+                        relayed(&mut out, relay::capped(seen.console.fresh(lines)));
+                    }
+                    // Said once: the console is extra, and the wait goes on without it.
+                    Err(error) if !seen.log_failed => {
+                        seen.log_failed = true;
+                        say(&mut out, &format!("! {error}"));
+                    }
+                    Err(_) => {}
+                }
+            }
+            if out.last.elapsed() >= options.alive {
+                say(
+                    &mut out,
+                    &format!(
+                        "… {name}: still waiting, {} so far",
+                        words(started.elapsed())
+                    ),
+                );
             }
             std::thread::sleep(options.every);
         }
-        (options.finish)(paths, &host, setup, out)?;
-        say(out, &format!("✓ {name} is set up"));
+        (options.finish)(paths, &host, setup, &mut out)?;
+        say(&mut out, &format!("✓ {name} is set up"));
         Ok(())
     }
+}
+
+/// What has been seen of a machine while it is waited for.
+#[derive(Default)]
+struct Seen {
+    /// Its state and address, as its provisioner said them last.
+    state: (String, String),
+    console: relay::Tail,
+    boot: relay::FirstBoot,
+    log_failed: bool,
+}
+
+impl Seen {
+    /// Say the machine's state and address when they are not what they were.
+    fn machine(&mut self, name: &str, answer: &Value, out: &mut dyn Write) {
+        let text = |key: &str| relay::clean(answer[key].as_str().unwrap_or(""));
+        let now = (text("state"), text("address"));
+        if now.0.is_empty() || now == self.state {
+            return;
+        }
+        let at = match now.1.as_str() {
+            "" => String::new(),
+            address => format!(" at {address}"),
+        };
+        say(out, &format!("▸ {name}: its machine is {}{at}", now.0));
+        self.state = now;
+    }
+}
+
+/// Lines of the machine's, set apart from berth's own.
+fn relayed(out: &mut dyn Write, lines: Vec<String>) {
+    for line in lines {
+        say(out, &format!("{}{line}", relay::PREFIX));
+    }
+}
+
+/// Output that notes when it was last written to.
+struct Noted<'a> {
+    out: &'a mut dyn Write,
+    last: Instant,
+}
+
+impl<'a> Noted<'a> {
+    fn new(out: &'a mut dyn Write) -> Noted<'a> {
+        Noted {
+            out,
+            last: Instant::now(),
+        }
+    }
+}
+
+impl Write for Noted<'_> {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.last = Instant::now();
+        self.out.write(data)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.out.flush()
+    }
+}
+
+/// What the seed carries that the machine must never be seen to print: the
+/// password hashes, the enrollment key and the login for the release.
+fn seed_secrets(user_data: &str) -> Vec<String> {
+    let body = user_data.split_once('\n').map_or("", |(_, rest)| rest);
+    let Ok(seed) = serde_json::from_str::<Value>(body) else {
+        return vec![];
+    };
+    let mut found: Vec<String> = vec![];
+    for user in seed["users"].as_array().into_iter().flatten() {
+        found.extend(user["passwd"].as_str().map(str::to_owned));
+    }
+    let secret = |key: &str| {
+        let key = key.to_ascii_lowercase();
+        !key.contains("public")
+            && [
+                "password", "passwd", "secret", "token", "auth_key", "private",
+            ]
+            .iter()
+            .any(|word| key.contains(word))
+    };
+    for file in seed["write_files"].as_array().into_iter().flatten() {
+        let path = file["path"].as_str().unwrap_or("");
+        let content = file["content"].as_str().unwrap_or("");
+        if path.ends_with("/release-login") {
+            // A line of curl configuration: the value is what is between the quotes.
+            found.push(content.trim().to_owned());
+            if let (Some(start), Some(end)) = (content.find('"'), content.rfind('"'))
+                && start < end
+            {
+                found.push(content[start + 1..end].to_owned());
+            }
+        }
+        if path.ends_with("/deployment.json")
+            && let Ok(deployment) = serde_json::from_str::<Value>(content)
+        {
+            for (key, value) in deployment["ansible_vars"].as_object().into_iter().flatten() {
+                if let (true, Some(value)) = (secret(key), value.as_str()) {
+                    found.push(value.to_owned());
+                }
+            }
+        }
+    }
+    // A short value would hide ordinary words, and no real secret is that short.
+    found.retain(|text| text.len() >= 8);
+    found
 }
 
 /// Put an address the provisioner gave into the profile, where it has none.
@@ -859,30 +1056,88 @@ fn ssh_answers(host: &Host) -> bool {
     ssh.status().is_ok_and(|status| status.success())
 }
 
-fn answers(_paths: &Paths, host: &Host, setup: Setup) -> bool {
-    match setup {
-        Setup::Seed => {
-            // The link goes over SSH, which has to know the machine's key first.
-            if !host.address().is_empty() && !ssh_answers(host) {
-                return false;
-            }
-            let (Ok(spec), Ok(runtime)) = (host.link(password(host).as_deref()), link::runtime())
-            else {
-                return false;
-            };
-            let link = Link::new(spec);
-            // The timer is made inside the runtime, which is what it runs on.
-            let asked = runtime.block_on(async {
-                tokio::time::timeout(
-                    Duration::from_secs(20),
-                    link.get::<berth_api::Version>("/v1/version"),
-                )
-                .await
-            });
-            runtime.shutdown_background();
-            matches!(asked, Ok(Ok(_)))
-        }
-        Setup::Apply => ssh_answers(host),
+/// Whether berthd answers on the host's link. The wait asks only once SSH
+/// answers, which has made the machine's key known for the link to use.
+fn answers(_paths: &Paths, host: &Host) -> bool {
+    let (Ok(spec), Ok(runtime)) = (host.link(password(host).as_deref()), link::runtime()) else {
+        return false;
+    };
+    let link = Link::new(spec);
+    // The timer is made inside the runtime, which is what it runs on.
+    let asked = runtime.block_on(async {
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            link.get::<berth_api::Version>("/v1/version"),
+        )
+        .await
+    });
+    runtime.shutdown_background();
+    matches!(asked, Ok(Ok(_)))
+}
+
+/// The service that runs a seeded machine's first boot.
+const FIRST_BOOT_UNIT: &str = "devbox-provision.service";
+
+/// The shell command that prints the provision state and the first boot's
+/// log after `cursor`. The state is readable by anyone and the log by root:
+/// sudo is tried without a password, then with the line berth sends first,
+/// and without either only the state is printed.
+fn first_boot_look(cursor: &str) -> String {
+    let after = match relay::valid_cursor(cursor) {
+        true => format!(" --after-cursor=\"{cursor}\""),
+        false => String::new(),
+    };
+    // Single quotes are left out: the look is itself put in single quotes.
+    let look = format!(
+        "printf \"state %s\\n\" \"$(cat {PROVISION_STATE} 2>/dev/null || echo none)\"; \
+         journalctl -q -u {FIRST_BOOT_UNIT} -o cat --no-pager --show-cursor{after} 2>/dev/null | tail -n 400"
+    );
+    format!(
+        "IFS= read -r p; q='{look}'; \
+         if sudo -n true 2>/dev/null; then sudo -n sh -c \"$q\"; \
+         elif [ -n \"$p\" ]; then printf '%s\\n' \"$p\" | sudo -S -k -p '' sh -c \"$q\" 2>/dev/null || sh -c \"$q\"; \
+         else sh -c \"$q\"; fi"
+    )
+}
+
+/// What the first boot of a seeded machine has written since `cursor`, read
+/// over SSH. The sudo password, when berth has one, goes on standard input.
+fn first_boot(host: &Host, cursor: &str) -> Result<String> {
+    let mut ssh = host.ssh();
+    ssh.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"])
+        .arg(host.target())
+        .arg(first_boot_look(cursor));
+    let first = password(host).unwrap_or_default();
+    output_within(ssh, format!("{first}\n"), Duration::from_secs(40))
+}
+
+/// What `command` prints with `input` on its standard input, when it ends
+/// well within `limit`. One that takes longer is killed.
+fn output_within(mut command: Command, input: String, limit: Duration) -> Result<String> {
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut stdin = child.stdin.take().ok_or("no standard input")?;
+    std::thread::spawn(move || {
+        let _ = stdin.write_all(input.as_bytes());
+    });
+    let mut stdout = child.stdout.take().ok_or("no standard output")?;
+    let (sent, printed) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut data = vec![];
+        let _ = stdout.read_to_end(&mut data);
+        let _ = sent.send(data);
+    });
+    let Ok(data) = printed.recv_timeout(limit) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("it did not answer in time".into());
+    };
+    match child.wait()?.success() {
+        true => Ok(String::from_utf8_lossy(&data).into_owned()),
+        false => Err("it failed".into()),
     }
 }
 
@@ -1045,7 +1300,7 @@ pub fn status(
         instance.verbs = provisioner
             .verbs
             .iter()
-            .filter(|verb| *verb != "list")
+            .filter(|verb| !matches!(verb.as_str(), "list" | "log"))
             .cloned()
             .collect();
     }
@@ -1288,7 +1543,8 @@ print(out)
                      "verbs": ["start", "list", "dance"],
                      "secrets": ["api_token", {"name": "extra", "required": false}],
                      "arguments": [{"name": "server", "required": true}, {"name": "cpus", "default": "4"}]},
-                    {"id": "seeded", "command": "bin/provision", "setup": "seed", "archive": true}]}}"#,
+                    {"id": "seeded", "command": "bin/provision", "setup": "seed", "archive": true,
+                     "verbs": ["log"]}]}}"#,
             )
             .unwrap();
             let world = World {
@@ -1365,7 +1621,10 @@ print(out)
             boot: Duration::from_millis(500),
             ssh: Duration::from_millis(500),
             every: Duration::from_millis(10),
-            answers: |_, _, _| true,
+            alive: Duration::from_secs(60),
+            reaches: |_| true,
+            answers: |_, _| true,
+            first_boot: |_, _| Ok(String::new()),
             finish: |_, host, _, out| {
                 say(
                     out,
@@ -1728,7 +1987,7 @@ print(out)
             ),
             ("stopped", "vm-1", "192.0.2.21")
         );
-        // The manifest's unknown verb is not one, and list is not done to a machine.
+        // The manifest's unknown verb is not one, and list and log change no machine.
         assert_eq!(instance.verbs, ["start"]);
         world.file("code.status", "2");
         let instance = status(&world.paths, &world.store(), "studio", &quick())
@@ -1780,7 +2039,8 @@ print(out)
         );
         world.file("answer.status", r#"{"state": "gone"}"#);
         let options = Options {
-            answers: |_, _, _| false,
+            reaches: |_| false,
+            answers: |_, _| false,
             ..quick()
         };
         let asked = Provision {
@@ -1822,6 +2082,244 @@ print(out)
             "a4d451ec23463726f72c43d64c710968f6b602cd653b4de8adee1b556240a829"
         );
         assert!(create.get("access").is_none());
+    }
+
+    std::thread_local! {
+        /// How often each stand-in for the machine was asked, on this test's thread.
+        static ASKED: std::cell::RefCell<BTreeMap<&'static str, usize>> = Default::default();
+        /// The cursors the first boot was looked at from.
+        static CURSORS: std::cell::RefCell<Vec<String>> = Default::default();
+    }
+
+    /// How many times `what` was asked before, counting this one.
+    fn asked(what: &'static str) -> usize {
+        ASKED.with(|asked| {
+            let mut asked = asked.borrow_mut();
+            let count = asked.entry(what).or_default();
+            *count += 1;
+            *count
+        })
+    }
+
+    fn seeded(world: &World, options: &Options) -> (Result<()>, String) {
+        let asked = Provision {
+            provisioner: "fake/seeded".into(),
+            arguments: BTreeMap::new(),
+        };
+        let mut out = vec![];
+        let done = provision(
+            &world.paths,
+            &world.store(),
+            "studio",
+            &asked,
+            options,
+            &mut out,
+        );
+        (done, String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn the_wait_tells_each_stage_the_console_and_the_first_boot_once() {
+        let world = World::new();
+        world.file(
+            "answer.create",
+            r#"{"id": "seeded-1", "address": "192.0.2.40"}"#,
+        );
+        world.file(
+            "answer.status",
+            r#"{"state": "running", "address": "192.0.2.40"}"#,
+        );
+        world.file(
+            "answer.log",
+            r#"{"lines": ["[  OK  ] Started Journal Service.", "\u001b[32mcloud-init\u001b[0m: key tskey-auth-k1 taken", "  "]}"#,
+        );
+        let options = Options {
+            boot: Duration::from_secs(30),
+            reaches: |_| asked("ssh") > 3,
+            answers: |_, _| asked("berthd") > 2,
+            first_boot: |_, cursor| {
+                CURSORS.with(|cursors| cursors.borrow_mut().push(cursor.to_owned()));
+                Ok(match asked("first boot") {
+                    1 => "state provisioning\n==> Installing Ansible\n-- cursor: s=1;i=1\n",
+                    2 => "state provisioning\n==> Applying the role\nTASK [devbox : Check the profile] *\nTASK [devbox : Install Docker] *\n-- cursor: s=1;i=2\n",
+                    _ => "state configured-needs-enrollment\n==> The role is applied\n-- cursor: s=1;i=3\n",
+                }
+                .to_owned())
+            },
+            ..quick()
+        };
+        let (done, out) = seeded(&world, &options);
+        done.unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        let start = lines
+            .iter()
+            .position(|line| line.contains("waiting for berthd"))
+            .unwrap();
+        assert_eq!(
+            lines[start + 1..],
+            [
+                "▸ studio: its machine is running at 192.0.2.40",
+                "  │ [  OK  ] Started Journal Service.",
+                "  │ cloud-init: key [secret] taken",
+                "✓ studio: SSH answers",
+                "  │ first boot: provisioning",
+                "  │ Installing Ansible",
+                "  │ Applying the role",
+                "  │ Ansible task 2: Install Docker",
+                "  │ first boot: configured-needs-enrollment",
+                "  │ The role is applied",
+                "✓ studio: berthd answers",
+                "finished 192.0.2.40 as cloud",
+                "✓ studio is set up",
+            ],
+            "{out}"
+        );
+        // Each look goes on from where the last one ended.
+        assert_eq!(
+            CURSORS.with(|cursors| cursors.borrow().clone()),
+            ["", "s=1;i=1", "s=1;i=2"]
+        );
+        // The console is not asked for once SSH answers.
+        let logs = world
+            .requests()
+            .iter()
+            .filter(|(verb, _)| verb == "log")
+            .count();
+        assert_eq!(logs, 3);
+    }
+
+    #[test]
+    fn a_first_boot_that_failed_ends_the_wait_with_the_end_of_its_log() {
+        let world = World::new();
+        world.file(
+            "answer.create",
+            r#"{"id": "seeded-1", "address": "192.0.2.40"}"#,
+        );
+        world.file("answer.status", r#"{"state": "running"}"#);
+        let options = Options {
+            boot: Duration::from_secs(120),
+            answers: |_, _| false,
+            first_boot: |_, _| {
+                Ok("state failed\n==> Applying the role\nTASK [devbox : Install Docker] *\nfatal: [localhost]: FAILED! => {\"msg\": \"No package docker-ce\"}\n".into())
+            },
+            ..quick()
+        };
+        let started = Instant::now();
+        let (done, out) = seeded(&world, &options);
+        let said = done.unwrap_err().to_string();
+        assert!(started.elapsed() < Duration::from_secs(20));
+        assert!(said.contains("studio's first boot failed"), "{said}");
+        assert!(said.contains("berth instance studio destroy"), "{said}");
+        let end = out
+            .split_once("! studio: its first boot failed. The end of its log:\n")
+            .unwrap()
+            .1;
+        assert_eq!(
+            end,
+            "  │ ==> Applying the role\n  │ TASK [devbox : Install Docker] *\n  │ fatal: [localhost]: FAILED! => {\"msg\": \"No package docker-ce\"}\n"
+        );
+    }
+
+    #[test]
+    fn a_long_silence_is_broken_by_how_long_it_has_waited() {
+        let world = World::new();
+        with_secret(&world);
+        world.file(
+            "answer.create",
+            r#"{"id": "vm-1", "address": "192.0.2.20"}"#,
+        );
+        world.file("answer.status", r#"{"state": "running"}"#);
+        let options = Options {
+            ssh: Duration::from_millis(400),
+            alive: Duration::from_millis(100),
+            every: Duration::from_millis(20),
+            reaches: |_| false,
+            ..quick()
+        };
+        let asked = Provision {
+            provisioner: "fake/vm".into(),
+            arguments: [("server".to_owned(), "x".to_owned())].into(),
+        };
+        let mut out = vec![];
+        let said = provision(
+            &world.paths,
+            &world.store(),
+            "studio",
+            &asked,
+            &options,
+            &mut out,
+        )
+        .unwrap_err()
+        .to_string();
+        let out = String::from_utf8(out).unwrap();
+        assert!(said.contains("did not answer within"), "{said}");
+        let alive = out
+            .lines()
+            .filter(|line| line.starts_with("… studio: still waiting, "))
+            .count();
+        assert!((1..=6).contains(&alive), "{out}");
+        // A provisioner without the log verb is not asked for one.
+        assert!(world.requests().iter().all(|(verb, _)| verb != "log"));
+    }
+
+    #[test]
+    fn the_secrets_a_seed_carries_are_found_in_it() {
+        let deployment = json!({"profile": "cloud", "ansible_vars": {
+            "devbox_tailscale_auth_key": "tskey-auth-kAbc123-xyz",
+            "devbox_operator_password_hash": "$6$salt$hashhashhash",
+            "devbox_operator_ssh_public_key": "ssh-ed25519 AAAAexample",
+            "devbox_agent_passwordless_sudo": true,
+            "devbox_hostname": "studio",
+        }});
+        let seed = json!({
+            "users": ["default", {"name": "ops", "passwd": "$6$salt$hashhashhash"}],
+            "write_files": [
+                {"path": "/opt/devbox-bootstrap/deployment.json", "content": deployment.to_string()},
+                {"path": "/opt/devbox-bootstrap/release-login",
+                 "content": "user = \"reader:registry-password\"\n"},
+            ],
+        });
+        let mut found = seed_secrets(&format!("#cloud-config\n{seed:#}\n"));
+        found.sort();
+        found.dedup();
+        assert_eq!(
+            found,
+            [
+                "$6$salt$hashhashhash",
+                "reader:registry-password",
+                "tskey-auth-kAbc123-xyz",
+                "user = \"reader:registry-password\"",
+            ]
+        );
+        assert!(seed_secrets("#cloud-config\n# not JSON\n").is_empty());
+    }
+
+    #[test]
+    fn the_look_at_the_first_boot_carries_no_password_and_a_checked_cursor() {
+        let look = first_boot_look("s=ab;i=1");
+        assert!(look.contains("--after-cursor=\"s=ab;i=1\""), "{look}");
+        assert!(look.starts_with("IFS= read -r p;"));
+        // A cursor that is not one is left out rather than run.
+        assert!(!first_boot_look("x\"; reboot; \"").contains("after-cursor"));
+        // The look runs in a shell here as it would on the machine, with a
+        // sudo that refuses and no journal.
+        let bin = tempfile::tempdir().unwrap();
+        for tool in ["sh", "cat", "tail"] {
+            let found = Command::new("sh")
+                .args(["-c", &format!("command -v {tool}")])
+                .output()
+                .unwrap();
+            let path = String::from_utf8(found.stdout).unwrap();
+            std::os::unix::fs::symlink(path.trim(), bin.path().join(tool)).unwrap();
+        }
+        fs::write(bin.path().join("sudo"), "#!/bin/sh\nexit 1\n").unwrap();
+        fs::set_permissions(bin.path().join("sudo"), fs::Permissions::from_mode(0o755)).unwrap();
+        let mut sh = Command::new(bin.path().join("sh"));
+        sh.arg("-c")
+            .arg(first_boot_look("s=ab;i=1"))
+            .env("PATH", bin.path());
+        let printed = output_within(sh, "\n".into(), Duration::from_secs(10)).unwrap();
+        assert_eq!(printed, "state none\n");
     }
 
     #[test]

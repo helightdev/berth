@@ -737,7 +737,7 @@ pub struct ProvisionerInfo {
     /// `apply`: berth applies the profile over SSH once the machine answers.
     pub setup: String,
     /// What it can do besides `create`, `status` and `destroy`: `start`,
-    /// `stop`, `list`.
+    /// `stop`, `list`, `log`.
     #[serde(default)]
     pub verbs: Vec<String>,
     /// The berth secrets it is given.

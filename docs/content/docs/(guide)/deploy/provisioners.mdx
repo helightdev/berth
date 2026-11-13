@@ -16,13 +16,13 @@ berth provisioners
 docker/container         Docker container
   An Ubuntu 26.04 container with systemd and an SSH server, on the local Docker or on the engine named by host. berth applies its role to it over SSH.
   · berth applies the profile over SSH
-  · also start, stop, list
+  · also start, stop, list, log
   · asks publish_address (default 127.0.0.1)
   · asks keep_volume (default no)
 incus/vm                 Incus virtual machine
   A KVM guest on an Incus server, set up from berth's cloud seed. The server needs KVM.
   · sets itself up from the cloud seed
-  · also start, stop, list
+  · also start, stop, list, log
   · asks server
   · asks cpus (default 4)
   · secret incus_client_cert, not set
@@ -46,6 +46,38 @@ For an `apply` provisioner the account is the profile's SSH user. It takes berth
 A provisioner may report the machine's address and SSH port. berth writes them to `builder.ssh_host` and `builder.ssh_port` of the profile, but only where those are empty. A machine just made has a new SSH host key, so berth forgets the key known for that address first.
 
 A seeded machine whose address berth does not know is not waited for. berth says so and ends. The machine sets itself up on its own, and you set `builder.ssh_host` to reach it.
+
+### While berth waits
+
+The first boot of a seeded machine installs everything and can take most of the 30 minutes. berth says what it can find out as it goes, and each thing only once. Lines that come from the machine start with `│`.
+
+| What | When |
+| --- | --- |
+| The machine's state and address | When the provisioner reports a new one |
+| The latest lines of the machine's console | Until SSH answers, from provisioners that offer `log` |
+| `SSH answers` | Once berth can log in |
+| The first boot's state, its steps and the Ansible task it is at | After SSH answers, for a seeded machine |
+| `berthd answers` | When the host is ready |
+| `still waiting` and the time so far | After a minute without any other line |
+
+```text
+▸ studio-2: waiting for berthd to answer (up to 30 minutes)
+▸ studio-2: its machine is running at 192.0.2.31
+  │ [  OK  ] Started ssh.service - OpenBSD Secure Shell server.
+✓ studio-2: SSH answers
+  │ first boot: provisioning
+  │ Installing Ansible
+  │ Applying the role
+  │ Ansible task 87: Install the desktop
+… studio-2: still waiting, 12 minutes so far
+  │ Ansible task 214: Configure the browser
+  │ first boot: configured-needs-enrollment
+✓ studio-2: berthd answers
+```
+
+Reading the first boot's log needs sudo on the machine. berth uses sudo without a password, or `BERTH_SUDO_PASSWORD` when the profile says sudo asks for one. Without either, berth shows the first boot's state only.
+
+When the first boot fails, berth stops waiting at once and shows the last lines of its log. The machine tries again by itself every 10 minutes. berth hides the secrets in the seed, such as password hashes and the enrollment key, in every line it shows.
 
 ## Create the machine
 

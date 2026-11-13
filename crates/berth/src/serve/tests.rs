@@ -1734,7 +1734,10 @@ fn quick() -> berth_core::provision::Options {
         boot: Duration::from_millis(500),
         ssh: Duration::from_millis(500),
         every: Duration::from_millis(10),
-        answers: |_, _, _| true,
+        alive: Duration::from_secs(60),
+        reaches: |_| true,
+        answers: |_, _| true,
+        first_boot: |_, _| Ok(String::new()),
         finish: |_, host, _, out| {
             writeln!(out, "finished {}", host.address())?;
             Ok(())

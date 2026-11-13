@@ -23,7 +23,8 @@
         "verbs": [
           "start",
           "stop",
-          "list"
+          "list",
+          "log"
         ],
         "secrets": [
           "incus_client_cert",
@@ -54,7 +55,8 @@
         "verbs": [
           "start",
           "stop",
-          "list"
+          "list",
+          "log"
         ],
         "secrets": [
           "incus_client_cert",

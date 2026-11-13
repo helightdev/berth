@@ -91,7 +91,7 @@ pub struct Provisioner {
     /// The plugin puts the release archive into the machine, so the seed
     /// needs no `release_url`.
     pub archive: bool,
-    /// Of `start`, `stop` and `list`, those it answers.
+    /// Of `start`, `stop`, `list` and `log`, those it answers.
     pub verbs: Vec<String>,
     pub secrets: Vec<ProvisionerSecret>,
     /// Values are strings; `choices` is not used.
@@ -99,7 +99,7 @@ pub struct Provisioner {
 }
 
 /// The verbs a provisioner may answer besides `create`, `status` and `destroy`.
-pub const OPTIONAL_VERBS: &[&str] = &["start", "stop", "list"];
+pub const OPTIONAL_VERBS: &[&str] = &["start", "stop", "list", "log"];
 
 impl Provisioner {
     /// What is said of it, as `PLUGIN/ID`, with the required secrets that
