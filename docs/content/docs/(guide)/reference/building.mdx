@@ -126,18 +126,18 @@ GitHub Actions build on every push:
 | CI | The checks above and the end-to-end tests, both with `ci/run.sh`, and Vale. berth is built once, and the tests of each test host run in a job of their own |
 | Boot | The boot tests, `boot cloud` and `boot iso`, for changes to provisioning and when started by hand |
 | Docs | The docs build, and publishing it to GitHub Pages from `main` |
-| Build | The static `berth` for Linux x86_64 as artifact `berth-x86_64-linux`, the host programs as `host-programs-x86_64-linux`, `berth-remote` for Windows as `berth-remote-x86_64-windows`; the container image `ghcr.io/helightdev/berth`, tagged `edge` from `main` |
+| Build | The static `berth` for Linux x86_64 as artifact `berth-x86_64-linux`, the host programs as `host-programs-x86_64-linux`, `berth-remote` for each system as `berth-remote-<target>`; the container image `ghcr.io/helightdev/berth`, tagged `edge` from `main` |
 
 To release, push a tag such as `v0.3.0`, or create the release on GitHub's release page with a new tag. Build then:
 
 1. Builds `berth`, `berthd`, `box` and the page with the version of the tag, and checks that each says it. Runs `boot cloud`. When it fails, nothing is published.
-2. Publishes the release with both archives, `berth-remote-x86_64-windows.zip`, their checksum files, `install.sh`, `install.ps1` and `VERSION`. A release made on the page gets the files added.
+2. Publishes the release with both archives, the archives of `berth-remote`, their checksum files, `install.sh`, `install-remote.sh`, `install.ps1` and `VERSION`. A release made on the page gets the files added.
 3. Pushes the image tagged `0.3.0`, `0.3` and `latest`.
 4. Opens a pull request that sets the version on `main` in `Cargo.toml`, `Cargo.lock` and `docs/openapi/`. Merge it once its checks have passed.
 
 You don't edit a version anywhere. A build from a checkout says the version in `Cargo.toml`, which is that of the latest release. That way `berth update` never offers an older version. `berth`, `berthd`, `box` and the page take the version from `berth_api::VERSION`. A release build sets it with `BERTH_BUILD_VERSION`, and `docker build` takes the same name as a build argument.
 
-A tag with a suffix, such as `v0.4.0-rc.1`, makes a pre-release. Its programs say `0.4.0-rc.1` and its image is tagged only with that. `main` stays as it is. `install.sh` and `berth update` pass over pre-releases, and `BERTH_VERSION=v0.4.0-rc.1` installs one.
+A tag with a suffix, such as `v0.4.0-rc.1`, makes a pre-release. Its programs say `0.4.0-rc.1` and its image is tagged only with that. `main` stays as it is. The install scripts and `berth update` pass over pre-releases, and `BERTH_VERSION=v0.4.0-rc.1` installs one.
 
 ## With the page for a browser
 
@@ -155,14 +155,24 @@ cargo build --release -p berth --features web
 
 `berth update` stays with the build it is. The container image is the one with the page. The docs build takes the page from `target/web-dist` for `/web`. It builds the page with the `web` profile, as a release does, by setting `BERTH_WEB_PROFILE=web`.
 
-## A client for Windows
+## berth-remote
 
-`berth-remote` is the client for a [berth server](/docs/use/server#from-windows) in a terminal. It builds the screens of `crates/berth-web/` for a terminal, from `crates/berth-remote/`. It runs on Linux, macOS and Windows. A release builds it for Windows on Linux, with MinGW:
+`berth-remote` is the client for a [berth server](/docs/use/server#with-berth-remote) in a terminal. The screens of the page are in `crates/berth-page/`, which `crates/berth-web/` builds for a browser and `crates/berth-remote/` for a terminal. Each program gives the screens its own `Device`, from `crates/berth-page/src/device.rs`. It covers the clipboard, links, files, what is kept and the portal's socket.
+
+It builds on the system it is for:
 
 ```bash
-sudo apt-get install gcc-mingw-w64-x86-64        # once
-rustup target add x86_64-pc-windows-gnu          # once
-cargo build --release --locked -p berth-remote --target x86_64-pc-windows-gnu
+cargo build --release --locked -p berth-remote
 ```
 
-The program is `target/x86_64-pc-windows-gnu/release/berth-remote.exe`. On Windows itself, with Rust and the Visual Studio build tools, `cargo build --release -p berth-remote` builds it.
+A release builds it on a runner of each system and checks that it says its version:
+
+| System | Target | Archive |
+| --- | --- | --- |
+| Windows x86_64 | `x86_64-pc-windows-msvc`, with the C runtime linked in | `berth-remote-x86_64-windows.zip` |
+| macOS on Apple silicon | `aarch64-apple-darwin` | `berth-remote-aarch64-macos.tar.gz` |
+| macOS on Intel | `x86_64-apple-darwin` | `berth-remote-x86_64-macos.tar.gz` |
+| Linux x86_64 | `x86_64-unknown-linux-musl` | `berth-remote-x86_64-linux.tar.gz` |
+| Linux arm64 | `aarch64-unknown-linux-musl` | `berth-remote-aarch64-linux.tar.gz` |
+
+On Windows, the build needs Rust from rustup and the Visual Studio build tools.

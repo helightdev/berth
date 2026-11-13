@@ -37,10 +37,15 @@ Setting up hosts also needs `ssh`, `python3` and `ansible-playbook` on your
 machine. berth is also an image, `ghcr.io/helightdev/berth`, which runs its
 local API server by default.
 
-On Windows, `berth-remote` uses the hosts of a berth server from a terminal:
+`berth-remote` uses the hosts of a berth server from a terminal on Windows,
+macOS or Linux:
 
 ```powershell
-irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex   # Windows
+```
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/helightdev/berth/main/install-remote.sh | sh   # macOS, Linux
 ```
 
 ## Quick start
