@@ -677,7 +677,7 @@
   "info": {
     "description": "The WebSockets of berth serve: its own, and each host's under /v1/hosts/{name}. Text frames are JSON, one message each; binary frames carry only session and job bytes.",
     "title": "berth serve",
-    "version": "0.4.0"
+    "version": "0.4.1"
   },
   "operations": {
     "events.receive": {
