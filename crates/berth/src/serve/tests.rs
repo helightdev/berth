@@ -301,7 +301,8 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
     assert_eq!((secrets.status(), secrets.code()), (403, "forbidden"));
 
     // A job that ran: its state, its output both ways, and the stream of it.
-    let log = served.dir.path().join("j1.log");
+    std::fs::create_dir_all(&served.state.jobs_dir).unwrap();
+    let log = served.state.jobs_dir.join("j1.log");
     std::fs::write(&log, "PLAY [all]\nok: [devbox_target]\n").unwrap();
     let job = Job {
         id: "j1".into(),
@@ -374,6 +375,26 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
             .to_string()
             .contains("kept on the machine that ran it"),
         "{missing}"
+    );
+    // A row of a shared store can name any file of the server: it is not read.
+    let secret = served.dir.path().join("secret.log");
+    std::fs::write(&secret, "private").unwrap();
+    std::fs::write(secret.with_extension("json"), r#"{"private": true}"#).unwrap();
+    let planted = Job {
+        id: "j3".into(),
+        output_path: secret.to_string_lossy().into_owned(),
+        ..elsewhere.clone()
+    };
+    served.state.store.add_job(&planted).unwrap();
+    let refused = client
+        .get::<Output>("/v1/jobs/j3/output")
+        .await
+        .unwrap_err();
+    assert_eq!(refused.status(), 404);
+    let info: Value = client.get("/v1/jobs/j3").await.unwrap();
+    assert!(
+        info["report"].is_null() && !info.to_string().contains("private"),
+        "{info}"
     );
     let info: Value = client.get("/v1/jobs/j2").await.unwrap();
     assert_eq!(info["exit_code"], 0);
@@ -2992,26 +3013,35 @@ fn pruning_removes_a_jobs_output_and_its_report() {
     let dir = tempfile::tempdir().unwrap();
     let state = state_in(dir.path(), None);
     std::fs::create_dir_all(&state.jobs_dir).unwrap();
-    let log = state.jobs_dir.join("old.log");
+    let log = state.jobs_dir.join("jold.log");
     std::fs::write(&log, "done\n").unwrap();
     std::fs::write(log.with_extension("json"), "{}").unwrap();
+    // A row of a shared store that names a file elsewhere: the row goes,
+    // the file stays.
+    let elsewhere = dir.path().join("precious.log");
+    std::fs::write(&elsewhere, "kept\n").unwrap();
+    std::fs::write(elsewhere.with_extension("json"), "{}").unwrap();
     let long_ago = berth_api::rfc3339(berth_api::unix_now() - 200 * 86400);
-    state
-        .store
-        .add_job(&Job {
-            id: "old".into(),
-            host: "studio".into(),
-            what: "rollout".into(),
-            started: long_ago.clone(),
-            ended: Some(long_ago),
-            exit_code: Some(0),
-            output_path: log.to_string_lossy().into_owned(),
-            ..Job::default()
-        })
-        .unwrap();
+    for (id, output) in [("jold", &log), ("jelsewhere", &elsewhere)] {
+        state
+            .store
+            .add_job(&Job {
+                id: id.into(),
+                host: "studio".into(),
+                what: "rollout".into(),
+                started: long_ago.clone(),
+                ended: Some(long_ago.clone()),
+                exit_code: Some(0),
+                output_path: output.to_string_lossy().into_owned(),
+                ..Job::default()
+            })
+            .unwrap();
+    }
     state.prune();
-    assert!(state.store.job("old").unwrap().is_none());
+    assert!(state.store.job("jold").unwrap().is_none());
+    assert!(state.store.job("jelsewhere").unwrap().is_none());
     assert!(!log.exists() && !log.with_extension("json").exists());
+    assert!(elsewhere.exists() && elsewhere.with_extension("json").exists());
 }
 
 /// The routes of the key ring, with the helpers of these tests.

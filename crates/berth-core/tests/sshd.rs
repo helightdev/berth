@@ -3,7 +3,8 @@
 //! directory, logging in as that user. sshd sets `HOME` of its sessions to
 //! the scratch directory, so the keys berth installs land there and not in
 //! the user's own `~/.ssh`, and ssh is given no configuration file. Without
-//! sshd the test says so and passes.
+//! sshd, or for a user with no entry in the password database, which ssh,
+//! sshd and ssh-keygen all need, the test says so and passes.
 
 use berth_core::host::Host;
 use berth_core::keys::{self, Once, contact, known, ring};
@@ -131,6 +132,12 @@ fn first_contact_host_keys_and_rekeying_against_sshd() {
         eprintln!("no sshd on this machine: skipped");
         return;
     };
+    // SAFETY: getpwuid is given this process's own uid and only the
+    // pointer's being null is looked at.
+    if unsafe { libc::getpwuid(libc::getuid()) }.is_null() {
+        eprintln!("no user in the password database for this uid, as in a container: skipped");
+        return;
+    }
     let ssh = find("ssh", &[]).expect("ssh");
     let scratch = tempfile::tempdir().unwrap();
     // ssh of the tests reads no configuration of the user's.

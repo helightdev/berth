@@ -17,6 +17,7 @@
 pub mod askpass;
 pub mod contact;
 pub mod known;
+pub mod openssh;
 pub mod refusal;
 pub mod ring;
 
@@ -120,6 +121,14 @@ fn key_files(paths: &Paths, store: &Store, name: &str) -> Result<Vec<PathBuf>> {
 /// How to log in to the host whose profile is `config` at `place`.
 pub fn login(paths: &Paths, store: &Store, place: &Place, config: &Value) -> Result<Login> {
     let access = Access::of(config);
+    // A profile may come from a server or a shared store without the checks
+    // of saving it, and these two go on ssh's command line.
+    if !access.address.is_empty() && !berth_api::profile::valid_address(&access.address) {
+        return Err(format!("{}: access.address is not an SSH address", place.title()).into());
+    }
+    if !berth_api::profile::valid_user(&access.user) {
+        return Err(format!("{}: access.user is not an SSH user", place.title()).into());
+    }
     let served = config["builder"]["served"].is_string();
     // A berth server's host is reached by the server with the server's keys;
     // ssh from here can only be the user's own.
@@ -442,12 +451,7 @@ impl Login {
 
 /// Whether an address and a port can be given to ssh: the port, if there is one.
 pub fn check(address: &str, port: &str) -> Result<Option<u16>> {
-    if address.is_empty()
-        || address.starts_with('-')
-        || address
-            .chars()
-            .any(|ch| ch.is_whitespace() || ch.is_control())
-    {
+    if !berth_api::profile::valid_address(address) {
         return Err("Enter an SSH hostname, IP address or config alias".into());
     }
     if port.is_empty() {

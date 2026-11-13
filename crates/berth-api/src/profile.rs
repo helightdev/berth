@@ -147,6 +147,29 @@ pub fn valid_key_name(name: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
 }
 
+/// Whether a text can be a host's SSH address: a hostname, an IP address or
+/// an alias of the SSH configuration. It goes on ssh's command line, where
+/// one that starts with `-` would be read as an option.
+pub fn valid_address(address: &str) -> bool {
+    !address.is_empty()
+        && address.len() <= 255
+        && !address.starts_with('-')
+        && !address.contains('@')
+        && !address
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
+}
+
+/// Whether a text can be the user berth logs in as over SSH, empty for
+/// ssh's own choice. It becomes `USER@ADDRESS` on ssh's command line, where
+/// one that starts with `-` would be read as an option.
+pub fn valid_user(user: &str) -> bool {
+    user.len() <= 64
+        && !user.starts_with('-')
+        && !user.contains('@')
+        && !user.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+}
+
 /// Where a host is and how berth logs in to it: the `access` object of its
 /// profile.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -244,7 +267,20 @@ impl Access {
         if !["", "none", "password"].contains(&sudo) {
             problems.push(format!("access.sudo is none or password, not {sudo}"));
         }
-        let port = Access::of(config).port;
+        let Access {
+            address,
+            user,
+            port,
+            ..
+        } = Access::of(config);
+        if !address.is_empty() && !valid_address(&address) {
+            problems.push(format!(
+                "access.address is a hostname, IP address or SSH alias, not {address}"
+            ));
+        }
+        if !valid_user(&user) {
+            problems.push(format!("access.user is not an SSH user: {user}"));
+        }
         if !port.is_empty() && !port.parse::<u16>().is_ok_and(|port| port != 0) {
             problems.push("access.port must be between 1 and 65535".into());
         }
@@ -456,6 +492,27 @@ pub fn retire_qemu(config: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_address_or_user_cannot_be_an_option_of_ssh() {
+        for good in ["192.0.2.10", "studio.example", "studio", "2001:db8::1"] {
+            assert!(valid_address(good), "{good}");
+        }
+        for bad in ["", "-oProxyCommand=x", "a b", "ops@studio", "a\nb"] {
+            assert!(!valid_address(bad), "{bad}");
+        }
+        assert!(valid_user("") && valid_user("ops") && valid_user("first.last"));
+        for bad in ["-oProxyCommand=touch /tmp/x;#", "a b", "a@b", "a\tb"] {
+            assert!(!valid_user(bad), "{bad}");
+        }
+        let problems = |access: Value| problems(&json!({"level": "reachable", "access": access}));
+        assert!(problems(json!({"address": "192.0.2.10", "user": "ops"})).is_empty());
+        assert_eq!(problems(json!({"address": "-oProxyCommand=x"})).len(), 1);
+        assert_eq!(
+            problems(json!({"address": "192.0.2.10", "user": "-oProxyCommand=x"})).len(),
+            1
+        );
+    }
 
     #[test]
     fn a_pasted_key_wins_over_the_automatic_one() {

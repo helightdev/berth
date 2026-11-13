@@ -166,13 +166,13 @@ pub struct KvWritten {
 }
 
 /// Where a roll-out keeps its report: beside its output.
-pub(super) fn report_path(output: &str) -> std::path::PathBuf {
-    std::path::Path::new(output).with_extension("json")
+pub(super) fn report_path(output: &std::path::Path) -> std::path::PathBuf {
+    output.with_extension("json")
 }
 
-pub(super) fn job_info(job: store::Job) -> JobInfo {
-    let report = std::fs::read(report_path(&job.output_path))
-        .ok()
+pub(super) fn job_info(paths: &berth_core::paths::Paths, job: store::Job) -> JobInfo {
+    let report = berth_core::runner::output_file(paths, &job.output_path)
+        .and_then(|output| std::fs::read(report_path(&output)).ok())
         .and_then(|data| serde_json::from_slice(&data).ok());
     JobInfo {
         report,
@@ -544,7 +544,11 @@ struct Limit {
     responses((status = 200, description = "Jobs, newest first", body = Vec<JobInfo>)))]
 async fn jobs(State(state): App, Query(query): Query<Limit>) -> Answer<Json<Vec<JobInfo>>> {
     let jobs = state.store.jobs(query.limit.unwrap_or(100))?;
-    Ok(Json(jobs.into_iter().map(job_info).collect()))
+    Ok(Json(
+        jobs.into_iter()
+            .map(|job| job_info(&state.paths, job))
+            .collect(),
+    ))
 }
 
 fn find_job(state: &Serve, id: &str) -> Answer<store::Job> {
@@ -574,7 +578,7 @@ async fn job(
             let offset = query.since.unwrap_or(0);
             ws.on_upgrade(move |socket| follow_job(state, id, offset, socket))
         }
-        Err(_) => Json(job_info(job)).into_response(),
+        Err(_) => Json(job_info(&state.paths, job)).into_response(),
     })
 }
 
@@ -587,14 +591,15 @@ async fn follow_job(state: Arc<Serve>, id: String, mut offset: u64, mut socket: 
             return;
         };
         // Said once, as output, so a follower shows it as it shows the rest.
-        if !said_elsewhere && !std::path::Path::new(&job.output_path).exists() {
+        let output = berth_core::runner::output_file(&state.paths, &job.output_path);
+        if !said_elsewhere && !output.as_ref().is_some_and(|output| output.exists()) {
             said_elsewhere = true;
             let note = format!("{}\n", output_elsewhere(&id));
             if socket.send(WsMessage::Binary(note.into())).await.is_err() {
                 return;
             }
         }
-        let data = read_from(&job.output_path, offset);
+        let data = output.map_or_else(Vec::new, |output| read_from(&output, offset));
         if !data.is_empty() {
             offset += data.len() as u64;
             if socket.send(WsMessage::Binary(data.into())).await.is_err() {
@@ -615,7 +620,7 @@ async fn follow_job(state: Arc<Serve>, id: String, mut offset: u64, mut socket: 
     }
 }
 
-fn read_from(path: &str, offset: u64) -> Vec<u8> {
+fn read_from(path: &std::path::Path, offset: u64) -> Vec<u8> {
     use std::io::{Read, Seek, SeekFrom};
     let mut data = vec![];
     if let Ok(mut file) = std::fs::File::open(path)
@@ -700,7 +705,10 @@ async fn job_output(
     Query(query): Query<OutputQuery>,
 ) -> Answer<Json<Output>> {
     let job = find_job(&state, &id)?;
-    let data = match std::fs::read(&job.output_path) {
+    let Some(output) = berth_core::runner::output_file(&state.paths, &job.output_path) else {
+        return Err(Fail::new(code::NOT_FOUND, output_elsewhere(&id)));
+    };
+    let data = match std::fs::read(&output) {
         Ok(data) => data,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(Fail::new(code::NOT_FOUND, output_elsewhere(&id)));

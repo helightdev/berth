@@ -44,11 +44,20 @@ pub struct Public {
 /// The suffix of the row of a key that replaces another.
 pub const PENDING: &str = ".pending";
 
-fn row(name: &str, pending: bool) -> String {
-    match pending {
+/// The row of a key, and the name of its file. Every way to a key comes
+/// through here, so a name from a request, a profile or a row of a shared
+/// store that could leave `keys/` is refused before any file is touched.
+fn row(name: &str, pending: bool) -> Result<String> {
+    if !valid_key_name(name) {
+        return Err(format!(
+            "A key's name is letters, digits, - and _, such as deploy, not {name}"
+        )
+        .into());
+    }
+    Ok(match pending {
         true => format!("{name}{PENDING}"),
         false => name.to_owned(),
-    }
+    })
 }
 
 /// The SHA256 fingerprint of a public key line, as `ssh-keygen -l` writes it.
@@ -72,7 +81,7 @@ pub fn blob(public: &str) -> String {
 
 /// The halves of a key, or of its pending successor.
 pub fn read(store: &Store, name: &str, pending: bool) -> Result<Option<Halves>> {
-    let Some(value) = store.read(kind::KEY, OWN, &row(name, pending))? else {
+    let Some(value) = store.read(kind::KEY, OWN, &row(name, pending)?)? else {
         return Ok(None);
     };
     serde_json::from_slice(&value)
@@ -84,13 +93,13 @@ fn write(store: &Store, name: &str, pending: bool, halves: &Halves) -> Result<()
     Ok(store.write(
         kind::KEY,
         OWN,
-        &row(name, pending),
+        &row(name, pending)?,
         &serde_json::to_vec(halves)?,
     )?)
 }
 
-/// Put a key that is not a real one under `name`, so that a test makes no
-/// key with ssh-keygen, which needs an account in the password database.
+/// Put a key that is not a real one under `name`, for a test that needs a
+/// key in the ring but never logs in with it.
 #[cfg(test)]
 pub fn give_test_key(store: &Store, name: &str) {
     let halves = Halves {
@@ -163,7 +172,7 @@ pub fn ensure(paths: &Paths, store: &Store) -> Result<Halves> {
     if let Some(halves) = read(store, BERTH_KEY, false)? {
         return Ok(halves);
     }
-    let halves = generate(paths, BERTH_KEY)?;
+    let halves = generate(BERTH_KEY)?;
     write(store, BERTH_KEY, false, &halves)?;
     Ok(halves)
 }
@@ -172,18 +181,31 @@ fn lock_file(paths: &Paths) -> PathBuf {
     paths.data_dir.join("locks").join("keys.lock")
 }
 
-/// A new ed25519 key.
-pub fn generate(paths: &Paths, name: &str) -> Result<Halves> {
-    let made = crate::kept::generate_key_named(paths, name)?;
+/// A new ed25519 key, whose comment says which key of the ring it is and,
+/// in authorized_keys, which berth it belongs to.
+pub fn generate(name: &str) -> Result<Halves> {
+    let machine = fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
+    let machine = machine.trim().split('.').next().unwrap_or("");
+    let who = match name {
+        BERTH_KEY => BERTH_KEY.to_owned(),
+        name => format!("berth-{name}"),
+    };
+    let comment = match machine {
+        "" => who,
+        machine => format!("{who}@{machine}"),
+    };
+    let made = super::openssh::generate(&comment)?;
     Ok(Halves {
-        private: String::from_utf8(made[0].clone()).map_err(|_| "ssh-keygen made no text")?,
-        public: String::from_utf8_lossy(&made[1]).trim().to_owned(),
+        private: made.private,
+        public: made.public,
     })
 }
 
-/// A private key as ssh can use it, with its public half from `ssh-keygen
-/// -y`, which reads every type ssh takes. One with a passphrase is refused:
-/// berth logs in without anyone to type it.
+/// A private key as ssh can use it, with its public half. A key in
+/// OpenSSH's own format, which ssh-keygen has written since OpenSSH 7.8, is
+/// read by berth; an older PEM file goes to `ssh-keygen -y`, which reads
+/// every type ssh takes. One with a passphrase is refused: berth logs in
+/// without anyone to type it.
 pub fn validate(paths: &Paths, private: &[u8]) -> Result<Halves> {
     let text = std::str::from_utf8(private).map_err(|_| "That is not an OpenSSH private key")?;
     if !text.contains("PRIVATE KEY-----") {
@@ -191,6 +213,24 @@ pub fn validate(paths: &Paths, private: &[u8]) -> Result<Halves> {
     }
     let mut text = text.trim().to_owned();
     text.push('\n');
+    let public = match super::openssh::is_openssh(&text) {
+        true => {
+            super::openssh::public_of(&text).map_err(|why| match why.contains("passphrase") {
+                true => PASSPHRASE.to_owned(),
+                false => why.to_owned(),
+            })?
+        }
+        false => public_by_keygen(paths, &text)?,
+    };
+    Ok(Halves {
+        private: text,
+        public,
+    })
+}
+
+const PASSPHRASE: &str = "That key has a passphrase. berth logs in where nobody can type one: remove it from a copy with ssh-keygen -p -N '' -f COPY and add the copy";
+
+fn public_by_keygen(paths: &Paths, text: &str) -> Result<String> {
     let dir = scratch_dir(paths)?;
     let file = dir.path().join("key");
     crate::paths::write_private(&file, text.as_bytes())?;
@@ -204,7 +244,7 @@ pub fn validate(paths: &Paths, private: &[u8]) -> Result<Halves> {
     if !said.status.success() {
         let why = String::from_utf8_lossy(&said.stderr).to_lowercase();
         if why.contains("passphrase") {
-            return Err("That key has a passphrase. berth logs in where nobody can type one: remove it from a copy with ssh-keygen -p -N '' -f COPY and add the copy".into());
+            return Err(PASSPHRASE.into());
         }
         return Err("ssh-keygen cannot read that private key".into());
     }
@@ -212,10 +252,7 @@ pub fn validate(paths: &Paths, private: &[u8]) -> Result<Halves> {
     if public.split_whitespace().count() < 2 {
         return Err("ssh-keygen gave no public half for that key".into());
     }
-    Ok(Halves {
-        private: text,
-        public,
-    })
+    Ok(public)
 }
 
 /// A private directory for files that live only as long as one step.
@@ -232,12 +269,7 @@ pub(crate) fn scratch_dir(paths: &Paths) -> Result<tempfile::TempDir> {
 
 /// Add a key: a new one when `private` is `None`, else that private key.
 pub fn add(paths: &Paths, store: &Store, name: &str, private: Option<&[u8]>) -> Result<Public> {
-    if !valid_key_name(name) {
-        return Err(format!(
-            "A key's name is letters, digits, - and _, such as deploy, not {name}"
-        )
-        .into());
-    }
+    row(name, false)?;
     if store
         .names(kind::KEY, OWN)?
         .iter()
@@ -250,7 +282,7 @@ pub fn add(paths: &Paths, store: &Store, name: &str, private: Option<&[u8]>) -> 
     }
     let halves = match private {
         Some(private) => validate(paths, private)?,
-        None => generate(paths, name)?,
+        None => generate(name)?,
     };
     write(store, name, false, &halves)?;
     Ok(public_of(name, &halves))
@@ -280,7 +312,10 @@ pub fn remove(paths: &Paths, store: &Store, name: &str) -> Result<()> {
         .into());
     }
     store.change(&[], &[(kind::KEY, OWN, name)])?;
-    for file in [file_path(paths, name, false), file_path(paths, name, true)] {
+    for file in [
+        file_path(paths, name, false)?,
+        file_path(paths, name, true)?,
+    ] {
         let _ = fs::remove_file(&file);
         let _ = fs::remove_file(public_path(&file));
     }
@@ -288,8 +323,8 @@ pub fn remove(paths: &Paths, store: &Store, name: &str) -> Result<()> {
 }
 
 /// Where a key's private half is written for ssh.
-pub fn file_path(paths: &Paths, name: &str, pending: bool) -> PathBuf {
-    paths.data_dir.join("keys").join(row(name, pending))
+pub fn file_path(paths: &Paths, name: &str, pending: bool) -> Result<PathBuf> {
+    Ok(paths.data_dir.join("keys").join(row(name, pending)?))
 }
 
 /// The private half of a key as a file, written from the store. `None` for
@@ -303,7 +338,7 @@ pub fn file(paths: &Paths, store: &Store, name: &str, pending: bool) -> Result<O
             None => return Err(no_key(name)),
         },
     };
-    let path = file_path(paths, name, pending);
+    let path = file_path(paths, name, pending)?;
     write_halves(&path, &halves)?;
     Ok(Some(path))
 }
@@ -336,7 +371,7 @@ pub fn begin_rotation(paths: &Paths, store: &Store, name: &str) -> Result<Halves
     if let Some(next) = read(store, name, true)? {
         return Ok(next);
     }
-    let next = generate(paths, name)?;
+    let next = generate(name)?;
     write(store, name, true, &next)?;
     Ok(next)
 }
@@ -347,17 +382,17 @@ pub fn finish_rotation(paths: &Paths, store: &Store, name: &str) -> Result<()> {
     let Some(next) = read(store, name, true)? else {
         return Ok(());
     };
-    let pending = row(name, true);
+    let pending = row(name, true)?;
     store.change(
         &[(kind::KEY, OWN, name, serde_json::to_vec(&next)?)],
         &[(kind::KEY, OWN, pending.as_str())],
     )?;
-    let old = file_path(paths, name, false);
+    let old = file_path(paths, name, false)?;
     // Replaced on purpose: the old key is retired, not something to keep aside.
     let _ = fs::remove_file(&old);
     let _ = fs::remove_file(public_path(&old));
     write_halves(&old, &next)?;
-    let gone = file_path(paths, name, true);
+    let gone = file_path(paths, name, true)?;
     let _ = fs::remove_file(&gone);
     let _ = fs::remove_file(public_path(&gone));
     Ok(())

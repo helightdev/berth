@@ -798,6 +798,7 @@ pub fn npm(paths: &Paths, verb: &str, what: &str) -> Result<Vec<String>> {
             "--prefix",
         ])
         .arg(&own)
+        .arg("--")
         .arg(what)
         .stdin(std::process::Stdio::null())
         .output()
@@ -983,6 +984,7 @@ fn ask_npm(own: &Path, updates: &mut [PluginUpdate], ask: &[String]) -> Result<(
     let output = std::process::Command::new("npm")
         .args(["outdated", "--json", "--prefix"])
         .arg(own)
+        .arg("--")
         .args(ask)
         .stdin(std::process::Stdio::null())
         .output()
@@ -1250,6 +1252,7 @@ fn pack(folder: &Path) -> Result<Vec<u8>> {
     let output = std::process::Command::new("npm")
         .args(["pack", "--ignore-scripts", "--silent", "--pack-destination"])
         .arg(into.path())
+        .arg("--")
         .arg(folder)
         .stdin(std::process::Stdio::null())
         .output()

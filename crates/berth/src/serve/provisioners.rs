@@ -160,7 +160,7 @@ pub async fn provisioner_act(
     }));
     let job = state.runner.start(request, work).map_err(refused)?;
     Ok(answer(Acted {
-        job: Some(job_info(job)),
+        job: Some(job_info(&state.paths, job)),
         ..Acted::default()
     }))
 }

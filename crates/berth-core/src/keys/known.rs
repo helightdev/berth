@@ -165,14 +165,7 @@ pub fn seed_from(
         return Ok(false);
     }
     for name in names.iter().filter(|name| !name.is_empty()) {
-        let found = std::process::Command::new("ssh-keygen")
-            .args(["-F", name, "-f"])
-            .arg(known_hosts)
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output();
-        let Ok(found) = found else { continue };
-        let keys = keys_in(&String::from_utf8_lossy(&found.stdout));
+        let keys = lookup(&fs::read_to_string(known_hosts).unwrap_or_default(), name);
         if !keys.is_empty() {
             record.host_keys = keys;
             record.save(store, place)?;
@@ -180,6 +173,65 @@ pub fn seed_from(
         }
     }
     Ok(false)
+}
+
+/// The host keys, `TYPE BASE64` each, that the text of a known-hosts file
+/// such as `~/.ssh/known_hosts` has for `name`, an address or
+/// `[ADDRESS]:PORT`, as `ssh-keygen -F` finds them: in plain and hashed
+/// lines, with `*` and `?` in patterns and `!` to exclude. Lines marked
+/// `@revoked` or `@cert-authority` are no host's key.
+pub fn lookup(text: &str, name: &str) -> Vec<String> {
+    let name = name.to_ascii_lowercase();
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with(['#', '@']))
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            let hosts = words.next()?;
+            let key = format!("{} {}", words.next()?, words.next()?);
+            hosts_match(hosts, &name).then_some(key)
+        })
+        .collect()
+}
+
+fn hosts_match(hosts: &str, name: &str) -> bool {
+    if let Some(hashed) = hosts.strip_prefix("|1|") {
+        use hmac::{Hmac, Mac};
+        let Some((salt, hash)) = hashed.split_once('|') else {
+            return false;
+        };
+        let (Some(salt), Some(hash)) = (berth_api::unb64(salt), berth_api::unb64(hash)) else {
+            return false;
+        };
+        let Ok(mut mac) = Hmac::<sha1::Sha1>::new_from_slice(&salt) else {
+            return false;
+        };
+        mac.update(name.as_bytes());
+        return mac.verify_slice(&hash).is_ok();
+    }
+    let mut matched = false;
+    for pattern in hosts.split(',') {
+        let pattern = pattern.to_ascii_lowercase();
+        match pattern.strip_prefix('!') {
+            Some(negated) if wildcard(negated.as_bytes(), name.as_bytes()) => return false,
+            Some(_) => {}
+            None => matched |= wildcard(pattern.as_bytes(), name.as_bytes()),
+        }
+    }
+    matched
+}
+
+/// Whether `text` matches `pattern`, where `*` is any run and `?` any one.
+fn wildcard(pattern: &[u8], text: &[u8]) -> bool {
+    match (pattern.first(), text.first()) {
+        (None, None) => true,
+        (Some(b'*'), _) => {
+            wildcard(&pattern[1..], text) || (!text.is_empty() && wildcard(pattern, &text[1..]))
+        }
+        (Some(b'?'), Some(_)) => wildcard(&pattern[1..], &text[1..]),
+        (Some(p), Some(t)) if p == t => wildcard(&pattern[1..], &text[1..]),
+        _ => false,
+    }
 }
 
 /// The sentence for an ssh that refused a host because its key changed.
@@ -196,6 +248,34 @@ pub fn changed_key(name: &str, said: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_known_hosts_file_is_searched_as_ssh_keygen_does() {
+        // What `ssh-keygen -H` makes of a line for 192.0.2.10.
+        let hashed = "|1|CZqkPPc86dJHd5J4+xGj+7JNKvc=|bcssnejYjRKZfOHUfJ8LjrYBWGY=";
+        let text = format!(
+            "# a comment\n\
+             192.0.2.9,192.0.2.10 ssh-ed25519 AAAAplain\n\
+             {hashed} ecdsa-sha2-nistp256 AAAAhashed\n\
+             [192.0.2.10]:2222 ssh-ed25519 AAAAport\n\
+             192.0.2.* ssh-rsa AAAAwild comment\n\
+             192.0.2.*,!192.0.2.10 ssh-rsa AAAAnot\n\
+             @revoked 192.0.2.10 ssh-ed25519 AAAArevoked\n\
+             STUDIO ssh-ed25519 AAAAname\n"
+        );
+        assert_eq!(
+            lookup(&text, "192.0.2.10"),
+            [
+                "ssh-ed25519 AAAAplain",
+                "ecdsa-sha2-nistp256 AAAAhashed",
+                "ssh-rsa AAAAwild"
+            ]
+        );
+        assert_eq!(lookup(&text, "[192.0.2.10]:2222"), ["ssh-ed25519 AAAAport"]);
+        assert_eq!(lookup(&text, "studio"), ["ssh-ed25519 AAAAname"]);
+        assert!(lookup(&text, "198.51.100.1").is_empty());
+        assert!(lookup("192.0.2.10 ssh-ed25519", "192.0.2.10").is_empty());
+    }
 
     #[test]
     fn aliases_are_one_word_per_place() {

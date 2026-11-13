@@ -88,7 +88,7 @@ fn refused(error: Box<dyn std::error::Error>) -> Fail {
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> berth_core::Result<T> + Send + 'static,
 ) -> Answer<T> {
-    // A key's halves come from ssh-keygen and the store, which both wait.
+    // A key's halves come from the store, which waits, and /dev/urandom.
     let done = tokio::task::spawn_blocking(move || work().map_err(|error| error.to_string()))
         .await
         .map_err(internal)?;
@@ -182,7 +182,7 @@ pub(super) fn start_rotation(
         .start(request, work)
         .map_err(|error| Fail::new(code::CONFLICT, error.to_string()))?;
     Ok(Acted {
-        job: Some(job_info(job)),
+        job: Some(job_info(&state.paths, job)),
         ..Acted::default()
     })
 }

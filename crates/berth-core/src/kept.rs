@@ -176,48 +176,6 @@ impl Kept {
     }
 }
 
-/// A new ed25519 key, private and public half, as ssh-keygen makes it.
-pub fn generate_key(paths: &Paths) -> Result<Vec<Vec<u8>>> {
-    generate_key_named(paths, "berth")
-}
-
-/// A new ed25519 key whose comment says which key of the ring it is.
-pub fn generate_key_named(paths: &Paths, name: &str) -> Result<Vec<Vec<u8>>> {
-    use std::os::unix::fs::DirBuilderExt;
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&paths.data_dir)?;
-    let dir = tempfile::tempdir_in(&paths.data_dir)?;
-    let key = dir.path().join("id_ed25519");
-    // The comment only tells the keys of several berths apart in authorized_keys.
-    let machine = fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
-    let machine = machine.trim().split('.').next().unwrap_or("");
-    let who = match name {
-        "berth" => "berth".to_owned(),
-        name => format!("berth-{name}"),
-    };
-    let comment = match machine {
-        "" => who,
-        machine => format!("{who}@{machine}"),
-    };
-    let made = std::process::Command::new("ssh-keygen")
-        .args(["-q", "-t", "ed25519", "-N", "", "-C"])
-        .arg(comment)
-        .arg("-f")
-        .arg(&key)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|error| format!("ssh-keygen: {error}"))?;
-    if !made.status.success() {
-        return Err(String::from_utf8_lossy(&made.stderr)
-            .trim()
-            .to_owned()
-            .into());
-    }
-    Ok(vec![fs::read(&key)?, fs::read(key.with_extension("pub"))?])
-}
-
 /// A new token: 32 random bytes in hex, as `serve.token` holds it.
 pub fn generate_token() -> Result<Vec<Vec<u8>>> {
     let mut bytes = [0u8; 32];

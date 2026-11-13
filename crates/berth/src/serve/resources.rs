@@ -164,7 +164,7 @@ pub async fn create(State(state): App, body: Bytes) -> Answer<(StatusCode, Json<
                 StatusCode::ACCEPTED,
                 Json(Created {
                     resource: described(&state, &kept),
-                    job: job_info(job),
+                    job: job_info(&state.paths, job),
                 }),
             ));
         }
@@ -197,7 +197,7 @@ pub async fn create(State(state): App, body: Bytes) -> Answer<(StatusCode, Json<
         StatusCode::ACCEPTED,
         Json(Created {
             resource: described(&state, &kept),
-            job: job_info(job),
+            job: job_info(&state.paths, job),
         }),
     ))
 }
@@ -228,7 +228,7 @@ async fn run_action(
             .job_by_token(&kept.subject().key(), &action, token)?
     {
         return Ok(Acted {
-            job: Some(job_info(job)),
+            job: Some(job_info(&state.paths, job)),
             ..Acted::default()
         });
     }
@@ -256,7 +256,7 @@ async fn run_action(
     let ticket = match state.runner.reserve(request).map_err(refused)? {
         Reserved::Found(job) => {
             return Ok(Acted {
-                job: Some(job_info(job)),
+                job: Some(job_info(&state.paths, job)),
                 ..Acted::default()
             });
         }
@@ -275,7 +275,7 @@ async fn run_action(
         }
     }));
     Ok(Acted {
-        job: Some(job_info(ticket.run(work))),
+        job: Some(job_info(&state.paths, ticket.run(work))),
         ..Acted::default()
     })
 }

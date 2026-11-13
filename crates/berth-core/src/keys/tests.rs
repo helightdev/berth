@@ -176,9 +176,20 @@ fn the_link_and_the_inventory_take_the_same_options() {
             paths.data_dir.join("keys/berth").display()
         )));
     }
-    let bad = |access: Value| login_for(&paths, &store, access).inventory().is_err();
+    let bad = |access: Value| {
+        let place = Place::own("studio").unwrap();
+        login(&paths, &store, &place, &json!({"access": access}))
+            .and_then(|login| login.inventory())
+            .is_err()
+    };
     assert!(bad(json!({"address": "-oProxyCommand=x"})));
     assert!(bad(json!({"address": "box", "port": "0"})));
+    // A profile that skipped the checks of saving, from a server or a shared
+    // store, gives ssh no option in place of its target.
+    assert!(bad(
+        json!({"address": "box", "user": "-oProxyCommand=touch /tmp/x;#"})
+    ));
+    assert!(bad(json!({"address": "-oProxyCommand=x", "auth": "ssh"})));
 }
 
 #[test]
@@ -195,44 +206,19 @@ fn a_pending_key_is_offered_beside_the_current_one() {
 }
 
 #[test]
-fn the_ring_takes_keys_ssh_keygen_reads_and_no_passphrase() {
-    let (dir, paths, store) = scratch();
-    let made = dir.path().join("made");
-    let keygen = |args: &[&str]| {
-        assert!(
-            Command::new("ssh-keygen")
-                .args(args)
-                .arg("-f")
-                .arg(&made)
-                .stdin(std::process::Stdio::null())
-                .output()
-                .unwrap()
-                .status
-                .success()
-        );
-    };
-    keygen(&["-q", "-t", "ecdsa", "-N", "", "-C", "made-up"]);
-    let private = std::fs::read(&made).unwrap();
-    let added = ring::add(&paths, &store, "deploy", Some(&private)).unwrap();
-    assert_eq!(
-        ring::blob(&added.public),
-        ring::blob(&std::fs::read_to_string(made.with_extension("pub")).unwrap())
-    );
+fn the_ring_takes_openssh_keys_without_a_passphrase() {
+    let (_dir, paths, store) = scratch();
+    let made = openssh::generate("made-up").unwrap();
+    let private = made.private.as_bytes();
+    let added = ring::add(&paths, &store, "deploy", Some(private)).unwrap();
+    assert_eq!(ring::blob(&added.public), ring::blob(&made.public));
     assert!(added.fingerprint.starts_with("SHA256:"));
-    assert!(ring::add(&paths, &store, "deploy", Some(&private)).is_err());
+    assert!(ring::add(&paths, &store, "deploy", Some(private)).is_err());
     assert!(ring::add(&paths, &store, "bad name", None).is_err());
     assert!(ring::add(&paths, &store, "junk", Some(b"not a key")).is_err());
-    std::fs::remove_file(&made).unwrap();
-    std::fs::remove_file(made.with_extension("pub")).unwrap();
-    keygen(&["-q", "-t", "ed25519", "-N", "made-up-phrase"]);
-    let said = ring::add(
-        &paths,
-        &store,
-        "locked",
-        Some(&std::fs::read(&made).unwrap()),
-    )
-    .unwrap_err()
-    .to_string();
+    let said = ring::add(&paths, &store, "locked", Some(openssh::locked().as_bytes()))
+        .unwrap_err()
+        .to_string();
     assert!(said.contains("passphrase"), "{said}");
 
     // The list shows public halves, berth first; no private half is in it.
@@ -262,6 +248,35 @@ fn the_ring_takes_keys_ssh_keygen_reads_and_no_passphrase() {
     ring::remove(&paths, &store, "deploy").unwrap();
     assert!(!paths.data_dir.join("keys/deploy").exists());
     assert_eq!(ring::names(&store).unwrap(), ["berth"]);
+}
+
+#[test]
+fn a_key_name_that_leaves_the_folder_of_keys_is_refused_everywhere() {
+    let (dir, paths, store) = scratch();
+    // A row of that name, as another berth sharing the store could write it.
+    let outside = dir.path().join("outside");
+    std::fs::write(&outside, "kept").unwrap();
+    let halves =
+        serde_json::to_vec(&json!({"private": "x", "public": "ssh-ed25519 AAAA"})).unwrap();
+    for name in ["../../outside", "../../outside.pending"] {
+        store.write(kind::KEY, OWN, name, &halves).unwrap();
+    }
+    let name = "../../outside";
+    assert!(ring::read(&store, name, false).is_err());
+    assert!(ring::file(&paths, &store, name, false).is_err());
+    assert!(ring::remove(&paths, &store, name).is_err());
+    assert!(ring::finish_rotation(&paths, &store, name).is_err());
+    assert!(ring::begin_rotation(&paths, &store, name).is_err());
+    assert!(ring::public(&paths, &store, name).is_err());
+    assert!(ring::file_path(&paths, name, false).is_err());
+    assert!(ring::add(&paths, &store, "-x", None).is_err());
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), "kept");
+    assert!(
+        !ring::names(&store)
+            .unwrap()
+            .iter()
+            .any(|known| known.contains('/'))
+    );
 }
 
 #[test]

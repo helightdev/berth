@@ -450,7 +450,7 @@ async fn run_task(
     let ticket = match state.runner.reserve(request).map_err(refused)? {
         Reserved::Found(job) => {
             return Ok(Acted {
-                job: Some(job_info(job)),
+                job: Some(job_info(&state.paths, job)),
                 ..Acted::default()
             });
         }
@@ -473,7 +473,7 @@ async fn run_task(
     };
     let job = ticket.run(work);
     Ok(Acted {
-        job: Some(job_info(job)),
+        job: Some(job_info(&state.paths, job)),
         session: Some(session),
         result: None,
     })
@@ -566,7 +566,7 @@ fn install_controller(state: Arc<Serve>, name: String, act: Act) -> Run {
         }));
         let job = state.runner.start(request, work).map_err(refused)?;
         Ok(Acted {
-            job: Some(job_info(job)),
+            job: Some(job_info(&state.paths, job)),
             ..Acted::default()
         })
     })
@@ -613,7 +613,7 @@ fn apply(state: Arc<Serve>, name: String, act: Act) -> Run {
         }));
         let job = state.runner.start(request, work).map_err(refused)?;
         Ok(Acted {
-            job: Some(job_info(job)),
+            job: Some(job_info(&state.paths, job)),
             ..Acted::default()
         })
     })
@@ -787,7 +787,7 @@ fn rollout(state: Arc<Serve>, _: String, act: Act) -> Run {
             drop(targets);
             if let Some(log) = out.log() {
                 let _ = std::fs::write(
-                    report_path(&log.to_string_lossy()),
+                    report_path(log),
                     serde_json::to_vec(&report).unwrap_or_default(),
                 );
             }
@@ -796,7 +796,7 @@ fn rollout(state: Arc<Serve>, _: String, act: Act) -> Run {
         // The roll-out waits on hosts with a runtime of its own, in the job's thread.
         let job = state.runner.start(request, work).map_err(refused)?;
         Ok(Acted {
-            job: Some(job_info(job)),
+            job: Some(job_info(&state.paths, job)),
             ..Acted::default()
         })
     })
@@ -914,7 +914,7 @@ fn trust_key(state: Arc<Serve>, name: String, act: Act) -> Run {
         }));
         let job = state.runner.start(request, work).map_err(refused)?;
         Ok(Acted {
-            job: Some(job_info(job)),
+            job: Some(job_info(&state.paths, job)),
             ..Acted::default()
         })
     })

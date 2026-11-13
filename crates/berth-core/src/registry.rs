@@ -888,21 +888,22 @@ pub fn push_image(paths: &Paths, destination: &str, tag: &str) -> Result<String>
         let mut login = Command::new("docker");
         login.args([
             "login",
-            docker_host(&address),
             "--username",
             user,
             "--password-stdin",
+            "--",
+            docker_host(&address),
         ]);
         run(login, Some(password))?;
     }
     let image = format!("{address}/berth-desktop:{tag}");
     let mut retag = Command::new("docker");
-    retag.args(["tag", "berth-desktop", &image]);
+    retag.args(["tag", "--", "berth-desktop", &image]);
     run(retag, None).map_err(
         |_| "No local image berth-desktop. Build it first with the Docker install method.",
     )?;
     let mut push = Command::new("docker");
-    push.args(["push", &image]);
+    push.args(["push", "--", &image]);
     run(push, None)?;
     Ok(image)
 }

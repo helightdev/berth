@@ -128,7 +128,7 @@ impl Reach {
         };
         // The same checks as for a saved host, so that what is read can be applied.
         keys::check(address, port)?;
-        if user.starts_with('-') || user.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
+        if !berth_api::profile::valid_user(user) {
             return Err(format!("Not an SSH user: {user}").into());
         }
         let key = key.map(crate::discovery::expand_path);

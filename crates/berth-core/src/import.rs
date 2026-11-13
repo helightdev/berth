@@ -331,24 +331,9 @@ fn known_host_keys(known_hosts: &Path, address: &str, port: &str) -> Vec<String>
         "" | "22" => vec![address.to_owned()],
         port => vec![format!("[{address}]:{port}")],
     };
+    let text = fs::read_to_string(known_hosts).unwrap_or_default();
     for name in names {
-        let Ok(found) = std::process::Command::new("ssh-keygen")
-            .args(["-F", &name, "-f"])
-            .arg(known_hosts)
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()
-        else {
-            continue;
-        };
-        let keys: Vec<String> = String::from_utf8_lossy(&found.stdout)
-            .lines()
-            .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
-            .filter_map(|line| {
-                let mut words = line.split_whitespace().skip(1);
-                Some(format!("{} {}", words.next()?, words.next()?))
-            })
-            .collect();
+        let keys = crate::keys::known::lookup(&text, &name);
         if !keys.is_empty() {
             return keys;
         }
@@ -1559,15 +1544,11 @@ mod tests {
         assert!(!data.join("serve.setup-key").exists());
     }
 
-    /// A private key made by ssh-keygen, at `file`.
+    /// A private key at `file`, as an older berth was given one.
     fn key_file(file: &Path) {
-        let made = std::process::Command::new("ssh-keygen")
-            .args(["-q", "-t", "ed25519", "-N", "", "-C", "made-up", "-f"])
-            .arg(file)
-            .stdin(std::process::Stdio::null())
-            .status()
-            .unwrap();
-        assert!(made.success());
+        let made = crate::keys::openssh::generate("made-up").unwrap();
+        crate::paths::write_private(file, made.private.as_bytes()).unwrap();
+        fs::write(file.with_extension("pub"), format!("{}\n", made.public)).unwrap();
     }
 
     #[test]

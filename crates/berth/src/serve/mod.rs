@@ -139,7 +139,7 @@ impl Serve {
     }
 
     pub fn with(paths: Paths, store: Arc<Store>, auth: auth::Auth) -> Arc<Serve> {
-        let jobs_dir = paths.data_dir.join("jobs");
+        let jobs_dir = berth_core::runner::jobs_dir(&paths);
         let events = broadcast::channel(1024).0;
         let told = events.clone();
         let notify = Arc::new(move |job: &store::Job| {
@@ -288,7 +288,12 @@ impl Serve {
             .and_then(|days| days.parse().ok())
             .unwrap_or(store::RETENTION_DAYS);
         if let Ok(files) = self.store.prune(days) {
-            for file in files {
+            // Only files of this machine's own jobs: a row of a shared store
+            // can name any file.
+            for file in files
+                .iter()
+                .filter_map(|file| berth_core::runner::output_file(&self.paths, file))
+            {
                 // A roll-out's report is beside its output.
                 let _ = std::fs::remove_file(api::report_path(&file));
                 let _ = std::fs::remove_file(file);

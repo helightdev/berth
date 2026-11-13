@@ -462,6 +462,29 @@ pub struct Runner {
     notify: Notify,
 }
 
+/// Where an installation keeps the output of the jobs it runs.
+pub fn jobs_dir(paths: &Paths) -> PathBuf {
+    paths.data_dir.join("jobs")
+}
+
+/// Whether a text can be a job's id, as [`new_id`] makes them.
+pub fn valid_job_id(id: &str) -> bool {
+    id.len() <= 40
+        && id.starts_with('j')
+        && id[1..]
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+}
+
+/// The file of a job's output that a job's row names, when it is one this
+/// machine wrote: `ID.log` in its folder of jobs. A row of a shared store
+/// can name any file, which is then neither read nor removed.
+pub fn output_file(paths: &Paths, output_path: &str) -> Option<PathBuf> {
+    let path = Path::new(output_path);
+    let id = path.file_name()?.to_str()?.strip_suffix(".log")?;
+    (valid_job_id(id) && path.parent()? == jobs_dir(paths)).then(|| path.to_owned())
+}
+
 fn new_id() -> std::io::Result<String> {
     let mut bytes = [0u8; 12];
     fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
@@ -668,6 +691,30 @@ fn inherit(program: Program) -> std::io::Result<Option<i32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_jobs_output_is_a_file_of_its_folder_of_jobs() {
+        let paths = Paths {
+            config_dir: "/home/ops/.config/berth".into(),
+            data_dir: "/home/ops/.local/share/berth".into(),
+        };
+        let id = new_id().unwrap();
+        assert!(valid_job_id(&id), "{id}");
+        let own = jobs_dir(&paths).join(format!("{id}.log"));
+        assert_eq!(output_file(&paths, &own.to_string_lossy()), Some(own));
+        for bad in [
+            "/home/ops/.ssh/authorized_keys",
+            "/home/ops/.local/share/berth/jobs/../serve.log",
+            "/home/ops/.local/share/berth/jobs/j1.json",
+            "/home/ops/.local/share/berth/jobs/sub/j1.log",
+            "/srv/berth/jobs/j1.log",
+            "jobs/j1.log",
+            "",
+        ] {
+            assert_eq!(output_file(&paths, bad), None, "{bad}");
+        }
+        assert!(!valid_job_id("") && !valid_job_id("j/x") && !valid_job_id("x1"));
+    }
     use std::sync::{Mutex, mpsc};
 
     struct World {

@@ -28,22 +28,28 @@ async fn the_key_ring_is_kept_on_the_server_and_only_public_halves_leave() {
         send(client, "PUT", "/v1/keys/deploy", Value::Null).await.0,
         409
     );
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("key");
-    let keygen = |phrase: &str| {
-        let _ = std::fs::remove_file(&file);
-        let _ = std::fs::remove_file(file.with_extension("pub"));
-        assert!(
-            std::process::Command::new("ssh-keygen")
-                .args(["-q", "-t", "ed25519", "-C", "made-up", "-N", phrase, "-f"])
-                .arg(&file)
-                .status()
-                .unwrap()
-                .success()
-        );
-        std::fs::read(&file).unwrap()
+    // Keys berth makes itself, since ssh-keygen needs an account in the
+    // password database, which a container may not have.
+    let own = berth_core::keys::openssh::generate("made-up").unwrap();
+    let locked = {
+        // The header of a key with a passphrase names its cipher and its
+        // key derivation, and that is all berth reads before refusing it.
+        use berth_api::{b64, unb64};
+        let body: String = own
+            .private
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .collect();
+        let mut file = unb64(&body).unwrap();
+        let at = 15 + 4;
+        file[at..at + 4].copy_from_slice(b"aes0");
+        file[at + 8..at + 12].copy_from_slice(b"bcry");
+        format!(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n{}\n-----END OPENSSH PRIVATE KEY-----\n",
+            b64(&file)
+        )
     };
-    let bytes = keygen("");
+    let bytes = own.private.clone().into_bytes();
     let headers = [("content-type", "application/octet-stream")];
     let answer = client
         .send("PUT", "/v1/keys/imported", &headers, bytes.into())
@@ -51,17 +57,16 @@ async fn the_key_ring_is_kept_on_the_server_and_only_public_halves_leave() {
         .unwrap();
     let taken: Value = serde_json::from_slice(&answer.body).unwrap();
     assert_eq!(answer.status, 200, "{taken}");
-    let public = std::fs::read_to_string(file.with_extension("pub")).unwrap();
     assert_eq!(
         berth_core::keys::ring::blob(taken["public"].as_str().unwrap()),
-        berth_core::keys::ring::blob(&public)
+        berth_core::keys::ring::blob(&own.public)
     );
     let answer = client
         .send(
             "PUT",
             "/v1/keys/locked",
             &headers,
-            keygen("made-up-phrase").into(),
+            locked.into_bytes().into(),
         )
         .await
         .unwrap();

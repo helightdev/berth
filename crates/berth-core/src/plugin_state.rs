@@ -31,6 +31,19 @@ const FOLDER: &str = "folder/";
 /// What npm writes for a package installed from the folder of uploads.
 const UPLOADED: &str = "file:uploads/";
 
+/// Whether a name can be one of the uploads a plugin directory keeps in
+/// `uploads/`: a file name of its own, as berth gives them (`STAMP.tgz`). A
+/// name in a stored `package.json` or a row of a shared store that is not one
+/// would put a file outside that folder.
+pub fn valid_upload(name: &str) -> bool {
+    name.len() <= 64
+        && name.ends_with(".tgz")
+        && !name.starts_with(['.', '-'])
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+}
+
 fn read_json(file: &Path) -> Option<Value> {
     serde_json::from_slice(&fs::read(file).ok()?).ok()
 }
@@ -55,6 +68,7 @@ fn pack_folder(own: &Path, folder: &Path) -> Result<Vec<u8>> {
             "-C",
         ])
         .arg(own)
+        .arg("--")
         .arg(relative)
         .stdin(std::process::Stdio::null())
         .output()
@@ -87,8 +101,7 @@ pub fn snapshot(own: &Path) -> Result<Vec<(String, Vec<u8>)>> {
         .filter_map(|spec| spec.strip_prefix(UPLOADED))
         .collect();
     for name in named {
-        // A name with a folder in it is no upload of berth's.
-        if name.contains('/') {
+        if !valid_upload(name) {
             continue;
         }
         if let Ok(data) = fs::read(own.join("uploads").join(name)) {
@@ -154,7 +167,7 @@ fn restorable(spec: &str, uploads: &BTreeSet<String>) -> bool {
         None => true,
         Some(_) => spec
             .strip_prefix(UPLOADED)
-            .is_some_and(|name| uploads.contains(name)),
+            .is_some_and(|name| valid_upload(name) && uploads.contains(name)),
     }
 }
 
@@ -215,6 +228,7 @@ pub fn plan(own: &Path, store: &Store) -> Result<Option<Plan>> {
     let uploads: BTreeSet<String> = names
         .iter()
         .filter_map(|name| name.strip_prefix(UPLOAD))
+        .filter(|name| valid_upload(name))
         .map(str::to_owned)
         .collect();
     let mut plan = Plan::default();
@@ -276,6 +290,7 @@ pub fn plan(own: &Path, store: &Store) -> Result<Option<Plan>> {
     }
     for (_, spec) in &wanted {
         if let Some(file) = spec.strip_prefix(UPLOADED)
+            && valid_upload(file)
             && !own.join("uploads").join(file).exists()
             && let Some(data) = read(&format!("{UPLOAD}{file}"))?
         {
@@ -285,6 +300,7 @@ pub fn plan(own: &Path, store: &Store) -> Result<Option<Plan>> {
     let folders: Vec<&str> = names
         .iter()
         .filter_map(|name| name.strip_prefix(FOLDER)?.strip_suffix(".tgz"))
+        .filter(|id| plugins::valid_name(id))
         .collect();
     if !folders.is_empty() {
         let found: BTreeSet<String> = plugins::load(&[own.to_owned()])
@@ -326,6 +342,16 @@ fn unpack(own: &Path, id: &str, archive: &[u8]) -> Result<Option<String>> {
         .into());
     }
     for entry in fs::read_dir(into.path())?.flatten() {
+        // A plugin's archive holds its folder, and nothing berth or npm
+        // keep in the directory beside it.
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let folder = entry.file_type().is_ok_and(|kind| kind.is_dir());
+        if !folder || name.starts_with('.') || ["node_modules", "uploads"].contains(&name.as_str())
+        {
+            return Ok(Some(format!(
+                "berth: the plugin {id} in berth's store is not unpacked, as its archive holds {name}, which is not a plugin's folder"
+            )));
+        }
         let to = own.join(entry.file_name());
         if to.exists() {
             return Ok(Some(format!(
@@ -390,6 +416,7 @@ pub fn carry_out(own: &Path, plan: &Plan) -> Result<Vec<String>> {
     );
     args.push(own.as_os_str().to_owned());
     if let Install::Packages(packages) = &plan.install {
+        args.push("--".into());
         args.extend(packages.iter().map(OsString::from));
     }
     let ran = std::process::Command::new("npm")
@@ -613,5 +640,58 @@ mod tests {
         let said = carry_out(&own, &plan).unwrap();
         assert!(said[0].contains("there already"), "{said:?}");
         assert!(own.join("hand-made/node_modules/dep/index.js").exists());
+    }
+
+    #[test]
+    fn rows_of_a_shared_store_cannot_write_outside_the_directory() {
+        let (dir, paths) = scratch();
+        let store = store(&paths);
+        let own = own_dir(&paths.config_dir);
+        let manifest = r#"{"dependencies": {
+            "berth-plugin-a": "file:uploads/../../../escaped.tgz",
+            "berth-plugin-b": "file:uploads/-x.tgz",
+            "berth-plugin-c": "file:uploads/17.tgz"}}"#;
+        put(
+            &store,
+            &[
+                (PACKAGE, manifest.as_bytes()),
+                ("upload/../../../escaped.tgz", b"bad"),
+                ("upload/-x.tgz", b"bad"),
+                ("upload/17.tgz", b"good"),
+                ("folder/../escaped.tgz", b"bad"),
+            ],
+        );
+        let plan = plan(&own, &store).unwrap().unwrap();
+        let files: Vec<_> = plan.files.iter().map(|(file, _)| file.clone()).collect();
+        assert_eq!(
+            files,
+            [PathBuf::from(PACKAGE), PathBuf::from("uploads/17.tgz")]
+        );
+        assert!(plan.folders.is_empty());
+        let left_out: Vec<_> = plan
+            .left_out
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(left_out, ["berth-plugin-a", "berth-plugin-b"]);
+        assert!(!dir.path().join("escaped.tgz").exists());
+        assert!(valid_upload("1763000000000000000.tgz"));
+        for bad in ["", "../x.tgz", "a/b.tgz", ".x.tgz", "-x.tgz", "x.tar"] {
+            assert!(!valid_upload(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_archive_holds_one_plugin_folder_and_nothing_else() {
+        let (dir, paths) = scratch();
+        let own = own_dir(&paths.config_dir);
+        fs::create_dir_all(&own).unwrap();
+        let made = dir.path().join("made");
+        fs::create_dir_all(&made).unwrap();
+        fs::write(made.join("package.json"), "{}").unwrap();
+        let archive = pack_folder(&made, &made.join("package.json")).unwrap();
+        let said = unpack(&own, "local", &archive).unwrap().unwrap();
+        assert!(said.contains("not a plugin's folder"), "{said}");
+        assert!(!own.join("package.json").exists());
     }
 }
