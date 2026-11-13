@@ -1,8 +1,9 @@
 //! What the browser does for the page: its keys and mouse as the screens
 //! take them, the clipboard, the token it keeps, and the canvas.
 
-use crate::app::App;
-use berth_tui::{Click, Code, Event, Key, Mouse, screen::Platform};
+use berth_page::App;
+use berth_page::device::{Answer, Device, Kept, Linked, Said, Socket};
+use berth_tui::{Click, Code, Event, Key, Mouse};
 use ratzilla::backend::webgl2::WebGl2BackendOptions;
 use ratzilla::ratatui::{Terminal, style::Color};
 use ratzilla::{CellSized, FontAtlasConfig, WebGl2Backend, WebRenderer};
@@ -11,9 +12,13 @@ use std::rc::Rc;
 use wasm_bindgen::{JsCast, prelude::*};
 use web_sys::{KeyboardEvent, window};
 
-/// Where the token is kept between visits, and the server it is for.
-pub const TOKEN: &str = "berth.token";
-pub const SERVER: &str = "berth.server";
+/// Where the browser keeps what the page keeps between visits.
+fn item(key: Kept) -> &'static str {
+    match key {
+        Kept::Token => "berth.token",
+        Kept::Server => "berth.server",
+    }
+}
 
 /// The fonts the page draws with, the first the browser has.
 const FONTS: &[&str] = &[
@@ -28,34 +33,9 @@ const FONTS: &[&str] = &[
 
 pub struct Browser;
 
-impl Platform for Browser {
-    fn copy(&mut self, text: &str) -> bool {
-        match window() {
-            Some(window) => {
-                let _ = window.navigator().clipboard().write_text(text);
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Pasting is the browser's: its `paste` event carries the text.
-    fn paste(&mut self) -> Option<String> {
-        None
-    }
-
-    fn open(&mut self, link: &str) -> Result<(), String> {
-        let window = window().ok_or("there is no window")?;
-        match window.open_with_url_and_target(link, "_blank") {
-            Ok(Some(_)) => Ok(()),
-            _ => Err("the browser kept the tab from opening".into()),
-        }
-    }
-}
-
 /// Let the user choose a file of this device, and hand over its name and
 /// bytes once the browser has read it. Nothing happens when none is chosen.
-pub fn choose_file(accept: &str, then: impl FnOnce(String, Vec<u8>) + 'static) {
+fn choose_file(accept: &str, then: Box<dyn FnOnce(String, Vec<u8>)>) {
     let Some(element) = window()
         .and_then(|window| window.document())
         .and_then(|document| document.create_element("input").ok())
@@ -89,26 +69,9 @@ fn storage() -> Option<web_sys::Storage> {
     window()?.local_storage().ok()?
 }
 
-/// What the browser keeps between visits: the token, and the server it is for.
-pub fn stored(key: &str) -> Option<String> {
-    storage()?
-        .get_item(key)
-        .ok()?
-        .filter(|value| !value.is_empty())
-}
-
-pub fn store(key: &str, value: &str) {
-    if let Some(storage) = storage() {
-        let _ = match value.is_empty() {
-            true => storage.remove_item(key),
-            false => storage.set_item(key, value),
-        };
-    }
-}
-
 /// Whether `berth serve` gave this page itself, so that it is the server.
 /// A copy hosted elsewhere, as on the documentation site, asks which server.
-pub fn embedded() -> bool {
+fn embedded() -> bool {
     window()
         .and_then(|window| window.document())
         .and_then(|document| {
@@ -129,18 +92,9 @@ fn decoded(value: &str) -> String {
         .unwrap_or_else(|| value.to_owned())
 }
 
-/// What a link to the page carried, after `?` or `#`.
-#[derive(Default)]
-pub struct Linked {
-    pub server: Option<String>,
-    pub token: Option<String>,
-    /// A key that collects the token, once, after an install.
-    pub setup_key: Option<String>,
-}
-
 /// What the link to this page carried. A token or a setup key is taken out
 /// of the address so that it is not left in the bar or the history.
-pub fn linked() -> Linked {
+fn linked() -> Linked {
     let Some(window) = window() else {
         return Linked::default();
     };
@@ -221,12 +175,7 @@ fn settle(promise: &JsValue, then: impl FnOnce(Result<JsValue, String>) + 'stati
 
 /// One plain HTTP request with a bearer, and then its status and body. For
 /// what the portal cannot carry because the caller has no token yet.
-pub fn request(
-    method: &str,
-    url: &str,
-    bearer: &str,
-    then: impl FnOnce(Result<(u16, String), String>) + 'static,
-) {
+fn request(method: &str, url: &str, bearer: &str, then: Answer) {
     let Some(window) = window() else {
         return then(Err("there is no window".into()));
     };
@@ -253,14 +202,14 @@ pub fn request(
 }
 
 /// The address this page came from: `http://host:port`.
-pub fn origin() -> String {
+fn origin() -> String {
     window()
         .and_then(|window| window.location().origin().ok())
         .unwrap_or_default()
 }
 
 /// Where this page is: its origin and path, without what follows them.
-pub fn page() -> String {
+fn page() -> String {
     window()
         .map(|window| {
             let location = window.location();
@@ -273,33 +222,81 @@ pub fn page() -> String {
         .unwrap_or_default()
 }
 
-/// A server's address as typed, made whole: without a scheme it is https,
-/// or http for this machine itself.
-pub fn address(typed: &str) -> String {
-    let typed = typed.trim().trim_end_matches('/');
-    if typed.is_empty() || typed.starts_with("http://") || typed.starts_with("https://") {
-        return typed.to_owned();
+impl Device for Browser {
+    fn copy(&self, text: &str) -> bool {
+        match window() {
+            Some(window) => {
+                let _ = window.navigator().clipboard().write_text(text);
+                true
+            }
+            None => false,
+        }
     }
-    let local = ["localhost", "127.", "[::1]"]
-        .iter()
-        .any(|name| typed.starts_with(name));
-    format!("{}://{typed}", if local { "http" } else { "https" })
-}
 
-/// A server as it is shown: `host:port`.
-pub fn shown(server: &str) -> &str {
-    server
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-}
+    /// Pasting is the browser's: its `paste` event carries the text.
+    fn paste(&self) -> Option<String> {
+        None
+    }
 
-/// The address of the portal of a server.
-pub fn portal_url(server: &str) -> String {
-    let scheme = match server.starts_with("https://") {
-        true => "wss",
-        false => "ws",
-    };
-    format!("{scheme}://{}{}", shown(server), berth_api::ops::PORTAL)
+    fn open(&self, link: &str) -> Result<(), String> {
+        let window = window().ok_or("there is no window")?;
+        match window.open_with_url_and_target(link, "_blank") {
+            Ok(Some(_)) => Ok(()),
+            _ => Err("the browser kept the tab from opening".into()),
+        }
+    }
+
+    fn choose_file(
+        &self,
+        accept: &str,
+        then: Box<dyn FnOnce(String, Vec<u8>)>,
+    ) -> Result<(), String> {
+        choose_file(accept, then);
+        Ok(())
+    }
+
+    fn stored(&self, key: Kept) -> Option<String> {
+        storage()?.get_item(item(key)).ok()?
+    }
+
+    fn store(&self, key: Kept, value: &str) {
+        if let Some(storage) = storage() {
+            let _ = match value.is_empty() {
+                true => storage.remove_item(item(key)),
+                false => storage.set_item(item(key), value),
+            };
+        }
+    }
+
+    fn embedded(&self) -> bool {
+        embedded()
+    }
+
+    fn linked(&self) -> Linked {
+        linked()
+    }
+
+    fn origin(&self) -> String {
+        origin()
+    }
+
+    fn page(&self) -> String {
+        page()
+    }
+
+    fn request(&self, method: &str, url: &str, bearer: &str, then: Answer) {
+        request(method, url, bearer, then)
+    }
+
+    fn connect(
+        &self,
+        url: &str,
+        token: &str,
+        said: Box<dyn Fn(Said)>,
+    ) -> Result<Box<dyn Socket>, String> {
+        let socket = crate::socket::open(url, token, said)?;
+        Ok(Box::new(socket))
+    }
 }
 
 /// The key a `keydown` was; `None` for keys the screens have no use for.
@@ -417,6 +414,7 @@ fn cell_of(event: &web_sys::MouseEvent, cell: (f32, f32)) -> Option<(u16, u16)> 
 
 pub fn start() {
     console_error_panic_hook::set_once();
+    berth_page::device::install(Browser);
     let Some(window) = window() else {
         return;
     };

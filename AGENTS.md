@@ -12,7 +12,9 @@ berth sets up and looks after agent workstations. These are Ubuntu machines with
 | `crates/berth-tui/` | The parts of the UI that run in a terminal and in a browser |
 | `crates/berth-pty/` | Terminals for sessions |
 | `crates/berthd/`, `crates/box/` | The controller on each host and the agent's own tool there |
-| `crates/berth-web/` | The page of `berth serve --web`, built for WebAssembly |
+| `crates/berth-page/` | The screens of the page of `berth serve`, shared by `berth-web` and `berth-remote`. `device.rs` is what a browser and a terminal each give them, and `portal.rs` the server's portal over it |
+| `crates/berth-web/` | The page of `berth serve --web`, built for WebAssembly: the browser's side of `berth-page`'s device |
+| `crates/berth-remote/` | `berth-remote`, the same screens in a terminal on Linux, macOS and Windows, for a `berth serve` on another machine |
 | `crates/vendor/` | The vendored `tui-input` crate |
 | `provision/` | The installer side of the provisioning source: the role in `ansible/`, first-boot provisioning in `bootstrap/`, the builder of seeds and releases in `bin/devbox.py` and the example profile in `config/`. berth names these paths in `layout` in `crates/berth-core/src/paths.rs` |
 | `plugins/` | The plugins that come with berth, each an npm-format package with a `guide.md`. With `provision/` they make the provisioning source, which berth carries and unpacks with the same layout |
@@ -47,7 +49,7 @@ Use cargo for everything Rust. These are what CI runs:
 ```bash
 cargo test --locked
 cargo test --locked -p berth --features web
-cargo fmt --check -p berth-api -p berth-pty -p berth-core -p berth-tui -p berth -p berthd -p box -p berth-web
+cargo fmt --check -p berth-api -p berth-pty -p berth-core -p berth-tui -p berth -p berthd -p box -p berth-page -p berth-web -p berth-remote
 cargo clippy --locked --all-targets -- -D warnings
 cargo clippy --locked --all-targets -p berth --features web -- -D warnings
 cargo clippy --locked -p berth-web --target wasm32-unknown-unknown -- -D warnings

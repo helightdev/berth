@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 berth-core.workspace = true
-berth-api.workspace = true
+berth-api = { workspace = true, features = ["client"] }
 berth-pty.workspace = true
 berth-tui.workspace = true
 # For its API document, which berth serve's includes.
@@ -41,3 +41,6 @@ wasm-bindgen-cli-support = { version = "=0.2.129", optional = true }
 [dev-dependencies]
 # Signs the access tokens of the tests.
 ring = "0.17"
+# berth-remote signs in to a berth serve of the tests.
+berth-page.workspace = true
+berth-remote = { path = "../berth-remote" }

@@ -1,0 +1,15 @@
+[package]
+name = "berth-page"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The page of berth serve, its screens and its portal, for a browser (berth-web) and a terminal (berth-remote)"
+
+[dependencies]
+berth-api.workspace = true
+berth-tui.workspace = true
+serde_json.workspace = true
+tui-input.workspace = true
+web-time = "1"
+ratatui = { version = "=0.30.2", default-features = false }

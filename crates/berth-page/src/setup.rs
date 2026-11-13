@@ -3,13 +3,13 @@
 //! and kept by the server.
 
 use crate::admin::{Admin, Data};
-use crate::browser::Browser;
+use crate::device::Here;
 use berth_tui::fields::{Action, Field, Kind, Step};
 use berth_tui::machine::{self, Machine, Next};
 use berth_tui::screen::{self, draw_footer, draw_header, draw_question, inside};
 use berth_tui::setup::{self, Account, Entry, Feature, Item, Page, Problem, Profile, Row};
 use berth_tui::{Click, Code, Event, Key, event, markdown, theme};
-use ratzilla::ratatui::{
+use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::Style,
@@ -563,7 +563,7 @@ impl Setup {
                 }
                 Code::Char('u') if key.ctrl => input.reset(),
                 _ if screen::is_copy_field(&key) => {
-                    say(Some(screen::copy_field(&mut Browser, input)));
+                    say(Some(screen::copy_field(&mut Here, input)));
                 }
                 _ => event::edit(input, &key),
             }

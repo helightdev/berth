@@ -1,12 +1,11 @@
-//! The server's portal over the browser's WebSocket: calls that are answered
+//! The server's portal over the device's WebSocket: calls that are answered
 //! once, and streams that send frames until either side ends them.
 
+use crate::device::{self, Said, Socket};
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
-use wasm_bindgen::{JsCast, prelude::*};
-use web_sys::{BinaryType, MessageEvent, WebSocket};
 
 /// How the connection is doing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,26 +28,15 @@ pub enum Frame {
 
 type Answer = Box<dyn FnOnce(Result<Value, String>)>;
 type Listener = Rc<dyn Fn(Frame)>;
-/// What the page does when the socket says something.
-type Handler = Box<dyn Fn(&Inner, JsValue)>;
 
 struct Inner {
-    socket: WebSocket,
+    socket: RefCell<Option<Box<dyn Socket>>>,
     link: Cell<Link>,
     next: Cell<u32>,
     /// Frames asked for before the socket was open.
     waiting: RefCell<Vec<String>>,
     calls: RefCell<HashMap<u32, Answer>>,
     streams: RefCell<HashMap<u32, Listener>>,
-}
-
-impl Drop for Inner {
-    fn drop(&mut self) {
-        for name in ["onopen", "onmessage", "onclose"] {
-            let _ = js_sys::Reflect::set(&self.socket, &name.into(), &JsValue::NULL);
-        }
-        let _ = self.socket.close();
-    }
 }
 
 #[derive(Clone)]
@@ -82,6 +70,25 @@ impl Inner {
         };
         if let Some(listener) = listener {
             listener(frame);
+        }
+    }
+
+    fn said(&self, said: Said) {
+        match said {
+            Said::Open => {
+                self.link.set(Link::Open);
+                let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
+                for text in waiting {
+                    self.send_now(&text);
+                }
+            }
+            Said::Text(text) => self.text(&text),
+            Said::Bytes(bytes) => {
+                if let Some((id, rest)) = bytes.split_first_chunk::<4>() {
+                    self.frame(u32::from_be_bytes(*id), Frame::Bytes(rest.to_vec()));
+                }
+            }
+            Said::Closed => self.closed(),
         }
     }
 
@@ -130,6 +137,13 @@ impl Inner {
         }
     }
 
+    fn send_now(&self, text: &str) -> bool {
+        self.socket
+            .borrow()
+            .as_ref()
+            .is_some_and(|socket| socket.send_text(text))
+    }
+
     fn send(&self, frame: Value) -> bool {
         let text = frame.to_string();
         match self.link.get() {
@@ -137,7 +151,7 @@ impl Inner {
                 self.waiting.borrow_mut().push(text);
                 true
             }
-            Link::Open => self.socket.send_with_str(&text).is_ok(),
+            Link::Open => self.send_now(&text),
             _ => false,
         }
     }
@@ -161,58 +175,25 @@ impl Portal {
     /// Open the portal at `url`, showing the token the way a browser can: as
     /// the WebSocket's protocol.
     pub fn open(url: &str, token: &str) -> Result<Portal, String> {
-        let socket = match token.is_empty() {
-            true => WebSocket::new(url),
-            false => WebSocket::new_with_str(url, token),
-        }
-        .map_err(|_| format!("{url} is no address a browser can open"))?;
-        socket.set_binary_type(BinaryType::Arraybuffer);
         let inner = Rc::new(Inner {
-            socket,
+            socket: RefCell::default(),
             link: Cell::new(Link::Connecting),
             next: Cell::new(1),
             waiting: RefCell::default(),
             calls: RefCell::default(),
             streams: RefCell::default(),
         });
-        let listen = |name: &str, handler: Handler| {
-            let weak: Weak<Inner> = Rc::downgrade(&inner);
-            let closure = Closure::<dyn FnMut(JsValue)>::new(move |event: JsValue| {
+        let weak: Weak<Inner> = Rc::downgrade(&inner);
+        let socket = device::device().connect(
+            url,
+            token,
+            Box::new(move |said| {
                 if let Some(inner) = weak.upgrade() {
-                    handler(&inner, event);
-                }
-            });
-            let _ = js_sys::Reflect::set(&inner.socket, &name.into(), closure.as_ref());
-            // The socket keeps it for as long as the page has it.
-            closure.forget();
-        };
-        listen(
-            "onopen",
-            Box::new(|inner, _| {
-                inner.link.set(Link::Open);
-                for text in inner.waiting.borrow_mut().drain(..) {
-                    let _ = inner.socket.send_with_str(&text);
+                    inner.said(said);
                 }
             }),
-        );
-        listen("onclose", Box::new(|inner, _| inner.closed()));
-        listen(
-            "onmessage",
-            Box::new(|inner, event| {
-                let Ok(event) = event.dyn_into::<MessageEvent>() else {
-                    return;
-                };
-                let data = event.data();
-                if let Some(text) = data.as_string() {
-                    inner.text(&text);
-                } else if data.is_instance_of::<js_sys::ArrayBuffer>() {
-                    let bytes = js_sys::Uint8Array::new(&data).to_vec();
-                    if let Some((id, rest)) = bytes.split_first_chunk::<4>() {
-                        inner.frame(u32::from_be_bytes(*id), Frame::Bytes(rest.to_vec()));
-                    }
-                }
-            }),
-        );
+        )?;
+        *inner.socket.borrow_mut() = Some(socket);
         Ok(Portal(inner))
     }
 
@@ -270,7 +251,9 @@ impl Portal {
     pub fn push_bytes(&self, id: u32, bytes: &[u8]) {
         if self.0.link.get() == Link::Open {
             let frame = [&id.to_be_bytes()[..], bytes].concat();
-            let _ = self.0.socket.send_with_u8_array(&frame);
+            if let Some(socket) = self.0.socket.borrow().as_ref() {
+                socket.send_bytes(&frame);
+            }
         }
     }
 
@@ -279,5 +262,156 @@ impl Portal {
         if self.0.streams.borrow_mut().remove(&id).is_some() {
             self.0.send(json!({"sub": id, "end": true}));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::device::{Answer, Device, Kept, Linked};
+
+    type Hears = Box<dyn Fn(Said)>;
+
+    /// A device whose socket the test speaks for.
+    #[derive(Clone, Default)]
+    struct Wire {
+        sent: Rc<RefCell<Vec<String>>>,
+        said: Rc<RefCell<Option<Hears>>>,
+    }
+
+    struct WireSocket(Rc<RefCell<Vec<String>>>);
+
+    impl Socket for WireSocket {
+        fn send_text(&self, text: &str) -> bool {
+            self.0.borrow_mut().push(text.to_owned());
+            true
+        }
+
+        fn send_bytes(&self, bytes: &[u8]) -> bool {
+            self.0.borrow_mut().push(format!("{bytes:?}"));
+            true
+        }
+    }
+
+    impl Wire {
+        fn say(&self, said: Said) {
+            (self.said.borrow().as_ref().expect("a socket is open"))(said)
+        }
+
+        fn sent(&self) -> Vec<Value> {
+            let sent = self.sent.borrow();
+            sent.iter()
+                .map(|text| serde_json::from_str(text).unwrap())
+                .collect()
+        }
+    }
+
+    impl Device for Wire {
+        fn copy(&self, _: &str) -> bool {
+            false
+        }
+        fn paste(&self) -> Option<String> {
+            None
+        }
+        fn open(&self, _: &str) -> Result<(), String> {
+            Err("no".into())
+        }
+        fn choose_file(&self, _: &str, _: Box<dyn FnOnce(String, Vec<u8>)>) -> Result<(), String> {
+            Err("no".into())
+        }
+        fn stored(&self, _: Kept) -> Option<String> {
+            None
+        }
+        fn store(&self, _: Kept, _: &str) {}
+        fn embedded(&self) -> bool {
+            false
+        }
+        fn linked(&self) -> Linked {
+            Linked::default()
+        }
+        fn origin(&self) -> String {
+            String::new()
+        }
+        fn page(&self) -> String {
+            String::new()
+        }
+        fn request(&self, _: &str, _: &str, _: &str, then: Answer) {
+            then(Err("no".into()))
+        }
+        fn connect(
+            &self,
+            url: &str,
+            token: &str,
+            said: Box<dyn Fn(Said)>,
+        ) -> Result<Box<dyn Socket>, String> {
+            assert_eq!(
+                (url, token),
+                ("ws://192.0.2.10:7878/v1/portal", "the-token")
+            );
+            *self.said.borrow_mut() = Some(said);
+            Ok(Box::new(WireSocket(self.sent.clone())))
+        }
+    }
+
+    fn portal() -> (Wire, Portal) {
+        let wire = Wire::default();
+        device::install(wire.clone());
+        let portal = Portal::open("ws://192.0.2.10:7878/v1/portal", "the-token").unwrap();
+        (wire, portal)
+    }
+
+    #[test]
+    fn calls_wait_for_the_socket_and_are_answered() {
+        let (wire, portal) = portal();
+        let answer = Rc::new(RefCell::new(None));
+        let got = answer.clone();
+        portal.call("hosts", None, json!({}), Value::Null, move |result| {
+            *got.borrow_mut() = Some(result)
+        });
+        assert!(wire.sent().is_empty());
+        wire.say(Said::Open);
+        assert_eq!(portal.link(), Link::Open);
+        let sent = wire.sent();
+        assert_eq!(
+            (sent[0]["id"].as_u64(), sent[0]["op"].as_str()),
+            (Some(1), Some("hosts"))
+        );
+        wire.say(Said::Text(r#"{"id": 1, "result": ["studio"]}"#.into()));
+        assert_eq!(answer.borrow_mut().take(), Some(Ok(json!(["studio"]))));
+    }
+
+    #[test]
+    fn streams_end_when_the_socket_closes() {
+        let (wire, portal) = portal();
+        let frames = Rc::new(RefCell::new(vec![]));
+        let got = frames.clone();
+        wire.say(Said::Open);
+        let id = portal.stream("session", Some("studio"), json!({}), move |frame| {
+            got.borrow_mut().push(match frame {
+                Frame::Data(data) => data.to_string(),
+                Frame::Bytes(bytes) => String::from_utf8(bytes).unwrap(),
+                Frame::End(why) => format!("end {}", why.unwrap_or_default()),
+            })
+        });
+        assert_eq!(wire.sent()[0]["host"], "studio");
+        wire.say(Said::Text(format!(r#"{{"sub": {id}, "data": 7}}"#)));
+        wire.say(Said::Bytes([&id.to_be_bytes()[..], b"hi"].concat()));
+        wire.say(Said::Closed);
+        assert_eq!(portal.link(), Link::Lost);
+        assert_eq!(*frames.borrow(), ["7", "hi", &format!("end {GONE}")]);
+        // A call after the end is answered at once.
+        let answer = Rc::new(RefCell::new(None));
+        let got = answer.clone();
+        portal.call("hosts", None, json!({}), Value::Null, move |result| {
+            *got.borrow_mut() = Some(result)
+        });
+        assert_eq!(answer.borrow_mut().take(), Some(Err(GONE.to_owned())));
+    }
+
+    #[test]
+    fn a_socket_that_never_opens_is_refused() {
+        let (wire, portal) = portal();
+        wire.say(Said::Closed);
+        assert_eq!(portal.link(), Link::Refused);
     }
 }

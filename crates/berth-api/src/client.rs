@@ -8,6 +8,7 @@ use hyper::client::conn::http1::SendRequest;
 use hyper_util::rt::TokioIo;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+#[cfg(unix)]
 use std::path::Path;
 use tokio::io::{AsyncRead, AsyncWrite};
 pub use tokio_tungstenite::WebSocketStream;
@@ -130,6 +131,7 @@ impl Client {
         Ok(Client { sender })
     }
 
+    #[cfg(unix)]
     pub async fn unix(path: &Path) -> Result<Client> {
         let stream = tokio::net::UnixStream::connect(path)
             .await
@@ -247,6 +249,7 @@ where
     }
 }
 
+#[cfg(unix)]
 pub async fn websocket_unix(
     path: &Path,
     target: &str,

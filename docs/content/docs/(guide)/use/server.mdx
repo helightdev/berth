@@ -149,6 +149,51 @@ The same page is part of this site, at [/web](/web/). It asks which server to us
 
 Your browser talks to the server you name, and to nothing else. It keeps the server and the token. A page loaded over `https` can only reach a server over `https`.
 
+## With berth-remote
+
+berth runs on Linux. `berth-remote` uses the hosts of a server from a terminal on Windows, macOS or Linux. It shows the screens of the page, and works with a server that runs without `--web`. Install it on Windows in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex
+```
+
+On macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/helightdev/berth/main/install-remote.sh | sh
+```
+
+Each script downloads the latest release for this machine, checks it against its SHA-256 and installs it, to `%LOCALAPPDATA%\Programs\berth-remote` on Windows and to `~/.local/bin` elsewhere. `BERTH_INSTALL_DIR` and `BERTH_VERSION` work as for `install.sh`. To download it by hand, take the archive for your system and its `.sha256` file from the [latest release](https://github.com/helightdev/berth/releases/latest).
+
+Then start it with the server's address. On Windows, use Windows Terminal or the console of Windows 10 or later.
+
+```bash
+berth-remote --server https://berth.example.ts.net
+```
+
+It asks for the token and keeps the server and the token for the next run. A token never goes on the command line:
+
+| Variable or option | Effect |
+| --- | --- |
+| `BERTH_TOKEN` | The token, so it isn't asked for |
+| `BERTH_SETUP_KEY` | A [setup key](#with-a-setup-key), which collects the token |
+| `BERTH_SERVER` | The server, instead of `--server` |
+| `--forget` | Remove the kept server and token, and keep nothing from this run |
+| `BERTH_REMOTE_FILE` | The plugin package to send, where there is no file dialog |
+| `--version` | Say the version |
+
+The server and the token are in `settings.json` in a folder of your own:
+
+| System | Folder |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\berth-remote`. Its access list lets in you, SYSTEM and the administrators |
+| macOS | `~/Library/Application Support/berth-remote`, which only you can open |
+| Linux | `~/.config/berth-remote`, or under `$XDG_CONFIG_HOME`, which only you can open |
+
+It talks to a server over `https` only with a certificate that the system or the Mozilla roots trust. It opens only `http` and `https` links, in the system's browser.
+
+The screens and keys are those of the page. **Ctrl+Q** quits, and `u` on **Plugins** opens the system's file dialog: on Linux that of zenity or kdialog.
+
 ## What works from another machine
 
 | Works through the server | Stays on a machine with the host's profile |

@@ -4,7 +4,7 @@
 set -euo pipefail
 cd /src
 
-crates=(-p berth-api -p berth-pty -p berth-core -p berth-tui -p berth -p berthd -p box -p berth-web)
+crates=(-p berth-api -p berth-pty -p berth-core -p berth-tui -p berth -p berthd -p box -p berth-page -p berth-web -p berth-remote)
 
 # Each runs as the condition of an if, where set -e does not stop it: the
 # steps are joined with && instead.
@@ -15,7 +15,7 @@ rust-tests() {
 python-tests() { python3 -m unittest discover -s tests -v; }
 shell-syntax() {
   local script bad=0
-  for script in install.sh provision/bin/*.sh provision/bootstrap/*.sh container/*.sh ci/*.sh \
+  for script in install.sh install-remote.sh provision/bin/*.sh provision/bootstrap/*.sh container/*.sh ci/*.sh \
     provision/ansible/roles/devbox/files/*.sh provision/ansible/roles/devbox/files/tasks/*.sh plugins/*/files/*.sh \
     recipes/*/*.sh; do
     bash -n "$script" || bad=1

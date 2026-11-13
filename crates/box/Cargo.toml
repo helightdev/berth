@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-berth-api.workspace = true
+berth-api = { workspace = true, features = ["client"] }
 serde.workspace = true
 serde_json.workspace = true
 libc.workspace = true

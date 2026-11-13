@@ -4,9 +4,9 @@ description: Put the berth command on the machine you work from. It is one file.
 icon: Download
 ---
 
-berth runs on Linux. The program contains everything it puts on a host, so installing it means placing one file on your `PATH`.
+berth runs on Linux. The program contains everything it puts on a host, so installing it means placing one file on your `PATH`. On Windows and macOS, `berth-remote` uses the hosts of a berth server.
 
-<Tabs items={['Install script', 'Cargo', 'Container image']}>
+<Tabs items={['Install script', 'Cargo', 'Container image', 'berth-remote']}>
 <Tab value="Install script">
 
 ```bash title="Linux x86_64"
@@ -61,6 +61,21 @@ berth --server http://127.0.0.1:7777 --token "$(docker exec berth cat /data/bert
 ```
 
 See [A berth server](/docs/use/server).
+
+</Tab>
+<Tab value="berth-remote">
+
+berth itself needs Linux. `berth-remote` is the client for a [berth server](/docs/use/server) on another machine, with the screens of its page in a terminal. It runs on Windows, macOS and Linux:
+
+```powershell title="Windows, in PowerShell"
+irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex
+```
+
+```bash title="macOS and Linux"
+curl -fsSL https://raw.githubusercontent.com/helightdev/berth/main/install-remote.sh | sh
+```
+
+Each script downloads the latest release for this machine, checks it against its SHA-256 and installs it: to `%LOCALAPPDATA%\Programs\berth-remote` on Windows, and to `~/.local/bin/berth-remote` elsewhere. `BERTH_INSTALL_DIR` and `BERTH_VERSION` work as for `install.sh`. Releases have it for Windows x86_64, macOS on Apple silicon and Intel, and Linux x86_64 and arm64. See [With berth-remote](/docs/use/server#with-berth-remote).
 
 </Tab>
 </Tabs>

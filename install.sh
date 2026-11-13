@@ -15,7 +15,7 @@ variant=${BERTH_VARIANT:-}
 
 fail() { printf 'install: %s\n' "$1" >&2; exit 1; }
 
-[ "$(uname -s)" = Linux ] || fail "berth runs on Linux; on another system use the container image ghcr.io/$repo"
+[ "$(uname -s)" = Linux ] || fail "berth runs on Linux; on another system use the container image ghcr.io/$repo, or install-remote.sh for berth-remote, which uses a berth server elsewhere"
 case "$(uname -m)" in
   x86_64|amd64) arch=x86_64 ;;
   *) fail "no released program for $(uname -m): build it with cargo install --locked --git https://github.com/$repo berth" ;;
