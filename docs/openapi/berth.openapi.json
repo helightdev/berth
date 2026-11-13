@@ -1468,7 +1468,7 @@
             "type": "string"
           },
           "verbs": {
-            "description": "What it can do besides `create`, `status` and `destroy`: `start`,\n`stop`, `list`.",
+            "description": "What it can do besides `create`, `status` and `destroy`: `start`,\n`stop`, `list`, `log`.",
             "items": {
               "type": "string"
             },

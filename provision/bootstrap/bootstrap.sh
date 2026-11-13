@@ -39,14 +39,18 @@ digest=$(python3 -c 'import json; print(json.load(open("/opt/devbox-bootstrap/de
 [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || exit 2
 if [[ -f "$state/ready" && $(cat "$state/ready") == "$digest" ]]; then exit 0; fi
 set_state() { printf '%s\n' "$1" > "$state/provision-state"; chmod 0644 "$state/provision-state"; }
+# berth relays the lines that start with ==> while it waits for the machine.
+step() { printf '==> %s\n' "$*"; }
 trap 'set_state failed' ERR
 set_state provisioning
 export DEBIAN_FRONTEND=noninteractive
+step 'Installing the packages the first boot needs'
 apt-get -o DPkg::Lock::Timeout=300 update
 apt-get -o DPkg::Lock::Timeout=300 install -y python3-venv python3-pip curl ca-certificates
 url=$(python3 -c 'import json; print(json.load(open("/opt/devbox-bootstrap/deployment.json")).get("release_url", ""))')
 release_ready() { [[ -f "$base/release.tar.gz" ]] && printf '%s  %s\n' "$digest" "$base/release.tar.gz" | sha256sum --check --status; }
 if [[ -z "$url" ]]; then
+  step 'Waiting for the release to be copied in'
   # Without a URL the release is copied in by what made the machine, possibly
   # only after boot; the digest tells a finished copy from one still being written.
   release_ready || echo "Waiting up to 15 minutes for $base/release.tar.gz" >&2
@@ -56,6 +60,7 @@ if [[ -z "$url" ]]; then
   done
 elif [[ ! -f "$base/release.tar.gz" ]]; then
   [[ "$url" == https://* ]] || { echo 'Expected an HTTPS release URL' >&2; exit 1; }
+  step 'Downloading the release'
   # A release that is not public comes with a login for curl, used once.
   login=()
   if [[ -f /opt/devbox-bootstrap/release-login ]]; then login=(--config /opt/devbox-bootstrap/release-login); fi
@@ -66,6 +71,7 @@ rm -f /opt/devbox-bootstrap/release-login
 printf '%s  %s\n' "$digest" "$base/release.tar.gz" | sha256sum --check --status
 release="/opt/devbox/releases/$digest"
 mkdir -p "$release"
+step 'Unpacking the release'
 python3 - "$base/release.tar.gz" "$release" <<'PY'
 import sys, tarfile
 with tarfile.open(sys.argv[1]) as archive:
@@ -76,6 +82,7 @@ PY
 for need in provision/requirements.txt provision/ansible.cfg provision/ansible/site.yml; do
   [[ -f "$release/$need" ]] || { echo "The release has no $need: render the seed and the release with the same berth" >&2; set_state failed; exit 1; }
 done
+step 'Installing Ansible'
 python3 -m venv /opt/devbox/ansible-venv
 /opt/devbox/ansible-venv/bin/pip install -r "$release/provision/requirements.txt"
 python3 - <<'PY'
@@ -92,6 +99,7 @@ if v['devbox_profile']=='qemu':
 os.chmod(p/'host.json',0o600)
 PY
 cd "$release"
+step 'Applying the role'
 # The role creates shared tools under /opt that the agent must be able to run,
 # so it gets the normal umask rather than this script's private one.
 (umask 022; ANSIBLE_CONFIG="$release/provision/ansible.cfg" /opt/devbox/ansible-venv/bin/ansible-playbook \
@@ -100,6 +108,7 @@ ln -sfn "$release" /opt/devbox/current
 printf '%s\n' "$digest" > "$state/ready"
 chmod 0644 "$state/ready"
 set_state configured-needs-enrollment
+step 'The role is applied'
 # Successful enrollment consumes the temporary key. The original USB/cloud user data
 # may still contain it; use short-lived one-use keys, never a reusable credential.
 python3 - <<'PY'

@@ -12,6 +12,7 @@ pub mod paths;
 pub mod plugins;
 pub mod provision;
 pub mod registry;
+pub mod relay;
 pub mod rollout;
 pub mod seed;
 pub mod server;
