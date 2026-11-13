@@ -125,6 +125,11 @@ jobs:
           restore-keys: |
             boot-apt-${{ matrix.kind }}-
             boot-apt-
+      # The restored target directory is newer than this checkout, so cargo
+      # would not run the build script that puts berthd and box among the
+      # role's files. A newer Cargo.lock makes it.
+      - name: Have the build script run
+        run: touch Cargo.lock
       - name: Boot ${{ matrix.kind }}
         run: ci/run.sh boot ${{ matrix.kind }}
       - name: Disk and memory
