@@ -35,6 +35,8 @@ pub struct LinkSpec {
     pub env: Vec<(String, String)>,
     /// The host's name, for what is said when it fails.
     pub name: String,
+    /// Where a refused login is noted, for a link over SSH.
+    pub guard: Option<crate::keys::refusal::Guard>,
 }
 
 /// A private directory for sockets of ours.
@@ -105,6 +107,9 @@ pub struct Link {
     idle: Mutex<Vec<Client>>,
     /// What the link commands last wrote to standard error.
     complaints: Arc<Mutex<String>>,
+    /// Whether a login worked since the link was made, so a refusal noted
+    /// before is forgotten once.
+    worked: std::sync::atomic::AtomicBool,
 }
 
 impl Link {
@@ -114,6 +119,23 @@ impl Link {
             portal: Default::default(),
             idle: Mutex::new(vec![]),
             complaints: Default::default(),
+            worked: Default::default(),
+        }
+    }
+
+    /// Why nothing automatic should use the link now: the host refused its
+    /// login a short while ago, or turned this address away. Whatever the
+    /// user asks for uses it all the same, and tries once.
+    pub fn refused(&self) -> Option<String> {
+        self.spec.guard.as_ref()?.refused()
+    }
+
+    fn worked(&self) {
+        use std::sync::atomic::Ordering;
+        if let Some(guard) = &self.spec.guard
+            && !self.worked.swap(true, Ordering::Relaxed)
+        {
+            guard.worked();
         }
     }
 
@@ -171,8 +193,19 @@ impl Link {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         let said = self.complaints.lock().unwrap().trim().to_owned();
+        // A refused login is noted, so nothing automatic repeats it at once.
+        let noted = match (&self.spec.guard, said.is_empty()) {
+            (Some(guard), false) => {
+                self.worked
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                guard.failed(&said)
+            }
+            _ => None,
+        };
         Error::Transport(if said.is_empty() {
             message
+        } else if let Some(noted) = noted {
+            noted
         } else if let Some(changed) = crate::keys::known::changed_key(&self.spec.name, &said) {
             changed
         } else if said.contains("a password is required") {
@@ -215,6 +248,7 @@ impl Link {
                 Ok(response) => {
                     // What a command said before it worked is no reason for a later failure.
                     self.complaints.lock().unwrap().clear();
+                    self.worked();
                     let mut idle = self.idle.lock().unwrap();
                     if client.usable() && idle.len() < IDLE {
                         idle.push(client);
@@ -288,7 +322,10 @@ impl Link {
         }
         let conn = self.connect().await?;
         match client::websocket(conn, path, "").await {
-            Ok(stream) => Ok(Box::pin(stream)),
+            Ok(stream) => {
+                self.worked();
+                Ok(Box::pin(stream))
+            }
             Err(error) => Err(self.explain(error).await),
         }
     }

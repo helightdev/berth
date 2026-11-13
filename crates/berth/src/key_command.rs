@@ -210,7 +210,17 @@ pub(crate) fn trust(paths: &Paths, name: &str, rest: &[&str]) -> Result<()> {
         return trust_served(&server, name, key_file, keep);
     }
     let host = local_host(paths, name)?;
-    let trusted = match contact::trust_key(paths, &host, None, false) {
+    // A login the host refused a short while ago is not tried first again:
+    // the one-time credential is asked for at once.
+    let refused = berth_core::keys::login_of(paths, &host)
+        .ok()
+        .and_then(|login| login.refusal())
+        .is_some_and(|refusal| !refusal.penalty);
+    let first = match refused {
+        true => Err("refused before; berth key trust".into()),
+        false => contact::trust_key(paths, &host, None, false),
+    };
+    let trusted = match first {
         Ok(trusted) => trusted,
         // Refused the key, it needs a login once; anything else is said as it is.
         Err(error) if !error.to_string().contains("berth key trust") => return Err(error),

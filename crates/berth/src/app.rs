@@ -97,6 +97,9 @@ pub struct App {
     pub host: HostView,
     /// The password dialog for the host was shown; it is not opened by itself again.
     password_asked: bool,
+    /// The next connection was asked for, by Try again or a changed
+    /// address: it logs in even after the host refused the login.
+    force_login: bool,
     /// The Terminal row opens the agent's shell and not the SSH user's.
     pub as_agent: bool,
     /// Plugins found in the source and in the user's plugin directory.
@@ -254,6 +257,7 @@ impl App {
             session: None,
             host: HostView::default(),
             password_asked: false,
+            force_login: false,
             as_agent: true,
             links: vec![],
             words: vec![],
@@ -1696,7 +1700,17 @@ impl App {
             }
             return;
         }
+        let asked = std::mem::take(&mut self.force_login);
         match host.link(&self.paths, self.host.password.as_deref()) {
+            // Opening the overview is no reason to repeat a login the host
+            // refused a moment ago; Try again is.
+            Ok(spec)
+                if !asked
+                    && let Some(refused) =
+                        spec.guard.as_ref().and_then(|guard| guard.refused()) =>
+            {
+                self.host.state = State::Unreachable(refused);
+            }
             Ok(spec) => {
                 crate::remote::connect_with(&mut self.host, spec, compare(&self.paths, &host));
             }
@@ -1778,6 +1792,7 @@ impl App {
     /// Connect again from nothing, asking for the password again if needed.
     pub fn reconnect_host(&mut self) {
         self.password_asked = false;
+        self.force_login = true;
         self.host.disconnect();
     }
 

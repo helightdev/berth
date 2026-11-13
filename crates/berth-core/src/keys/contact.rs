@@ -6,7 +6,7 @@
 //! the keys in question, and check a login with the new key before anything
 //! is removed.
 
-use super::{Login, Once, known, ring};
+use super::{Login, Once, known, refusal, ring};
 use crate::Result;
 use crate::host::Host;
 use crate::paths::Paths;
@@ -26,7 +26,8 @@ const REMOVE: &str = r#"umask 077; f="$HOME/.ssh/authorized_keys"; IFS= read -r 
 
 /// Run a command on the host as berth runs one, with `input` on its
 /// standard input. The error is ssh's own words, or the sentence for a
-/// changed host key.
+/// changed host key or for an address sshd turns away. A refused login is
+/// noted, so nothing automatic tries it again at once.
 fn run(login: &Login, command: &str, input: &str) -> Result<()> {
     let mut ssh = login.batch_ssh();
     ssh.arg(login.target())
@@ -40,11 +41,15 @@ fn run(login: &Login, command: &str, input: &str) -> Result<()> {
     }
     let done = child.wait_with_output()?;
     if done.status.success() {
+        login.noted(None);
         return Ok(());
     }
     let said = String::from_utf8_lossy(&done.stderr);
     if let Some(changed) = known::changed_key(&login.name, &said) {
         return Err(changed.into());
+    }
+    if let Some(noted) = login.noted(Some(&said)) {
+        return Err(noted.into());
     }
     let said = said
         .lines()
@@ -129,14 +134,21 @@ pub fn trust_key(
     let base = super::login(paths, &store, &host.place, &host.config)?;
     let files = super::key_files(paths, &store, &key)?;
     let by_key = base.with_keys(files);
-    let mut record = known::Record::load(&store, &host.place)?;
     // A changed host key is said as it is, and no credential goes to a
     // machine that may not be the host.
     let changed = known::changed_key(&host.name, "Host key verification failed");
-    let already = match works(&by_key) {
-        Ok(()) => true,
-        Err(error) if Some(error.to_string()) == changed => return Err(error),
-        Err(_) => false,
+    // With a credential to log in with, a key the host refused a moment ago
+    // is not tried again: each failed login counts against this address at
+    // the host's sshd, which turns it away after a few.
+    let refused = once.is_some() && by_key.refusal().is_some_and(|refused| !refused.penalty);
+    let already = match refused {
+        true => false,
+        false => match works(&by_key) {
+            Ok(()) => true,
+            Err(error) if Some(error.to_string()) == changed => return Err(error),
+            Err(error) if refusal::is_penalty(&error.to_string()) => return Err(error),
+            Err(_) => false,
+        },
     };
     if !already {
         let Some(once) = once else {
@@ -164,9 +176,10 @@ pub fn trust_key(
         // The directory with the one-time credential goes here.
         drop(dir);
     }
-    record = known::Record {
+    // Loaded after the logins, which note in it whether they worked.
+    let mut record = known::Record {
         host_keys: known::absorb(paths, &store, &host.place)?,
-        ..record
+        ..known::Record::load(&store, &host.place)?
     };
     record.trust(&public.fingerprint, None);
     record.save(&store, &host.place)?;
@@ -304,16 +317,24 @@ pub fn rotate(paths: &Paths, name: &str, out: &mut dyn Write) -> Result<Rotation
             let base = super::login(paths, &store, &place, &config)?;
             let both = base.with_keys(vec![old_file.clone(), new_file.clone()]);
             let by_new = base.with_keys(vec![new_file.clone()]);
-            let mut record = known::Record::load(&store, &place)?;
-            if works(&by_new).is_err() {
+            // A host berth has not put the new key on yet is not asked to
+            // take it: that login would only be refused, and count against
+            // this address at its sshd.
+            let has_new = known::Record::load(&store, &place)?
+                .trusts
+                .contains(&new_fp);
+            if !has_new || works(&by_new).is_err() {
                 add_key(&both, &next.public)?;
                 works(&by_new).map_err(|error| {
                     format!("the new key is there, but logging in with it fails: {error}")
                 })?;
             }
+            // Loaded after each login, which notes in it whether it worked.
+            let mut record = known::Record::load(&store, &place)?;
             record.trust(&new_fp, None);
             record.save(&store, &place)?;
             remove_key(&by_new, &old.public)?;
+            let mut record = known::Record::load(&store, &place)?;
             record.trust(&new_fp, Some(&old_fp));
             record.save(&store, &place)?;
             Ok(())

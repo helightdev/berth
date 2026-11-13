@@ -17,6 +17,7 @@
 pub mod askpass;
 pub mod contact;
 pub mod known;
+pub mod refusal;
 pub mod ring;
 
 use crate::Result;
@@ -63,6 +64,8 @@ pub struct Login {
     only: bool,
     /// Where the askpass helper finds the password: `secret:NAME` or `file:PATH`.
     askpass: Option<String>,
+    /// Where a refusal of this login is kept; none for a credential used once.
+    guard: Option<refusal::Guard>,
 }
 
 /// A value of an `-o` option, quoted for ssh when it has spaces.
@@ -135,6 +138,7 @@ pub fn login(paths: &Paths, store: &Store, place: &Place, config: &Value) -> Res
         identities: vec![],
         only: false,
         askpass: None,
+        guard: None,
     };
     match &auth {
         Auth::Berth | Auth::Key(_) => {
@@ -154,6 +158,12 @@ pub fn login(paths: &Paths, store: &Store, place: &Place, config: &Value) -> Res
             }
         }
     }
+    login.guard = Some(refusal::Guard {
+        paths: paths.clone(),
+        place: place.clone(),
+        login: login.identity(),
+        name: login.name.clone(),
+    });
     Ok(login)
 }
 
@@ -176,6 +186,7 @@ impl Login {
                 login.identities.clear();
                 login.only = false;
                 login.askpass = Some(format!("file:{}", file.display()));
+                login.guard = None;
             }
             Once::Key(halves) => {
                 let file = dir.join("once");
@@ -184,6 +195,7 @@ impl Login {
                 login.identities = vec![file];
                 login.only = true;
                 login.askpass = None;
+                login.guard = None;
             }
         }
         Ok(login)
@@ -196,7 +208,57 @@ impl Login {
         login.identities = files;
         login.only = true;
         login.askpass = None;
+        let identity = login.identity();
+        if let Some(guard) = &mut login.guard {
+            guard.login = identity;
+        }
         login
+    }
+
+    /// Which login this is, to tell whether a refusal was of it: where it
+    /// goes, as whom, and with which keys or password. Another key, address
+    /// or user is another login.
+    pub fn identity(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        for part in [&self.address, &self.user, &self.port] {
+            hash.update(part.as_bytes());
+            hash.update([0]);
+        }
+        hash.update([self.only as u8]);
+        for file in &self.identities {
+            hash.update(std::fs::read(file).unwrap_or_default());
+            hash.update([0]);
+        }
+        hash.update(self.askpass.as_deref().unwrap_or("").as_bytes());
+        hash.finalize()[..12]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    /// Why nothing automatic logs in with this login now: the host refused
+    /// it a short while ago.
+    pub fn refused(&self) -> Option<String> {
+        self.guard.as_ref()?.refused()
+    }
+
+    /// Whether the host refused this login a short while ago.
+    pub fn refusal(&self) -> Option<refusal::Refusal> {
+        self.guard.as_ref()?.holds()
+    }
+
+    /// Note how a login went: what ssh said when it failed, or nothing when
+    /// it worked. Returns what to say instead of ssh's words.
+    pub fn noted(&self, failed: Option<&str>) -> Option<String> {
+        let guard = self.guard.as_ref()?;
+        match failed {
+            Some(said) => guard.failed(said),
+            None => {
+                guard.worked();
+                None
+            }
+        }
     }
 
     /// `user@address`, or the address alone.
@@ -337,6 +399,7 @@ impl Login {
             via: None,
             env: self.env(),
             name: self.name.clone(),
+            guard: self.guard.clone(),
         })
     }
 

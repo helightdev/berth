@@ -422,7 +422,7 @@ pub(crate) fn take_in_access(
                 if !keys.is_empty() {
                     let record = crate::keys::known::Record {
                         host_keys: keys,
-                        trusts: vec![],
+                        ..Default::default()
                     };
                     writes.push((
                         kind::ACCESS,

@@ -466,6 +466,11 @@ pub fn survey(paths: &Paths) -> Vec<api::HostBehind> {
         |host| async move {
             let password = std::env::var("BERTH_SUDO_PASSWORD").ok();
             let link = Link::new(host.link(paths, password.as_deref()).ok()?);
+            // A host that refused the login a short while ago is left out,
+            // as one that does not answer is.
+            if link.refused().is_some() {
+                return None;
+            }
             let version = tokio::time::timeout(
                 std::time::Duration::from_secs(20),
                 link.get::<Version>("/v1/version"),

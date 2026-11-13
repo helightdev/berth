@@ -23,6 +23,10 @@ pub struct Record {
     /// put them there or saw them work.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trusts: Vec<String>,
+    /// The last login the host refused, which nothing automatic tries again
+    /// for a while ([`super::refusal`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<super::refusal::Refusal>,
 }
 
 impl Record {

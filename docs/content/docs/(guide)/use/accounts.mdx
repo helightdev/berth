@@ -94,6 +94,14 @@ berth key trust studio --key ~/.ssh/provider_key
 
 berth tries the host's key first. If the host refuses it, berth logs in once with what you gave and adds the key to the SSH user's `~/.ssh/authorized_keys`. The other lines of that file stay as they are. Then berth checks that a login with the key works, and forgets the one-time credential. A host whose method was `password` logs in with berth's key from then on, unless you add `--keep-password`, which keeps the password as the secret `ssh/HOST`.
 
+### Refused logins
+
+sshd counts failed logins from each address. OpenSSH 10 then turns that address away for a while (`PerSourcePenalties`, on by default), and the wait grows with each failure, up to 10 minutes. A berth that kept trying a key a host refuses would shut itself out of that host, and of every other host behind the same address.
+
+So berth remembers a refused login beside the host. For 30 minutes nothing berth does by itself logs in that way again, such as the berth server's channel to the host or the overview opening. The host shows why instead. Whatever you ask for still tries once, such as **Try again** or `berth key trust`. A changed address, user, port or key is another login and is tried at once, and a login that works forgets the refusal. `berth key trust` asks for the credential straight away while the key's refusal holds. The host then sees one failed login at most.
+
+When sshd closes the connection before the login, berth says the host is turning the address away for a while. Wait a minute and try again. berth itself waits 2 minutes before it tries such a host by itself.
+
 ### Host keys
 
 berth records each host's SSH host key in its store and gives ssh a known-hosts file of its own for each host, under `known_hosts/` of the data directory, written from the store. So a restored installation knows its hosts. The first login records the key. A key that changes later is refused:

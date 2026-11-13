@@ -233,7 +233,16 @@ pub fn install_controller(
     // The profile here may say less than the host is, as for a workstation
     // added by its address; the role refuses it too.
     let intended = crate::level::of(&host.config);
+    let asked = crate::keys::refusal::now();
     let observed = crate::level::observe(paths, host, become_password);
+    // A host that refused the login just now would refuse Ansible's too.
+    if observed.is_none()
+        && let Ok(login) = crate::keys::login_of(paths, host)
+        && let Some(refused) = login.refusal()
+        && refused.at >= asked
+    {
+        return fail(out, &refused.sentence(&host.name, refused.at));
+    }
     if let Some(why) = crate::level::refuse_install(&host.name, intended, observed) {
         return fail(out, &why);
     }

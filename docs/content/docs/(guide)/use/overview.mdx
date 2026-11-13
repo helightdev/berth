@@ -67,4 +67,6 @@ Instead of the tasks, the overview then says why, and offers:
 | Terminal over SSH | A plain SSH shell as the SSH user, for a host whose berthd cannot be reached |
 | Apply this configuration | Shown when berthd is missing or older than berth needs; installs or updates it |
 
+A host that refused berth's login says so, and berth does not try it again by itself for a while, so the host's sshd does not turn berth's address away ([Refused logins](/docs/use/accounts#refused-logins)). **Try again** logs in once. A message that names `PerSourcePenalties` means sshd is already turning the address away: wait a minute before you try again.
+
 berth's own actions stay listed below these, such as **Install berth's key**, **Host key** and **Install the controller**, as first contact is what such a host often needs. One that goes through the controller, such as sending secrets, is marked `not now`, and the Information panel gives the host's answer.

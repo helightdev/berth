@@ -9,11 +9,12 @@ hands it over: at the end the operator's password, its authorized_keys, the
 provided key and the host's SSH host keys are as they were."""
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
-from harness import (BERTH, HOST, OPERATOR, Workstation, hand_over_operator_key, keygen, needs_e2e, profile,
-                     random_text, shell_quote, wait_for)
+from harness import (BERTH, HOST, OPERATOR, Serve, Workstation, hand_over_operator_key, keygen, needs_e2e,
+                     profile, random_text, shell_quote, wait_for)
 
 # What sshd reads before the test host's own setting, which turns passwords off.
 PASSWORD_CONF = '/etc/ssh/sshd_config.d/05-e2e-password.conf'
@@ -56,10 +57,7 @@ class Access(unittest.TestCase):
         # The password goes to chpasswd on its standard input.
         cls.admin.ssh(OPERATOR, 'sudo -n chpasswd', input=f'{OPERATOR}:{cls.password}\n')
         # These tests fail logins on purpose, and sshd would shut their address out for it.
-        cls.root(f"printf 'PasswordAuthentication yes\\nKbdInteractiveAuthentication yes\\n"
-                 f"PerSourcePenalties no\\n' > {PASSWORD_CONF} "
-                 f'&& {RELOAD_SSHD}')
-        wait_for('sshd answering again', lambda: cls.admin.ssh(OPERATOR, 'true', check=False).returncode == 0)
+        cls.sshd(penalties=False)
         cls.station = Workstation('access', ssh_key=False, trust=False)
         cls.station.write_profile(profile(access={'address': HOST, 'user': OPERATOR, 'auth': 'berth'}))
 
@@ -77,6 +75,16 @@ class Access(unittest.TestCase):
         # The provider's key goes too; e2e_own_key hands over its own.
         cls.root(f'rm -f /etc/ssh/provided-keys/{OPERATOR}', check=False)
         hand_over_operator_key()
+
+    @classmethod
+    def sshd(cls, penalties):
+        """Passwords on, and sshd's penalties for failed logins on or off.
+        sshd forgets the penalties it counted when it reads its files again."""
+        conf = 'PasswordAuthentication yes\\nKbdInteractiveAuthentication yes\\n'
+        if not penalties:
+            conf += 'PerSourcePenalties no\\n'
+        cls.root(f"printf '{conf}' > {PASSWORD_CONF} && {RELOAD_SSHD}")
+        wait_for('sshd answering again', lambda: cls.admin.ssh(OPERATOR, 'true', check=False).returncode == 0)
 
     @classmethod
     def root(cls, command, check=True):
@@ -185,3 +193,32 @@ class Access(unittest.TestCase):
         self.assertNotIn('being replaced', self.berth('key').stdout)
         self.assertEqual(self.logs_in().stdout.strip(), OPERATOR)
         self.assertEqual(Path(f'{self.station.own_key}.pub').read_text().strip(), after)
+
+    def test_6_automatic_logins_stop_at_a_refusal_so_sshd_does_not_shut_berth_out(self):
+        # sshd's penalties as Ubuntu has them, and a berth whose key the host does not take.
+        self.sshd(penalties=True)
+        try:
+            server = Workstation('access-penalty', ssh_key=False, trust=False)
+            server.write_profile(profile(access={'address': HOST, 'user': OPERATOR, 'auth': 'berth'}))
+            serve = Serve(server, web=False)
+            try:
+                client = Workstation('access-penalty-client', ssh_key=False, trust=False)
+                client.berth('config', 'server', serve.url)
+                client.berth('config', 'server_token', serve.token)
+                # The server's channel follower and the host list ask by themselves; each
+                # refused login would count against this address at the host's sshd.
+                for _ in range(5):
+                    client.berth('list')
+                    time.sleep(3)
+                host = next(found for found in serve.call('GET', '/v1/hosts') if found['name'] == HOST)
+                self.assertFalse(host['reachable'])
+                self.assertIn('did not take berth', host['error'] or '')
+                # One first contact with the password goes through.
+                done = server.berth('key', 'trust', HOST, input=self.password + '\n', timeout=120)
+                self.assertIn(f'{HOST} takes the key berth now', done.stdout, done.stderr)
+                self.assertNotIn('PerSourcePenalties', done.stdout + done.stderr)
+                self.assertEqual(self.admin.ssh(OPERATOR, 'true', check=False).returncode, 0)
+            finally:
+                serve.stop()
+        finally:
+            self.sshd(penalties=False)

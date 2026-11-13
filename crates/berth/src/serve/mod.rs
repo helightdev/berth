@@ -93,6 +93,12 @@ impl Remote {
         {
             return answer.clone();
         }
+        // A host that refused the login a short while ago is not asked by
+        // the list: each refused login counts against the server's address
+        // at the host's sshd.
+        if let Some(refused) = link.refused() {
+            return Err(refused);
+        }
         let asked =
             tokio::time::timeout(Duration::from_secs(15), link.get::<Version>("/v1/version")).await;
         let answer = match asked {
@@ -298,6 +304,12 @@ async fn take_in(state: Arc<Serve>, remote: Arc<Remote>) {
     };
     let mut wait = 1;
     loop {
+        // A refused login is not tried again by itself until its back-off
+        // has passed or someone logged in with it; the store says which.
+        if link.refused().is_some() {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            continue;
+        }
         let since = state.store.cursor(&remote.name).unwrap_or(0);
         if let Ok(mut stream) = link.stream(&format!("/v1/channel?since={since}")).await {
             wait = 1;
