@@ -64,11 +64,14 @@ With only Docker or Podman, `ci/run.sh` runs the same checks in an image that ha
 ```bash
 ci/run.sh check [CHECK…]   # fmt, shell-syntax, ansible-syntax, vale, python-tests, rust-tests, clippy
 ci/run.sh e2e [TEST…]      # the end-to-end tests, such as e2e_serve.Roles
+ci/run.sh e2e --shard NAME # one shard of them, as a CI job runs it
 ci/run.sh shell            # a shell in the dev container
 ci/run.sh boot cloud|iso   # real installs in QEMU, with KVM; slow
 ```
 
 The end-to-end tests in `tests/e2e/` apply a profile to a throw-away Ubuntu container over SSH and then use it with berth, berthd and `berth serve`. They run on a network with nothing else on it, in scratch directories. The order of the modules is in `tests/e2e/run.py`. The test host's logs from a failed run are in `build/ci/logs/`.
+
+CI builds berth once and runs the shards in `SHARDS` of `tests/e2e/run.py` at the same time, each on a fresh host. A shard's first test that needs the host applies the profile itself. A new module goes into a shard too, or the run refuses to start.
 
 `ci/run.sh boot` boots berth's cloud seed and its USB installer in QEMU, lets the first boot set the host up, and then runs `tests/e2e/boot_*.py` and part of the container suite against it. Each takes 10 to 15 minutes on a machine with KVM, so run it when a change touches provisioning, the role or first boot. Logs, timings and disk use are in `build/boot/`.
 
