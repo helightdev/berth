@@ -52,6 +52,8 @@ pub enum Entry {
     /// Open the set-up flow.
     Setup,
     Run,
+    /// Save the profile, as Ctrl+S does.
+    Save,
 }
 
 pub struct Row {
@@ -104,7 +106,7 @@ pub struct App {
     catalogue: Vec<setup::Feature>,
     /// Where berth keeps its settings, for the registries and secret values.
     pub config_dir: PathBuf,
-    /// The registries and secrets that exist, for the Secrets page.
+    /// The registries and secrets that exist, for the Settings tab.
     pub registry_names: Vec<String>,
     pub secret_names: Vec<String>,
     /// Web addresses in the output on screen, and where they are, for clicking.
@@ -159,7 +161,7 @@ pub struct App {
     pub usb_drives: Choices,
     /// A link of the panel as a QR code, over everything else.
     pub qr: Option<berth_tui::qr::Overlay>,
-    /// The machine berth creates for the host, on the Install tab.
+    /// The machine berth creates for the host, on the set-up tabs.
     pub machine: Machine,
     /// What is being asked of it and of the provisioners, until it answers.
     machine_answers: Option<mpsc::Receiver<Answers>>,
@@ -218,6 +220,7 @@ fn lift(rows: Vec<setup::Row>) -> Vec<Row> {
                 setup::Entry::Key(account, index) => Entry::Key(account, index),
                 setup::Entry::Machine(pick) => Entry::Machine(pick),
                 setup::Entry::Run => Entry::Run,
+                setup::Entry::Save => Entry::Save,
             }),
         })
         .collect()
@@ -229,7 +232,7 @@ impl App {
             saved: Value::Null,
             config,
             path,
-            step: Step::Features,
+            step: Step::Install,
             action: Action::Iso,
             method: Action::Iso,
             terminal_action: None,
@@ -335,10 +338,6 @@ impl App {
         }
     }
 
-    fn access_rows(&self) -> Vec<Row> {
-        lift(self.view().access_rows())
-    }
-
     /// Read the plugins of the source (the working directory) and the user's own.
     pub fn load_plugins(&mut self, user_dir: PathBuf) {
         self.set_plugins(plugins::load(&["plugins".into(), user_dir]));
@@ -407,10 +406,6 @@ impl App {
         self.status = format!("{}: all {}", group.title, if on { "on" } else { "off" });
     }
 
-    fn feature_rows(&self) -> Vec<Row> {
-        lift(self.view().feature_rows())
-    }
-
     /// Set a toggle. The coding agents share the older switch for all of them,
     /// which the role still reads: it is on while any agent is.
     fn set_toggle(&mut self, field: Field, on: bool) {
@@ -440,70 +435,27 @@ impl App {
         lift(self.view().field_rows())
     }
 
-    fn review_rows(&self) -> Vec<Row> {
-        let mut rows = vec![];
-        if self.action == Action::Apply && self.text(Field::Inventory).is_empty() {
-            rows.push(Row::info(Line::styled(
-                "! This installs on THIS MACHINE (no inventory set)",
-                Style::new().fg(theme::WARN).bold(),
-            )));
+    /// What the Run tab says besides the shared rows: whether the Wi-Fi
+    /// password is the one this machine knows.
+    fn run_notes(&self) -> Vec<setup::Row> {
+        if !(self.action.installer() && self.enabled(Field::Wifi)) {
+            return vec![];
         }
-        let problems = self.problems();
-        for problem in &problems {
-            rows.push(Row::info(Line::styled(
-                format!("✗ {problem}"),
-                Style::new().fg(theme::BAD),
-            )));
-        }
-        if self.action.installer() && self.enabled(Field::Wifi) {
-            let (text, color) = match self.wifi_password_matches() {
-                Some(true) => (
-                    "✓ Wi-Fi password matches the one saved on this machine",
-                    theme::GOOD,
-                ),
-                Some(false) => (
-                    "! Wi-Fi password differs from the one saved on this machine",
-                    theme::WARN,
-                ),
-                None => (
-                    "· Wi-Fi login not checked: this machine has not saved that network",
-                    theme::MUTED,
-                ),
-            };
-            rows.push(Row::info(Line::styled(text, Style::new().fg(color))));
-        }
-        if let Some(text) = self.view().open_ssh_warning() {
-            rows.push(Row::info(Line::styled(text, Style::new().fg(theme::WARN))));
-        }
-        if problems.is_empty() {
-            rows.push(Row::info(Line::styled(
-                "✓ Ready",
-                Style::new().fg(theme::GOOD),
-            )));
-        }
-        // A machine is created from the provisioner's own rows.
-        if self.action == Action::Machine {
-            return rows;
-        }
-        rows.push(Row::info(""));
-        if self.action == Action::Iso {
-            let device = self.text(Field::UsbDevice);
-            let drive = self.usb_drives.iter().find(|(_, path)| path == device);
-            let value = match drive {
-                Some((label, _)) => label.as_str(),
-                None if device.is_empty() => "no",
-                None => device,
-            };
-            rows.push(Row::entry(
-                value_line("Then write to USB drive", value, Kind::Text),
-                Entry::Field(Field::UsbDevice),
-            ));
-        }
-        rows.push(Row::entry(
-            format!("[Run · {}]", self.action.label()),
-            Entry::Run,
-        ));
-        rows
+        let (text, color) = match self.wifi_password_matches() {
+            Some(true) => (
+                "✓ Wi-Fi password matches the one saved on this machine",
+                theme::GOOD,
+            ),
+            Some(false) => (
+                "! Wi-Fi password differs from the one saved on this machine",
+                theme::WARN,
+            ),
+            None => (
+                "· Wi-Fi login not checked: this machine has not saved that network",
+                theme::MUTED,
+            ),
+        };
+        vec![setup::Row::info(Line::styled(text, Style::new().fg(color)))]
     }
 
     pub fn rows(&self) -> Vec<Row> {
@@ -512,23 +464,29 @@ impl App {
         };
         let mut rows = vec![];
         match self.step {
-            Step::Features => rows = self.feature_rows(),
-            Step::Secrets => rows = self.access_rows(),
-            Step::Accounts => rows = self.field_rows(),
-            Step::Install => {
-                rows = lift(self.view().method_rows(self.methods()));
-                rows.push(Row::info(""));
-                rows.extend(self.field_rows());
-                rows.push(Row::info(""));
-                rows.extend(self.review_rows());
-                let machine = if self.action == Action::Machine || self.machine.exists() {
-                    lift(self.machine.rows())
-                } else {
-                    vec![]
+            Step::Install | Step::Features | Step::Settings | Step::Run => {
+                let problems = self.placed_problems();
+                let page = setup::Page {
+                    methods: self.methods(),
+                    machine: &self.machine,
+                    problems: &problems,
+                    notes: self.run_notes(),
                 };
-                if !machine.is_empty() {
-                    rows.push(Row::info(""));
-                    rows.extend(machine);
+                rows = lift(self.view().page_rows(page));
+                // The drive to write to is named as this machine knows it.
+                for row in &mut rows {
+                    if row.entry == Some(Entry::Field(Field::UsbDevice)) {
+                        let device = self.text(Field::UsbDevice);
+                        let drive = self.usb_drives.iter().find(|(_, path)| path == device);
+                        let value = match drive {
+                            Some((label, _)) => label.as_str(),
+                            None if device.is_empty() => "no",
+                            None => device,
+                        };
+                        let mut line = value_line("Then write to USB drive", value, Kind::Text);
+                        line.spans.insert(0, row.line.spans[0].clone());
+                        row.line = line;
+                    }
                 }
             }
             Step::Manage => {
@@ -760,8 +718,9 @@ impl App {
                 "How this host gets the secret. Enter, then type a variable name such as GH_TOKEN to put it in the agent's environment, or a path such as ~/.config/app/token to write it to a file. Empty, or x, means the host does not get it. A secret given as GH_TOKEN also logs git in to GitHub through gh. Values are set on the Secrets tab of the home screen."
             }
             Some(Entry::Setup) => {
-                "Opens the set-up pages of this host: what is installed, its accounts, and how to install it. Esc comes back here. Changes reach a running host with Apply this configuration."
+                "Opens the set-up tabs of this host: how to install it, what is installed, its settings, and running it. Esc comes back here. Changes reach a running host with Apply this configuration."
             }
+            Some(Entry::Save) => "Saves the profile, as Ctrl+S does, without running anything.",
             Some(Entry::Run) | None => self.action.help(),
         }
     }
@@ -822,9 +781,7 @@ impl App {
             && !self.methods().contains(&self.action)
         {
             self.action = self.methods()[0];
-            if self.text(Field::Profile) == "laptop" {
-                self.config["profile"] = json!("cloud");
-            }
+            setup::fit_profile(&mut self.config, self.action);
         }
         // The Manage tab acts on the running host; the others on the install method.
         if step == Step::Manage {
@@ -835,13 +792,17 @@ impl App {
         } else if self.action == Action::Manage {
             self.action = self.method;
         }
+        // A profile saved with another kind opens as the machine's.
+        if step != Step::Manage && self.action == Action::Machine {
+            setup::fit_profile(&mut self.config, self.action);
+        }
         // A host with an address opens on its tasks rather than the address.
         let task = |entry: &Entry| matches!(entry, Entry::Task(_) | Entry::HostTask(_));
         let first = match self.text(Field::SshHost).is_empty() {
             false if step == Step::Manage => self.entries().iter().position(task),
             _ => None,
         };
-        if step == Step::Secrets {
+        if step == Step::Settings {
             self.load_access();
         }
         if step == Step::Install {
@@ -850,6 +811,17 @@ impl App {
         self.list = ListState::default().with_selected(Some(first.unwrap_or(0)));
         self.status.clear();
         self.suggestion_focus = false;
+    }
+
+    /// Open the first tab of the set-up flow, for a host that is not on its
+    /// overview, and keep what was said on opening it.
+    pub fn start(&mut self) {
+        if self.step == Step::Manage || self.locked() {
+            return;
+        }
+        let said = std::mem::take(&mut self.status);
+        self.set_step(Step::Install);
+        self.status = said;
     }
 
     pub fn move_selection(&mut self, up: bool) {
@@ -981,6 +953,11 @@ impl App {
         };
         let choices = match self.selected_entry() {
             Some(Entry::Key(..)) => self.public_keys.clone(),
+            // The provisioner is a choice like a field's, of what there is.
+            Some(Entry::Machine(machine::Pick::Provisioner)) => self.machine.choices(),
+            Some(Entry::Machine(machine::Pick::Argument(index))) => {
+                self.machine.argument_choices(index)
+            }
             Some(Entry::Field(field)) => match (field, field.spec().kind) {
                 (_, Kind::Choice(values)) => own(values),
                 (Field::SshHost, _) => self
@@ -1003,6 +980,30 @@ impl App {
             self.suggestions = choices;
             self.suggestion_list = ListState::default().with_selected(Some(0));
             self.suggestion_focus = false;
+        }
+        // A choice's list starts at what is chosen, and follows it as it changes.
+        if !self.suggestion_focus
+            && let Some(current) = self.current_choice()
+            && let Some(at) = self
+                .suggestions
+                .iter()
+                .position(|(_, value)| *value == current)
+        {
+            self.suggestion_list.select(Some(at));
+        }
+    }
+
+    /// What is chosen on the selected row, when it is a choice.
+    fn current_choice(&self) -> Option<String> {
+        match self.selected_entry()? {
+            Entry::Field(field) if matches!(field.spec().kind, Kind::Choice(_)) => {
+                Some(self.text(field).to_owned())
+            }
+            Entry::Machine(machine::Pick::Provisioner) => self.machine.chosen.clone(),
+            Entry::Machine(machine::Pick::Argument(index)) => {
+                self.machine.value(index).map(str::to_owned)
+            }
+            _ => None,
         }
     }
 
@@ -1315,31 +1316,42 @@ impl App {
 
     /// Reasons the chosen action would fail, checked before leaving the UI.
     pub fn problems(&self) -> Vec<String> {
+        self.placed_problems()
+            .into_iter()
+            .map(|problem| problem.text)
+            .collect()
+    }
+
+    /// [`App::problems`], each on the tab of what it is about.
+    pub fn placed_problems(&self) -> Vec<setup::Problem> {
         use Field::*;
+        use setup::Problem;
         let action = self.action;
         if action == Action::Manage {
             return self
                 .remote_inventory()
                 .err()
-                .map(|error| error.to_string())
+                .map(|error| Problem::new(Step::Manage, error.to_string()))
                 .into_iter()
                 .collect();
         }
-        let mut problems = self.view().problems();
-        let mut check = |ok: bool, message: &str| {
+        let mut problems = self.view().problems_with(&self.machine);
+        let mut check = |ok: bool, step: Step, message: &str| {
             if !ok {
-                problems.push(message.to_owned());
+                problems.push(Problem::new(step, message));
             }
         };
         match action {
             Action::Iso => {
                 check(
                     expand_path(self.text(Iso)).is_file(),
+                    Step::Run,
                     "Source ISO file does not exist",
                 );
                 let usb = self.text(UsbDevice);
                 check(
                     usb.is_empty() || self.usb_drives.iter().any(|(_, path)| path == usb),
+                    Step::Run,
                     "The USB drive to write to is not connected",
                 );
                 let sha = self.text(IsoSha);
@@ -1349,6 +1361,7 @@ impl App {
                             && sha
                                 .chars()
                                 .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+                    Step::Run,
                     "ISO SHA256 must be 64 lowercase hex characters",
                 );
             }
@@ -1356,12 +1369,13 @@ impl App {
                 let inventory = self.text(Inventory);
                 check(
                     inventory.is_empty() || expand_path(inventory).exists(),
+                    Step::Run,
                     "Ansible inventory file does not exist",
                 );
             }
             Action::Ssh => {
                 if let Err(error) = self.remote_inventory() {
-                    problems.push(error.to_string());
+                    problems.push(Problem::new(Step::Install, error.to_string()));
                 }
             }
             _ => {}
@@ -1972,7 +1986,11 @@ impl App {
 
     /// Enter on a row of the machine.
     pub fn machine_enter(&mut self, pick: machine::Pick) {
-        // The machine is made from the profile, which has to be whole first.
+        // The machine is made from the profile, which has to be whole first,
+        // and of the kind a created machine is.
+        if pick == machine::Pick::Create {
+            setup::fit_profile(&mut self.config, Action::Machine);
+        }
         if pick == machine::Pick::Create && !self.problems().is_empty() {
             self.status = "Fix the listed problems first".into();
             return;
@@ -2104,6 +2122,7 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
     if !config.is_object() {
         return Err("Configuration must be a JSON object".into());
     }
+    berth_api::profile::retire_qemu(&mut config);
     for field in ["wifi", "ansible_vars", "builder"] {
         if !config[field].is_null() && !config[field].is_object() {
             return Err(format!("{field} must be a JSON object or null").into());

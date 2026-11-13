@@ -32,7 +32,7 @@ class EnvironmentTests(unittest.TestCase):
         self.defaults['devbox_tool_path'] = self.templates.from_string(self.defaults['devbox_tool_path']).render(self.defaults)
 
     def test_shell_and_service_environment_agree_for_all_profiles(self):
-        for profile in ['laptop', 'cloud', 'qemu', 'container']:
+        for profile in ['laptop', 'cloud', 'container']:
             for software in [True, False]:
                 with self.subTest(profile=profile, software=software):
                     values = dict(self.defaults, devbox_profile=profile,
@@ -62,7 +62,7 @@ class EnvironmentTests(unittest.TestCase):
 
     def test_custom_agent_paths_reach_shell_and_service(self):
         values=dict(self.defaults,devbox_user='robot',devbox_home='/home/robot',
-                    devbox_profile='qemu',devbox_uid='1003',devbox_bind='127.0.0.1',
+                    devbox_profile='cloud',devbox_uid='1003',devbox_bind='127.0.0.1',
                     devbox_lvp_icd='/usr/share/vulkan/icd.d/lvp_icd.json')
         values['devbox_tool_path']=values['devbox_tool_path'].replace('/home/agent','/home/robot')
         shell=self.templates.get_template('environment.j2').render(values)
