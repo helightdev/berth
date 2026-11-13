@@ -129,11 +129,20 @@ fn decoded(value: &str) -> String {
         .unwrap_or_else(|| value.to_owned())
 }
 
-/// The `server` and `token` a link carried, after `?` or `#`. The token is
-/// taken out of the address so that it is not left in the bar or the history.
-pub fn linked() -> (Option<String>, Option<String>) {
+/// What a link to the page carried, after `?` or `#`.
+#[derive(Default)]
+pub struct Linked {
+    pub server: Option<String>,
+    pub token: Option<String>,
+    /// A key that collects the token, once, after an install.
+    pub setup_key: Option<String>,
+}
+
+/// What the link to this page carried. A token or a setup key is taken out
+/// of the address so that it is not left in the bar or the history.
+pub fn linked() -> Linked {
     let Some(window) = window() else {
-        return (None, None);
+        return Linked::default();
     };
     let location = window.location();
     let (search, hash) = (
@@ -154,12 +163,17 @@ pub fn linked() -> (Option<String>, Option<String>) {
             (key == name && !value.is_empty()).then(|| decoded(value))
         })
     };
-    let (server, token) = (value("server"), value("token"));
-    if token.is_some() {
+    let linked = Linked {
+        server: value("server"),
+        token: value("token"),
+        setup_key: value("setup-key"),
+    };
+    if linked.token.is_some() || linked.setup_key.is_some() {
+        let secret = |part: &str| part.starts_with("token=") || part.starts_with("setup-key=");
         let keep = |parts: &[String], mark: &str| {
             let kept: Vec<&str> = parts
                 .iter()
-                .filter(|part| !part.starts_with("token="))
+                .filter(|part| !secret(part))
                 .map(String::as_str)
                 .collect();
             match kept.is_empty() {
@@ -177,7 +191,65 @@ pub fn linked() -> (Option<String>, Option<String>) {
             let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&bare));
         }
     }
-    (server, token)
+    linked
+}
+
+/// Call `then` on the outcome of a promise: what it gave, or why it failed.
+fn settle(promise: &JsValue, then: impl FnOnce(Result<JsValue, String>) + 'static) {
+    let then = Rc::new(RefCell::new(Some(then)));
+    let failed = then.clone();
+    let given = Closure::once_into_js(move |value: JsValue| {
+        if let Some(then) = then.borrow_mut().take() {
+            then(Ok(value));
+        }
+    });
+    let refused = Closure::once_into_js(move |error: JsValue| {
+        if let Some(then) = failed.borrow_mut().take() {
+            let said = js_sys::Reflect::get(&error, &"message".into())
+                .ok()
+                .and_then(|message| message.as_string())
+                .unwrap_or_else(|| "the browser did not send the request".into());
+            then(Err(said));
+        }
+    });
+    if let Ok(method) = js_sys::Reflect::get(promise, &"then".into()) {
+        let _ = method
+            .unchecked_into::<js_sys::Function>()
+            .call2(promise, &given, &refused);
+    }
+}
+
+/// One plain HTTP request with a bearer, and then its status and body. For
+/// what the portal cannot carry because the caller has no token yet.
+pub fn request(
+    method: &str,
+    url: &str,
+    bearer: &str,
+    then: impl FnOnce(Result<(u16, String), String>) + 'static,
+) {
+    let Some(window) = window() else {
+        return then(Err("there is no window".into()));
+    };
+    let init = web_sys::RequestInit::new();
+    init.set_method(method);
+    if let Ok(headers) = web_sys::Headers::new() {
+        let _ = headers.set("Authorization", &format!("Bearer {bearer}"));
+        init.set_headers(&headers);
+    }
+    let sent: JsValue = window.fetch_with_str_and_init(url, &init).into();
+    settle(&sent, move |answer| {
+        let response: web_sys::Response = match answer {
+            Ok(response) => response.unchecked_into(),
+            Err(error) => return then(Err(error)),
+        };
+        let status = response.status();
+        match response.text() {
+            Ok(text) => settle(&text.into(), move |body| {
+                then(body.map(|body| (status, body.as_string().unwrap_or_default())))
+            }),
+            Err(_) => then(Ok((status, String::new()))),
+        }
+    });
 }
 
 /// The address this page came from: `http://host:port`.

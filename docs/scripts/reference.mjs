@@ -38,6 +38,7 @@ const groups = {
   processes: ['Processes', 'The processes of the host.'],
   channel: ['Channel', 'Messages between programs on the host and berth.'],
   services: ['Services', 'Programs of plugins that answer calls.'],
+  setup_key: ['Setup key', 'Collecting the token with a short-lived key, after an install.'],
   hosts: ['Hosts', 'The hosts berth serve knows, and applying their profiles.'],
   provisioners: ['Provisioners', 'What the plugins can create machines with, and the machines they have.'],
   instances: ['Machines', 'The machine berth created for a host: creating, starting, stopping and deleting it.'],
@@ -235,6 +236,7 @@ function operationSection(op, program, schemas, used) {
     facts.push(op.resumable ? 'It resumes from `since`.' : 'It does not resume.');
   }
   if (op.portal === false) facts.push(`Not on the portal${op.http_only ? `, because ${md(op.http_only)}` : ''}.`);
+  if (op.key) facts.push(`It takes ${md(op.key)} as the bearer, not the token or a role.`);
   if (op.role) {
     facts.push(
       program.serve
@@ -371,7 +373,8 @@ function httpExample(op, program, path, headers, data, stream) {
     }\n\n`;
   }
   const lines = [];
-  if (program.serve) lines.push(`curl -H "Authorization: Bearer $TOKEN"`);
+  if (op.key) lines.push(`curl -H "Authorization: Bearer $SETUP_KEY"`);
+  else if (program.serve) lines.push(`curl -H "Authorization: Bearer $TOKEN"`);
   else lines.push('sudo curl --unix-socket /run/berth/control.sock');
   if (op.http.method !== 'GET') lines.push(`-X ${op.http.method}`);
   for (const header of headers) lines.push(`-H '${header}'`);

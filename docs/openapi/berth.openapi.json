@@ -2000,6 +2000,57 @@
         ],
         "type": "object"
       },
+      "SetupClaim": {
+        "description": "The server's token, collected with a setup key.",
+        "properties": {
+          "api": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expires": {
+            "type": "string"
+          },
+          "token": {
+            "description": "The token of berth serve, as in its serve.token.",
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "version",
+          "api",
+          "expires"
+        ],
+        "type": "object"
+      },
+      "SetupKey": {
+        "description": "What a setup key says of the server it is for.",
+        "properties": {
+          "api": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expires": {
+            "description": "When the key stops working, in RFC 3339.",
+            "type": "string"
+          },
+          "version": {
+            "description": "The version of berth serve.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "api",
+          "expires"
+        ],
+        "type": "object"
+      },
       "Signal": {
         "properties": {
           "signal": {
@@ -2407,7 +2458,7 @@
     }
   },
   "info": {
-    "description": "One API over all hosts, with the inbox and a key-value store. Everything under /v1/hosts/{name}/ that is not named here is that host's own API, passed through unchanged; only the `secrets` task is refused, which `hosts.secrets` stands in for. Over TCP every request carries the server's token or an OAuth 2.0 access token as a bearer, and needs the role its operation names.",
+    "description": "One API over all hosts, with the inbox and a key-value store. Everything under /v1/hosts/{name}/ that is not named here is that host's own API, passed through unchanged; only the `secrets` task is refused, which `hosts.secrets` stands in for. Over TCP every request carries the server's token or an OAuth 2.0 access token as a bearer, and needs the role its operation names. The routes of the setup key take that key as the bearer instead.",
     "title": "berth serve",
     "version": "0.3.0"
   },
@@ -6212,6 +6263,105 @@
         "summary": "What a new host starts from, and what plugins can install on one.",
         "tags": [
           "set-up"
+        ]
+      }
+    },
+    "/v1/setup-key": {
+      "delete": {
+        "operationId": "done",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Done"
+                }
+              }
+            },
+            "description": "The key is deleted"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The key is wrong, missing or expired"
+          }
+        },
+        "summary": "End the setup key, once its user has the token.",
+        "tags": [
+          "setup_key"
+        ]
+      },
+      "get": {
+        "operationId": "check",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupKey"
+                }
+              }
+            },
+            "description": "The server's version and when the key expires"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The key is wrong, missing or expired"
+          }
+        },
+        "summary": "Whether a setup key works, and the berth serve it is for.",
+        "tags": [
+          "setup_key"
+        ]
+      },
+      "post": {
+        "operationId": "claim",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupClaim"
+                }
+              }
+            },
+            "description": "The server's token"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The key is wrong, missing or expired"
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "This berth serve takes no token over the network"
+          }
+        },
+        "summary": "Collect the server's token with a setup key. It can be asked again until the key is done.",
+        "tags": [
+          "setup_key"
         ]
       }
     },

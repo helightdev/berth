@@ -35,6 +35,8 @@ Usage:
                              at the first that fails; --all takes current ones too,
                              --update runs their update task, --reboot reboots those
                              that need it unless sessions run (--force: even then)
+  berth connect URL          use the berth server at URL: give it the setup key made
+                             there with berth setup-key, on standard input
   berth login                log in to a berth server that takes access tokens of an
                              OAuth 2.0 issuer; berth logout forgets the login
   berth remove HOST          forget a host; the machine is left as it is
@@ -110,6 +112,9 @@ Usage:
                              an API over all hosts on a socket of this user; with
                              --listen also over HTTP behind a token, on this machine
                              only unless --expose allows another address
+  berth setup-key [--remove] make a key, valid for a day, that lets the first user
+                             collect the token of the berth serve on this machine;
+                             --remove ends it
   berth inbox [HOST] [--topic PREFIX] [--all]
                              messages taken in from the hosts' channels
   berth kv get|set|rm|ls NAMESPACE [KEY] [JSON]
@@ -399,6 +404,8 @@ fn run() -> Result<()> {
         "logout",
         "key",
         "tailnet-key",
+        "connect",
+        "setup-key",
     ];
     if let Some(server) = berth_core::server::Server::configured(&paths)
         && !args.first().is_some_and(|verb| local.contains(verb))
@@ -468,6 +475,8 @@ fn run() -> Result<()> {
         }
         ["update", ref rest @ ..] => return update::command(rest),
         ["serve", ref rest @ ..] => return serve::command(&paths, rest),
+        ["setup-key", ref rest @ ..] => return serve::setup_key::command(&paths, rest),
+        ["connect", url] => return commands::connect(&paths, url),
         ["inbox", ref rest @ ..] => return serve::inbox_command(&paths, rest),
         ["kv", ref rest @ ..] => return serve::kv_command(&paths, rest),
         ["openapi"] => {

@@ -416,8 +416,12 @@ pub fn operations_of(
             "kind": if op.kind == ops::Kind::Stream { "stream" } else { "call" },
             "http": {"method": op.method, "path": path},
             "portal": op.http_only.is_empty(),
-            "role": op.role.name(),
         });
+        // An operation with a key of its own is let in by that key, whatever the role.
+        match op.key {
+            "" => entry["role"] = json!(op.role.name()),
+            key => entry["key"] = json!(key),
+        }
         if !op.http_only.is_empty() {
             entry["http_only"] = json!(op.http_only);
         }

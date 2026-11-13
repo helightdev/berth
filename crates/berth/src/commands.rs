@@ -1186,6 +1186,80 @@ pub fn logout(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
+/// `berth connect URL`: use the berth server at URL, with the token a setup
+/// key collects. The key comes on standard input, so it is in no argv.
+pub fn connect(paths: &Paths, url: &str) -> Result<()> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(format!(
+            "{url} is no address of a berth server: https://HOST or http://HOST:PORT"
+        )
+        .into());
+    }
+    let key = registry::read_secret("Setup key")?;
+    connect_with(paths, url, key.trim())
+}
+
+/// [`connect`] with the key in hand. Nothing is saved unless all of it works.
+pub fn connect_with(paths: &Paths, url: &str, key: &str) -> Result<()> {
+    use berth_core::server::{Server, http_as};
+    let url = url.trim().trim_end_matches('/').to_owned();
+    let key = key.to_owned();
+    let at = format!("{url}/v1/setup-key");
+    let ask = |method: &'static str| {
+        let (at, key) = (at.clone(), key.clone());
+        async move {
+            let (status, body) = http_as(method, &at, Some(&key), None, vec![]).await?;
+            match status {
+                200 => Ok(serde_json::from_slice::<Value>(&body)?),
+                401 => Err(
+                    "The server did not take the setup key: it is wrong, used up or expired. Make a new one where the server runs: berth setup-key".into(),
+                ),
+                404 | 405 => Err("The server knows no setup keys: it is an older berth".into()),
+                _ => Err(answer_error(status, &body)),
+            }
+        }
+    };
+    let (version, token) = link::runtime()?.block_on(async {
+        let checked: api::SetupKey = serde_json::from_value(ask("GET").await?)?;
+        let claimed: api::SetupClaim = serde_json::from_value(ask("POST").await?)?;
+        // Saved only once the token is seen to open the server.
+        Server {
+            url: url.clone(),
+            token: Some(claimed.token.clone()),
+        }
+        .portal()
+        .await?
+        .call("access", None, Value::Null, None)
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>((checked.version, claimed.token))
+    })?;
+    let before = paths.setting("server");
+    paths.set("server", &url)?;
+    if let Err(error) = paths.set("server_token", &token) {
+        paths.set("server", before.as_deref().unwrap_or(""))?;
+        return Err(error);
+    }
+    if let Err(error) = link::runtime()?.block_on(ask("DELETE")) {
+        eprintln!(
+            "The setup key could not be ended ({error}). It stops by itself within a day, or with berth setup-key --remove where the server runs."
+        );
+    }
+    println!("This berth now uses the berth server at {url}, berth {version}");
+    if std::env::var_os("BERTH_SERVER").is_some() {
+        eprintln!("BERTH_SERVER is set in this shell and is used before the setting");
+    }
+    Ok(())
+}
+
+/// What an answer that is not a 200 says.
+fn answer_error(status: u16, body: &[u8]) -> Box<dyn std::error::Error> {
+    let said: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    match said["error"]["message"].as_str() {
+        Some(message) => format!("HTTP {status}: {message}").into(),
+        None => format!("HTTP {status}").into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -45,7 +45,8 @@ pub struct Auth {
     oauth: Option<Oauth>,
 }
 
-fn same(a: &str, b: &str) -> bool {
+/// Whether two secrets are the same, in a time that does not tell where they differ.
+pub fn same(a: &str, b: &str) -> bool {
     a.len() == b.len()
         && a.bytes()
             .zip(b.bytes())
@@ -113,6 +114,11 @@ impl Auth {
         }))
     }
 
+    /// The server's own token, when it takes one over the network.
+    pub fn own_token(&self) -> Option<&str> {
+        self.token.as_deref()
+    }
+
     /// What the callers over the network are told about set-up.
     pub fn setup(&self) -> bool {
         self.setup
@@ -169,6 +175,12 @@ impl Auth {
     }
 
     pub fn allows(&self, access: &Access, op: &Op) -> Result<(), Refusal> {
+        if !op.key.is_empty() {
+            return Err((
+                code::FORBIDDEN,
+                format!("{} takes {} as its bearer, over HTTP", op.name, op.key),
+            ));
+        }
         if self.role(access) >= op.role {
             return Ok(());
         }

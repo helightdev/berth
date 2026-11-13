@@ -9,6 +9,7 @@ mod docs;
 mod page;
 mod provisioners;
 mod setup;
+pub mod setup_key;
 #[cfg(test)]
 mod tests;
 

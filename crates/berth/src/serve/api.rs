@@ -3,7 +3,7 @@
 use super::{
     Event, Remote, Serve,
     auth::{self, Access},
-    provisioners, setup,
+    provisioners, setup, setup_key,
 };
 use axum::{
     Json, Router,
@@ -199,6 +199,16 @@ fn kv_entry(entry: store::Entry) -> KvEntry {
 
 /// The routes that are plain requests, with their descriptions.
 pub fn documented() -> OpenApiRouter<Arc<Serve>> {
+    guarded_routes().merge(keyed_routes())
+}
+
+/// The routes that check a key of their own, for a caller without a token.
+fn keyed_routes() -> OpenApiRouter<Arc<Serve>> {
+    OpenApiRouter::new().routes(routes!(setup_key::check, setup_key::claim, setup_key::done))
+}
+
+/// The routes that over TCP are for a caller with a token and a role.
+fn guarded_routes() -> OpenApiRouter<Arc<Serve>> {
     OpenApiRouter::new()
         .routes(routes!(version))
         .routes(routes!(access))
@@ -241,7 +251,7 @@ pub fn documented() -> OpenApiRouter<Arc<Serve>> {
 }
 
 pub fn router(state: Arc<Serve>, guarded: bool) -> Router {
-    let (mut router, _) = documented().split_for_parts();
+    let (mut router, _) = guarded_routes().split_for_parts();
     // Every stream of the table gets its route here, so none can exist undescribed.
     for stream in streams::SERVE {
         router = match stream.id {
@@ -263,6 +273,8 @@ pub fn router(state: Arc<Serve>, guarded: bool) -> Router {
             );
         }
     }
+    // Added after the guard, which they are not behind: they check their key themselves.
+    router = router.merge(keyed_routes().split_for_parts().0);
     router
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state)

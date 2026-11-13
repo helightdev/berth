@@ -46,6 +46,26 @@ pub struct Version {
     pub applied: Option<Applied>,
 }
 
+/// What a setup key says of the server it is for.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SetupKey {
+    /// The version of berth serve.
+    pub version: String,
+    pub api: u32,
+    /// When the key stops working, in RFC 3339.
+    pub expires: String,
+}
+
+/// The server's token, collected with a setup key.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SetupClaim {
+    /// The token of berth serve, as in its serve.token.
+    pub token: String,
+    pub version: String,
+    pub api: u32,
+    pub expires: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {

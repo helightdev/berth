@@ -2023,3 +2023,155 @@ async fn machines_are_created_and_deleted_through_the_api() {
         assert!(!profile.with_extension(beside).exists(), "{beside}");
     }
 }
+
+// ── The setup key ───────────────────────────────────────────────────────────
+
+/// A request to the setup key's route with a bearer, or none.
+async fn setup_key(
+    address: std::net::SocketAddr,
+    method: &str,
+    bearer: Option<&str>,
+) -> (u16, Value) {
+    let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    let mut client = Client::over(stream).await.unwrap();
+    let authorization = bearer.map(|bearer| format!("Bearer {bearer}"));
+    let headers: Vec<(&str, &str)> = authorization
+        .iter()
+        .map(|value| ("authorization", value.as_str()))
+        .collect();
+    let answer = client
+        .send(method, "/v1/setup-key", &headers, Default::default())
+        .await
+        .unwrap();
+    let said = serde_json::from_slice(&answer.body).unwrap_or(Value::Null);
+    (answer.status, said)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_setup_key_hands_over_the_token_until_it_is_done() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let state = state_in(dir.path(), Some("s3cret-token"));
+    let paths = super::copy(&state.paths);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = api::router(state, true);
+    tokio::spawn(async move { axum::serve(listener, router).await });
+
+    // Without a key there is nothing to get in with, and every refusal looks the same.
+    let (status, nothing) = setup_key(address, "GET", Some("0".repeat(64).as_str())).await;
+    assert_eq!(status, 401);
+    let (key, _) = super::setup_key::make(&paths).unwrap();
+    assert!(key.len() >= 64);
+    let file = paths.data_dir.join("serve.setup-key");
+    let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+    for bearer in [None, Some("wrong"), Some("s3cret-token")] {
+        let (status, said) = setup_key(address, "GET", bearer).await;
+        assert_eq!((status, &said), (401, &nothing), "{bearer:?}");
+    }
+    // Nor is the key a token for anything else.
+    let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    let mut client = Client::over(stream).await.unwrap();
+    let bearer = format!("Bearer {key}");
+    let hosts = client
+        .send(
+            "GET",
+            "/v1/hosts",
+            &[("authorization", bearer.as_str())],
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hosts.status, 401);
+
+    let (status, checked) = setup_key(address, "GET", Some(&key)).await;
+    assert_eq!(status, 200);
+    assert_eq!(checked["version"], berth_api::VERSION);
+    assert!(checked["expires"].as_str().unwrap().ends_with('Z'));
+    // Collecting may be repeated, as after a reload of the page.
+    for _ in 0..2 {
+        let (status, claimed) = setup_key(address, "POST", Some(&key)).await;
+        assert_eq!(
+            (status, claimed["token"].as_str()),
+            (200, Some("s3cret-token"))
+        );
+    }
+    // Done ends it.
+    assert_eq!(setup_key(address, "DELETE", Some(&key)).await.0, 200);
+    assert!(!file.exists());
+    for method in ["GET", "POST", "DELETE"] {
+        assert_eq!(setup_key(address, method, Some(&key)).await.0, 401);
+    }
+
+    // A key that has expired is refused and goes.
+    let old = "a".repeat(64);
+    std::fs::write(&file, json!({"key": old, "expires": 1}).to_string()).unwrap();
+    assert_eq!(setup_key(address, "POST", Some(&old)).await.0, 401);
+    assert!(!file.exists());
+
+    // A new key takes the place of the one before.
+    let (first, _) = super::setup_key::make(&paths).unwrap();
+    let (second, _) = super::setup_key::make(&paths).unwrap();
+    assert_eq!(setup_key(address, "GET", Some(&first)).await.0, 401);
+    assert_eq!(setup_key(address, "GET", Some(&second)).await.0, 200);
+    assert!(super::setup_key::remove(&paths).unwrap());
+    assert_eq!(setup_key(address, "GET", Some(&second)).await.0, 401);
+
+    // The portal does not carry these: they are for a caller without a token.
+    let op = berth_api::ops::find(berth_api::ops::SERVE, "setup_key.claim").unwrap();
+    let auth = super::auth::Auth::token(Some("s3cret-token".into()));
+    assert!(auth.allows(&super::auth::Access::local(), op).is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn berth_connect_saves_the_server_and_its_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state_in(dir.path(), Some("s3cret-token"));
+    let served = super::copy(&state.paths);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = api::router(state, true);
+    tokio::spawn(async move { axum::serve(listener, router).await });
+    let (key, _) = super::setup_key::make(&served).unwrap();
+
+    let client = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        config_dir: client.path().join("config"),
+        data_dir: client.path().join("data"),
+    };
+    let connect = |key: String| {
+        let (paths, url) = (super::copy(&paths), url.clone());
+        tokio::task::spawn_blocking(move || {
+            crate::commands::connect_with(&paths, &url, &key).map_err(|error| error.to_string())
+        })
+    };
+    // A wrong key saves nothing.
+    let refused = connect("wrong".into()).await.unwrap().unwrap_err();
+    assert!(refused.contains("did not take the setup key"), "{refused}");
+    assert_eq!(paths.setting("server"), None);
+
+    connect(key.clone()).await.unwrap().unwrap();
+    assert_eq!(paths.setting("server").as_deref(), Some(url.as_str()));
+    assert_eq!(
+        paths.setting("server_token").as_deref(),
+        Some("s3cret-token")
+    );
+    // The key was ended once the token was saved.
+    assert!(!served.data_dir.join("serve.setup-key").exists());
+    assert!(connect(key).await.unwrap().is_err());
+}
+
+#[test]
+fn a_setup_key_is_refused_when_the_token_is_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        config_dir: dir.path().join("config"),
+        data_dir: dir.path().join("data"),
+    };
+    paths.set("serve_token", "off").unwrap();
+    let refused = super::setup_key::make(&paths).unwrap_err().to_string();
+    assert!(refused.contains("serve_token is off"), "{refused}");
+    assert!(!paths.data_dir.join("serve.setup-key").exists());
+    assert!(super::setup_key::command(&paths, &["--nothing"]).is_err());
+}

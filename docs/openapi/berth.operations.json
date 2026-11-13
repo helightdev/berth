@@ -1380,6 +1380,57 @@
         ],
         "type": "object"
       },
+      "SetupClaim": {
+        "description": "The server's token, collected with a setup key.",
+        "properties": {
+          "api": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expires": {
+            "type": "string"
+          },
+          "token": {
+            "description": "The token of berth serve, as in its serve.token.",
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "version",
+          "api",
+          "expires"
+        ],
+        "type": "object"
+      },
+      "SetupKey": {
+        "description": "What a setup key says of the server it is for.",
+        "properties": {
+          "api": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expires": {
+            "description": "When the key stops working, in RFC 3339.",
+            "type": "string"
+          },
+          "version": {
+            "description": "The version of berth serve.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "api",
+          "expires"
+        ],
+        "type": "object"
+      },
       "Step": {
         "properties": {
           "exit_code": {
@@ -1474,6 +1525,85 @@
       },
       "role": "view",
       "summary": "What the caller may do here."
+    },
+    {
+      "args": [],
+      "errors": [
+        {
+          "description": "The key is wrong, missing or expired",
+          "status": "401"
+        }
+      ],
+      "group": "setup_key",
+      "http": {
+        "method": "GET",
+        "path": "/v1/setup-key"
+      },
+      "http_only": "it is for a caller that has no token yet",
+      "key": "the setup key",
+      "kind": "call",
+      "name": "setup_key.check",
+      "portal": false,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/SetupKey"
+        }
+      },
+      "summary": "Whether a setup key works, and the berth serve it is for."
+    },
+    {
+      "args": [],
+      "errors": [
+        {
+          "description": "The key is wrong, missing or expired",
+          "status": "401"
+        },
+        {
+          "description": "This berth serve takes no token over the network",
+          "status": "501"
+        }
+      ],
+      "group": "setup_key",
+      "http": {
+        "method": "POST",
+        "path": "/v1/setup-key"
+      },
+      "http_only": "it is for a caller that has no token yet",
+      "key": "the setup key",
+      "kind": "call",
+      "name": "setup_key.claim",
+      "portal": false,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/SetupClaim"
+        }
+      },
+      "summary": "Collect the server's token with a setup key. It can be asked again until the key is done."
+    },
+    {
+      "args": [],
+      "errors": [
+        {
+          "description": "The key is wrong, missing or expired",
+          "status": "401"
+        }
+      ],
+      "group": "setup_key",
+      "http": {
+        "method": "DELETE",
+        "path": "/v1/setup-key"
+      },
+      "http_only": "it is for a caller that has no token yet",
+      "key": "the setup key",
+      "kind": "call",
+      "name": "setup_key.done",
+      "portal": false,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "summary": "End the setup key, once its user has the token."
     },
     {
       "args": [],
