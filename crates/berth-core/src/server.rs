@@ -146,16 +146,9 @@ impl Server {
         })
     }
 
-    /// Open the server's portal. Without a token of the server's, berth
-    /// shows an access token of its own when it has or can get one.
+    /// Open the server's portal, with the configured token if there is one.
     pub async fn portal(&self) -> client::Result<Portal> {
-        let own = match (&self.token, self.url.starts_with("unix:")) {
-            (None, false) => crate::oauth::token(&self.url)
-                .await
-                .map_err(|error| Error::Transport(error.to_string()))?,
-            _ => None,
-        };
-        let token = own.as_deref().or(self.token.as_deref()).unwrap_or("");
+        let token = self.token.as_deref().unwrap_or("");
         if let Some(path) = self.url.strip_prefix("unix:") {
             let stream = UnixStream::connect(path)
                 .await
