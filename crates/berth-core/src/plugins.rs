@@ -1,11 +1,14 @@
 //! Plugins: npm-format packages whose `package.json` has a `berth` section.
 //! Each contributes features to the groups of the Features page, and tasks to
 //! the overview of a host. The role does the installing from the same manifest.
+//! A plugin can also bring provisioners, programs that create the machine a
+//! profile describes; berth runs those itself (see [`crate::provision`]).
 
 use crate::{Result, paths::Paths, server::Server};
 use berth_api::{
     AppliedPlugin, PluginFeature, PluginInfo, PluginList as Listing, PluginOrigin,
     PluginReport as Report, PluginService, PluginTask, PluginUpdate, PluginUpdates,
+    ProvisionerInfo,
 };
 use serde_json::{Value, json};
 use std::fs;
@@ -50,6 +53,75 @@ pub struct Feature {
     pub channels: Vec<berth_api::Topic>,
 }
 
+/// How a machine a provisioner created becomes the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Setup {
+    /// It boots with berth's cloud seed and sets itself up.
+    Seed,
+    /// berth applies the profile over SSH once it answers.
+    Apply,
+}
+
+impl Setup {
+    pub fn name(self) -> &'static str {
+        match self {
+            Setup::Seed => "seed",
+            Setup::Apply => "apply",
+        }
+    }
+}
+
+/// A berth secret a provisioner is given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvisionerSecret {
+    pub name: String,
+    /// Without a value it cannot run; one that is not required is passed when set.
+    pub required: bool,
+}
+
+/// A program of a plugin that creates machines.
+#[derive(Debug, Clone)]
+pub struct Provisioner {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    /// The executable, resolved and inside the package.
+    pub command: PathBuf,
+    pub setup: Setup,
+    /// The plugin puts the release archive into the machine, so the seed
+    /// needs no `release_url`.
+    pub archive: bool,
+    /// Of `start`, `stop`, `list` and `log`, those it answers.
+    pub verbs: Vec<String>,
+    pub secrets: Vec<ProvisionerSecret>,
+    /// Values are strings; `choices` is not used.
+    pub arguments: Vec<berth_api::Argument>,
+}
+
+/// The verbs a provisioner may answer besides `create`, `status` and `destroy`.
+pub const OPTIONAL_VERBS: &[&str] = &["start", "stop", "list", "log"];
+
+impl Provisioner {
+    /// What is said of it, as `PLUGIN/ID`, with the required secrets that
+    /// have no value.
+    pub fn info(&self, plugin: &str, missing_secrets: Vec<String>) -> ProvisionerInfo {
+        ProvisionerInfo {
+            id: format!("{plugin}/{}", self.id),
+            label: self.label.clone(),
+            description: self.description.clone(),
+            setup: self.setup.name().into(),
+            verbs: self.verbs.clone(),
+            secrets: self
+                .secrets
+                .iter()
+                .map(|secret| secret.name.clone())
+                .collect(),
+            missing_secrets,
+            arguments: self.arguments.clone(),
+        }
+    }
+}
+
 pub struct Plugin {
     pub id: String,
     pub label: String,
@@ -62,6 +134,7 @@ pub struct Plugin {
     /// from a folder is a link to that folder.
     pub found: PathBuf,
     pub features: Vec<Feature>,
+    pub provisioners: Vec<Provisioner>,
 }
 
 /// A name that is safe as a directory name and inside a remote command.
@@ -180,6 +253,13 @@ fn read(dir: &Path) -> Option<Plugin> {
                             serde_json::from_value::<berth_api::Argument>(argument).ok()
                         })
                         .filter(|argument| valid_name(&argument.name))
+                        // Only a provisioner's arguments size a machine or are a
+                        // list of values; a task's offers them with `choices`.
+                        .map(|argument| berth_api::Argument {
+                            kind: String::new(),
+                            values: vec![],
+                            ..argument
+                        })
                         .collect(),
                     confirm: action["confirm"]
                         .as_str()
@@ -200,15 +280,93 @@ fn read(dir: &Path) -> Option<Plugin> {
                 .collect(),
         })
         .collect();
+    let real = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_owned());
+    let provisioners = list(&berth["provisioners"])
+        .iter()
+        .filter_map(|provisioner| read_provisioner(provisioner, &real))
+        .collect();
     Some(Plugin {
         id,
         label,
         package,
         version: text(&data, "version"),
         description: text(&data, "description"),
-        dir: fs::canonicalize(dir).unwrap_or_else(|_| dir.to_owned()),
+        dir: real,
         found: dir.to_owned(),
         features,
+        provisioners,
+    })
+}
+
+/// A provisioner of a manifest, or None when it is not usable: a bad id or
+/// set-up, or a command that is not a file inside the package.
+fn read_provisioner(entry: &Value, dir: &Path) -> Option<Provisioner> {
+    let text = |key: &str| entry[key].as_str().unwrap_or("").to_owned();
+    let id = text("id");
+    let setup = match entry["setup"].as_str() {
+        Some("seed") => Setup::Seed,
+        Some("apply") => Setup::Apply,
+        _ => return None,
+    };
+    let relative = PathBuf::from(text("command"));
+    // berth runs it as itself, so it must be the package's own file.
+    let plain = relative.components().all(|part| {
+        matches!(
+            part,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    });
+    if !valid_name(&id) || relative.as_os_str().is_empty() || !plain {
+        return None;
+    }
+    let command = fs::canonicalize(dir.join(&relative)).ok()?;
+    if !command.starts_with(dir) || !command.is_file() {
+        return None;
+    }
+    let list = |key: &str| entry[key].as_array().cloned().unwrap_or_default();
+    let mut secrets: Vec<ProvisionerSecret> = vec![];
+    for secret in list("secrets") {
+        let (name, required) = match &secret {
+            Value::String(name) => (name.clone(), true),
+            other => (
+                other["name"].as_str().unwrap_or("").to_owned(),
+                other["required"].as_bool().unwrap_or(true),
+            ),
+        };
+        if valid_name(&name) && !secrets.iter().any(|known| known.name == name) {
+            secrets.push(ProvisionerSecret { name, required });
+        }
+    }
+    Some(Provisioner {
+        label: match text("label") {
+            label if label.is_empty() => id.clone(),
+            label => label,
+        },
+        id,
+        description: text("description"),
+        command,
+        setup,
+        archive: setup == Setup::Seed && entry["archive"].as_bool().unwrap_or(false),
+        verbs: OPTIONAL_VERBS
+            .iter()
+            .filter(|verb| list("verbs").iter().any(|known| known == **verb))
+            .map(|verb| (*verb).to_owned())
+            .collect(),
+        secrets,
+        arguments: list("arguments")
+            .into_iter()
+            .filter_map(|argument| serde_json::from_value::<berth_api::Argument>(argument).ok())
+            .filter(|argument| valid_name(&argument.name))
+            .map(|argument| berth_api::Argument {
+                choices: String::new(),
+                // A kind berth does not know makes an ordinary argument.
+                kind: match argument.is_resource() {
+                    true => argument.kind.clone(),
+                    false => String::new(),
+                },
+                ..argument
+            })
+            .collect(),
     })
 }
 
@@ -290,6 +448,11 @@ impl Plugin {
                         .collect(),
                 })
                 .collect(),
+            provisioners: self
+                .provisioners
+                .iter()
+                .map(|provisioner| provisioner.info(&self.id, vec![]))
+                .collect(),
         }
     }
 }
@@ -339,8 +502,46 @@ pub fn describe(plugins: &[PluginInfo]) -> String {
                 text += &format!("    channel  {}/{channel}\n", plugin.id);
             }
         }
+        for provisioner in &plugin.provisioners {
+            text += &format!(
+                "  provisioner  {}  {} ({})\n",
+                provisioner.id,
+                provisioner.label,
+                provisioner_notes(provisioner).join("; ")
+            );
+        }
     }
     text
+}
+
+/// What a provisioner does and asks for, in a few words each.
+pub fn provisioner_notes(provisioner: &ProvisionerInfo) -> Vec<String> {
+    let mut notes = vec![match provisioner.setup.as_str() {
+        "seed" => "sets itself up from the cloud seed".to_owned(),
+        _ => "berth applies the profile over SSH".to_owned(),
+    }];
+    if !provisioner.verbs.is_empty() {
+        notes.push(format!("also {}", provisioner.verbs.join(", ")));
+    }
+    for argument in &provisioner.arguments {
+        let mut note = match (argument.required, argument.default.as_str()) {
+            (true, _) => format!("asks {}", argument.name),
+            (false, "") => format!("may ask {}", argument.name),
+            (false, default) => format!("asks {} (default {default})", argument.name),
+        };
+        if !argument.values.is_empty() {
+            note += &format!(": {}", argument.values.join(" or "));
+        }
+        notes.push(note);
+    }
+    for secret in &provisioner.secrets {
+        let missing = provisioner.missing_secrets.contains(secret);
+        notes.push(match missing {
+            true => format!("secret {secret}, not set"),
+            false => format!("secret {secret}"),
+        });
+    }
+    notes
 }
 
 /// SHA-256 over a plugin's files, their paths and contents, so a plugin
@@ -938,6 +1139,106 @@ mod tests {
         let extra = &one.features[1];
         assert_eq!(extra.services[0].methods[0].name, "start");
         assert_eq!(extra.channels[0].keep, Some(berth_api::Keep::None));
+    }
+
+    #[test]
+    fn provisioners_are_read_and_their_commands_kept_inside_the_package() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path().join("plugins/cloud");
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        fs::write(dir.join("bin/provision"), "#!/bin/sh\n").unwrap();
+        fs::write(base.path().join("plugins/outside"), "#!/bin/sh\n").unwrap();
+        std::os::unix::fs::symlink(base.path().join("plugins/outside"), dir.join("bin/out"))
+            .unwrap();
+        fs::write(
+            dir.join("package.json"),
+            r#"{"name": "berth-plugin-cloud", "berth": {"provisioners": [
+                {"id": "vm", "label": "A VM", "description": "One machine.", "command": "bin/provision",
+                 "setup": "seed", "archive": true, "verbs": ["stop", "list", "reboot"],
+                 "secrets": ["key", {"name": "cert", "required": false}, {"name": "Bad Name"}, "key"],
+                 "arguments": [{"name": "server", "label": "Server", "required": true},
+                               {"name": "cpus", "default": "4", "choices": "seq 8", "kind": "resource"},
+                               {"name": "image", "kind": "colour", "help": "What it starts from.",
+                                "values": ["a", "b"]}, {"name": "Bad"}]},
+                {"id": "ssh", "command": "./bin/provision", "setup": "apply", "archive": true},
+                {"id": "up", "command": "../outside", "setup": "apply"},
+                {"id": "absolute", "command": "/bin/sh", "setup": "apply"},
+                {"id": "linked", "command": "bin/out", "setup": "apply"},
+                {"id": "missing", "command": "bin/none", "setup": "apply"},
+                {"id": "folder", "command": "bin", "setup": "apply"},
+                {"id": "odd", "command": "bin/provision", "setup": "magic"},
+                {"id": "Bad Id", "command": "bin/provision", "setup": "seed"}]}}"#,
+        )
+        .unwrap();
+        // Provisioners and no features is a plugin too.
+        let plugins = load(&[base.path().join("plugins")]);
+        assert_eq!(plugins.len(), 1);
+        let ids: Vec<&str> = plugins[0]
+            .provisioners
+            .iter()
+            .map(|provisioner| provisioner.id.as_str())
+            .collect();
+        assert_eq!(ids, ["vm", "ssh"]);
+        let vm = &plugins[0].provisioners[0];
+        assert_eq!(vm.command, plugins[0].dir.join("bin/provision"));
+        assert_eq!((vm.setup, vm.archive), (Setup::Seed, true));
+        assert_eq!(vm.verbs, ["stop", "list"]);
+        assert_eq!(
+            vm.secrets,
+            [
+                ProvisionerSecret {
+                    name: "key".into(),
+                    required: true
+                },
+                ProvisionerSecret {
+                    name: "cert".into(),
+                    required: false
+                },
+            ]
+        );
+        let arguments: Vec<_> = vm
+            .arguments
+            .iter()
+            .map(|argument| {
+                (
+                    argument.name.as_str(),
+                    argument.required,
+                    argument.choices.as_str(),
+                    argument.kind.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            arguments,
+            [
+                ("server", true, "", ""),
+                ("cpus", false, "", "resource"),
+                ("image", false, "", "")
+            ]
+        );
+        // Only a seeded machine is given the archive.
+        let ssh = &plugins[0].provisioners[1];
+        assert_eq!(
+            (ssh.setup, ssh.archive, ssh.label.as_str()),
+            (Setup::Apply, false, "ssh")
+        );
+        let info = plugins[0].info(base.path());
+        assert_eq!(info.provisioners[0].id, "cloud/vm");
+        // A provisioner's argument keeps its help and its values.
+        assert_eq!(vm.arguments[2].help, "What it starts from.");
+        assert_eq!(vm.arguments[2].values, ["a", "b"]);
+        // The marker reaches the API and comes back from it.
+        let sent = serde_json::to_value(&info.provisioners[0]).unwrap();
+        assert_eq!(sent["arguments"][1]["kind"], "resource");
+        assert!(sent["arguments"][0].get("kind").is_none());
+        let back: berth_api::ProvisionerInfo = serde_json::from_value(sent).unwrap();
+        assert!(back.arguments[1].is_resource() && !back.arguments[0].is_resource());
+        assert_eq!(info.provisioners[0].secrets, ["key", "cert"]);
+        let listing = describe(&[info]);
+        assert!(
+            listing.contains("  provisioner  cloud/vm  A VM (sets itself up from the cloud seed; also stop, list; asks server; asks cpus (default 4); may ask image: a or b; secret key; secret cert)"),
+            "{listing}"
+        );
     }
 
     #[test]

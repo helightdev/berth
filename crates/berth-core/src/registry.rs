@@ -281,6 +281,12 @@ impl Store {
         let mut files = vec![];
         for entry in list(&profile["secrets"]) {
             let name = entry["name"].as_str().unwrap_or("");
+            if name == berth_api::profile::TAILNET_API_KEY {
+                return Err(format!(
+                    "{name} is the API key berth creates enrollment keys with, and is never sent to a host"
+                )
+                .into());
+            }
             let value = self.secret(name)?.ok_or_else(|| {
                 format!("Secret {name} has no value. Set it: berth secret set {name}")
             })?;

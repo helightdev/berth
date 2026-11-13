@@ -53,6 +53,14 @@
           "default": {
             "type": "string"
           },
+          "help": {
+            "description": "What it is for, in a sentence or two, beside its short label.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`resource` for an argument of a provisioner that sizes the machine:\nits CPUs, memory or disk. Empty for any other argument.",
+            "type": "string"
+          },
           "label": {
             "type": "string"
           },
@@ -61,6 +69,13 @@
           },
           "required": {
             "type": "boolean"
+          },
+          "values": {
+            "description": "The values a provisioner's argument takes, when it is a choice of a\nfew. Empty for one that takes any text.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -1368,7 +1383,7 @@
       "name": "MIT"
     },
     "title": "berthd",
-    "version": "0.3.0"
+    "version": "0.4.0"
   },
   "openapi": "3.1.0",
   "paths": {

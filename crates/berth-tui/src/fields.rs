@@ -1,32 +1,35 @@
 //! The settings the UI can edit, and the wizard steps and actions around them.
 
-pub const PROFILES: &[&str] = &["laptop", "cloud", "qemu"];
+pub const PROFILES: &[&str] = &["laptop", "cloud"];
 pub const DISK_MODES: &[&str] = &[
     "auto", "serial", "model", "path", "largest", "smallest", "ssd", "hdd",
 ];
 pub const DISK_TYPES: &[&str] = &["any", "ssd", "hdd"];
 
-/// The pages of a host: its overview (`Manage`) and the tabs of the set-up flow.
+/// The pages of a host: its overview (`Manage`) and the tabs of the set-up
+/// flow. Each tab depends only on the ones before it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Step {
-    Features,
-    Accounts,
-    /// The registries and secrets the host is given.
-    Secrets,
+    /// How the host is installed and reached: what has to be chosen.
     Install,
+    Features,
+    /// What has a default that follows from the tabs before.
+    Settings,
+    /// The last few things, every problem, and the buttons.
+    Run,
     Manage,
 }
 
 impl Step {
     /// The tabs of the set-up flow.
-    pub const SETUP: [Step; 4] = [Step::Features, Step::Accounts, Step::Secrets, Step::Install];
+    pub const SETUP: [Step; 4] = [Step::Install, Step::Features, Step::Settings, Step::Run];
 
     pub fn label(self) -> &'static str {
         match self {
-            Step::Features => "Features",
-            Step::Accounts => "Accounts",
-            Step::Secrets => "Secrets",
             Step::Install => "Install",
+            Step::Features => "Features",
+            Step::Settings => "Settings",
+            Step::Run => "Run",
             Step::Manage => "Overview",
         }
     }
@@ -75,6 +78,7 @@ pub enum Action {
     UsbSeed,
     Iso,
     CloudSeed,
+    Machine,
     Apply,
     Docker,
     Ssh,
@@ -83,7 +87,8 @@ pub enum Action {
 
 impl Action {
     /// The ways to install a host, offered on the Install tab.
-    pub const METHODS: [Action; 5] = [
+    pub const METHODS: [Action; 6] = [
+        Action::Machine,
         Action::Iso,
         Action::CloudSeed,
         Action::Ssh,
@@ -98,6 +103,7 @@ impl Action {
             Action::UsbSeed => "Render USB seed",
             Action::Iso => "USB installer",
             Action::CloudSeed => "Cloud-init seed",
+            Action::Machine => "Create a machine",
             Action::Apply => "This machine or an inventory",
             Action::Docker => "Container image",
             Action::Ssh => "Existing host over SSH",
@@ -118,6 +124,9 @@ impl Action {
             Action::CloudSeed => {
                 "Generate cloud-init user data. Upload the generated release archive to the configured URL."
             }
+            Action::Machine => {
+                "Have a provisioner create the machine, such as a container or a virtual machine on a server, and set it up as this host. Choose the provisioner below; plugins bring them. Its size is on the Settings tab, and Create is on the Run tab."
+            }
             Action::Apply => {
                 "Provision a dedicated Ubuntu host using Ansible. Blank inventory applies to this machine."
             }
@@ -125,7 +134,7 @@ impl Action {
                 "Build the desktop image using Docker Compose. Start it afterwards with docker compose."
             }
             Action::Manage => {
-                "Look after a host that is already set up, over SSH: show its status and access links, publish the desktop on the tailnet, run the smoke test, install updates or reboot. Pick the task on Review."
+                "Look after a host that is already set up, over SSH: show its status and access links, publish the desktop on the tailnet, run the smoke test, install updates or reboot. Pick the task on the overview."
             }
             Action::Ssh => {
                 "Install on an existing Ubuntu host over SSH. Enter a hostname, IP address or SSH config alias. Credentials and sudo prompts use the normal terminal."
@@ -137,23 +146,12 @@ impl Action {
     pub fn installer(self) -> bool {
         matches!(self, Action::UsbSeed | Action::Iso)
     }
-}
 
-/// Rows of the Inputs step: label and help.
-pub const SOURCES: &[(&str, &str)] = &[
-    (
-        "Detect local inputs",
-        "Fill blank values from SSH public keys, ssh-agent and DEVBOX_* environment variables.",
-    ),
-    (
-        "Import a devbox JSON profile",
-        "Load settings from an existing devbox JSON file. The save path stays the same.",
-    ),
-    (
-        "Import an SSH public key file",
-        "Enter the path to an OpenSSH public key file for the operator account.",
-    ),
-];
+    /// Actions that make a machine nobody has logged in to, from the profile alone.
+    pub fn seeds(self) -> bool {
+        matches!(self, Action::CloudSeed | Action::Machine)
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -189,6 +187,8 @@ pub enum Field {
     ReleaseStore,
     ReleasePrivate,
     TailscaleKey,
+    TailscaleAuto,
+    TailscaleLoginServer,
     DiskMode,
     DiskSerial,
     DiskModel,
@@ -242,7 +242,7 @@ impl Field {
                 "Host profile",
                 "/profile",
                 Choice(PROFILES),
-                "Choose laptop, cloud or QEMU provisioning defaults. Only laptop adds a physical login and power settings.",
+                "Choose laptop or cloud provisioning defaults. Only laptop adds a physical login and power settings. Cloud leaves SSH open to any address when no recovery SSH CIDR is set; for a QEMU guest, set that to 10.0.2.2/32.",
             ),
             Hostname => (
                 "Hostname",
@@ -272,7 +272,7 @@ impl Field {
                 "Publish release to",
                 "/release_store",
                 Text,
-                "Where the new machine gets the release archive from. Enter switches between the file servers and raw repositories of the Registries tab; berth uploads the archive there when the seed is made. Or upload it yourself and enter its address below.",
+                "Where the new machine gets the release archive from. Enter switches between the file servers and raw repositories of the Registries tab of the home screen; berth uploads the archive there when the seed is made. Or upload it yourself and enter its address below.",
             ),
             ReleasePrivate => (
                 "Download with login",
@@ -290,7 +290,19 @@ impl Field {
                 "Tailscale enrollment key",
                 "/tailscale_auth_key",
                 Secret,
-                "Optional Tailscale enrollment key. Prefer a short-lived, one-use key. With a Tailscale API access token in TS_API_KEY, F4 creates a one-use key valid for 24 hours.",
+                "Optional enrollment key from Tailscale or Headscale. Prefer a short-lived, one-use key. With the API key of the control server in the secret tailnet_api_key (or a Tailscale token in TS_API_KEY), F4 creates a one-use key valid for 24 hours.",
+            ),
+            TailscaleAuto => (
+                "Automatic enrollment key",
+                "/tailscale_auto_key",
+                Toggle,
+                "berth creates a one-use key whenever this host is about to join the tailnet: when a seed or installer is made (valid for 24 hours) and when an apply finds the host not on the tailnet yet (valid for an hour). It needs the control server's API key in the secret tailnet_api_key and, for Headscale, the tailnet_ settings. A host on the tailnet already needs no key.",
+            ),
+            TailscaleLoginServer => (
+                "Login server",
+                "/tailscale_login_server",
+                Text,
+                "The Headscale server this host joins, such as https://hs.example.org. Leave it empty for berth's tailnet_login_server setting, or Tailscale's own service when that is empty too. It takes effect when the host joins.",
             ),
             DiskMode => (
                 "Disk selection",
@@ -344,7 +356,7 @@ impl Field {
                 "Wi-Fi password",
                 "/wifi/password",
                 Secret,
-                "Wireless network password, saved in the private profile. When this machine knows the network, Review shows whether the password matches.",
+                "Wireless network password, saved in the private profile. When this machine knows the network, the Run tab shows whether the password matches.",
             ),
             OperatorUser => (
                 "Operator username",
@@ -567,7 +579,7 @@ impl Field {
             | ToolsChrome => Group::Heading("Development Tools"),
             DiskSerial | DiskModel | DiskPath | DiskType => Group::Under(DiskMode),
             WifiInterface | WifiSsid | WifiPassword => Group::Under(Wifi),
-            TailscaleKey => Group::Under(Tailscale),
+            TailscaleKey | TailscaleAuto | TailscaleLoginServer => Group::Under(Tailscale),
             ReleaseUrl | ReleasePrivate => Group::Under(ReleaseStore),
             IsoSha | UsbDevice => Group::Under(Iso),
             SshUser | SshPort | SshKey | AskPass => Group::Under(SshHost),

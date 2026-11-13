@@ -470,9 +470,13 @@ impl Home {
             (None, true) => " Name of the new secret ",
             (None, false) => " New value ",
         };
-        let help = match adding {
-            true => "Add a secret: a token or password for the agent on a host. Type a short name for it (lower-case letters, digits, - and _), then its value.\n\nThe server keeps the values, readable by the user it runs as only. They are never shown, and leave the server only to a host that is given them.".into(),
-            false => "Enter sets a new value, x removes the secret from the server.\n\nA host gets a secret on the Secrets page of its set-up, as a variable of the agent's environment or as a file, and \"Install secrets and registry logins\" on its overview sends it.".into(),
+        let own = names
+            .get(selected)
+            .and_then(|name| berth_tui::setup::own_secret_help(name));
+        let help = match (adding, own) {
+            (true, _) => "Add a secret: a token or password for the agent on a host. Type a short name for it (lower-case letters, digits, - and _), then its value. The name tailnet_api_key is for the API key of the tailnet's control server, which the server keeps for itself.\n\nThe server keeps the values, readable by the user it runs as only. They are never shown, and leave the server only to a host that is given them.".into(),
+            (false, Some(own)) => own.to_owned(),
+            (false, None) => "Enter sets a new value, x removes the secret from the server.\n\nA host gets a secret on the Secrets page of its set-up, as a variable of the agent's environment or as a file, and \"Install secrets and registry logins\" on its overview sends it.".into(),
         };
         Shown {
             rows,

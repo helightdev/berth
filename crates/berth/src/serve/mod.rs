@@ -7,7 +7,9 @@ mod auth;
 mod docs;
 #[cfg(feature = "web")]
 mod page;
+mod provisioners;
 mod setup;
+pub mod setup_key;
 #[cfg(test)]
 mod tests;
 
@@ -112,6 +114,9 @@ pub struct Serve {
     followers: Mutex<BTreeMap<String, tokio::task::AbortHandle>>,
     /// The sudo passwords given at the start, which outlive a changed profile.
     passwords: Mutex<BTreeMap<String, String>>,
+    /// How long provisioners may take and how a new machine is waited for,
+    /// which tests make quick.
+    pub provision: fn() -> berth_core::provision::Options,
 }
 
 impl Serve {
@@ -132,6 +137,7 @@ impl Serve {
             jobs_dir,
             followers: Mutex::new(BTreeMap::new()),
             passwords: Mutex::new(BTreeMap::new()),
+            provision: Default::default,
         })
     }
 

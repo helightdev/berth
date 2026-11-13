@@ -32,7 +32,9 @@ RELEASE_SOURCES = [
     'crates/berth/Cargo.toml', 'crates/berth/build.rs', 'crates/berth/src', 'crates/vendor/tui-input',
     'crates/vendor/README.md',
 ]
-PROFILES = {'laptop', 'qemu', 'cloud'}
+PROFILES = {'laptop', 'cloud'}
+# Where a QEMU guest on the user-mode network sees the machine it runs on.
+QEMU_HOST = '10.0.2.2/32'
 DEFAULT_OPERATOR = 'ops'
 # Names Ubuntu already uses for system accounts or groups; useradd refuses them.
 RESERVED_NAMES = set('''
@@ -129,15 +131,36 @@ def wifi_enabled(config):
     return flag(config, 'wifi_enabled', bool(config.get('wifi')))
 
 
+def release_delivered():
+    """Whether whatever creates the machine copies the release into it, so that
+    first boot waits for the archive instead of downloading it."""
+    return os.environ.get('BERTH_RELEASE_DELIVERED') == '1'
+
+
+def retire_qemu(c):
+    """A profile of the qemu kind there once was, as the cloud one it is now.
+    That kind let SSH in only from the QEMU host when no recovery network was
+    named, so it gets that network rather than SSH open to every address."""
+    if c.get('profile') != 'qemu':
+        return c
+    c = dict(c, profile='cloud')
+    variables = dict(c.get('ansible_vars') or {})
+    if not variables.get('devbox_bootstrap_ssh_cidr'):
+        variables['devbox_bootstrap_ssh_cidr'] = QEMU_HOST
+    c['ansible_vars'] = variables
+    return c
+
+
 def checked_config(path, kind):
     """Load a host profile and reject anything that could not produce a working seed."""
     c = json.loads(Path(path).read_text())
     if not isinstance(c, dict):
         raise ValueError('Configuration must be a JSON object')
+    c = retire_qemu(c)
     if not HOSTNAME.fullmatch(text(c, 'hostname')):
         raise ValueError('Invalid hostname: use lowercase letters, digits and hyphens, starting with a letter')
     if text(c, 'profile') not in PROFILES:
-        raise ValueError('profile must be laptop, qemu or cloud')
+        raise ValueError('profile must be laptop or cloud')
 
     operator = text(c, 'operator_username', DEFAULT_OPERATOR)
     agent = text(c, 'agent_username', 'agent')
@@ -153,8 +176,10 @@ def checked_config(path, kind):
     for account in ('operator', 'agent'):
         for key in account_keys(c, account):
             check_public_key(key, account)
-    check_password_hash(text(c, 'operator_password_hash'), 'operator')
-    flag(c, 'operator_passwordless_sudo', True)
+    # A cloud machine is reached with the key. It needs a password only for sudo.
+    password = text(c, 'operator_password_hash')
+    if password or kind != 'cloud' or not flag(c, 'operator_passwordless_sudo', True):
+        check_password_hash(password, 'operator')
     if text(c, 'agent_password_hash'):
         check_password_hash(c['agent_password_hash'], 'agent')
     privileges = text(c, 'agent_privileges')
@@ -167,6 +192,14 @@ def checked_config(path, kind):
     if not isinstance(variables, dict) or any(not k.startswith('devbox_') for k in variables):
         raise ValueError('ansible_vars must contain only devbox_ settings')
     text(c, 'tailscale_auth_key')
+    login_server = text(c, 'tailscale_login_server')
+    if login_server and not re.fullmatch(r'https?://[^\s/]+(/[^\s]*)?', login_server):
+        raise ValueError('tailscale_login_server must be an http:// or https:// address')
+    # berth puts a new key into the profile it renders; without berth there is none.
+    if flag(c, 'tailscale_auto_key', False) and not c.get('tailscale_auth_key') \
+            and variables.get('devbox_install_tailscale', True):
+        raise ValueError('tailscale_auto_key needs berth to create the key: render the seed with berth, '
+                         'or paste a key into tailscale_auth_key')
 
     if kind == 'usb':
         c['target_disk_mode'] = disk_guard.policy(c)['mode']
@@ -179,7 +212,7 @@ def checked_config(path, kind):
                 raise ValueError('wifi interface must be a string')
     if kind == 'cloud':
         url = text(c, 'release_url')
-        if not url.startswith('https://') or 'REPLACE' in url:
+        if not release_delivered() and (not url.startswith('https://') or 'REPLACE' in url):
             raise ValueError('Cloud seed needs an HTTPS release_url for the generated tarball')
         # The firewall keeps this route open until the tailnet has been enrolled.
         cidr = variables.get('devbox_bootstrap_ssh_cidr')
@@ -217,7 +250,8 @@ def release():
         for entry in stale:
             del entries[entry]
         for p in directory.rglob('*'):
-            if p.is_file() and not {'node_modules', '__pycache__'} & set(p.parts):
+            # Only the plugin's own dependencies: berth installs the plugin itself in a node_modules.
+            if p.is_file() and not {'node_modules', '__pycache__'} & set(p.relative_to(directory).parts):
                 entries[str(Path('plugins') / name / p.relative_to(directory))] = p
     with target.open('wb') as stream, \
             gzip.GzipFile(fileobj=stream, mode='wb', mtime=0, filename='') as gz, \
@@ -228,7 +262,9 @@ def release():
             info = archive.gettarinfo(str(p), arcname=name)
             info.uid = info.gid = info.mtime = 0
             info.uname = info.gname = ''
-            info.mode = 0o755 if p.suffix == '.sh' else 0o644
+            # berth runs a plugin's provisioner command directly, so plugins keep their executables.
+            executable = p.suffix == '.sh' or (name.startswith('plugins/') and p.stat().st_mode & 0o111)
+            info.mode = 0o755 if executable else 0o644
             with p.open('rb') as src:
                 archive.addfile(info, src)
     private_write(BUILD / 'release.sha256', digest(target) + '\n')
@@ -256,8 +292,10 @@ def deployment(c, sha):
     variables.update(account_vars(c))
     if c.get('tailscale_auth_key'):
         variables['devbox_tailscale_auth_key'] = c['tailscale_auth_key']
+    if c.get('tailscale_login_server'):
+        variables['devbox_tailscale_login_server'] = c['tailscale_login_server']
     return {'profile': c['profile'], 'release_sha256': sha,
-            'release_url': c.get('release_url', ''), 'ansible_vars': variables}
+            'release_url': '' if release_delivered() else c.get('release_url', ''), 'ansible_vars': variables}
 
 
 def autoinstall(c):
@@ -315,9 +353,12 @@ def cloud_config(c, sha):
     sudo = 'NOPASSWD:ALL' if c.get('operator_passwordless_sudo', True) else 'ALL'
     operator = {
         'name': c.get('operator_username', DEFAULT_OPERATOR), 'shell': '/bin/bash', 'groups': ['sudo'],
-        'sudo': [f'ALL=(ALL) {sudo}'], 'lock_passwd': False, 'passwd': c['operator_password_hash'],
-        'ssh_authorized_keys': account_keys(c, 'operator'),
+        'sudo': [f'ALL=(ALL) {sudo}'], 'ssh_authorized_keys': account_keys(c, 'operator'),
     }
+    if c.get('operator_password_hash'):
+        operator.update({'lock_passwd': False, 'passwd': c['operator_password_hash']})
+    else:
+        operator['lock_passwd'] = True
     files = [
         {'path': '/opt/devbox-bootstrap/bootstrap.sh', 'encoding': 'b64',
          'content': base64.b64encode(boot).decode(), 'permissions': '0700'},

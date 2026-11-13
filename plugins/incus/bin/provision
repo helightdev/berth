@@ -1,0 +1,440 @@
+#!/usr/bin/env python3
+"""Virtual machines and containers on an Incus server, through its REST API.
+
+berth runs this as `provision VERB` with one JSON request on standard input and
+reads one JSON answer from standard output. Progress and errors go to standard
+error. Only the standard library is used, as berth needs nothing else where it runs.
+"""
+import hashlib
+import http.client
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import ssl
+import sys
+import tempfile
+import time
+import urllib.parse
+
+IMAGES = 'https://images.linuxcontainers.org'
+BOOTSTRAP = '/opt/devbox-bootstrap'
+ARCHIVE = f'{BOOTSTRAP}/release.tar.gz'
+TYPES = {'vm': 'virtual-machine', 'container': 'container'}
+CLOUD_INIT_LOG = '/var/log/cloud-init-output.log'
+# How many of the latest lines `log` answers with.
+LOG_LINES = 100
+# Incus names are host names: letters, digits and hyphens, at most 63 characters.
+NAME_LIMIT = 63
+
+
+class Failure(Exception):
+    """A reason to stop, said to the person on standard error."""
+
+
+class IncusError(Failure):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+
+
+def say(line):
+    print(line, file=sys.stderr, flush=True)
+
+
+def instance_name(host):
+    name = re.sub(r'[^a-z0-9-]+', '-', f'berth-{host}'.lower())
+    return re.sub(r'-{2,}', '-', name)[:NAME_LIMIT].rstrip('-')
+
+
+class Incus:
+    def __init__(self, server, project, secrets, scratch):
+        url = urllib.parse.urlsplit(server)
+        if url.scheme != 'https' or not url.hostname:
+            raise Failure(f'server must be an https:// address such as https://192.0.2.10:8443, not {server!r}')
+        self.server = server
+        self.host = url.hostname
+        self.port = url.port or 8443
+        self.project = project or 'default'
+        cert, key = secrets.get('incus_client_cert') or '', secrets.get('incus_client_key') or ''
+        if not cert.strip() or not key.strip():
+            raise Failure('The secrets incus_client_cert and incus_client_key are needed to talk to Incus.')
+        # ssl reads a client certificate only from files, so they live in a private
+        # directory for as long as this runs.
+        cert_path, key_path = Path(scratch) / 'client.crt', Path(scratch) / 'client.key'
+        for path, value in ((cert_path, cert), (key_path, key)):
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'w') as stream:
+                stream.write(value)
+        self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        try:
+            self.context.load_cert_chain(cert_path, key_path)
+        except ssl.SSLError:
+            raise Failure('incus_client_cert and incus_client_key are not a PEM certificate and its key.') from None
+        finally:
+            key_path.unlink()
+        pinned = (secrets.get('incus_server_cert') or '').strip()
+        self.pinned = None
+        if pinned:
+            match = re.search(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', pinned, re.S)
+            try:
+                self.pinned = ssl.PEM_cert_to_DER_cert(match[0]) if match else None
+            except ValueError:
+                pass
+            if not self.pinned:
+                raise Failure('incus_server_cert is not a PEM certificate.')
+            # Incus makes its own certificate, for no name a CA would vouch for, so the
+            # one given is compared byte for byte instead of checked as a chain.
+            self.context.check_hostname = False
+            self.context.verify_mode = ssl.CERT_NONE
+        else:
+            self.context.load_default_certs()
+
+    def connect(self, timeout):
+        connection = http.client.HTTPSConnection(self.host, self.port, context=self.context, timeout=timeout)
+        try:
+            connection.connect()
+        except ssl.SSLCertVerificationError as exc:
+            raise Failure(f'The certificate of {self.server} is not trusted here ({exc.verify_message}). '
+                          'Store the server\'s certificate as the berth secret incus_server_cert.') from None
+        except (OSError, http.client.HTTPException) as exc:
+            raise Failure(f'Cannot reach the Incus server at {self.server}: {exc}') from None
+        if self.pinned and connection.sock.getpeercert(binary_form=True) != self.pinned:
+            connection.close()
+            raise Failure(f'{self.server} presented a certificate other than the one in incus_server_cert. '
+                          'Check the address, or store the server\'s current certificate.')
+        return connection
+
+    def untrusted(self):
+        return Failure(f'The Incus server at {self.server} does not trust this client certificate. '
+                       'Add incus_client_cert to its trust store: on the server, run '
+                       '`incus config trust add-certificate FILE` with the certificate in FILE.')
+
+    def exchange(self, method, path, body=None, query=None, headers=None, timeout=20):
+        """The status and the raw body of the answer."""
+        query = dict(query or {})
+        query.setdefault('project', self.project)
+        target = urllib.parse.quote(path) + '?' + urllib.parse.urlencode(query)
+        headers = dict(headers or {})
+        if isinstance(body, (dict, list)):
+            body = json.dumps(body).encode()
+            headers['Content-Type'] = 'application/json'
+        connection = self.connect(timeout)
+        try:
+            connection.request(method, target, body=body, headers=headers)
+            response = connection.getresponse()
+            raw = response.read()
+        except (OSError, http.client.HTTPException) as exc:
+            raise Failure(f'Lost the connection to {self.server}: {exc}') from None
+        finally:
+            connection.close()
+        if response.status == 403:
+            raise self.untrusted()
+        return response.status, raw
+
+    def text(self, path, query=None):
+        """A file the API serves as it is, such as a console log, or '' when it has none."""
+        status, raw = self.exchange('GET', path, query=query)
+        return raw.decode('utf-8', 'replace') if status == 200 else ''
+
+    def request(self, method, path, body=None, query=None, headers=None, timeout=20):
+        status, raw = self.exchange(method, path, body, query, headers, timeout)
+        try:
+            data = json.loads(raw) if raw else {}
+        except ValueError:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        return status, data
+
+    def call(self, method, path, body=None, missing=False, wait=900, **options):
+        """The metadata of a sync answer, or of the finished operation of an async one.
+        With `missing`, a 404 answers None."""
+        status, data = self.request(method, path, body, **options)
+        if status == 404 and missing:
+            return None
+        if status >= 400 or data.get('type') == 'error':
+            raise IncusError(status, data.get('error') or f'HTTP {status}')
+        if data.get('type') == 'async':
+            return self.wait(data.get('operation') or '', wait)
+        return data.get('metadata')
+
+    def wait(self, operation, limit):
+        uuid = operation.split('?')[0].rstrip('/').rsplit('/', 1)[-1]
+        deadline = time.monotonic() + limit
+        while True:
+            status, data = self.request('GET', f'/1.0/operations/{uuid}/wait', query={'timeout': 30}, timeout=60)
+            if status >= 400 and status != 504:
+                raise IncusError(status, data.get('error') or f'HTTP {status}')
+            found = data.get('metadata') or {}
+            if found.get('status') == 'Success':
+                return found.get('metadata')
+            if found.get('status') in ('Failure', 'Cancelled'):
+                raise IncusError(status, found.get('err') or found['status'])
+            if time.monotonic() > deadline:
+                raise Failure(f'Incus did not finish {found.get("description") or "an operation"} in time.')
+
+    def check_trust(self):
+        status, data = self.request('GET', '/1.0', query={'project': self.project})
+        if status >= 400:
+            raise IncusError(status, data.get('error') or f'HTTP {status}')
+        if (data.get('metadata') or {}).get('auth') != 'trusted':
+            raise self.untrusted()
+
+    # Instances.
+
+    def instances(self):
+        return self.call('GET', '/1.0/instances', query={'recursion': 1}) or []
+
+    def instance(self, name):
+        return self.call('GET', f'/1.0/instances/{name}', missing=True)
+
+    def set_state(self, name, action):
+        self.call('PUT', f'/1.0/instances/{name}/state', {'action': action, 'force': action == 'stop', 'timeout': 60},
+                  wait=300)
+
+    def address(self, name):
+        state = self.call('GET', f'/1.0/instances/{name}/state', missing=True) or {}
+        for interface, details in sorted((state.get('network') or {}).items()):
+            # Bridges the guest makes itself, such as Docker's, are not how it is reached.
+            if interface == 'lo' or interface.startswith(('docker', 'br-', 'veth', 'tailscale', 'incusbr', 'lxcbr')):
+                continue
+            for entry in (details or {}).get('addresses') or []:
+                if entry.get('family') == 'inet' and entry.get('scope') == 'global' and entry.get('address'):
+                    return entry['address']
+        return ''
+
+    def exists(self, name, path):
+        """Whether a path exists in the instance; raises while Incus cannot look."""
+        status, data = self.request('HEAD', f'/1.0/instances/{name}/files', query={'path': path})
+        if status == 404:
+            return False
+        if status >= 400:
+            raise IncusError(status, data.get('error') or f'HTTP {status}')
+        return True
+
+    def push(self, name, archive):
+        owner = {'X-Incus-uid': '0', 'X-Incus-gid': '0'}
+        self.call('POST', f'/1.0/instances/{name}/files', b'', query={'path': BOOTSTRAP},
+                  headers={**owner, 'X-Incus-type': 'directory', 'X-Incus-mode': '0700'})
+        with open(archive, 'rb') as stream:
+            size = os.fstat(stream.fileno()).st_size
+            self.call('POST', f'/1.0/instances/{name}/files', stream, query={'path': ARCHIVE}, timeout=900,
+                      headers={**owner, 'X-Incus-type': 'file', 'X-Incus-mode': '0600', 'X-Incus-write': 'overwrite',
+                               'Content-Type': 'application/octet-stream', 'Content-Length': str(size)})
+
+
+def state_of(instance):
+    status = (instance or {}).get('status') or ''
+    if not instance:
+        return 'gone'
+    return 'stopped' if status in ('Stopped', 'Frozen', 'Error') else 'running'
+
+
+def checked_archive(seed):
+    archive = (seed or {}).get('archive') or {}
+    path, expected = archive.get('path') or '', archive.get('sha256') or ''
+    if not path or not os.path.isfile(path):
+        raise Failure(f'The release archive {path or "(none given)"} is not there.')
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    if expected and digest.hexdigest() != expected:
+        raise Failure(f'The release archive {path} does not match its digest; render the seed again.')
+    return path
+
+
+def wait_for_agent(incus, name, limit=300):
+    """A VM's files are reachable only once the Incus agent in the guest runs."""
+    deadline = time.monotonic() + limit
+    while True:
+        try:
+            incus.exists(name, '/')
+            return
+        except IncusError as exc:
+            if time.monotonic() > deadline:
+                raise Failure(f'The Incus agent in {name} did not answer within {limit // 60} minutes: {exc}') from None
+        time.sleep(5)
+
+
+def wait_for_address(incus, name, limit=60):
+    deadline = time.monotonic() + limit
+    while True:
+        address = incus.address(name)
+        if address or time.monotonic() > deadline:
+            return address
+        time.sleep(3)
+
+
+def deliver(incus, name, kind, archive, running):
+    """Puts the release in the guest and leaves it running. A container takes the
+    file before its first boot; a VM only once its agent is up."""
+    if kind == 'container':
+        if not running:
+            say('Copying the release…')
+            incus.push(name, archive)
+            say('Starting…')
+            incus.set_state(name, 'start')
+        elif not incus.exists(name, ARCHIVE):
+            say('Copying the release…')
+            incus.push(name, archive)
+        return
+    if not running:
+        say('Starting…')
+        incus.set_state(name, 'start')
+    say('Waiting for the Incus agent in the guest…')
+    wait_for_agent(incus, name)
+    if not incus.exists(name, ARCHIVE):
+        say('Copying the release…')
+        incus.push(name, archive)
+
+
+def create(incus, request, arguments):
+    host, token = request.get('host') or '', request.get('token') or ''
+    if not host or not token:
+        raise Failure('create needs a host and a token.')
+    kind = request['provisioner']
+    archive = checked_archive(request.get('seed'))
+    found = [i for i in incus.instances() if (i.get('config') or {}).get('user.berth-instance') == token]
+    if found:
+        name = found[0]['name']
+        say(f'{name} exists already; making sure it is set up.')
+        deliver(incus, name, kind, archive, state_of(found[0]) == 'running')
+    else:
+        name = instance_name(host)
+        other = incus.instance(name)
+        if other:
+            whose = 'another berth record' if 'user.berth-host' in (other.get('config') or {}) else 'something other than berth'
+            raise Failure(f'{incus.server} already has an instance named {name}, made by {whose}. '
+                          'Rename or delete it on the server first.')
+        image = arguments.get('image') or 'ubuntu/26.04/cloud'
+        config = {
+            'limits.cpu': arguments.get('cpus') or '4',
+            'limits.memory': arguments.get('memory') or '8GiB',
+            'cloud-init.user-data': (request.get('seed') or {}).get('user_data') or '',
+        }
+        for label, value in (request.get('labels') or {}).items():
+            config[f'user.{label}'] = str(value)
+        config['user.berth-host'] = config.get('user.berth-host') or host
+        config['user.berth-instance'] = token
+        if kind == 'container':
+            # The guest's systemd does not come up in an unprivileged container without it.
+            config['security.nesting'] = 'true'
+        devices = {'root': {'type': 'disk', 'path': '/', 'pool': arguments.get('pool') or 'default',
+                            'size': arguments.get('disk') or '60GiB'}}
+        if arguments.get('network'):
+            devices['eth0'] = {'type': 'nic', 'name': 'eth0', 'network': arguments['network']}
+        say(f'Creating {name}…')
+        try:
+            incus.call('POST', '/1.0/instances', {
+                'name': name, 'type': TYPES[kind], 'profiles': ['default'], 'start': False,
+                'config': config, 'devices': devices,
+                'source': {'type': 'image', 'mode': 'pull', 'protocol': 'simplestreams',
+                           'server': IMAGES, 'alias': image},
+            })
+        except IncusError as exc:
+            reason = str(exc)
+            if 'image' in reason.lower() and ('not found' in reason.lower() or "couldn't be found" in reason.lower()):
+                raise Failure(f'There is no image {image} on {IMAGES} for {TYPES[kind]} instances: {reason}') from None
+            raise Failure(f'Incus could not create {name}: {reason}') from None
+        deliver(incus, name, kind, archive, False)
+    answer = {'id': name}
+    address = wait_for_address(incus, name)
+    if address:
+        answer['address'] = address
+    return answer
+
+
+def status(incus, request, arguments):
+    instance = incus.instance(request['id'])
+    answer = {'state': state_of(instance)}
+    if answer['state'] == 'running':
+        address = incus.address(request['id'])
+        if address:
+            answer['address'] = address
+    return answer
+
+
+def destroy(incus, request, arguments):
+    name = request['id']
+    instance = incus.instance(name)
+    if not instance:
+        return {}
+    if 'user.berth-host' not in (instance.get('config') or {}):
+        raise Failure(f'{name} on {incus.server} was not made by berth (it has no user.berth-host), so berth leaves it alone.')
+    if instance.get('status') != 'Stopped':
+        say(f'Stopping {name}…')
+        incus.set_state(name, 'stop')
+    say(f'Deleting {name}…')
+    incus.call('DELETE', f'/1.0/instances/{name}', missing=True, wait=300)
+    return {}
+
+
+def power(action):
+    def verb(incus, request, arguments):
+        name = request['id']
+        instance = incus.instance(name)
+        if not instance:
+            raise Failure(f'{name} is no longer on {incus.server}.')
+        if (action == 'start') != (state_of(instance) == 'running'):
+            incus.set_state(name, action)
+        return {}
+    return verb
+
+
+def log(incus, request, arguments):
+    """The latest lines of the console, or of cloud-init's output when the console has none."""
+    name = request['id']
+    if not incus.instance(name):
+        return {'lines': []}
+    text = incus.text(f'/1.0/instances/{name}/console', {'type': 'log'})
+    if not text.strip():
+        # A VM's files are out of reach until its agent runs, which answers as no file.
+        text = incus.text(f'/1.0/instances/{name}/files', {'path': CLOUD_INIT_LOG})
+    return {'lines': [line for line in text.splitlines() if line.strip()][-LOG_LINES:]}
+
+
+def listed(incus, request, arguments):
+    return {'instances': [
+        {'id': i['name'], 'host': i['config']['user.berth-host'], 'state': state_of(i)}
+        for i in incus.instances() if 'user.berth-host' in (i.get('config') or {})]}
+
+
+VERBS = {'create': create, 'status': status, 'destroy': destroy,
+         'start': power('start'), 'stop': power('stop'), 'list': listed, 'log': log}
+
+
+def main():
+    verb = sys.argv[1] if len(sys.argv) == 2 else ''
+    if verb not in VERBS:
+        say(f'Usage: provision {"|".join(VERBS)}, with the request as JSON on standard input')
+        return 2
+    # berth stops a run that takes too long; SIGTERM still removes the key's directory.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
+    try:
+        try:
+            request = json.load(sys.stdin)
+        except ValueError:
+            raise Failure('The request on standard input is not JSON.') from None
+        if not isinstance(request, dict):
+            raise Failure('The request on standard input is not a JSON object.')
+        if request.get('provisioner') not in TYPES:
+            raise Failure(f'This plugin provides {", ".join(TYPES)}, not {request.get("provisioner")!r}.')
+        if verb not in ('create', 'list') and not request.get('id'):
+            raise Failure(f'{verb} needs the instance id.')
+        arguments = request.get('arguments') or {}
+        with tempfile.TemporaryDirectory(prefix='berth-incus-') as scratch:
+            incus = Incus(arguments.get('server') or '', arguments.get('project'), request.get('secrets') or {}, scratch)
+            incus.check_trust()
+            answer = VERBS[verb](incus, request, arguments)
+    except Failure as exc:
+        say(str(exc))
+        return 1
+    print(json.dumps(answer))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

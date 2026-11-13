@@ -1,0 +1,43 @@
+# Install Tailscale from its own packages and join the tailnet with the
+# enrollment key. A machine that is on a tailnet already is left as it is.
+- name: Add Tailscale's package signing key
+  ansible.builtin.get_url:
+    url: "https://pkgs.tailscale.com/stable/ubuntu/{{ ansible_facts['distribution_release'] }}.noarmor.gpg"
+    dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+    mode: "0644"
+
+- name: Add Tailscale's package repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/tailscale.list
+    content: "deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/ubuntu {{ ansible_facts['distribution_release'] }} main\n"
+    mode: "0644"
+  register: tailscale_repository
+
+- name: Install Tailscale
+  ansible.builtin.apt:
+    name: tailscale
+    state: present
+    update_cache: "{{ tailscale_repository.changed }}"
+
+- name: Start Tailscale now and at boot
+  ansible.builtin.systemd_service:
+    name: tailscaled.service
+    enabled: true
+    state: started
+
+- name: See whether the server is on a tailnet already
+  ansible.builtin.command: tailscale status --peers=false
+  register: tailscale_state
+  changed_when: false
+  failed_when: false
+
+# The key goes through the environment, so it is in no process list.
+- name: Join with the enrollment key
+  ansible.builtin.shell: >-
+    tailscale up --auth-key="$TS_KEY" --hostname={{ tailscale_hostname | quote }}
+    {% if tailscale_login_server %}--login-server={{ tailscale_login_server | quote }}{% endif %}
+  environment:
+    TS_KEY: "{{ tailscale_auth_key }}"
+  when: tailscale_state.rc != 0
+  no_log: true
+  changed_when: true

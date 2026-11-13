@@ -27,44 +27,51 @@ The USB installer is the Ubuntu Server 26.04 ISO with the host's profile built i
 berth garage-laptop
 ```
 
-Keep **Host profile** at `laptop`. Fill in the operator's SSH public key and a password on **Accounts**.
-
-</Step>
-<Step>
-
-### Choose the disk
-
-On **Install**, choose **USB installer** and set **Disk selection**. `auto`, the default, takes the only eligible internal disk. The other modes are in the table [below](#disk-selection).
-
-</Step>
-<Step>
-
-### Set up the network
-
-Wired DHCP is always configured. To add Wi-Fi, switch **Wi-Fi** on and give the SSID and password. Networks saved in NetworkManager on your machine are suggested, and F5 unlocks their saved passwords so choosing one fills in its password. Leave the interface blank: the installer finds the wireless interface on the target and falls back to wired networking when there is none.
+It opens on **Install**. Choose **USB installer** under **How To Install**, and keep **Host profile** at `laptop`. **Hostname** is the name the machine gets. F4 generates one.
 
 </Step>
 <Step>
 
 ### Optionally, join the tailnet
 
-Give a short-lived, one-use Tailscale key in **Tailscale enrollment key**. With a Tailscale API access token exported as `TS_API_KEY`, F4 on that field creates a one-use, pre-approved key valid for 24 hours. Tailnets that require tags take them from `DEVBOX_TAILSCALE_TAGS=tag:devbox,...`.
+The Tailscale settings are on **Install** too. Give a short-lived, one-use Tailscale key in **Tailscale enrollment key**. Or switch on **Automatic enrollment key**: with the control server's API key in the secret `tailnet_api_key`, berth creates a one-use key valid for 24 hours each time it builds the installer. F4 on the key field does the same for a key to paste. Tailnets that require tags take them from `berth config tailnet_tags tag:devbox`. For a Headscale server, see [Headscale](/docs/use/access#headscale).
 
 Reusable keys and existing machine identities do not belong in installer images.
 
 </Step>
 <Step>
 
+### Set up the accounts
+
+On **Settings**, fill in the operator's SSH public key and a password under **Operator Account**.
+
+</Step>
+<Step>
+
+### Choose the disk
+
+Under **Installer** on **Settings**, set **Disk selection**. `auto`, the default, takes the only eligible internal disk. The other modes are in the table [below](#disk-selection).
+
+</Step>
+<Step>
+
+### Set up the network
+
+Wired DHCP is always configured. To add Wi-Fi, switch **Wi-Fi** on under **Installer** and give the SSID and password. Networks saved in NetworkManager on your machine are suggested, and F5 unlocks their saved passwords so choosing one fills in its password. Leave the interface blank: the installer finds the wireless interface on the target and falls back to wired networking when there is none.
+
+</Step>
+<Step>
+
 ### Choose the ISO
 
-F4 on **Source ISO** downloads the current Ubuntu Server ISO and checks it against Ubuntu's `SHA256SUMS`. When you choose a file you already have, berth computes its SHA-256. Compare that with Ubuntu's signed `SHA256SUMS`, because a checksum taken from the file only proves it has not changed since.
+On **Run**, F4 on **Source ISO** downloads the current Ubuntu Server ISO and checks it against Ubuntu's `SHA256SUMS`. When you choose a file you already have, berth computes its SHA-256. Compare that with Ubuntu's signed `SHA256SUMS`, because a checksum taken from the file only proves it has not changed since.
 
 </Step>
 <Step>
 
 ### Build and write
 
-Choose the drive under **Then write to USB drive**, or press `w` when the build has finished. berth asks which drive to use when several are connected and asks you to confirm erasing it. It then asks for your `sudo` password and writes the image with a progress bar.
+Choose the drive under **Then write to USB drive** on **Run**, or press `w` when the build has finished. Then press Enter on **Run · USB installer**. berth asks which drive to use when several are connected and asks you to confirm erasing it. It then asks for your `sudo` password and writes the image with a progress bar.
 
 </Step>
 </Steps>
@@ -113,7 +120,7 @@ sudo systemctl start devbox-provision.service     # start it again after a failu
 | `largest` / `smallest` | By capacity among eligible disks |
 | `ssd` / `hdd` | The only eligible non-rotating or rotating disk |
 
-For `auto`, `model`, `path`, `largest` and `smallest`, `target_disk_ssd` narrows the candidates to `any`, `ssd` or `hdd`. Each mode needs exactly one final candidate, including when capacities tie. The Install tab shows the fields of the chosen mode and offers the values in Suggestions.
+For `auto`, `model`, `path`, `largest` and `smallest`, `target_disk_ssd` narrows the candidates to `any`, `ssd` or `hdd`. Each mode needs exactly one final candidate, including when capacities tie. The Settings tab shows the fields of the chosen mode and offers the values in Suggestions.
 
 ```json title="In the host profile"
 {

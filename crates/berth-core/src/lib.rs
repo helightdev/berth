@@ -10,9 +10,13 @@ pub mod link;
 pub mod oauth;
 pub mod paths;
 pub mod plugins;
+pub mod provision;
 pub mod registry;
+pub mod relay;
 pub mod rollout;
+pub mod seed;
 pub mod server;
 pub mod store;
+pub mod tailnet;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;

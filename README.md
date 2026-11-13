@@ -39,14 +39,15 @@ local API server by default.
 ## Quick start
 
 ```bash
-berth studio          # a new profile: choose features, accounts and how to install
+berth studio          # a new profile: choose how to install, features and settings
 berth                 # the home screen with all hosts
 berth run studio status
 ```
 
-On a new host's Install tab, choose how to install it. The methods are a USB
-installer, a cloud-init seed, SSH to an existing Ubuntu server, and a container
-image. Once it runs, `berth studio` opens its overview, where you sign the
+A new host opens on its Install tab, where you choose how to install it. The
+methods are a machine a plugin creates, a USB installer, a cloud-init seed, SSH
+to an existing Ubuntu server, and a container image. Features and Settings
+follow, and Run installs it. Once it runs, `berth studio` opens its overview, where you sign the
 agents in and find the address of its desktop.
 
 ## Documentation

@@ -538,17 +538,24 @@ def shlex_quote(text):
     return shlex.quote(text)
 
 
+# Downs from the top of a host's Settings tab to the fourth row of its registries
+# and secrets: past the six rows of the operator with its one key, the five of
+# the agent, and SSH hardening.
+SECRETS_DOWN = 15
+
+
 def pictures(env):
     """Name: (needs the host, how to make it). The order matters where one
     picture shows what an earlier one left behind, such as sessions."""
     return {
         "home": (False, lambda: tui(env, "home", [], [], "berth", rows=20)),
         "home-plugins": (False, lambda: tui(env, "home-plugins", [], ["5"], "berth: plugins")),
-        "features": (False, lambda: tui(env, "features", ["cloud-1"], [], "berth cloud-1: features", rows=34)),
-        "accounts": (False, lambda: tui(env, "accounts", ["cloud-1"], ["2"], "berth cloud-1: accounts", rows=26)),
-        "secrets": (False, lambda: tui(env, "secrets", ["cloud-1"], ["3"] + ["<down>"] * 3, "berth cloud-1: secrets", rows=22)),
-        "install-cloud": (False, lambda: tui(env, "install-cloud", ["cloud-1"], ["4", "<down>", "<enter>"],
-                                             "berth cloud-1: install", rows=34)),
+        "features": (False, lambda: tui(env, "features", ["cloud-1"], ["2"], "berth cloud-1: features", rows=34)),
+        "accounts": (False, lambda: tui(env, "accounts", ["cloud-1"], ["3"], "berth cloud-1: settings", rows=26)),
+        "secrets": (False, lambda: tui(env, "secrets", ["cloud-1"], ["3"] + ["<down>"] * SECRETS_DOWN,
+                                       "berth cloud-1: settings", rows=22)),
+        "install-cloud": (False, lambda: tui(env, "install-cloud", ["cloud-1"], ["<down>", "<down>", "<enter>", "4"],
+                                             "berth cloud-1: run", rows=34)),
         "list": (False, lambda: command(env, "list", ["list"])),
         "overview": (True, lambda: tui(env, "overview", ["studio"], [2.5, "<up>"], "berth studio", rows=46)),
         "terminal": (True, lambda: tui(env, "terminal", ["studio"],

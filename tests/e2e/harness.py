@@ -25,6 +25,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -118,7 +119,7 @@ def source_with_plugins(name, plugins):
 class Workstation:
     """A user's machine with berth: its own HOME, XDG directories and SSH key."""
 
-    def __init__(self, name, ssh_key=True):
+    def __init__(self, name, ssh_key=True, source_dir=None, trust=True):
         self.root = SCRATCH / name
         self.home = self.root / 'home'
         self.config = self.home / '.config'
@@ -132,7 +133,7 @@ class Workstation:
             'XDG_CONFIG_HOME': str(self.config), 'XDG_DATA_HOME': str(self.data),
             'XDG_RUNTIME_DIR': str(self.run_dir),
             'PATH': os.environ['PATH'], 'LANG': 'C.UTF-8', 'TERM': 'xterm-256color',
-            'BERTH_SOURCE': str(source()),
+            'BERTH_SOURCE': str(source_dir or source()),
             # npm stays off the network: plugins come from folders here.
             'npm_config_registry': 'http://127.0.0.1:9/', 'npm_config_offline': 'true',
             'npm_config_cache': str(self.root / 'npm-cache'), 'npm_config_update_notifier': 'false',
@@ -140,7 +141,9 @@ class Workstation:
         }
         self.key = self.home / '.ssh/id_ed25519'
         self.public = keygen(self.key, f'tester@{name}') if ssh_key else None
-        self.trust_host()
+        # A host that is not up yet is trusted once it answers.
+        if trust:
+            self.trust_host()
 
     @property
     def berth_dir(self):
@@ -283,6 +286,12 @@ def provisioned():
     wait_for('berthd answering', lambda: station.link().get('/v1/version'), timeout=60)
     _provisioned['workstation'] = station
     return station
+
+
+def adopt(station):
+    """Take a workstation whose host was set up otherwise, such as by its
+    first boot, as the one provisioned() gives the tests."""
+    _provisioned['workstation'] = station
 
 
 def served():
@@ -826,6 +835,64 @@ def package_registry():
     if not _registry:
         _registry.append(PackageRegistry())
     return _registry[0]
+
+
+# ---------------------------------------------------------------------------
+# The Headscale server of ci/compose.yml, which the test host can join
+
+
+HEADSCALE = os.environ.get('BERTH_E2E_HEADSCALE', 'headscale')
+
+
+class Headscale:
+    """The `headscale` service of ci/compose.yml: its login server, the API key
+    it hands out at start, and its API. It has one user, `berth`, number 1."""
+
+    def __init__(self):
+        self.url = f'http://{HEADSCALE}:8080'
+        self.user = 'berth'
+
+        def ready():
+            with urllib.request.urlopen(f'http://{HEADSCALE}:8081/api-key', timeout=5) as answer:
+                key = answer.read().decode().strip()
+            # A key from an earlier start is refused until the new one is there.
+            self.api_key = key
+            return key and self.api('GET', '/api/v1/user') is not None
+        wait_for('Headscale handing out its API key', ready, timeout=60)
+
+    def api(self, method, path, body=None):
+        data = None if body is None else json.dumps(body).encode()
+        request = urllib.request.Request(self.url + path, data=data, method=method, headers={
+            'Authorization': f'Bearer {self.api_key}', 'Content-Type': 'application/json'})
+        with urllib.request.urlopen(request, timeout=20) as answer:
+            return json.loads(answer.read() or b'null')
+
+    def nodes(self):
+        return self.api('GET', '/api/v1/node').get('nodes', [])
+
+    def keys(self):
+        return self.api('GET', '/api/v1/preauthkey').get('preAuthKeys', [])
+
+    def new_key(self, hours=1):
+        """A one-use key of the user, as an admin makes one by hand."""
+        expiry = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() + hours * 3600))
+        made = self.api('POST', '/api/v1/preauthkey', {'user': '1', 'reusable': False, 'ephemeral': False,
+                                                     'expiration': expiry})
+        return made['preAuthKey']['key']
+
+    def forget_nodes(self):
+        for node in self.nodes():
+            self.api('DELETE', f'/api/v1/node/{node["id"]}')
+
+
+_headscale = []
+
+
+def headscale():
+    """The Headscale server, once it is ready."""
+    if not _headscale:
+        _headscale.append(Headscale())
+    return _headscale[0]
 
 
 # ---------------------------------------------------------------------------

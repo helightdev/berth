@@ -11,6 +11,8 @@ mod browser;
 #[cfg(target_arch = "wasm32")]
 mod home;
 #[cfg(target_arch = "wasm32")]
+mod installed;
+#[cfg(target_arch = "wasm32")]
 mod portal;
 #[cfg(target_arch = "wasm32")]
 mod remote;

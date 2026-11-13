@@ -1,0 +1,30 @@
+networks:
+- name: {{ incus_bridge }}
+  type: bridge
+  config:
+    ipv4.address: {{ incus_bridge_address }}
+    ipv4.nat: "true"
+    ipv6.address: none
+storage_pools:
+- name: {{ incus_pool }}
+  driver: btrfs
+  config:
+{% if incus_pool_source %}
+    source: {{ incus_pool_source }}
+{% else %}
+    size: {{ incus_pool_size }}
+{% endif %}
+profiles:
+- name: default
+  config:
+    # A container's systemd does not come up without it, and Docker in a guest needs it too.
+    security.nesting: "true"
+  devices:
+    eth0:
+      name: eth0
+      network: {{ incus_bridge }}
+      type: nic
+    root:
+      path: /
+      pool: {{ incus_pool }}
+      type: disk
