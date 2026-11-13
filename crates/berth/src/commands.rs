@@ -1124,68 +1124,6 @@ pub fn describe_instance(name: &str, instance: &api::Instance) -> String {
     text
 }
 
-/// `berth login`: get an access token for the berth server from its issuer.
-/// A person approves in a browser on any device; a client with a secret
-/// needs nobody.
-pub fn login(paths: &Paths) -> Result<()> {
-    use berth_core::{oauth, server::Server};
-    let server =
-        Server::configured(paths).ok_or("Set the berth server first: berth config server URL")?;
-    if server.token.is_some() {
-        eprintln!(
-            "server_token is set and is used before a login. Clear it: berth config server_token"
-        );
-    }
-    let role = link::runtime()?.block_on(async {
-        let client = oauth::Client::configured(paths, &server.url)
-            .await?
-            .ok_or("Say which client berth is at the issuer: berth config oauth_client_id ID")?;
-        let tokens = match client.secret {
-            Some(_) => client.credentials().await?,
-            None => {
-                client
-                    .device(|asked| {
-                        let text = |name: &str| asked[name].as_str().unwrap_or("").to_owned();
-                        match text("verification_uri_complete").as_str() {
-                            "" => println!(
-                                "Open {} and enter {}",
-                                text("verification_uri"),
-                                text("user_code")
-                            ),
-                            link => println!(
-                                "Open {link}\nThe code there should be {}",
-                                text("user_code")
-                            ),
-                        }
-                        println!("Waiting for you to approve…");
-                    })
-                    .await?
-            }
-        };
-        oauth::save(paths, &server.url, Some(&tokens))?;
-        let own = Server {
-            url: server.url.clone(),
-            token: None,
-        };
-        let access = own
-            .portal()
-            .await?
-            .call("access", None, Value::Null, None)
-            .await?;
-        Ok::<String, Box<dyn std::error::Error>>(access["role"].as_str().unwrap_or("?").to_owned())
-    })?;
-    println!("Logged in to {} with the role {role}", server.url);
-    Ok(())
-}
-
-/// `berth logout`: forget the login at the berth server.
-pub fn logout(paths: &Paths) -> Result<()> {
-    let server = berth_core::server::Server::configured(paths).ok_or("No berth server is set")?;
-    berth_core::oauth::save(paths, &server.url, None)?;
-    println!("Forgot the login at {}", server.url);
-    Ok(())
-}
-
 /// `berth connect URL`: use the berth server at URL, with the token a setup
 /// key collects. The key comes on standard input, so it is in no argv.
 pub fn connect(paths: &Paths, url: &str) -> Result<()> {
