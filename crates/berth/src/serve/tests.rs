@@ -3017,6 +3017,9 @@ fn pruning_removes_a_jobs_output_and_its_report() {
 /// The routes of the key ring, with the helpers of these tests.
 mod keys;
 
+/// berth-remote signed in to a server of the tests.
+mod remote;
+
 #[tokio::test(flavor = "multi_thread")]
 async fn first_contact_and_keys_are_actions_of_the_server() {
     let served = served().await;

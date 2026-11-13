@@ -3,7 +3,7 @@
 //! is what the server last said; what they change goes to the server.
 
 use crate::admin::{Admin, Data};
-use crate::browser::Browser;
+use crate::device::Here;
 use berth_tui::berth_key;
 use berth_tui::fields::Kind;
 use berth_tui::plugins::{self, Asked, Place};
@@ -333,7 +333,7 @@ impl Home {
 
     fn provisioners_key(&mut self, key: Key, admin: &Admin) -> Option<String> {
         let listed = admin.data.borrow().provisioners.clone();
-        match self.provisioners.key(key, &listed, &mut Browser) {
+        match self.provisioners.key(key, &listed, &mut Here) {
             provisioners::Asked::Nothing(said) => return said,
             provisioners::Asked::List => admin.provisioners(),
             provisioners::Asked::Open(name) => admin.provisioner(&name),
@@ -473,7 +473,7 @@ impl Home {
                     admin.set_setting(&name, &typed, format!("Saved {name}"));
                 }
                 _ if screen::is_copy_field(&key) => {
-                    return Some(screen::copy_field(&mut Browser, input));
+                    return Some(screen::copy_field(&mut Here, input));
                 }
                 _ => event::edit(input, &key),
             }
@@ -483,7 +483,7 @@ impl Home {
             && (key.code == Code::Enter || berth_key::is_copy(&key))
         {
             let public = keys.get(index).map(|(_, public)| public.as_str());
-            return Some(berth_key::copy(&mut Browser, public.unwrap_or("")));
+            return Some(berth_key::copy(&mut Here, public.unwrap_or("")));
         }
         // The last row shows the link that opens this page.
         if extra == Some(SettingsRow::Connect)
@@ -589,7 +589,7 @@ impl Home {
                     admin.set_secret(&name, &typed, format!("Stored {name}"));
                 }
                 _ if screen::is_copy_field(&key) => {
-                    return Some(screen::copy_field(&mut Browser, input));
+                    return Some(screen::copy_field(&mut Here, input));
                 }
                 _ => event::edit(input, &key),
             }
@@ -804,7 +804,7 @@ impl Home {
                     };
                 }
                 _ if screen::is_copy_field(&key) => {
-                    return Some(screen::copy_field(&mut Browser, input));
+                    return Some(screen::copy_field(&mut Here, input));
                 }
                 _ => event::edit(input, &key),
             }
@@ -936,7 +936,7 @@ impl Home {
         if let Some(input) = &self.editor
             && screen::is_copy_field(&key)
         {
-            return Some(screen::copy_field(&mut Browser, input));
+            return Some(screen::copy_field(&mut Here, input));
         }
         let asked = self
             .plugins
@@ -951,9 +951,12 @@ impl Home {
             Asked::Rollout(options) => admin.roll_out(&options),
             Asked::Other if key.code == Code::Char('u') => {
                 let admin = admin.clone();
-                crate::browser::choose_file(".tgz,.tar.gz", move |name, package| {
+                let chosen = crate::device::choose_file(".tgz,.tar.gz", move |name, package| {
                     admin.upload_plugin(&name, &package)
                 });
+                if let Err(why) = chosen {
+                    return Some(why);
+                }
             }
             Asked::Other => {}
         }

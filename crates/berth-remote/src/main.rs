@@ -1,94 +1,34 @@
-//! berth-remote: the page of `berth serve --web` in a terminal, for a
-//! machine that only looks after the hosts of a berth serve elsewhere. It
-//! runs on Linux, macOS and Windows: the screens are the page's own, and
-//! this program gives them a terminal and a network in place of a browser.
+//! berth-remote: the hosts of a berth serve, in this terminal.
 
-#[path = "../../berth-web/src/admin.rs"]
-mod admin;
-#[path = "../../berth-web/src/app.rs"]
-mod app;
-mod browser;
-#[path = "../../berth-web/src/home.rs"]
-mod home;
-#[path = "../../berth-web/src/installed.rs"]
-mod installed;
-mod keys;
-mod net;
-mod portal;
-#[path = "../../berth-web/src/remote.rs"]
-mod remote;
-#[path = "../../berth-web/src/setup.rs"]
-mod setup;
-
+use berth_remote::options::{self, Parsed};
+use berth_remote::{device, keys, settings};
 use crossterm::event::{self, Event as Native, KeyCode, KeyEventKind, KeyModifiers};
 use std::time::Duration;
 
-const USAGE: &str = "\
-berth-remote: the hosts of a berth serve, in this terminal
-
-Usage: berth-remote [--server ADDRESS] [--forget]
-
-  --server ADDRESS   the berth serve to use, such as https://berth.example
-                     or http://192.0.2.10:7878 (also BERTH_SERVER)
-  --forget           keep neither the server nor the token for the next run
-  --version          say the version
-
-The token comes from BERTH_TOKEN, or is asked for. A setup key from
-`berth setup-key` comes from BERTH_SETUP_KEY. Neither goes on the command
-line, where other users of the machine could read it.
-
-A plugin package is chosen in the file dialog of the system: on Linux that
-of zenity or kdialog. Without one, BERTH_REMOTE_FILE names the file.
-
-The server and the token are kept in the settings of this user:
-%APPDATA%\\berth-remote on Windows, ~/.config/berth-remote elsewhere.
-
-Ctrl+Q quits.";
-
-fn options() -> Result<browser::Options, String> {
-    let variable = |name: &str| {
-        std::env::var(name)
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-    };
-    let mut options = browser::Options {
-        linked: browser::Linked {
-            server: variable("BERTH_SERVER"),
-            token: variable("BERTH_TOKEN").map(|token| token.trim().to_owned()),
-            setup_key: variable("BERTH_SETUP_KEY").map(|key| key.trim().to_owned()),
-        },
-        ephemeral: false,
-    };
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--server" | "-s" => {
-                options.linked.server = Some(args.next().ok_or("--server needs an address")?)
-            }
-            "--forget" => options.ephemeral = true,
-            "--version" | "-V" => {
-                println!("berth-remote {}", berth_api::VERSION);
-                std::process::exit(0);
-            }
-            "--help" | "-h" => {
-                println!("{USAGE}");
-                std::process::exit(0);
-            }
-            other => return Err(format!("{other} is no option of berth-remote\n\n{USAGE}")),
-        }
-    }
-    Ok(options)
-}
-
 fn main() {
-    let options = match options() {
-        Ok(options) => options,
+    let options = match options::parse(std::env::args().skip(1), |name| std::env::var(name).ok()) {
+        Ok(Parsed::Run(options)) => options,
+        Ok(Parsed::Version) => {
+            println!("berth-remote {}", berth_api::VERSION);
+            return;
+        }
+        Ok(Parsed::Help) => {
+            println!("{}", options::USAGE);
+            return;
+        }
         Err(error) => {
-            eprintln!("{error}");
+            eprintln!("berth-remote: {error}\n\n{}", options::USAGE);
             std::process::exit(2);
         }
     };
-    browser::set_options(options);
+    let settings = settings::Settings::new(settings::folder(|name| std::env::var(name).ok()));
+    match device::Terminal::new(options.linked, settings, options.forget) {
+        Ok(terminal) => berth_page::device::install(terminal),
+        Err(error) => {
+            eprintln!("berth-remote: could not forget the kept sign-in: {error}");
+            std::process::exit(1);
+        }
+    }
     if let Err(error) = run() {
         eprintln!("berth-remote: {error}");
         std::process::exit(1);
@@ -125,10 +65,9 @@ fn run() -> std::io::Result<()> {
 }
 
 fn screens(terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<()> {
-    let mut app = app::App::new();
+    let mut app = berth_page::App::new();
     loop {
-        net::pump();
-        portal::pump();
+        berth_remote::pump();
         app.tick();
         terminal.draw(|frame| app.draw(frame))?;
         // Wait a little for input; what the network says is taken in on the next turn.

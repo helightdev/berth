@@ -11,11 +11,10 @@ name = "berth-remote"
 path = "src/main.rs"
 
 [dependencies]
-berth-api = { path = "../berth-api" }
+berth-api = { workspace = true, features = ["client"] }
+berth-page.workspace = true
 berth-tui.workspace = true
 serde_json.workspace = true
-tui-input.workspace = true
-web-time = "1"
 ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
 crossterm = "=0.29.0"
 tokio.workspace = true
@@ -23,3 +22,7 @@ futures-util.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 webpki-roots = "1"
+rustls-native-certs = "0.8"
+
+[dev-dependencies]
+tempfile.workspace = true

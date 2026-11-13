@@ -1,6 +1,6 @@
 # berth-remote
 
-berth-remote shows the hosts of a `berth serve` on another machine, in a terminal. It has the screens of the page that `berth serve --web` gives, and it runs on Linux, macOS and Windows.
+berth-remote shows the hosts of a `berth serve` on another machine, in a terminal. It has the screens of the page that `berth serve --web` gives, and it runs on Windows, macOS and Linux.
 
 It is only a client. Setting up hosts, Ansible and SSH stay on the server.
 
@@ -12,7 +12,13 @@ On Windows, in PowerShell:
 irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex
 ```
 
-The script checks the download against its SHA-256 and installs it to `%LOCALAPPDATA%\Programs\berth-remote`.
+On macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/helightdev/berth/main/install-remote.sh | sh
+```
+
+Each script checks the download against its SHA-256. It installs to `%LOCALAPPDATA%\Programs\berth-remote` on Windows and to `~/.local/bin` elsewhere. `BERTH_INSTALL_DIR` and `BERTH_VERSION` change where and which release.
 
 ## Use
 
@@ -35,16 +41,21 @@ berth-remote asks for the token and keeps it for the next run. The token is in `
 | `--server ADDRESS`, `BERTH_SERVER` | The server. An address without a scheme is https, or http for `localhost` |
 | `BERTH_TOKEN` | The token, so that it is not asked for |
 | `BERTH_SETUP_KEY` | A setup key, which collects the token once |
-| `--forget` | Keep the server and the token for this run only |
+| `--forget` | Remove the kept server and token, and keep nothing from this run |
 | `BERTH_REMOTE_FILE` | The plugin package to send, on a system without a file dialog |
+| `--version` | Say the version |
 
-A token or a setup key never goes on the command line, where other users of the machine could read it.
+A token or a setup key never goes on the command line, where other users of the machine could read it, and berth-remote does not pass either on to the programs it starts.
 
-The settings are in `%APPDATA%\berth-remote\settings.json` on Windows and in `~/.config/berth-remote/settings.json` elsewhere. Only you can read the file.
+The settings are in `settings.json` in `%LOCALAPPDATA%\berth-remote` on Windows, `~/Library/Application Support/berth-remote` on macOS and `~/.config/berth-remote` elsewhere (`$XDG_CONFIG_HOME` where it is set). On macOS and Linux the folder is mode 0700 and the file 0600. On Windows the file takes the access list of your profile, which lets in you, SYSTEM and the administrators.
+
+A server over https needs a certificate that the system or the Mozilla roots trust. There is no way to turn the check off. Only `http` and `https` links are opened, in the system's browser.
 
 Ctrl+Q quits.
 
-## Build
+## How it is built
+
+The screens are in `crates/berth-page`, which the page for a browser (`crates/berth-web`) uses too. This crate gives them a terminal in place of a browser: `device.rs` has the clipboard, links, the file dialog and the kept settings, `net.rs` and `socket.rs` the HTTP requests and the portal's WebSocket over TCP or TLS.
 
 On the system it is for:
 
@@ -52,16 +63,4 @@ On the system it is for:
 cargo build --release --locked -p berth-remote
 ```
 
-For Windows from Linux, with MinGW:
-
-```bash
-sudo apt-get install gcc-mingw-w64-x86-64
-rustup target add x86_64-pc-windows-gnu
-cargo build --release --locked -p berth-remote --target x86_64-pc-windows-gnu
-```
-
-The program is `target/x86_64-pc-windows-gnu/release/berth-remote.exe`. It needs nothing else installed.
-
-On Windows itself, with Rust from rustup and the Visual Studio build tools, the first command builds `target\release\berth-remote.exe`.
-
-Use Windows Terminal or the console of Windows 10 or later, which draw its colours.
+On Windows, that needs Rust from rustup and the Visual Studio build tools. Use Windows Terminal or the console of Windows 10 or later, which draw its colours.

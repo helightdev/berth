@@ -79,8 +79,12 @@ fn tls() -> Arc<rustls::ClientConfig> {
     static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
     CONFIG
         .get_or_init(|| {
-            let roots =
+            let mut roots =
                 rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            // The system's own as well, so that a server with a certificate of
+            // an authority this machine trusts, such as a company's, is taken.
+            // A certificate the system store cannot give is left out.
+            let _ = roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
             let provider = Arc::new(rustls::crypto::ring::default_provider());
             let config = rustls::ClientConfig::builder_with_provider(provider)
                 .with_safe_default_protocol_versions()
@@ -198,4 +202,34 @@ pub fn pump() {
         taken.append(&mut waiting);
         *waiting = taken;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn addresses_are_taken_apart() {
+        let at = target("wss://studio.example/v1/portal").unwrap();
+        assert_eq!(
+            (at.name.as_str(), at.port, at.authority.as_str()),
+            ("studio.example", 443, "studio.example:443")
+        );
+        assert_eq!((at.path.as_str(), at.secure), ("/v1/portal", true));
+        let at = target("http://192.0.2.10:7878").unwrap();
+        assert_eq!((at.name.as_str(), at.port), ("192.0.2.10", 7878));
+        assert_eq!((at.path.as_str(), at.secure), ("/", false));
+        let at = target("ws://[2001:db8::1]:7878/v1/portal").unwrap();
+        assert_eq!((at.name.as_str(), at.port), ("2001:db8::1", 7878));
+        let at = target("https://[2001:db8::1]/").unwrap();
+        assert_eq!((at.name.as_str(), at.port), ("2001:db8::1", 443));
+        for wrong in [
+            "studio.example",
+            "ftp://studio.example",
+            "https://",
+            "http://studio:port",
+        ] {
+            assert!(target(wrong).is_err(), "{wrong}");
+        }
+    }
 }

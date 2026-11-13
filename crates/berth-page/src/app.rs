@@ -1,7 +1,7 @@
 //! The page's screens: the token, the server's hosts, and one host.
 
 use crate::admin::{Admin, Arrived, Data};
-use crate::browser::{self, Browser};
+use crate::device::{self, Here, Kept};
 use crate::home::Home;
 use crate::installed::{Installed, Outcome};
 use crate::portal::{Link, Portal};
@@ -149,29 +149,31 @@ pub struct App {
 }
 
 impl App {
+    /// Not a `Default`: making the screens signs in and opens the portal.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> App {
-        let embedded = browser::embedded();
-        let linked = browser::linked();
+        let embedded = device::embedded();
+        let linked = device::linked();
         let (linked_server, linked_token) = (linked.server, linked.token);
-        let kept = browser::stored(browser::SERVER).unwrap_or_default();
+        let kept = device::stored(Kept::Server).unwrap_or_default();
         let server = match embedded {
-            true => browser::origin(),
+            true => device::origin(),
             false => linked_server
-                .map(|server| browser::address(&server))
+                .map(|server| device::address(&server))
                 .unwrap_or_else(|| kept.clone()),
         };
         // The token that was kept is the one of the server that was kept.
         let token = linked_token
             .or_else(|| {
                 (embedded || server == kept)
-                    .then(|| browser::stored(browser::TOKEN))
+                    .then(|| device::stored(Kept::Token))
                     .flatten()
             })
             .unwrap_or_default();
         if !embedded {
-            browser::store(browser::SERVER, &server);
+            device::store(Kept::Server, &server);
         }
-        browser::store(browser::TOKEN, &token);
+        device::store(Kept::Token, &token);
         let mut app = App {
             screen: Screen::Token,
             portal: None,
@@ -232,7 +234,7 @@ impl App {
         self.host.disconnect();
         self.asked = None;
         self.retry = None;
-        match Portal::open(&browser::portal_url(&self.server), &self.token) {
+        match Portal::open(&device::portal_url(&self.server), &self.token) {
             Ok(portal) => {
                 // Who the token is here decides what the page offers.
                 let admin = Admin::new(portal.clone(), self.data.clone());
@@ -243,16 +245,9 @@ impl App {
                     self.screen = Screen::Hosts;
                 }
             }
-            Err(_) => {
+            Err(error) => {
                 self.portal = None;
-                // A browser does not let a page over https open plain ws.
-                self.refused = match self.server.starts_with("http://") {
-                    true => {
-                        "The browser did not open it: from a page over https, use an https address."
-                            .into()
-                    }
-                    false => "The browser did not open that address.".into(),
-                };
+                self.refused = error;
                 self.screen = Screen::Token;
             }
         }
@@ -271,7 +266,7 @@ impl App {
         self.host.disconnect();
         *self.hosts.borrow_mut() = Hosts::default();
         self.token.clear();
-        browser::store(browser::TOKEN, "");
+        device::store(Kept::Token, "");
         self.typing = Input::default();
         self.refused = why.to_owned();
         self.screen = Screen::Token;
@@ -302,10 +297,10 @@ impl App {
             match installed.tick() {
                 Outcome::SignIn(token) => {
                     self.token = token;
-                    browser::store(browser::TOKEN, &self.token);
+                    device::store(Kept::Token, &self.token);
                     self.connect();
                 }
-                // A token this browser kept still signs it in.
+                // A token kept here still signs it in.
                 Outcome::Refused(why) => {
                     self.installed = None;
                     self.screen = Screen::Token;
@@ -406,7 +401,7 @@ impl App {
     /// server gave it, and told which server otherwise.
     fn connect_link(&self) -> Option<(String, String)> {
         let server = (!self.embedded).then_some(self.server.as_str());
-        let link = qr::connect_link(&browser::page(), server, &self.token)?;
+        let link = qr::connect_link(&device::page(), server, &self.token)?;
         Some((self.server.clone(), link))
     }
 
@@ -544,7 +539,7 @@ impl App {
         rows.push(Row::info(format!(
             "  {} · through the berth server at {}",
             self.address,
-            browser::shown(&self.server)
+            device::shown(&self.server)
         )));
         for line in host::level_lines(&self.name, &self.host) {
             rows.push(Row::info(Line::styled(
@@ -862,13 +857,9 @@ impl App {
 
     fn host_event(&mut self, event: Event) {
         if self.host.view.is_some() {
-            if let Some(said) = screen::view_event(
-                &mut self.host,
-                &self.links,
-                &self.words,
-                &event,
-                &mut Browser,
-            ) {
+            if let Some(said) =
+                screen::view_event(&mut self.host, &self.links, &self.words, &event, &mut Here)
+            {
                 self.status = said;
             }
             return;
@@ -894,7 +885,7 @@ impl App {
         }
         if self.host.arguments.is_some() {
             let mut said = None;
-            let accepted = screen::arguments_event(&mut self.host, &event, &mut Browser, &mut said);
+            let accepted = screen::arguments_event(&mut self.host, &event, &mut Here, &mut said);
             if let Some(said) = said {
                 self.status = said;
             }
@@ -1077,7 +1068,7 @@ impl App {
                     self.name_host(&name);
                 }
                 _ if screen::is_copy_field(&key) => {
-                    self.status = screen::copy_field(&mut Browser, input);
+                    self.status = screen::copy_field(&mut Here, input);
                 }
                 _ => event::edit(input, &key),
             }
@@ -1218,9 +1209,9 @@ impl App {
             self.tab = 0;
         }
         self.home.connect = self.connect_link();
-        self.home.server = browser::shown(&self.server).to_owned();
+        self.home.server = device::shown(&self.server).to_owned();
         let tabs: &[&str] = if admin { &TABS } else { &[] };
-        self.tab_hits = draw_header(frame, header, tabs, self.tab, browser::shown(&self.server));
+        self.tab_hits = draw_header(frame, header, tabs, self.tab, device::shown(&self.server));
         frame.render_widget(Paragraph::new(theme::logo()), logo);
         frame.render_widget(
             Paragraph::new(theme::swell(
@@ -1409,7 +1400,7 @@ impl App {
                         }
                     }
                     _ if screen::is_copy_field(key) => {
-                        self.status = screen::copy_field(&mut Browser, input);
+                        self.status = screen::copy_field(&mut Here, input);
                     }
                     _ => event::edit(input, key),
                 },
@@ -1422,9 +1413,9 @@ impl App {
             if let Event::Key(key) = event {
                 match key.code {
                     Code::Char('c') => {
-                        self.status = match Browser.copy(password) {
+                        self.status = match Here.copy(password) {
                             true => "Copied the password".into(),
-                            false => "The browser did not let the page copy".into(),
+                            false => "Could not copy to the clipboard".into(),
                         };
                     }
                     Code::Enter | Code::Esc => self.made = None,
@@ -1447,9 +1438,9 @@ impl App {
             if let Event::Key(key) = event {
                 match key.code {
                     Code::Char('c') => {
-                        self.status = match Browser.copy(text) {
+                        self.status = match Here.copy(text) {
                             true => "Copied the user data".into(),
-                            false => "The browser did not let the page copy".into(),
+                            false => "Could not copy to the clipboard".into(),
                         };
                     }
                     Code::Enter | Code::Esc | Code::Char('q') => self.seed = None,
@@ -1550,7 +1541,7 @@ impl App {
                 let token = self.typing.value().trim().to_owned();
                 let server = match self.embedded {
                     true => self.server.clone(),
-                    false => browser::address(self.typing_server.value()),
+                    false => device::address(self.typing_server.value()),
                 };
                 if server.is_empty() {
                     self.on_server = true;
@@ -1558,10 +1549,10 @@ impl App {
                     self.token = token;
                     self.server = server;
                     if !self.embedded {
-                        browser::store(browser::SERVER, &self.server);
+                        device::store(Kept::Server, &self.server);
                         self.typing_server = Input::new(self.server.clone());
                     }
-                    browser::store(browser::TOKEN, &self.token);
+                    device::store(Kept::Token, &self.token);
                     self.typing = Input::default();
                     self.refused.clear();
                     self.status.clear();
@@ -1574,7 +1565,7 @@ impl App {
                 } else {
                     &self.typing
                 };
-                self.status = screen::copy_field(&mut Browser, input);
+                self.status = screen::copy_field(&mut Here, input);
             }
             Event::Key(key) if self.on_server => event::edit(&mut self.typing_server, &key),
             Event::Key(key) => event::edit(&mut self.typing, &key),
@@ -1612,7 +1603,7 @@ impl App {
             Constraint::Length(2),
         ])
         .areas(area);
-        draw_header(frame, header, &[], 0, browser::shown(&self.server));
+        draw_header(frame, header, &[], 0, device::shown(&self.server));
         frame.render_widget(Paragraph::new(theme::logo()), logo);
         frame.render_widget(
             Paragraph::new(theme::swell(
