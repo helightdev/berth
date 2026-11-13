@@ -191,9 +191,10 @@ class Deployments(unittest.TestCase):
         self.assertIn('deploying bench with [secret]', output)
         self.assertNotIn('b3nch-t0ken', output)
         self.assertEqual((self.folder / 'spec.bench').read_text(), 'benches: 3\n')
-        # The secret reached the program on its input only, never its arguments.
+        # The secret reaches the program in the request on its input, and the spec is kept without it.
         create = next(asked for asked in requests(self.folder) if asked['verb'] == 'create')
-        self.assertNotIn('b3nch-t0ken', json.dumps(create))
+        self.assertEqual(list(create['environment']), ['TOKEN'])
+        self.assertNotIn('b3nch-t0ken', create['spec'] + json.dumps(create['arguments']))
         listed = self.berth('resource').stdout
         self.assertRegex(listed, r'(?m)^r-\S+\s+deployment\s+bench\s+lab/box\s+running$')
         page = self.berth('provisioner', 'lab/box').stdout
