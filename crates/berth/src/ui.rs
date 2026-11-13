@@ -14,8 +14,7 @@ use berth_tui::screen::{
     draw_question, draw_view, ellipsize, hint_at, inside, note_hints, pasted, with_links, words,
 };
 use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-    MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::{
     DefaultTerminal, Frame,
@@ -2197,10 +2196,10 @@ fn home_loop(terminal: &mut DefaultTerminal, paths: &Paths) -> Result<Option<Str
             crossterm::terminal::EndSynchronizedUpdate
         )?;
         drawn?;
-        if !event::poll(std::time::Duration::from_millis(50))? {
+        if !crate::keys::poll(std::time::Duration::from_millis(50))? {
             continue;
         }
-        let event = hint_click(event::read()?);
+        let event = hint_click(crate::keys::read()?);
         if home.qr.is_some() {
             if let Some(event) = crate::keys::event(&event) {
                 berth_tui::qr::take(&mut home.qr, &vec![], &event, &mut None);
@@ -2780,7 +2779,7 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
         if let Some(job) = &mut app.job {
             let running = job.running();
             job.tick();
-            if running && !event::poll(std::time::Duration::from_millis(100))? {
+            if running && !crate::keys::poll(std::time::Duration::from_millis(100))? {
                 continue;
             }
         }
@@ -2793,10 +2792,10 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
                 app.session = None;
                 continue;
             }
-            if !event::poll(std::time::Duration::from_millis(40))? {
+            if !crate::keys::poll(std::time::Duration::from_millis(40))? {
                 continue;
             }
-            let event = hint_click(event::read()?);
+            let event = hint_click(crate::keys::read()?);
             session_event(app, &event);
             continue;
         }
@@ -2806,10 +2805,10 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
                 app.host.close(true);
                 continue;
             }
-            if !event::poll(std::time::Duration::from_millis(40))? {
+            if !crate::keys::poll(std::time::Duration::from_millis(40))? {
                 continue;
             }
-            let event = hint_click(event::read()?);
+            let event = hint_click(crate::keys::read()?);
             view_event(app, &event);
             continue;
         }
@@ -2817,20 +2816,20 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
         // without waiting for a key.
         if app.step == Step::Manage
             && app.host.connected()
-            && !event::poll(std::time::Duration::from_millis(200))?
+            && !crate::keys::poll(std::time::Duration::from_millis(200))?
         {
             continue;
         }
         // The machine's state is taken in when it comes, too.
-        if app.machine_awaited() && !event::poll(std::time::Duration::from_millis(200))? {
+        if app.machine_awaited() && !crate::keys::poll(std::time::Duration::from_millis(200))? {
             continue;
         }
         if let Some(left) = fading
-            && !event::poll(left)?
+            && !crate::keys::poll(left)?
         {
             continue;
         }
-        let event = hint_click(event::read()?);
+        let event = hint_click(crate::keys::read()?);
         // The overlay can outlast the panel it came from.
         if app.qr.is_some() {
             qr_event(app, &event);

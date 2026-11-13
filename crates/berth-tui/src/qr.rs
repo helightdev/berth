@@ -32,8 +32,9 @@ const LIGHT: Color = Color::Rgb(255, 255, 255);
 /// The widest the text under a code gets.
 const TEXT_WIDTH: u16 = 64;
 
+/// Alt+R, with Shift or Caps Lock too, and with the Ctrl that AltGr adds.
 pub fn is_key(key: &Key) -> bool {
-    key.alt && !key.ctrl && matches!(key.code, Code::Char('r' | 'R'))
+    key.alt && matches!(key.code, Code::Char('r' | 'R'))
 }
 
 /// A QR code with its quiet zone.

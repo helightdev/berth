@@ -304,7 +304,17 @@ pub fn portal_url(server: &str) -> String {
 
 /// The key a `keydown` was; `None` for keys the screens have no use for.
 fn key_of(event: &KeyboardEvent) -> Option<Key> {
-    let name = event.key();
+    let mut name = event.key();
+    // Option on a Mac types a character of its own, such as ® for R, where the
+    // screens want the letter of the key. AltGr, which adds Ctrl, types text.
+    if event.alt_key()
+        && !event.ctrl_key()
+        && let Some(letter) = event.code().strip_prefix("Key")
+        && letter.len() == 1
+        && !(name.len() == 1 && name.chars().all(|ch| ch.is_ascii_alphabetic()))
+    {
+        name = letter.to_lowercase();
+    }
     let mut chars = name.chars();
     let code = match (chars.next(), chars.next()) {
         (Some(ch), None) => Code::Char(ch),
