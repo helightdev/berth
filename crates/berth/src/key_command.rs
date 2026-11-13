@@ -227,7 +227,7 @@ pub(crate) fn trust(paths: &Paths, name: &str, rest: &[&str]) -> Result<()> {
         ),
     }
     for key in &trusted.host_keys {
-        println!("Its host key is {}", ring::fingerprint(key));
+        println!("Recorded its host key: {}", ring::fingerprint(key));
     }
     Ok(())
 }

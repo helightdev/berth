@@ -3,7 +3,7 @@
 use super::{
     Event, Remote, Serve, actions,
     auth::{self, Access},
-    keys, provisioners, setup, setup_key,
+    keys, provisioners, resources, setup, setup_key,
 };
 use axum::{
     Json, Router,
@@ -39,7 +39,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 
 pub(super) type App = State<Arc<Serve>>;
 /// The upgrade when the request asks for a stream, at a path that also answers plainly.
-type Ws = std::result::Result<WebSocketUpgrade, WebSocketUpgradeRejection>;
+pub(super) type Ws = std::result::Result<WebSocketUpgrade, WebSocketUpgradeRejection>;
 
 /// An error on its way out: status, code, message.
 pub struct Fail(u16, String, String);
@@ -242,13 +242,15 @@ fn guarded_routes() -> OpenApiRouter<Arc<Serve>> {
         .routes(routes!(provisioners::provisioner))
         .routes(routes!(provisioners::provisioner_actions))
         .routes(routes!(provisioners::provisioner_act))
-        .routes(routes!(provisioners::instances))
+        .routes(routes!(resources::list, resources::create))
         .routes(routes!(
-            provisioners::get,
-            provisioners::create,
-            provisioners::destroy
+            resources::get,
+            resources::change,
+            resources::remove
         ))
-        .routes(routes!(provisioners::power))
+        .routes(routes!(resources::actions))
+        .routes(routes!(resources::act))
+        .routes(routes!(resources::logs))
         .routes(routes!(jobs))
         .routes(routes!(job))
         .routes(routes!(job_output))
@@ -264,7 +266,7 @@ pub fn router(state: Arc<Serve>, guarded: bool) -> Router {
     for stream in streams::SERVE {
         router = match stream.id {
             // At the path of a plain GET, whose handler upgrades when asked to.
-            "job" | "inbox" | "kv" => router,
+            "job" | "inbox" | "kv" | "resource-logs" => router,
             "events" => router.route(stream.path, get(events)),
             other => panic!("no handler for the stream {other}"),
         };

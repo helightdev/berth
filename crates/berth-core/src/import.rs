@@ -10,6 +10,9 @@
 //!    the token and the plugin directory stay where they are, as they are
 //!    used as files; only `serve.setup-key` goes.
 //!
+//! Two more change rows the store has already: how hosts are reached moves
+//! into `access`, and the records of hosts' machines become resources.
+//!
 //! The rows of an import go into the store in one change with its marker, so
 //! they are all there or none of them are. Only then are the old files put
 //! away in `migrated/` beside them, and `config.json` keeps the local
@@ -35,6 +38,9 @@ pub const KEYS_MARKER: &str = "import:keys";
 /// The marker of the fourth, which moves how hosts are reached out of
 /// `builder` into `access` and berth's own key into the key ring.
 pub const ACCESS_MARKER: &str = "import:access";
+/// The marker of the fifth, which makes each record of a host's machine a
+/// resource of the machine kind.
+pub const RESOURCES_MARKER: &str = "import:resources";
 
 /// What a row of the import is.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -63,6 +69,7 @@ pub fn run(paths: &Paths, installation: &Installation, store: &Store) -> Result<
         && marked(store, KEYS_MARKER)?
         && !setup_key_file(paths).exists()
         && marked(store, ACCESS_MARKER)?
+        && marked(store, RESOURCES_MARKER)?
     {
         return Ok(());
     }
@@ -122,7 +129,98 @@ pub fn run(paths: &Paths, installation: &Installation, store: &Store) -> Result<
             eprintln!("berth: {notice}");
         }
     }
+    if !marked(store, RESOURCES_MARKER)? {
+        let converted = take_in_resources(store)?;
+        if converted > 0 {
+            eprintln!(
+                "berth: the record of {converted} host{}'s machine is a resource now: see berth resource",
+                if converted == 1 { "" } else { "s" }
+            );
+        }
+    }
     Ok(())
+}
+
+/// What berth before 0.5 kept of a host's machine, beside its profile.
+#[derive(serde::Deserialize)]
+struct Instance {
+    provisioner: String,
+    #[serde(default)]
+    id: String,
+    token: String,
+    #[serde(default)]
+    arguments: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    created: String,
+}
+
+/// The fifth import, in one change with its marker: each record of a host's
+/// machine, of every scope, becomes a resource of the machine kind in the
+/// same scope, keeping its token and the provisioner's id. Returns how many.
+pub(crate) fn take_in_resources(store: &Store) -> Result<usize> {
+    let mut scopes = std::collections::BTreeSet::new();
+    if let crate::store::Rows::State(rows) = store.export(crate::store::Table::State)? {
+        for row in rows.into_iter().filter(|row| row.kind == kind::INSTANCE) {
+            scopes.insert(row.scope);
+        }
+    }
+    let mut writes: Vec<(&'static str, String, String, Vec<u8>)> = vec![];
+    let mut removals: Vec<(&'static str, String, String)> = vec![];
+    for scope in scopes {
+        for (host, value) in store.entries(kind::INSTANCE, &scope)? {
+            removals.push((kind::INSTANCE, scope.clone(), host.clone()));
+            let Ok(old) = serde_json::from_slice::<Instance>(&value) else {
+                eprintln!(
+                    "berth: the record of {host}'s machine is not one berth reads, and is left out"
+                );
+                continue;
+            };
+            let name = match scope.as_str() {
+                crate::profiles::FILE_SCOPE => Path::new(&host)
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| host.clone()),
+                _ => host.clone(),
+            };
+            let record = crate::resource::Record {
+                id: crate::resource::new_id()?,
+                provisioner: old.provisioner,
+                kind: crate::plugins::MACHINE.into(),
+                name,
+                external_id: old.id,
+                host: host.clone(),
+                token: old.token,
+                arguments: old.arguments,
+                created: old.created,
+                ..crate::resource::Record::default()
+            };
+            writes.push((
+                kind::RESOURCE,
+                scope.clone(),
+                record.id.clone(),
+                serde_json::to_vec(&record)?,
+            ));
+        }
+    }
+    let converted = writes.len();
+    let marker =
+        json!({"version": berth_api::VERSION, "at": berth_api::rfc3339(berth_api::unix_now())});
+    writes.push((
+        kind::META,
+        OWN.into(),
+        RESOURCES_MARKER.into(),
+        marker.to_string().into_bytes(),
+    ));
+    let writes: Vec<(&str, &str, &str, Vec<u8>)> = writes
+        .iter()
+        .map(|(kind, scope, name, value)| (*kind, scope.as_str(), name.as_str(), value.clone()))
+        .collect();
+    let removals: Vec<(&str, &str, &str)> = removals
+        .iter()
+        .map(|(kind, scope, name)| (*kind, scope.as_str(), name.as_str()))
+        .collect();
+    store.change(&writes, &removals)?;
+    Ok(converted)
 }
 
 /// What becomes of a profile's access fields: the rows to write besides the
@@ -1048,11 +1146,12 @@ mod tests {
         let (_dir, paths) = scratch();
         let store = open(&paths);
         let report = store.seal_report().unwrap();
-        assert_eq!((report.sealed, report.plain), (0, 4));
+        assert_eq!((report.sealed, report.plain), (0, 5));
         assert!(read(&store, kind::META, MARKER).is_some());
         assert!(read(&store, kind::META, PROFILES_MARKER).is_some());
         assert!(read(&store, kind::META, KEYS_MARKER).is_some());
         assert!(read(&store, kind::META, ACCESS_MARKER).is_some());
+        assert!(read(&store, kind::META, RESOURCES_MARKER).is_some());
         assert!(!paths.config_dir.join("migrated").exists());
         assert!(!paths.settings_file().exists());
     }
@@ -1066,8 +1165,8 @@ mod tests {
         let store = open(&paths);
         assert!(store.encrypted());
         let report = store.seal_report().unwrap();
-        // Two secrets, a registry, two settings and the four markers.
-        assert_eq!((report.sealed, report.plain), (9, 0));
+        // Two secrets, a registry, two settings and the five markers.
+        assert_eq!((report.sealed, report.plain), (10, 0));
         assert_eq!(read(&store, kind::SECRET, "github").unwrap(), "ghp-made-up");
     }
 
@@ -1123,6 +1222,16 @@ mod tests {
         store.read_json(kind, OWN, name).unwrap()
     }
 
+    /// The resource that is the machine of a host of this installation.
+    fn machine_of(store: &Store, host: &str) -> Option<crate::resource::Record> {
+        store
+            .entries(kind::RESOURCE, OWN)
+            .unwrap()
+            .into_iter()
+            .map(|(_, value)| serde_json::from_slice::<crate::resource::Record>(&value).unwrap())
+            .find(|record| record.host == host)
+    }
+
     #[test]
     fn the_hosts_move_into_the_store() {
         let (_dir, paths) = scratch();
@@ -1138,9 +1247,20 @@ mod tests {
             json_row(&store, kind::CREDENTIALS, "studio").unwrap()["ops"],
             "made-up-pw"
         );
-        let record: crate::provision::Record =
-            serde_json::from_value(json_row(&store, kind::INSTANCE, "studio").unwrap()).unwrap();
-        assert_eq!((record.id.as_str(), record.token.as_str()), ("vm-1", "t0k"));
+        // The record of its machine is a resource of the machine kind now.
+        let record = machine_of(&store, "studio").unwrap();
+        assert_eq!(
+            (
+                record.external_id.as_str(),
+                record.token.as_str(),
+                record.kind.as_str(),
+                record.provisioner.as_str(),
+                record.name.as_str()
+            ),
+            ("vm-1", "t0k", "machine", "cloud/vm", "studio")
+        );
+        assert!(crate::resource::valid_id(&record.id), "{}", record.id);
+        assert!(json_row(&store, kind::INSTANCE, "studio").is_none());
         assert_eq!(
             store.names(kind::PROFILE, OWN).unwrap(),
             ["attic", "studio"]
@@ -1182,6 +1302,62 @@ mod tests {
     }
 
     #[test]
+    fn the_records_of_machines_become_resources_in_their_scopes_once() {
+        let (_dir, paths) = scratch();
+        let store = open(&paths);
+        let file = "/profiles/attic.json";
+        let served = "served:http://192.0.2.7:7777";
+        for (scope, host) in [
+            (OWN, "studio"),
+            (crate::profiles::FILE_SCOPE, file),
+            (served, "yard"),
+        ] {
+            store
+                .write(kind::INSTANCE, scope, host, RECORD.as_bytes())
+                .unwrap();
+        }
+        store.write(kind::INSTANCE, OWN, "broken", b"[1]").unwrap();
+        assert_eq!(take_in_resources(&store).unwrap(), 3);
+        for (scope, host, name) in [
+            (OWN, "studio", "studio"),
+            (crate::profiles::FILE_SCOPE, file, "attic"),
+            (served, "yard", "yard"),
+        ] {
+            let found: Vec<crate::resource::Record> = store
+                .entries(kind::RESOURCE, scope)
+                .unwrap()
+                .into_iter()
+                .map(|(_, value)| serde_json::from_slice(&value).unwrap())
+                .collect();
+            assert_eq!(found.len(), 1, "{scope}");
+            assert_eq!(
+                (
+                    found[0].host.as_str(),
+                    found[0].name.as_str(),
+                    found[0].external_id.as_str()
+                ),
+                (host, name, "vm-1")
+            );
+            assert!(store.names(kind::INSTANCE, scope).unwrap().is_empty());
+        }
+        // Found again as the machine of its host.
+        let place = crate::profiles::Place::File(file.into());
+        assert_eq!(
+            crate::resource::of_place(&paths, &place)
+                .unwrap()
+                .unwrap()
+                .record
+                .token,
+            "t0k"
+        );
+        // The marker stops it from running again.
+        assert!(read(&store, kind::META, RESOURCES_MARKER).is_some());
+        drop(store);
+        let store = open(&paths);
+        assert_eq!(store.names(kind::RESOURCE, OWN).unwrap().len(), 1);
+    }
+
+    #[test]
     fn a_hosts_import_stopped_after_its_change_is_finished() {
         let (_dir, paths) = scratch();
         old_hosts(&paths);
@@ -1208,10 +1384,7 @@ mod tests {
             .unwrap();
         drop(store);
         let store = open(&paths);
-        assert_eq!(
-            json_row(&store, kind::INSTANCE, "studio").unwrap()["id"],
-            "vm-2"
-        );
+        assert_eq!(machine_of(&store, "studio").unwrap().external_id, "vm-2");
         assert!(!paths.config_dir.join("hosts").exists());
         assert!(
             paths

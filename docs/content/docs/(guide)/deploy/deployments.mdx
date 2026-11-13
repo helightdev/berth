@@ -1,0 +1,135 @@
+---
+title: Deployments
+description: Run a Compose project on a Docker engine as a resource of berth, with its secrets taken from berth's store.
+icon: LayoutGrid
+---
+
+A deployment is a [resource](/docs/deploy/resources) made from a specification. berth keeps the specification in its store and hands it to the provisioner, but never reads it. The Docker plugin's provisioner `docker/container` makes deployments from Compose files.
+
+A deployment belongs to no host. Compose runs where berth runs, against the Docker engine of the provisioner's `host` setting, so that machine needs the `docker compose` plugin. With a [berth server](/docs/use/server) set, that is the server.
+
+## The specification
+
+Write `${VARIABLE}` where a secret goes. This file runs a PostgreSQL database for a notes app, with its password from berth:
+
+```yaml title="notes.compose.yaml"
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    restart: unless-stopped
+volumes:
+  data:
+```
+
+Compose reads the file from an empty directory, so give a bind mount as an absolute path on the Docker host.
+
+## Deploy it
+
+Store the password as a berth secret, then deploy:
+
+```bash
+berth secret set notes_db_password
+berth deploy notes --provisioner docker/container \
+  --spec notes.compose.yaml --secret notes_db_password:DB_PASSWORD
+```
+
+```text
+▸ Creating the deployment notes with docker/container
+…
+✓ docker/container created notes: running
+notes: berth resource r-p5x2hd7a
+```
+
+The output of Compose follows as it runs. The last line gives the new resource's id.
+
+| Option | Means |
+| --- | --- |
+| `NAME` | The deployment's name, which is the Compose project's. Lowercase letters, digits, `-` and `_`, starting with a letter or digit |
+| `--provisioner PLUGIN/ID` | The provisioner that makes it, here `docker/container` |
+| `--spec FILE` | The Compose file. `-` reads it from standard input |
+| `--secret NAME[:VARIABLE]` | A berth secret it gets, as the variable `VARIABLE`, or as `NAME` when none is given. Give it once for each secret |
+| `--token TEXT` | Any text of yours. The same token again answers with the first job, and nothing is made twice |
+| `NAME=VALUE` | Values of its arguments, such as `keep_volumes=yes`, or `host=…` for an engine other than the setting's |
+
+berth refuses before anything is made when a secret has no value, or when the name of a variable is not one a shell takes. A deployment of that name that exists already is changed instead, with the new file.
+
+## Look after it
+
+```bash
+berth resource notes
+```
+
+```text
+r-p5x2hd7a  deployment notes of docker/container
+State      running
+Made as    notes
+Created    2026-11-13T09:12:40Z
+Asked      2026-11-13T09:30:02Z
+Spec       5f0c1d9e8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d
+Secrets    notes_db_password as DB_PASSWORD
+Arguments  host=ssh://ops@192.0.2.10 keep_volumes=no
+
+Actions (berth resource r-p5x2hd7a run ACTION)
+  start              Start
+  stop               Stop
+  change             Change
+  services           Services
+  restart            Restart
+  pull               Pull and update
+  remove             Remove the deployment
+
+Its log: berth resource r-p5x2hd7a logs [--follow]
+```
+
+```bash
+berth resource notes logs --follow      # every service's log
+berth resource notes run services       # each container, with its state
+berth resource notes run pull           # newer images, then up again
+berth resource notes run stop
+```
+
+## Change it
+
+Deploy again with the same name, or use `change`:
+
+```bash
+berth deploy notes --provisioner docker/container --spec notes.compose.yaml
+berth resource notes change --spec notes.compose.yaml
+berth resource notes change keep_volumes=yes
+```
+
+The plugin runs `docker compose up -d --remove-orphans` with the file. With the same file nothing changes. Without `--spec`, the file berth has is used again. The secrets stay as they are unless `--secret` is given, which replaces the whole list.
+
+## Remove it
+
+```bash
+berth resource notes remove
+```
+
+berth asks `Remove the deployment notes with what it holds? [y/N]`, which `--yes` answers. The plugin runs `docker compose down`, which removes the project's named volumes too unless `keep_volumes` is `yes`. berth then forgets the record and the Compose file.
+
+## Secrets and what berth keeps
+
+| What | Where it is kept | Where it is shown |
+| --- | --- | --- |
+| The Compose file | In berth's store, in a row of its own, sealed when the [store is encrypted](/docs/use/store) | Only as its SHA-256, on the `Spec` line |
+| The names of the secrets and their variables | In the resource's record | On the `Secrets` line |
+| The values of the secrets | In berth's secrets alone, never with the resource or in the file | Nowhere. Job output and logs show `[secret]` in their place |
+
+berth reads the values each time it makes, changes or acts on the deployment. They reach the plugin only on its standard input. The plugin gives them to `docker compose` only as variables of its environment, never on a command line or in a file.
+
+Compose puts the values into the containers as the file says. A variable in a container's environment is visible to anyone who can inspect that container on the Docker host.
+
+## With a berth server
+
+With a server set, `berth deploy` sends the Compose file to the server. The server keeps it and makes the deployment as a job of the subject `resource:ID`. The secrets it gets are the server's. Making, changing and removing one need the role `admin`, and reading its log `operate` ([Resources](/docs/deploy/resources#with-a-berth-server)).
+
+## The Docker plugin's part
+
+The [Docker plugin's guide](https://github.com/helightdev/berth/blob/main/plugins/docker/guide.md#deployments) says what each verb and action does to the project. It also covers the labels `berth-resource` and `berth-token` that go on its containers. The plugin lists, changes and removes only projects whose containers have them.

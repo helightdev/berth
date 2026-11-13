@@ -19,6 +19,7 @@ pub mod profiles;
 pub mod provision;
 pub mod provisioner;
 pub mod registry;
+pub mod resource;
 pub mod rollout;
 pub mod runner;
 pub mod seal;

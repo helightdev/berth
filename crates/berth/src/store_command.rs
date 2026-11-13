@@ -575,13 +575,20 @@ mod tests {
             place.save(paths, &profile).unwrap();
             berth_core::credentials::save(paths, &place, "ops", &format!("pw-of-{name}")).unwrap();
         }
-        berth_core::provision::Record {
-            provisioner: "cloud/vm".into(),
-            id: "vm-1".into(),
-            token: "t0k".into(),
-            ..Default::default()
+        berth_core::resource::Kept {
+            scope: berth_core::store::OWN.into(),
+            record: berth_core::resource::Record {
+                id: "r-studio".into(),
+                provisioner: "cloud/vm".into(),
+                kind: "machine".into(),
+                name: "studio".into(),
+                external_id: "vm-1".into(),
+                host: "studio".into(),
+                token: "t0k".into(),
+                ..Default::default()
+            },
         }
-        .save(paths, "studio")
+        .save(paths)
         .unwrap();
         // A key of its own in the ring, so no ssh-keygen is needed.
         berth_core::store::shared(paths)
@@ -631,10 +638,10 @@ mod tests {
             berth_core::credentials::load(paths, &studio).unwrap()["ops"],
             "pw-of-studio"
         );
-        let record = berth_core::provision::Record::load(paths, "studio")
+        let machine = berth_core::resource::of_host(paths, "studio")
             .unwrap()
             .unwrap();
-        assert_eq!(record.id, "vm-1");
+        assert_eq!(machine.record.external_id, "vm-1");
         let registries = berth_core::registry::Store::new(paths).unwrap();
         assert_eq!(
             registries.secret("github").unwrap().as_deref(),

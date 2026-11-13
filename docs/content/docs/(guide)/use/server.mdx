@@ -158,7 +158,7 @@ The page is the terminal UI drawn in the browser. It has the host list and the o
 
 With the role `admin` the page also sets the server up, with the same screens as the terminal UI:
 
-- **Settings**, **Registries**, **Secrets** and **Plugins** are tabs of the home screen. On **Plugins**, `u` sends a `.tgz` from the device.
+- **Provisioners**, **Settings**, **Registries**, **Secrets** and **Plugins** are tabs of the home screen. On **Plugins**, `u` sends a `.tgz` from the device. A provisioner's page opens the pages of what berth made with it ([Resources](/docs/deploy/resources#in-the-terminal-ui)).
 - **New host** starts a profile, and a host's overview opens its Install, Features, Settings and Run tabs. A new host opens on Install with **Create a machine** chosen, and offers only Create a machine, Cloud-init seed and Existing host over SSH.
 - **Run** does what the chosen method does on the server. That is creating the machine, a cloud-init seed to copy, or an apply over SSH. The output is shown as it runs.
 - **Install secrets and registry logins** sends a host what its profile names.
@@ -199,7 +199,7 @@ Your browser talks to the server you name, and to nothing else. It keeps the ser
 | The set-up tabs of a host, new hosts, and `berth remove` | |
 | `berth profile` and `berth credentials` | |
 | `berth apply`, `berth seed`, and the **Secrets and registry logins** task | |
-| `berth provisioners`, `berth provision` and `berth instance` | |
+| `berth provisioner`, `berth provision`, `berth instance`, `berth resource` and `berth deploy` | |
 | `berth secret`, `berth registry` and `berth host` | |
 | The Plugins tab and `berth plugins` | |
 
@@ -214,6 +214,7 @@ With the role `admin` on the server, which its token has, berth sets the server 
 - **Apply this configuration** and `berth apply HOST` run as a job on the server. Its output is shown as it comes.
 - `berth seed HOST` has the server render the cloud-init seed, and writes it here.
 - `berth provision HOST` and `berth instance HOST` use the server's provisioners and secrets, and create the machine from the server ([Provisioners](/docs/deploy/provisioners#with-a-berth-server)). `berth provisioner` shows the server's provisioners, and their actions run there.
+- `berth resource` and `berth deploy` use the server's resources. A deployment's specification is sent to the server and kept there, and it gets the server's secrets ([Deployments](/docs/deploy/deployments#with-a-berth-server)).
 - A secret's value is sent to the server and kept only there. Here berth knows its name.
 - The `tailnet_` settings and the secret `tailnet_api_key` are the server's, which creates the [enrollment keys](/docs/use/access#automatic-enrollment-keys) for its hosts. Settings and `berth config` change them there.
 - A plugin is installed on the server, and its features show on the Features tab of the server's hosts. A `.tgz` or folder of yours is sent there first.

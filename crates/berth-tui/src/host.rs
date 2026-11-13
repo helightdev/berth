@@ -648,9 +648,11 @@ pub fn groups(host: &HostView, terminal_user: &str) -> Vec<(String, Vec<(String,
 
 /// The line the overview shows of the host's level, with what the host
 /// itself was seen to be when that is different.
-pub fn level_line(host: &HostView) -> String {
+pub fn level_line(name: &str, host: &HostView) -> String {
     let mut line = format!("Level · {}: {}", host.level, host.level.describe());
-    if let Some(seen) = host.seen.filter(|seen| *seen != host.level) {
+    if let Some(said) = api::level_mismatch(name, host.level, host.seen) {
+        line += &format!(". {said}");
+    } else if let Some(seen) = host.seen.filter(|seen| *seen != host.level) {
         line += &format!(". The host itself is {seen} now");
     }
     line
@@ -761,10 +763,21 @@ mod tests {
             level: api::HostLevel::Reachable,
             ..HostView::default()
         };
-        assert!(level_line(&host).starts_with("Level · reachable: berth logs in over SSH"));
-        host.seen = Some(api::HostLevel::Controller);
-        assert!(level_line(&host).ends_with("The host itself is controller now"));
+        assert!(
+            level_line("studio", &host).starts_with("Level · reachable: berth logs in over SSH")
+        );
         host.seen = Some(api::HostLevel::Reachable);
-        assert!(!level_line(&host).contains("now"));
+        assert!(!level_line("studio", &host).contains("now"));
+        // One seen to be more than its profile says names how to adopt it.
+        host.seen = Some(api::HostLevel::Workstation);
+        assert!(
+            level_line("studio", &host)
+                .contains("studio is a workstation; its profile here says reachable. To adopt it"),
+            "{}",
+            level_line("studio", &host)
+        );
+        host.level = api::HostLevel::Workstation;
+        host.seen = Some(api::HostLevel::Controller);
+        assert!(level_line("studio", &host).ends_with("The host itself is controller now"));
     }
 }

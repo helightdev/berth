@@ -212,7 +212,7 @@ class UpdateServed(unittest.TestCase):
         home = station.terminal(cols=160, rows=46)
         try:
             home.expect(HOST)
-            home.send('5')
+            home.send('6')
             home.expect('Add plugin')
             home.send('c')
             home.expect(r'update available: 1\.0\.0 → 2\.0\.0', timeout=60)

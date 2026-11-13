@@ -217,6 +217,8 @@ impl Login {
             "StrictHostKeyChecking=accept-new".to_owned(),
             "HashKnownHosts=no".to_owned(),
             "CheckHostIP=no".to_owned(),
+            // berth says itself which host key it recorded, in place of ssh's warning.
+            "LogLevel=ERROR".to_owned(),
         ];
         match &self.auth {
             Auth::Password => options.extend([

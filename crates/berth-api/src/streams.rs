@@ -183,6 +183,26 @@ pub const SERVE: &[Stream] = &[
         client: &[],
     },
     Stream {
+        id: "resource-logs",
+        path: "/v1/resources/{id}/logs",
+        summary: "What a resource writes, as its provisioner gives it, with secrets masked: the last lines, then what follows.",
+        level: "host",
+        parameters: &[(
+            "tail",
+            "The last so many lines first; all when 0 (default 100).",
+        )],
+        resumable: false,
+        server: &[
+            binary("output", "Lines of its log."),
+            text(
+                "exited",
+                "The log ended, or the provisioner stopped giving it. The last frame; with `error` when it failed.",
+                r#"{"exited":{"exit_code":0}}"#,
+            ),
+        ],
+        client: &[],
+    },
+    Stream {
         id: "inbox",
         path: "/v1/inbox",
         summary: "Messages as they are taken in from the hosts.",

@@ -381,16 +381,17 @@ fn provisioner_kinds(entries: &Value) -> Vec<berth_api::ProvisionerKind> {
                 .collect(),
             arguments: provisioner_arguments(&entry["arguments"]),
             spec: entry.get("spec").filter(|spec| spec.is_object()).cloned(),
+            actions: provisioner_actions(&entry["actions"], berth_api::ops::Role::Admin),
             id,
         });
     }
     kinds
 }
 
-/// The actions of a provisioner's manifest. Each runs where berth runs; one
-/// that changes something needs an admin unless it says otherwise, one that
-/// only reads anyone let in.
-fn provisioner_actions(entries: &Value) -> Vec<berth_api::Action> {
+/// The actions of a provisioner's manifest, or of one of its kinds. Each
+/// runs where berth runs; one that changes something needs an admin unless
+/// it says otherwise, and one that only reads needs `reading`.
+fn provisioner_actions(entries: &Value, reading: berth_api::ops::Role) -> Vec<berth_api::Action> {
     let mut actions: Vec<berth_api::Action> = vec![];
     for entry in entries.as_array().cloned().unwrap_or_default() {
         let Ok(action) = serde_json::from_value::<berth_api::Action>(entry.clone()) else {
@@ -402,7 +403,7 @@ fn provisioner_actions(entries: &Value) -> Vec<berth_api::Action> {
         let role = match (entry.get("role"), action.changes) {
             (Some(_), _) => action.role,
             (None, true) => berth_api::ops::Role::Admin,
-            (None, false) => berth_api::ops::Role::View,
+            (None, false) => reading,
         };
         actions.push(berth_api::Action {
             arguments: provisioner_arguments(&entry["arguments"]),
@@ -469,7 +470,7 @@ fn read_provisioner(plugin: &str, entry: &Value, dir: &Path) -> Option<Provision
         Some(_) => (vec![], vec![]),
         None => (
             provisioner_kinds(&entry["kinds"]),
-            provisioner_actions(&entry["actions"]),
+            provisioner_actions(&entry["actions"], berth_api::ops::Role::View),
         ),
     };
     let machine = kinds.iter().find(|kind| kind.id == MACHINE);

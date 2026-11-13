@@ -49,6 +49,8 @@ pub(super) struct Seen<'a> {
     pub secrets: &'a [String],
     /// The level the host's profile means it to have.
     pub level: Level,
+    /// What its controller says it is, when it answered.
+    pub observed: Option<Level>,
 }
 
 /// One of berth's own actions.
@@ -148,6 +150,16 @@ async fn host_tasks(remote: &Remote) -> Result<Vec<Task>, String> {
     }
 }
 
+/// What a host's controller says the host is, when it answers.
+async fn observed(remote: &Remote) -> Option<Level> {
+    remote
+        .version()
+        .await
+        .ok()
+        .as_ref()
+        .and_then(|version| level::seen(Ok(version)))
+}
+
 /// A host's actions: its tasks, then berth's own. A task that takes the
 /// workstation's secrets on its input is berth's to run, with the server's.
 fn host_list(seen: &Seen) -> Vec<Action> {
@@ -233,12 +245,14 @@ pub async fn host_actions(
         _ => host_tasks(&remote).await.ok(),
     };
     let secrets = secret_names(&state);
+    let observed = observed(&remote).await;
     Ok(Json(host_list(&Seen {
         name: &name,
         profile: &profile,
         tasks: tasks.as_deref(),
         secrets: &secrets,
         level: level::of(&profile),
+        observed,
     })))
 }
 
@@ -276,12 +290,14 @@ pub async fn host_act(
         ),
     };
     let secrets = secret_names(&state);
+    let observed = observed(&remote).await;
     let actions = host_list(&Seen {
         name: &name,
         profile: &profile,
         tasks: tasks.as_deref(),
         secrets: &secrets,
         level: level::of(&profile),
+        observed,
     });
     let found = actions
         .iter()
@@ -308,6 +324,7 @@ fn installation_list() -> Vec<Action> {
         tasks: None,
         secrets: &[],
         level: Level::Workstation,
+        observed: None,
     };
     INSTALLATION
         .iter()
@@ -488,7 +505,7 @@ fn logs_in_alone(seen: &Seen, action: Action) -> Action {
 }
 
 fn install_controller_action(seen: &Seen) -> Action {
-    let action = level::install_controller_action(seen.name, seen.level);
+    let action = level::install_controller_action(seen.name, seen.level, seen.observed);
     let action = match seen.profile.is_null() {
         true => unavailable(
             action,
@@ -845,7 +862,7 @@ fn trust_key(state: Arc<Serve>, name: String, act: Act) -> Run {
                         ),
                     };
                     for key in &trusted.host_keys {
-                        let _ = writeln!(out, "Its host key is {}", ring::fingerprint(key));
+                        let _ = writeln!(out, "Recorded its host key: {}", ring::fingerprint(key));
                     }
                     true
                 }

@@ -1,7 +1,7 @@
 //! Creating the machine a saved host's profile describes, with a provisioner
 //! of a plugin. berth runs the provisioner where it runs itself, keeps the
-//! machine's id in its store beside the profile, and from then on the machine
-//! is an ordinary host. One machine per profile.
+//! machine as a resource of the host (see [`crate::resource`]), and from then
+//! on the machine is an ordinary host. One machine per profile.
 //!
 //! A provisioner is run as `COMMAND VERB` in its package directory and in a
 //! process group of its own. It reads one JSON object on standard input and
@@ -9,6 +9,7 @@
 //! progress. Secrets travel only on its standard input, and the request is
 //! never written anywhere.
 
+use crate::resource::{self, Kept};
 use crate::{
     Result, apply,
     host::Host,
@@ -19,10 +20,9 @@ use crate::{
     registry::Store,
     seed,
     server::KEPT,
-    store::{self, kind},
+    store,
 };
-use berth_api::{Instance, ListedInstance, Provision, ProvisionerInfo};
-use serde::{Deserialize, Serialize};
+use berth_api::{NewResource, ProvisionerInfo};
 use serde_json::{Map, Value, json};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -77,65 +77,12 @@ impl Default for Options {
 }
 
 impl Options {
-    fn limit(&self, verb: &str) -> Duration {
+    pub(crate) fn limit(&self, verb: &str) -> Duration {
         match verb {
             "create" => self.create,
             "status" | "list" => self.quick,
             _ => self.change,
         }
-    }
-}
-
-// ── The record beside the profile ───────────────────────────────────────────
-
-/// What berth keeps of the machine it created for a host, in its store
-/// beside the profile. It is the only way back to that machine, so it is
-/// written before the machine is asked for and removed only once it is gone.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Record {
-    /// `PLUGIN/ID`.
-    pub provisioner: String,
-    /// Empty until `create` has said it.
-    #[serde(default)]
-    pub id: String,
-    /// What `create` is asked with, so asking again finds the same machine.
-    pub token: String,
-    #[serde(default)]
-    pub arguments: BTreeMap<String, String>,
-    #[serde(default)]
-    pub created: String,
-}
-
-impl Record {
-    pub fn load(paths: &Paths, host: &str) -> Result<Option<Record>> {
-        Record::load_at(paths, &Place::resolve(paths, host)?)
-    }
-
-    /// The record of the host whose profile is at `place`.
-    pub fn load_at(paths: &Paths, place: &Place) -> Result<Option<Record>> {
-        let (scope, name) = place.side();
-        match store::shared(paths)?.read_json(kind::INSTANCE, &scope, &name)? {
-            Some(record) => Ok(Some(serde_json::from_value(record).map_err(|error| {
-                format!(
-                    "The record of the machine of {} in berth's store: {error}",
-                    place.argument()
-                )
-            })?)),
-            None => Ok(None),
-        }
-    }
-
-    pub fn save(&self, paths: &Paths, host: &str) -> Result<()> {
-        let (scope, name) = Place::resolve(paths, host)?.side();
-        let record = serde_json::to_value(self)?;
-        store::shared(paths)?.write_json(kind::INSTANCE, &scope, &name, &record)?;
-        Ok(())
-    }
-
-    pub fn remove(paths: &Paths, host: &str) -> Result<()> {
-        let (scope, name) = Place::resolve(paths, host)?.side();
-        store::shared(paths)?.forget(kind::INSTANCE, &scope, &name)?;
-        Ok(())
     }
 }
 
@@ -159,6 +106,11 @@ pub fn busy(paths: &Paths, host: &str) -> bool {
 }
 
 // ── Finding provisioners ────────────────────────────────────────────────────
+
+/// The plugins whose provisioners berth runs here.
+pub fn list_plugins(paths: &Paths) -> Vec<Plugin> {
+    found(paths)
+}
 
 pub(crate) fn found(paths: &Paths) -> Vec<Plugin> {
     let own = plugins::own_dir(&paths.config_dir);
@@ -273,28 +225,21 @@ pub(crate) fn values_of(
     Ok(values)
 }
 
-/// What every verb is sent. `list` is about no host.
+/// What every verb is sent; one about a resource adds what it is (see
+/// [`resource::request`]).
 pub(crate) fn request(
     verb: &str,
     provisioner: &Provisioner,
-    host: Option<(&str, &str)>,
     arguments: &BTreeMap<String, String>,
     secrets: &Map<String, Value>,
 ) -> Value {
-    let mut request = json!({
+    json!({
         "version": PROTOCOL,
         "verb": verb,
         "provisioner": provisioner.id,
         "arguments": arguments,
         "secrets": secrets,
-    });
-    if let Some((host, token)) = host {
-        request["kind"] = json!(crate::plugins::MACHINE);
-        request["name"] = json!(host);
-        request["host"] = json!(host);
-        request["labels"] = json!({"berth-host": host, "berth-instance": token});
-    }
-    request
+    })
 }
 
 /// The provisioners there are, with the required secrets that are not set,
@@ -463,7 +408,7 @@ pub struct Prepared {
     dir: PathBuf,
     provisioner: Provisioner,
     secrets: Map<String, Value>,
-    record: Record,
+    kept: Kept,
     lock: Option<Lock>,
 }
 
@@ -471,26 +416,35 @@ pub struct Prepared {
 /// its lock. Refused: a host that has a machine, an unfinished one of another
 /// provisioner, an unknown provisioner, unknown or missing arguments and
 /// missing secrets, and a host something else is being done to.
-pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &Provision) -> Result<Prepared> {
+pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) -> Result<Prepared> {
     let profile = Host::load(paths, host).map_err(|_| format!("No host {host}"))?;
     let lock = lock(paths, host)?;
-    let kept = Record::load(paths, host)?;
-    if let Some(kept) = kept.as_ref().filter(|kept| !kept.id.is_empty()) {
+    let kept = resource::of_place(paths, &profile.place)?;
+    if let Some(kept) = kept
+        .as_ref()
+        .filter(|kept| !kept.record.external_id.is_empty())
+    {
         return Err(format!(
-            "{host} has a machine already, {} of {}. See it with: berth instance {host}; delete it with: berth instance {host} destroy",
-            kept.id, kept.provisioner
+            "{host} has a machine already, {} of {}. See it with: berth resource {}; delete it with: berth resource {} remove",
+            kept.record.external_id, kept.record.provisioner, kept.record.id, kept.record.id
         )
         .into());
     }
     if let Some(kept) = kept
         .as_ref()
-        .filter(|kept| kept.provisioner != asked.provisioner)
+        .filter(|kept| kept.record.provisioner != asked.provisioner)
     {
         return Err(format!(
-            "A machine for {host} was asked of {}, which did not say it made one. Forget it with: berth instance {host} destroy",
-            kept.provisioner
+            "A machine for {host} was asked of {}, which did not say it made one. Forget it with: berth resource {} remove",
+            kept.record.provisioner, kept.record.id
         )
         .into());
+    }
+    if asked.spec.is_some() {
+        return Err("A machine takes no specification".into());
+    }
+    if !asked.secrets.is_empty() {
+        return Err("A machine is given no secrets of its own; its profile names them".into());
     }
     let plugins = found(paths);
     let (plugin, provisioner) = find(&plugins, &asked.provisioner)?;
@@ -514,24 +468,39 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &Provision) -> R
         )
         .into());
     }
+    let (scope, side) = profile.place.side();
     // Asked again after a failure, the provisioner finds the machine by its token.
-    let token = match kept {
-        Some(kept) => kept.token,
-        None => new_token()?,
+    let kept = match kept {
+        Some(mut kept) => {
+            kept.record.arguments = arguments;
+            kept.record.asked = asked.token.clone().unwrap_or_default();
+            kept
+        }
+        None => Kept {
+            scope,
+            record: resource::Record {
+                id: resource::new_id()?,
+                provisioner: asked.provisioner.clone(),
+                kind: crate::plugins::MACHINE.into(),
+                name: profile.place.title(),
+                host: side,
+                token: new_token()?,
+                asked: asked.token.clone().unwrap_or_default(),
+                arguments,
+                created: berth_api::now(),
+                ..resource::Record::default()
+            },
+        },
     };
+    // Saved before there is a job, so that its answer names the resource.
+    kept.save(paths)?;
     Ok(Prepared {
         host: host.to_owned(),
         name: asked.provisioner.clone(),
         dir: plugin.dir.clone(),
         provisioner: provisioner.clone(),
         secrets,
-        record: Record {
-            provisioner: asked.provisioner.clone(),
-            id: String::new(),
-            token,
-            arguments,
-            created: berth_api::now(),
-        },
+        kept,
         lock: Some(lock),
     })
 }
@@ -551,7 +520,7 @@ fn cloud_profile(paths: &Paths, host: &str) -> Result<()> {
     Ok(())
 }
 
-fn new_token() -> Result<String> {
+pub(crate) fn new_token() -> Result<String> {
     let mut bytes = [0u8; 16];
     fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
@@ -563,7 +532,7 @@ pub fn provision(
     paths: &Paths,
     store: &Store,
     host: &str,
-    asked: &Provision,
+    asked: &NewResource,
     options: &Options,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -571,6 +540,11 @@ pub fn provision(
 }
 
 impl Prepared {
+    /// The record of the machine, saved already.
+    pub fn kept(&self) -> &Kept {
+        &self.kept
+    }
+
     /// The host's lock, for a job to hold while this runs in it.
     pub fn take_lock(&mut self) -> Option<Lock> {
         self.lock.take()
@@ -598,14 +572,14 @@ impl Prepared {
         say(out, &format!("▸ {host}: creating its machine with {name}"));
         cloud_profile(paths, &host)?;
         let profile = Host::load(paths, &host)?;
-        let mut request = request(
+        let mut request = resource::request(
             "create",
             &self.provisioner,
-            Some((&host, &self.record.token)),
-            &self.record.arguments,
+            &self.kept.record,
+            &self.kept.record.arguments,
             &self.secrets,
         );
-        request["token"] = json!(self.record.token);
+        request["token"] = json!(self.kept.record.token);
         match self.provisioner.setup {
             Setup::Seed => {
                 say(out, &format!("▸ {host}: rendering the cloud seed"));
@@ -616,7 +590,7 @@ impl Prepared {
                 };
                 request["seed"] = json!({
                     "user_data": seed.user_data,
-                    "meta_data": format!("instance-id: {}\nlocal-hostname: {hostname}\n", self.record.token),
+                    "meta_data": format!("instance-id: {}\nlocal-hostname: {hostname}\n", self.kept.record.token),
                 });
                 if let Some(archive) = seed.archive {
                     request["seed"]["archive"] =
@@ -637,7 +611,7 @@ impl Prepared {
             }
         }
         // Written before the machine is asked for, so a crash leaves the token to ask again with.
-        self.record.save(paths, &host)?;
+        self.kept.save(paths)?;
         let answer = call(
             &self.dir,
             &self.provisioner,
@@ -653,12 +627,18 @@ impl Prepared {
             )
             .into());
         }
-        self.record.id = id.clone();
-        self.record.save(paths, &host)?;
+        self.kept.record.external_id = id.clone();
+        self.kept.record.state = "running".into();
+        self.kept.record.checked = berth_api::now();
+        if let Some(address) = answer["address"].as_str() {
+            self.kept.record.address = address.to_owned();
+        }
+        self.kept.save(paths)?;
         say(out, &format!("✓ {host}: {name} created {id}"));
+        let resource = self.kept.record.id.clone();
         let exists = |error: Box<dyn std::error::Error>| -> Box<dyn std::error::Error> {
             format!(
-                "{error}. The machine {id} exists and stays: berth instance {host} destroy deletes it"
+                "{error}. The machine {id} exists and stays: berth resource {resource} remove deletes it"
             )
             .into()
         };
@@ -707,15 +687,13 @@ impl Prepared {
             crate::keys::known::forget_host_key(paths, &store, &host.place)?;
         }
         let deadline = Instant::now() + limit;
-        let status = request(
+        let status = resource::request(
             "status",
             &self.provisioner,
-            Some((name, &self.record.token)),
-            &self.record.arguments,
+            &self.kept.record,
+            &self.kept.record.arguments,
             &self.secrets,
         );
-        let mut status = status;
-        status["id"] = json!(self.record.id);
         loop {
             if (options.answers)(paths, &host, setup) {
                 break;
@@ -941,278 +919,6 @@ fn finish(paths: &Paths, host: &Host, setup: Setup, out: &mut dyn Write) -> Resu
     }
 }
 
-// ── The machine afterwards ──────────────────────────────────────────────────
-
-/// The record of a host and the provisioner that made its machine.
-struct Made {
-    record: Record,
-    plugins: Vec<Plugin>,
-}
-
-impl Made {
-    fn load(paths: &Paths, host: &str) -> Result<Made> {
-        let record = Record::load(paths, host)?
-            .ok_or_else(|| format!("{host} has no machine that berth created"))?;
-        Ok(Made {
-            record,
-            plugins: found(paths),
-        })
-    }
-
-    fn provisioner(&self) -> Result<(&Plugin, &Provisioner)> {
-        find(&self.plugins, &self.record.provisioner).map_err(|_| {
-            format!(
-                "No provisioner {} any more, which made this machine: add its plugin again",
-                self.record.provisioner
-            )
-            .into()
-        })
-    }
-
-    /// A request about the machine. Arguments it did not have when the
-    /// machine was made take their defaults.
-    fn request(
-        &self,
-        verb: &str,
-        host: &str,
-        store: &Store,
-    ) -> Result<(PathBuf, Provisioner, Value)> {
-        let (plugin, provisioner) = self.provisioner()?;
-        runnable(provisioner)?;
-        let (secrets, missing) = secrets(store, provisioner);
-        needs_secrets(&self.record.provisioner, &missing)?;
-        let mut arguments = self.record.arguments.clone();
-        for argument in &provisioner.arguments {
-            arguments
-                .entry(argument.name.clone())
-                .or_insert_with(|| argument.default.clone());
-        }
-        let mut request = request(
-            verb,
-            provisioner,
-            Some((host, &self.record.token)),
-            &arguments,
-            &secrets,
-        );
-        request["id"] = json!(self.record.id);
-        Ok((plugin.dir.clone(), provisioner.clone(), request))
-    }
-}
-
-/// The machine berth created for a host, and what its provisioner says of
-/// it now. None when berth created none.
-pub fn status(
-    paths: &Paths,
-    store: &Store,
-    host: &str,
-    options: &Options,
-) -> Result<Option<Instance>> {
-    if Record::load(paths, host)?.is_none() {
-        return Ok(None);
-    }
-    let made = Made::load(paths, host)?;
-    let mut instance = Instance {
-        provisioner: made.record.provisioner.clone(),
-        id: made.record.id.clone(),
-        state: "unknown".into(),
-        address: Host::load(paths, host)
-            .map(|host| host.address().to_owned())
-            .unwrap_or_default(),
-        created: made.record.created.clone(),
-        arguments: made.record.arguments.clone(),
-        verbs: vec![],
-        problem: String::new(),
-    };
-    if let Ok((_, provisioner)) = made.provisioner() {
-        instance.verbs = provisioner
-            .verbs
-            .iter()
-            .filter(|verb| *verb != "list")
-            .cloned()
-            .collect();
-    }
-    if made.record.id.is_empty() {
-        match busy(paths, host) {
-            true => instance.state = "creating".into(),
-            false => {
-                instance.problem = format!(
-                    "Creating it did not end. berth provision {host} {} asks again; berth instance {host} destroy forgets it",
-                    made.record.provisioner
-                )
-            }
-        }
-        return Ok(Some(instance));
-    }
-    let answer = made
-        .request("status", host, store)
-        .and_then(|(dir, provisioner, request)| {
-            call(
-                &dir,
-                &provisioner,
-                "status",
-                &request,
-                options.quick,
-                &mut std::io::sink(),
-            )
-        });
-    match answer {
-        Ok(answer) => match answer["state"].as_str() {
-            Some(state @ ("running" | "stopped" | "gone")) => {
-                instance.state = state.into();
-                if let Some(address) = answer["address"]
-                    .as_str()
-                    .filter(|address| !address.is_empty())
-                {
-                    instance.address = address.into();
-                }
-            }
-            _ => instance.problem = format!("{} status said no state", made.record.provisioner),
-        },
-        Err(error) => instance.problem = error.to_string(),
-    }
-    Ok(Some(instance))
-}
-
-/// Delete the machine berth created for a host, by the id it keeps, and
-/// forget it. The profile stays. A record without an id is only forgotten.
-pub fn destroy(
-    paths: &Paths,
-    store: &Store,
-    host: &str,
-    options: &Options,
-    out: &mut dyn Write,
-) -> Result<()> {
-    let _lock = lock(paths, host)?;
-    let made = Made::load(paths, host)?;
-    if made.record.id.is_empty() {
-        Record::remove(paths, host)?;
-        say(
-            out,
-            &format!(
-                "✓ Forgot the unfinished machine of {host}. One {} made anyway is not deleted",
-                made.record.provisioner
-            ),
-        );
-        return Ok(());
-    }
-    let (dir, provisioner, request) = made.request("destroy", host, store)?;
-    say(
-        out,
-        &format!(
-            "▸ {host}: deleting {} with {}",
-            made.record.id, made.record.provisioner
-        ),
-    );
-    if let Err(error) = call(
-        &dir,
-        &provisioner,
-        "destroy",
-        &request,
-        options.limit("destroy"),
-        out,
-    ) {
-        // One that is gone already is what was asked for.
-        let mut asked = request.clone();
-        asked["verb"] = json!("status");
-        let gone = call(
-            &dir,
-            &provisioner,
-            "status",
-            &asked,
-            options.quick,
-            &mut std::io::sink(),
-        )
-        .is_ok_and(|answer| answer["state"] == "gone");
-        if !gone {
-            return Err(error);
-        }
-    }
-    Record::remove(paths, host)?;
-    say(
-        out,
-        &format!(
-            "✓ Deleted {host}'s machine. The profile stays, and so does its node on the tailnet: remove that there"
-        ),
-    );
-    Ok(())
-}
-
-/// Start or stop the machine, when its provisioner can.
-pub fn power(
-    paths: &Paths,
-    store: &Store,
-    host: &str,
-    verb: &str,
-    options: &Options,
-    out: &mut dyn Write,
-) -> Result<()> {
-    if !matches!(verb, "start" | "stop") {
-        return Err(format!("A machine is started or stopped, not {verb}").into());
-    }
-    let _lock = lock(paths, host)?;
-    let made = Made::load(paths, host)?;
-    if made.record.id.is_empty() {
-        return Err(format!("{host}'s machine was not made yet").into());
-    }
-    let (dir, provisioner, request) = made.request(verb, host, store)?;
-    if !provisioner.verbs.iter().any(|known| known == verb) {
-        return Err(format!("{} cannot {verb} a machine", made.record.provisioner).into());
-    }
-    call(&dir, &provisioner, verb, &request, options.limit(verb), out)?;
-    Ok(())
-}
-
-/// The machines a provisioner has that berth created, as it lists them.
-pub fn instances(
-    paths: &Paths,
-    store: &Store,
-    name: &str,
-    given: &BTreeMap<String, String>,
-    options: &Options,
-) -> Result<Vec<ListedInstance>> {
-    let plugins = found(paths);
-    let (plugin, provisioner) = find(&plugins, name)?;
-    runnable(provisioner)?;
-    if !provisioner.verbs.iter().any(|verb| verb == "list") {
-        return Err(format!("{name} cannot list its machines").into());
-    }
-    let settings = crate::provisioner::settings(paths, name)?;
-    let arguments = values_of(name, &provisioner.arguments, given, &settings)?;
-    let (secrets, missing) = secrets(store, provisioner);
-    needs_secrets(name, &missing)?;
-    let mut request = request("list", provisioner, None, &arguments, &secrets);
-    request["kind"] = json!(crate::plugins::MACHINE);
-    let answer = call(
-        &plugin.dir,
-        provisioner,
-        "list",
-        &request,
-        options.quick,
-        &mut std::io::sink(),
-    )?;
-    Ok(listed_machines(&answer))
-}
-
-/// The machines in what `list` answered: its resources of the machine
-/// kind, or of no kind, each by the host it was made for.
-pub(crate) fn listed_machines(answer: &Value) -> Vec<ListedInstance> {
-    let listed = answer["resources"].as_array().cloned().unwrap_or_default();
-    let text = |entry: &Value, key: &str| entry[key].as_str().unwrap_or("").to_owned();
-    listed
-        .iter()
-        .filter(|entry| !text(entry, "id").is_empty())
-        .filter(|entry| matches!(text(entry, "kind").as_str(), "" | crate::plugins::MACHINE))
-        .map(|entry| ListedInstance {
-            id: text(entry, "id"),
-            host: match text(entry, "host") {
-                host if host.is_empty() => text(entry, "name"),
-                host => host,
-            },
-            state: text(entry, "state"),
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1340,12 +1046,13 @@ print(out)
         }
 
         fn provision(&self, name: &str, arguments: &[(&str, &str)]) -> (Result<()>, String) {
-            let asked = Provision {
+            let asked = NewResource {
                 provisioner: name.into(),
                 arguments: arguments
                     .iter()
                     .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
                     .collect(),
+                ..NewResource::default()
             };
             let mut out = vec![];
             let done = provision(
@@ -1359,8 +1066,26 @@ print(out)
             (done, String::from_utf8(out).unwrap())
         }
 
-        fn record(&self) -> Option<Record> {
-            Record::load(&self.paths, "studio").unwrap()
+        fn record(&self) -> Option<resource::Record> {
+            resource::of_host(&self.paths, "studio")
+                .unwrap()
+                .map(|kept| kept.record)
+        }
+
+        fn machine(&self) -> String {
+            self.record().unwrap().id
+        }
+
+        /// Run an action of the studio's machine.
+        fn act(&self, action: &str) -> Result<crate::provisioner::Answered> {
+            resource::prepare_action(
+                &self.paths,
+                &self.store(),
+                &self.machine(),
+                action,
+                &resource::Given::default(),
+            )?
+            .run(&self.paths, &quick(), &mut vec![])
         }
     }
 
@@ -1404,10 +1129,17 @@ print(out)
         let said = done.unwrap_err().to_string();
         assert!(said.contains("quota exceeded"), "{said}");
         let kept = world.record().unwrap();
-        assert!(kept.id.is_empty() && kept.token.len() == 32);
-        // The record is in the store beside the profile, and no file is beside anything.
+        assert!(kept.external_id.is_empty() && kept.token.len() == 32);
+        assert_eq!(
+            (kept.kind.as_str(), kept.host.as_str()),
+            ("machine", "studio")
+        );
+        // The record is a resource in the store, and no file is beside anything.
         let store = store::shared(&world.paths).unwrap();
-        assert_eq!(store.names(kind::INSTANCE, store::OWN).unwrap(), ["studio"]);
+        assert_eq!(
+            store.names(store::kind::RESOURCE, store::OWN).unwrap(),
+            std::slice::from_ref(&kept.id)
+        );
         assert!(!world.paths.config_dir.join("hosts").exists());
         // Another provisioner cannot take over while the first may have made one.
         let said = world
@@ -1415,7 +1147,10 @@ print(out)
             .0
             .unwrap_err()
             .to_string();
-        assert!(said.contains("berth instance studio destroy"), "{said}");
+        assert!(
+            said.contains(&format!("berth resource {} remove", kept.id)),
+            "{said}"
+        );
 
         world.forget("code.create");
         world.file(
@@ -1454,7 +1189,8 @@ print(out)
         );
         assert_eq!(create["access"]["user"], "ops");
         assert!(create.get("seed").is_none());
-        assert_eq!(world.record().unwrap().id, "vm-1");
+        assert_eq!(world.record().unwrap().external_id, "vm-1");
+        assert_eq!(world.record().unwrap().id, kept.id);
         let host = Host::load(&world.paths, "studio").unwrap();
         assert_eq!(host.address(), "192.0.2.20");
         assert_eq!(host.config["access"]["port"], "2222");
@@ -1509,9 +1245,10 @@ print(out)
     fn one_thing_at_a_time_is_done_to_a_host() {
         let world = World::new();
         with_secret(&world);
-        let asked = Provision {
+        let asked = NewResource {
             provisioner: "fake/vm".into(),
             arguments: [("server".to_owned(), "x".to_owned())].into(),
+            ..NewResource::default()
         };
         let first = prepare(&world.paths, &world.store(), "studio", &asked).unwrap();
         let said = prepare(&world.paths, &world.store(), "studio", &asked)
@@ -1529,9 +1266,10 @@ print(out)
         let world = World::new();
         with_secret(&world);
         world.file("hang.create", "");
-        let asked = Provision {
+        let asked = NewResource {
             provisioner: "fake/vm".into(),
             arguments: [("server".to_owned(), "x".to_owned())].into(),
+            ..NewResource::default()
         };
         let options = Options {
             create: Duration::from_millis(500),
@@ -1601,7 +1339,7 @@ print(out)
     }
 
     #[test]
-    fn destroy_uses_the_kept_id_takes_gone_for_done_and_keeps_the_profile() {
+    fn removing_uses_the_kept_id_takes_gone_for_done_and_keeps_the_profile() {
         let world = World::new();
         with_secret(&world);
         world.file(
@@ -1609,12 +1347,10 @@ print(out)
             r#"{"id": "vm-1", "address": "192.0.2.20"}"#,
         );
         world.provision("fake/vm", &[("server", "x")]).0.unwrap();
-        let mut out = vec![];
         // It fails, but says the machine is gone: what was asked for.
         world.file("code.destroy", "1");
         world.file("answer.status", r#"{"state": "gone"}"#);
-        destroy(&world.paths, &world.store(), "studio", &quick(), &mut out).unwrap();
-        let said = String::from_utf8(out).unwrap();
+        let said = world.act(resource::REMOVE).unwrap().message;
         assert!(said.contains("tailnet"), "{said}");
         assert!(world.record().is_none());
         assert!(Host::load(&world.paths, "studio").is_ok());
@@ -1627,16 +1363,6 @@ print(out)
             (verb.as_str(), request["id"].as_str()),
             ("destroy", Some("vm-1"))
         );
-        assert!(
-            destroy(
-                &world.paths,
-                &world.store(),
-                "studio",
-                &quick(),
-                &mut vec![]
-            )
-            .is_err()
-        );
 
         // One that fails and is not gone stays.
         world.forget("requests.log");
@@ -1648,35 +1374,16 @@ print(out)
         world.provision("fake/vm", &[("server", "x")]).0.unwrap();
         world.file("answer.status", r#"{"state": "running"}"#);
         world.file("say.destroy", "permission denied\n");
-        let said = destroy(
-            &world.paths,
-            &world.store(),
-            "studio",
-            &quick(),
-            &mut vec![],
-        )
-        .unwrap_err()
-        .to_string();
+        let said = world.act(resource::REMOVE).err().unwrap().to_string();
         assert!(said.contains("permission denied"), "{said}");
-        assert_eq!(world.record().unwrap().id, "vm-2");
+        assert_eq!(world.record().unwrap().external_id, "vm-2");
 
         // A record without an id is only forgotten.
-        Record {
-            provisioner: "fake/vm".into(),
-            token: "t".into(),
-            ..Default::default()
-        }
-        .save(&world.paths, "studio")
-        .unwrap();
+        let mut kept = resource::of_host(&world.paths, "studio").unwrap().unwrap();
+        kept.record.external_id.clear();
+        kept.save(&world.paths).unwrap();
         world.forget("requests.log");
-        destroy(
-            &world.paths,
-            &world.store(),
-            "studio",
-            &quick(),
-            &mut vec![],
-        )
-        .unwrap();
+        world.act(resource::REMOVE).unwrap();
         assert!(world.record().is_none() && world.requests().is_empty());
     }
 
@@ -1684,47 +1391,17 @@ print(out)
     fn power_and_status_follow_what_the_provisioner_answers() {
         let world = World::new();
         with_secret(&world);
-        assert!(
-            status(&world.paths, &world.store(), "studio", &quick())
-                .unwrap()
-                .is_none()
-        );
+        assert!(world.record().is_none());
         world.file(
             "answer.create",
             r#"{"id": "vm-1", "address": "192.0.2.20"}"#,
         );
         world.provision("fake/vm", &[("server", "x")]).0.unwrap();
-        power(
-            &world.paths,
-            &world.store(),
-            "studio",
-            "start",
-            &quick(),
-            &mut vec![],
-        )
-        .unwrap();
-        let said = power(
-            &world.paths,
-            &world.store(),
-            "studio",
-            "stop",
-            &quick(),
-            &mut vec![],
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(said.contains("cannot stop"), "{said}");
-        assert!(
-            power(
-                &world.paths,
-                &world.store(),
-                "studio",
-                "dance",
-                &quick(),
-                &mut vec![]
-            )
-            .is_err()
-        );
+        world.act("start").unwrap();
+        // The kind declares start and not stop, and the manifest's unknown verb is none.
+        let said = world.act("stop").err().unwrap().to_string();
+        assert!(said.contains("has no action stop"), "{said}");
+        assert!(world.act("dance").is_err());
         let verbs: Vec<String> = world.requests().into_iter().map(|(verb, _)| verb).collect();
         assert_eq!(verbs, ["create", "start"]);
 
@@ -1732,58 +1409,50 @@ print(out)
             "answer.status",
             r#"{"state": "stopped", "address": "192.0.2.21"}"#,
         );
-        let instance = status(&world.paths, &world.store(), "studio", &quick())
-            .unwrap()
-            .unwrap();
+        let id = world.machine();
+        let seen = resource::status(&world.paths, &world.store(), &id, &quick()).unwrap();
         assert_eq!(
             (
-                instance.state.as_str(),
-                instance.id.as_str(),
-                instance.address.as_str()
+                seen.state.as_str(),
+                seen.external_id.as_str(),
+                seen.address.as_str()
             ),
             ("stopped", "vm-1", "192.0.2.21")
         );
-        // The manifest's unknown verb is not one, and list is not done to a machine.
-        assert_eq!(instance.verbs, ["start"]);
+        assert_eq!(seen.verbs, ["start", "logs"]);
+        // What it said is kept, and listing asks nothing.
+        world.forget("requests.log");
+        let listed = resource::listed(&world.paths, Some("fake/vm"), None, Some("studio")).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].state, "stopped");
+        assert!(world.requests().is_empty());
+        // One that is gone is missing, and its record stays.
+        world.file("answer.status", r#"{"state": "gone"}"#);
+        let seen = resource::status(&world.paths, &world.store(), &id, &quick()).unwrap();
+        assert_eq!(seen.state, "missing");
+        assert!(world.record().is_some());
         world.file("code.status", "2");
-        let instance = status(&world.paths, &world.store(), "studio", &quick())
-            .unwrap()
-            .unwrap();
-        assert_eq!(instance.state, "unknown");
-        assert!(!instance.problem.is_empty());
+        let seen = resource::status(&world.paths, &world.store(), &id, &quick()).unwrap();
+        assert_eq!(seen.state, "unknown");
+        assert!(!seen.problem.is_empty());
+        world.forget("code.status");
 
         world.file(
             "answer.list",
             r#"{"resources": [{"id": "vm-1", "kind": "machine", "name": "studio", "state": "running"},
                 {"name": "no id"}, {"id": "wiki-1", "kind": "deployment", "name": "wiki"}]}"#,
         );
-        let listed = instances(
-            &world.paths,
-            &world.store(),
-            "fake/vm",
-            &[("server".to_owned(), "x".to_owned())].into(),
-            &quick(),
-        )
-        .unwrap();
-        assert_eq!(
-            listed,
-            [ListedInstance {
-                id: "vm-1".into(),
-                host: "studio".into(),
-                state: "running".into()
-            }]
+        let listed = resource::listed_of(
+            &serde_json::from_str(&fs::read_to_string(world.plugin.join("answer.list")).unwrap())
+                .unwrap(),
         );
-        let (_, request) = world.requests().pop().unwrap();
-        assert!(request.get("host").is_none() && request.get("labels").is_none());
-        assert!(
-            instances(
-                &world.paths,
-                &world.store(),
-                "fake/seeded",
-                &BTreeMap::new(),
-                &quick()
-            )
-            .is_err()
+        let names: Vec<(&str, &str, &str)> = listed
+            .iter()
+            .map(|entry| (entry.id.as_str(), entry.kind.as_str(), entry.host.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            [("vm-1", "machine", "studio"), ("wiki-1", "deployment", "")]
         );
     }
 
@@ -1799,9 +1468,9 @@ print(out)
             answers: |_, _, _| false,
             ..quick()
         };
-        let asked = Provision {
+        let asked = NewResource {
             provisioner: "fake/seeded".into(),
-            arguments: BTreeMap::new(),
+            ..NewResource::default()
         };
         let said = provision(
             &world.paths,
@@ -1814,10 +1483,10 @@ print(out)
         .unwrap_err()
         .to_string();
         assert!(
-            said.contains("gone") && said.contains("berth instance studio destroy"),
+            said.contains("gone") && said.contains("berth resource r-") && said.contains(" remove"),
             "{said}"
         );
-        assert_eq!(world.record().unwrap().id, "seeded-1");
+        assert_eq!(world.record().unwrap().external_id, "seeded-1");
         let (_, create) = world.requests().into_iter().next().unwrap();
         let token = world.record().unwrap().token;
         // A created machine is a cloud host, whatever the profile said before.
@@ -1886,22 +1555,27 @@ print(out)
         assert!(lock(&world.paths, "studio").is_ok());
         drop((other, by_path));
         assert!(!busy(&world.paths, "attic"));
-        // A record of a profile in a file is found by its path.
-        Record {
-            provisioner: "fake/vm".into(),
-            token: "t".into(),
-            ..Default::default()
+        // A machine of a profile in a file is found by its path.
+        Kept {
+            scope: crate::profiles::FILE_SCOPE.into(),
+            record: resource::Record {
+                id: "r-file".into(),
+                provisioner: "fake/vm".into(),
+                kind: "machine".into(),
+                name: "studio".into(),
+                host: file.to_str().unwrap().into(),
+                token: "t".into(),
+                ..Default::default()
+            },
         }
-        .save(&world.paths, file.to_str().unwrap())
+        .save(&world.paths)
         .unwrap();
         assert!(world.record().is_none());
-        assert_eq!(
-            Record::load(&world.paths, file.to_str().unwrap())
-                .unwrap()
-                .unwrap()
-                .token,
-            "t"
-        );
+        let found = resource::of_host(&world.paths, file.to_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.record.token, "t");
+        assert_eq!(found.title(), "studio's machine");
     }
 
     #[test]
@@ -2043,14 +1717,14 @@ print(out)
         assert_eq!(page.values["runtime"], ["privileged"]);
         assert!(page.values["odd"].is_empty());
         let machines: Vec<_> = page
-            .machines
+            .resources
             .iter()
             .map(|made| {
                 (
                     made.host.as_str(),
                     made.id.as_str(),
                     made.state.as_str(),
-                    made.recorded,
+                    !made.resource.is_empty(),
                 )
             })
             .collect();
@@ -2081,7 +1755,7 @@ print(out)
             "{}",
             page.message
         );
-        assert_eq!(page.machines.len(), 1);
+        assert_eq!(page.resources.len(), 1);
     }
 
     #[test]
@@ -2206,10 +1880,10 @@ print(out)
         world.provision("fake/vm", &[("server", "x")]).0.unwrap();
         world.file("answer.logs", "booted\nkey tok-s3cret-value\n");
         let mut out = vec![];
-        crate::provisioner::logs(
+        resource::logs(
             &world.paths,
             &world.store(),
-            "studio",
+            &world.machine(),
             20,
             false,
             Duration::from_secs(5),
@@ -2231,10 +1905,10 @@ print(out)
         // One that follows is stopped when the time is up.
         world.file("hang.logs", "");
         let started = Instant::now();
-        crate::provisioner::logs(
+        resource::logs(
             &world.paths,
             &world.store(),
-            "studio",
+            &world.machine(),
             0,
             true,
             Duration::from_millis(300),

@@ -1,7 +1,8 @@
 //! The Provisioners tab of the home screen: the provisioners there are, each
 //! with whether it can be used here, and the page of one, built with
-//! [`crate::page`]: how it is now, what it says of itself, the machines berth
-//! made with it, and its actions. berth shows those of this machine or of its
+//! [`crate::page`]: how it is now, what it says of itself, what it holds by
+//! kind, and its actions. A resource berth made with it has a page of its own
+//! with its state, its actions and its log. berth shows those of this machine or of its
 //! berth server, the page in a browser those of the server it came from. What
 //! the tab asks for, each of them does its own way, and tells the tab what
 //! came back.
@@ -10,7 +11,7 @@ use crate::event::{Code, Event, Key};
 use crate::page::{self, Accepted, Arguments, Begin, Group, Item, Tone};
 use crate::screen::{self, Platform};
 use crate::theme;
-use berth_api::{Action, ProvisionerInfo, ProvisionerState};
+use berth_api::{Action, ProvisionerInfo, ProvisionerState, Resource};
 use ratatui::{
     style::Style,
     text::{Line, Span},
@@ -41,6 +42,16 @@ pub enum Asked {
         action: Box<Action>,
         values: BTreeMap<String, String>,
     },
+    /// Ask a resource how it is and what it can do, for its page.
+    OpenResource(String),
+    /// Run an action of a resource with these values.
+    RunResource {
+        resource: String,
+        action: Box<Action>,
+        values: BTreeMap<String, String>,
+    },
+    /// Show a resource's log, by its id.
+    Logs(String),
     /// A key the tab does not take, such as one that changes tabs.
     Other,
 }
@@ -49,15 +60,32 @@ pub enum Asked {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Entry {
     Action(usize),
-    Machine(usize),
+    /// What the provisioner holds, by its place on the page.
+    Resource(usize),
+    /// A resource's log.
+    Logs,
 }
 
-/// The page of one provisioner, as it was last heard of.
+/// What a resource's page knows of it.
+pub struct ResourcePart {
+    /// The provisioner whose page it was opened from.
+    pub provisioner: String,
+    /// None while it is asked.
+    pub seen: Option<Result<Resource, String>>,
+}
+
+/// The page of one provisioner, or of one resource it made, as it was last
+/// heard of.
 pub struct Page {
+    /// The provisioner's `PLUGIN/ID`, or the resource's id.
     pub id: String,
+    /// Set on a resource's page.
+    pub resource: Option<ResourcePart>,
     /// None while it is asked.
     pub state: Option<Result<ProvisionerState, String>>,
     pub actions: Vec<Action>,
+    /// The page it was opened from, which Esc goes back to.
+    back: Option<Box<Page>>,
     cursor: usize,
     /// The question of the action chosen, to be answered first.
     question: Option<(String, usize)>,
@@ -180,6 +208,8 @@ impl Page {
     fn new(id: &str) -> Page {
         Page {
             id: id.to_owned(),
+            resource: None,
+            back: None,
             state: None,
             actions: vec![],
             cursor: 0,
@@ -189,8 +219,75 @@ impl Page {
         }
     }
 
+    /// The lines that say how a resource is.
+    fn resource_lines(&self, part: &ResourcePart) -> Vec<(String, Tone)> {
+        let seen = match &part.seen {
+            None => return vec![(format!("Asking about {}…", self.id), Tone::Muted)],
+            Some(Err(error)) => return vec![(format!("✗ {error}"), Tone::Bad)],
+            Some(Ok(seen)) => seen,
+        };
+        let tone = match seen.state.as_str() {
+            "running" => Tone::Plain,
+            "missing" => Tone::Bad,
+            "stopped" => Tone::Muted,
+            _ => Tone::Warn,
+        };
+        let mark = match tone {
+            Tone::Plain => "●",
+            _ => "○",
+        };
+        let mut lines = vec![
+            (
+                format!("{} · {} of {}", seen.name, seen.kind, seen.provisioner),
+                Tone::Plain,
+            ),
+            (format!("{mark} {}", seen.state), tone),
+        ];
+        if !seen.problem.is_empty() {
+            lines.push((format!("! {}", seen.problem), Tone::Warn));
+        }
+        let mut row = |label: &str, value: &str| {
+            if !value.is_empty() {
+                lines.push((format!("  {label:<12}{value}"), Tone::Muted));
+            }
+        };
+        row("Resource", &seen.id);
+        row("Made as", &seen.external_id);
+        row("Host", seen.host.as_deref().unwrap_or(""));
+        row("Address", &seen.address);
+        row("Created", &seen.created);
+        row("Asked", &seen.checked);
+        if !seen.spec_sha256.is_empty() {
+            row(
+                "Spec",
+                &format!(
+                    "sha256 {}",
+                    &seen.spec_sha256[..12.min(seen.spec_sha256.len())]
+                ),
+            );
+        }
+        let secrets: Vec<String> = seen
+            .secrets
+            .iter()
+            .map(|secret| format!("{} as {}", secret.name, secret.variable()))
+            .collect();
+        row("Secrets", &secrets.join(", "));
+        let arguments: Vec<String> = seen
+            .arguments
+            .iter()
+            .filter(|(_, value)| !value.is_empty())
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect();
+        row("Arguments", &arguments.join(" "));
+        lines.extend(self.said.iter().map(|line| (line.clone(), Tone::Plain)));
+        lines
+    }
+
     /// The lines that say how it is.
     fn state_lines(&self) -> Vec<(String, Tone)> {
+        if let Some(part) = &self.resource {
+            return self.resource_lines(part);
+        }
         let state = match &self.state {
             None => return vec![(format!("Asking {}…", self.id), Tone::Muted)],
             Some(Err(error)) => return vec![(format!("✗ {error}"), Tone::Bad)],
@@ -241,42 +338,82 @@ impl Page {
         lines
     }
 
-    fn machines(&self) -> &[berth_api::MadeMachine] {
-        match &self.state {
-            Some(Ok(state)) => &state.machines,
+    fn held(&self) -> &[berth_api::ListedResource] {
+        match (&self.resource, &self.state) {
+            (None, Some(Ok(state))) => &state.resources,
             _ => &[],
         }
     }
 
-    /// The rows: how it is, its actions in their groups, the machines it made.
+    /// The label of a kind of the provisioner, for its heading.
+    fn kind_label(&self, kind: &str) -> String {
+        let declared = match &self.state {
+            Some(Ok(state)) => state
+                .provisioner
+                .kinds
+                .iter()
+                .find(|known| known.id == kind)
+                .map(|known| known.label.clone()),
+            _ => None,
+        };
+        match (kind, declared) {
+            ("machine", _) => "Machines".into(),
+            (_, Some(label)) if !label.is_empty() => label,
+            (kind, _) => kind.to_owned(),
+        }
+    }
+
+    /// The rows: how it is, its actions in their groups, and on a
+    /// provisioner's page what it holds, by kind.
     fn items(&self) -> Vec<Item<Entry>> {
         let mut groups = page::groups(&self.actions, Entry::Action);
-        let machines: Vec<(String, Entry)> = self
-            .machines()
-            .iter()
-            .enumerate()
-            .map(|(index, machine)| {
-                let mut notes = vec![];
-                if !machine.state.is_empty() {
-                    notes.push(machine.state.clone());
-                }
-                if !machine.recorded {
-                    notes.push("no record of it".into());
-                }
-                let id = match machine.id.as_str() {
-                    "" => "being made",
-                    id => id,
-                };
-                (
-                    format!("  {:<18} {id}  {}", machine.host, notes.join(" · ")),
-                    Entry::Machine(index),
-                )
-            })
-            .collect();
-        if !machines.is_empty() {
+        if self.resource.is_some() {
+            let logs = matches!(&self.resource, Some(ResourcePart { seen: Some(Ok(seen)), .. }) if seen.verbs.iter().any(|verb| verb == "logs"));
+            if logs {
+                groups.push(Group {
+                    title: "Log".into(),
+                    rows: vec![("  ▸ Show its log".into(), Entry::Logs)],
+                });
+            }
+            return page::items(&self.state_lines(), groups);
+        }
+        let mut kinds: Vec<String> = vec![];
+        for held in self.held() {
+            if !kinds.contains(&held.kind) {
+                kinds.push(held.kind.clone());
+            }
+        }
+        for kind in kinds {
+            let rows: Vec<(String, Entry)> = self
+                .held()
+                .iter()
+                .enumerate()
+                .filter(|(_, held)| held.kind == kind)
+                .map(|(index, held)| {
+                    let mut notes = vec![];
+                    if !held.state.is_empty() {
+                        notes.push(held.state.clone());
+                    }
+                    if held.resource.is_empty() {
+                        notes.push("no record of it".into());
+                    }
+                    let id = match held.id.as_str() {
+                        "" => "being made",
+                        id => id,
+                    };
+                    let name = match (kind.as_str(), held.host.is_empty()) {
+                        ("machine", false) => &held.host,
+                        _ => &held.name,
+                    };
+                    (
+                        format!("  {name:<18} {id}  {}", notes.join(" · ")),
+                        Entry::Resource(index),
+                    )
+                })
+                .collect();
             groups.push(Group {
-                title: "Machines berth made with it".into(),
-                rows: machines,
+                title: format!("{} berth made with it", self.kind_label(&kind)),
+                rows,
             });
         }
         page::items(&self.state_lines(), groups)
@@ -323,6 +460,11 @@ impl Page {
                 action.title(),
                 action.why
             ))),
+            Some(action) if self.resource.is_some() => Asked::RunResource {
+                resource: self.id.clone(),
+                action: Box::new(action.clone()),
+                values,
+            },
             Some(action) => Asked::Run {
                 provisioner: self.id.clone(),
                 action: Box::new(action.clone()),
@@ -407,7 +549,41 @@ impl Tab {
         page.actions = actions.unwrap_or_default();
     }
 
-    /// Take in what an action that answers at once said.
+    /// Leave the page of the resource `id` for its provisioner's, as when it
+    /// is gone: the provisioner, to ask again.
+    pub fn back_from(&mut self, id: &str) -> Option<String> {
+        let page = self.page.as_mut().filter(|page| page.id == id)?;
+        let back = page.back.take()?;
+        let provisioner = back.id.clone();
+        self.page = Some(*back);
+        Some(provisioner)
+    }
+
+    /// Take in what a resource said for its page.
+    pub fn opened_resource(
+        &mut self,
+        id: &str,
+        seen: Result<Resource, String>,
+        actions: Result<Vec<Action>, String>,
+    ) {
+        let Some(page) = self.page.as_mut().filter(|page| page.id == id) else {
+            return;
+        };
+        let Some(part) = page.resource.as_mut() else {
+            return;
+        };
+        part.seen = Some(match (seen, &actions) {
+            (Ok(seen), Err(error)) => Err(format!(
+                "{} answered, but not with its actions: {error}",
+                seen.id
+            )),
+            (seen, _) => seen,
+        });
+        page.actions = actions.unwrap_or_default();
+    }
+
+    /// Take in what an action that answers at once said, of a provisioner
+    /// or a resource by its id.
     pub fn answered(&mut self, id: &str, lines: Vec<String>) {
         if let Some(page) = self.page.as_mut().filter(|page| page.id == id) {
             page.said = lines;
@@ -472,7 +648,7 @@ impl Tab {
                 rows: rows(list),
                 selected,
                 help: help(list.get(selected), place),
-                keys: "↑↓ select · Enter open · r refresh · Tab hosts · q quit",
+                keys: "↑↓ select · Enter open · r refresh · Tab settings · Esc hosts · q quit",
             };
         };
         let items = page.items();
@@ -493,31 +669,56 @@ impl Tab {
                     }),
                 ),
                 Item::Blank => Line::raw(""),
-                Item::Pick(text, Entry::Machine(_)) => Line::styled(text.clone(), muted),
+                Item::Pick(text, Entry::Resource(index))
+                    if page
+                        .held()
+                        .get(*index)
+                        .is_some_and(|held| held.resource.is_empty()) =>
+                {
+                    Line::styled(text.clone(), muted)
+                }
                 Item::Pick(text, _) => Line::styled(text.clone(), Style::new().fg(theme::TEXT)),
             })
             .collect();
         let help = match page.selected() {
             Some(Entry::Action(index)) => page::help(
                 &page.actions[index],
-                &format!(
-                    "berth provisioner {} run {}",
-                    page.id, page.actions[index].name
-                ),
-            ),
-            Some(Entry::Machine(index)) => {
-                let machine = &page.machines()[index];
-                match machine.recorded {
-                    true => format!(
-                        "The machine of {}, {} as the provisioner calls it. It is looked after as that host: its machine is on the host's page, and `berth instance {}` from the command line.",
-                        machine.host, machine.id, machine.host
+                &match &page.resource {
+                    Some(_) => format!(
+                        "berth resource {} run {}",
+                        page.id, page.actions[index].name
                     ),
-                    false => format!(
-                        "{} carries berth's labels for the host {}, but berth has no record of it. berth does not delete it; the provisioner's own tools do.",
-                        machine.id, machine.host
+                    None => format!(
+                        "berth provisioner {} run {}",
+                        page.id, page.actions[index].name
+                    ),
+                },
+            ),
+            Some(Entry::Resource(index)) => {
+                let held = &page.held()[index];
+                match (held.resource.is_empty(), held.kind.as_str()) {
+                    (false, "machine") if !held.host.is_empty() => format!(
+                        "The machine of {}, {} as the provisioner calls it. Enter opens its page, with its state, its actions and its log. It is looked after as that host too, on the host's page. From the command line: `berth resource {}`",
+                        held.host, held.id, held.resource
+                    ),
+                    (false, _) => format!(
+                        "The {} {}, {} as the provisioner calls it. Enter opens its page, with its state, its actions and its log. From the command line: `berth resource {}`",
+                        held.kind, held.name, held.id, held.resource
+                    ),
+                    (true, _) => format!(
+                        "{} is listed by the provisioner, but berth has no record of it: it was made otherwise, or berth lost track of it. berth does not remove it; the provisioner's own tools do.",
+                        held.id
                     ),
                 }
             }
+            Some(Entry::Logs) => format!(
+                "Its log as its provisioner gives it, the last lines and then what follows, with secrets masked. From the command line: `berth resource {} logs --follow`",
+                page.id
+            ),
+            None if page.resource.is_some() => format!(
+                "Asking about the resource. From the command line: `berth resource {}`",
+                page.id
+            ),
             None => format!(
                 "Asking the provisioner how it is. From the command line: `berth provisioner {}`",
                 page.id
@@ -600,18 +801,46 @@ impl Tab {
                     page.said.clear();
                     return page.begin(index, false);
                 }
-                Some(Entry::Machine(_)) => {
-                    return Asked::Nothing(Some("Open the host from the Hosts tab".into()));
+                Some(Entry::Resource(index)) => {
+                    let held = page.held()[index].clone();
+                    if held.resource.is_empty() {
+                        return Asked::Nothing(Some(format!("berth has no record of {}", held.id)));
+                    }
+                    let back = self.page.take().map(Box::new);
+                    let provisioner = back
+                        .as_ref()
+                        .map(|page| page.id.clone())
+                        .unwrap_or_default();
+                    self.page = Some(Page {
+                        resource: Some(ResourcePart {
+                            provisioner,
+                            seen: None,
+                        }),
+                        back,
+                        ..Page::new(&held.resource)
+                    });
+                    return Asked::OpenResource(held.resource);
                 }
+                Some(Entry::Logs) => return Asked::Logs(page.id.clone()),
                 None => {}
             },
             Code::Char('r') => {
                 let id = page.id.clone();
                 page.state = None;
                 page.said.clear();
+                if let Some(part) = &mut page.resource {
+                    part.seen = None;
+                    return Asked::OpenResource(id);
+                }
                 return Asked::Open(id);
             }
             Code::Esc | Code::Backspace | Code::Left => {
+                // A resource's page goes back to its provisioner's, which is asked again.
+                if let Some(back) = page.back.take() {
+                    let id = back.id.clone();
+                    self.page = Some(*back);
+                    return Asked::Open(id);
+                }
                 self.page = None;
                 return Asked::List;
             }
@@ -624,7 +853,7 @@ impl Tab {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use berth_api::{Argument, Detail, MadeMachine};
+    use berth_api::{Argument, Detail, ListedResource};
 
     struct Nowhere;
 
@@ -763,12 +992,24 @@ mod tests {
                 value: "runc".into(),
             }],
             values: [("runtime".to_owned(), vec!["privileged".to_owned()])].into(),
-            machines: vec![MadeMachine {
-                host: "studio".into(),
-                id: "berth-studio".into(),
-                state: "running".into(),
-                recorded: true,
-            }],
+            resources: vec![
+                ListedResource {
+                    id: "berth-studio".into(),
+                    kind: "machine".into(),
+                    name: "studio".into(),
+                    host: "studio".into(),
+                    state: "running".into(),
+                    resource: "r-studio".into(),
+                },
+                ListedResource {
+                    id: "wiki".into(),
+                    kind: "deployment".into(),
+                    name: "wiki".into(),
+                    state: "running".into(),
+                    resource: "r-wiki".into(),
+                    ..ListedResource::default()
+                },
+            ],
         };
         // What arrives for another page is not taken.
         tab.opened("lab/old", Err("no".into()), Ok(vec![]));
@@ -783,6 +1024,7 @@ mod tests {
             "Engine",
             "  ▸ Images",
             "Machines berth made with it",
+            "deployment berth made with it",
         ] {
             assert!(rows.iter().any(|row| row == line), "{line:?} in {rows:?}");
         }
@@ -863,5 +1105,116 @@ mod tests {
             panic!("it ran");
         };
         assert!(said.contains("needs the secret api_token"));
+    }
+
+    #[test]
+    fn a_resource_has_a_page_with_its_actions_and_its_log() {
+        let list = listed();
+        let mut tab = Tab::default();
+        tab.key(key(Code::Enter), &list, &mut Nowhere);
+        let state = ProvisionerState {
+            provisioner: ProvisionerInfo {
+                kinds: vec![berth_api::ProvisionerKind {
+                    id: "deployment".into(),
+                    label: "Compose project".into(),
+                    ..Default::default()
+                }],
+                ..list[0].clone()
+            },
+            state: "ready".into(),
+            resources: vec![
+                ListedResource {
+                    id: "wiki".into(),
+                    kind: "deployment".into(),
+                    name: "wiki".into(),
+                    state: "running".into(),
+                    resource: "r-wiki".into(),
+                    ..ListedResource::default()
+                },
+                ListedResource {
+                    id: "stray".into(),
+                    kind: "deployment".into(),
+                    name: "stray".into(),
+                    ..ListedResource::default()
+                },
+            ],
+            ..ProvisionerState::default()
+        };
+        tab.opened("docker/container", Ok(state), Ok(vec![]));
+        let rows = text(&tab.shown(&list, "here"));
+        assert!(
+            rows.contains(&"Compose project berth made with it".to_owned()),
+            "{rows:?}"
+        );
+        assert!(rows.iter().any(|row| row.contains("no record of it")));
+        // One without a record has no page.
+        tab.key(key(Code::Down), &list, &mut Nowhere);
+        assert!(matches!(
+            tab.key(key(Code::Enter), &list, &mut Nowhere),
+            Asked::Nothing(Some(_))
+        ));
+        tab.key(key(Code::Up), &list, &mut Nowhere);
+        assert_eq!(
+            tab.key(key(Code::Enter), &list, &mut Nowhere),
+            Asked::OpenResource("r-wiki".into())
+        );
+        let seen = Resource {
+            id: "r-wiki".into(),
+            provisioner: "docker/container".into(),
+            kind: "deployment".into(),
+            name: "wiki".into(),
+            state: "running".into(),
+            external_id: "wiki".into(),
+            verbs: vec!["logs".into()],
+            ..Resource::default()
+        };
+        let remove = Action {
+            name: "remove".into(),
+            label: "Remove the deployment".into(),
+            group: "Resource".into(),
+            confirm: Some("Remove the deployment wiki with what it holds?".into()),
+            ..Action::default()
+        };
+        tab.opened_resource("r-wiki", Ok(seen), Ok(vec![remove]));
+        let shown = tab.shown(&list, "here");
+        let rows = text(&shown);
+        assert_eq!(rows[0], "wiki · deployment of docker/container");
+        assert!(rows.contains(&"  ▸ Show its log".to_owned()), "{rows:?}");
+        assert!(shown.help.contains("berth resource r-wiki run remove"));
+        // Removing asks first, and then runs as the resource's.
+        tab.key(key(Code::Enter), &list, &mut Nowhere);
+        assert_eq!(
+            tab.question(),
+            Some("Remove the deployment wiki with what it holds?")
+        );
+        let Asked::RunResource {
+            resource, action, ..
+        } = tab.key(key(Code::Char('y')), &list, &mut Nowhere)
+        else {
+            panic!("not run");
+        };
+        assert_eq!(
+            (resource.as_str(), action.name.as_str()),
+            ("r-wiki", "remove")
+        );
+        tab.key(key(Code::Down), &list, &mut Nowhere);
+        assert_eq!(
+            tab.key(key(Code::Enter), &list, &mut Nowhere),
+            Asked::Logs("r-wiki".into())
+        );
+        assert_eq!(
+            tab.key(key(Code::Char('r')), &list, &mut Nowhere),
+            Asked::OpenResource("r-wiki".into())
+        );
+        // Back to the provisioner's page, which is asked again.
+        assert_eq!(
+            tab.key(key(Code::Esc), &list, &mut Nowhere),
+            Asked::Open("docker/container".into())
+        );
+        assert!(
+            tab.page
+                .as_ref()
+                .is_some_and(|page| page.resource.is_none())
+        );
     }
 }

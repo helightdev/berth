@@ -2,7 +2,7 @@
   "name": "berth-plugin-docker",
   "version": "0.2.0",
   "displayName": "Docker",
-  "description": "Creates a long-running Ubuntu container with systemd and SSH, to be set up like any other machine.",
+  "description": "Creates a long-running Ubuntu container with systemd and SSH, to be set up like any other machine, and runs Compose projects as deployments.",
   "license": "MIT OR Apache-2.0",
   "keywords": [
     "berth-plugin"
@@ -17,7 +17,7 @@
       {
         "id": "container",
         "label": "Docker container",
-        "description": "An Ubuntu 26.04 container with systemd and an SSH server, on the local Docker or on the engine named by host. berth applies its role to it over SSH.",
+        "description": "An Ubuntu 26.04 container with systemd and an SSH server, on the local Docker or on the engine named by host. berth applies its role to it over SSH. It also runs Compose projects there as deployments.",
         "command": "bin/provision",
         "protocol": 2,
         "verbs": ["list"],
@@ -39,6 +39,20 @@
               {"name": "cpus", "label": "CPUs", "default": "", "kind": "resource", "help": "How many CPUs the container may use, such as 4. Empty sets no limit."},
               {"name": "memory", "label": "Memory", "default": "", "kind": "resource", "help": "How much memory the container may use, such as 8g. Empty sets no limit."},
               {"name": "keep_volume", "label": "Keep volume on destroy", "default": "no", "values": ["no", "yes"], "help": "Whether deleting the machine keeps its volume, so a new machine can take the agent's work over."}
+            ]
+          },
+          {
+            "id": "deployment",
+            "label": "Compose project",
+            "verbs": ["start", "stop", "change", "logs"],
+            "spec": {"format": "compose", "label": "Compose file"},
+            "arguments": [
+              {"name": "keep_volumes", "label": "Keep volumes on remove", "default": "no", "values": ["no", "yes"], "help": "Whether removing the deployment keeps the named volumes of its project. no removes them with what is in them."}
+            ],
+            "actions": [
+              {"name": "services", "label": "Services", "group": "Compose", "changes": false, "help": "Each container of the project, with its service and its state."},
+              {"name": "restart", "label": "Restart", "group": "Compose", "confirm": "Restart every container of this deployment?", "help": "Restart the project's containers as they are, without reading the Compose file again."},
+              {"name": "pull", "label": "Pull and update", "group": "Compose", "confirm": "Pull the images of this deployment and recreate the containers whose image changed?", "help": "Pull the images the Compose file names, then bring the project up again, so containers whose image changed are recreated."}
             ]
           }
         ],

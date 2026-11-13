@@ -4,9 +4,9 @@ description: Have a plugin create the machine for a saved host on Docker, Incus 
 icon: Boxes
 ---
 
-A provisioner is a program that comes with a plugin. It creates the machine a host's profile describes, such as a container or a virtual machine. berth runs it and keeps the machine's id in its store beside the profile. From then on the machine is an ordinary host.
+A provisioner is a program that comes with a plugin. It creates the machine a host's profile describes, such as a container or a virtual machine. berth runs it and keeps a record of the machine in its store, as a [resource](/docs/deploy/resources). From then on the machine is an ordinary host. Some provisioners make other kinds of resources too, such as the [deployments](/docs/deploy/deployments) of the Docker plugin.
 
-A provisioner is also a place of its own, with a page that says whether the platform answers and lists the machines berth made there. The actions on that page come from the plugin, such as listing images or removing what berth left behind.
+A provisioner is also a place of its own, with a page that says whether the platform answers and lists what berth made there. The actions on that page come from the plugin, such as listing images or removing what berth left behind.
 
 Each host has at most one machine made this way. See which provisioners you have, and whether each can be used here:
 
@@ -52,7 +52,10 @@ Machines berth made  1
 Settings  host=ssh://ops@192.0.2.10
 
 Machines berth made with it
-  studio-2         berth-studio-2  running
+  studio-2         berth-studio-2  running · r-k3q7wz2m
+
+Compose project berth made with it
+  notes            notes  running · r-p5x2hd7a
 
 Actions (berth provisioner docker/container run ACTION)
   Engine
@@ -74,7 +77,7 @@ berth asks the provisioner how it is each time. The lines under the state are wh
 | `unreachable` | It did not answer, as when the engine or server is down. The message says why |
 | `unusable` | berth does not ask it: a secret or a setting is missing, or the plugin is of an older version |
 
-The machines are those berth has a record of, with the state the provisioner lists for each. One the provisioner lists with berth's labels, but that berth has no record of, is marked *berth has no record of it*. berth does not delete it.
+What berth made is listed by kind, each with berth's id of the resource and the state the provisioner lists for it. One the provisioner lists with berth's labels, but that berth has no record of, is marked *berth has no record of it*. berth does not delete it. [Resources](/docs/deploy/resources) says how to look after each one.
 
 ### Settings
 
@@ -98,7 +101,7 @@ berth provisioner docker/container run prune volumes=yes
 
 In a terminal, `run` prompts for a required argument you leave out. It puts the action's question first, unless `--yes` is given. An action that only reads, such as `images`, answers at once. One that changes something runs as a job and shows its output as it comes. Only one such job runs at a time for a provisioner.
 
-In the terminal UI, the **Provisioners** tab of the home screen (`6`) lists the provisioners. Enter opens a page, which lists the actions in their groups and the machines. Enter on an action shows its question and then a dialog for its arguments. A job's output fills a panel. The page of [`berth serve --web`](/docs/use/server#in-a-browser) has the same tab.
+In the terminal UI, the **Provisioners** tab of the home screen (`2`) lists the provisioners. Enter opens a page, which lists the actions in their groups and what berth made there, by kind. Enter on an action shows its question and then a dialog for its arguments. A job's output fills a panel. Enter on something berth made opens its [resource's page](/docs/deploy/resources#in-the-terminal-ui), and Esc comes back. The page of [`berth serve --web`](/docs/use/server#in-a-browser) has the same tab.
 
 ## Seed and apply
 
@@ -168,31 +171,34 @@ Only one thing runs at a time for a host. A second command for the same host is 
 
 ## Look after the machine
 
+The machine is a [resource](/docs/deploy/resources) of the kind `machine`. `berth instance HOST` shows it by the host's name, as `berth resource ID` does:
+
 ```bash
 berth instance studio-2
 ```
 
 ```text
-studio-2  incus/vm  berth-studio-2
+r-k3q7wz2m  machine studio-2 of incus/vm
 State      running
+Made as    berth-studio-2
+Host       studio-2
 Address    192.0.2.31
 Created    2026-11-12T20:14:03Z
-Arguments  cpus=8 disk=60GiB image=ubuntu/26.04/cloud memory=8GiB network= pool=default project=default server=https://192.0.2.10:8443
-Can        berth instance studio-2 start|stop|destroy
+Asked      2026-11-13T08:02:11Z
+Arguments  cpus=8 disk=60GiB image=ubuntu/26.04/cloud memory=8GiB pool=default project=default server=https://192.0.2.10:8443
+
+Actions (berth resource r-k3q7wz2m run ACTION)
+  start              Start
+  stop               Stop
+  change             Change
+  remove             Delete the machine
+
+Its log: berth resource r-k3q7wz2m logs [--follow]
 ```
 
-The state comes from the provisioner each time you ask.
+The state comes from the provisioner each time you ask. A machine the platform no longer has is `missing`, and its record stays until you delete it through berth ([States](/docs/deploy/resources#states)).
 
-| State | Means |
-| --- | --- |
-| `running`, `stopped` | What the provisioner reports |
-| `gone` | The platform no longer has the machine |
-| `creating` | A command is creating it now |
-| `unknown` | The provisioner did not answer. A `Problem` line says why |
-
-`berth instance HOST start` and `stop` work only when the provisioner offers them. The list above says which. The Run tab shows the machine's state and a **Start machine** and **Stop machine** row in the same cases, whatever install method is chosen.
-
-`berth provisioners PLUGIN/ID [NAME=VALUE…]` lists the machines that provisioner has and berth made, such as `berth provisioners incus/vm server=https://192.0.2.10:8443`. It works for provisioners that offer `list`.
+`berth instance HOST start` and `stop` work only when the provisioner offers them. The actions above say which. The Run tab shows the machine's state and a **Start machine** and **Stop machine** row in the same cases, whatever install method is chosen.
 
 ## When it fails
 
@@ -201,9 +207,9 @@ What happens depends on how far it got.
 | It failed | What is left | To go on |
 | --- | --- | --- |
 | Before the provisioner gave an id | A record with a token, and perhaps a machine | `berth provision` again with the same provisioner. The provisioner finds the machine by the token and does not make a second one |
-| After it gave one, such as a boot that did not finish or a failed apply | The machine and its record. The message says so | Fix the cause and wait, or `berth apply HOST` for a failed apply. `berth instance HOST destroy` deletes the machine to start again |
+| After it gave one, such as a boot that did not finish or a failed apply | The machine and its record. The message says so | Fix the cause and wait, or `berth apply HOST` for a failed apply. `berth resource ID remove` deletes the machine to start again |
 
-A record without a machine is shown with a problem that says creating it did not end. Asking for a different provisioner while it exists is refused. `berth instance HOST destroy` then forgets the record only. A machine the provisioner made anyway is not deleted.
+A record without a machine is shown with a problem that says creating it did not end. Asking for a different provisioner while it exists is refused. `berth resource ID remove` then forgets the record only. A machine the provisioner made anyway is not deleted.
 
 ## Delete the machine
 
@@ -211,7 +217,7 @@ A record without a machine is shown with a problem that says creating it did not
 berth instance studio-2 destroy
 ```
 
-berth asks you to type the host's name. `--yes` skips that. It runs the provisioner's `destroy` with the id it kept, never another, and then removes the record. A machine that is gone already counts as deleted. If deleting fails, the record stays so you can try again.
+berth asks you to type the host's name. `--yes` skips that. `berth resource ID remove` does the same and asks yes or no. It runs the provisioner's `destroy` with the id it kept, never another, and then removes the record. A machine that is gone already counts as deleted. If deleting fails, the record stays so you can try again.
 
 The profile stays. The host's node on the tailnet is not removed. Remove it in the tailnet's admin console.
 
@@ -219,13 +225,16 @@ Deleting needs the provisioner's plugin and its required secrets. Removing a hos
 
 ## With a berth server
 
-With a [berth server](/docs/use/server) set, the server creates the machines. Its commands and the set-up tabs go to the server, and the provisioner runs on the server's machine with the server's plugins, secrets and provisioner settings. Creating and deleting are jobs there, named `provision` and `unprovision`, and their output follows as for an apply. An action of a provisioner that changes something is a job there too, of the subject `provisioner:PLUGIN/ID`.
+With a [berth server](/docs/use/server) set, the server creates the machines. Its commands and the set-up tabs go to the server, and the provisioner runs on the server's machine with the server's plugins, secrets and provisioner settings. Creating and deleting a machine are jobs there of the subject `resource:ID`, named `create` and `remove`, and their output follows as for an apply. An action of a provisioner that changes something is a job there too, of the subject `provisioner:PLUGIN/ID`.
 
 | What | Role |
 | --- | --- |
 | The list, a provisioner's page and its actions | `view` |
-| An action | Its own: `admin` for one that changes something, `view` for one that only reads, unless the plugin says otherwise |
-| A host's machine: create, look, start, stop, delete | `admin` |
+| An action of a provisioner | Its own: `admin` for one that changes something, `view` for one that only reads, unless the plugin says otherwise |
+| Looking at what it made | `view` |
+| Creating, changing, starting, stopping and deleting what it made | `admin` |
+
+[Resources](/docs/deploy/resources#with-a-berth-server) lists the operations with their roles.
 
 A server with `serve_setup off` does not take set-up over the network, only on its own socket ([Closing set-up](/docs/extend/serve#closing-set-up)).
 
@@ -243,7 +252,9 @@ The documentation site does not show the guides of these plugins. Each is a `gui
 
 ### Docker
 
-`docker/container` makes an Ubuntu 26.04 container with systemd and an SSH server on the local Docker or on the engine named by `host`, such as `ssh://ops@192.0.2.10`. berth applies the profile to it over SSH. The container is named `berth-HOST` and has the labels `berth-host` and `berth-instance`. It offers `start`, `stop` and `list`, and takes no secrets.
+`docker/container` makes an Ubuntu 26.04 container with systemd and an SSH server on the local Docker or on the engine named by `host`, such as `ssh://ops@192.0.2.10`. berth applies the profile to it over SSH. The container is named `berth-HOST` and has the labels `berth-host` and `berth-instance`. It offers `start`, `stop`, `change`, `logs` and `list`, and takes no secrets.
+
+The same provisioner runs Compose projects on that engine as [deployments](/docs/deploy/deployments).
 
 | Action | Does |
 | --- | --- |
@@ -261,7 +272,7 @@ berth provision studio-2 docker/container runtime=sysbox
 
 ### Incus
 
-`incus/vm` makes a virtual machine and `incus/container` a system container on an Incus server. Both are set up from the cloud seed, and the plugin puts the release archive into the machine. The profile does without a `release_url`. They offer `start`, `stop` and `list`.
+`incus/vm` makes a virtual machine and `incus/container` a system container on an Incus server. Both are set up from the cloud seed, and the plugin puts the release archive into the machine. The profile does without a `release_url`. They offer `start`, `stop`, `change`, `logs` and `list`.
 
 berth talks to the Incus API over HTTPS. `server` is required, as a setting or for each machine. Incus must trust a certificate of berth, which you store as the secrets `incus_client_cert` and `incus_client_key`. The secret `incus_server_cert` is optional and pins the server's own certificate. `plugins/incus/guide.md` shows how to make and trust the certificate.
 

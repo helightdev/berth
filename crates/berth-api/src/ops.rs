@@ -292,27 +292,26 @@ pub static SERVE: &[Op] = &[
         ),
         Role::View,
     ),
-    admin(call(
-        "provisioners.instances",
-        "GET",
-        "/v1/provisioners/{plugin}/{id}/instances",
-    )),
-    admin(call(
-        "instances.create",
-        "POST",
-        "/v1/hosts/{name}/instance",
-    )),
-    admin(call("instances.get", "GET", "/v1/hosts/{name}/instance")),
-    admin(call(
-        "instances.power",
-        "POST",
-        "/v1/hosts/{name}/instance/{verb}",
-    )),
-    admin(call(
-        "instances.destroy",
-        "DELETE",
-        "/v1/hosts/{name}/instance",
-    )),
+    call("resources.list", "GET", "/v1/resources"),
+    admin(call("resources.create", "POST", "/v1/resources")),
+    call("resources.get", "GET", "/v1/resources/{id}"),
+    admin(call("resources.change", "PUT", "/v1/resources/{id}")),
+    admin(call("resources.remove", "DELETE", "/v1/resources/{id}")),
+    call("resources.actions", "GET", "/v1/resources/{id}/actions"),
+    // Anyone let in may ask; the action's own role is checked when it is run.
+    role(
+        call(
+            "resources.act",
+            "POST",
+            "/v1/resources/{id}/actions/{action}",
+        ),
+        Role::View,
+    ),
+    role(
+        call("resources.logs", "GET", "/v1/resources/{id}/logs"),
+        Role::Operate,
+    ),
+    stream("resources.follow", "/v1/resources/{id}/logs"),
     call("jobs.list", "GET", "/v1/jobs"),
     call("jobs.get", "GET", "/v1/jobs/{id}"),
     role(stream("jobs.follow", "/v1/jobs/{id}"), Role::View),
@@ -440,7 +439,11 @@ mod tests {
         assert_eq!(role(SERVE, "hosts.act"), Role::View);
         assert_eq!(role(SERVE, "provisioners.get"), Role::View);
         assert_eq!(role(SERVE, "provisioners.act"), Role::View);
-        assert_eq!(role(SERVE, "provisioners.instances"), Role::Admin);
+        assert_eq!(role(SERVE, "resources.get"), Role::View);
+        assert_eq!(role(SERVE, "resources.create"), Role::Admin);
+        assert_eq!(role(SERVE, "resources.act"), Role::View);
+        assert_eq!(role(SERVE, "resources.logs"), Role::Operate);
+        assert_eq!(role(SERVE, "resources.follow"), Role::Operate);
         let (op, args) = recognise(
             SERVE,
             Kind::Call,

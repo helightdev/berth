@@ -45,7 +45,15 @@ berth host add dock 192.0.2.4 --user ops
 | `--level LEVEL` | `reachable` | The level it is meant to have |
 | `--no-contact` | | Save it without logging in |
 
-After saving the host, berth logs in the way [first contact](/docs/use/accounts#first-contact) does. It tries its own key, and if the machine refuses it, it asks for a password or a private key that logs in once to install the key. It records the host's SSH host key. With a [berth server](/docs/use/server) set, the host is saved on the server, which logs in with its own keys.
+After saving the host, berth logs in the way [first contact](/docs/use/accounts#first-contact) does. It tries its own key, and if the machine refuses it, it asks for a password or a private key that logs in once to install the key. It records the host's SSH host key and prints its fingerprint. When your `~/.ssh/known_hosts` knows the address, berth takes the host key from there. With a [berth server](/docs/use/server) set, the host is saved on the server, which logs in with its own keys.
+
+Then berth asks the host what it is. A machine that berth set up before, such as a workstation added again by its address, has a controller that says its level. If that level is higher than the one `--level` gave, berth offers to save it, and without a terminal it prints the command:
+
+```bash
+berth host level dock workstation
+```
+
+`berth host level HOST LEVEL` only changes the profile here. For a workstation, check its set-up and then apply it.
 
 In the terminal UI, create a host on the home screen, choose **Existing host over SSH** on the **Install** tab and set **Level**. Below a workstation, the address and the login are all the set-up asks for. **Run** then installs the controller for a controller host and saves a reachable one. The browser page does the same through the server.
 
@@ -68,6 +76,8 @@ berth host install dock
 The controller is berthd and box with the files they read, from the same part of the role that a full apply runs. Nothing else of a workstation is installed: no accounts, desktop, agents or plugins. The SSH user is the account sessions run as, and its home is where the file calls may go. The host's level becomes `controller`, and its tasks are status, update, reboot and secrets.
 
 The same is the host's action **Install the controller** on its overview, in the browser page and over the API as `install-controller`. On a controller host it's called **Update the controller**: run it after updating berth, as berth's own version is all such a host is compared with. A workstation's controller comes with applying its configuration, so the action is not offered there.
+
+berth also refuses it on a host that is a workstation whatever its profile here says. It asks the host's controller first. The role checks again on the host before it changes anything. It stops when the host's record says workstation. It also stops when berthd there serves an account other than the SSH user. Installing the controller alone on such a host would take the workstation's controller apart. The overview and `berth tasks` say when a host is more than its profile, and how to adopt it.
 
 <Callout type="warn" title="A host without systemd">
   On a host with systemd the controller is a service that starts at boot. Without systemd, as in most containers, the controller is installed but nothing on the host starts it. berth says so and waits a minute for it to answer. The install fails when it doesn't. Something on the host then has to run `/usr/local/bin/berthd`, as the init of a container can.

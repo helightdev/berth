@@ -217,7 +217,8 @@ fn registry_rows(data: &Data) -> Vec<(RegistryRow, Line<'static>)> {
 
 #[derive(Default)]
 pub struct Home {
-    selected: [usize; 3],
+    /// The selected row of each tab after Hosts that keeps its own, by its index.
+    selected: [usize; 5],
     pub editor: Option<Input>,
     /// A removal waits for a second x.
     armed: bool,
@@ -245,11 +246,11 @@ enum SettingsRow {
 }
 
 /// The tabs after Hosts, in their order.
-pub const SETTINGS: usize = 0;
-pub const REGISTRIES: usize = 1;
-pub const SECRETS: usize = 2;
-pub const PLUGINS: usize = 3;
-pub const PROVISIONERS: usize = 4;
+pub const PROVISIONERS: usize = 0;
+pub const SETTINGS: usize = 1;
+pub const REGISTRIES: usize = 2;
+pub const SECRETS: usize = 3;
+pub const PLUGINS: usize = 4;
 
 fn cycle(all: &[&str], current: &str) -> String {
     let index = all
@@ -342,6 +343,13 @@ impl Home {
                 action,
                 values,
             } => admin.provisioner_act(&provisioner, &action, &values, (24, 80)),
+            provisioners::Asked::OpenResource(id) => admin.resource(&id),
+            provisioners::Asked::RunResource {
+                resource,
+                action,
+                values,
+            } => admin.resource_act(&resource, &action, &values, (24, 80)),
+            provisioners::Asked::Logs(id) => admin.resource_logs(&id, (24, 80)),
             provisioners::Asked::Other => {}
         }
         None

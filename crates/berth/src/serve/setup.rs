@@ -137,15 +137,15 @@ pub async fn save_profile(
 pub async fn remove_host(State(state): App, Path(name): Path<String>) -> Answer<Json<Done>> {
     let (place, _) = saved_profile(&state, &name)?;
     // Without its record nobody could delete the machine any more.
-    if let Some(record) = provision::Record::load_at(&state.paths, &place)
+    if let Some(kept) = berth_core::resource::of_place(&state.paths, &place)
         .map_err(internal)?
-        .filter(|record| !record.id.is_empty())
+        .filter(|kept| !kept.record.external_id.is_empty())
     {
         return Err(Fail::new(
             code::CONFLICT,
             format!(
-                "{name} has a machine berth created, {} of {}. Delete it first: berth instance {name} destroy",
-                record.id, record.provisioner
+                "{name} has a machine berth created, {} of {}. Delete it first: berth resource {} remove",
+                kept.record.external_id, kept.record.provisioner, kept.record.id
             ),
         ));
     }

@@ -5,10 +5,13 @@
 
 use crate::Result;
 use crate::commands::{follow_job, parse_arguments, ready};
-use berth_api::{self as api, Act, Action, ProvisionerInfo, ProvisionerState};
+use berth_api::{
+    self as api, Act, Action, NewResource, ProvisionerInfo, ProvisionerState, Resource,
+    ResourceSecret,
+};
 use berth_core::{
     paths::Paths,
-    provision, provisioner, registry,
+    provision, provisioner, registry, resource,
     runner::{self, Request, Subject, Work},
     server::Server,
 };
@@ -169,6 +172,299 @@ impl Source {
     }
 }
 
+/// What an action of a resource is given: its arguments, and for `change`
+/// a new specification and other secrets.
+#[derive(Debug, Clone, Default)]
+pub struct Change {
+    pub arguments: BTreeMap<String, String>,
+    pub spec: Option<String>,
+    pub secrets: Option<Vec<ResourceSecret>>,
+}
+
+/// The text of an answer that is the bytes of a page, as the portal gives them.
+fn text_of(answer: &Value) -> String {
+    match answer {
+        Value::String(text) => text.clone(),
+        other => other["base64"]
+            .as_str()
+            .and_then(api::unb64)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_default(),
+    }
+}
+
+impl Source {
+    /// The resources kept, narrowed by provisioner, kind and host.
+    pub fn resources(
+        &self,
+        provisioner: Option<&str>,
+        kind: Option<&str>,
+        host: Option<&str>,
+    ) -> Result<Vec<Resource>> {
+        match self {
+            Source::Here(paths) => resource::listed(paths, provisioner, kind, host),
+            Source::Server(server) => {
+                let mut asked = json!({});
+                for (key, value) in [("provisioner", provisioner), ("kind", kind), ("host", host)] {
+                    if let Some(value) = value {
+                        asked[key] = json!(value);
+                    }
+                }
+                Ok(serde_json::from_value(server.call(
+                    "resources.list",
+                    asked,
+                    None,
+                )?)?)
+            }
+        }
+    }
+
+    /// The id of a resource given by its id or by a name only it has.
+    pub fn resolve(&self, given: &str) -> Result<String> {
+        if resource::valid_id(given) {
+            return Ok(given.to_owned());
+        }
+        let named: Vec<Resource> = self
+            .resources(None, None, None)?
+            .into_iter()
+            .filter(|known| known.name == given)
+            .collect();
+        match named.as_slice() {
+            [one] => Ok(one.id.clone()),
+            [] => Err(format!("No resource {given}. See: berth resource").into()),
+            _ => Err(format!(
+                "Several resources are called {given}: name one by its id ({})",
+                named
+                    .iter()
+                    .map(|known| known.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+            .into()),
+        }
+    }
+
+    /// One resource, as its provisioner says it is now.
+    pub fn resource(&self, id: &str) -> Result<Resource> {
+        match self {
+            Source::Here(paths) => resource::status(
+                paths,
+                &registry::Store::new(paths)?,
+                id,
+                &Default::default(),
+            ),
+            Source::Server(server) => Ok(serde_json::from_value(server.call(
+                "resources.get",
+                json!({"id": id}),
+                None,
+            )?)?),
+        }
+    }
+
+    pub fn resource_actions(&self, id: &str) -> Result<Vec<Action>> {
+        match self {
+            Source::Here(paths) => {
+                let kept = resource::find(paths, id)?;
+                Ok(resource::actions(
+                    paths,
+                    &registry::Store::new(paths)?,
+                    &kept,
+                ))
+            }
+            Source::Server(server) => Ok(serde_json::from_value(server.call(
+                "resources.actions",
+                json!({"id": id}),
+                None,
+            )?)?),
+        }
+    }
+
+    /// Follow a job of the berth server to its end, its output to `out`.
+    fn follow(
+        server: &Server,
+        job: &str,
+        out: &mut dyn Write,
+        progress: &mut dyn Write,
+    ) -> Result<i32> {
+        let _ = writeln!(progress, "Job {job} on the berth server at {}", server.url);
+        berth_core::link::runtime()?.block_on(async {
+            let portal = server.portal().await?;
+            follow_job(&portal, job, out).await
+        })
+    }
+
+    /// Create a resource: its record, and how its making ended.
+    pub fn create(
+        &self,
+        asked: &NewResource,
+        out: &mut dyn Write,
+        progress: &mut dyn Write,
+    ) -> Result<(Resource, i32)> {
+        match self {
+            Source::Here(paths) => {
+                let store = registry::Store::new(paths)?;
+                let mut creating = match resource::prepare(paths, &store, asked)? {
+                    resource::Asked::Again(kept) => {
+                        let plugins = provision::list_plugins(paths);
+                        let _ = writeln!(progress, "It was asked for with this token before");
+                        return Ok((resource::info(&kept, &plugins, false), 0));
+                    }
+                    resource::Asked::New(creating) => creating,
+                };
+                let kept = creating.kept().clone();
+                let mut request = Request::new(kept.subject(), "create");
+                request.held = creating.take_lock();
+                request.secrets = creating.secrets();
+                let held = paths.clone();
+                let work = Work::Function(Box::new(move |out| {
+                    let done = creating.run(&held, &store, &Default::default(), out);
+                    if let Err(error) = &done {
+                        let _ = writeln!(out, "✗ {error}");
+                    }
+                    done.is_ok()
+                }));
+                let code = runner::here(paths, request, work, out)?.unwrap_or(1);
+                let plugins = provision::list_plugins(paths);
+                let kept = resource::find(paths, kept.id()).unwrap_or(kept);
+                Ok((resource::info(&kept, &plugins, false), code))
+            }
+            Source::Server(server) => {
+                let created: api::Created = serde_json::from_value(server.call(
+                    "resources.create",
+                    Value::Null,
+                    Some(serde_json::to_value(asked)?),
+                )?)?;
+                let code = Source::follow(server, &created.job.id, out, progress)?;
+                Ok((created.resource, code))
+            }
+        }
+    }
+
+    /// Run an action of a resource. A job's output goes to `out` as it
+    /// comes; the provisioner's progress for one that only reads to `progress`.
+    pub fn resource_run(
+        &self,
+        id: &str,
+        action: &str,
+        given: Change,
+        out: &mut dyn Write,
+        progress: &mut dyn Write,
+    ) -> Result<Ran> {
+        match self {
+            Source::Here(paths) => {
+                let store = registry::Store::new(paths)?;
+                let given = resource::Given {
+                    arguments: given.arguments,
+                    spec: given.spec,
+                    secrets: given.secrets,
+                };
+                let mut acting = resource::prepare_action(paths, &store, id, action, &given)?;
+                let options = provision::Options::default();
+                if !acting.changes() {
+                    let answered = acting.run(paths, &options, progress)?;
+                    return Ok(Ran::Answered(answered.value()));
+                }
+                let mut request = Request::new(acting.kept().subject(), action);
+                request.held = acting.take_lock();
+                request.secrets = acting.secrets();
+                let held = paths.clone();
+                let work = Work::Function(Box::new(move |out| {
+                    match acting.run(&held, &options, out) {
+                        Ok(answered) => {
+                            for line in answered.lines() {
+                                let _ = writeln!(out, "{line}");
+                            }
+                            true
+                        }
+                        Err(error) => {
+                            let _ = writeln!(out, "✗ {error}");
+                            false
+                        }
+                    }
+                }));
+                let code = runner::here(paths, request, work, out)?;
+                Ok(Ran::Ended(code.unwrap_or(1)))
+            }
+            Source::Server(server) => {
+                let acted = match action {
+                    resource::CHANGE => server.call(
+                        "resources.change",
+                        json!({"id": id}),
+                        Some(serde_json::to_value(api::ResourceChange {
+                            arguments: given.arguments,
+                            spec: given.spec,
+                            secrets: given.secrets,
+                            token: None,
+                        })?),
+                    )?,
+                    resource::REMOVE => server.call("resources.remove", json!({"id": id}), None)?,
+                    _ => server.call(
+                        "resources.act",
+                        json!({"id": id, "action": action}),
+                        Some(serde_json::to_value(Act {
+                            arguments: given.arguments,
+                            ..Act::default()
+                        })?),
+                    )?,
+                };
+                let acted: api::Acted = serde_json::from_value(acted)?;
+                let Some(job) = acted.job else {
+                    return Ok(Ran::Answered(acted.result.unwrap_or(Value::Null)));
+                };
+                Ok(Ran::Ended(Source::follow(server, &job.id, out, progress)?))
+            }
+        }
+    }
+
+    /// A resource's log to `out`: the last `tail` lines, and with `follow`
+    /// what comes after.
+    pub fn logs(&self, id: &str, tail: u32, follow: bool, out: &mut dyn Write) -> Result<()> {
+        match self {
+            Source::Here(paths) => {
+                let limit = match follow {
+                    true => std::time::Duration::from_secs(24 * 60 * 60),
+                    false => std::time::Duration::from_secs(60),
+                };
+                resource::logs(
+                    paths,
+                    &registry::Store::new(paths)?,
+                    id,
+                    tail,
+                    follow,
+                    limit,
+                    out,
+                )
+            }
+            Source::Server(server) if !follow => {
+                let answer =
+                    server.call("resources.logs", json!({"id": id, "tail": tail}), None)?;
+                out.write_all(text_of(&answer).as_bytes())?;
+                Ok(())
+            }
+            Source::Server(server) => berth_core::link::runtime()?.block_on(async {
+                let portal = server.portal().await?;
+                let mut stream = portal
+                    .open("resources.follow", None, json!({"id": id, "tail": tail}))
+                    .await?;
+                while let Some(piece) = stream.recv().await {
+                    match piece? {
+                        api::portal::Piece::Binary(data) => {
+                            out.write_all(&data)?;
+                            out.flush()?;
+                        }
+                        api::portal::Piece::Text(said) => {
+                            if let Some(error) = said["error"].as_str() {
+                                return Err(error.to_owned().into());
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }),
+        }
+    }
+}
+
 /// The line a provisioner has in the list: its name, and why it cannot be
 /// used here when it cannot.
 pub fn summary(provisioner: &ProvisionerInfo) -> String {
@@ -214,23 +510,49 @@ pub fn describe(state: &ProvisionerState, actions: &[Action]) -> String {
             .collect();
         text += &format!("Settings  {}\n", set.join(" · "));
     }
-    text += "\nMachines berth made with it\n";
-    if state.machines.is_empty() {
-        text += "  none\n";
+    let mut kinds: Vec<&str> = vec![];
+    for held in &state.resources {
+        if !kinds.contains(&held.kind.as_str()) {
+            kinds.push(&held.kind);
+        }
     }
-    for machine in &state.machines {
-        let mut notes = vec![];
-        if !machine.state.is_empty() {
-            notes.push(machine.state.clone());
+    if kinds.is_empty() {
+        text += "\nWhat berth made with it\n  none\n";
+    }
+    for kind in kinds {
+        let label = info
+            .kinds
+            .iter()
+            .find(|known| known.id == kind)
+            .map(|known| known.label.as_str())
+            .filter(|label| !label.is_empty() && kind != "machine");
+        text += &format!(
+            "\n{} berth made with it\n",
+            match (kind, label) {
+                ("machine", _) => "Machines",
+                (_, Some(label)) => label,
+                (kind, None) => kind,
+            }
+        );
+        for held in state.resources.iter().filter(|held| held.kind == kind) {
+            let mut notes = vec![];
+            if !held.state.is_empty() {
+                notes.push(held.state.clone());
+            }
+            match held.resource.is_empty() {
+                true => notes.push("berth has no record of it".into()),
+                false => notes.push(held.resource.clone()),
+            }
+            let id = match held.id.as_str() {
+                "" => "(being made)",
+                id => id,
+            };
+            let name = match held.host.is_empty() {
+                true => &held.name,
+                false => &held.host,
+            };
+            text += &format!("  {name:<16} {id}  {}\n", notes.join(" · "));
         }
-        if !machine.recorded {
-            notes.push("berth has no record of it".into());
-        }
-        let id = match machine.id.as_str() {
-            "" => "(being made)",
-            id => id,
-        };
-        text += &format!("  {:<16} {id}  {}\n", machine.host, notes.join(" · "));
     }
     let mut groups: Vec<(&str, Vec<&Action>)> = vec![];
     for action in actions {
@@ -343,7 +665,7 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use berth_api::{Detail, MadeMachine};
+    use berth_api::{Detail, ListedResource};
 
     #[test]
     fn a_provisioners_page_says_how_it_is_what_it_made_and_what_it_can_do() {
@@ -361,18 +683,21 @@ mod tests {
                 label: "Kernel".into(),
                 value: "Linux 6.17".into(),
             }],
-            machines: vec![
-                MadeMachine {
-                    host: "studio".into(),
+            resources: vec![
+                ListedResource {
                     id: "berth-studio".into(),
+                    kind: "machine".into(),
+                    name: "studio".into(),
+                    host: "studio".into(),
                     state: "running".into(),
-                    recorded: true,
+                    resource: "r-studio".into(),
                 },
-                MadeMachine {
-                    host: "attic".into(),
+                ListedResource {
                     id: "berth-attic".into(),
-                    state: String::new(),
-                    recorded: false,
+                    kind: "machine".into(),
+                    name: "attic".into(),
+                    host: "attic".into(),
+                    ..ListedResource::default()
                 },
             ],
             ..Default::default()
@@ -398,7 +723,7 @@ mod tests {
             "State     ready · Incus 6.18 answers\n",
             "Kernel    Linux 6.17\n",
             "Settings  server=https://192.0.2.10:8443 · project not set\n",
-            "  studio           berth-studio  running\n",
+            "  studio           berth-studio  running · r-studio\n",
             "  attic            berth-attic  berth has no record of it\n",
             "Actions (berth provisioner incus/vm run ACTION)\n",
             "    pools              Storage pools\n",

@@ -2,13 +2,15 @@
 //! the host's set-up tabs show it: what there is to create it with and what
 //! the chosen one requires on the Install tab, the machine's size and the
 //! rest of its arguments on the Settings tab, and creating it, or the machine
-//! once there is one, on the Run tab. berth and its page in a browser ask for
-//! these and run the jobs each their own way.
+//! once there is one, on the Run tab. The machine is the host's resource of
+//! the machine kind, and starting, stopping and deleting it are its actions.
+//! berth and its page in a browser ask for these and run the jobs each their
+//! own way.
 
 use crate::fields::{Kind, Step};
 use crate::setup::{Entry, Problem, Row, value_line};
 use crate::theme;
-use berth_api::{Instance, Provision, ProvisionerInfo};
+use berth_api::{NewResource, ProvisionerInfo, Resource};
 use ratatui::{
     style::Style,
     text::{Line, Span},
@@ -37,7 +39,8 @@ pub enum Next {
     Edit(String),
     /// Ask the question in [`Machine::question`] first.
     Confirm,
-    Create(Provision),
+    /// Create the machine; the host is the caller's to fill in.
+    Create(NewResource),
     /// `start` or `stop`.
     Power(&'static str),
     Destroy,
@@ -50,8 +53,9 @@ pub struct Machine {
     /// They were asked for: the rows show what came back, or that it is awaited.
     pub asked: bool,
     pub provisioners: Option<Result<Vec<ProvisionerInfo>, String>>,
-    /// The machine berth created for the host; `None` inside when it has none.
-    pub instance: Option<Result<Option<Instance>, String>>,
+    /// The machine berth created for the host, the resource of the machine
+    /// kind whose host it is; `None` inside when it has none.
+    pub instance: Option<Result<Option<Resource>, String>>,
     /// The chosen provisioner, by `PLUGIN/ID`.
     pub chosen: Option<String>,
     /// What its arguments are given, by name.
@@ -60,10 +64,12 @@ pub struct Machine {
     pub question: Option<String>,
 }
 
-/// Whether an error of `instances.get` only says there is no machine: the
+/// Whether an error of asking for the machine only says there is none: the
 /// host has none, or the server has no such host yet.
 pub fn absent(error: &str) -> bool {
-    error.contains("has no machine that berth created") || error.starts_with("No host ")
+    error.contains("has no machine that berth created")
+        || error.starts_with("No host ")
+        || error.starts_with("No resource ")
 }
 
 /// How a provisioner sets the new machine up, in a few words.
@@ -148,7 +154,7 @@ impl Machine {
         }
     }
 
-    pub fn found(&mut self, instance: Result<Option<Instance>, String>) {
+    pub fn found(&mut self, instance: Result<Option<Resource>, String>) {
         // A machine there is was made by its provisioner, which is the chosen one then.
         if let Ok(Some(made)) = &instance {
             let id = made.provisioner.clone();
@@ -171,7 +177,7 @@ impl Machine {
     }
 
     /// The machine the host has, once that is known.
-    pub fn machine(&self) -> Option<&Instance> {
+    pub fn machine(&self) -> Option<&Resource> {
         match &self.instance {
             Some(Ok(Some(instance))) => Some(instance),
             _ => None,
@@ -330,7 +336,7 @@ impl Machine {
     }
 
     /// What creating the machine asks for, once nothing is in the way.
-    pub fn request(&self) -> Result<Provision, String> {
+    pub fn request(&self) -> Result<NewResource, String> {
         let provisioner = self.provisioner().ok_or("Choose a provisioner first")?;
         if let Some(problem) = self.problems().into_iter().next() {
             return Err(problem.text);
@@ -343,14 +349,16 @@ impl Machine {
                 (argument.name.clone(), value.trim().to_owned())
             })
             .collect();
-        Ok(Provision {
+        Ok(NewResource {
             provisioner: provisioner.id.clone(),
+            kind: "machine".into(),
             arguments,
+            ..NewResource::default()
         })
     }
 
     /// The actions the machine offers, beside what it is.
-    pub fn actions(instance: &Instance) -> Vec<Pick> {
+    pub fn actions(instance: &Resource) -> Vec<Pick> {
         let mut picks = vec![];
         for (verb, pick) in [("start", Pick::Start), ("stop", Pick::Stop)] {
             if instance.verbs.iter().any(|known| known == verb) {
@@ -479,10 +487,11 @@ impl Machine {
         let mut rows = vec![Row::heading("Machine")];
         let line = |label: &str, value: &str| Row::info(value_line(label, value, Kind::Text));
         rows.push(line("  Created with", &instance.provisioner));
-        rows.push(line("  Machine", &instance.id));
+        rows.push(line("  Machine", &instance.external_id));
+        rows.push(line("  Resource", &instance.id));
         let colour = match instance.state.as_str() {
             "running" => theme::GOOD,
-            "gone" => theme::BAD,
+            "missing" => theme::BAD,
             "stopped" => theme::MUTED,
             _ => theme::WARN,
         };
@@ -935,9 +944,10 @@ mod tests {
 
     #[test]
     fn a_machine_offers_what_its_provisioner_can_do() {
-        let mut instance = Instance {
+        let mut instance = Resource {
             provisioner: "lab/vm".into(),
-            id: "studio".into(),
+            id: "r-studio".into(),
+            external_id: "studio".into(),
             state: "running".into(),
             address: "192.0.2.20".into(),
             verbs: vec!["start".into(), "stop".into()],

@@ -8,6 +8,7 @@ mod picker;
 mod provisioner_command;
 mod provisioner_tab;
 mod remote;
+mod resource_command;
 mod serve;
 mod session;
 mod store_command;
@@ -37,6 +38,9 @@ Usage:
                              install berth's key there; it is reachable unless told
   berth host install HOST    install berth's controller alone on a host below a
                              workstation: sessions, tasks and files, no desktop
+  berth host level HOST reachable|controller|workstation
+                             say what the host is, as for one added by its address
+                             that berth set up before; nothing on the host changes
   berth iso HOST [--write /dev/sdX]
                              build the unattended installer; write it to a USB drive
   berth seed HOST            render the cloud-init seed
@@ -61,17 +65,24 @@ Usage:
   berth provisioners         what can create machines, and what each asks for
   berth provisioner          the provisioners, and whether each can be used here
   berth provisioner PLUGIN/ID [NAME=VALUE…]
-                             how it is now, the machines berth made with it, and its
+                             how it is now, what berth made with it, and its
                              actions; the values are of its own arguments, this once
   berth provisioner PLUGIN/ID actions
   berth provisioner PLUGIN/ID run ACTION [NAME=VALUE…] [--yes]
                              run one of its actions, such as settings, which keeps
                              where it is, or the plugin's own
-  berth provisioners PLUGIN/ID [NAME=VALUE…]
-                             the machines it has that berth created
+  berth resource [--provisioner PLUGIN/ID] [--kind KIND] [--host HOST]
+                             what provisioners made for berth: machines, deployments
+  berth resource ID          one of them as its provisioner says it is now
+  berth resource ID actions | run ACTION [NAME=VALUE…] [--yes] | remove [--yes]
+  berth resource ID logs [--tail N] [--follow]
+  berth resource ID change [--spec FILE|-] [--secret NAME[:VARIABLE]]… [NAME=VALUE…]
+  berth deploy NAME --provisioner PLUGIN/ID --spec FILE|- [--secret NAME[:VARIABLE]]…
+          [NAME=VALUE…]      a deployment from a specification, such as a Compose
+                             file; again with the same name gives it the new one
   berth provision HOST PLUGIN/ID [NAME=VALUE…] [--yes]
                              create the machine for a saved host and set it up
-  berth instance HOST        the machine berth created for the host, and its state
+  berth instance HOST        the host's machine, as its resource
   berth instance HOST start|stop
   berth instance HOST destroy [--yes]
                              delete the machine; the profile stays
@@ -250,6 +261,7 @@ fn opens_screen(args: &[&str]) -> bool {
         "plugins",
         "provisioners",
         "provisioner",
+        "resource",
         "inventory",
         "inbox",
         "kv",
@@ -273,6 +285,8 @@ fn loads_plugins(args: &[&str]) -> bool {
         "provisioner",
         "provision",
         "instance",
+        "resource",
+        "deploy",
         "seed",
         "iso",
         "publish",
@@ -637,6 +651,7 @@ fn run() -> Result<()> {
             return commands::add_host(&paths, name, address, rest);
         }
         ["host", "install", host] => return commands::install_controller(&paths, host),
+        ["host", "level", host, level] => return commands::set_level(&paths, host, level),
         ["host", host, ref rest @ ..] => return host_command(&paths, host, rest),
         ["--version" | "-V" | "version"] => {
             println!("berth {}", berth_api::VERSION);
@@ -728,13 +743,12 @@ fn run() -> Result<()> {
         ["remove", host] => return commands::remove(&paths, host),
         ["provisioners"] => return commands::provisioners(&paths),
         ["provisioner", ref rest @ ..] => return provisioner_command::command(&paths, rest),
-        ["provisioners", name, ref rest @ ..] => {
-            return commands::provisioner_instances(&paths, name, rest);
-        }
         ["provision", host, provisioner, ref rest @ ..] => {
-            return commands::provision(&paths, host, provisioner, rest);
+            return resource_command::provision(&paths, host, provisioner, rest);
         }
-        ["instance", host, ref rest @ ..] => return commands::instance(&paths, host, rest),
+        ["instance", host, ref rest @ ..] => return resource_command::instance(&paths, host, rest),
+        ["resource", ref rest @ ..] => return resource_command::command(&paths, rest),
+        ["deploy", name, ref rest @ ..] => return resource_command::deploy(&paths, name, rest),
         ["seed", host] if berth_core::server::Server::configured(&paths).is_some() => {
             return commands::seed(&paths, host);
         }

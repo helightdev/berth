@@ -51,11 +51,11 @@ enum Screen {
 /// The tabs of the home screen, for whoever may set the server up.
 const TABS: [&str; 6] = [
     "Hosts",
+    "Provisioners",
     "Settings",
     "Registries",
     "Secrets",
     "Plugins",
-    "Provisioners",
 ];
 
 /// What the server last said of its hosts.
@@ -492,6 +492,21 @@ impl App {
                 Arrived::ProvisionerPage(name, state, actions) => {
                     self.home.provisioners.opened(&name, state, actions);
                 }
+                Arrived::ResourcePage(id, seen, actions) => {
+                    if seen
+                        .as_ref()
+                        .is_err_and(|error| error.starts_with("No resource "))
+                    {
+                        // One that was removed takes its page back to its provisioner's.
+                        if let (Some(provisioner), Some(admin)) =
+                            (self.home.provisioners.back_from(&id), &self.admin)
+                        {
+                            admin.provisioner(&provisioner);
+                        }
+                    } else {
+                        self.home.provisioners.opened_resource(&id, seen, actions);
+                    }
+                }
                 Arrived::ProvisionerAnswer(name, said) => {
                     let lines = said.unwrap_or_else(|error| vec![format!("✗ {error}")]);
                     self.home.provisioners.answered(&name, lines);
@@ -539,7 +554,7 @@ impl App {
             browser::shown(&self.server)
         )));
         rows.push(Row::info(Line::styled(
-            format!("  {}", host::level_line(&self.host)),
+            format!("  {}", host::level_line(&self.name, &self.host)),
             Style::new().fg(theme::MUTED),
         )));
         let workstation = self.host.level == berth_api::HostLevel::Workstation;

@@ -178,7 +178,7 @@ The topic becomes `PLUGIN/TOPIC`. `keep` is the default for messages published t
 
 ## Writing a provisioner
 
-A provisioner is a program of a plugin that makes things on a platform: machines for saved hosts, and other kinds of things its plugin names. It also has actions of its own, such as listing images or freeing space. Its plugin lists it under `berth.provisioners`, next to `features`, and holds the executable. People use it with `berth provision HOST PLUGIN/ID` and `berth provisioner PLUGIN/ID` ([Provisioners](/docs/deploy/provisioners)). The plugins `docker` and `incus` in the berth source are examples.
+A provisioner is a program of a plugin that makes things on a platform: machines for saved hosts, and other kinds of things its plugin names. It also has actions of its own, such as listing images or freeing space. Its plugin lists it under `berth.provisioners`, next to `features`, and holds the executable. People use it with `berth provision HOST PLUGIN/ID`, `berth provisioner PLUGIN/ID` and `berth resource` ([Provisioners](/docs/deploy/provisioners), [Resources](/docs/deploy/resources)). The plugins `docker` and `incus` in the berth source are examples.
 
 ```json title="package.json"
 {
@@ -253,8 +253,27 @@ A kind:
     verbs: { type: 'string[]', description: 'Of start, stop, change and logs, the ones it answers for one of these. create, status and destroy are always required.' },
     arguments: { type: 'Argument[]', description: 'What making one takes, such as its CPUs and image.' },
     spec: { type: 'object', description: 'For a kind made from a specification: its format and label, such as {"format": "compose", "label": "Compose file"}.' },
+    actions: { type: 'Action[]', description: "What it can do to one of these, each run with the verb act. They are listed on the resource's page." },
   }}
 />
+
+A kind other than `machine` belongs to no host. The Docker plugin's `deployment` is one, made from a Compose file:
+
+```json
+{
+  "id": "deployment",
+  "label": "Compose project",
+  "verbs": ["start", "stop", "change", "logs"],
+  "spec": {"format": "compose", "label": "Compose file"},
+  "arguments": [{"name": "keep_volumes", "default": "no", "values": ["no", "yes"]}],
+  "actions": [
+    {"name": "services", "label": "Services", "group": "Compose", "changes": false},
+    {"name": "restart", "label": "Restart", "group": "Compose", "confirm": "Restart every container of this deployment?"}
+  ]
+}
+```
+
+berth keeps the specification and never reads it. People give it with `berth deploy` or `berth resource ID change --spec FILE` ([Deployments](/docs/deploy/deployments)).
 
 An action takes most fields of a [task's action](#actions):
 
@@ -269,8 +288,8 @@ It also takes these:
 
 | Field | Default | Means |
 | --- | --- | --- |
-| `changes` | `true` | `false` for one that only reads. It answers at once. One that changes something runs as a job of its own and holds the provisioner's lock |
-| `role` | `admin`, or `view` with `"changes": false` | The least [role](/docs/use/server#roles) that may run it through a berth server |
+| `changes` | `true` | `false` for one that only reads. It answers at once. One that changes something runs as a job of its own. It holds the provisioner's lock, or the resource's for an action of a kind |
+| `role` | `admin`. An action of the provisioner with `"changes": false` is `view` | The least [role](/docs/extend/serve#who-gets-in) that may run it through a berth server. An action of a kind is `admin` unless it says otherwise, even one that only reads |
 
 An action runs where berth runs, as the provisioner does, so it has no terminal and no user. An argument with `"secret": true` is not shown as it is typed and is masked in the job's output.
 
@@ -345,30 +364,34 @@ Every verb gets this:
 | `arguments` | The values of the arguments that apply, with defaults filled in. The provisioner's own come from what was given or from its settings. A verb about a machine also gets those of the machine kind |
 | `secrets` | The secrets it names that have a value |
 
-A verb about one machine also gets these. `status` without an `id`, `list` and `act` are about the provisioner and have none of them.
+A verb about one resource also gets these. `status` without an `id`, `list` and an action of the provisioner itself are about the provisioner and have none of them. An action of a kind is about one resource and has them.
 
 | Field | Value |
 | --- | --- |
-| `kind` | `machine` |
-| `name`, `host` | The host's name |
-| `labels` | `berth-host`, the host's name, and `berth-instance`, the token |
+| `kind` | `machine`, or the kind's id |
+| `name` | The resource's name. A machine's is the host's |
+| `host` | The host's name, for a machine |
+| `id` | The id `create` answered with, once it has |
+| `labels` | For a machine, `berth-host` with the host's name and `berth-instance` with the token. For another kind, `berth-resource` with berth's id of the resource and `berth-token` with the token |
 
-The verbs about a machine get the `arguments` that `create` was given, with defaults for any argument added since.
+The verbs about a resource get the `arguments` that `create` was given, with defaults for any argument added since. A resource of any other kind gets the provisioner's own arguments and its kind's.
 
 Each verb adds to it and answers like this:
 
 | Verb | Request adds | Answer |
 | --- | --- | --- |
-| `create` | `token`, and `seed` or `access` | `id`, and optionally `address` and `port` |
-| `status` | `id` | `state`: `running`, `stopped` or `gone`, and optionally `address` |
+| `create` | `token`. For a machine, `seed` or `access`. For another kind, `environment`, and `spec` when the kind has one | `id`, and optionally `address` and `port` |
+| `status` | `id` | `state`, which is `running`, `stopped` or `gone`, and optionally `address`. berth shows `gone` as `missing` |
 | `status` | nothing | The provisioner itself: `state` (`ready` unless it says otherwise), `message`, `details`, `values` |
 | `destroy`, `start`, `stop` | `id` | `{}` |
-| `change` | `id`, and the new values in `arguments` | `state` |
+| `change` | `id`, the new values in `arguments`, and `environment`. For a kind with a specification, `spec`: the new one, or the one berth has | `state` |
 | `logs` | `id`, `tail` and `follow` | The log on standard output, a line at a time, until it ends |
-| `list` | `kind` | `resources`, a list of `id`, `kind`, `name`, `host` and `state` |
-| `act` | `action`: its `name` and its `arguments` | `message`, and optionally `details` |
+| `list` | nothing | `resources`, a list of `id`, `kind`, `name`, `host` and `state`, of every kind |
+| `act` | `action`: its `name` and its `arguments`. For an action of a kind, also `environment`, and `spec` when the kind has one | `message`, and optionally `details` |
 
-`create` must answer with an `id`. berth keeps it, and every later verb uses that id. The `address` and `port` go into the profile's `access.address` and `access.port` when those are empty. Entries of `list` without an `id` are dropped, and so are those of another kind.
+`create` must answer with an `id`. berth keeps it, and every later verb uses that id. For a machine, the `address` and `port` go into the profile's `access.address` and `access.port` when those are empty. Entries of `list` without an `id` are dropped. An entry without a `kind` is a machine, and one without a `name` takes its `host` as its name.
+
+`spec` is the specification as the person gave it, as text. `environment` maps variables to the values of the berth secrets the resource is given, such as `{"DB_PASSWORD": "…"}`. It is empty for a resource without secrets. Pass these values on only through the environment of the program that needs them, and berth masks them in your output as it does secrets.
 
 For `logs`, `tail` is how many of the last lines to give, and `follow` whether to go on with what comes after them.
 
@@ -442,7 +465,7 @@ A provisioner is run again after a crash or a timeout, and it works on machines 
 - **Destroy a machine that is gone.** `destroy` succeeds when there is nothing left to delete, and deletes only the machine with the `id` it is given.
 - **Leave alone what lacks berth's labels.** `list` shows, and `destroy`, `change` and the actions touch, only what has them. An action that frees space removes only what berth made.
 - **Write progress to standard error.** Standard output is for the answer.
-- **Take secrets from standard input only.** Never print them, and do not put them on a command line or in a file that stays after the command ends. berth hides secrets in the lines you write, but it cannot hide what you write elsewhere.
+- **Take secrets from standard input only.** That includes the values in `environment`. Never print them, and do not put them on a command line or in a file that stays after the command ends. berth hides secrets in the lines you write, but it cannot hide what you write elsewhere.
 
 ### Try it
 
@@ -466,7 +489,8 @@ Then create a machine for a saved host and delete it again:
 
 ```bash
 berth provision studio-2 lab/vm
-berth instance studio-2 destroy
+berth resource                       # the machine's id, such as r-k3q7wz2m
+berth resource r-k3q7wz2m remove
 ```
 
 Run `berth provision` a second time while the first has failed to check that it finds the same machine.

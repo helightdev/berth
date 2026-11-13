@@ -11,8 +11,8 @@ once the controller's files are there, as ci/host.sh says."""
 import json
 import unittest
 
-from harness import (HOST, OPERATOR, Workstation, hand_over_operator_key, needs_e2e, random_text, shell_quote,
-                     wait_for)
+from harness import (HOST, OPERATOR, Workstation, hand_over_operator_key, needs_e2e, provisioned, random_text,
+                     shell_quote, wait_for)
 
 # What the controller puts on the host, removed again at the end.
 INSTALLED = ('/usr/local/bin/berthd /usr/local/bin/box /usr/local/bin/devbox-desktop /usr/local/bin/devbox-secrets '
@@ -101,3 +101,30 @@ class Controller(unittest.TestCase):
         self.assertNotIn(value, sent.stdout + sent.stderr)
         env = self.root(f'cat /home/{OPERATOR}/.config/devbox/secrets.env').stdout
         self.assertIn(f'export CONTROLLER_TOKEN={value}', env)
+
+
+@needs_e2e
+class OnAWorkstation(unittest.TestCase):
+    """The controller alone is never put on a workstation berth set up, though
+    a profile saved here under another name says the host is less: on
+    `studio`, as provisioned() applied it."""
+
+    def test_a_workstation_added_again_as_reachable_keeps_its_controller(self):
+        station = provisioned()
+        files = 'cat /etc/berth/applied.json /etc/berth/berthd.json /etc/berth/tasks.json'
+        before = station.root_on_host(files).stdout
+        added = station.berth('host', 'add', 'adopted', HOST, '--user', OPERATOR, '--level', 'reachable', input='')
+        try:
+            # berth sees what the host is, and says how to adopt it.
+            self.assertIn('adopted is a workstation; its profile here says reachable', added.stdout)
+            self.assertIn('berth host level adopted workstation', added.stdout)
+            listed = station.berth('tasks', 'adopted').stdout
+            self.assertIn('adopted is a workstation; its profile here says reachable', listed)
+            self.assertRegex(listed, r'(?m)^  install-controller\s+.*take its controller apart')
+            refused = station.berth('host', 'install', 'adopted', check=False, timeout=600)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn('would take its controller apart', refused.stdout + refused.stderr)
+            self.assertEqual(station.root_on_host(files).stdout, before)
+            self.assertEqual(station.read_profile('adopted')['level'], 'reachable')
+        finally:
+            station.remove_host('adopted', check=False)

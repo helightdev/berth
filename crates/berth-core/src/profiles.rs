@@ -188,18 +188,26 @@ pub fn list(paths: &Paths, scope: &str) -> Result<Vec<(String, Value)>> {
         .collect())
 }
 
-/// Forget a host: its profile, its generated passwords, the record of its
-/// machine, what berth knows of its SSH and the passwords it keeps for
+/// Forget a host: its profile, its generated passwords, the record of a
+/// machine of it that was never made, what berth knows of its SSH and the passwords it keeps for
 /// logging in, in one change. A profile in a file is removed with the file.
 pub fn remove(paths: &Paths, place: &Place) -> Result<()> {
     let (scope, name) = place.side();
     let password = crate::keys::password_secret(place);
     let sudo = crate::keys::sudo_secret(place);
+    // The record of a machine that was never made goes with the host; a
+    // made one is refused before this.
+    let machine = crate::resource::of_place(paths, place)?
+        .map(|kept| kept.record.id)
+        .unwrap_or_default();
     let mut removals = vec![
         (kind::CREDENTIALS, scope.as_str(), name.as_str()),
-        (kind::INSTANCE, scope.as_str(), name.as_str()),
         (kind::ACCESS, scope.as_str(), name.as_str()),
     ];
+    if !machine.is_empty() {
+        removals.push((kind::RESOURCE, scope.as_str(), machine.as_str()));
+        removals.push((kind::SPEC, scope.as_str(), machine.as_str()));
+    }
     if scope == OWN || matches!(place, Place::File(_)) {
         removals.push((kind::SECRET, OWN, password.as_str()));
         removals.push((kind::SECRET, OWN, sudo.as_str()));

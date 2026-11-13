@@ -42,6 +42,7 @@ HOSTS = {
         'e2e_host',
         'e2e_secrets',
         'e2e_local',
+        'e2e_controller.OnAWorkstation',
         # extended(): three plugins and the tailnet, applied twice.
         'e2e_apply.Again',
         'e2e_plugins.Plugin',
@@ -69,11 +70,15 @@ HOSTS = {
     # The bare host first: the ways berth logs in, and berth's controller
     # alone, which leave it as they found it. Then a host that only ever
     # takes berth's own key. The provisioners' tests need no host at all.
-    'dock': ['e2e_access', 'e2e_controller', 'e2e_own_key', 'e2e_provisioners'],
+    'dock': ['e2e_access', 'e2e_controller.Controller', 'e2e_own_key', 'e2e_provisioners'],
 }
 
 
 def host_of(name):
+    # A test case named on its own goes where it is named; a module where its cases are.
+    for host, names in HOSTS.items():
+        if name in names:
+            return host
     module = name.split('.')[0]
     for host, names in HOSTS.items():
         if any(known.split('.')[0] == module for known in names):

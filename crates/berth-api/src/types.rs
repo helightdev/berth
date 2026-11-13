@@ -117,6 +117,24 @@ impl std::fmt::Display for HostLevel {
     }
 }
 
+/// What to say when a host is seen to be more than its profile here says,
+/// with how to adopt it: as when a workstation is added by its address.
+pub fn level_mismatch(
+    name: &str,
+    intended: HostLevel,
+    observed: Option<HostLevel>,
+) -> Option<String> {
+    let observed = observed.filter(|observed| *observed > intended)?;
+    Some(match observed {
+        HostLevel::Workstation => format!(
+            "{name} is a workstation; its profile here says {intended}. To adopt it, save its profile as a workstation and apply it: berth host level {name} workstation, then berth apply {name}"
+        ),
+        _ => format!(
+            "{name} has berth's controller; its profile here says {intended}. To adopt it: berth host level {name} controller"
+        ),
+    })
+}
+
 /// What a setup key says of the server it is for.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SetupKey {
@@ -1048,6 +1066,10 @@ pub struct ProvisionerKind {
     /// `format` and `label`, as the plugin declares them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec: Option<Value>,
+    /// What its plugin can do to one, each run with the verb `act` and the
+    /// resource's id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<Action>,
 }
 
 /// A row of what a provisioner says, shown as it is given.
@@ -1058,27 +1080,29 @@ pub struct Detail {
     pub value: String,
 }
 
-/// A machine a provisioner made, as berth's records and the provisioner's
-/// own list have it.
+/// What a provisioner lists of what it holds, beside berth's records.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct MadeMachine {
-    /// The host it was made for.
-    pub host: String,
-    /// The provisioner's id of it; empty while it is being made.
+pub struct ListedResource {
+    /// The provisioner's id of it; empty for a record whose `create` did not end.
     #[serde(default)]
     pub id: String,
-    /// What the provisioner's list says: `running`, `stopped`, or empty
-    /// when it was not asked or cannot list.
+    /// `machine`, or a kind the plugin names, such as `deployment`.
+    pub kind: String,
+    pub name: String,
+    /// The host a machine was made for, when it says.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub host: String,
+    /// What the provisioner's list says, or empty when it was not asked.
     #[serde(default)]
     pub state: String,
-    /// Whether berth has a record of it. One the provisioner lists without
-    /// a record carries berth's labels, but berth has lost track of it.
-    #[serde(default)]
-    pub recorded: bool,
+    /// berth's id of it, when berth has a record of it. One the provisioner
+    /// lists without one is not berth's, or berth lost track of it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub resource: String,
 }
 
-/// A provisioner's page: what it is, what it says of itself now, and the
-/// machines it made.
+/// A provisioner's page: what it is, what it says of itself now, and what
+/// it holds.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ProvisionerState {
     pub provisioner: ProvisionerInfo,
@@ -1093,51 +1117,126 @@ pub struct ProvisionerState {
     /// provisioner narrows what it declares, such as the pools there are.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub values: BTreeMap<String, Vec<String>>,
+    /// berth's records of what it made, with what its own list says.
     #[serde(default)]
-    pub machines: Vec<MadeMachine>,
+    pub resources: Vec<ListedResource>,
 }
 
-/// What to create a host's machine with.
+/// A berth secret a resource is given in its environment, by name. Its
+/// value is resolved when the provisioner is called and never kept with
+/// the resource.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ResourceSecret {
+    /// The name of the berth secret.
+    pub name: String,
+    /// The environment variable it becomes; the secret's name when empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub env: String,
+}
+
+impl ResourceSecret {
+    /// The variable it is given as.
+    pub fn variable(&self) -> &str {
+        match self.env.is_empty() {
+            true => &self.name,
+            false => &self.env,
+        }
+    }
+}
+
+/// Something a provisioner made for berth: a machine, which may be a
+/// host's, or a kind its plugin names, such as a deployment.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct Provision {
+pub struct Resource {
+    /// berth's id of it, stable for the life of the record.
+    pub id: String,
     /// `PLUGIN/ID`.
     pub provisioner: String,
-    /// Values of its arguments; the others take their defaults.
+    /// `machine`, or a kind the plugin declares.
+    pub kind: String,
+    /// Unique per provisioner and kind.
+    pub name: String,
+    /// `creating`, `running`, `stopped`, `missing` or `unknown`, as last seen.
+    pub state: String,
+    /// The provisioner's id of it; empty until `create` said it.
+    #[serde(default)]
+    pub external_id: String,
+    /// The host a machine belongs to, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub address: String,
     #[serde(default)]
     pub arguments: BTreeMap<String, String>,
-}
-
-/// The machine berth created for a host.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
-pub struct Instance {
-    /// `PLUGIN/ID`.
-    pub provisioner: String,
-    /// The provisioner's id of the machine; empty until `create` said it.
-    pub id: String,
-    /// `running`, `stopped`, `gone`, `unknown` or `creating`.
-    pub state: String,
-    #[serde(default)]
-    pub address: String,
+    /// The berth secrets it is given, by name; never their values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<ResourceSecret>,
+    /// The SHA-256 of its stored specification, for a kind that has one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub spec_sha256: String,
     /// When it was asked for, RFC 3339.
     #[serde(default)]
     pub created: String,
-    #[serde(default)]
-    pub arguments: BTreeMap<String, String>,
-    /// What can be done to it besides `destroy`: `start`, `stop`.
+    /// When its provisioner was last asked about it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub checked: String,
+    /// What can be done to it besides being removed: `start`, `stop`,
+    /// `change`, `logs`, as its kind declares.
     #[serde(default)]
     pub verbs: Vec<String>,
-    /// Why the state is `unknown`.
+    /// Why its state is `unknown`, or what is wrong with it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub problem: String,
 }
 
-/// A machine a provisioner has that berth created.
+/// What to create a resource with.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct ListedInstance {
-    pub id: String,
-    /// The host it was created for, as its labels say.
-    pub host: String,
-    pub state: String,
+pub struct NewResource {
+    /// `PLUGIN/ID`.
+    pub provisioner: String,
+    /// `machine` when empty.
+    #[serde(default)]
+    pub kind: String,
+    /// The host's name for a host's machine when empty.
+    #[serde(default)]
+    pub name: String,
+    /// The saved host a machine is made for, and set up as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// Values of the provisioner's and the kind's arguments; the others
+    /// take their settings or defaults.
+    #[serde(default)]
+    pub arguments: BTreeMap<String, String>,
+    /// The specification, for a kind that has one, as its plugin reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<ResourceSecret>,
+    /// Any text of the caller's. The same token again answers with the
+    /// resource and the job the first call started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+/// What to change of a resource: what is given replaces what it had.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ResourceChange {
+    /// Values of the kind's arguments, over those it has.
+    #[serde(default)]
+    pub arguments: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<Vec<ResourceSecret>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+/// What creating a resource answers: its record and the job that makes it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct Created {
+    pub resource: Resource,
+    pub job: JobInfo,
 }
 
 // ── What a host was applied from ────────────────────────────────────────────

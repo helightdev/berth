@@ -24,7 +24,13 @@ use std::sync::{Mutex, MutexGuard};
 pub mod kind {
     pub const PROFILE: &str = "profile";
     pub const CREDENTIALS: &str = "credentials";
+    /// The record of a host's machine of berth before 0.5, which an import
+    /// turns into a resource.
     pub const INSTANCE: &str = "instance";
+    /// What a provisioner made for berth, by its id.
+    pub const RESOURCE: &str = "resource";
+    /// A resource's specification, by the resource's id.
+    pub const SPEC: &str = "spec";
     /// The values of a provisioner's own arguments, by `PLUGIN/ID`.
     pub const PROVISIONER: &str = "provisioner";
     pub const SETTING: &str = "setting";

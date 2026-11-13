@@ -11,6 +11,8 @@
       - ansible_facts.architecture == 'x86_64'
       - devbox_controller_user | length > 0
     fail_msg: berth's controller runs on Linux on x86_64.
+- name: Refuse a host berth set up as a workstation
+  ansible.builtin.import_tasks: controller_guard.yml
 - name: Find the account sessions run as
   ansible.builtin.getent:
     database: passwd

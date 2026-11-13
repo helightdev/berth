@@ -113,6 +113,8 @@ devbox_start_services: true
 # How much of the role runs: workstation for all of it, controller for
 # berthd and box alone (the playbook controller.yml sets it).
 devbox_level: workstation
+# Where berthd's files are, which installing the controller alone reads first.
+devbox_controller_etc: /etc/berth
 # Whether systemd runs berthd and the services of plugins. A container
 # profile has no systemd; the controller alone looks at the host.
 devbox_berthd_systemd: "{{ devbox_profile != 'container' }}"

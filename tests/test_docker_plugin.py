@@ -1,4 +1,4 @@
-"""The Docker container provisioner, run against a fake docker executable."""
+"""The Docker provisioner, its machines and its Compose deployments, run against a fake docker executable."""
 import json
 import os
 import stat
@@ -14,12 +14,17 @@ KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyForTestsOnly berth'
 # Answers by the start of the argument list. Each rule has results, [code, stdout, stderr],
 # used in turn with the last one repeating. A call that matches no rule succeeds quietly.
 FAKE = r'''#!/usr/bin/env python3
-import json, os, sys
+import json, os, stat, sys
 state = os.environ['FAKE_DIR']
 args = sys.argv[1:]
-data = sys.stdin.read() if '-i' in args else ''
+pairs = [args[i:i + 2] for i in range(len(args) - 1)]
+data = sys.stdin.read() if '-i' in args or ['-f', '-'] in pairs else ''
+# Files given with -f other than stdin, with their mode, as compose would read them.
+files = {pair[1]: {'text': open(pair[1]).read(), 'mode': stat.S_IMODE(os.stat(pair[1]).st_mode)}
+         for pair in pairs if pair[0] == '-f' and pair[1] != '-'}
 with open(state + '/calls.jsonl', 'a') as log:
-    log.write(json.dumps({'args': args, 'stdin': data, 'DOCKER_HOST': os.environ.get('DOCKER_HOST')}) + '\n')
+    log.write(json.dumps({'args': args, 'stdin': data, 'DOCKER_HOST': os.environ.get('DOCKER_HOST'),
+                          'env': dict(os.environ), 'cwd': os.getcwd(), 'files': files}) + '\n')
 rules = json.load(open(state + '/rules.json'))
 for number, rule in enumerate(rules):
     if args[:len(rule['prefix'])] == rule['prefix']:
@@ -45,8 +50,21 @@ def inspect(labels=None, running=True, ip='172.17.0.2'):
 
 OURS = {'berth-host': 'studio', 'berth-instance': 'tok-1'}
 
+SPEC = 'services:\n  web:\n    image: example/web:1\n    environment:\n      DB_PASSWORD: ${DB_PASSWORD}\n  db:\n    image: example/db:2\n'
+SECRET = 'hunter2-made-up-for-tests'
+COMPOSE = ['compose', '-p', 'shop']
+BERTH_LABELS = 'com.docker.compose.project=shop,berth-resource=shop,berth-token=tok-9'
 
-class Provision(unittest.TestCase):
+
+def ps(*services, labels=BERTH_LABELS, lines=False):
+    """What docker compose ps --format json prints for (service, state) pairs."""
+    rows = [{'Name': f'shop-{name}-1', 'Service': name, 'State': state, 'Labels': labels,
+             'Status': 'Up 2 minutes' if state == 'running' else 'Exited (0) 1 minute ago'}
+            for name, state in services]
+    return [0, ''.join(json.dumps(row) + '\n' for row in rows) if lines else json.dumps(rows), '']
+
+
+class Harness(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -98,6 +116,8 @@ class Provision(unittest.TestCase):
             {'prefix': ['volume', 'inspect'], 'results': [[1, '', 'Error: No such volume']]},
         ]
 
+
+class Provision(Harness):
     def test_manifest_has_provisioner_and_no_features(self):
         package = json.loads((PLUGIN / 'package.json').read_text())
         self.assertNotIn('features', package['berth'])
@@ -106,7 +126,7 @@ class Provision(unittest.TestCase):
         self.assertEqual(entry['verbs'], ['list'])
         self.assertNotIn('secrets', entry)
         self.assertEqual([a['name'] for a in entry['arguments']], ['host'])
-        [machine] = entry['kinds']
+        machine, deployment = entry['kinds']
         self.assertEqual((machine['id'], machine['setup']), ('machine', 'apply'))
         self.assertEqual(machine['verbs'], ['start', 'stop', 'change', 'logs'])
         self.assertEqual([a['name'] for a in machine['arguments']],
@@ -119,6 +139,17 @@ class Provision(unittest.TestCase):
         prune = [a for a in entry['actions'] if a['name'] == 'prune'][0]
         self.assertTrue(prune['confirm'])
         self.assertTrue(os.access(PLUGIN / 'bin/provision', os.X_OK))
+        self.assertNotIn('actions', machine)
+        self.assertEqual((deployment['id'], deployment['label']), ('deployment', 'Compose project'))
+        self.assertEqual(deployment['spec'], {'format': 'compose', 'label': 'Compose file'})
+        self.assertEqual(deployment['verbs'], ['start', 'stop', 'change', 'logs'])
+        [keep] = deployment['arguments']
+        self.assertEqual((keep['name'], keep['default'], keep['values']), ('keep_volumes', 'no', ['no', 'yes']))
+        self.assertEqual([a['name'] for a in deployment['actions']], ['services', 'restart', 'pull'])
+        for action in deployment['actions']:
+            self.assertIn(f"'{action['name']}': act_", source)
+            self.assertTrue(action['label'] and action['group'] and action['help'])
+            self.assertEqual(bool(action.get('confirm')), action.get('changes', True), action['name'])
 
     def test_create_runs_systemd_container_with_labels(self):
         done = self.run_verb('create', self.create_request(), rules=self.fresh_rules())
@@ -253,7 +284,8 @@ class Provision(unittest.TestCase):
         self.assertEqual(self.argv('rm'), [])
 
     def test_list_shows_labelled_containers(self):
-        rules = [{'prefix': ['ps'], 'results': [[0, 'berth-studio\nberth-studio-2\n', '']]},
+        rules = [{'prefix': ['ps', '--all', '--filter', 'label=berth-resource'], 'results': [[0, '', '']]},
+                 {'prefix': ['ps'], 'results': [[0, 'berth-studio\nberth-studio-2\n', '']]},
                  {'prefix': ['container', 'inspect', 'berth-studio'],
                   'results': [inspect({'berth-host': 'studio'})]},
                  {'prefix': ['container', 'inspect', 'berth-studio-2'],
@@ -264,7 +296,6 @@ class Provision(unittest.TestCase):
             {'id': 'berth-studio', 'kind': 'machine', 'name': 'studio', 'host': 'studio', 'state': 'running'},
             {'id': 'berth-studio-2', 'kind': 'machine', 'name': 'studio-2', 'host': 'studio-2', 'state': 'stopped'}]})
         self.assertIn('label=berth-host', self.argv('ps')[0])
-        # It makes no other kind.
         done = self.run_verb('list', {'kind': 'deployment'}, rules=rules)
         self.assertEqual(json.loads(done.stdout), {'resources': []})
 
@@ -397,6 +428,240 @@ class Provision(unittest.TestCase):
         done = self.run_verb('create', self.create_request(), rules=rules)
         self.assertEqual(done.returncode, 1)
         self.assertIn('Unable to locate package nope', done.stderr)
+
+
+class Deployment(Harness):
+    def deploy(self, verb, extra=None, arguments=None, rules=None, environment=None):
+        request = {'kind': 'deployment', 'name': 'shop', 'environment': environment or {}}
+        if verb != 'create':
+            request['id'] = 'shop'
+        request.update(extra or {})
+        arguments = dict({'keep_volumes': 'no'}, **(arguments or {}))
+        return self.run_verb(verb, request, arguments=arguments, rules=rules)
+
+    def compose(self, *rest):
+        return self.argv(*COMPOSE, *rest)
+
+    def create_rules(self, state=None):
+        return [{'prefix': [*COMPOSE, '-f', '-', 'config', '--services'], 'results': [[0, 'web\ndb\n', '']]},
+                {'prefix': [*COMPOSE, 'ps'], 'results': [state or ps(('web', 'running'), ('db', 'running'))]}]
+
+    def test_create_brings_the_project_up_with_the_spec_on_stdin(self):
+        done = self.deploy('create', {'spec': SPEC, 'token': 'tok-9',
+                                      'labels': {'berth-resource': 'shop', 'berth-token': 'tok-9'}},
+                           rules=self.create_rules())
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {'id': 'shop', 'state': 'running'})
+        calls = [c for c in self.calls() if c['args'][:1] == ['compose']]
+        self.assertEqual(calls[0]['args'], [*COMPOSE, '-f', '-', 'config', '--services'])
+        up = calls[1]['args']
+        self.assertEqual(up[:6], [*COMPOSE, '-f', '-', '-f'])
+        self.assertEqual(up[7:], ['up', '-d', '--remove-orphans'])
+        self.assertEqual(calls[2]['args'], [*COMPOSE, 'ps', '--all', '--format', 'json'])
+        self.assertEqual(len(calls), 3)
+        for call in calls[:2]:
+            self.assertEqual(call['stdin'], SPEC)
+        for call in self.calls():
+            self.assertNotIn('example/web', ' '.join(call['args']))
+        # berth's labels go on every service, in a private file of their own that does not stay.
+        override = calls[1]['files'][up[6]]
+        self.assertEqual(override['mode'], 0o600)
+        labels = {'berth-resource': 'shop', 'berth-token': 'tok-9'}
+        self.assertEqual(json.loads(override['text']), {'services': {'web': {'labels': labels}, 'db': {'labels': labels}}})
+        self.assertFalse(os.path.exists(up[6]))
+        # Compose runs in an empty directory, so no compose.yaml or .env of the caller comes in.
+        self.assertNotEqual(calls[1]['cwd'], str(PLUGIN))
+        self.assertFalse(os.path.exists(calls[1]['cwd']))
+
+    def test_create_again_is_up_again(self):
+        for _ in range(2):
+            done = self.deploy('create', {'spec': SPEC, 'token': 'tok-9'}, rules=self.create_rules())
+            self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(len([c for c in self.compose('-f') if 'up' in c]), 2)
+
+    def test_secrets_reach_compose_only_through_its_environment(self):
+        rules = self.create_rules()
+        rules.insert(0, {'prefix': [*COMPOSE, '-f', '-', '-f'], 'results': [[0, '', f'pulling {SECRET} layer\n']]})
+        done = self.deploy('create', {'spec': SPEC, 'token': 'tok-9'}, rules=rules,
+                           environment={'DB_PASSWORD': SECRET})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        compose = [c for c in self.calls() if c['args'][:1] == ['compose']]
+        for call in compose:
+            self.assertEqual(call['env']['DB_PASSWORD'], SECRET)
+        for call in self.calls():
+            self.assertNotIn(SECRET, ' '.join(call['args']))
+            self.assertNotIn(SECRET, call['stdin'])
+            self.assertNotIn(SECRET, json.dumps(call['files']))
+        self.assertNotIn(SECRET, done.stdout + done.stderr)
+        self.assertIn('pulling *** layer', done.stderr)
+        # Nor in the one-line error when compose fails and names it.
+        rules[0] = {'prefix': [*COMPOSE, '-f', '-', '-f'], 'results': [[1, '', f'invalid reference format: {SECRET}\n']]}
+        done = self.deploy('create', {'spec': SPEC, 'token': 'tok-9'}, rules=rules,
+                           environment={'DB_PASSWORD': SECRET})
+        self.assertEqual(done.returncode, 1)
+        self.assertNotIn(SECRET, done.stdout + done.stderr)
+        self.assertIn('docker compose up failed', done.stderr)
+
+    def test_environment_names_are_checked_without_showing_values(self):
+        for name in ('DOCKER_HOST', 'COMPOSE_FILE', 'not a name'):
+            with self.subTest(name=name):
+                done = self.deploy('create', {'spec': SPEC}, rules=self.create_rules(), environment={name: SECRET})
+                self.assertEqual(done.returncode, 1)
+                self.assertNotIn(SECRET, done.stderr)
+                self.assertEqual(self.calls(), [])
+
+    def test_the_endpoint_is_docker_host_for_compose(self):
+        done = self.deploy('create', {'spec': SPEC}, rules=self.create_rules(),
+                           arguments={'host': 'ssh://ops@192.0.2.10'})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual({c['DOCKER_HOST'] for c in self.calls()}, {'ssh://ops@192.0.2.10'})
+        self.assertIn('ssh://ops@192.0.2.10', done.stderr)
+
+    def test_a_bad_project_name_is_refused_before_anything_runs(self):
+        for name in ('Shop', '-shop', 'shop.web', '', 'shop web'):
+            with self.subTest(name=name):
+                done = self.deploy('create', {'name': name, 'spec': SPEC}, rules=self.create_rules())
+                self.assertEqual(done.returncode, 1)
+                self.assertIn('not a Compose project name', done.stderr)
+                self.assertEqual(done.stderr.strip().count('\n'), 0)
+                self.assertEqual(self.calls(), [])
+        done = self.deploy('status', {'id': 'Shop'})
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(self.calls(), [])
+
+    def test_create_without_a_spec_is_refused(self):
+        done = self.deploy('create', {'spec': ''}, rules=self.create_rules())
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('no Compose file', done.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_change_applies_the_new_spec_and_keeps_the_labels(self):
+        done = self.deploy('change', {'spec': SPEC}, rules=self.create_rules())
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {'state': 'running'})
+        [up] = [c for c in self.calls() if 'up' in c['args']]
+        self.assertEqual(up['args'][-3:], ['up', '-d', '--remove-orphans'])
+        self.assertEqual(up['stdin'], SPEC)
+        override = json.loads(list(up['files'].values())[0]['text'])
+        self.assertEqual(override['services']['web']['labels'], {'berth-resource': 'shop', 'berth-token': 'tok-9'})
+
+    def test_status_reads_both_forms_of_ps(self):
+        cases = [(ps(('web', 'running'), ('db', 'running')), {'state': 'running'}),
+                 (ps(('web', 'running'), ('db', 'running'), lines=True), {'state': 'running'}),
+                 (ps(('web', 'exited'), ('db', 'exited'), lines=True), {'state': 'stopped'}),
+                 (ps(('web', 'running'), ('db', 'exited')), {'state': 'running', 'message': 'db not running'}),
+                 ([0, '[]', ''], {'state': 'gone'}),
+                 ([0, '', ''], {'state': 'gone'})]
+        for result, expected in cases:
+            with self.subTest(expected=expected, result=result[1][:20]):
+                done = self.deploy('status', rules=[{'prefix': [*COMPOSE, 'ps'], 'results': [result]}])
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(json.loads(done.stdout), expected)
+        self.assertEqual(set(map(tuple, self.compose())), {(*COMPOSE, 'ps', '--all', '--format', 'json')})
+
+    def test_destroy_removes_volumes_unless_kept(self):
+        rules = [{'prefix': [*COMPOSE, 'ps'], 'results': [ps(('web', 'running'))]}]
+        done = self.deploy('destroy', rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {})
+        self.assertEqual(self.compose('down'), [[*COMPOSE, 'down', '--remove-orphans', '--volumes']])
+        done = self.deploy('destroy', rules=rules, arguments={'keep_volumes': 'yes'})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.compose('down')[1], [*COMPOSE, 'down', '--remove-orphans'])
+
+    def test_destroy_of_a_project_that_is_gone_succeeds(self):
+        rules = [{'prefix': [*COMPOSE, 'ps'], 'results': [[0, '[]', '']]},
+                 {'prefix': [*COMPOSE, 'down'], 'results': [[1, '', 'no such project']]}]
+        done = self.deploy('destroy', rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        rules = [{'prefix': [*COMPOSE, 'ps'], 'results': [ps(('web', 'running'))]},
+                 {'prefix': [*COMPOSE, 'down'], 'results': [[1, '', 'Error: something held on']]}]
+        done = self.deploy('destroy', rules=rules)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('something held on', done.stderr)
+
+    def test_a_project_without_berth_labels_is_left_alone(self):
+        rules = [{'prefix': [*COMPOSE, 'ps'], 'results': [ps(('web', 'running'), labels='com.docker.compose.project=shop')]}]
+        for verb in ('destroy', 'stop', 'change'):
+            with self.subTest(verb=verb):
+                done = self.deploy(verb, {'spec': SPEC}, rules=rules)
+                self.assertEqual(done.returncode, 1)
+                self.assertIn('not created by berth', done.stderr)
+        self.assertEqual([c for c in self.compose() if 'ps' not in c], [])
+
+    def test_start_and_stop(self):
+        rules = [{'prefix': [*COMPOSE, 'ps'], 'results': [ps(('web', 'exited'))]}]
+        for verb in ('start', 'stop'):
+            done = self.deploy(verb, rules=rules)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(json.loads(done.stdout), {})
+        self.assertEqual([c for c in self.compose() if 'ps' not in c], [[*COMPOSE, 'start'], [*COMPOSE, 'stop']])
+        done = self.deploy('start', rules=[{'prefix': [*COMPOSE, 'ps'], 'results': [[0, '[]', '']]}])
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('has no containers', done.stderr)
+
+    def test_logs_pass_through_as_they_come(self):
+        rules = [{'prefix': [*COMPOSE, 'logs'], 'results': [[0, 'web-1  | ready\ndb-1  | ready\n', '']]}]
+        done = self.deploy('logs', {'tail': 20, 'follow': True}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout, 'web-1  | ready\ndb-1  | ready\n')
+        done = self.deploy('logs', {'tail': 0, 'follow': False}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.compose('logs'), [[*COMPOSE, 'logs', '--no-color', '--tail', '20', '--follow'],
+                                                [*COMPOSE, 'logs', '--no-color', '--tail', 'all']])
+
+    def test_list_shows_projects_with_berth_labels(self):
+        projects = 'shop\trunning\nshop\texited\nblog\texited\n'
+        rules = [{'prefix': ['ps', '--all', '--filter', 'label=berth-resource'], 'results': [[0, projects, '']]},
+                 {'prefix': ['ps'], 'results': [[0, '', '']]}]
+        done = self.run_verb('list', {'kind': 'deployment'}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {'resources': [
+            {'id': 'blog', 'kind': 'deployment', 'name': 'blog', 'host': '', 'state': 'stopped'},
+            {'id': 'shop', 'kind': 'deployment', 'name': 'shop', 'host': '', 'state': 'running'}]})
+        self.assertEqual(self.argv('ps'), [['ps', '--all', '--filter', 'label=berth-resource', '--format',
+                                            '{{.Label "com.docker.compose.project"}}\t{{.State}}']])
+        done = self.run_verb('list', rules=rules)
+        self.assertEqual(len(json.loads(done.stdout)['resources']), 2)
+        done = self.run_verb('list', {'kind': 'machine'}, rules=rules)
+        self.assertEqual(json.loads(done.stdout), {'resources': []})
+
+    def test_services_action_has_a_row_per_service(self):
+        rules = [{'prefix': [*COMPOSE, 'ps'], 'results': [ps(('web', 'running'), ('db', 'exited'), lines=True)]}]
+        done = self.deploy('act', {'action': {'name': 'services', 'arguments': {}}}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {
+            'message': '2 services of shop, 1 running',
+            'details': [{'label': 'web', 'value': 'running · Up 2 minutes'},
+                        {'label': 'db', 'value': 'exited · Exited (0) 1 minute ago'}]})
+
+    def test_restart_and_pull_actions(self):
+        rules = self.create_rules()
+        done = self.deploy('act', {'action': {'name': 'restart', 'arguments': {}}}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {'message': 'Restarted 2 containers of shop'})
+        self.assertEqual(self.compose('restart'), [[*COMPOSE, 'restart']])
+        done = self.deploy('act', {'action': {'name': 'pull', 'arguments': {}}, 'spec': SPEC},
+                           rules=rules, environment={'DB_PASSWORD': SECRET})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        [pull] = [c for c in self.calls() if c['args'][-1:] == ['pull']]
+        self.assertEqual(pull['args'], [*COMPOSE, '-f', '-', 'pull'])
+        self.assertEqual(pull['stdin'], SPEC)
+        self.assertEqual(pull['env']['DB_PASSWORD'], SECRET)
+        self.assertEqual(len([c for c in self.calls() if 'up' in c['args']]), 1)
+        self.assertNotIn(SECRET, done.stdout + done.stderr)
+
+    def test_actions_go_by_kind(self):
+        done = self.deploy('act', {'action': {'name': 'images', 'arguments': {}}})
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('of a deployment', done.stderr)
+        done = self.run_verb('act', {'kind': 'machine', 'id': 'berth-studio', 'action': {'name': 'services'}})
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('a machine has no actions', done.stderr)
+        # Without an id an action is the provisioner's own.
+        done = self.run_verb('act', {'kind': 'deployment', 'action': {'name': 'images', 'arguments': {}}})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.compose(), [])
 
 
 if __name__ == '__main__':

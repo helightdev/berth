@@ -449,13 +449,10 @@ mod tests {
             "secrets.set"
         );
         // The routes of berth serve below a host are its own, not the host's.
+        assert_eq!(name("POST", "/v1/resources", false), "resources.create");
         assert_eq!(
-            name("POST", "/v1/hosts/a/instance", false),
-            "instances.create"
-        );
-        assert_eq!(
-            name("POST", "/v1/hosts/a/instance/stop", false),
-            "instances.power"
+            name("GET", "/v1/resources/r-a/logs", true),
+            "resources.follow"
         );
         assert!(operation("GET", "/v1/portal", true).unwrap().is_none());
         // What nobody knows below a host is not let through on a guess.

@@ -1,5 +1,5 @@
 //! A provisioner as a subject of its own: the settings that say where it is,
-//! what it says of itself, the machines berth made with it, and its actions.
+//! what it says of itself, the resources berth made with it, and its actions.
 //! Its program runs where berth runs, as for creating a machine (see
 //! [`crate::provision`]): `status` without an id answers for the provisioner
 //! itself, and `act` runs one of its actions.
@@ -9,16 +9,13 @@ use crate::{
     paths::Paths,
     plugins::Provisioner,
     provision::{
-        self, Options, Record, call, find, found, needs_secrets, request, runnable, secrets,
-        values_of,
+        self, Options, call, find, found, needs_secrets, request, runnable, secrets, values_of,
     },
     registry::Store,
     store::{self, OWN, kind},
 };
-use berth_api::{
-    Action, Argument, Detail, MadeMachine, ProvisionerInfo, ProvisionerState, ops::Role,
-};
-use serde_json::{Map, Value, json};
+use berth_api::{Action, Argument, Detail, ProvisionerInfo, ProvisionerState, ops::Role};
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     io::{BufRead, Read, Write},
@@ -143,7 +140,7 @@ fn own_values(
 }
 
 /// The rows of `details` in an answer, as they are given.
-fn details(answer: &Value) -> Vec<Detail> {
+pub(crate) fn details(answer: &Value) -> Vec<Detail> {
     answer["details"]
         .as_array()
         .into_iter()
@@ -160,8 +157,8 @@ fn details(answer: &Value) -> Vec<Detail> {
         .collect()
 }
 
-/// The page of a provisioner: what it says of itself now, and the machines
-/// berth made with it. `given` are values of its own arguments for this
+/// The page of a provisioner: what it says of itself now, and the resources
+/// berth made with it with what its own list says of them. `given` are values of its own arguments for this
 /// once, such as another server to ask.
 pub fn state(
     paths: &Paths,
@@ -172,7 +169,8 @@ pub fn state(
 ) -> Result<ProvisionerState> {
     let (dir, plugin, provisioner) = load(paths, name)?;
     let info = describe(paths, store, &plugin, &provisioner);
-    let mut machines = made(paths, name);
+    let records = crate::resource::list(paths).unwrap_or_default();
+    let mut listed = vec![];
     let mut state = ProvisionerState {
         provisioner: info.clone(),
         state: "unusable".into(),
@@ -186,12 +184,12 @@ pub fn state(
         Ok(own) => own,
         Err(error) => {
             state.message = error.to_string();
-            state.machines = machines;
+            state.resources = crate::resource::merge(&records, name, vec![]);
             return Ok(state);
         }
     };
     let (secrets, _) = secrets(store, &provisioner);
-    let asked = request("status", &provisioner, None, &own, &secrets);
+    let asked = request("status", &provisioner, &own, &secrets);
     match call(
         &dir,
         &provisioner,
@@ -226,8 +224,7 @@ pub fn state(
         }
     }
     if state.state != "unreachable" && provisioner.verbs.iter().any(|verb| verb == "list") {
-        let mut asked = request("list", &provisioner, None, &own, &secrets);
-        asked["kind"] = json!(crate::plugins::MACHINE);
+        let asked = request("list", &provisioner, &own, &secrets);
         if let Ok(answer) = call(
             &dir,
             &provisioner,
@@ -236,51 +233,11 @@ pub fn state(
             options.quick,
             &mut std::io::sink(),
         ) {
-            merge(&mut machines, provision::listed_machines(&answer));
+            listed = crate::resource::listed_of(&answer);
         }
     }
-    state.machines = machines;
+    state.resources = crate::resource::merge(&records, name, listed);
     Ok(state)
-}
-
-/// The machines berth has records of that `name` made, by host.
-fn made(paths: &Paths, name: &str) -> Vec<MadeMachine> {
-    let Ok(store) = store::shared(paths) else {
-        return vec![];
-    };
-    let mut machines: Vec<MadeMachine> = store
-        .names(kind::INSTANCE, OWN)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|host| {
-            let kept = store.read_json(kind::INSTANCE, OWN, &host).ok()??;
-            let record: Record = serde_json::from_value(kept).ok()?;
-            (record.provisioner == name).then(|| MadeMachine {
-                host,
-                id: record.id,
-                state: String::new(),
-                recorded: true,
-            })
-        })
-        .collect();
-    machines.sort_by(|a, b| a.host.cmp(&b.host));
-    machines
-}
-
-/// Take in what the provisioner lists: the state of each machine berth has
-/// a record of, and those it lists that berth has none of.
-fn merge(machines: &mut Vec<MadeMachine>, listed: Vec<berth_api::ListedInstance>) {
-    for entry in listed {
-        match machines.iter_mut().find(|known| known.id == entry.id) {
-            Some(known) => known.state = entry.state,
-            None => machines.push(MadeMachine {
-                host: entry.host,
-                id: entry.id,
-                state: entry.state,
-                recorded: false,
-            }),
-        }
-    }
 }
 
 // ── Its actions ─────────────────────────────────────────────────────────────
@@ -478,7 +435,7 @@ pub fn prepare(
     let own = own_values(name, &provisioner, &own, &kept)?;
     let (secrets, missing) = secrets(store, &provisioner);
     needs_secrets(name, &missing)?;
-    let mut request = request("act", &provisioner, None, &own, &secrets);
+    let mut request = request("act", &provisioner, &own, &secrets);
     request["action"] = json!({"name": action, "arguments": theirs});
     let mut hidden: Vec<String> = provision::hidden(&secrets);
     hidden.extend(hidden_of(&theirs, &declared));
@@ -549,62 +506,16 @@ impl Acting {
     }
 }
 
-// ── A machine's log ─────────────────────────────────────────────────────────
-
-/// What a host's machine wrote, as its provisioner's `logs` verb gives it:
-/// the last `tail` lines, and with `follow` what comes after until it ends
-/// or `limit` has passed. Its lines go to `out` with secrets masked.
-pub fn logs(
-    paths: &Paths,
-    store: &Store,
-    host: &str,
-    tail: u32,
-    follow: bool,
-    limit: Duration,
-    out: &mut dyn Write,
-) -> Result<()> {
-    let record = Record::load(paths, host)?
-        .ok_or_else(|| format!("{host} has no machine that berth made"))?;
-    if record.id.is_empty() {
-        return Err(format!("{host}'s machine was not made yet").into());
-    }
-    let (dir, _, provisioner) = load(paths, &record.provisioner)?;
-    runnable(&provisioner)?;
-    if !provisioner
-        .machine()
-        .is_some_and(|kind| kind.verbs.iter().any(|verb| verb == "logs"))
-    {
-        return Err(format!("{} gives no logs of its machines", record.provisioner).into());
-    }
-    let (secrets, missing) = secrets(store, &provisioner);
-    needs_secrets(&record.provisioner, &missing)?;
-    let mut arguments = record.arguments.clone();
-    for argument in &provisioner.arguments {
-        arguments
-            .entry(argument.name.clone())
-            .or_insert_with(|| argument.default.clone());
-    }
-    let mut asked = request(
-        "logs",
-        &provisioner,
-        Some((host, &record.token)),
-        &arguments,
-        &secrets,
-    );
-    (asked["id"], asked["tail"], asked["follow"]) = (json!(record.id), json!(tail), json!(follow));
-    stream(&dir, &provisioner, &asked, limit, out)
-}
-
 /// Run `logs`: what it writes on standard output and error goes to `out`,
 /// masked, until it ends; one that outlasts `limit` is stopped.
-fn stream(
+pub(crate) fn stream(
     dir: &std::path::Path,
     provisioner: &Provisioner,
     asked: &Value,
+    hidden: &[String],
     limit: Duration,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let hidden = provision::hidden(asked["secrets"].as_object().unwrap_or(&Map::new()));
     let mut child = Command::new(&provisioner.command)
         .arg("logs")
         .current_dir(dir)
@@ -655,7 +566,7 @@ fn stream(
     loop {
         match lines.recv_timeout(Duration::from_millis(100)) {
             Ok(line) => {
-                let line = provision::hide(line, &hidden);
+                let line = provision::hide(line, hidden);
                 if writeln!(out, "{line}").and_then(|_| out.flush()).is_err() {
                     // Nobody reads any more, as when the screen it went to closed.
                     stop(&mut child);

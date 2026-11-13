@@ -176,7 +176,7 @@ berth keeps more of a host in its store, beside the profile:
 | What | Holds | How to see it |
 | --- | --- | --- |
 | Generated passwords | The passwords F4 made for the host's accounts | `berth credentials HOST` |
-| The machine's record | The provisioner and id of a machine berth created for the host | `berth instance HOST` |
+| The machine's record | The [resource](/docs/deploy/resources) of a machine berth created for the host, with its provisioner and id | `berth instance HOST` |
 
 `berth credentials` prints an account and its password to a line, and only to a terminal unless `--show` is given. For a berth server's host it asks the server, which keeps them. `berth remove HOST` forgets the profile and both of these at once. It refuses while berth knows of a machine it created for the host.
 

@@ -230,6 +230,13 @@ pub fn install_controller(
         let _ = writeln!(out, "✗ {error}");
         false
     };
+    // The profile here may say less than the host is, as for a workstation
+    // added by its address; the role refuses it too.
+    let intended = crate::level::of(&host.config);
+    let observed = crate::level::observe(paths, host, become_password);
+    if let Some(why) = crate::level::refuse_install(&host.name, intended, observed) {
+        return fail(out, &why);
+    }
     let prepared = match prepare_controller(paths, host, become_password) {
         Ok(prepared) => prepared,
         Err(error) => return fail(out, &error),

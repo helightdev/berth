@@ -187,34 +187,29 @@ pub struct App {
 /// What the provisioners there are, and the host's machine, came back as.
 type Answers = (
     std::result::Result<Vec<berth_api::ProvisionerInfo>, String>,
-    std::result::Result<Option<berth_api::Instance>, String>,
+    std::result::Result<Option<berth_api::Resource>, String>,
 );
 
 /// Ask where provisioners run, as `berth provision` does: the berth server
-/// when one is set, otherwise here.
+/// when one is set, otherwise here. The host's machine is its resource of the
+/// machine kind, as its provisioner says it is now.
 fn machine_answers(paths: &Paths, name: &str) -> Answers {
     let text = |error: &dyn std::fmt::Display| error.to_string();
-    let Some(server) = berth_core::server::Server::configured(paths) else {
-        let store = match crate::registry::Store::new(paths) {
-            Ok(store) => store,
-            Err(error) => return (Err(text(&error)), Err(text(&error))),
-        };
-        let options = berth_core::provision::Options::default();
-        return (
-            Ok(berth_core::provision::list(paths, &store)),
-            berth_core::provision::status(paths, &store, name, &options).map_err(|e| text(&e)),
-        );
-    };
-    let listed = server
-        .call("provisioners.list", Value::Null, None)
+    let source = crate::provisioner_command::Source::of(paths);
+    let listed = source.list().map_err(|error| text(&error));
+    let found = source
+        .resources(None, Some("machine"), Some(name))
         .map_err(|error| text(&error))
-        .and_then(|found| serde_json::from_value(found).map_err(|error| text(&error)));
-    let found = match server.call("instances.get", json!({"name": name}), None) {
-        Ok(found) => serde_json::from_value(found)
-            .map(Some)
-            .map_err(|error| text(&error)),
-        Err(error) if machine::absent(&error.to_string()) => Ok(None),
-        Err(error) => Err(text(&error)),
+        .and_then(|found| match found.first() {
+            None => Ok(None),
+            Some(made) => source
+                .resource(&made.id)
+                .map(Some)
+                .map_err(|error| text(&error)),
+        });
+    let found = match found {
+        Err(error) if machine::absent(&error) => Ok(None),
+        found => found,
     };
     (listed, found)
 }
@@ -609,7 +604,10 @@ impl App {
                 }
                 rows.push(heading("Connection"));
                 rows.push(Row::info(Line::styled(
-                    format!("  {}", berth_tui::host::level_line(&self.host)),
+                    format!(
+                        "  {}",
+                        berth_tui::host::level_line(&self.name(), &self.host)
+                    ),
                     Style::new().fg(theme::MUTED),
                 )));
                 if let Some(server) = self.served() {
@@ -1630,7 +1628,7 @@ impl App {
     fn ask_own_actions(&mut self) {
         let host = self.host_profile();
         let Some(server) = host.served(&self.paths) else {
-            self.host.own = level::local_actions(&host.name, self.host.level);
+            self.host.own = level::local_actions(&host.name, self.host.level, self.host.seen);
             return;
         };
         let (sender, receiver) = mpsc::channel();

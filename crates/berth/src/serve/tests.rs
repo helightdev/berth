@@ -1702,11 +1702,9 @@ async fn an_access_token_gets_in_with_the_role_it_names() {
     }
     // Machines are created with the server's secrets: set-up too.
     for (method, path) in [
-        ("GET", "/v1/provisioners/fake/vm/instances"),
-        ("POST", "/v1/hosts/a/instance"),
-        ("GET", "/v1/hosts/a/instance"),
-        ("POST", "/v1/hosts/a/instance/start"),
-        ("DELETE", "/v1/hosts/a/instance"),
+        ("POST", "/v1/resources"),
+        ("PUT", "/v1/resources/r-a"),
+        ("DELETE", "/v1/resources/r-a"),
     ] {
         let (status, said) = as_bearer(address, &operator, method, path, json!({})).await;
         assert_eq!(status, 403, "{method} {path}: {said}");
@@ -1824,8 +1822,8 @@ async fn set_up_can_be_closed_to_the_network() {
             403
         );
         for (method, path) in [
-            ("POST", "/v1/hosts/a/instance"),
-            ("DELETE", "/v1/hosts/a/instance"),
+            ("POST", "/v1/resources"),
+            ("DELETE", "/v1/resources/r-a"),
             ("POST", "/v1/actions/rollout"),
         ] {
             let (status, said) = as_bearer(address, token, method, path, json!({})).await;
@@ -2015,8 +2013,10 @@ async fn berth_gets_access_tokens_as_a_client() {
 /// output, `code.VERB` as its exit code, `say.VERB` on standard error.
 const FAKE_PROVISIONER: &str = r#"#!/bin/sh
 verb="$1"
-cat > /dev/null
+request=$(cat)
 echo "$verb" >> requests.log
+printf '%s\n' "$request" > "last.$verb"
+[ -f leak ] && printf '%s\n' "$request" >&2
 [ -f "say.$verb" ] && cat "say.$verb" >&2
 [ -f "answer.$verb" ] && cat "answer.$verb"
 exit "$(cat "code.$verb" 2>/dev/null || echo 0)"
@@ -2062,7 +2062,12 @@ fn write_fake_provisioner(home: &std::path::Path) -> PathBuf {
              "verbs": ["list"], "secrets": ["api_token"],
              "arguments": [{"name": "server", "required": true}],
              "kinds": [{"id": "machine", "setup": "apply", "verbs": ["start"],
-                        "arguments": [{"name": "cpus", "default": "4"}]}],
+                        "arguments": [{"name": "cpus", "default": "4"}]},
+                       {"id": "deployment", "label": "Project", "verbs": ["change", "logs"],
+                        "spec": {"format": "text", "label": "Spec"},
+                        "arguments": [{"name": "replicas", "default": "1"}],
+                        "actions": [{"name": "services", "changes": false},
+                                    {"name": "restart", "confirm": "Restart?"}]}],
              "actions": [
                {"name": "images", "label": "Images", "changes": false},
                {"name": "prune", "label": "Prune", "confirm": "Prune?",
@@ -2314,8 +2319,8 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
         page["provisioner"]["settings"]["server"],
         "https://192.0.2.10:8443"
     );
-    assert_eq!(page["machines"][0]["host"], "attic");
-    assert_eq!(page["machines"][0]["recorded"], false);
+    assert_eq!(page["resources"][0]["host"], "attic");
+    assert!(page["resources"][0].get("resource").is_none());
     // Also over the portal.
     let portal = berth_api::portal::Portal::over(
         client::websocket_unix(&served.socket, "/v1/portal")
@@ -2346,7 +2351,6 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn machines_are_created_and_deleted_through_the_api() {
-    use berth_core::provision::{self, Record};
     let served = served_with(quick).await;
     let fake = fake_provisioner(&served);
     let mut client = served.client().await;
@@ -2362,6 +2366,7 @@ async fn machines_are_created_and_deleted_through_the_api() {
         )
         .unwrap();
     let message = |said: &Value| said["error"]["message"].as_str().unwrap_or("").to_owned();
+    let machine = || berth_core::resource::of_host(paths, "studio").unwrap();
 
     let (status, listed) = send(client, "GET", "/v1/provisioners", Value::Null).await;
     assert_eq!(status, 200, "{listed}");
@@ -2373,35 +2378,29 @@ async fn machines_are_created_and_deleted_through_the_api() {
         .unwrap()
         .clone();
     assert_eq!(vm["missing_secrets"], json!(["api_token"]));
+    assert_eq!(vm["kinds"][1]["actions"][1]["role"], "admin");
 
     // Refusals are answers of their own, before there is a job.
-    let asked =
-        json!({"provisioner": "fake/vm", "arguments": {"server": "https://192.0.2.10:8443"}});
-    let (status, said) = send(client, "POST", "/v1/hosts/studio/instance", asked.clone()).await;
+    let asked = json!({"provisioner": "fake/vm", "host": "studio",
+                       "arguments": {"server": "https://192.0.2.10:8443"}});
+    let (status, said) = send(client, "POST", "/v1/resources", asked.clone()).await;
     assert_eq!(status, 400, "{said}");
     assert!(message(&said).contains("api_token"), "{said}");
     let secret = json!({"value": "tok-s3cret"});
     send(client, "PUT", "/v1/secrets/api_token", secret).await;
-    for (path, body, wanted) in [
-        ("/v1/hosts/nobody/instance", asked.clone(), 404),
-        (
-            "/v1/hosts/studio/instance",
-            json!({"provisioner": "fake/none"}),
-            404,
-        ),
-        (
-            "/v1/hosts/studio/instance",
-            json!({"provisioner": "fake/vm"}),
-            400,
-        ),
-        ("/v1/hosts/studio/instance", json!({"nothing": 1}), 400),
+    for (body, wanted) in [
+        (json!({"provisioner": "fake/vm", "host": "nobody"}), 404),
+        (json!({"provisioner": "fake/none", "host": "studio"}), 404),
+        (json!({"provisioner": "fake/vm", "host": "studio"}), 400),
+        (json!({"provisioner": "fake/vm"}), 400),
+        (json!({"nothing": 1}), 400),
     ] {
-        let (status, said) = send(client, "POST", path, body).await;
-        assert_eq!(status, wanted, "{path}: {said}");
+        let (status, said) = send(client, "POST", "/v1/resources", body.clone()).await;
+        assert_eq!(status, wanted, "{body}: {said}");
     }
-    assert!(Record::load(paths, "studio").unwrap().is_none());
+    assert!(machine().is_none());
 
-    // A job that fails says why, and leaves the token to ask again with.
+    // A job that fails says why, and leaves the record and its token to ask again with.
     let mut events = client::websocket_unix(&served.socket, "/v1/events")
         .await
         .unwrap();
@@ -2412,24 +2411,32 @@ async fn machines_are_created_and_deleted_through_the_api() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     std::fs::write(fake.join("code.create"), "3").unwrap();
     std::fs::write(fake.join("say.create"), "quota exceeded\n").unwrap();
-    let (status, job) = send(client, "POST", "/v1/hosts/studio/instance", asked.clone()).await;
+    let (status, created) = send(client, "POST", "/v1/resources", asked.clone()).await;
+    assert_eq!(status, 202, "{created}");
+    let id = created["resource"]["id"].as_str().unwrap().to_owned();
     assert_eq!(
-        (status, &job["action"]),
-        (200, &json!("provision")),
-        "{job}"
+        (&created["resource"]["kind"], &created["resource"]["host"]),
+        (&json!("machine"), &json!("studio"))
+    );
+    assert_eq!(
+        (&created["job"]["action"], &created["job"]["subject"]),
+        (&json!("create"), &json!(format!("resource:{id}")))
     );
     let started = text(&mut events).await;
     assert_eq!(
         (&started["source"], &started["job"]["action"]),
-        (&json!("job"), &json!("provision"))
+        (&json!("job"), &json!("create"))
     );
-    let (output, code) = job_ended(&served.socket, job["id"].as_str().unwrap()).await;
+    let (output, code) = job_ended(&served.socket, created["job"]["id"].as_str().unwrap()).await;
     assert_eq!(code, 1, "{output}");
     assert!(output.contains("quota exceeded"), "{output}");
     assert!(text(&mut events).await["job"]["ended"].is_string());
-    let token = Record::load(paths, "studio").unwrap().unwrap().token;
+    let token = machine().unwrap().record.token;
     let (_, host) = send(client, "GET", "/v1/hosts/studio", Value::Null).await;
     assert_eq!(host["address"], "", "{host}");
+    let (_, listed) = send(client, "GET", "/v1/resources?host=studio", Value::Null).await;
+    assert_eq!(listed[0]["state"], "unknown", "{listed}");
+    assert!(message(&json!({"error": {"message": listed[0]["problem"]}})).contains("did not end"));
 
     std::fs::remove_file(fake.join("code.create")).unwrap();
     std::fs::write(
@@ -2437,144 +2444,135 @@ async fn machines_are_created_and_deleted_through_the_api() {
         r#"{"id": "vm-1", "address": "192.0.2.20"}"#,
     )
     .unwrap();
-    let (_, job) = send(client, "POST", "/v1/hosts/studio/instance", asked.clone()).await;
-    let (output, code) = job_ended(&served.socket, job["id"].as_str().unwrap()).await;
+    let mut again = asked.clone();
+    again["token"] = json!("caller-1");
+    let (status, created) = send(client, "POST", "/v1/resources", again.clone()).await;
+    assert_eq!(status, 202, "{created}");
+    // The same machine is asked for again, with the same token.
+    assert_eq!(created["resource"]["id"], json!(id));
+    let (output, code) = job_ended(&served.socket, created["job"]["id"].as_str().unwrap()).await;
     assert_eq!(code, 0, "{output}");
     assert!(output.contains("finished 192.0.2.20"), "{output}");
-    let kept = Record::load(paths, "studio").unwrap().unwrap();
-    assert_eq!((kept.id.as_str(), kept.token), ("vm-1", token));
+    let kept = machine().unwrap().record;
+    assert_eq!((kept.external_id.as_str(), kept.token), ("vm-1", token));
+    // The caller's token again answers with the job it started, and nothing runs.
+    let (status, repeated) = send(client, "POST", "/v1/resources", again.clone()).await;
+    assert_eq!(status, 202, "{repeated}");
+    assert_eq!(repeated["job"]["id"], created["job"]["id"]);
     // The server reaches the host where the provisioner said it is.
     let (_, host) = send(client, "GET", "/v1/hosts/studio", Value::Null).await;
     assert_eq!(host["address"], "192.0.2.20", "{host}");
-    let (status, said) = send(client, "POST", "/v1/hosts/studio/instance", asked.clone()).await;
+    let (status, said) = send(client, "POST", "/v1/resources", asked.clone()).await;
     assert_eq!(status, 409, "{said}");
 
-    // What its provisioner says of it, and what it can do to it.
+    // What its provisioner says of it, and what can be done to it.
     std::fs::write(fake.join("answer.status"), r#"{"state": "running"}"#).unwrap();
-    let (status, instance) = send(client, "GET", "/v1/hosts/studio/instance", Value::Null).await;
-    assert_eq!(status, 200, "{instance}");
+    let path = format!("/v1/resources/{id}");
+    let (status, seen) = send(client, "GET", &path, Value::Null).await;
+    assert_eq!(status, 200, "{seen}");
     assert_eq!(
-        (&instance["state"], &instance["id"], &instance["verbs"]),
+        (&seen["state"], &seen["external_id"], &seen["verbs"]),
         (&json!("running"), &json!("vm-1"), &json!(["start"]))
     );
-    send(
-        client,
-        "PUT",
-        "/v1/hosts/draft/profile",
-        json!({"builder": {}}),
-    )
-    .await;
-    let (status, said) = send(client, "GET", "/v1/hosts/draft/instance", Value::Null).await;
-    assert_eq!(status, 404, "{said}");
+    let (_, actions) = send(client, "GET", &format!("{path}/actions"), Value::Null).await;
+    let names: Vec<&str> = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|action| action["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["start", "remove"]);
     assert_eq!(
-        send(client, "GET", "/v1/hosts/nobody/instance", Value::Null)
+        send(client, "GET", "/v1/resources/r-nobody", Value::Null)
             .await
             .0,
         404
     );
-    for (verb, wanted) in [("start", 200), ("stop", 400), ("dance", 400)] {
-        let path = format!("/v1/hosts/studio/instance/{verb}");
-        let (status, said) = send(client, "POST", &path, Value::Null).await;
-        assert_eq!(status, wanted, "{verb}: {said}");
-    }
-    assert_eq!(
-        send(
+    for (action, wanted) in [("start", 202), ("stop", 404), ("dance", 404)] {
+        let (status, said) = send(
             client,
             "POST",
-            "/v1/hosts/draft/instance/start",
-            Value::Null
+            &format!("{path}/actions/{action}"),
+            Value::Null,
         )
-        .await
-        .0,
-        404
-    );
+        .await;
+        assert_eq!(status, wanted, "{action}: {said}");
+        if status == 202 {
+            let (output, code) =
+                job_ended(&served.socket, said["job"]["id"].as_str().unwrap()).await;
+            assert_eq!(code, 0, "{output}");
+        }
+    }
+    // A machine that is gone is missing, and its record stays.
+    std::fs::write(fake.join("answer.status"), r#"{"state": "gone"}"#).unwrap();
+    let (_, seen) = send(client, "GET", &path, Value::Null).await;
+    assert_eq!(seen["state"], "missing");
+    assert!(machine().is_some());
 
-    // One thing at a time is done to a host's machine.
-    let held = provision::lock(paths, "studio").unwrap();
-    for (method, path) in [
-        ("POST", "/v1/hosts/studio/instance/start"),
-        ("DELETE", "/v1/hosts/studio/instance"),
+    // One thing at a time is done to a host's machine, as to the host.
+    let held = berth_core::provision::lock(paths, "studio").unwrap();
+    for (method, at) in [
+        ("POST", format!("{path}/actions/start")),
+        ("DELETE", path.clone()),
     ] {
-        let (status, said) = send(client, method, path, Value::Null).await;
-        assert_eq!(status, 409, "{method} {path}: {said}");
+        let (status, said) = send(client, method, &at, Value::Null).await;
+        assert_eq!(status, 409, "{method} {at}: {said}");
     }
     drop(held);
 
-    // The machines it has, as it lists them, also over the portal.
+    // The provisioner's page lists it, joined with what the provisioner lists.
     std::fs::write(
         fake.join("answer.list"),
-        r#"{"resources": [{"id": "vm-1", "kind": "machine", "name": "studio", "state": "running"}]}"#,
+        r#"{"resources": [{"id": "vm-1", "kind": "machine", "name": "studio", "state": "running"},
+            {"id": "vm-9", "kind": "machine", "name": "attic"}]}"#,
     )
     .unwrap();
-    let path = "/v1/provisioners/fake/vm/instances?server=https%3A%2F%2F192.0.2.10%3A8443";
-    let (status, listed) = send(client, "GET", path, Value::Null).await;
-    assert_eq!(status, 200, "{listed}");
-    assert_eq!(listed[0]["host"], "studio");
-    let (status, said) = send(
+    let (_, page) = send(
         client,
         "GET",
-        "/v1/provisioners/fake/vm/instances",
+        "/v1/provisioners/fake/vm?server=x",
         Value::Null,
     )
     .await;
-    assert_eq!(status, 400, "{said}");
-    assert!(message(&said).contains("server=VALUE"), "{said}");
-    assert_eq!(
-        send(
-            client,
-            "GET",
-            "/v1/provisioners/fake/none/instances",
-            Value::Null
-        )
-        .await
-        .0,
-        404
-    );
+    assert_eq!(page["resources"][0]["resource"], json!(id), "{page}");
+    assert_eq!(page["resources"][0]["state"], "running");
+    assert!(page["resources"][1].get("resource").is_none());
     let portal = berth_api::portal::Portal::over(
         client::websocket_unix(&served.socket, "/v1/portal")
             .await
             .unwrap(),
     );
-    let args = json!({"plugin": "fake", "id": "vm", "server": "x"});
-    let listed = portal
-        .call("provisioners.instances", None, args, None)
-        .await;
-    assert_eq!(listed.unwrap()[0]["id"], "vm-1");
     let got = portal
-        .call("instances.get", None, json!({"name": "studio"}), None)
+        .call("resources.list", None, json!({"kind": "machine"}), None)
         .await;
-    assert_eq!(got.unwrap()["id"], "vm-1");
+    assert_eq!(got.unwrap()[0]["id"], json!(id));
 
     // The host stays while its machine does.
     let (status, said) = send(client, "DELETE", "/v1/hosts/studio", Value::Null).await;
     assert_eq!(status, 409, "{said}");
     assert!(
-        message(&said).contains("berth instance studio destroy"),
+        message(&said).contains(&format!("berth resource {id} remove")),
         "{said}"
     );
 
-    let (status, job) = send(client, "DELETE", "/v1/hosts/studio/instance", Value::Null).await;
+    std::fs::write(fake.join("answer.status"), r#"{"state": "running"}"#).unwrap();
+    let (status, acted) = send(client, "DELETE", &path, Value::Null).await;
     assert_eq!(
-        (status, &job["action"]),
-        (200, &json!("unprovision")),
-        "{job}"
+        (status, &acted["job"]["action"]),
+        (202, &json!("remove")),
+        "{acted}"
     );
-    let (output, code) = job_ended(&served.socket, job["id"].as_str().unwrap()).await;
+    let (output, code) = job_ended(&served.socket, acted["job"]["id"].as_str().unwrap()).await;
     assert_eq!(code, 0, "{output}");
     assert!(output.contains("tailnet"), "{output}");
-    assert!(Record::load(paths, "studio").unwrap().is_none());
+    assert!(machine().is_none());
     let asked: Vec<String> = std::fs::read_to_string(fake.join("requests.log"))
         .unwrap()
         .lines()
         .map(str::to_owned)
         .collect();
     assert_eq!(asked.last().map(String::as_str), Some("destroy"));
-    assert_eq!(
-        send(client, "DELETE", "/v1/hosts/studio/instance", Value::Null)
-            .await
-            .0,
-        404
-    );
+    assert_eq!(send(client, "DELETE", &path, Value::Null).await.0, 404);
     assert_eq!(
         send(client, "DELETE", "/v1/hosts/studio", Value::Null)
             .await
@@ -2586,11 +2584,253 @@ async fn machines_are_created_and_deleted_through_the_api() {
     for kind in [
         berth_core::store::kind::PROFILE,
         berth_core::store::kind::CREDENTIALS,
-        berth_core::store::kind::INSTANCE,
     ] {
         let kept = store.read(kind, berth_core::store::OWN, "studio").unwrap();
         assert!(kept.is_none(), "{kind}");
     }
+    assert!(
+        store
+            .names(berth_core::store::kind::RESOURCE, berth_core::store::OWN)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deployment_keeps_its_spec_and_gets_its_secrets_only_on_standard_input() {
+    let served = served_with(quick).await;
+    let fake = fake_provisioner(&served);
+    let mut client = served.client().await;
+    let client = &mut client;
+    let paths = &served.state.paths;
+    paths.prepare().unwrap();
+    let message = |said: &Value| said["error"]["message"].as_str().unwrap_or("").to_owned();
+    send(
+        client,
+        "PUT",
+        "/v1/secrets/api_token",
+        json!({"value": "tok-s3cret"}),
+    )
+    .await;
+    let spec = "services:\n  wiki:\n    image: wiki\n    environment:\n      DB: ${DB_PASSWORD}\n";
+    let asked = json!({"provisioner": "fake/vm", "kind": "deployment", "name": "wiki",
+                       "arguments": {"server": "x"}, "spec": spec,
+                       "secrets": [{"name": "wiki_db", "env": "DB_PASSWORD"}], "token": "t-1"});
+    // A secret it is given has to have a value; a name and a spec have to fit.
+    let (status, said) = send(client, "POST", "/v1/resources", asked.clone()).await;
+    assert_eq!(status, 400, "{said}");
+    assert!(message(&said).contains("wiki_db"), "{said}");
+    send(
+        client,
+        "PUT",
+        "/v1/secrets/wiki_db",
+        json!({"value": "db-pa55word-made-up"}),
+    )
+    .await;
+    for (change, wanted) in [
+        (json!({"name": "Wiki!"}), "cannot be a deployment's name"),
+        (json!({"spec": null}), "made from a specification"),
+        (json!({"kind": "volume"}), "makes no volume"),
+        (
+            json!({"secrets": [{"name": "wiki_db", "env": "1X"}]}),
+            "environment variable",
+        ),
+    ] {
+        let mut body = asked.clone();
+        for (key, value) in change.as_object().unwrap() {
+            body[key] = value.clone();
+        }
+        let (status, said) = send(client, "POST", "/v1/resources", body).await;
+        assert_eq!(status, 400, "{change}: {said}");
+        assert!(message(&said).contains(wanted), "{change}: {said}");
+    }
+    std::fs::write(fake.join("leak"), "").unwrap();
+    std::fs::write(
+        fake.join("answer.create"),
+        r#"{"id": "wiki", "state": "running"}"#,
+    )
+    .unwrap();
+    let (status, created) = send(client, "POST", "/v1/resources", asked.clone()).await;
+    assert_eq!(status, 202, "{created}");
+    let id = created["resource"]["id"].as_str().unwrap().to_owned();
+    assert!(created["resource"].get("host").is_none());
+    let (output, code) = job_ended(&served.socket, created["job"]["id"].as_str().unwrap()).await;
+    assert_eq!(code, 0, "{output}");
+    // The request carried the secret, which the job never shows.
+    assert!(!output.contains("db-pa55word-made-up"), "{output}");
+    assert!(output.contains("[secret]"), "{output}");
+    let request: Value =
+        serde_json::from_str(&std::fs::read_to_string(fake.join("last.create")).unwrap()).unwrap();
+    assert_eq!(
+        (&request["kind"], &request["name"], &request["spec"]),
+        (&json!("deployment"), &json!("wiki"), &json!(spec))
+    );
+    assert_eq!(request["environment"]["DB_PASSWORD"], "db-pa55word-made-up");
+    assert_eq!(
+        request["arguments"],
+        json!({"server": "x", "replicas": "1"})
+    );
+    assert_eq!(request["labels"]["berth-resource"], json!(id));
+    // berth keeps the spec apart from the record, and the secret by name only.
+    let store = berth_core::store::shared(paths).unwrap();
+    let record = store
+        .read(
+            berth_core::store::kind::RESOURCE,
+            berth_core::store::OWN,
+            &id,
+        )
+        .unwrap()
+        .unwrap();
+    let record = String::from_utf8(record).unwrap();
+    assert!(
+        !record.contains("db-pa55word") && !record.contains("services:"),
+        "{record}"
+    );
+    let kept = store
+        .read(berth_core::store::kind::SPEC, berth_core::store::OWN, &id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept, spec.as_bytes());
+    let (_, seen) = send(client, "GET", "/v1/resources?kind=deployment", Value::Null).await;
+    assert_eq!(seen[0]["state"], "running", "{seen}");
+    assert_eq!(seen[0]["spec_sha256"].as_str().unwrap().len(), 64);
+    // Asked again with the same token, it is the same, with the same job.
+    let (status, repeated) = send(client, "POST", "/v1/resources", asked.clone()).await;
+    assert_eq!(status, 202, "{repeated}");
+    assert_eq!(
+        (&repeated["resource"]["id"], &repeated["job"]["id"]),
+        (&json!(id), &created["job"]["id"])
+    );
+    let mut other = asked.clone();
+    other["token"] = json!("t-2");
+    let (status, said) = send(client, "POST", "/v1/resources", other).await;
+    assert_eq!(status, 409, "{said}");
+
+    // Its actions: the kind's own, run with its id and kind, and change.
+    let path = format!("/v1/resources/{id}");
+    let (_, actions) = send(client, "GET", &format!("{path}/actions"), Value::Null).await;
+    let names: Vec<&str> = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|action| action["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["change", "services", "restart", "remove"]);
+    std::fs::write(
+        fake.join("answer.act"),
+        r#"{"message": "1 service", "details": [{"label": "wiki", "value": "running"}]}"#,
+    )
+    .unwrap();
+    let (status, acted) = send(
+        client,
+        "POST",
+        &format!("{path}/actions/services"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{acted}");
+    assert_eq!(acted["result"]["message"], "1 service");
+    let request: Value =
+        serde_json::from_str(&std::fs::read_to_string(fake.join("last.act")).unwrap()).unwrap();
+    assert_eq!(
+        (&request["id"], &request["kind"], &request["action"]["name"]),
+        (&json!("wiki"), &json!("deployment"), &json!("services"))
+    );
+    assert_eq!(request["spec"], json!(spec));
+    let changed = "services:\n  wiki:\n    image: wiki:2\n";
+    let (status, acted) = send(
+        client,
+        "PUT",
+        &path,
+        json!({"spec": changed, "arguments": {"replicas": "2"}, "token": "c-1"}),
+    )
+    .await;
+    assert_eq!(status, 202, "{acted}");
+    let (output, code) = job_ended(&served.socket, acted["job"]["id"].as_str().unwrap()).await;
+    assert_eq!(code, 0, "{output}");
+    let request: Value =
+        serde_json::from_str(&std::fs::read_to_string(fake.join("last.change")).unwrap()).unwrap();
+    assert_eq!(
+        (&request["spec"], &request["arguments"]["replicas"]),
+        (&json!(changed), &json!("2"))
+    );
+    let kept = store
+        .read(berth_core::store::kind::SPEC, berth_core::store::OWN, &id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept, changed.as_bytes());
+    let (_, again) = send(
+        client,
+        "PUT",
+        &path,
+        json!({"spec": changed, "token": "c-1"}),
+    )
+    .await;
+    assert_eq!(again["job"]["id"], acted["job"]["id"]);
+
+    // Its log, with the secret masked.
+    std::fs::write(fake.join("answer.logs"), "up\nusing db-pa55word-made-up\n").unwrap();
+    let request =
+        format!("GET {path}/logs?tail=5 HTTP/1.1\r\nHost: berth\r\nConnection: close\r\n\r\n");
+    let mut stream = tokio::net::UnixStream::connect(&served.socket)
+        .await
+        .unwrap();
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut said = String::new();
+    stream.read_to_string(&mut said).await.unwrap();
+    assert!(
+        said.contains("200 OK") && said.contains("using [secret]"),
+        "{said}"
+    );
+    assert!(!said.contains("db-pa55word"), "{said}");
+
+    // And as a stream over the portal, which ends with how it ended.
+    let portal = berth_api::portal::Portal::over(
+        client::websocket_unix(&served.socket, "/v1/portal")
+            .await
+            .unwrap(),
+    );
+    let mut stream = portal
+        .open("resources.follow", None, json!({"id": id, "tail": 5}))
+        .await
+        .unwrap();
+    let (mut lines, mut ended) = (String::new(), None);
+    while let Some(piece) = tokio::time::timeout(Duration::from_secs(20), stream.recv())
+        .await
+        .unwrap()
+    {
+        match piece.unwrap() {
+            berth_api::portal::Piece::Binary(data) => {
+                lines.push_str(&String::from_utf8_lossy(&data))
+            }
+            berth_api::portal::Piece::Text(said) => ended = Some(said),
+        }
+    }
+    assert!(
+        lines.contains("using [secret]") && !lines.contains("db-pa55word"),
+        "{lines}"
+    );
+    assert_eq!(ended.unwrap()["exited"]["exit_code"], 0);
+    let request: Value =
+        serde_json::from_str(&std::fs::read_to_string(fake.join("last.logs")).unwrap()).unwrap();
+    assert_eq!(
+        (&request["tail"], &request["follow"]),
+        (&json!(5), &json!(true))
+    );
+
+    // Removing it forgets it with its spec.
+    let (status, acted) = send(client, "DELETE", &path, Value::Null).await;
+    assert_eq!(status, 202, "{acted}");
+    let (output, code) = job_ended(&served.socket, acted["job"]["id"].as_str().unwrap()).await;
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains("Removed the deployment wiki"), "{output}");
+    assert!(
+        store
+            .read(berth_core::store::kind::SPEC, berth_core::store::OWN, &id)
+            .unwrap()
+            .is_none()
+    );
 }
 
 // ── The setup key ───────────────────────────────────────────────────────────
@@ -3153,6 +3393,55 @@ async fn a_host_added_by_its_address_has_a_level_and_actions_to_match() {
             .unwrap()
             .contains("berth apply dock")
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_seen_to_be_a_workstation_never_gets_the_controller_alone() {
+    let Some(host) = Berthd::start().await else {
+        return;
+    };
+    // The host's record is a workstation's, whatever its profile here says.
+    std::fs::write(
+        host.dir.path().join("etc/applied.json"),
+        json!({"berth": "0.5.0", "plugins": []}).to_string(),
+    )
+    .unwrap();
+    let served = served().await;
+    berth_core::profiles::Place::own("box")
+        .unwrap()
+        .save(
+            &served.state.paths,
+            &json!({"level": "reachable", "access": {"address": "198.51.100.1", "user": "ops"}}),
+        )
+        .unwrap();
+    served
+        .state
+        .add(Remote::new("box", "198.51.100.1", host.link()));
+    let client = &mut served.client().await;
+    let (_, actions) = send(client, "GET", "/v1/hosts/box/actions", Value::Null).await;
+    let install = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["name"] == "install-controller")
+        .cloned()
+        .unwrap();
+    assert_eq!(install["available"], false, "{install}");
+    let why = install["why"].as_str().unwrap();
+    assert!(
+        why.starts_with("box is a workstation; its profile here says reachable")
+            && why.contains("berth host level box workstation"),
+        "{why}"
+    );
+    let (status, said) = send(
+        client,
+        "POST",
+        "/v1/hosts/box/actions/install-controller",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 501, "{said}");
+    assert!(served.state.store.jobs(10).unwrap().is_empty());
 }
 
 async fn said_profile(client: &mut Client, name: &str) -> Value {

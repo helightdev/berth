@@ -177,9 +177,45 @@ pub fn seen(answer: std::result::Result<&Version, bool>) -> Option<Level> {
     }
 }
 
+pub use berth_api::level_mismatch as mismatch;
+
+/// Why installing the controller alone must not run on a host seen to be a
+/// workstation, whatever its profile says: it would take the workstation's
+/// controller apart.
+pub fn refuse_install(name: &str, intended: Level, observed: Option<Level>) -> Option<String> {
+    match (intended, observed) {
+        (Level::Workstation, _) | (_, None) => None,
+        (_, Some(Level::Workstation)) => Some(format!(
+            "{} Installing the controller alone would take its controller apart, so it is not offered",
+            mismatch(name, intended, observed).unwrap_or_default()
+        )),
+        _ => None,
+    }
+}
+
+/// What the host's controller says the host is, asked through the link
+/// once and briefly: `None` when no controller answers.
+pub fn observe(paths: &crate::paths::Paths, host: &Host, password: Option<&str>) -> Option<Level> {
+    let link = crate::link::Link::new(host.link(paths, password).ok()?);
+    let runtime = crate::link::runtime().ok()?;
+    let asked = runtime.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            link.get::<Version>("/v1/version"),
+        )
+        .await
+    });
+    runtime.shutdown_background();
+    match asked {
+        Ok(Ok(version)) => seen(Ok(&version)),
+        _ => None,
+    }
+}
+
 /// berth's own action that puts the controller on a host, as a host of
-/// `level` sees it.
-pub fn install_controller_action(name: &str, level: Level) -> Action {
+/// `level` sees it. `observed` is what its controller says it is, when it
+/// answered.
+pub fn install_controller_action(name: &str, level: Level, observed: Option<Level>) -> Action {
     let (label, help) = match level {
         Level::Controller => (
             "Update the controller",
@@ -199,13 +235,18 @@ pub fn install_controller_action(name: &str, level: Level) -> Action {
         confirm: Some(format!("Install berth's controller on {name} now?")),
         ..Action::default()
     };
-    fit(action, name, level, Capability::InstallController)
+    let mut action = fit(action, name, level, Capability::InstallController);
+    if let Some(why) = refuse_install(name, level, observed) {
+        action.available = false;
+        action.why = why;
+    }
+    action
 }
 
 /// berth's own actions on a host of this machine, which need no server:
 /// those that change the host's level.
-pub fn local_actions(name: &str, level: Level) -> Vec<Action> {
-    vec![install_controller_action(name, level)]
+pub fn local_actions(name: &str, level: Level, observed: Option<Level>) -> Vec<Action> {
+    vec![install_controller_action(name, level, observed)]
 }
 
 #[cfg(test)]
@@ -284,13 +325,38 @@ mod tests {
 
     #[test]
     fn installing_the_controller_is_offered_below_a_workstation() {
-        let action = install_controller_action("dock", Level::Reachable);
+        let action = install_controller_action("dock", Level::Reachable, None);
         assert!(action.available && action.label == "Install the controller");
         assert_eq!(
-            install_controller_action("dock", Level::Controller).label,
+            install_controller_action("dock", Level::Controller, None).label,
             "Update the controller"
         );
-        let action = install_controller_action("dock", Level::Workstation);
+        let action = install_controller_action("dock", Level::Workstation, None);
         assert!(!action.available && action.why.contains("berth apply dock"));
+        // A controller seen to be one is updated as its profile says.
+        let action = install_controller_action("dock", Level::Reachable, Some(Level::Controller));
+        assert!(action.available);
+    }
+
+    #[test]
+    fn a_host_seen_to_be_a_workstation_never_gets_the_controller_alone() {
+        for intended in [Level::Reachable, Level::Controller] {
+            let action = install_controller_action("dock", intended, Some(Level::Workstation));
+            assert!(!action.available);
+            assert!(
+                action.why.starts_with(&format!(
+                    "dock is a workstation; its profile here says {intended}"
+                )),
+                "{}",
+                action.why
+            );
+            assert!(action.why.contains("berth host level dock workstation"));
+        }
+        assert_eq!(
+            mismatch("dock", Level::Reachable, Some(Level::Controller)).unwrap(),
+            "dock has berth's controller; its profile here says reachable. To adopt it: berth host level dock controller"
+        );
+        assert!(mismatch("dock", Level::Workstation, Some(Level::Controller)).is_none());
+        assert!(mismatch("dock", Level::Controller, None).is_none());
     }
 }

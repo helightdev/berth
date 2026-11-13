@@ -26,8 +26,14 @@ pub enum Arrived {
     Password,
     /// What can create the host's machine.
     Provisioners(Result<Vec<berth_api::ProvisionerInfo>, String>),
-    /// The machine berth created for the host, if it has one.
-    Instance(Result<Option<berth_api::Instance>, String>),
+    /// The machine berth created for the host, its resource, if it has one.
+    Instance(Result<Option<berth_api::Resource>, String>),
+    /// A resource's page: how it is, and its actions.
+    ResourcePage(
+        String,
+        Result<berth_api::Resource, String>,
+        Result<Vec<berth_api::Action>, String>,
+    ),
     /// A provisioner's page: how it is, and its actions.
     ProvisionerPage(
         String,
@@ -697,63 +703,233 @@ impl Admin {
         );
         let admin = self.clone();
         self.portal.call(
-            "instances.get",
+            "resources.list",
             None,
-            json!({"name": name}),
+            json!({"kind": "machine", "host": name}),
             Value::Null,
             move |result| {
-                let found = match result {
-                    Ok(found) => serde_json::from_value(found)
-                        .map(Some)
-                        .map_err(|error| error.to_string()),
-                    Err(error) if berth_tui::machine::absent(&error) => Ok(None),
-                    Err(error) => Err(error),
+                let listed: Result<Vec<berth_api::Resource>, String> = result.and_then(|found| {
+                    serde_json::from_value(found).map_err(|error| error.to_string())
+                });
+                let id = match listed {
+                    Ok(listed) => match listed.first() {
+                        Some(made) => made.id.clone(),
+                        None => return admin.arrive(Arrived::Instance(Ok(None))),
+                    },
+                    Err(error) => return admin.arrive(Arrived::Instance(Err(error))),
                 };
-                admin.arrive(Arrived::Instance(found));
+                // What its provisioner says of it now.
+                let asker = admin.clone();
+                admin.portal.call(
+                    "resources.get",
+                    None,
+                    json!({"id": id}),
+                    Value::Null,
+                    move |result| {
+                        let found = match result {
+                            Ok(found) => serde_json::from_value(found)
+                                .map(Some)
+                                .map_err(|error| error.to_string()),
+                            Err(error) if berth_tui::machine::absent(&error) => Ok(None),
+                            Err(error) => Err(error),
+                        };
+                        asker.arrive(Arrived::Instance(found));
+                    },
+                );
             },
         );
     }
 
     /// Create the host's machine as a job of the server, and follow it.
-    pub fn provision(&self, name: &str, asked: &berth_api::Provision, size: (u16, u16)) {
-        let body = serde_json::to_value(asked).unwrap_or_default();
+    pub fn provision(&self, name: &str, asked: &berth_api::NewResource, size: (u16, u16)) {
+        let mut asked = asked.clone();
+        asked.host = Some(name.to_owned());
+        asked.kind = "machine".into();
         let title = format!("Create machine · {name}");
-        let host = name.to_owned();
-        self.job("instances.create", name, body, title, size, move |admin| {
-            admin.machine(&host)
-        });
-    }
-
-    /// Delete the host's machine as a job of the server, and follow it.
-    pub fn unprovision(&self, name: &str, size: (u16, u16)) {
-        let title = format!("Delete machine · {name}");
-        let host = name.to_owned();
-        self.job(
-            "instances.destroy",
-            name,
-            Value::Null,
-            title,
-            size,
-            move |admin| admin.machine(&host),
-        );
-    }
-
-    /// Start or stop the host's machine.
-    pub fn power(&self, name: &str, verb: &str) {
-        self.say(format!("Asking the machine to {verb}…"));
-        let (host, said) = (
-            name.to_owned(),
-            format!("✓ {verb} asked of {name}'s machine"),
-        );
-        self.call(
-            "instances.power",
-            json!({"name": name, "verb": verb}),
-            Value::Null,
-            move |admin, _| {
-                admin.say(said);
-                admin.machine(&host);
+        let (admin, host) = (self.clone(), name.to_owned());
+        self.say("Starting…");
+        self.portal.call(
+            "resources.create",
+            None,
+            json!({}),
+            serde_json::to_value(&asked).unwrap_or_default(),
+            move |result| match result {
+                Ok(created) => {
+                    admin.say("");
+                    let again = host.clone();
+                    admin.follow(created["job"]["id"].clone(), &title, size, move |admin| {
+                        admin.machine(&again)
+                    });
+                }
+                Err(error) => admin.say(format!("✗ {error}")),
             },
         );
+    }
+
+    /// Delete the host's machine, the resource `id`, as a job of the server,
+    /// and follow it.
+    pub fn unprovision(&self, name: &str, id: &str, size: (u16, u16)) {
+        let title = format!("Delete machine · {name}");
+        let (admin, host) = (self.clone(), name.to_owned());
+        self.portal.call(
+            "resources.remove",
+            None,
+            json!({"id": id}),
+            Value::Null,
+            move |result| match result {
+                Ok(acted) => {
+                    let again = host.clone();
+                    admin.follow(acted["job"]["id"].clone(), &title, size, move |admin| {
+                        admin.machine(&again)
+                    });
+                }
+                Err(error) => admin.say(format!("✗ {error}")),
+            },
+        );
+    }
+
+    /// Start or stop the host's machine, the resource `id`, as a job of the
+    /// server, and follow it.
+    pub fn power(&self, name: &str, id: &str, verb: &str, size: (u16, u16)) {
+        let title = format!(
+            "{} machine · {name}",
+            if verb == "start" { "Start" } else { "Stop" }
+        );
+        let (admin, host) = (self.clone(), name.to_owned());
+        self.portal.call(
+            "resources.act",
+            None,
+            json!({"id": id, "action": verb}),
+            json!({}),
+            move |result| match result {
+                Ok(acted) if acted["job"].is_null() => admin.machine(&host),
+                Ok(acted) => {
+                    let again = host.clone();
+                    admin.follow(acted["job"]["id"].clone(), &title, size, move |admin| {
+                        admin.machine(&again)
+                    });
+                }
+                Err(error) => admin.say(format!("✗ {error}")),
+            },
+        );
+    }
+
+    // ── Resources ───────────────────────────────────────────────────────────
+
+    /// Ask a resource how it is and what it can do, for its page.
+    pub fn resource(&self, id: &str) {
+        let (admin, id) = (self.clone(), id.to_owned());
+        let args = json!({"id": id});
+        self.portal.call(
+            "resources.get",
+            None,
+            args.clone(),
+            Value::Null,
+            move |seen| {
+                let seen = seen.and_then(|found| {
+                    serde_json::from_value(found).map_err(|error| error.to_string())
+                });
+                let asker = admin.clone();
+                admin.portal.call(
+                    "resources.actions",
+                    None,
+                    args,
+                    Value::Null,
+                    move |actions| {
+                        let actions = actions.and_then(|found| {
+                            serde_json::from_value(found).map_err(|error| error.to_string())
+                        });
+                        asker.arrive(Arrived::ResourcePage(id, seen, actions));
+                    },
+                );
+            },
+        );
+    }
+
+    /// Run an action of a resource: one that answers at once says so on its
+    /// page, a job is followed in a panel and its page asked for again.
+    pub fn resource_act(
+        &self,
+        id: &str,
+        action: &berth_api::Action,
+        values: &std::collections::BTreeMap<String, String>,
+        size: (u16, u16),
+    ) {
+        let (admin, id) = (self.clone(), id.to_owned());
+        let title = format!("{} · {id}", action.title());
+        self.say(match action.changes {
+            true => "Starting…".to_owned(),
+            false => format!("Asking {id}…"),
+        });
+        self.portal.call(
+            "resources.act",
+            None,
+            json!({"id": id, "action": action.name}),
+            json!({"arguments": values}),
+            move |result| match result {
+                Ok(acted) if acted["job"].is_null() => {
+                    let lines = berth_tui::provisioners::answer_lines(&acted["result"]);
+                    admin.say(lines.first().cloned().unwrap_or_default());
+                    admin.arrive(Arrived::ProvisionerAnswer(id, Ok(lines)));
+                }
+                Ok(acted) => {
+                    admin.say("");
+                    let again = id.clone();
+                    admin.follow(acted["job"]["id"].clone(), &title, size, move |admin| {
+                        admin.resource(&again)
+                    });
+                }
+                Err(error) => {
+                    admin.say(format!("✗ {error}"));
+                    admin.arrive(Arrived::ProvisionerAnswer(id, Err(error)));
+                }
+            },
+        );
+    }
+
+    /// A resource's log in a panel: the last lines, then what follows until
+    /// the panel is closed.
+    pub fn resource_logs(&self, id: &str, size: (u16, u16)) {
+        let title = format!("Log · {id}");
+        self.data.borrow_mut().job = Some(View::plain(&title, size.0, size.1));
+        let follower = self.clone();
+        let stream = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let ours = stream.clone();
+        let opened = self.portal.stream(
+            "resources.follow",
+            None,
+            json!({"id": id, "tail": 200}),
+            move |frame| {
+                let mut data = follower.data.borrow_mut();
+                // A closed panel ends the stream, so the server stops reading the log.
+                let Some(view) = data.job.as_mut().filter(|view| view.title == title) else {
+                    follower.portal.end(ours.get());
+                    return;
+                };
+                match frame {
+                    Frame::Bytes(bytes) => {
+                        view.feed(&bytes);
+                    }
+                    Frame::Data(said) => {
+                        if let Some(error) = said["error"].as_str() {
+                            view.feed(format!("\n✗ {error}\n").as_bytes());
+                        }
+                        if let Some(code) = berth_tui::host::exited(&said) {
+                            view.ended = Some(code);
+                        }
+                    }
+                    Frame::End(why) => {
+                        if view.ended.is_none() {
+                            if let Some(why) = why {
+                                view.feed(format!("\n{why}\n").as_bytes());
+                            }
+                            view.ended = Some(None);
+                        }
+                    }
+                }
+            },
+        );
+        stream.set(opened);
     }
 
     // ── Provisioners ────────────────────────────────────────────────────────

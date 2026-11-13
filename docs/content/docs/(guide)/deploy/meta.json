@@ -1,5 +1,5 @@
 {
   "title": "Deploying",
   "icon": "HardDriveDownload",
-  "pages": ["usb", "ssh", "cloud", "provisioners", "container", "ansible", "qemu"]
+  "pages": ["usb", "ssh", "cloud", "provisioners", "resources", "deployments", "container", "ansible", "qemu"]
 }

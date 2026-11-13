@@ -320,11 +320,13 @@ impl Setup {
                 Some("Saving…".into())
             }
             Next::Power(verb) => {
-                admin.power(&name, verb);
+                let id = self.machine.machine().map(|made| made.id.clone())?;
+                admin.power(&name, &id, verb, size);
                 None
             }
             Next::Destroy => {
-                admin.unprovision(&name, size);
+                let id = self.machine.machine().map(|made| made.id.clone())?;
+                admin.unprovision(&name, &id, size);
                 None
             }
         }

@@ -10,6 +10,7 @@ pub(crate) mod keys;
 #[cfg(feature = "web")]
 mod page;
 mod provisioners;
+mod resources;
 mod setup;
 pub mod setup_key;
 #[cfg(test)]

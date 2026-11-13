@@ -1638,14 +1638,9 @@ fn plugins_key(
             *status = "A roll-out runs already".into();
         }
         Asked::Rollout(options) => view.roll_out(paths, options),
-        Asked::Other => match key.code {
-            KeyCode::Char('1') | KeyCode::Esc => return Outcome::Tab(0),
-            KeyCode::Char('2') => return Outcome::Tab(1),
-            KeyCode::Char('3') => return Outcome::Tab(2),
-            KeyCode::Char('4') | KeyCode::BackTab => return Outcome::Tab(3),
-            KeyCode::Char('6') | KeyCode::Tab => return Outcome::Tab(5),
-            KeyCode::Char('q') => return Outcome::Quit,
-            _ => {}
+        Asked::Other => match leave_tab(key, tabs::PLUGINS) {
+            Outcome::Stay => {}
+            outcome => return outcome,
         },
     }
     Outcome::Stay
@@ -1673,7 +1668,7 @@ fn secrets_key(
         Ok(store) => store,
         Err(error) => {
             *status = error.to_string();
-            return leave_tab(key, 3);
+            return leave_tab(key, tabs::SECRETS);
         }
     };
     let names = store.secret_names();
@@ -1742,25 +1737,39 @@ fn secrets_key(
             }
             None => {}
         },
-        KeyCode::Char('1') | KeyCode::Esc => return Outcome::Tab(0),
-        KeyCode::Char('2') => return Outcome::Tab(1),
-        KeyCode::Char('3') | KeyCode::BackTab => return Outcome::Tab(2),
-        KeyCode::Char('5') | KeyCode::Tab => return Outcome::Tab(4),
-        KeyCode::Char('6') => return Outcome::Tab(5),
-        KeyCode::Char('q') => return Outcome::Quit,
-        _ => {}
+        _ => return leave_tab(key, tabs::SECRETS),
     }
     Outcome::Stay
 }
 
-/// A key on a tab whose store did not open: only the keys that leave it
-/// count, so the screen is not stuck there. `here` is the tab's number.
+/// The tabs of the home screen, in their order; a digit key is one more
+/// than the index.
+pub(crate) mod tabs {
+    pub const HOSTS: usize = 0;
+    pub const PROVISIONERS: usize = 1;
+    pub const SETTINGS: usize = 2;
+    pub const REGISTRIES: usize = 3;
+    pub const SECRETS: usize = 4;
+    pub const PLUGINS: usize = 5;
+    pub const NAMES: [&str; 6] = [
+        "Hosts",
+        "Provisioners",
+        "Settings",
+        "Registries",
+        "Secrets",
+        "Plugins",
+    ];
+}
+
+/// The keys that leave a tab for another, the same on every tab: a digit,
+/// Tab and Shift+Tab, Esc for the hosts, and q. `here` is the tab's index.
 fn leave_tab(key: KeyEvent, here: usize) -> Outcome {
+    let count = tabs::NAMES.len();
     match key.code {
         KeyCode::Char(digit @ '1'..='6') => Outcome::Tab(digit as usize - '1' as usize),
-        KeyCode::Esc => Outcome::Tab(0),
-        KeyCode::Tab => Outcome::Tab((here + 1) % 6),
-        KeyCode::BackTab => Outcome::Tab((here + 5) % 6),
+        KeyCode::Esc => Outcome::Tab(tabs::HOSTS),
+        KeyCode::Tab => Outcome::Tab((here + 1) % count),
+        KeyCode::BackTab => Outcome::Tab((here + count - 1) % count),
         KeyCode::Char('q') => Outcome::Quit,
         _ => Outcome::Stay,
     }
@@ -1897,7 +1906,7 @@ fn registries_key(
         Ok(store) => store,
         Err(error) => {
             *status = error.to_string();
-            return leave_tab(key, 2);
+            return leave_tab(key, tabs::REGISTRIES);
         }
     };
     let rows = registry_rows(Some(&store));
@@ -2048,13 +2057,7 @@ fn registries_key(
             }
             _ => {}
         },
-        KeyCode::Char('1') | KeyCode::Esc => return Outcome::Tab(0),
-        KeyCode::Char('2') | KeyCode::BackTab => return Outcome::Tab(1),
-        KeyCode::Char('4') | KeyCode::Tab => return Outcome::Tab(3),
-        KeyCode::Char('5') => return Outcome::Tab(4),
-        KeyCode::Char('6') => return Outcome::Tab(5),
-        KeyCode::Char('q') => return Outcome::Quit,
-        _ => {}
+        _ => return leave_tab(key, tabs::REGISTRIES),
     }
     Outcome::Stay
 }
@@ -2062,11 +2065,11 @@ fn registries_key(
 /// Open one of the home screen's tabs.
 fn open_tab(home: &mut Home, tab: usize) {
     home.mode = match tab {
-        1 => HomeMode::Settings(0, None),
-        2 => HomeMode::Registries(RegistryView::default()),
-        3 => HomeMode::Secrets(SecretView::default()),
-        4 => HomeMode::Plugins(PluginView::default()),
-        5 => HomeMode::Provisioners(Default::default()),
+        tabs::PROVISIONERS => HomeMode::Provisioners(Default::default()),
+        tabs::SETTINGS => HomeMode::Settings(0, None),
+        tabs::REGISTRIES => HomeMode::Registries(RegistryView::default()),
+        tabs::SECRETS => HomeMode::Secrets(SecretView::default()),
+        tabs::PLUGINS => HomeMode::Plugins(PluginView::default()),
         _ => HomeMode::Hosts,
     };
 }
@@ -2703,27 +2706,22 @@ fn home_key(
                     home.qr = Some(berth_tui::qr::Overlay::connect(link));
                 }
             }
-            KeyCode::Char('3') | KeyCode::Tab => {
-                home.mode = HomeMode::Registries(RegistryView::default())
-            }
-            KeyCode::Char('4') => home.mode = HomeMode::Secrets(SecretView::default()),
-            KeyCode::Char('5') => home.mode = HomeMode::Plugins(PluginView::default()),
-            KeyCode::Char('6') => home.mode = HomeMode::Provisioners(Default::default()),
-            KeyCode::Char('1') | KeyCode::BackTab | KeyCode::Esc => home.mode = HomeMode::Hosts,
-            KeyCode::Char('q') => return Some(None),
-            _ => {}
+            _ => match leave_tab(key, tabs::SETTINGS) {
+                Outcome::Tab(tab) => open_tab(home, tab),
+                Outcome::Quit => return Some(None),
+                Outcome::Stay => {}
+            },
         },
         HomeMode::Hosts => match key.code {
             KeyCode::Up => home.selected = home.selected.saturating_sub(1),
             KeyCode::Down => home.selected = (home.selected + 1).min(home.hosts.len()),
             KeyCode::Char('n') => home.mode = HomeMode::Naming(Input::default()),
-            KeyCode::Char('2' | 's') | KeyCode::Tab => home.mode = HomeMode::Settings(0, None),
+            KeyCode::Char('s') => open_tab(home, tabs::SETTINGS),
             KeyCode::Char('r') => home.refresh = true,
-            KeyCode::Char('3') => home.mode = HomeMode::Registries(RegistryView::default()),
-            KeyCode::Char('4') => home.mode = HomeMode::Secrets(SecretView::default()),
-            KeyCode::Char('5') => home.mode = HomeMode::Plugins(PluginView::default()),
-            KeyCode::Char('6') | KeyCode::BackTab => {
-                home.mode = HomeMode::Provisioners(Default::default())
+            KeyCode::Char('1'..='6') | KeyCode::Tab | KeyCode::BackTab => {
+                if let Outcome::Tab(tab) = leave_tab(key, tabs::HOSTS) {
+                    open_tab(home, tab);
+                }
             }
             KeyCode::Char('d') => {
                 if let Some((name, _)) = home.hosts.get(home.selected) {
@@ -2762,26 +2760,19 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
     ])
     .areas(area);
     let tab = match home.mode {
-        HomeMode::Settings(..) => 1,
-        HomeMode::Registries(..) => 2,
-        HomeMode::Secrets(..) => 3,
-        HomeMode::Plugins(..) => 4,
-        HomeMode::Provisioners(..) => 5,
-        _ => 0,
+        HomeMode::Provisioners(..) => tabs::PROVISIONERS,
+        HomeMode::Settings(..) => tabs::SETTINGS,
+        HomeMode::Registries(..) => tabs::REGISTRIES,
+        HomeMode::Secrets(..) => tabs::SECRETS,
+        HomeMode::Plugins(..) => tabs::PLUGINS,
+        _ => tabs::HOSTS,
     };
     // The Information panel is for the settings, and for a host with a server's word on it.
     let settings = tab != 0 || home.known.is_some();
     let tabs = draw_header(
         frame,
         header,
-        &[
-            "Hosts",
-            "Settings",
-            "Registries",
-            "Secrets",
-            "Plugins",
-            "Provisioners",
-        ],
+        &tabs::NAMES,
         tab,
         home.known
             .as_ref()
@@ -3074,7 +3065,7 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                 if naming.is_some() {
                     "Enter create · Esc cancel · Ctrl+O copy"
                 } else {
-                    "↑↓ select · Enter open · n new host · d default · r refresh · 2 settings · 3 registries · 4 secrets · 5 plugins · 6 provisioners · q quit"
+                    "↑↓ select · Enter open · n new host · d default · r refresh · 2 provisioners · 3 settings · 4 registries · 5 secrets · 6 plugins · q quit"
                 },
             )
         }
@@ -3456,7 +3447,7 @@ mod tests {
         };
         let typed = |text: &str| text.chars().map(KeyCode::Char).collect::<Vec<_>>();
         // The Secrets tab: a name, then the value, which the screen does not show.
-        keys(&mut home, &[KeyCode::Char('4'), KeyCode::Enter]);
+        keys(&mut home, &[KeyCode::Char('5'), KeyCode::Enter]);
         keys(&mut home, &typed("github"));
         keys(&mut home, &[KeyCode::Enter]);
         keys(&mut home, &typed("ghp_value"));
@@ -3558,7 +3549,7 @@ mod tests {
                 &mut Clipboard::default(),
             );
         };
-        key(&mut home, KeyCode::Char('5'));
+        key(&mut home, KeyCode::Char('6'));
         if let HomeMode::Plugins(view) = &mut home.mode {
             view.load(&paths);
         }
@@ -3666,7 +3657,7 @@ mod tests {
                 home_screen(&paths, home).join("\n")
             );
         };
-        key(&mut home, KeyCode::Char('6'));
+        key(&mut home, KeyCode::Char('2'));
         let screen = settle(&mut home, &|screen| screen.contains("Lab box"));
         assert!(screen.contains("Provisioners") && screen.contains("aa-lab/box"));
         // The lab sorts first; its page asks it how it is.
@@ -3800,7 +3791,7 @@ mod tests {
         let typed = |text: &str| text.chars().map(KeyCode::Char).collect::<Vec<_>>();
         use KeyCode::{Down, Enter, Up};
         // Hosts, then the Registries tab: only "+ Add registry" is there.
-        keys(&mut home, &[KeyCode::Char('3'), Enter]);
+        keys(&mut home, &[KeyCode::Char('4'), Enter]);
         keys(&mut home, &typed("Bad Name"));
         keys(&mut home, &[Enter]);
         assert!(home.status.starts_with("Use lower-case"));
@@ -4011,7 +4002,7 @@ mod tests {
         assert!(press(&mut home, KeyCode::Char('d')).is_none());
         assert_eq!(paths.settings().unwrap()["default_host"], "laptop");
         for code in [
-            KeyCode::Char('2'),
+            KeyCode::Char('3'),
             KeyCode::Down,
             KeyCode::Down,
             KeyCode::Enter,
@@ -4739,6 +4730,7 @@ mod tests {
             berth_core::level::install_controller_action(
                 "devbox",
                 berth_api::HostLevel::Controller,
+                None,
             ),
             berth_api::Action {
                 name: "host-key".into(),
@@ -5212,9 +5204,10 @@ mod tests {
         app.set_step(Step::Install);
         assert!(machine_rows(&app).is_empty());
         // With a machine, its state and what can be done to it are on Run, whatever the way.
-        app.machine.found(Ok(Some(berth_api::Instance {
+        app.machine.found(Ok(Some(berth_api::Resource {
             provisioner: "lab/vm".into(),
-            id: "studio".into(),
+            id: "r-studio".into(),
+            external_id: "studio".into(),
             state: "stopped".into(),
             verbs: vec!["start".into()],
             ..Default::default()

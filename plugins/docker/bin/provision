@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Creates the container for a berth host: systemd as PID 1 and an SSH server.
+"""Creates the container for a berth host, with systemd as PID 1 and an SSH
+server, and Compose projects for deployments.
 
 Version 2 of berth's provisioner protocol: one JSON request on stdin, one JSON
-answer on stdout, progress on stderr. `logs` writes the container's log on
-stdout instead.
+answer on stdout, progress on stderr. `logs` writes the log on stdout instead.
 """
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -58,6 +60,39 @@ def tail(text, lines=8):
     return ' | '.join([line for line in text.strip().splitlines() if line.strip()][-lines:])
 
 
+def failure(what, output):
+    """The error for a docker command that failed, from the last lines it wrote."""
+    message = tail(output or '')
+    if re.search(r'Cannot connect to the Docker daemon|error during connect|permission denied while trying to connect', message):
+        return Failure(f'the Docker daemon is not reachable: {message}')
+    if re.search(r"'compose' is not a docker command|unknown command:? .*compose", message):
+        return Failure('Docker Compose is not installed where berth runs: deployments need the docker compose plugin')
+    return Failure(f'{what} failed: {message}')
+
+
+def stream(argv, env, what, cwd=None, mask=lambda text: text):
+    """Copies what a command writes to standard output as it comes, until it ends
+    or whoever reads stops."""
+    sys.stdout.flush()
+    try:
+        process = subprocess.Popen(argv, env=env, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, text=True, errors='replace')
+    except FileNotFoundError:
+        raise Failure('docker is not installed or not on the PATH')
+    try:
+        for line in process.stdout:
+            sys.stdout.write(mask(line))
+            sys.stdout.flush()
+    except BrokenPipeError:
+        process.kill()
+        process.wait()
+        # Nothing more can be written, so the closed pipe must not fail the exit either.
+        sys.stdout = open(os.devnull, 'w')
+        return
+    if process.wait() != 0:
+        raise Failure(f'{what} ended with {process.returncode}')
+
+
 class Docker:
     def __init__(self, endpoint):
         self.env = dict(os.environ)
@@ -71,10 +106,7 @@ class Docker:
         except FileNotFoundError:
             raise Failure('docker is not installed or not on the PATH')
         if check and done.returncode != 0:
-            message = tail(done.stderr or done.stdout or '')
-            if re.search(r'Cannot connect to the Docker daemon|error during connect|permission denied while trying to connect', message):
-                raise Failure(f'the Docker daemon is not reachable: {message}')
-            raise Failure(f'docker {args[0]} failed: {message}')
+            raise failure(f'docker {args[0]}', done.stderr or done.stdout)
         return done
 
     def inspect(self, name):
@@ -415,8 +447,16 @@ def destroy(request):
 
 def list_all(request):
     docker = settings(request)['docker']
-    if (request.get('kind') or 'machine') != 'machine':
-        return {'resources': []}
+    kind = request.get('kind') or ''
+    resources = []
+    if kind in ('', 'machine'):
+        resources += machines(docker)
+    if kind in ('', 'deployment'):
+        resources += deployments(docker)
+    return {'resources': resources}
+
+
+def machines(docker):
     resources = []
     for name in docker.names('label=berth-host'):
         info = docker.inspect(name)
@@ -426,7 +466,7 @@ def list_all(request):
         running = info.get('State', {}).get('Running')
         resources.append({'id': name, 'kind': 'machine', 'name': host, 'host': host,
                           'state': 'running' if running else 'stopped'})
-    return {'resources': resources}
+    return resources
 
 
 def change(request):
@@ -459,13 +499,7 @@ def logs(request):
     args = ['docker', 'logs', '--tail', str(int(request.get('tail') or 100))]
     if request.get('follow'):
         args.append('--follow')
-    sys.stdout.flush()
-    try:
-        done = subprocess.run([*args, name], env=cfg['docker'].env, stderr=subprocess.STDOUT)
-    except FileNotFoundError:
-        raise Failure('docker is not installed or not on the PATH')
-    if done.returncode != 0:
-        raise Failure(f'docker logs ended with {done.returncode}')
+    stream([*args, name], cfg['docker'].env, 'docker logs')
     return None
 
 
@@ -543,16 +577,317 @@ ACTIONS = {'engine': act_engine, 'images': act_images, 'volumes': act_volumes,
            'build': act_build, 'prune': act_prune}
 
 
+# Deployments: one Compose project each, named after the deployment.
+
+PROJECT = r'[a-z0-9][a-z0-9_-]*'
+VARIABLE = r'[A-Za-z_][A-Za-z0-9_]*'
+# The project is named by -p and its file comes on stdin, never from the environment berth runs in.
+INHERITED = ('COMPOSE_FILE', 'COMPOSE_PROJECT_NAME', 'COMPOSE_PATH_SEPARATOR', 'COMPOSE_PROFILES')
+LABELS = ('berth-resource', 'berth-token')
+
+
+def valid_project(name):
+    if not isinstance(name, str) or not re.fullmatch(PROJECT, name):
+        raise Failure(f'{name!r} is not a Compose project name: it takes lowercase letters, digits, - and _, '
+                      'and starts with a letter or digit')
+    return name
+
+
+def json_objects(text):
+    """What --format json printed: one array, or one object a line, as Compose versions differ."""
+    text = (text or '').strip()
+    if not text:
+        return []
+    try:
+        found = json.loads(text)
+        return [item for item in (found if isinstance(found, list) else [found]) if isinstance(item, dict)]
+    except ValueError:
+        pass
+    found = []
+    for line in text.splitlines():
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict):
+            found.append(item)
+    return found
+
+
+def label_map(text):
+    if isinstance(text, dict):
+        return text
+    return dict(part.split('=', 1) for part in (text or '').split(',') if '=' in part)
+
+
+def feed(pipe, text):
+    try:
+        pipe.write(text)
+        pipe.close()
+    except (BrokenPipeError, OSError):
+        pass
+
+
+class Compose:
+    """docker compose for one project, with the secrets berth resolved in its environment and nowhere else."""
+
+    def __init__(self, request, project):
+        self.docker = settings(request)['docker']
+        self.project = valid_project(project)
+        self.env = {key: value for key, value in self.docker.env.items() if key not in INHERITED}
+        self.secrets = []
+        environment = request.get('environment') or {}
+        if not isinstance(environment, dict):
+            raise Failure('environment must be an object of variables')
+        for key, value in environment.items():
+            if not re.fullmatch(VARIABLE, key):
+                raise Failure(f'{key!r} is not a name an environment variable can have')
+            if key.startswith(('DOCKER_', 'COMPOSE_')):
+                raise Failure(f'{key} would change how docker compose runs: give the secret another name')
+            value = '' if value is None else str(value)
+            self.env[key] = value
+            if value:
+                self.secrets.append(value)
+        self.secrets.sort(key=len, reverse=True)
+        arguments = request.get('arguments') or {}
+        self.keep = (arguments.get('keep_volumes') or 'no').strip().lower() == 'yes'
+
+    def where(self):
+        return self.docker.where()
+
+    def mask(self, text):
+        for secret in self.secrets:
+            text = text.replace(secret, '***')
+        return text
+
+    def argv(self, args, files=()):
+        argv = ['docker', 'compose', '-p', self.project]
+        for name in files:
+            argv += ['-f', name]
+        return argv + list(args)
+
+    def run(self, *args, spec=None, labels=None, services=(), progress=False, check=True):
+        """Runs a subcommand in an empty directory, so that no compose.yaml or .env of whoever
+        runs berth comes in. The spec goes on standard input, and the labels in a file of their own."""
+        with tempfile.TemporaryDirectory(prefix='berth-compose-') as empty:
+            files = ['-'] if spec is not None else []
+            if labels and services:
+                override = Path(empty) / 'berth-labels.json'
+                override.write_text(json.dumps({'services': {name: {'labels': labels} for name in services}}))
+                override.chmod(0o600)
+                files.append(str(override))
+            try:
+                process = subprocess.Popen(
+                    self.argv(args, files), env=self.env, cwd=empty, text=True, errors='replace',
+                    stdin=subprocess.PIPE if spec is not None else subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT if progress else subprocess.PIPE)
+            except FileNotFoundError:
+                raise Failure('docker is not installed or not on the PATH')
+            if progress:
+                if spec is not None:
+                    threading.Thread(target=feed, args=(process.stdin, spec), daemon=True).start()
+                seen = []
+                for line in process.stdout:
+                    line = self.mask(line)
+                    sys.stderr.write(line)
+                    sys.stderr.flush()
+                    seen = (seen + [line])[-20:]
+                process.wait()
+                out = err = ''.join(seen)
+            else:
+                out, err = process.communicate(spec)
+        if check and process.returncode != 0:
+            raise failure(f'docker compose {args[0]}', self.mask(err or out))
+        return subprocess.CompletedProcess(process.args, process.returncode, out, err)
+
+    def containers(self):
+        return json_objects(self.run('ps', '--all', '--format', 'json').stdout)
+
+    def ours(self):
+        """The project's containers. A project with containers but none of berth's labels is someone else's."""
+        rows = self.containers()
+        if rows and not any('berth-resource' in label_map(row.get('Labels')) for row in rows):
+            raise Failure(f'the Compose project {self.project} was not created by berth')
+        return rows
+
+    def existing(self):
+        rows = self.ours()
+        if not rows:
+            raise Failure(f'the Compose project {self.project} has no containers at {self.where()}')
+        return rows
+
+    def up(self, spec, labels):
+        if not isinstance(spec, str) or not spec.strip():
+            raise Failure('the request carries no Compose file')
+        services = [line.strip() for line in self.run('config', '--services', spec=spec).stdout.splitlines()
+                    if line.strip()]
+        say(f'Bringing up {self.project} at {self.where()}.')
+        self.run('up', '-d', '--remove-orphans', spec=spec, labels=labels, services=services, progress=True)
+        return project_state(self.containers())
+
+
+def running(row):
+    return (row.get('State') or '').lower() == 'running'
+
+
+def project_state(rows):
+    if not rows:
+        return {'state': 'gone'}
+    up = [row for row in rows if running(row)]
+    if len(up) == len(rows):
+        return {'state': 'running'}
+    if not up:
+        return {'state': 'stopped'}
+    down = sorted({row.get('Service') or row.get('Name') or '?' for row in rows if not running(row)})
+    return {'state': 'running', 'message': f'{", ".join(down)} not running'}
+
+
+def project_labels(request, compose, rows=()):
+    """berth's labels for the project's containers: the request's, else those its containers have."""
+    given = request.get('labels') or {}
+    labels = {key: given[key] for key in LABELS if given.get(key)}
+    if request.get('token'):
+        labels.setdefault('berth-token', request['token'])
+    for row in rows:
+        found = label_map(row.get('Labels'))
+        for key in LABELS:
+            if found.get(key):
+                labels.setdefault(key, found[key])
+    labels.setdefault('berth-resource', compose.project)
+    return labels
+
+
+def deployment_id(request):
+    if not request.get('id'):
+        raise Failure('the request names no Compose project')
+    return request['id']
+
+
+def deployment_create(request):
+    compose = Compose(request, request.get('name'))
+    answer = compose.up(request.get('spec'), project_labels(request, compose))
+    return {'id': compose.project, **answer}
+
+
+def deployment_change(request):
+    compose = Compose(request, deployment_id(request))
+    rows = compose.ours()
+    return compose.up(request.get('spec'), project_labels(request, compose, rows))
+
+
+def deployment_status(request):
+    return project_state(Compose(request, deployment_id(request)).containers())
+
+
+def deployment_destroy(request):
+    compose = Compose(request, deployment_id(request))
+    if not compose.ours():
+        say(f'{compose.project} has no containers left; removing what else it has.')
+    args = ['down', '--remove-orphans'] + ([] if compose.keep else ['--volumes'])
+    done = compose.run(*args, progress=True, check=False)
+    if done.returncode != 0 and compose.containers():
+        raise failure('docker compose down', done.stderr)
+    return {}
+
+
+def deployment_start(request):
+    compose = Compose(request, deployment_id(request))
+    compose.existing()
+    compose.run('start', progress=True)
+    return {}
+
+
+def deployment_stop(request):
+    compose = Compose(request, deployment_id(request))
+    compose.existing()
+    compose.run('stop', progress=True)
+    return {}
+
+
+def deployment_logs(request):
+    compose = Compose(request, deployment_id(request))
+    lines = int(request.get('tail') or 0)
+    args = ['logs', '--no-color', '--tail', str(lines) if lines > 0 else 'all']
+    if request.get('follow'):
+        args.append('--follow')
+    with tempfile.TemporaryDirectory(prefix='berth-compose-') as empty:
+        stream(compose.argv(args), compose.env, 'docker compose logs', cwd=empty, mask=compose.mask)
+    return None
+
+
+def deployments(docker):
+    """The Compose projects whose containers carry berth's labels, each with its state."""
+    done = docker.run('ps', '--all', '--filter', 'label=berth-resource',
+                      '--format', '{{.Label "com.docker.compose.project"}}\t{{.State}}')
+    projects = {}
+    for line in done.stdout.splitlines():
+        name, _, state = line.partition('\t')
+        if name.strip():
+            projects.setdefault(name.strip(), []).append({'State': state.strip()})
+    return [{'id': name, 'kind': 'deployment', 'name': name, 'host': '', 'state': project_state(rows)['state']}
+            for name, rows in sorted(projects.items())]
+
+
+def act_services(request, compose, arguments):
+    rows = compose.ours()
+    details = [{'label': row.get('Service') or row.get('Name') or '?',
+                'value': ' · '.join(part for part in (row.get('State'), row.get('Status')) if part)}
+               for row in rows[:ROWS]]
+    up = len([row for row in rows if running(row)])
+    return {'message': f'{counted(len(rows), "service")} of {compose.project}, {up} running', 'details': details}
+
+
+def act_restart(request, compose, arguments):
+    rows = compose.existing()
+    compose.run('restart', progress=True)
+    return {'message': f'Restarted {counted(len(rows), "container")} of {compose.project}'}
+
+
+def act_pull(request, compose, arguments):
+    rows = compose.existing()
+    spec = request.get('spec')
+    if not isinstance(spec, str) or not spec.strip():
+        raise Failure('the request carries no Compose file')
+    say(f'Pulling the images of {compose.project}.')
+    compose.run('pull', spec=spec, progress=True)
+    answer = compose.up(spec, project_labels(request, compose, rows))
+    return {'message': f'Pulled the images of {compose.project} and recreated what they changed',
+            'details': [{'label': 'State', 'value': answer['state']}]}
+
+
+DEPLOYMENT_ACTIONS = {'services': act_services, 'restart': act_restart, 'pull': act_pull}
+
+DEPLOYMENT_VERBS = {'create': deployment_create, 'status': deployment_status, 'start': deployment_start,
+                    'stop': deployment_stop, 'destroy': deployment_destroy, 'change': deployment_change,
+                    'logs': deployment_logs}
+
+
 def act(request):
     action = request.get('action') or {}
     name = action.get('name') or ''
+    arguments = action.get('arguments') or {}
+    if request.get('id'):
+        kind = request.get('kind') or 'machine'
+        if kind != 'deployment':
+            raise Failure(f'a {kind} has no actions')
+        if name not in DEPLOYMENT_ACTIONS:
+            raise Failure(f'there is no action {name!r} of a deployment; there are {", ".join(DEPLOYMENT_ACTIONS)}')
+        return DEPLOYMENT_ACTIONS[name](request, Compose(request, request['id']), arguments)
     if name not in ACTIONS:
         raise Failure(f'there is no action {name!r}; there are {", ".join(ACTIONS)}')
-    return ACTIONS[name](settings(request), action.get('arguments') or {})
+    return ACTIONS[name](settings(request), arguments)
 
 
 VERBS = {'create': create, 'status': status, 'start': start, 'stop': stop,
          'destroy': destroy, 'list': list_all, 'change': change, 'logs': logs, 'act': act}
+
+
+def handler(verb, request):
+    """The function for a verb: a deployment's own, or the machine's and the provisioner's."""
+    about_one = verb == 'create' or (verb != 'act' and request.get('id'))
+    if request.get('kind') == 'deployment' and verb in DEPLOYMENT_VERBS and about_one:
+        return DEPLOYMENT_VERBS[verb]
+    return VERBS[verb]
 
 
 def main():
@@ -564,7 +899,7 @@ def main():
         if request.get('version') != PROTOCOL:
             raise Failure(f'this plugin speaks version {PROTOCOL} of the provisioner protocol, '
                           f'not {request.get("version")!r}: update berth')
-        answer = VERBS[verb](request)
+        answer = handler(verb, request)(request)
     except Failure as error:
         say(f'docker/container: {error}')
         return 1
