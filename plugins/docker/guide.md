@@ -21,6 +21,9 @@ created. The same image serves every host.
 
 ## Arguments
 
+In berth each argument has a short label, and its row's Information panel
+says what it means. CPUs and Memory are under Machine on the Settings tab.
+
 | Name | Default | Meaning |
 | --- | --- | --- |
 | `host` | empty | The Docker endpoint, such as `ssh://user@192.0.2.20`. Empty uses the local default. |
@@ -30,7 +33,7 @@ created. The same image serves every host.
 | `volume` | `berth-HOST-data` | The volume for `/srv/agent`. |
 | `cpus` | empty | The CPUs the container may use, such as `2` or `1.5`. Empty means no limit. |
 | `memory` | empty | The memory the container may use, such as `4GiB`, `512MiB` or `4g`. Empty means no limit. |
-| `keep_volume` | `no` | `yes` keeps the volume when the container is destroyed. |
+| `keep_volume` | `no` | `yes` keeps the volume when the container is destroyed. It is a choice of `no` and `yes`. |
 
 `cpus` and `memory` cap the container with Docker's own limits. There is no
 disk limit, because Docker can cap a container's disk only on some storage drivers.

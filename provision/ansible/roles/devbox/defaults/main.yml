@@ -1,5 +1,5 @@
 ---
-devbox_profile: qemu
+devbox_profile: cloud
 devbox_user: agent
 devbox_agent_password_hash: ""
 devbox_agent_ssh_public_key: ""

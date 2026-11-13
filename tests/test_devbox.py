@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -19,7 +20,7 @@ builder=load('builder','provision/bin/devbox.py')
 guard=load('guard','provision/bin/check-target-disk.py')
 
 def config():
-    return {'hostname':'test-devbox','profile':'qemu',
+    return {'hostname':'test-devbox','profile':'cloud',
         'operator_ssh_public_key':'ssh-ed25519 '+base64.b64encode(b'\0'*64).decode(),
         'operator_password_hash':'$6$salt$'+'a'*86,'target_disk_serial':'DEVBOX_TEST_DISK',
         'release_url':'https://example.com/devbox.tar.gz',
@@ -196,6 +197,35 @@ class RenderTests(unittest.TestCase):
             builder.checked_config(path,'cloud')
             c['ansible_vars']={'devbox_bootstrap_ssh_cidr':'not a network'}; path.write_text(json.dumps(c))
             with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
+    def test_a_qemu_profile_is_a_cloud_one_reached_from_the_qemu_host(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'host.json'
+            c=config(); c['profile']='qemu'; c['ansible_vars']={}; path.write_text(json.dumps(c))
+            checked=builder.checked_config(path,'cloud')
+            self.assertEqual(checked['profile'],'cloud')
+            self.assertEqual(checked['ansible_vars']['devbox_bootstrap_ssh_cidr'],'10.0.2.2/32')
+            self.assertEqual(builder.deployment(checked,'a'*64)['profile'],'cloud')
+            # A network it names stays; laptop and cloud are left alone.
+            c['ansible_vars']={'devbox_bootstrap_ssh_cidr':'192.0.2.0/24'}; path.write_text(json.dumps(c))
+            self.assertEqual(builder.checked_config(path,'cloud')['ansible_vars']['devbox_bootstrap_ssh_cidr'],'192.0.2.0/24')
+            for kept in ['laptop','cloud']:
+                self.assertEqual(builder.retire_qemu({'profile':kept}),{'profile':kept})
+            c['profile']='desktop'; path.write_text(json.dumps(c))
+            with self.assertRaisesRegex(ValueError,'laptop or cloud'): builder.checked_config(path,'cloud')
+    def test_bootstrap_hands_a_qemu_seed_to_the_role_as_cloud(self):
+        script=(ROOT/'provision/bootstrap/bootstrap.sh').read_text()
+        start=script.index("python3 - <<'PY'\n")+len("python3 - <<'PY'\n")
+        handover=script[start:script.index('\nPY\n',start)]
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            deployment={'profile':'qemu','ansible_vars':{'devbox_user':'agent'}}
+            code=(handover.replace("/opt/devbox-bootstrap/deployment.json",str(root/'deployment.json'))
+                          .replace("Path('/etc/devbox')","Path(%r)"%str(root/'etc')))
+            (root/'deployment.json').write_text(json.dumps(deployment))
+            subprocess.run([sys.executable,'-c',code],check=True)
+            handed=json.loads((root/'etc/host.json').read_text())
+            self.assertEqual(handed['devbox_profile'],'cloud')
+            self.assertEqual(handed['devbox_bootstrap_ssh_cidr'],'10.0.2.2/32')
     def test_accounts_take_several_keys_and_the_operator_this_berths(self):
         key=lambda byte:'ssh-ed25519 '+base64.b64encode(bytes([byte])*64).decode()
         c={**config(),'operator_ssh_public_keys':[key(1),key(1)],'agent_ssh_public_keys':[key(2),key(3)]}

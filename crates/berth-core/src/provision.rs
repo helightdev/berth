@@ -278,6 +278,14 @@ fn arguments(
         if argument.required && value.is_empty() {
             return Err(format!("{name} needs {}=VALUE", argument.name).into());
         }
+        if !value.is_empty() && !argument.values.is_empty() && !argument.values.contains(&value) {
+            return Err(format!(
+                "{name} takes {}={} only",
+                argument.name,
+                argument.values.join(" or ")
+            )
+            .into());
+        }
         values.insert(argument.name.clone(), value);
     }
     Ok(values)
@@ -556,6 +564,19 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &Provision) -> R
     })
 }
 
+/// Make the host's profile a `cloud` one before the machine is made from it:
+/// a created machine has no laptop's physical login or power settings, and
+/// the seed is rendered from, or the role applied with, what is saved.
+fn cloud_profile(paths: &Paths, host: &str) -> Result<()> {
+    let path = paths.profile(host)?;
+    let mut profile: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    if profile["profile"] != "cloud" && profile.is_object() {
+        profile["profile"] = json!("cloud");
+        seed::save_profile(&path, &profile)?;
+    }
+    Ok(())
+}
+
 fn new_token() -> Result<String> {
     let mut bytes = [0u8; 16];
     fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
@@ -587,6 +608,7 @@ impl Prepared {
     ) -> Result<()> {
         let (host, name) = (self.host.clone(), self.name.clone());
         say(out, &format!("▸ {host}: creating its machine with {name}"));
+        cloud_profile(paths, &host)?;
         let profile = Host::load(paths, &host)?;
         let mut request = request(
             "create",
@@ -1226,7 +1248,8 @@ build = Path(os.environ['DEVBOX_BUILD_DIR'])
 out = build / config['hostname'] / 'cloud'
 out.mkdir(parents=True, exist_ok=True)
 (build / 'devbox-release.tar.gz').write_bytes(b'release')
-(out / 'user-data').write_text('#cloud-config\n# delivered=' + os.environ.get('BERTH_RELEASE_DELIVERED', '') + '\n')
+(out / 'user-data').write_text('#cloud-config\n# delivered=' + os.environ.get('BERTH_RELEASE_DELIVERED', '') + '\n'
+                               + '# profile=' + config.get('profile', '') + '\n')
 print(build / 'devbox-release.tar.gz')
 print(out)
 "#;
@@ -1344,7 +1367,14 @@ print(out)
             every: Duration::from_millis(10),
             answers: |_, _, _| true,
             finish: |_, host, _, out| {
-                say(out, &format!("finished {}", host.address()));
+                say(
+                    out,
+                    &format!(
+                        "finished {} as {}",
+                        host.address(),
+                        host.config["profile"].as_str().unwrap_or("")
+                    ),
+                );
                 Ok(())
             },
             forget: |_| {},
@@ -1389,7 +1419,8 @@ print(out)
         );
         let (done, out) = world.provision("fake/vm", &[("server", "https://192.0.2.10:8443")]);
         done.unwrap();
-        assert!(out.contains("finished 192.0.2.20"), "{out}");
+        // It is applied as a cloud host.
+        assert!(out.contains("finished 192.0.2.20 as cloud"), "{out}");
         let creates: Vec<Value> = world
             .requests()
             .into_iter()
@@ -1773,10 +1804,13 @@ print(out)
         assert_eq!(world.record().unwrap().id, "seeded-1");
         let (_, create) = world.requests().into_iter().next().unwrap();
         let token = world.record().unwrap().token;
+        // A created machine is a cloud host, whatever the profile said before.
         assert_eq!(
             create["seed"]["user_data"],
-            "#cloud-config\n# delivered=1\n"
+            "#cloud-config\n# delivered=1\n# profile=cloud\n"
         );
+        let host = Host::load(&world.paths, "studio").unwrap();
+        assert_eq!(host.config["profile"], "cloud");
         assert_eq!(
             create["seed"]["meta_data"],
             format!("instance-id: {token}\nlocal-hostname: studio\n")
@@ -1810,5 +1844,38 @@ print(out)
             taken(json!({"operator_username": "ops", "builder": {"ssh_user": "admin"}})),
             json!({"ssh_host": "192.0.2.40", "ssh_user": "admin"})
         );
+    }
+
+    #[test]
+    fn an_argument_of_a_few_values_takes_only_those() {
+        let provisioner = Provisioner {
+            id: "box".into(),
+            label: "Box".into(),
+            description: String::new(),
+            command: PathBuf::from("/bin/true"),
+            setup: Setup::Apply,
+            archive: false,
+            verbs: vec![],
+            secrets: vec![],
+            arguments: vec![berth_api::Argument {
+                name: "keep_volume".into(),
+                default: "no".into(),
+                values: vec!["no".into(), "yes".into()],
+                ..Default::default()
+            }],
+        };
+        let given = |value: &str| BTreeMap::from([("keep_volume".to_owned(), value.to_owned())]);
+        assert_eq!(
+            arguments("lab/box", &provisioner, &BTreeMap::new()).unwrap()["keep_volume"],
+            "no"
+        );
+        assert_eq!(
+            arguments("lab/box", &provisioner, &given("yes")).unwrap()["keep_volume"],
+            "yes"
+        );
+        let said = arguments("lab/box", &provisioner, &given("maybe"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(said, "lab/box takes keep_volume=no or yes only");
     }
 }

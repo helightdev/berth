@@ -28,7 +28,7 @@ A profile is a JSON file that describes one host. berth writes it from the set-u
 <TypeTable
   type={{
     hostname: { type: 'string', description: 'Hostname of the installed machine: lower-case letters, digits and hyphens, starting with a letter. F4 generates one. A cloud seed or a created machine without one takes the name of the host.' },
-    profile: { type: '"laptop" | "cloud" | "qemu"', default: '"laptop"', description: 'Provisioning defaults. Only laptop adds a physical login and power settings.' },
+    profile: { type: '"laptop" | "cloud"', default: '"laptop"', description: 'Provisioning defaults. Only laptop adds a physical login and power settings. A created machine is always cloud. A profile that still says qemu is read as cloud with the recovery SSH CIDR 10.0.2.2/32.' },
     keyboard: { type: 'string', description: 'Keyboard layout of the installer, such as de or us.' },
     tailscale_auth_key: { type: 'string', description: 'Optional enrollment key; prefer a short-lived, one-use key.' },
     tailscale_auto_key: { type: 'boolean', default: 'false', description: 'berth creates a one-use enrollment key whenever the host joins the tailnet. A pasted key wins. See Access.' },
@@ -62,7 +62,7 @@ A profile written before the lists has one key in `operator_ssh_public_key` or `
 
 Each berth makes an ed25519 key of its own the first time it needs one, and keeps it as `id_ed25519` in its data directory. The operator of a host takes it along with the keys in the profile, so the berth that set a host up can log in to it without a key of yours. That matters most for a [berth server](/docs/use/server), which has no keys until you give it some. berth offers the key over SSH unless the profile has a key file set.
 
-`berth key` prints the public half. To copy it, choose **This berth's SSH key** on the Settings tab of the home screen, or press `c` on the field of the same name in Accounts. With a berth server set, both copy the server's key.
+`berth key` prints the public half. To copy it, choose **This berth's SSH key** on the Settings tab of the home screen, or press `c` on the field of the same name on a host's Settings tab. With a berth server set, both copy the server's key.
 
 Add the key as an SSH key at your cloud provider, and every machine you create there takes it. berth then logs in to a new machine without a key of yours. On a host set up some other way, add it to the operator's `~/.ssh/authorized_keys`.
 
@@ -91,13 +91,13 @@ Any `devbox_` setting of the role. The ones the terminal UI edits:
 | `devbox_plugin_features` | Features tab | `claude/cli`, `codex/cli`, `pi/cli`, `t3/server`, `github/cli` |
 | `devbox_tools_*` (one per [category](/docs/reference/tools#tool-categories)) | Features tab | on |
 | `devbox_install_playwright` | Features tab | on |
-| `devbox_software_rendering` | Software graphics | on |
-| `devbox_geometry` | Desktop size | `1600x900` |
-| `devbox_bootstrap_ssh_cidr` | Recovery SSH CIDR | none |
-| `devbox_harden_ssh` | SSH hardening | on |
-| `devbox_install_cockpit` | Cockpit web console | on |
-| `devbox_install_docker` | Docker on host | on |
-| `devbox_install_tailscale` | Tailscale | on |
+| `devbox_software_rendering` | Software graphics, Features tab | on |
+| `devbox_geometry` | Desktop size, under Desktop on the Settings tab | `1600x900` |
+| `devbox_bootstrap_ssh_cidr` | Recovery SSH CIDR, Settings tab | none |
+| `devbox_harden_ssh` | SSH hardening, under Access on the Settings tab | on |
+| `devbox_install_cockpit` | Cockpit web console, Features tab | on |
+| `devbox_install_docker` | Docker on host, Features tab | on |
+| `devbox_install_tailscale` | Tailscale, Install tab | on |
 
 Others, such as `devbox_tailscale_serve`, the agent versions and the backup settings, are described where they are used. All defaults are in [`defaults/main.yml`](https://github.com/helightdev/berth/blob/main/ansible/roles/devbox/defaults/main.yml).
 

@@ -110,6 +110,8 @@ class Handler(BaseHTTPRequestHandler):
         if rest == ['state'] and self.command == 'GET':
             running = instance['status'] == 'Running'
             network = {'lo': {'addresses': [{'family': 'inet', 'address': '127.0.0.1', 'scope': 'local'}]},
+                       # A guest that runs Docker has its bridge too, which sorts first.
+                       'docker0': {'addresses': [{'family': 'inet', 'address': '172.17.0.1', 'scope': 'global'}]},
                        'eth0': {'addresses': [{'family': 'inet6', 'address': 'fe80::1', 'scope': 'link'},
                                               {'family': 'inet', 'address': '192.0.2.50', 'scope': 'global'}]}}
             return self.answer(200, {'status': instance['status'], 'network': network if running else None})

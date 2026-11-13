@@ -25,7 +25,7 @@ Your machine needs `ssh` and `ansible-playbook` ([Install](/docs/start/install#w
 
 ### Choose the method
 
-On the host's **Install** tab, choose **Existing host over SSH**.
+On the host's **Install** tab, choose **Existing host over SSH**. The SSH rows follow under it.
 
 </Step>
 <Step>
@@ -39,14 +39,14 @@ Enter a hostname, an IP address or a `Host` alias from your SSH configuration in
 
 ### Say how to log in
 
-Choose whether berth asks for an SSH password and for your sudo password on the target. Instead of a key of yours, the login can take [the key of berth itself](/docs/reference/profile#the-key-of-berth-itself): copy it from the Settings tab of the home screen into the login's `~/.ssh/authorized_keys`. Your ssh-agent and SSH configuration apply as usual. OpenSSH's host key check applies too: if the host is new to you, connect once with `ssh HOST` to accept its key.
+Choose with **Ask for SSH password** and **Ask for sudo password** whether berth asks for them on the target. Instead of a key of yours, the login can take [the key of berth itself](/docs/reference/profile#the-key-of-berth-itself): copy it from the Settings tab of the home screen into the login's `~/.ssh/authorized_keys`. Your ssh-agent and SSH configuration apply as usual. OpenSSH's host key check applies too: if the host is new to you, connect once with `ssh HOST` to accept its key.
 
 </Step>
 <Step>
 
 ### Run
 
-berth writes a temporary private Ansible inventory and runs the role against the host in your terminal. When it finishes, the profile keeps the SSH address and `berth HOST` opens the host's [overview](/docs/use/overview).
+Look over **Features** and **Settings**, then press Enter on **Run · Existing host over SSH** on the **Run** tab. berth writes a temporary private Ansible inventory and runs the role against the host in your terminal. When it finishes, the profile keeps the SSH address and `berth HOST` opens the host's [overview](/docs/use/overview).
 
 </Step>
 </Steps>

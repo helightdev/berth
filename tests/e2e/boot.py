@@ -90,7 +90,7 @@ def password_hash():
 def boot_profile(station, kind, **values):
     profile = json.loads((SRC / 'provision/config/example.json').read_text())
     profile.update({
-        'hostname': HOST, 'profile': 'cloud' if kind == 'cloud' else 'qemu', 'keyboard': 'us',
+        'hostname': HOST, 'profile': 'cloud', 'keyboard': 'us',
         # As berth writes a new host: the shipped plugins' features are chosen
         # in the list, not switched on for a profile from before them.
         'builder': {'ssh_host': HOST, 'ssh_user': OPERATOR, 'shipped_plugins': True},
@@ -99,6 +99,9 @@ def boot_profile(station, kind, **values):
         'operator_password_hash': password_hash(),
         'ansible_vars': boot_vars(),
     })
+    if kind != 'cloud':
+        # The installed machine is reached only from this container, as QEMU's host.
+        profile['ansible_vars']['devbox_bootstrap_ssh_cidr'] = f'{vm.GATEWAY}/32'
     if control_server():
         profile['tailscale_auth_key'] = control_server()[1]
     profile.update(values)

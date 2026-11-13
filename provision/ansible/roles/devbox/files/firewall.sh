@@ -21,7 +21,5 @@ elif [[ ${DEVBOX_PROFILE:-} == cloud ]]; then
   # No network was named for a host that is only reachable from outside:
   # SSH stays open to any address rather than locking the owner out.
   ufw allow 22/tcp >/dev/null
-elif [[ ${DEVBOX_PROFILE:-} == qemu ]]; then
-  ufw allow from 10.0.2.2 to any port 22 proto tcp >/dev/null
 fi
 ufw --force enable >/dev/null

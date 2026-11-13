@@ -45,6 +45,10 @@ On the server the certificate is `/var/lib/incus/server.crt`.
 
 ## Arguments
 
+In berth each argument has a short label, and its row's Information panel
+says what it means. The server is on the Install tab. CPUs, memory and disk
+size are under Machine on the Settings tab.
+
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `server` | | The address of the Incus API, such as `https://192.0.2.10:8443`. Required. |
