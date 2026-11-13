@@ -25,7 +25,7 @@ tempfile = "3"
 vt100 = "=0.16.2"
 libc = "0.2"
 pulldown-cmark = { version = "0.13", default-features = false }
-jsonwebtoken = { version = "9", default-features = false }
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 
 tui-input = { workspace = true, features = ["crossterm"] }
 
