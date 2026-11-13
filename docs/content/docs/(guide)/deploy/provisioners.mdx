@@ -256,6 +256,8 @@ The documentation site does not show the guides of these plugins. Each is a `gui
 
 The same provisioner runs Compose projects on that engine as [deployments](/docs/deploy/deployments).
 
+For an engine at `ssh://user@address`, the provisioner only sets `DOCKER_HOST`, and Docker starts the system's `ssh` with your own SSH configuration and known hosts. It does not use berth's recorded host key of that server or berth's key. The address has to be in your own known hosts, so log in once with plain `ssh` first. The account's key has to be one your `ssh` offers, from your configuration or agent. ssh cannot ask for a password.
+
 | Action | Does |
 | --- | --- |
 | `engine` | Says the engine's version, its runtimes and how many machines berth made there |

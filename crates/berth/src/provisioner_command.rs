@@ -478,17 +478,35 @@ pub fn summary(provisioner: &ProvisionerInfo) -> String {
 }
 
 /// What `berth provisioner NAME` says of it.
-pub fn describe(state: &ProvisionerState, actions: &[Action]) -> String {
+pub fn describe(
+    state: &ProvisionerState,
+    actions: &[Action],
+    given: &BTreeMap<String, String>,
+) -> String {
     let info = &state.provisioner;
     let mut text = format!("{}  {}\n", info.id, info.label);
     if !info.description.is_empty() {
         text += &format!("{}\n", info.description);
     }
-    let said = match state.message.is_empty() {
-        true => state.state.clone(),
-        false => format!("{} · {}", state.state, state.message),
-    };
-    text += &format!("\nState     {said}\n");
+    // A reason that is long, or has several lines, goes below in full.
+    let pieces: Vec<&str> = state
+        .message
+        .lines()
+        .flat_map(|line| line.split(" | "))
+        .map(str::trim)
+        .filter(|piece| !piece.is_empty())
+        .collect();
+    let long = pieces.len() > 1 || state.message.chars().count() > 60;
+    match (state.message.is_empty(), long) {
+        (true, _) => text += &format!("\nState     {}\n", state.state),
+        (false, false) => text += &format!("\nState     {} · {}\n", state.state, state.message),
+        (false, true) => {
+            text += &format!("\nState     {}\n", state.state);
+            for piece in pieces {
+                text += &format!("  {piece}\n");
+            }
+        }
+    }
     let width = state
         .details
         .iter()
@@ -503,12 +521,19 @@ pub fn describe(state: &ProvisionerState, actions: &[Action]) -> String {
         let set: Vec<String> = info
             .own
             .iter()
-            .map(|name| match info.settings.get(name) {
-                Some(value) => format!("{name}={value}"),
-                None => format!("{name} not set"),
+            .map(|name| match (given.get(name), info.settings.get(name)) {
+                (Some(value), _) => format!("{name}={value} (given for this call, not saved)"),
+                (None, Some(value)) => format!("{name}={value}"),
+                (None, None) => format!("{name} not set"),
             })
             .collect();
         text += &format!("Settings  {}\n", set.join(" · "));
+        if info.own.iter().any(|name| given.contains_key(name)) {
+            text += &format!(
+                "          To keep them: berth provisioner {} run settings NAME=VALUE\n",
+                info.id
+            );
+        }
     }
     let mut kinds: Vec<&str> = vec![];
     for held in &state.resources {
@@ -655,7 +680,7 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
             let (given, _) = parse_arguments(rest)?;
             let state = source.state(name, &given)?;
             let actions = source.actions(name).unwrap_or_default();
-            print!("{}", describe(&state, &actions));
+            print!("{}", describe(&state, &actions, &given));
             Ok(())
         }
         _ => Err(USAGE.into()),
@@ -718,7 +743,7 @@ mod tests {
                 ..Action::default()
             },
         ];
-        let text = describe(&state, &actions);
+        let text = describe(&state, &actions, &BTreeMap::new());
         for line in [
             "State     ready · Incus 6.18 answers\n",
             "Kernel    Linux 6.17\n",
@@ -728,6 +753,23 @@ mod tests {
             "Actions (berth provisioner incus/vm run ACTION)\n",
             "    pools              Storage pools\n",
             "    settings           Settings  (no)\n",
+        ] {
+            assert!(text.contains(line), "{line:?} in\n{text}");
+        }
+        let given: BTreeMap<String, String> =
+            [("server".to_owned(), "https://192.0.2.11:8443".to_owned())].into();
+        let long = ProvisionerState {
+            state: "unreachable".into(),
+            message: "docker version failed: Cannot connect to the Docker daemon | error during connect: ssh: handshake failed".into(),
+            ..state.clone()
+        };
+        let text = describe(&long, &[], &given);
+        for line in [
+            "State     unreachable\n",
+            "  docker version failed: Cannot connect to the Docker daemon\n",
+            "  error during connect: ssh: handshake failed\n",
+            "server=https://192.0.2.11:8443 (given for this call, not saved) · project not set\n",
+            "berth provisioner incus/vm run settings NAME=VALUE\n",
         ] {
             assert!(text.contains(line), "{line:?} in\n{text}");
         }

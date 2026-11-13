@@ -56,6 +56,19 @@ ansible-playbook -i 192.0.2.10, -u root site.yml -e tailscale_auth_key=tskey-aut
 A second run changes nothing that is already in place. It leaves a server
 alone that has a storage pool, so it never touches existing guests.
 
+## Add the server to berth
+
+The recipes leave a plain Ubuntu server where the account `root` takes the public key the server was installed with, such as the one you gave `rescue-install`. Add it to berth from your own machine. This example uses the made-up name `big` and the address `192.0.2.20`:
+
+```bash
+berth host add big 192.0.2.20 --user root --auth ssh
+berth host install big
+```
+
+`berth host add` saves `big` as a reachable host. `--auth ssh` makes berth log in with your own SSH configuration and agent, so the key that works for `ssh root@192.0.2.20` works for berth. The default, `--auth berth`, uses berth's own key, which berth installs on the first contact with a password or a private key that logs in once. `--auth ssh` works with a local berth only. With a berth server set, the server logs in with its own keys.
+
+`berth host install big` puts the controller alone on the server. berth can then report its status and run commands there, and it can update and reboot the server. Sessions run as the SSH user, here `root`. berth never applies such a server as a workstation: it stays a reachable or controller host, and the machines on it are created with the Incus or Docker provisioner.
+
 ## Settings
 
 The settings are in [`vars.yml`](vars.yml), each with a comment. Change them

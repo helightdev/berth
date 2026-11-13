@@ -97,6 +97,23 @@ A second run changes nothing in place. It leaves a server alone that has a
 storage pool, so it never touches existing guests. Settings are in `vars.yml`,
 and the README lists them.
 
+### Add the server to berth
+
+A server from `rescue-install` and `incus-host` takes the user's public key for
+`root`. On the user's own machine, with the made-up name `big`:
+
+```bash
+berth host add big 192.0.2.20 --user root --auth ssh
+berth host install big
+```
+
+`host add` saves a reachable host. The default `--auth berth` uses berth's own
+key, which berth installs on first contact with a password or a private key that
+logs in once. `--auth ssh` uses the user's own SSH configuration and agent, and
+works with a local berth only. `host install` puts the controller alone on the
+server, for status, updates, a reboot and commands. Sessions then run as `root`.
+Such a server is never applied as a workstation.
+
 ### `berth-server`
 
 Turns a small Ubuntu machine into a berth server. 2 GB of memory is enough. It sets up `docker.io`,

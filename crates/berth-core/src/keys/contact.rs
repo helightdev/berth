@@ -203,7 +203,8 @@ pub fn trust_key(
 pub fn host_key(paths: &Paths, host: &Host, accept: bool) -> Result<Vec<String>> {
     let store = crate::store::shared(paths)?;
     if !accept {
-        return Ok(known::Record::load(&store, &host.place)?.host_keys);
+        // A login may have left the key in the known-hosts file only.
+        return known::absorb(paths, &store, &host.place);
     }
     known::forget_host_key(paths, &store, &host.place)?;
     let login = super::login(paths, &store, &host.place, &host.config)?;
@@ -368,4 +369,37 @@ pub fn rotate(paths: &Paths, name: &str, out: &mut dyn Write) -> Result<Rotation
         );
     }
     Ok(rotation)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_key_takes_in_what_a_login_left_in_the_known_hosts_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: dir.path().join("config"),
+            data_dir: dir.path().join("data"),
+        };
+        let place = crate::profiles::Place::own("studio").unwrap();
+        let host = Host {
+            name: "studio".into(),
+            place: place.clone(),
+            config: serde_json::json!({}),
+        };
+        assert!(host_key(&paths, &host, false).unwrap().is_empty());
+        // What ssh writes there at the first login.
+        let file = known::file(&paths, &place);
+        std::fs::write(&file, "berth.studio ssh-ed25519 AAAAmadeup\n").unwrap();
+        assert_eq!(
+            host_key(&paths, &host, false).unwrap(),
+            ["ssh-ed25519 AAAAmadeup"]
+        );
+        let store = crate::store::shared(&paths).unwrap();
+        assert_eq!(
+            known::Record::load(&store, &place).unwrap().host_keys,
+            ["ssh-ed25519 AAAAmadeup"]
+        );
+    }
 }

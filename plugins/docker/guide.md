@@ -48,6 +48,19 @@ disk limit, because Docker can cap a container's disk only on some storage drive
 Without `ssh_port`, the container's address is only reachable from the machine
 that runs Docker. Publish a port when berth runs elsewhere.
 
+### An engine over SSH
+
+With `host=ssh://user@address`, the plugin only sets `DOCKER_HOST`. Docker then
+starts the system's `ssh` for each call, with your own SSH configuration. It
+does not use berth's recorded host key of that server, and it does not use
+berth's key. So:
+
+- The address has to be in your own known hosts. Log in once with plain `ssh`,
+  such as `ssh ops@192.0.2.20`, and accept the key.
+- The account's key has to be one your `ssh` offers, from your SSH
+  configuration or agent.
+- ssh cannot ask for a password, because the calls have no terminal.
+
 ## Machines
 
 | Verb | What it does |
