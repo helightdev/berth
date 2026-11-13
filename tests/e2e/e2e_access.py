@@ -55,7 +55,9 @@ class Access(unittest.TestCase):
                  f'&& if [ -e {AUTHORIZED} ]; then cp -a {AUTHORIZED} {BACKUP}/authorized_keys; fi')
         # The password goes to chpasswd on its standard input.
         cls.admin.ssh(OPERATOR, 'sudo -n chpasswd', input=f'{OPERATOR}:{cls.password}\n')
-        cls.root(f"printf 'PasswordAuthentication yes\\nKbdInteractiveAuthentication yes\\n' > {PASSWORD_CONF} "
+        # These tests fail logins on purpose, and sshd would shut their address out for it.
+        cls.root(f"printf 'PasswordAuthentication yes\\nKbdInteractiveAuthentication yes\\n"
+                 f"PerSourcePenalties no\\n' > {PASSWORD_CONF} "
                  f'&& {RELOAD_SSHD}')
         wait_for('sshd answering again', lambda: cls.admin.ssh(OPERATOR, 'true', check=False).returncode == 0)
         cls.station = Workstation('access', ssh_key=False, trust=False)

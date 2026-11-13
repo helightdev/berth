@@ -630,7 +630,8 @@ class Pipe:
 class BerthdLink:
     def __init__(self, station, key=None):
         self.station = station
-        self.key = key or station.own_key
+        # berth writes its key as a file only when something needs it.
+        self.key = key or station.own_key_file()
 
     def request(self, method, path, body=None, raw=False, headers=None):
         """(status, answer) of one request; the answer is JSON unless raw."""
