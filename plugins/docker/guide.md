@@ -48,6 +48,7 @@ that runs Docker. Publish a port when berth runs elsewhere.
 | Start, stop | Start or stop the container. |
 | Destroy | Removes the container, and the volume unless `keep_volume` is `yes`. A volume that berth did not create is always kept. |
 | List | The containers on the engine with the `berth-host` label. |
+| Log | The latest lines of the container's console, or of its journal when the console is empty. berth shows them while it waits for SSH. |
 
 berth never touches a container without that label, even when its name
 matches.

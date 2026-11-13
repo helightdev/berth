@@ -48,7 +48,7 @@ class FakeIncus(ThreadingHTTPServer):
 
 
 def public(instance):
-    return {k: v for k, v in instance.items() if k not in ('files', 'request')}
+    return {k: v for k, v in instance.items() if k not in ('files', 'request', 'console')}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -70,6 +70,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if self.command != 'HEAD':
             self.wfile.write(raw)
+
+    def raw(self, data):
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/octet-stream')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def route(self):
         server = self.server
@@ -118,10 +125,16 @@ class Handler(BaseHTTPRequestHandler):
             server.events.append((action['action'], instance['name'], action.get('force', False)))
             instance['status'] = {'start': 'Running', 'stop': 'Stopped'}[action['action']]
             return self.answer(202, server.operation(), 'async')
+        if rest == ['console'] and self.command == 'GET':
+            server.events.append(('console', query.get('type')))
+            return self.raw(instance.get('console', b''))
         if rest == ['files']:
             if instance['type'] == 'virtual-machine' and instance['status'] != 'Running':
                 return self.answer(500, "VM agent isn't currently running", 'error')
             path = query['path']
+            if self.command == 'GET':
+                known = instance['files'].get(path)
+                return self.raw(known) if isinstance(known, bytes) else self.answer(404, 'not found', 'error')
             if self.command == 'HEAD':
                 known = path == '/' or path in instance['files']
                 return self.answer(200 if known else 404, {} if known else 'not found', 'sync' if known else 'error')
@@ -260,6 +273,30 @@ class IncusPluginTests(unittest.TestCase):
         self.assertEqual(self.run_verb('start', id='berth-studio-2')[:2], (0, {}))
         self.assertEqual(self.run_verb('status', id='berth-studio-2')[1]['state'], 'running')
         self.assertEqual(self.run_verb('status', id='berth-gone')[1], {'state': 'gone'})
+
+    def test_log_answers_the_latest_console_lines(self):
+        self.create()
+        console = ''.join(f'[  OK  ] Started unit-{n}.service.\r\n' for n in range(150)) + '\r\n'
+        self.server.instances['berth-studio-2']['console'] = console.encode()
+        code, answer, err = self.run_verb('log', id='berth-studio-2')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(answer['lines']), 100)
+        self.assertEqual(answer['lines'][-1], '[  OK  ] Started unit-149.service.')
+        self.assertIn(('console', 'log'), self.server.events)
+
+    def test_log_reads_cloud_init_output_when_the_console_is_empty(self):
+        self.create()
+        self.server.instances['berth-studio-2']['files']['/var/log/cloud-init-output.log'] = \
+            b'Cloud-init v. 25.1 running modules:config\n\nCloud-init v. 25.1 finished\n'
+        code, answer, err = self.run_verb('log', id='berth-studio-2')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(answer, {'lines': ['Cloud-init v. 25.1 running modules:config', 'Cloud-init v. 25.1 finished']})
+
+    def test_log_of_a_vm_without_its_agent_or_of_one_gone_is_empty(self):
+        self.create('vm')
+        self.server.instances['berth-studio-2']['status'] = 'Stopped'
+        self.assertEqual(self.run_verb('log', id='berth-studio-2')[:2], (0, {'lines': []}))
+        self.assertEqual(self.run_verb('log', id='berth-gone')[:2], (0, {'lines': []}))
 
     def test_destroy_stops_and_deletes_and_is_fine_when_gone(self):
         self.create()

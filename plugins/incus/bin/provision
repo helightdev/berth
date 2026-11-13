@@ -22,6 +22,9 @@ IMAGES = 'https://images.linuxcontainers.org'
 BOOTSTRAP = '/opt/devbox-bootstrap'
 ARCHIVE = f'{BOOTSTRAP}/release.tar.gz'
 TYPES = {'vm': 'virtual-machine', 'container': 'container'}
+CLOUD_INIT_LOG = '/var/log/cloud-init-output.log'
+# How many of the latest lines `log` answers with.
+LOG_LINES = 100
 # Incus names are host names: letters, digits and hyphens, at most 63 characters.
 NAME_LIMIT = 63
 
@@ -108,7 +111,8 @@ class Incus:
                        'Add incus_client_cert to its trust store: on the server, run '
                        '`incus config trust add-certificate FILE` with the certificate in FILE.')
 
-    def request(self, method, path, body=None, query=None, headers=None, timeout=20):
+    def exchange(self, method, path, body=None, query=None, headers=None, timeout=20):
+        """The status and the raw body of the answer."""
         query = dict(query or {})
         query.setdefault('project', self.project)
         target = urllib.parse.quote(path) + '?' + urllib.parse.urlencode(query)
@@ -125,15 +129,24 @@ class Incus:
             raise Failure(f'Lost the connection to {self.server}: {exc}') from None
         finally:
             connection.close()
+        if response.status == 403:
+            raise self.untrusted()
+        return response.status, raw
+
+    def text(self, path, query=None):
+        """A file the API serves as it is, such as a console log, or '' when it has none."""
+        status, raw = self.exchange('GET', path, query=query)
+        return raw.decode('utf-8', 'replace') if status == 200 else ''
+
+    def request(self, method, path, body=None, query=None, headers=None, timeout=20):
+        status, raw = self.exchange(method, path, body, query, headers, timeout)
         try:
             data = json.loads(raw) if raw else {}
         except ValueError:
             data = {}
         if not isinstance(data, dict):
             data = {}
-        if response.status == 403:
-            raise self.untrusted()
-        return response.status, data
+        return status, data
 
     def call(self, method, path, body=None, missing=False, wait=900, **options):
         """The metadata of a sync answer, or of the finished operation of an async one.
@@ -370,6 +383,18 @@ def power(action):
     return verb
 
 
+def log(incus, request, arguments):
+    """The latest lines of the console, or of cloud-init's output when the console has none."""
+    name = request['id']
+    if not incus.instance(name):
+        return {'lines': []}
+    text = incus.text(f'/1.0/instances/{name}/console', {'type': 'log'})
+    if not text.strip():
+        # A VM's files are out of reach until its agent runs, which answers as no file.
+        text = incus.text(f'/1.0/instances/{name}/files', {'path': CLOUD_INIT_LOG})
+    return {'lines': [line for line in text.splitlines() if line.strip()][-LOG_LINES:]}
+
+
 def listed(incus, request, arguments):
     return {'instances': [
         {'id': i['name'], 'host': i['config']['user.berth-host'], 'state': state_of(i)}
@@ -377,7 +402,7 @@ def listed(incus, request, arguments):
 
 
 VERBS = {'create': create, 'status': status, 'destroy': destroy,
-         'start': power('start'), 'stop': power('stop'), 'list': listed}
+         'start': power('start'), 'stop': power('stop'), 'list': listed, 'log': log}
 
 
 def main():

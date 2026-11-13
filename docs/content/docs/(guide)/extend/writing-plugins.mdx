@@ -221,7 +221,7 @@ The provisioner is referred to as `PLUGIN/ID`, here `lab/vm`.
     label: { type: 'string', default: 'the id', description: 'Name in berth.' },
     description: { type: 'string', description: 'Help text in berth.' },
     archive: { type: 'boolean', default: 'false', description: 'Only for seed. The provisioner puts the release archive into the machine itself, so the profile needs no release_url.' },
-    verbs: { type: 'string[]', description: 'Of start, stop and list, the ones it answers. create, status and destroy are always required.' },
+    verbs: { type: 'string[]', description: 'Of start, stop, list and log, the ones it answers. create, status and destroy are always required.' },
     secrets: { type: '(string | Secret)[]', description: 'Names of berth secrets it is given. A string is required. {"name", "required": false} is given when it has a value. It gets no others.' },
     arguments: { type: 'Argument[]', description: 'Values asked for: {name, label, required, default, kind, help, values}. All values are strings. choices, the command that lists the values of a task argument, is not used: list them in values.' },
   }}
@@ -274,7 +274,7 @@ When the command ends, berth ends everything it started in the process group. Do
 
 | Verb | Time allowed |
 | --- | --- |
-| `status`, `list` | 30 seconds |
+| `status`, `list`, `log` | 30 seconds |
 | `start`, `stop`, `destroy` | 5 minutes |
 | `create` | 15 minutes |
 
@@ -305,8 +305,19 @@ Each verb adds to it and answers like this:
 | `destroy` | `id` | `{}` |
 | `start`, `stop` | `id` | `{}` |
 | `list` | | `instances`, a list of `id`, `host` and `state` |
+| `log` | `id` | `lines`, the latest lines of the machine's console or boot output |
 
 `create` must answer with an `id`. berth keeps it, and every later verb uses that id. The `address` and `port` go into the profile's `builder.ssh_host` and `builder.ssh_port` when those are empty. Entries of `list` without an `id` are dropped.
+
+### The log verb
+
+While berth waits for a new machine, it asks `log` with each `status`, until SSH answers. It shows the lines it has not shown before, so `log` answers with the latest lines each time, oldest first. 100 lines is plenty. Answer `{"lines": []}` when the machine is gone or has no output yet.
+
+berth removes escape sequences and control characters, shortens long lines and shows at most six lines at a time. It hides the provisioner's secrets and those of the seed. Leave out `log` when the platform has no console to read. berth then waits without it.
+
+```json title="Answer on standard output"
+{"lines": ["[  OK  ] Started ssh.service - OpenBSD Secure Shell server.", "Cloud-init v. 25.1 finished"]}
+```
 
 A `seed` provisioner also receives the cloud seed:
 
