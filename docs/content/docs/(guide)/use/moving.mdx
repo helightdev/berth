@@ -78,13 +78,19 @@ echo 'ssh-ed25519 AAAA… berth@new-machine' >> ~/.ssh/authorized_keys
 
 ## The keys after the first apply
 
-The role writes the operator's keys as one block of `authorized_keys`: the keys in the profile and the key of the berth that applies. So the first apply of the new berth:
+In the operator's `authorized_keys`, the keys in the profile have one block. Each berth that applies the host has a block of its own, named `BERTH` and an ID. No later apply removes a berth's block. So after the first apply of the new berth:
 
-- puts the new berth's key into the block
-- takes the old berth's key out of the block, unless the profile lists it
-- leaves the lines outside the block alone, such as a key you added by hand
+- the new berth's key is in its own block
+- the old berth's key is still in its block, and the old berth still has access
+- lines outside the blocks stay, such as a key you added by hand
 
-After that, the new berth logs in with its own key from the block. You can remove the line you added, and the borrowed key can go.
+The new berth then logs in with its own key. You can remove the line you added.
+
+To take the old berth's access away, delete its block on the host as the operator. ID is the hex after `# BEGIN BERTH` on the line above the old berth's key:
+
+```bash
+sed -i '/^# BEGIN BERTH ID$/,/^# END BERTH ID$/d' ~/.ssh/authorized_keys
+```
 
 ## A berth that still has the host
 

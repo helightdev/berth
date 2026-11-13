@@ -1068,7 +1068,10 @@ pub fn adopt(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
         }
     }
     println!(
-        "Next: berth apply {name}. It gives the operator this berth's own key and takes off the key of the berth that applied it before, unless the profile lists that key."
+        "Next: berth apply {name}. It gives this berth's own key a block of its own in the operator's authorized_keys."
+    );
+    println!(
+        "The berth that set the host up still has access: its key keeps its BERTH block until you delete that block by hand."
     );
     if asked.key.is_some() {
         println!(

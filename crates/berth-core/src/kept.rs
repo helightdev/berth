@@ -388,6 +388,17 @@ mod tests {
             .unwrap()
             .remove("devbox_tailscale_auth_key");
         assert_eq!(ansible_vars(&back.profile, &dirs, own), wanted);
+        // Another berth applies the same keys of the profile and gives its own
+        // apart, in a block of its own, so the first berth's block stays.
+        let other = ansible_vars(&back.profile, &dirs, Some("ssh-ed25519 NEW berth"));
+        assert_eq!(
+            other["devbox_operator_ssh_public_key"],
+            wanted["devbox_operator_ssh_public_key"]
+        );
+        assert_eq!(
+            other["devbox_berth_ssh_public_key"],
+            "ssh-ed25519 NEW berth"
+        );
         assert_eq!(back.profile["builder"]["ssh_host"], "192.0.2.10");
         assert_eq!(back.profile["builder"]["ssh_user"], "ops");
         assert_eq!(back.profile["builder"]["ssh_port"], "2222");
