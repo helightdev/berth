@@ -85,6 +85,12 @@ class FirstBoot(unittest.TestCase):
         settings = dict(line.split(' ', 1) for line in self.root('sshd -T').splitlines() if ' ' in line)
         self.assertEqual((settings['passwordauthentication'], settings['kbdinteractiveauthentication'],
                           settings['permitrootlogin']), ('no', 'no', 'no'))
+        # The operator takes keys only, whatever the hardening says, and its
+        # password field is one sshd takes keys for with PAM or without.
+        operator = dict(line.split(' ', 1) for line in self.root(
+            f'sshd -T -C user={OPERATOR},host=studio,addr=192.0.2.5').splitlines() if ' ' in line)
+        self.assertEqual(operator['authenticationmethods'], 'publickey')
+        self.assertFalse(self.root(f'getent shadow {OPERATOR}').split(':')[1].startswith('!'))
         # The server offers nothing but keys.
         password = subprocess.run(
             ['ssh', '-o', 'BatchMode=yes', '-o', 'PubkeyAuthentication=no', '-o', 'ConnectTimeout=10',

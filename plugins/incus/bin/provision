@@ -68,6 +68,8 @@ class Incus:
             with os.fdopen(fd, 'w') as stream:
                 stream.write(value)
         self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        # The client key authenticates berth, so no older protocol is accepted for it.
+        self.context.minimum_version = ssl.TLSVersion.TLSv1_2
         try:
             self.context.load_cert_chain(cert_path, key_path)
         except ssl.SSLError:

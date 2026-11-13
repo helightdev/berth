@@ -84,18 +84,6 @@ pub const SETTINGS: &[(&str, &str)] = &[
         "the aud an access token needs for berth serve to take it",
     ),
     (
-        "oauth_client_id",
-        "the client berth is at the issuer, for getting access tokens of its own: berth login, or with oauth_client_secret",
-    ),
-    (
-        "oauth_client_secret",
-        "the client's secret: with it berth gets access tokens by itself, as a service does",
-    ),
-    (
-        "oauth_scope",
-        "the scope berth asks the issuer for, such as: openid offline_access berth:operate",
-    ),
-    (
         "oauth_claim",
         "the claim with the roles berth:view, berth:operate and berth:admin (default: scope; dots go into objects, as in realm_access.roles)",
     ),
@@ -200,6 +188,20 @@ impl Paths {
                 .into());
         }
         Ok(key)
+    }
+
+    /// Give a test's berth an own key of its own, so that nothing runs
+    /// ssh-keygen, which needs an account in the password database.
+    #[cfg(test)]
+    pub fn give_own_key(&self) {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&self.data_dir)
+            .unwrap();
+        let key = self.data_dir.join("id_ed25519");
+        fs::write(&key, "not a real private key\n").unwrap();
+        fs::write(key.with_extension("pub"), "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f berth@studio\n").unwrap();
     }
 
     /// The public half of this berth's own SSH key.
@@ -387,6 +389,25 @@ fn older_source(dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_of_earlier_versions_are_left_alone() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: home.path().join("config"),
+            data_dir: home.path().join("data"),
+        };
+        paths.prepare().unwrap();
+        fs::write(
+            paths.settings_file(),
+            r#"{"oauth_client_id":"berth-cli","oauth_scope":"openid","server":"http://192.0.2.1:7777"}"#,
+        )
+        .unwrap();
+        fs::write(paths.data_dir.join("oauth.json"), "{}").unwrap();
+        assert_eq!(paths.settings().unwrap()["server"], "http://192.0.2.1:7777");
+        paths.set("default_host", "studio").unwrap();
+        assert_eq!(paths.settings().unwrap()["oauth_client_id"], "berth-cli");
+    }
 
     #[test]
     fn hosts_are_named_files_and_paths_stay_paths() {

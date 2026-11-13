@@ -16,7 +16,7 @@ jobs:
       contents: read
       pages: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Where Pages serves the site: a folder named after the repository on
       # github.io, the root on a domain of its own.
       - id: pages
@@ -34,7 +34,7 @@ jobs:
         env:
           DOCS_BASE_PATH: ${{ steps.pages.outputs.base_path }}
       - run: test -f docs/out/web/berth-web_bg.wasm
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: docs/out
   # Needs Pages with the source "GitHub Actions" in the repository's settings.

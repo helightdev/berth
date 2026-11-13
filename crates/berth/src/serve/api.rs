@@ -39,6 +39,9 @@ use tokio::sync::broadcast::error::RecvError;
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
 
+/// Where the server says which issuer it takes access tokens of.
+pub const RESOURCE: &str = "/.well-known/oauth-protected-resource";
+
 pub(super) type App = State<Arc<Serve>>;
 /// The upgrade when the request asks for a stream, at a path that also answers plainly.
 type Ws = std::result::Result<WebSocketUpgrade, WebSocketUpgradeRejection>;
@@ -268,7 +271,7 @@ pub fn router(state: Arc<Serve>, guarded: bool) -> Router {
         // Asked before a caller has a token: which issuer gives one.
         if let Some(resource) = state.auth.resource() {
             router = router.route(
-                berth_core::oauth::RESOURCE,
+                RESOURCE,
                 get(move || std::future::ready(Json(resource.clone()))),
             );
         }
@@ -577,6 +580,9 @@ async fn apply_host(
         let exit_code = child.wait().await.ok().and_then(|status| status.code());
         // The private files the run read live until here.
         drop(files);
+        if exit_code == Some(0) {
+            let _ = apply::settle(&host);
+        }
         let mut store = watcher.store.lock().unwrap();
         let _ = store.end_job(&id, exit_code);
         if let Ok(Some(job)) = store.job(&id) {

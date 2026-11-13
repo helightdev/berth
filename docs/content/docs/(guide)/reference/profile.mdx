@@ -45,9 +45,7 @@ A profile is a JSON file that describes one host. berth writes it from the set-u
   type={{
     operator_username: { type: 'string', default: '"ops"', description: 'Your account on the host.' },
     operator_ssh_public_keys: { type: 'string[]', description: 'OpenSSH public keys that log in as the operator.' },
-    berth_ssh_key: { type: 'boolean', default: 'true', description: 'Whether the operator also takes the key of the berth that installs or applies the host.' },
-    operator_password_hash: { type: 'string', description: 'SHA-512 crypt or yescrypt hash. Needed for Cockpit and the console. The USB installer requires it. A cloud seed or a created machine requires it only when the operator has no passwordless sudo.' },
-    operator_passwordless_sudo: { type: 'boolean', default: 'true', description: 'sudo without a password for the operator, so berth needs no sudo password to look after the host.' },
+    operator_password_hash: { type: 'string', description: 'SHA-512 crypt or yescrypt hash, for the console, the graphical login and Cockpit. The USB installer requires it; everything else works without one.' },
     agent_username: { type: 'string', default: '"agent"', description: 'The agents\' account; home is /home/USERNAME.' },
     agent_ssh_public_keys: { type: 'string[]', description: 'Optional keys for SSH to the agent account.' },
     agent_password_hash: { type: 'string', description: 'Optional; empty locks password login.' },
@@ -56,17 +54,19 @@ A profile is a JSON file that describes one host. berth writes it from the set-u
   }}
 />
 
+The operator always has sudo without a password and logs in over SSH with keys only. See [Accounts and sudo](/docs/use/accounts#the-operator). Older profiles may have `operator_passwordless_sudo` and `berth_ssh_key`. berth ignores both.
+
 A profile written before the lists has one key in `operator_ssh_public_key` or `agent_ssh_public_key`. berth still reads it, and moves it into the list when the keys are next changed.
 
 ### The key of berth itself
 
-Each berth makes an ed25519 key of its own the first time it needs one, and keeps it as `id_ed25519` in its data directory. The operator of a host takes it along with the keys in the profile, so the berth that set a host up can log in to it without a key of yours. That matters most for a [berth server](/docs/use/server), which has no keys until you give it some. berth offers the key over SSH unless the profile has a key file set.
+Each berth makes an ed25519 key of its own the first time it needs one, and keeps it as `id_ed25519` in its data directory. The operator of a host always takes it along with the keys in the profile, so the berth that set a host up can always log in to it without a key of yours. That matters most for a [berth server](/docs/use/server), which has no keys until you give it some. berth offers the key over SSH unless the profile has a key file set.
 
-`berth key` prints the public half. To copy it, choose **This berth's SSH key** on the Settings tab of the home screen, or press `c` on the field of the same name on a host's Settings tab. With a berth server set, both copy the server's key.
+`berth key` prints the public half. To copy it, choose **This berth's SSH key** on the Settings tab of the home screen. With a berth server set, it copies the server's key.
 
 Add the key as an SSH key at your cloud provider, and every machine you create there takes it. berth then logs in to a new machine without a key of yours. On a host set up some other way, add it to the operator's `~/.ssh/authorized_keys`.
 
-Turn **This berth's SSH key** off in Accounts, or set `berth_ssh_key` to `false`, for a host that should only take the listed keys.
+Each berth that installs or applies a host leaves its key there in a block of its own in the operator's `~/.ssh/authorized_keys`. A later apply, from this berth or another, does not remove it. To take a berth's key away, delete its `BERTH` block by hand.
 
 ## USB installer
 
@@ -112,7 +112,7 @@ How berth installs and connects to the host. These settings stay on your machine
     ssh_port: { type: 'string', description: 'Blank uses your SSH configuration.' },
     ssh_key: { type: 'string', description: 'Private key path; blank uses ssh-agent or SSH configuration.' },
     ask_pass: { type: 'boolean', description: 'Ask for an SSH login password.' },
-    ask_become_pass: { type: 'boolean', description: 'Ask for the SSH user\'s sudo password. Left out, berth asks only when operator_passwordless_sudo is off.' },
+    ask_become_pass: { type: 'boolean', default: 'false', description: 'Ask for the SSH user\'s sudo password, for a first apply as an account whose sudo asks for one. berth removes it after an apply as the operator.' },
     link: { type: 'string[]', description: 'A command that connects to berthd instead of SSH, such as docker exec -i NAME berthd connect.' },
     inventory: { type: 'string', description: 'Ansible inventory for This machine or an inventory; blank is this machine.' },
     iso: { type: 'string', description: 'Ubuntu Server ISO to build the USB installer from.' },

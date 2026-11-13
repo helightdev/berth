@@ -37,7 +37,6 @@ With a [berth server](/docs/use/server) set, by `--server` or the `server` setti
 | `berth adopt HOST [USER@]ADDRESS [--port PORT] [--key FILE] [--force]` | Save a host from the profile it keeps, read over SSH with sudo ([Moving a host](/docs/use/moving)) |
 | `berth key` | Print the SSH public key of this berth, which the operator of a host it sets up [takes](/docs/reference/profile#the-key-of-berth-itself) |
 | `berth connect URL` | Use the [berth server](/docs/use/server#with-a-setup-key) at URL, with the token a setup key collects. The key comes on standard input |
-| `berth login`, `berth logout` | Log in to a [berth server](/docs/use/server#with-a-login-in-place-of-the-token) through its OAuth 2.0 issuer, and forget that login |
 | `berth publish REGISTRY[/REPOSITORY] [HOST [--login [REGISTRY]]]` | Upload the release archive and use it as HOST's release address ([Registries](/docs/use/registries#publishing-the-release-archive)) |
 | `berth image push REGISTRY[/REPOSITORY] [TAG]` | Push the container image |
 

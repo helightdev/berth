@@ -1,20 +1,38 @@
 name: Boot
 # Real installs in QEMU with KVM: the cloud image with berth's seed, and
 # berth's unattended installer on a blank virtual disk (ci/run.sh boot). They
-# take long, so they only run when started by hand.
+# take long, so they only run for changes that can break a first boot, or when
+# started by hand.
 on:
+  pull_request:
+    paths:
+      - 'provision/**'
+      - 'plugins/**'
+      - 'ci/**'
+      - 'tests/e2e/boot_*'
+      - 'container/**'
+      - '.github/workflows/boot.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'provision/**'
+      - 'plugins/**'
+      - 'ci/**'
+      - 'tests/e2e/boot_*'
+      - 'container/**'
+      - '.github/workflows/boot.yml'
   workflow_dispatch:
     inputs:
       kind:
         description: What to boot
         type: choice
         options: [cloud, iso, both]
-        default: cloud
+        default: both
 permissions:
   contents: read
 concurrency:
-  group: boot-${{ github.ref }}-${{ inputs.kind }}
-  cancel-in-progress: false
+  group: boot-${{ github.ref }}
+  cancel-in-progress: true
 env:
   BERTH_CI_NO_BUILD: '1'
 jobs:
@@ -28,22 +46,22 @@ jobs:
           KIND: ${{ inputs.kind }}
         run: |
           case "$KIND" in
-            both) kinds='["cloud","iso"]' ;;
+            cloud) kinds='["cloud"]' ;;
             iso) kinds='["iso"]' ;;
-            *) kinds='["cloud"]' ;;
+            *) kinds='["cloud","iso"]' ;;
           esac
           echo "kinds=$kinds" >> "$GITHUB_OUTPUT"
 
   boot:
     needs: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         kind: ${{ fromJSON(needs.plan.outputs.kinds) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Let the runner's user open /dev/kvm
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
@@ -61,7 +79,7 @@ jobs:
           sudo docker image prune --all --force >/dev/null
           df -h /
       - run: echo "BERTH_CI_CACHE=$RUNNER_TEMP/berth-ci-cache" >> "$GITHUB_ENV"
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build the dev image
         uses: docker/build-push-action@v6
         with:
@@ -107,6 +125,11 @@ jobs:
           restore-keys: |
             boot-apt-${{ matrix.kind }}-
             boot-apt-
+      # The restored target directory is newer than this checkout, so cargo
+      # would not run the build script that puts berthd and box among the
+      # role's files. A newer Cargo.lock makes it.
+      - name: Have the build script run
+        run: touch Cargo.lock
       - name: Boot ${{ matrix.kind }}
         run: ci/run.sh boot ${{ matrix.kind }}
       - name: Disk and memory
@@ -114,21 +137,17 @@ jobs:
         run: |
           df -h /
           cat build/boot/${{ matrix.kind }}/report.json || true
-      - name: Upload the logs
-        if: failure()
+      - name: Upload the logs and timings
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: boot-${{ matrix.kind }}-logs
+          name: boot-${{ matrix.kind }}
           path: |
-            build/boot/${{ matrix.kind }}/logs
-            build/boot/${{ matrix.kind }}/report.json
+            build/boot/${{ matrix.kind }}
+            !build/boot/${{ matrix.kind }}/**/*.qcow2
+            !build/boot/${{ matrix.kind }}/**/*.img
           if-no-files-found: ignore
-      - name: Upload the report
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: boot-${{ matrix.kind }}-report
-          path: build/boot/${{ matrix.kind }}/report.json
+          retention-days: 14
       - name: Keep the caches small
         if: always()
         run: |

@@ -13,13 +13,38 @@ Every host has two accounts, set under **Operator Account** and **Agent Account*
 
 Separate accounts keep sessions apart, but they do not isolate data from an agent that can become root.
 
+## The operator
+
+The operator is the account berth manages the host with. On every host it:
+
+- Uses sudo without a password. The role writes `/etc/sudoers.d/99-devbox-operator`.
+- Logs in over SSH with keys only. `/etc/ssh/sshd_config.d/00-devbox-operator.conf` holds a `Match User` block that allows only key logins for it, whatever **SSH hardening** says.
+- Takes the SSH key of [each berth](/docs/reference/profile#the-key-of-berth-itself) that installs or applies the host. Each of these keys has a block of its own in the operator's `~/.ssh/authorized_keys`, and no later apply removes it. An apply stops with an error before it changes SSH if that key is not there.
+
+None of these can be switched off, on laptops either.
+
+The operator's password is optional and only for local logins: the console, the laptop's graphical login and Cockpit. Cockpit checks it through PAM, not through SSH. Without a password the account's password field is `*`. No password logs in then, and SSH keys still do.
+
+| Install | Operator password |
+| --- | --- |
+| USB installer | Required. The Ubuntu installer needs one for the account it creates |
+| Cloud seed or created machine | Optional |
+| Apply over SSH or to this machine | Optional. An empty one leaves the account's password as it is |
+
 ## Passwords
 
 On a password hash field, F4 generates a password and stores its hash, and F5 hashes a password you type. Generated passwords are written next to the profile as `NAME.credentials.json` with mode 0600. The profile itself only stores hashes.
 
 - An empty agent password locks password login for the agent.
 - Turning off the agent's passwordless sudo requires an agent password.
-- The operator uses sudo without a password unless **Operator passwordless sudo** is off. With it off, berth asks for the operator's password when it connects, until **Ask for sudo password** says otherwise.
+
+## The first apply as another account
+
+An existing machine may not have the operator yet. berth then applies as an account of the machine's own, the profile's SSH user. When sudo prompts that account for a password, switch on **Ask for sudo password** on the Run tab, or set `builder.ask_become_pass`. berth asks for the password when it applies and when it connects. `BERTH_SUDO_PASSWORD` gives it where nobody can type it.
+
+When the SSH user is the operator, berth switches **Ask for sudo password** off again once the apply has worked, as the operator's sudo doesn't prompt for one from then on. Any other SSH user keeps its setting.
+
+A profile from before these rules may still say `"operator_passwordless_sudo": false` or `"berth_ssh_key": false`. berth reads it as usual and ignores both. The next apply gives the operator sudo without a password and the key of berth.
 
 ## Agent privileges
 

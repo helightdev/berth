@@ -1554,91 +1554,13 @@ async fn set_up_can_be_closed_to_the_network() {
     }
 }
 
-/// An issuer's endpoints, as far as berth as a client uses them.
-async fn issuer_endpoints(issuer: Arc<Issuer>) -> String {
-    use axum::{Json, http::StatusCode, routing};
-    // A form as an issuer is sent one.
-    fn fields(body: &str) -> std::collections::HashMap<String, String> {
-        body.split('&')
-            .filter_map(|pair| pair.split_once('='))
-            .map(|(name, value)| (name.to_owned(), berth_api::escape::decode(value)))
-            .collect()
-    }
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    let metadata = json!({
-        "issuer": base,
-        "token_endpoint": format!("{base}/token"),
-        "device_authorization_endpoint": format!("{base}/device"),
-    });
-    let asked = Arc::new(std::sync::atomic::AtomicU32::new(0));
-    let token = move |body: String| {
-        let form = fields(&body);
-        let field = |name: &str| form.get(name).map(String::as_str).unwrap_or("").to_owned();
-        let grant = |scope: &str, refresh: &str, left: u64| {
-            let access = issuer.token(json!({"scope": scope}));
-            (
-                StatusCode::OK,
-                Json(json!({"access_token": access, "refresh_token": refresh, "expires_in": left})),
-            )
-        };
-        let refused = |error: &str| (StatusCode::BAD_REQUEST, Json(json!({"error": error})));
-        let answer = match (field("grant_type").as_str(), field("client_id").as_str()) {
-            (_, id) if id != "berth-cli" => refused("invalid_client"),
-            ("urn:ietf:params:oauth:grant-type:device_code", _)
-                if field("device_code") == "dc 1" =>
-            {
-                // Nobody has approved the first time berth asks.
-                match asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
-                    0 => refused("authorization_pending"),
-                    _ => grant(&field("scope"), "r1", 600),
-                }
-            }
-            ("refresh_token", _) if field("refresh_token") == "r1" => {
-                grant("berth:view", "r2", 600)
-            }
-            ("client_credentials", _) if field("client_secret") == "s3cret" => {
-                grant("berth:admin", "", 600)
-            }
-            _ => refused("invalid_grant"),
-        };
-        std::future::ready(answer)
-    };
-    let device = |body: String| {
-        let form = fields(&body);
-        assert_eq!(form.get("scope").map(String::as_str), Some("berth:operate"));
-        std::future::ready(Json(json!({
-            "device_code": "dc 1", "user_code": "WDJB-MJHT", "interval": 0,
-            "verification_uri": "https://id.example/device", "expires_in": 60,
-        })))
-    };
-    let routes = axum::Router::new()
-        .route(
-            "/.well-known/openid-configuration",
-            routing::get(move || std::future::ready(Json(metadata.clone()))),
-        )
-        .route("/device", routing::post(device))
-        .route("/token", routing::post(token));
-    tokio::spawn(async move { axum::serve(listener, routes).await });
-    base
-}
-
 #[tokio::test(flavor = "multi_thread")]
-async fn berth_gets_access_tokens_as_a_client() {
-    use berth_core::oauth::{self, Client};
+async fn the_server_says_whose_access_tokens_it_takes() {
     let issuer = Arc::new(Issuer::new());
-    let (dir, address) = trusting(&issuer, true).await;
-    let base = issuer_endpoints(issuer.clone()).await;
-    let role = |token: String| async move {
-        as_bearer(address, &token, "GET", "/v1/access", Value::Null)
-            .await
-            .1["role"]
-            .clone()
-    };
+    let (_dir, address) = trusting(&issuer, true).await;
 
     // The server says whose tokens it takes, to anyone who asks.
-    let server = format!("http://{address}");
-    let named = berth_core::server::fetch(&format!("{server}{}", oauth::RESOURCE))
+    let named = berth_core::server::fetch(&format!("http://{address}{}", super::api::RESOURCE))
         .await
         .unwrap();
     let named: Value = serde_json::from_slice(&named).unwrap();
@@ -1648,67 +1570,10 @@ async fn berth_gets_access_tokens_as_a_client() {
     );
     assert_eq!(named["resource"], "berth");
 
-    // A person approves on another device, and berth has waited for it.
-    let client = Client {
-        issuer: base,
-        id: "berth-cli".into(),
-        secret: None,
-        scope: Some("berth:operate".into()),
-        audience: None,
-    };
-    let mut shown = None;
-    let tokens = client
-        .device(|asked| shown = asked["user_code"].as_str().map(str::to_owned))
-        .await
-        .unwrap();
-    assert_eq!(shown.as_deref(), Some("WDJB-MJHT"));
-    assert_eq!(tokens.refresh.as_deref(), Some("r1"));
-    assert!(tokens.expires > jsonwebtoken::get_current_timestamp());
-    assert_eq!(role(tokens.access.clone()).await, "operate");
-    // The login is renewed without them, and a refresh token is used once.
-    let renewed = client.refresh("r1").await.unwrap();
-    assert_eq!(renewed.refresh.as_deref(), Some("r2"));
-    assert_eq!(role(renewed.access).await, "view");
-    assert!(
-        client
-            .refresh("stale")
-            .await
-            .unwrap_err()
-            .contains("invalid_grant")
-    );
-
-    // A client with a secret needs nobody.
-    assert!(client.credentials().await.is_err());
-    let service = Client {
-        secret: Some("s3cret".into()),
-        ..client.clone()
-    };
-    assert_eq!(
-        role(service.credentials().await.unwrap().access).await,
-        "admin"
-    );
-    let stranger = Client {
-        id: "other".into(),
-        ..client
-    };
-    assert!(stranger.device(|_| {}).await.is_err());
-
-    // Tokens are kept per server, private to the user.
-    let paths = Paths {
-        config_dir: dir.path().join("config"),
-        data_dir: dir.path().join("client"),
-    };
-    oauth::save(&paths, &server, Some(&tokens)).unwrap();
-    assert_eq!(oauth::load(&paths, &server), Some(tokens));
-    assert_eq!(oauth::load(&paths, "http://another"), None);
-    use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::metadata(paths.data_dir.join("oauth.json"))
-        .unwrap()
-        .permissions()
-        .mode();
-    assert_eq!(mode & 0o777, 0o600);
-    oauth::save(&paths, &server, None).unwrap();
-    assert_eq!(oauth::load(&paths, &server), None);
+    // A token minted by that issuer gives its role.
+    let token = issuer.token(json!({"scope": "berth:operate"}));
+    let (_, access) = as_bearer(address, &token, "GET", "/v1/access", Value::Null).await;
+    assert_eq!(access["role"], "operate");
 }
 
 // ── Provisioners ────────────────────────────────────────────────────────────

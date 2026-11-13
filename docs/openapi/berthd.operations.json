@@ -669,10 +669,10 @@
           "keep": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Keep"
               },
               {
-                "$ref": "#/components/schemas/Keep"
+                "type": "null"
               }
             ]
           }
@@ -686,10 +686,10 @@
           "keep": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Keep"
               },
               {
-                "$ref": "#/components/schemas/Keep"
+                "type": "null"
               }
             ]
           },
@@ -708,10 +708,10 @@
           "error": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ErrorDetail"
               },
               {
-                "$ref": "#/components/schemas/ErrorDetail"
+                "type": "null"
               }
             ]
           },
@@ -1313,10 +1313,10 @@
           "keep": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Keep"
               },
               {
-                "$ref": "#/components/schemas/Keep"
+                "type": "null"
               }
             ]
           },
@@ -1389,11 +1389,11 @@
           "applied": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Applied",
                 "description": "What the host's configuration was last applied from, when berth\nrecorded it. An older berthd does not say."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -2630,5 +2630,5 @@
     "path": "/v1/portal"
   },
   "title": "berthd",
-  "version": "0.4.0"
+  "version": "0.4.1"
 }

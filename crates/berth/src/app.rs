@@ -684,10 +684,6 @@ impl App {
     pub fn help(&self) -> String {
         match self.selected_entry() {
             Some(Entry::Feature(index)) => self.catalogue[index].help.clone(),
-            // The key itself, to give to a host that was not set up from here.
-            Some(Entry::Field(Field::BerthKey)) => {
-                berth_tui::berth_key::field_help(&self.own_public)
-            }
             Some(Entry::HostTask(index)) => berth_tui::host::task_help(&self.host, index),
             Some(Entry::HostSession(index)) => berth_tui::host::session_help(&self.host, index),
             Some(Entry::Machine(pick)) => self.machine.help(pick),
@@ -1785,6 +1781,9 @@ impl App {
         if !status.success() {
             return Err(format!("{} failed ({status})", self.action.label()).into());
         }
+        if self.action == Action::Ssh && berth_api::profile::settle_after_apply(&mut self.config) {
+            self.save()?;
+        }
         println!("{}", self.next_hint());
         Ok(())
     }
@@ -2141,7 +2140,6 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
         ("keyboard", json!("de")),
         ("operator_username", json!("ops")),
         ("agent_username", json!("agent")),
-        ("operator_passwordless_sudo", json!(true)),
         ("agent_passwordless_sudo", json!(true)),
         ("target_disk_ssd", json!("any")),
     ] {
@@ -2226,9 +2224,13 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
     if let Some(builder) = config["builder"].as_object_mut() {
         builder.remove("usb_device");
     }
+    // The operator always has sudo without a password and always takes the key
+    // of berth; profiles once had switches for both.
+    if let Some(profile) = config.as_object_mut() {
+        profile.remove("operator_passwordless_sudo");
+        profile.remove("berth_ssh_key");
+    }
     // Prompt switches were once stored as the strings "true" and "false".
-    // Asking for the sudo password stays unset until it is chosen, so that it
-    // follows the operator's sudo as `Host` reads it.
     for key in ["ask_become_pass", "ask_pass"] {
         let value = &config["builder"][key];
         if let Some(enabled) = value

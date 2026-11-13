@@ -231,8 +231,8 @@ pub fn link(host: &str, user: &str, port: &str, key: &str, password: Option<&str
     }
     args.extend(["-T".into(), target(host, user)]);
     // The line sent first is read by the shell, never by berthd, and handed to
-    // sudo only when sudo asks: applying the role lets the SSH user off the
-    // password, and the profile still says to ask for it.
+    // sudo only when sudo asks: an SSH user that is the operator needs none
+    // once the role is applied, while the profile may still say to ask.
     args.push(match password {
         Some(_) => PASSWORD_LINK.into(),
         None => "sudo -n berthd connect".into(),

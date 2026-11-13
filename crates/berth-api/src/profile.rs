@@ -36,47 +36,39 @@ pub fn set_account_keys(config: &mut Value, account: &str, keys: &[String]) {
     }
 }
 
-/// Whether the operator also takes the key of the berth that sets the host
-/// up, which is so unless the profile says otherwise.
-pub fn takes_own_key(config: &Value) -> bool {
-    config["berth_ssh_key"].as_bool().unwrap_or(true)
-}
-
-/// Whether the operator uses sudo without a password, which is so unless the
-/// profile says otherwise.
-pub fn operator_passwordless_sudo(config: &Value) -> bool {
-    config["operator_passwordless_sudo"]
-        .as_bool()
-        .unwrap_or(true)
-}
-
 /// Whether the SSH user's sudo asks for a password, so berth asks for it
-/// first. A profile that does not say follows the operator's sudo, as the
-/// SSH user is the operator once the host is set up; root needs no sudo.
+/// first. The operator's sudo never asks, so only a profile that says so
+/// does: one applied for the first time as an account of the machine's own.
 pub fn asks_become_pass(config: &Value) -> bool {
-    let builder = &config["builder"];
-    let stored = &builder["ask_become_pass"];
+    let stored = &config["builder"]["ask_become_pass"];
     // Older profiles stored the switch as the strings "true" and "false".
-    if let Some(asks) = stored
+    stored
         .as_bool()
         .or_else(|| stored.as_str().map(|text| text == "true"))
-    {
-        return asks;
-    }
-    builder["ssh_user"] != "root" && !operator_passwordless_sudo(config)
+        .unwrap_or(false)
 }
 
-/// The keys the operator account gets: the profile's, and with `own` the key
-/// of the berth that sets the host up.
-pub fn operator_keys(config: &Value, own: Option<&str>) -> Vec<String> {
-    let mut keys = account_keys(config, "operator");
-    if let Some(own) = own.map(str::trim).filter(|own| !own.is_empty())
-        && takes_own_key(config)
-        && !keys.iter().any(|known| known == own)
-    {
-        keys.push(own.to_owned());
+/// The operator's name, `ops` unless the profile names another.
+pub fn operator(config: &Value) -> &str {
+    match config["operator_username"].as_str() {
+        None | Some("") => "ops",
+        Some(name) => name,
     }
-    keys
+}
+
+/// Make a profile stop asking for the sudo password once it has been applied,
+/// when berth reaches the host as its operator, whose sudo then needs none.
+/// Says whether it changed the profile.
+pub fn settle_after_apply(config: &mut Value) -> bool {
+    let ssh_user = config["builder"]["ssh_user"].as_str().unwrap_or("");
+    if config["profile"] == "container" || ssh_user != operator(config) || !asks_become_pass(config)
+    {
+        return false;
+    }
+    if let Some(builder) = config["builder"].as_object_mut() {
+        builder.remove("ask_become_pass");
+    }
+    true
 }
 
 /// The secret that holds the API key of the tailnet's control server. berth
@@ -158,32 +150,40 @@ mod tests {
     }
 
     #[test]
-    fn the_operator_takes_the_key_of_its_berth_unless_told_not_to() {
-        let own = Some("ssh-ed25519 OWN berth");
-        let config = json!({"operator_ssh_public_keys": ["ssh-ed25519 AAAA one"]});
-        assert_eq!(operator_keys(&config, own).len(), 2);
-        assert_eq!(operator_keys(&config, None).len(), 1);
-        let config = json!({"berth_ssh_key": false});
-        assert!(operator_keys(&config, own).is_empty());
-    }
-
-    #[test]
-    fn sudo_asks_for_a_password_only_when_the_operator_needs_one() {
-        assert!(operator_passwordless_sudo(&json!({})));
+    fn sudo_asks_for_a_password_only_when_the_profile_says_so() {
         assert!(!asks_become_pass(&json!({})));
         assert!(!asks_become_pass(&json!({"builder": {"ssh_user": "ops"}})));
-        let typed = json!({"operator_passwordless_sudo": false, "builder": {"ssh_user": "ops"}});
-        assert!(asks_become_pass(&typed));
-        let root = json!({"operator_passwordless_sudo": false, "builder": {"ssh_user": "root"}});
-        assert!(!asks_become_pass(&root));
-        // What the profile says wins, also in the older form.
+        // A profile from when the operator's sudo could ask is not taken to.
+        let old = json!({"operator_passwordless_sudo": false, "builder": {"ssh_user": "ops"}});
+        assert!(!asks_become_pass(&old));
         assert!(asks_become_pass(
             &json!({"builder": {"ask_become_pass": true}})
         ));
-        assert!(!asks_become_pass(&json!({
-            "operator_passwordless_sudo": false,
-            "builder": {"ask_become_pass": "false"}
-        })));
+        // Also in the older form.
+        assert!(asks_become_pass(
+            &json!({"builder": {"ask_become_pass": "true"}})
+        ));
+        assert!(!asks_become_pass(
+            &json!({"builder": {"ask_become_pass": "false"}})
+        ));
+    }
+
+    #[test]
+    fn an_apply_as_the_operator_stops_the_asking() {
+        let mut first = json!({"builder": {"ssh_user": "ops", "ask_become_pass": true}});
+        assert!(settle_after_apply(&mut first));
+        assert!(!asks_become_pass(&first));
+        assert!(!settle_after_apply(&mut first));
+        // An account of the machine's own keeps a sudo that asks.
+        let mut own = json!({"operator_username": "ops", "builder": {"ssh_user": "admin", "ask_become_pass": true}});
+        assert!(!settle_after_apply(&mut own));
+        assert!(asks_become_pass(&own));
+        let mut named = json!({"operator_username": "admin", "builder": {"ssh_user": "admin", "ask_become_pass": "true"}});
+        assert!(settle_after_apply(&mut named));
+        assert!(!asks_become_pass(&named));
+        // A container has no operator.
+        let mut container = json!({"profile": "container", "builder": {"ssh_user": "ops", "ask_become_pass": true}});
+        assert!(!settle_after_apply(&mut container));
     }
 
     #[test]
