@@ -19,6 +19,7 @@ It prints where it listens and how many hosts it knows. Only one runs per user. 
 | [`hosts.*`](/docs/api/serve/hosts) | The saved hosts and their profiles. A host can be added, changed, removed and applied as a job, and `hosts.rollout` applies the hosts that are behind one after another. Each host says whether it is behind. The server also renders its cloud-init seed and sends its secrets |
 | [`secrets.*`](/docs/api/serve/secrets), [`registries.*`](/docs/api/serve/registries), [`settings.*`](/docs/api/serve/settings) | What the server keeps beside the hosts. A secret's value goes in and never comes back out |
 | [`plugins.*`](/docs/api/serve/plugins) | The server's plugins. One is installed from its npm registry, from an `https://` address, or from a `.tgz` that is sent, and one of its own is removed. `plugins.check` asks the registries for newer versions and `plugins.update` installs them. `setup.catalogue` lists the new features straight away |
+| [`provisioners.*`](/docs/api/serve/provisioners), [`instances.*`](/docs/api/serve/instances) | The provisioners of the plugins, and the machine berth created for a host. A machine is created and deleted as a job, and started and stopped with `instances.power`. The role `admin` is needed ([Machine from a provisioner](/docs/deploy/provisioners)) |
 | Every [berthd operation](/docs/api/host) | With a host: `"host": "NAME"` on the portal, `/v1/hosts/NAME/…` over HTTP. Only the `secrets` task is refused; `hosts.secrets` sends the server's own |
 | [`jobs.*`](/docs/api/serve/jobs) | Jobs such as an apply or a roll-out, with their output. A roll-out's job has a report, host by host |
 | [`inbox.*`](/docs/api/serve/inbox) | Messages the hosts published on their channels and kept, taken in while `berth serve` runs; each can be marked done |
@@ -85,7 +86,7 @@ A caller over TCP shows the server's token or an OAuth 2.0 access token, and act
 | --- | --- |
 | `view` | Read what the hosts and the server report, such as sessions with their output, logs, jobs and the inbox |
 | `operate` | Work on the hosts with tasks, commands, terminals and files. Units, power and the key-value store are included |
-| `admin` | Change profiles, secrets, registries, settings and plugins, and apply a profile to a host |
+| `admin` | Change profiles, secrets, registries, settings and plugins, apply a profile to a host, and create or delete the machine of a host |
 
 The server's token is `admin`. The socket doesn't ask for a token and is `admin` too. The [API reference](/docs/api/serve) lists the role of each operation, and [`access`](/docs/api/serve/general) tells a caller its own.
 
@@ -115,7 +116,17 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" https://berth.example.ts.net/v1/ac
 
 An access token is used like the server's token. It works as a bearer and as the WebSocket protocol. berth takes it as `--token` or `server_token`, and the page for a browser takes it too.
 
-The server says which issuer it trusts at `/.well-known/oauth-protected-resource`, without a token. berth uses that to [log in](/docs/use/server#with-a-login-in-place-of-the-token) with the device grant or with client credentials.
+The server says which issuer it trusts at `/.well-known/oauth-protected-resource`, without a token.
+
+berth has no login of its own. Get an access token from the issuer by your own means, and give it to berth as `BERTH_TOKEN`. A wrapper script does that, and the token stays out of argv:
+
+```bash
+BERTH_TOKEN=$(curl -s -d grant_type=client_credentials -d client_id=berth-ci \
+  --data-urlencode client_secret@/etc/berth-ci.secret \
+  https://id.example.com/token | jq -r .access_token)
+export BERTH_TOKEN
+exec berth "$@"
+```
 
 Each of these settings can also come from the environment, as `BERTH_` and the name in capitals. That suits a container, or berth running inside another program:
 

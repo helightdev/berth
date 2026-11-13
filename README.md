@@ -1,4 +1,4 @@
-<img src="assets/logo.svg" alt="" width="72" align="right">
+<img src="docs/public/logo.svg" alt="" width="72" align="right">
 
 # berth
 
@@ -39,14 +39,15 @@ local API server by default.
 ## Quick start
 
 ```bash
-berth studio          # a new profile: choose features, accounts and how to install
+berth studio          # a new profile: choose how to install, features and settings
 berth                 # the home screen with all hosts
 berth run studio status
 ```
 
-On a new host's Install tab, choose how to install it. The methods are a USB
-installer, a cloud-init seed, SSH to an existing Ubuntu server, and a container
-image. Once it runs, `berth studio` opens its overview, where you sign the
+A new host opens on its Install tab, where you choose how to install it. The
+methods are a machine a plugin creates, a USB installer, a cloud-init seed, SSH
+to an existing Ubuntu server, and a container image. Features and Settings
+follow, and Run installs it. Once it runs, `berth studio` opens its overview, where you sign the
 agents in and find the address of its desktop.
 
 ## Documentation
@@ -62,8 +63,8 @@ The documentation site is built from [`docs/`](docs) (`cd docs && npm install &&
 
 ## Contributing and security
 
-[CONTRIBUTING.md](CONTRIBUTING.md) says what berth is meant to be and how changes
-get in. Open an issue before a pull request. [SECURITY.md](SECURITY.md) says how
+[CONTRIBUTING.md](.github/CONTRIBUTING.md) says what berth is meant to be and how changes
+get in. Open an issue before a pull request. [SECURITY.md](.github/SECURITY.md) says how
 to report a vulnerability and where berth's API is meant to be reachable from.
 
 ## License
@@ -71,7 +72,7 @@ to report a vulnerability and where berth's API is meant to be reachable from.
 Licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or
 the [MIT license](LICENSE-MIT), at your option. Contributions are licensed the same way.
 
-The vendored `tui-input` crate under `cli/vendor` has its own MIT license. The
+The vendored `tui-input` crate under `crates/vendor` has its own MIT license. The
 agents and tools that plugins install, such as Claude Code, Codex and Unity,
 are separate products under their vendors' terms. berth downloads them from
 their vendors and doesn't include them.

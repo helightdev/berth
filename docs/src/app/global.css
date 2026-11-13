@@ -3,7 +3,7 @@
 @import 'fumadocs-ui/css/preset.css';
 @import 'fumadocs-ui/css/generated/spacious.css';
 
-/* The colours of berth's terminal UI (cli/src/theme.rs): deep navy and harbour
+/* The colours of berth's terminal UI (crates/berth-tui/src/theme.rs): deep navy and harbour
    blue. The site is dark only. The spacious layout draws the sidebar on the card
    colour and sets each page into a panel of the background colour. */
 .dark {

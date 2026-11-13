@@ -152,6 +152,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
       actions: write
     steps:
       - uses: actions/checkout@v4
@@ -175,13 +176,10 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898283+github-actions[bot]@users.noreply.github.com'
           git commit -am "chore(release): $version"
-          # main may have moved on since the checkout.
-          for attempt in 1 2 3; do
-            git push origin HEAD:main && break
-            [ "$attempt" = 3 ] && exit 1
-            git pull --rebase origin main
-          done
+          # main takes changes only as pull requests, so the version goes there as one.
+          branch="release/$version"
+          git push --force origin "HEAD:refs/heads/$branch"
+          gh pr create --base main --head "$branch" --title "chore(release): $version" \
+            --body "Sets the version on main to $version, the release that was just published. Merge it when its checks have passed."
           # A push with this job's token starts no workflows of its own.
-          for workflow in CI Build Docs; do
-            gh workflow run "$workflow" --ref main
-          done
+          gh workflow run CI --ref "$branch"

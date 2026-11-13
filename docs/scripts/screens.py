@@ -58,7 +58,7 @@ OUT = REPO / "docs/public/screens"
 CONTAINER = "berth-demo-studio"
 IMAGE = "ubuntu:26.04"
 
-# The theme of the UI (cli/src/theme.rs); used for the frame and for cells that
+# The theme of the UI (crates/berth-tui/src/theme.rs); used for the frame and for cells that
 # keep the terminal's default colours, such as plain command output.
 BASE = "#0d111c"
 TEXT = "#cdd6f4"
@@ -132,7 +132,7 @@ echo 'PATH="/dev/sdb" TYPE="disk" TRAN="usb" SIZE="57.3G" MODEL="Demo Flash Driv
 
 
 def profile(name: str, **values) -> dict:
-    base = json.loads((REPO / "config/example.json").read_text())
+    base = json.loads((REPO / "provision/config/example.json").read_text())
     base.update({"hostname": name})
     base.update(values)
     return base
@@ -221,7 +221,7 @@ def host_files() -> dict:
     import yaml  # noqa: PLC0415 (only needed here)
 
     task_dir = "/usr/local/lib/berth/tasks"
-    core = yaml.safe_load((REPO / "ansible/roles/devbox/vars/main.yml").read_text())["devbox_core_tasks"]
+    core = yaml.safe_load((REPO / "provision/ansible/roles/devbox/vars/main.yml").read_text())["devbox_core_tasks"]
     for task in core:
         task["run"] = task["run"].replace("{{ devbox_task_dir }}", task_dir)
     tasks, services, channels = core, [], []
@@ -265,7 +265,7 @@ def start_host(scratch: Path) -> bool:
     if not shutil.which("docker") or docker("image", "inspect", IMAGE, check=False).returncode:
         print(f"no docker or no {IMAGE} image: skipping the pictures of a connected host")
         return False
-    binaries = REPO / "ansible/roles/devbox/files/bin"
+    binaries = REPO / "provision/ansible/roles/devbox/files/bin"
     if not (binaries / "berthd").is_file():
         print("no static berthd (cargo build): skipping the pictures of a connected host")
         return False
@@ -538,17 +538,24 @@ def shlex_quote(text):
     return shlex.quote(text)
 
 
+# Downs from the top of a host's Settings tab to the fourth row of its registries
+# and secrets: past the six rows of the operator with its one key, the five of
+# the agent, and SSH hardening.
+SECRETS_DOWN = 15
+
+
 def pictures(env):
     """Name: (needs the host, how to make it). The order matters where one
     picture shows what an earlier one left behind, such as sessions."""
     return {
         "home": (False, lambda: tui(env, "home", [], [], "berth", rows=20)),
         "home-plugins": (False, lambda: tui(env, "home-plugins", [], ["5"], "berth: plugins")),
-        "features": (False, lambda: tui(env, "features", ["cloud-1"], [], "berth cloud-1: features", rows=34)),
-        "accounts": (False, lambda: tui(env, "accounts", ["cloud-1"], ["2"], "berth cloud-1: accounts", rows=26)),
-        "secrets": (False, lambda: tui(env, "secrets", ["cloud-1"], ["3"] + ["<down>"] * 3, "berth cloud-1: secrets", rows=22)),
-        "install-cloud": (False, lambda: tui(env, "install-cloud", ["cloud-1"], ["4", "<down>", "<enter>"],
-                                             "berth cloud-1: install", rows=34)),
+        "features": (False, lambda: tui(env, "features", ["cloud-1"], ["2"], "berth cloud-1: features", rows=34)),
+        "accounts": (False, lambda: tui(env, "accounts", ["cloud-1"], ["3"], "berth cloud-1: settings", rows=26)),
+        "secrets": (False, lambda: tui(env, "secrets", ["cloud-1"], ["3"] + ["<down>"] * SECRETS_DOWN,
+                                       "berth cloud-1: settings", rows=22)),
+        "install-cloud": (False, lambda: tui(env, "install-cloud", ["cloud-1"], ["<down>", "<down>", "<enter>", "4"],
+                                             "berth cloud-1: run", rows=34)),
         "list": (False, lambda: command(env, "list", ["list"])),
         "overview": (True, lambda: tui(env, "overview", ["studio"], [2.5, "<up>"], "berth studio", rows=46)),
         "terminal": (True, lambda: tui(env, "terminal", ["studio"],

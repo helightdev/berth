@@ -79,6 +79,17 @@ pub async fn http(
     content_type: Option<&str>,
     body: Vec<u8>,
 ) -> client::Result<(u16, Vec<u8>)> {
+    http_as(method, url, None, content_type, body).await
+}
+
+/// [`http`] with a bearer in the `Authorization` header.
+pub async fn http_as(
+    method: &str,
+    url: &str,
+    bearer: Option<&str>,
+    content_type: Option<&str>,
+    body: Vec<u8>,
+) -> client::Result<(u16, Vec<u8>)> {
     let (host, port, secure) = parts(url)?;
     let name = host.trim_matches(['[', ']']).to_owned();
     let scheme = if secure { "https://" } else { "http://" };
@@ -93,6 +104,10 @@ pub async fn http(
     let mut headers = vec![("host", authority.as_str()), ("accept", "application/json")];
     if let Some(kind) = content_type {
         headers.push(("content-type", kind));
+    }
+    let authorization = bearer.map(|bearer| format!("Bearer {bearer}"));
+    if let Some(value) = &authorization {
+        headers.push(("authorization", value));
     }
     let answer = match secure {
         true => {
@@ -131,16 +146,9 @@ impl Server {
         })
     }
 
-    /// Open the server's portal. Without a token of the server's, berth
-    /// shows an access token of its own when it has or can get one.
+    /// Open the server's portal, with the configured token if there is one.
     pub async fn portal(&self) -> client::Result<Portal> {
-        let own = match (&self.token, self.url.starts_with("unix:")) {
-            (None, false) => crate::oauth::token(&self.url)
-                .await
-                .map_err(|error| Error::Transport(error.to_string()))?,
-            _ => None,
-        };
-        let token = own.as_deref().or(self.token.as_deref()).unwrap_or("");
+        let token = self.token.as_deref().unwrap_or("");
         if let Some(path) = self.url.strip_prefix("unix:") {
             let stream = UnixStream::connect(path)
                 .await
@@ -214,7 +222,7 @@ impl Server {
         }
         // A whole profile, so every screen has what it expects; only where the
         // host is and that it is the server's are its own.
-        let example = std::fs::read(paths.source()?.join("config/example.json"))?;
+        let example = std::fs::read(paths.source()?.join(crate::paths::layout::EXAMPLE))?;
         let example: Value = serde_json::from_slice(&example)?;
         for (host, profile) in fetched.hosts {
             let Some(name) = host["name"].as_str().filter(|name| safe(name)) else {

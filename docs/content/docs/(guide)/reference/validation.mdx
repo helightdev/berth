@@ -20,6 +20,25 @@ CI runs these on every push, without network access to hosts:
 
 See [Building and releasing](/docs/reference/building#in-containers) for running them locally.
 
+## Boot tests
+
+The container suite can't boot anything. A cloud seed and the USB installer are booted in a virtual machine with KVM instead. `ci/run.sh boot cloud` and `ci/run.sh boot iso` run them. They take longer and are not part of every push.
+
+| Test | What happens |
+| --- | --- |
+| `boot cloud` | The Ubuntu 26.04 cloud image boots with the seed of `berth seed` as its NoCloud user data. It downloads the release archive over HTTPS and applies the role on its first boot |
+| `boot iso` | The installer of `berth iso` boots with only a disk of another serial, and must refuse it without writing to it. It then boots with that disk and the right one, erases and installs the right one and powers off. The installed system boots without the installer and sets itself up |
+
+After the first boot, berth reaches the host over SSH and checks:
+
+- berthd and a plugin's service run as systemd units, and berthd starts, stops and restarts units and reads the journal
+- the firewall lets in SSH and nothing else, and SSH takes keys only and refuses root
+- the status task ends without failed units, and a second apply in a row doesn't change anything
+- `berth apply --all --reboot` refuses while a session runs, then reboots the host, waits for it and checks it
+- the end-to-end tests of commands, berthd's API and secrets
+
+The guest runs on QEMU's user network with a package cache and a release server on the container's side. The cache is in `build/boot/cache` and makes a second run a lot quicker. The profile leaves out the coding agents, toolchains, Docker, Cockpit and the office and graphics programs, and keeps the desktop. On GitHub the Boot workflow runs either one when started by hand. Logs, timings and the disk and memory used are in `build/boot/KIND/`.
+
 ## Checking a build by hand
 
 <Accordions>
@@ -30,12 +49,12 @@ See [Building and releasing](/docs/reference/building#in-containers) for running
 </Accordion>
 <Accordion title="Full host in QEMU">
 
-`bin/qemu.py cloud` boots the Ubuntu cloud image. Apply the role over SSH with the `qemu` profile, then run `berth run HOST smoke`. A second apply should not change anything, and after a reboot the desktop, noVNC, T3 and Docker should be up without anyone logging in. See [Testing in QEMU](/docs/deploy/qemu#what-to-check).
+`ci/run.sh boot cloud` does this unattended with a light profile. By hand, `provision/bin/qemu.py cloud` boots the Ubuntu cloud image. Apply the role over SSH with the `qemu` profile, then run `berth run HOST smoke`. A second apply should not change anything, and after a reboot the desktop, noVNC, T3 and Docker should be up without anyone logging in. See [Testing in QEMU](/docs/deploy/qemu#what-to-check).
 
 </Accordion>
 <Accordion title="Unattended ISO in QEMU">
 
-`bin/qemu.py install` boots the remastered ISO with disk mode `auto`. It selects the virtual disk, installs without input and powers off. Test the selected disk policy this way before booting a physical machine.
+`ci/run.sh boot iso` does this unattended with disk mode `serial`. By hand, `provision/bin/qemu.py install` boots the remastered ISO with disk mode `auto`. It selects the virtual disk, installs without input and powers off. Test the selected disk policy this way before booting a physical machine.
 
 </Accordion>
 <Accordion title="SSH hardening">
@@ -45,7 +64,7 @@ After an apply, `sshd -T` reports password, keyboard-interactive and root logins
 </Accordion>
 </Accordions>
 
-Secure Boot with the remastered image is not covered by any of these checks.
+Secure Boot with the remastered image, Wi-Fi and real disks are not covered by any of these checks.
 
 Package availability and external installers change over time. If a dependency fails, provisioning records `failed`, retries from its timer, and never writes the success marker.
 

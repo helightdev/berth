@@ -1,0 +1,109 @@
+# berth's server in a Docker container, with its port on this machine only
+# and, on a tailnet, TLS in front of it.
+
+# The server in the image is the user 1000, who has to own what it keeps:
+# settings and profiles, the store, and the SSH hosts it has seen.
+- name: Make the folders the berth server keeps its things in
+  ansible.builtin.file:
+    path: "{{ berth_server_dir }}/{{ item }}"
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: "0700"
+  loop:
+    - config
+    - data
+    - ssh
+
+- name: See whether the berth server's container is there
+  ansible.builtin.command: docker container inspect --format {% raw %}'{{.State.Running}}'{% endraw %} berth
+  register: berth_container
+  changed_when: false
+  failed_when: false
+
+# Its port stays on this machine: the token gives full control of every host.
+- name: Start the berth server in a container
+  ansible.builtin.command: >-
+    docker run --detach --name berth --restart unless-stopped
+    --publish 127.0.0.1:{{ berth_server_port }}:7777
+    --volume {{ berth_server_dir }}/config:/config
+    --volume {{ berth_server_dir }}/data:/data
+    --volume {{ berth_server_dir }}/ssh:/home/berth/.ssh
+    {{ berth_server_run_options | default('') }}
+    {{ berth_server_image | quote }}
+  when: berth_container.rc != 0
+  changed_when: true
+
+- name: Start a berth server that was stopped
+  ansible.builtin.command: docker start berth
+  when: berth_container.rc == 0 and berth_container.stdout | trim != 'true'
+  changed_when: true
+
+- name: See whether the tailnet serves the berth server
+  ansible.builtin.command: tailscale serve status
+  register: berth_served
+  changed_when: false
+  failed_when: false
+  when: berth_server_tailscale_serve | bool
+
+# berth serve speaks plain HTTP; the tailnet puts TLS in front of it.
+- name: Serve the berth server on the tailnet with TLS
+  ansible.builtin.command: "tailscale serve --bg --https=443 http://127.0.0.1:{{ berth_server_port }}"
+  when:
+    - berth_server_tailscale_serve | bool
+    - berth_served.rc == 0
+    - ('127.0.0.1:' ~ berth_server_port) not in berth_served.stdout
+  changed_when: true
+
+# berth serve makes its token before it listens, so the key below collects that one.
+- name: Wait for the new berth server to answer
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ berth_server_port }}"
+    timeout: 60
+  when: berth_container.rc != 0
+
+# The first user collects the token with this key, so whoever ran the
+# recipe hands on the key and never the token. Later runs leave it be.
+- name: Make a setup key for the first user of the new berth server
+  ansible.builtin.command: docker exec berth berth setup-key
+  register: berth_setup_key
+  when: berth_container.rc != 0
+  changed_when: berth_setup_key.rc == 0
+  failed_when: false
+  no_log: true
+
+- name: Find the server's name on the tailnet
+  ansible.builtin.command: tailscale status --json
+  register: berth_tailnet_status
+  changed_when: false
+  failed_when: false
+  when: berth_server_tailscale_serve | bool
+
+- name: Note how the berth server is reached and handed over
+  ansible.builtin.set_fact:
+    berth_server_url: "{{ berth_url }}"
+    berth_server_handover: "{{ (with_key if berth_key else without_key) | select | list }}"
+  vars:
+    berth_tailnet_name: >-
+      {{ ((berth_tailnet_status.stdout | from_json).Self.DNSName | default('') | regex_replace('[.]$', ''))
+      if (berth_tailnet_status.rc | default(1)) == 0 else '' }}
+    berth_url: >-
+      {{ ('https://' ~ berth_tailnet_name) if berth_tailnet_name
+      else ('https://THIS-MACHINE.YOUR-TAILNET.ts.net' if berth_server_tailscale_serve | bool
+      else 'http://127.0.0.1:' ~ berth_server_port) }}
+    berth_here: >-
+      {{ '' if berth_url.startswith('http://127.') else ' (on this machine also http://127.0.0.1:' ~ berth_server_port ~ ')' }}
+    berth_key: >-
+      {{ (berth_setup_key.stdout | default('') | trim) if (berth_setup_key.rc | default(1)) == 0 else '' }}
+    with_key:
+      - "berth server: {{ berth_url }}{{ berth_here }}"
+      - "Setup key for the first user, valid for 24 hours: {{ berth_key }}"
+      - "In a terminal: berth connect {{ berth_url }} and paste the setup key when asked"
+      - "In a browser: {{ berth_url }}/#setup-key={{ berth_key }}"
+      - "The key ends when the user chooses Done. A new one: sudo docker exec berth berth setup-key"
+    without_key:
+      - "berth server: {{ berth_url }}{{ berth_here }}"
+      - "A setup key for a user to collect the token: sudo docker exec berth berth setup-key"
+      - "With it: berth connect {{ berth_url }}, or open {{ berth_url }}/#setup-key=KEY in a browser"
+      - "Or the token itself: sudo cat {{ berth_server_dir }}/data/berth/serve.token"

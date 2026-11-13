@@ -2,7 +2,7 @@
 test host, a link to its berthd, berth serve, an OAuth issuer and a small
 WebSocket client.
 
-The tests run in the runner container of container/ci.compose.yml, next to
+The tests run in the runner container of ci/compose.yml, next to
 the test host `studio`, on a network that reaches nothing else. Everything a
 test writes goes into scratch directories; the checkout is read-only.
 """
@@ -25,6 +25,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -45,7 +46,7 @@ def runtime_dir():
 
 def needs_e2e(cls):
     """Skip a test case outside the runner container."""
-    reason = 'the end-to-end tests run in containers: container/ci.sh e2e'
+    reason = 'the end-to-end tests run in containers: ci/run.sh e2e'
     return unittest.skipUnless(os.environ.get('BERTH_E2E') == '1', reason)(cls)
 
 
@@ -75,19 +76,23 @@ def keygen(path, comment):
 
 
 def source():
-    """The checkout with tests/e2e/site.yml as ansible/site.yml, made once."""
+    """The checkout with tests/e2e/site.yml as provision/ansible/site.yml, made once."""
     overlay = SCRATCH / 'source'
     if overlay.exists():
         return overlay
     overlay.mkdir()
     for entry in SRC.iterdir():
         # A virtual environment or build output of the checkout is not ours.
-        if entry.name.startswith('.') or entry.name in ('ansible', 'target', 'build'):
+        if entry.name.startswith('.') or entry.name in ('provision', 'target', 'build'):
             continue
         (overlay / entry.name).symlink_to(entry)
-    (overlay / 'ansible').mkdir()
-    (overlay / 'ansible/roles').symlink_to(SRC / 'ansible/roles')
-    (overlay / 'ansible/site.yml').symlink_to(SRC / 'tests/e2e/site.yml')
+    (overlay / 'provision').mkdir()
+    for entry in (SRC / 'provision').iterdir():
+        if entry.name != 'ansible':
+            (overlay / 'provision' / entry.name).symlink_to(entry)
+    (overlay / 'provision/ansible').mkdir()
+    (overlay / 'provision/ansible/roles').symlink_to(SRC / 'provision/ansible/roles')
+    (overlay / 'provision/ansible/site.yml').symlink_to(SRC / 'tests/e2e/site.yml')
     return overlay
 
 
@@ -98,7 +103,7 @@ def source_with_plugins(name, plugins):
     overlay.mkdir()
     for entry in source().iterdir():
         if entry.name != 'plugins':
-            (overlay / entry.name).symlink_to(entry.resolve() if entry.name != 'ansible' else entry)
+            (overlay / entry.name).symlink_to(entry.resolve() if entry.name != 'provision' else entry)
     (overlay / 'plugins').mkdir()
     for shipped in (SRC / 'plugins').iterdir():
         (overlay / 'plugins' / shipped.name).symlink_to(shipped)
@@ -114,7 +119,7 @@ def source_with_plugins(name, plugins):
 class Workstation:
     """A user's machine with berth: its own HOME, XDG directories and SSH key."""
 
-    def __init__(self, name, ssh_key=True):
+    def __init__(self, name, ssh_key=True, source_dir=None, trust=True):
         self.root = SCRATCH / name
         self.home = self.root / 'home'
         self.config = self.home / '.config'
@@ -128,7 +133,7 @@ class Workstation:
             'XDG_CONFIG_HOME': str(self.config), 'XDG_DATA_HOME': str(self.data),
             'XDG_RUNTIME_DIR': str(self.run_dir),
             'PATH': os.environ['PATH'], 'LANG': 'C.UTF-8', 'TERM': 'xterm-256color',
-            'BERTH_SOURCE': str(source()),
+            'BERTH_SOURCE': str(source_dir or source()),
             # npm stays off the network: plugins come from folders here.
             'npm_config_registry': 'http://127.0.0.1:9/', 'npm_config_offline': 'true',
             'npm_config_cache': str(self.root / 'npm-cache'), 'npm_config_update_notifier': 'false',
@@ -136,7 +141,9 @@ class Workstation:
         }
         self.key = self.home / '.ssh/id_ed25519'
         self.public = keygen(self.key, f'tester@{name}') if ssh_key else None
-        self.trust_host()
+        # A host that is not up yet is trusted once it answers.
+        if trust:
+            self.trust_host()
 
     @property
     def berth_dir(self):
@@ -218,7 +225,7 @@ def shell_quote(text):
 
 def profile(**values):
     """A profile like berth writes for a new host, with the test host's address."""
-    base = json.loads((SRC / 'config/example.json').read_text())
+    base = json.loads((SRC / 'provision/config/example.json').read_text())
     base.update({
         'hostname': HOST, 'profile': 'cloud', 'keyboard': 'us',
         # The operator's sudo needs no password, as by default, so berth asks for none.
@@ -281,6 +288,12 @@ def provisioned():
     return station
 
 
+def adopt(station):
+    """Take a workstation whose host was set up otherwise, such as by its
+    first boot, as the one provisioned() gives the tests."""
+    _provisioned['workstation'] = station
+
+
 def served():
     """A berth serve on a workstation of its own, set up through its API to
     reach the test host, and trusting an OAuth issuer; started once per run."""
@@ -293,7 +306,7 @@ def served():
     hand_over_operator_key(station.public, own)
     wait_for('the operator taking the server\'s key', lambda: server.ssh(
         OPERATOR, 'true', key=server.own_key, check=False).returncode == 0)
-    issuer = Issuer(clients={'berth-client': ('client-secret', 'openid berth:operate')})
+    issuer = Issuer()
     serve = Serve(server, web=True, env={'BERTH_OAUTH_ISSUER': issuer.url, 'BERTH_OAUTH_AUDIENCE': 'berth',
                                          **package_registry().env()})
     serve.issuer = issuer
@@ -644,8 +657,7 @@ class Portal:
 
 
 # ---------------------------------------------------------------------------
-# An OAuth 2.0 issuer: metadata, keys and a token endpoint for clients with
-# a secret, signing with an Ed25519 key
+# An OAuth 2.0 issuer: metadata and keys, signing with an Ed25519 key
 
 
 def url64(data):
@@ -653,14 +665,12 @@ def url64(data):
 
 
 class Issuer:
-    def __init__(self, clients=None):
+    def __init__(self):
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: PLC0415
         from cryptography.hazmat.primitives import serialization  # noqa: PLC0415
         self.key = Ed25519PrivateKey.generate()
         public = self.key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
         self.jwks = {'keys': [{'kty': 'OKP', 'crv': 'Ed25519', 'alg': 'EdDSA', 'kid': 'e2e', 'x': url64(public)}]}
-        # client id: (secret, scope it is given)
-        self.clients = clients or {}
         issuer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -677,24 +687,11 @@ class Issuer:
 
             def do_GET(self):  # noqa: N802 (the name http.server calls)
                 if self.path == '/.well-known/openid-configuration':
-                    self.answer(200, {'issuer': issuer.url, 'jwks_uri': f'{issuer.url}/keys',
-                                      'token_endpoint': f'{issuer.url}/token'})
+                    self.answer(200, {'issuer': issuer.url, 'jwks_uri': f'{issuer.url}/keys'})
                 elif self.path == '/keys':
                     self.answer(200, issuer.jwks)
                 else:
                     self.answer(404, {'error': 'not_found'})
-
-            def do_POST(self):  # noqa: N802
-                from urllib.parse import parse_qs  # noqa: PLC0415
-                length = int(self.headers.get('Content-Length') or 0)
-                form = {name: values[0] for name, values in parse_qs(self.rfile.read(length).decode()).items()}
-                client = issuer.clients.get(form.get('client_id'))
-                if self.path != '/token' or form.get('grant_type') != 'client_credentials':
-                    return self.answer(400, {'error': 'unsupported_grant_type'})
-                if not client or client[0] != form.get('client_secret'):
-                    return self.answer(401, {'error': 'invalid_client'})
-                token = issuer.token(client[1], subject=form['client_id'])
-                self.answer(200, {'access_token': token, 'token_type': 'Bearer', 'expires_in': 600})
 
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         self.url = f'http://127.0.0.1:{self.server.server_address[1]}'
@@ -822,6 +819,64 @@ def package_registry():
     if not _registry:
         _registry.append(PackageRegistry())
     return _registry[0]
+
+
+# ---------------------------------------------------------------------------
+# The Headscale server of ci/compose.yml, which the test host can join
+
+
+HEADSCALE = os.environ.get('BERTH_E2E_HEADSCALE', 'headscale')
+
+
+class Headscale:
+    """The `headscale` service of ci/compose.yml: its login server, the API key
+    it hands out at start, and its API. It has one user, `berth`, number 1."""
+
+    def __init__(self):
+        self.url = f'http://{HEADSCALE}:8080'
+        self.user = 'berth'
+
+        def ready():
+            with urllib.request.urlopen(f'http://{HEADSCALE}:8081/api-key', timeout=5) as answer:
+                key = answer.read().decode().strip()
+            # A key from an earlier start is refused until the new one is there.
+            self.api_key = key
+            return key and self.api('GET', '/api/v1/user') is not None
+        wait_for('Headscale handing out its API key', ready, timeout=60)
+
+    def api(self, method, path, body=None):
+        data = None if body is None else json.dumps(body).encode()
+        request = urllib.request.Request(self.url + path, data=data, method=method, headers={
+            'Authorization': f'Bearer {self.api_key}', 'Content-Type': 'application/json'})
+        with urllib.request.urlopen(request, timeout=20) as answer:
+            return json.loads(answer.read() or b'null')
+
+    def nodes(self):
+        return self.api('GET', '/api/v1/node').get('nodes', [])
+
+    def keys(self):
+        return self.api('GET', '/api/v1/preauthkey').get('preAuthKeys', [])
+
+    def new_key(self, hours=1):
+        """A one-use key of the user, as an admin makes one by hand."""
+        expiry = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() + hours * 3600))
+        made = self.api('POST', '/api/v1/preauthkey', {'user': '1', 'reusable': False, 'ephemeral': False,
+                                                     'expiration': expiry})
+        return made['preAuthKey']['key']
+
+    def forget_nodes(self):
+        for node in self.nodes():
+            self.api('DELETE', f'/api/v1/node/{node["id"]}')
+
+
+_headscale = []
+
+
+def headscale():
+    """The Headscale server, once it is ready."""
+    if not _headscale:
+        _headscale.append(Headscale())
+    return _headscale[0]
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,43 @@
+[package]
+name = "berth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+berth-core.workspace = true
+berth-api.workspace = true
+berth-pty.workspace = true
+berth-tui.workspace = true
+# For its API document, which berth serve's includes.
+berthd = { path = "../berthd" }
+tokio.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+axum.workspace = true
+utoipa.workspace = true
+utoipa-axum.workspace = true
+ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
+crossterm = "=0.29.0"
+serde_json = "1"
+tempfile = "3"
+vt100 = "=0.16.2"
+libc = "0.2"
+pulldown-cmark = { version = "0.13", default-features = false }
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+
+tui-input = { workspace = true, features = ["crossterm"] }
+
+[features]
+# The page for a browser, carried in the program for `berth serve --web`.
+# Building it needs the wasm32-unknown-unknown target.
+web = ["dep:wasm-bindgen-cli-support"]
+
+[build-dependencies]
+# The same version as the wasm-bindgen the page is built with.
+wasm-bindgen-cli-support = { version = "=0.2.129", optional = true }
+
+[dev-dependencies]
+# Signs the access tokens of the tests.
+ring = "0.17"

@@ -1,0 +1,412 @@
+---
+- name: Install firewall and recovery access first
+  ansible.builtin.apt:
+    name: [openssh-server, ufw]
+    state: present
+- name: Install firewall configuration helper
+  ansible.builtin.copy:
+    src: firewall.sh
+    dest: /usr/local/sbin/devbox-firewall
+    mode: '0755'
+- name: Read the provisioning SSH session
+  ansible.builtin.command: printenv SSH_CONNECTION
+  become: false
+  register: devbox_ssh_session
+  changed_when: false
+  failed_when: false
+  when: devbox_manage_firewall
+- name: Establish firewall before installing network administration services
+  ansible.builtin.command: /usr/local/sbin/devbox-firewall
+  environment:
+    DEVBOX_BOOTSTRAP_SSH_CIDR: "{{ devbox_bootstrap_ssh_cidr }}"
+    DEVBOX_SSH_CONNECTION: "{{ devbox_ssh_session.stdout | default('') | trim }}"
+    DEVBOX_PROFILE: "{{ devbox_profile }}"
+    DEVBOX_COCKPIT: "{{ '1' if devbox_install_cockpit else '0' }}"
+  changed_when: false
+  when: devbox_manage_firewall
+# Hardening is only applied when a key-based login for a non-root account is
+# certain to exist afterwards: the operator's configured key, or the keys of the
+# account this play logged in with.
+- name: Check the provisioning account's SSH keys
+  ansible.builtin.shell: 'test "$(id -u)" != 0 && test -s "$HOME/.ssh/authorized_keys"'
+  become: false
+  register: devbox_login_keys
+  changed_when: false
+  failed_when: false
+  when: devbox_harden_ssh
+- name: Decide whether SSH can be hardened safely
+  ansible.builtin.set_fact:
+    devbox_ssh_hardened: "{{ devbox_harden_ssh and (devbox_operator_ssh_public_key | length > 0 or devbox_login_keys.rc == 0) }}"
+- name: Explain skipped SSH hardening
+  ansible.builtin.debug:
+    msg: >-
+      SSH hardening skipped: no SSH key is configured for the operator and the
+      provisioning account has none, so turning off passwords and root login
+      would lock this host. Set an operator SSH public key and apply again.
+  when: devbox_harden_ssh and not devbox_ssh_hardened
+# cloud-init writes its password setting into a new sshd_config on an image
+# without an SSH server. The package then keeps that file, which reads no
+# drop-ins and has no PAM, so sshd refuses an operator whose password is locked.
+- name: See whether sshd_config is only what cloud-init left
+  ansible.builtin.command: >-
+    awk 'NF && $1 !~ /^#/ {lines++} tolower($1) == "include" {includes = 1}
+    END {exit !(lines < 3 && !includes)}' /etc/ssh/sshd_config
+  register: devbox_sshd_stub
+  changed_when: false
+  failed_when: false
+- name: Put the packaged sshd_config in its place
+  ansible.builtin.copy:
+    remote_src: true
+    src: /usr/share/openssh/sshd_config
+    dest: /etc/ssh/sshd_config
+    mode: '0644'
+    backup: true
+    validate: /usr/sbin/sshd -t -f %s
+  register: devbox_sshd_restored
+  when: devbox_sshd_stub.rc == 0
+- name: Require SSH keys and refuse root logins
+  ansible.builtin.copy:
+    # sshd uses the first value it reads, so this has to sort before other drop-ins.
+    dest: /etc/ssh/sshd_config.d/00-devbox.conf
+    mode: '0644'
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+    validate: /usr/sbin/sshd -t -f %s
+  register: devbox_sshd_hardening
+  when: devbox_ssh_hardened
+- name: Remove SSH hardening when it is switched off
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/00-devbox.conf
+    state: absent
+  register: devbox_sshd_relaxed
+  when: not devbox_ssh_hardened
+- name: Apply SSH server settings
+  ansible.builtin.systemd_service:
+    name: ssh
+    state: restarted
+  when: devbox_start_services and (devbox_sshd_restored.changed or devbox_sshd_hardening.changed or devbox_sshd_relaxed.changed)
+- name: Install host management packages
+  ansible.builtin.apt:
+    name: [unattended-upgrades, python3-psutil]
+    state: present
+    lock_timeout: 300
+- name: Install the Cockpit web console
+  ansible.builtin.apt:
+    name: "{{ devbox_cockpit_packages + (['cockpit-networkmanager'] if devbox_profile == 'laptop' else []) }}"
+    state: present
+    lock_timeout: 300
+  when: devbox_install_cockpit
+# A page in Cockpit's menu with the published noVNC desktop and a shell as the agent.
+- name: Add the agent desktop to Cockpit
+  ansible.builtin.copy:
+    src: cockpit-desktop/
+    dest: /usr/local/share/cockpit/devbox-desktop/
+    mode: '0644'
+    directory_mode: '0755'
+  when: devbox_install_cockpit
+# The page's console uses Ubuntu's packaged xterm.js; Cockpit only serves files
+# from the page's own directory.
+- name: Install the terminal widget for the Cockpit console
+  ansible.builtin.apt:
+    name: libjs-xterm
+    state: present
+    lock_timeout: 300
+  when: devbox_install_cockpit
+- name: Give the Cockpit console its terminal widget
+  ansible.builtin.copy:
+    src: "/usr/share/javascript/xterm/{{ item }}"
+    dest: "/usr/local/share/cockpit/devbox-desktop/{{ item | basename }}"
+    remote_src: true
+    mode: '0644'
+  loop: [xterm.js, xterm.css, addons/fit/xterm-addon-fit.js]
+  when: devbox_install_cockpit
+# Cockpit's own certificate is self-signed, which phones refuse.
+- name: Install the tailnet certificate helper for Cockpit
+  ansible.builtin.copy:
+    src: cockpit-cert.sh
+    dest: /usr/local/sbin/devbox-cockpit-cert
+    mode: '0755'
+  when: devbox_install_cockpit and devbox_install_tailscale
+- name: Install the certificate renewal units
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/devbox-cockpit-cert.{{ item.unit }}"
+    mode: '0644'
+    content: "{{ item.content }}"
+  loop:
+    - unit: service
+      content: |
+        [Unit]
+        Description=Give Cockpit the host's tailnet certificate
+        After=tailscaled.service network-online.target
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/devbox-cockpit-cert
+    - unit: timer
+      content: |
+        [Unit]
+        Description=Keep Cockpit's tailnet certificate current
+        [Timer]
+        OnBootSec=5min
+        OnUnitActiveSec=1d
+        RandomizedDelaySec=1h
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.unit }}"
+  when: devbox_install_cockpit and devbox_install_tailscale
+- name: Keep Cockpit's tailnet certificate current
+  ansible.builtin.systemd_service:
+    name: devbox-cockpit-cert.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: devbox_install_cockpit and devbox_install_tailscale and devbox_start_services
+- name: Check for a previously installed Cockpit
+  ansible.builtin.stat:
+    path: /usr/lib/systemd/system/cockpit.socket
+  register: devbox_cockpit_unit
+  when: not devbox_install_cockpit
+- name: Stop Cockpit when it is switched off
+  ansible.builtin.systemd_service:
+    name: cockpit.socket
+    enabled: false
+    state: stopped
+  when: not devbox_install_cockpit and devbox_cockpit_unit.stat.exists and devbox_start_services
+- name: Configure timezone
+  ansible.builtin.file:
+    src: "/usr/share/zoneinfo/{{ devbox_timezone }}"
+    dest: /etc/localtime
+    state: link
+    force: true
+- name: Enable English locale
+  ansible.builtin.lineinfile:
+    path: /etc/locale.gen
+    regexp: '^#?\s*en_US.UTF-8 UTF-8'
+    line: en_US.UTF-8 UTF-8
+  register: locale_config
+- name: Generate locale
+  ansible.builtin.command: locale-gen
+  when: locale_config.changed
+- name: Configure unattended security updates without reboots
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/52devbox
+    mode: '0644'
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      Unattended-Upgrade::Automatic-Reboot "false";
+      Unattended-Upgrade::Origins-Pattern {
+        "origin=Ubuntu,codename=${distro_codename},label=Ubuntu-Security";
+        "site=packages.mozilla.org";
+      };
+# Ubuntu only lets programs with an AppArmor profile create user namespaces.
+# Playwright's Chromium has none, so its sandbox would refuse to start.
+- name: Allow Playwright's Chromium to sandbox itself
+  ansible.builtin.copy:
+    dest: /etc/apparmor.d/devbox-playwright-chromium
+    mode: '0644'
+    content: |
+      abi <abi/4.0>,
+      include <tunables/global>
+
+      profile devbox-playwright-chromium {{ devbox_home }}/.cache/ms-playwright/chromium*/chrome-linux*/{chrome,headless_shell} flags=(unconfined) {
+        userns,
+        include if exists <local/devbox-playwright-chromium>
+      }
+  register: devbox_chromium_apparmor
+  when: devbox_install_playwright
+- name: Load the Chromium AppArmor profile
+  ansible.builtin.command: apparmor_parser -r /etc/apparmor.d/devbox-playwright-chromium
+  when: devbox_install_playwright and devbox_chromium_apparmor.changed and devbox_start_services
+- name: Install Docker from Ubuntu repositories
+  ansible.builtin.apt:
+    name: [docker.io, docker-compose-v2, docker-buildx]
+    state: present
+  when: devbox_install_docker
+- name: Add agent to Docker group
+  ansible.builtin.user:
+    name: "{{ devbox_user }}"
+    groups: docker
+    append: true
+  when: devbox_install_docker
+- name: Add Tailscale package signing key
+  ansible.builtin.get_url:
+    url: https://pkgs.tailscale.com/stable/ubuntu/resolute.noarmor.gpg
+    dest: /usr/share/keyrings/devbox-tailscale.gpg
+    mode: '0644'
+  when: devbox_install_tailscale
+- name: Configure Tailscale repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/devbox-tailscale.list
+    content: "deb [signed-by=/usr/share/keyrings/devbox-tailscale.gpg] https://pkgs.tailscale.com/stable/ubuntu resolute main\n"
+    mode: '0644'
+  register: tailscale_repo
+  when: devbox_install_tailscale
+- name: Install Tailscale
+  ansible.builtin.apt:
+    name: tailscale
+    state: present
+    update_cache: "{{ tailscale_repo.changed }}"
+  when: devbox_install_tailscale
+- name: Enable machine services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: "{{ ['ssh'] + (['cockpit.socket'] if devbox_install_cockpit else []) + (['tailscaled'] if devbox_install_tailscale else []) + (['docker'] if devbox_install_docker else []) }}"
+  when: devbox_start_services
+- name: Check whether the agent already lingers
+  ansible.builtin.stat:
+    path: /var/lib/systemd/linger/{{ devbox_user }}
+  register: linger
+- name: Enable user services at boot
+  ansible.builtin.command: loginctl enable-linger {{ devbox_user }}
+  when: not linger.stat.exists
+- name: Start agent user manager
+  ansible.builtin.systemd_service:
+    name: "user@{{ devbox_uid }}.service"
+    state: started
+  when: devbox_start_services
+- name: Install T3's own user service once
+  ansible.builtin.command:
+    argv: ["{{ devbox_home }}/.local/bin/t3", service, install]
+    creates: "{{ devbox_home }}/.config/systemd/user/t3code.service"
+  become_user: "{{ devbox_user }}"
+  environment:
+    HOME: "{{ devbox_home }}"
+    PATH: "{{ devbox_tool_path }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ devbox_uid }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ devbox_uid }}/bus"
+  when: devbox_install_t3 | bool and devbox_start_services
+- name: Create T3 service override directory
+  ansible.builtin.file:
+    path: "{{ devbox_home }}/.config/systemd/user/t3code.service.d"
+    state: directory
+    owner: "{{ devbox_user }}"
+    group: "{{ devbox_user }}"
+    mode: '0755'
+  when: devbox_install_t3 | bool
+- name: Ensure tools are available to noninteractive T3 processes
+  ansible.builtin.copy:
+    dest: "{{ devbox_home }}/.config/systemd/user/t3code.service.d/devbox.conf"
+    owner: "{{ devbox_user }}"
+    group: "{{ devbox_user }}"
+    mode: '0644'
+    content: |
+      [Service]
+      Environment=PATH={{ devbox_tool_path }}
+      EnvironmentFile={{ devbox_home }}/.t3/service.env
+      EnvironmentFile=-{{ devbox_home }}/.config/devbox/secrets.service.env
+      NoNewPrivileges=false
+  when: devbox_install_t3 | bool
+- name: Enable desktop and agent services without restarting running tasks
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    scope: user
+    daemon_reload: true
+    enabled: true
+    state: started
+  become_user: "{{ devbox_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ devbox_uid }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ devbox_uid }}/bus"
+  loop: "{{ ['devbox-desktop.service', 'devbox-novnc.service'] + (['t3code.service'] if devbox_install_t3 | bool else []) }}"
+  when: devbox_start_services
+- name: Join the tailnet
+  ansible.builtin.include_tasks: tailnet.yml
+  when: devbox_install_tailscale and devbox_start_services
+# Publishing needs an enrolled host and HTTPS certificates enabled for the
+# tailnet. Neither is certain here, so a failure is reported, not fatal.
+# Headscale offers neither tailscale serve nor certificates.
+- name: Publish the desktop and T3 on the tailnet
+  ansible.builtin.shell: |
+    tailscale status >/dev/null 2>&1 || { echo 'not enrolled in a tailnet yet'; exit 3; }
+    control=$(tailscale debug prefs 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ControlURL", ""))' 2>/dev/null || true)
+    if [[ -n $control && ! $control =~ ^https://[a-z0-9.-]*tailscale\.com/?$ ]]; then echo "the control server $control does not offer tailscale serve"; exit 5; fi
+    timeout 60 tailscale serve --bg --https=443 http://127.0.0.1:6080 2>&1 || exit 4
+    timeout 60 tailscale serve --bg --https=8443 http://127.0.0.1:3773 2>&1 || exit 4
+  args:
+    executable: /bin/bash
+  register: devbox_serve
+  changed_when: false
+  failed_when: false
+  when: devbox_install_tailscale and devbox_start_services and devbox_tailscale_serve
+- name: Explain unpublished tailnet endpoints
+  ansible.builtin.debug:
+    msg: >-
+      {% if devbox_serve.rc == 5 %}The desktop and T3 are not published on the tailnet
+      ({{ devbox_serve.stdout | trim }}). Reach them through an SSH tunnel, as the
+      access task of the UI's Manage action shows.{% else %}The desktop and T3 were
+      not published on the tailnet ({{ devbox_serve.stdout | default('') | trim }}).
+      Enroll the host and enable HTTPS certificates for the tailnet, then run the
+      publish task from the UI's Manage action or apply again.{% endif %}
+  when: devbox_serve is not skipped and devbox_serve.rc | default(0) != 0
+# The timer first fires five minutes after a boot, which has long passed during
+# an install; without this the self-signed certificate stays until a reboot.
+- name: Fetch Cockpit's tailnet certificate now
+  ansible.builtin.systemd_service:
+    name: devbox-cockpit-cert.service
+    state: started
+  failed_when: false
+  when:
+    - devbox_install_cockpit and devbox_install_tailscale and devbox_start_services
+    - devbox_serve is not skipped and devbox_serve.rc | default(1) == 0
+- name: Check whether systemd-networkd configures the network
+  ansible.builtin.command: systemctl is-active systemd-networkd
+  register: devbox_networkd_state
+  changed_when: false
+  failed_when: false
+  when: devbox_start_services
+# Cockpit brings NetworkManager; without it there is none to configure.
+- name: Check whether NetworkManager is installed
+  ansible.builtin.stat:
+    path: /usr/sbin/NetworkManager
+  register: devbox_network_manager
+  when: devbox_start_services
+# Where networkd owns the network, NetworkManager would still try DHCP on every
+# unused port and NetworkManager-wait-online would fail at each boot.
+- name: Keep NetworkManager off ports that systemd-networkd does not use
+  ansible.builtin.copy:
+    dest: /etc/NetworkManager/conf.d/20-devbox-no-auto-default.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [main]
+      no-auto-default=*
+  register: devbox_nm_no_auto_default
+  when: devbox_start_services and devbox_network_manager.stat.exists and devbox_networkd_state.stdout | default('') == 'active'
+- name: Drop the connections NetworkManager created on its own
+  ansible.builtin.shell: |
+    set -e
+    systemctl reload NetworkManager
+    nmcli -t -f NAME connection show | grep '^Wired connection ' | while read -r name; do
+      nmcli connection delete "$name"
+    done
+  args:
+    executable: /bin/bash
+  when: devbox_nm_no_auto_default is changed
+# Installers and cloud images leave the network to systemd-networkd, so
+# NetworkManager, which the desktop needs, manages nothing and reports the host
+# as offline. PackageKit believes it, and Cockpit's software updates fail with
+# "Cannot refresh cache whilst offline". A placeholder connection makes
+# NetworkManager report online; its route has a metric that never competes with
+# the real one.
+- name: Look for the connection that marks the host as online
+  ansible.builtin.command: nmcli -t -f NAME connection show
+  register: devbox_nm_connections
+  changed_when: false
+  when: devbox_start_services and devbox_network_manager.stat.exists
+- name: Mark the host as online for NetworkManager
+  ansible.builtin.shell: |
+    set -e
+    nmcli connection add type dummy con-name devbox-online ifname devbox0 \
+      ipv4.method manual ipv4.addresses 192.0.2.2/32 ipv4.gateway 192.0.2.1 \
+      ipv4.route-metric 30000 ipv6.method disabled
+    udevadm control --reload
+    systemctl restart NetworkManager
+  args:
+    executable: /bin/bash
+  when: devbox_start_services and devbox_network_manager.stat.exists and 'devbox-online' not in devbox_nm_connections.stdout_lines

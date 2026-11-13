@@ -3,18 +3,22 @@ __pycache__/
 *.pyc
 build/
 .env
-config/*.json
-!config/example.json
+provision/config/*.json
+!provision/config/example.json
+# Left in a checkout from before provision/: local profiles and built programs.
+/config/
+/ansible/
 secrets/
 *.qcow2
 *.iso
 
 /target/
-/cli/target/
-/ansible/roles/devbox/files/bin/
+/provision/ansible/roles/devbox/files/bin/
 
 *.credentials.json
 
 *.log
 .env.*
-.claude/
+.claude/*
+# The skills are a link to .agents/skills, which every agent reads.
+!.claude/skills

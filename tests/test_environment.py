@@ -14,7 +14,7 @@ try:
 except ImportError:
     jinja2 = yaml = None
 
-ROLE = Path(__file__).resolve().parents[1] / 'ansible/roles/devbox'
+ROLE = Path(__file__).resolve().parents[1] / 'provision/ansible/roles/devbox'
 
 
 @unittest.skipUnless(jinja2 and yaml, 'Run with the Ansible venv Python for template checks')
@@ -32,7 +32,7 @@ class EnvironmentTests(unittest.TestCase):
         self.defaults['devbox_tool_path'] = self.templates.from_string(self.defaults['devbox_tool_path']).render(self.defaults)
 
     def test_shell_and_service_environment_agree_for_all_profiles(self):
-        for profile in ['laptop', 'cloud', 'qemu', 'container']:
+        for profile in ['laptop', 'cloud', 'container']:
             for software in [True, False]:
                 with self.subTest(profile=profile, software=software):
                     values = dict(self.defaults, devbox_profile=profile,
@@ -62,7 +62,7 @@ class EnvironmentTests(unittest.TestCase):
 
     def test_custom_agent_paths_reach_shell_and_service(self):
         values=dict(self.defaults,devbox_user='robot',devbox_home='/home/robot',
-                    devbox_profile='qemu',devbox_uid='1003',devbox_bind='127.0.0.1',
+                    devbox_profile='cloud',devbox_uid='1003',devbox_bind='127.0.0.1',
                     devbox_lvp_icd='/usr/share/vulkan/icd.d/lvp_icd.json')
         values['devbox_tool_path']=values['devbox_tool_path'].replace('/home/agent','/home/robot')
         shell=self.templates.get_template('environment.j2').render(values)
@@ -125,11 +125,11 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(self.feature({'id': 'bare'}), {'tasks': [], 'services': [], 'channels': []})
 
     def test_shipped_plugins_make_valid_tasks(self):
-        plugins = ROLE.parents[2] / 'plugins'
+        plugins = ROLE.parents[3] / 'plugins'
         names = []
         for package in sorted(plugins.glob('*/package.json')):
             data = json.loads(package.read_text())
-            for feature in data['berth']['features']:
+            for feature in data['berth'].get('features', []):
                 adds = self.feature(feature, package.parent.name, data.get('displayName', package.parent.name))
                 self.assertEqual(len(adds['tasks']), len(feature.get('actions', [])), package)
                 names += [task['name'] for task in adds['tasks']]
