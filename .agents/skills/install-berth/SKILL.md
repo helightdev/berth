@@ -40,8 +40,8 @@ terminal. A set-up has these pieces:
 | A small VM just for the server | `berth-server` |
 | Only a client | The install instructions in `README.md` and the quick start |
 
-A recipe runs without berth. Clone the repository on the target machine and
-run the recipe's `install.sh`.
+A recipe runs without berth. Fetch the `recipes` folder on the target machine
+and run the recipe's `install.sh`. The commands below fetch only that folder.
 
 ## The recipes
 
@@ -57,8 +57,9 @@ name before it wipes them. `--yes` skips that, so do not use it without the
 user's say-so.
 
 ```bash
-git clone https://github.com/helightdev/berth.git
-cd berth/recipes/rescue-install
+curl -fsSL https://github.com/helightdev/berth/archive/refs/heads/main.tar.gz \
+  | tar xz --strip-components=1 --wildcards '*/recipes'
+cd recipes/rescue-install
 ./install.sh --disks /dev/nvme0n1,/dev/nvme1n1 --key ~/.ssh/authorized_keys --hostname big
 ```
 
@@ -74,8 +75,9 @@ its hosts there as Incus guests. It needs Ubuntu 24.04 or later, run as root on
 the server, from a fresh install. It does not wipe anything.
 
 ```bash
-git clone https://github.com/helightdev/berth.git
-cd berth/recipes/incus-host
+curl -fsSL https://github.com/helightdev/berth/archive/refs/heads/main.tar.gz \
+  | tar xz --strip-components=1 --wildcards '*/recipes'
+cd recipes/incus-host
 sudo ./install.sh -e tailscale_auth_key=tskey-auth-EXAMPLE
 ```
 
@@ -97,8 +99,9 @@ port 7777 on this machine only, Tailscale, `tailscale serve` with TLS and a
 `ufw` firewall. It needs Ubuntu 24.04 or later.
 
 ```bash
-git clone https://github.com/helightdev/berth.git
-cd berth/recipes/berth-server
+curl -fsSL https://github.com/helightdev/berth/archive/refs/heads/main.tar.gz \
+  | tar xz --strip-components=1 --wildcards '*/recipes'
+cd recipes/berth-server
 sudo ./install.sh -e tailscale_auth_key=tskey-auth-EXAMPLE
 ```
 

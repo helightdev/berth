@@ -15,3 +15,15 @@ with `ansible-core`, and share the tasks in `shared/`.
 The recipes that set up a berth server end with a setup key. With it the
 first user collects the server's token, with `berth connect URL` or in a
 browser, so the token never has to be read out or passed on.
+
+## Get the recipes
+
+A recipe needs only this folder. This fetches it into `recipes/` in the
+current directory:
+
+```bash
+curl -fsSL https://github.com/helightdev/berth/archive/refs/heads/main.tar.gz \
+  | tar xz --strip-components=1 --wildcards '*/recipes'
+```
+
+The recipes share the tasks in `shared/`, so fetch the folder as a whole.
