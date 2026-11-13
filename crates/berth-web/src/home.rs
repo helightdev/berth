@@ -9,7 +9,7 @@ use berth_tui::fields::Kind;
 use berth_tui::plugins::{self, Asked, Place};
 use berth_tui::setup::{valid_name, value_line};
 use berth_tui::{Code, Key, event, theme};
-use ratzilla::ratatui::{
+use ratatui::{
     style::Style,
     text::{Line, Span},
 };

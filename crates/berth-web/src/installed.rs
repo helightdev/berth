@@ -5,7 +5,7 @@
 use crate::browser::{self, Browser};
 use berth_tui::screen::{Platform, note_hints, wrap};
 use berth_tui::{Code, Event, theme};
-use ratzilla::ratatui::{
+use ratatui::{
     Frame,
     layout::Rect,
     style::Style,
