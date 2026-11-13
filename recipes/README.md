@@ -18,8 +18,8 @@ browser, so the token never has to be read out or passed on.
 
 ## Get the recipes
 
-A recipe needs only this folder, not the whole repository. This fetches it
-into `recipes/` in the current directory:
+A recipe needs only this folder. This fetches it into `recipes/` in the
+current directory:
 
 ```bash
 curl -fsSL https://github.com/helightdev/berth/archive/refs/heads/main.tar.gz \
