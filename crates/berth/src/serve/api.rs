@@ -1,9 +1,9 @@
 //! The routes of `berth serve`.
 
 use super::{
-    Event, Remote, Serve,
+    Event, Remote, Serve, actions,
     auth::{self, Access},
-    provisioners, setup, setup_key,
+    keys, provisioners, setup, setup_key,
 };
 use axum::{
     Json, Router,
@@ -20,21 +20,19 @@ use axum::{
     routing::{any, get},
 };
 use berth_api::{
-    Applied, Behind, Done, ErrorBody, ErrorDetail, HostBehind, Message, Output, Rollout,
-    RolloutReport, Version, b64, client, code,
+    Applied, Behind, Done, ErrorBody, ErrorDetail, HostBehind, JobInfo, Message, Output, Version,
+    b64, client, code,
     ops::{self, Role},
     streams,
 };
 use berth_core::{
-    apply,
-    host::Host,
     rollout,
     store::{self, Filter, When},
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{io::Write, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio::sync::broadcast::error::RecvError;
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -116,20 +114,6 @@ pub struct HostInfo {
     pub behind: Option<Behind>,
 }
 
-#[derive(Serialize, ToSchema)]
-pub struct JobInfo {
-    pub id: String,
-    pub host: String,
-    /// What it does: `apply`, `rollout`, `provision` or `unprovision`.
-    pub what: String,
-    pub started: String,
-    pub ended: Option<String>,
-    pub exit_code: Option<i32>,
-    /// How a roll-out went, host by host, once it has ended.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub report: Option<RolloutReport>,
-}
-
 /// A stored message: the host's message with where it came from.
 #[derive(Serialize, ToSchema)]
 pub struct InboxMessage {
@@ -173,15 +157,20 @@ pub(super) fn report_path(output: &str) -> std::path::PathBuf {
     std::path::Path::new(output).with_extension("json")
 }
 
-fn job_info(job: store::Job) -> JobInfo {
+pub(super) fn job_info(job: store::Job) -> JobInfo {
     let report = std::fs::read(report_path(&job.output_path))
         .ok()
         .and_then(|data| serde_json::from_slice(&data).ok());
     JobInfo {
         report,
         id: job.id,
+        subject: job.subject,
+        // Rows from before actions were kept say it as what they did.
+        action: match job.action.is_empty() {
+            true => job.what,
+            false => job.action,
+        },
         host: job.host,
-        what: job.what,
         started: job.started,
         ended: job.ended,
         exit_code: job.exit_code,
@@ -218,12 +207,15 @@ fn guarded_routes() -> OpenApiRouter<Arc<Serve>> {
         .routes(routes!(host, setup::remove_host))
         .routes(routes!(setup::profile, setup::save_profile))
         .routes(routes!(setup::credentials))
-        .routes(routes!(apply_host))
-        .routes(routes!(rollout_hosts))
-        .routes(routes!(setup::seed))
-        .routes(routes!(setup::send_secrets))
+        .routes(routes!(actions::host_actions))
+        .routes(routes!(actions::host_act))
+        .routes(routes!(actions::list))
+        .routes(routes!(actions::act))
         .routes(routes!(setup::secrets))
         .routes(routes!(setup::set_secret, setup::remove_secret))
+        .routes(routes!(keys::list))
+        .routes(routes!(keys::add, keys::remove))
+        .routes(routes!(keys::rotate))
         .routes(routes!(setup::registries))
         .routes(routes!(setup::save_registry, setup::remove_registry))
         .routes(routes!(setup::check_registry))
@@ -491,211 +483,6 @@ async fn hosts(State(state): App) -> Json<Vec<HostInfo>> {
 async fn host(State(state): App, Path(name): Path<String>) -> Answer<Json<HostInfo>> {
     state.refresh(false);
     Ok(Json(info(remote(&state, &name)?, compare(&state)).await))
-}
-
-/// What applying may be given.
-#[derive(Deserialize, ToSchema, Default)]
-pub struct ApplyWith {
-    /// The SSH user's sudo password, for a host that asks for one.
-    pub sudo_password: Option<String>,
-}
-
-fn new_id() -> std::io::Result<String> {
-    let mut bytes = [0u8; 12];
-    std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut bytes)?;
-    let letters = b"abcdefghijklmnopqrstuvwxyz234567";
-    Ok(format!(
-        "j{}",
-        bytes
-            .iter()
-            .map(|byte| letters[(byte & 31) as usize] as char)
-            .collect::<String>()
-    ))
-}
-
-#[utoipa::path(post, path = "/v1/hosts/{name}/apply", summary = "Apply the host's profile to it, as a job.", tag = "hosts",
-    params(("name" = String, Path, description = "A saved host")),
-    request_body(content = Option<ApplyWith>, description = "Nothing, or what the run needs that the server does not have"),
-    responses((status = 200, description = "The job that applies the host's configuration", body = JobInfo),
-              (status = 404, description = "No such host", body = ErrorBody)))]
-async fn apply_host(
-    State(state): App,
-    Path(name): Path<String>,
-    body: Bytes,
-) -> Answer<Json<JobInfo>> {
-    state.refresh(false);
-    let remote = remote(&state, &name)?;
-    let bad = |error: Box<dyn std::error::Error>| Fail::new(code::BAD_REQUEST, error.to_string());
-    let with: ApplyWith = match body.is_empty() {
-        true => ApplyWith::default(),
-        false => serde_json::from_slice(&body)
-            .map_err(|error| Fail::new(code::BAD_REQUEST, error.to_string()))?,
-    };
-    let host = super::setup::own_place(&name)
-        .and_then(|place| Host::load_at(&state.paths, place).map_err(bad))?;
-    let password = with.sudo_password.or_else(|| remote.password.clone());
-    if host.asks_password() && password.is_none() {
-        return Err(Fail::new(
-            code::NOT_AVAILABLE,
-            format!("{name} asks for a sudo password: send it as sudo_password"),
-        ));
-    }
-    if host.config["builder"]["ask_pass"]
-        .as_bool()
-        .unwrap_or(false)
-    {
-        return Err(Fail::new(
-            code::NOT_AVAILABLE,
-            format!(
-                "{name} is set to log in with an SSH password, which a job cannot type: give the server a key for it"
-            ),
-        ));
-    }
-    let prepared = apply::prepare(&state.paths, &host, password.as_deref()).map_err(bad)?;
-    let id = new_id().map_err(internal)?;
-    std::fs::create_dir_all(&state.jobs_dir).map_err(internal)?;
-    let path = state.jobs_dir.join(format!("{id}.log"));
-    let output = std::fs::File::create(&path).map_err(internal)?;
-    let mut command = tokio::process::Command::from(prepared.command);
-    command
-        .stdin(std::process::Stdio::null())
-        .stdout(output.try_clone().map_err(internal)?)
-        .stderr(output);
-    let mut child = command
-        .spawn()
-        .map_err(|error| internal(format!("ansible-playbook: {error}")))?;
-    let job = store::Job {
-        id: id.clone(),
-        host: name,
-        what: "apply".into(),
-        started: berth_api::now(),
-        ended: None,
-        exit_code: None,
-        output_path: path.to_string_lossy().into_owned(),
-    };
-    state.store.add_job(&job)?;
-    let _ = state.events.send(Event::Job(job.json()));
-    let files = prepared.files;
-    let watcher = state.clone();
-    tokio::spawn(async move {
-        let exit_code = child.wait().await.ok().and_then(|status| status.code());
-        // The private files the run read live until here.
-        drop(files);
-        let store = &watcher.store;
-        let _ = store.end_job(&id, exit_code);
-        if let Ok(Some(job)) = store.job(&id) {
-            let _ = watcher.events.send(Event::Job(job.json()));
-        }
-    });
-    Ok(Json(job_info(job)))
-}
-
-#[utoipa::path(post, path = "/v1/rollout", summary = "Bring hosts up to date one after another, as a job: apply each that is behind, maybe run its update and reboot it, and check it. The first that fails stops the rest.", tag = "hosts",
-    request_body(content = Option<Rollout>, description = "Which hosts and what to do; by default the saved hosts that are behind, applied only"),
-    responses((status = 200, description = "The job; its report says how each host went once it has ended", body = JobInfo),
-              (status = 400, description = "The body is not a roll-out", body = ErrorBody),
-              (status = 404, description = "No such host", body = ErrorBody)))]
-async fn rollout_hosts(State(state): App, body: Bytes) -> Answer<Json<JobInfo>> {
-    state.refresh(false);
-    let options: Rollout = match body.is_empty() {
-        true => Rollout::default(),
-        false => serde_json::from_slice(&body)
-            .map_err(|error| Fail::new(code::BAD_REQUEST, error.to_string()))?,
-    };
-    let known: Vec<String> = state.hosts.read().unwrap().keys().cloned().collect();
-    let names = rollout::chosen(known, &options.hosts)
-        .map_err(|error| Fail::new(code::NOT_FOUND, error.to_string()))?;
-    let id = new_id().map_err(internal)?;
-    std::fs::create_dir_all(&state.jobs_dir).map_err(internal)?;
-    let path = state.jobs_dir.join(format!("{id}.log"));
-    let mut output = std::fs::File::create(&path).map_err(internal)?;
-    let job = store::Job {
-        id: id.clone(),
-        host: names.join(", "),
-        what: "rollout".into(),
-        started: berth_api::now(),
-        ended: None,
-        exit_code: None,
-        output_path: path.to_string_lossy().into_owned(),
-    };
-    state.store.add_job(&job)?;
-    let _ = state.events.send(Event::Job(job.json()));
-    let passwords: Vec<Option<String>> = names
-        .iter()
-        .map(|name| state.host(name).and_then(|remote| remote.password.clone()))
-        .collect();
-    let watcher = state.clone();
-    // Its own thread: the roll-out waits on hosts with a runtime of its own.
-    std::thread::spawn(move || {
-        let paths = &watcher.paths;
-        let mut targets: Vec<Box<dyn rollout::Target + '_>> = vec![];
-        let mut problem = None;
-        for (name, password) in names.iter().zip(passwords) {
-            let host = berth_core::profiles::Place::own(name)
-                .and_then(|place| Host::load_at(paths, place));
-            match host.and_then(|host| rollout::Live::new(paths, host, password)) {
-                Ok(target) => targets.push(Box::new(target)),
-                Err(error) => problem = Some(format!("✗ {name}: {error}")),
-            }
-        }
-        let report = match problem {
-            Some(problem) => {
-                let _ = writeln!(output, "{problem}");
-                RolloutReport::default()
-            }
-            None => {
-                let compare = rollout::comparer(paths);
-                rollout::run(&mut targets, &options, &compare, &mut output)
-            }
-        };
-        drop(targets);
-        let _ = std::fs::write(
-            report_path(&path.to_string_lossy()),
-            serde_json::to_vec(&report).unwrap_or_default(),
-        );
-        let store = &watcher.store;
-        let _ = store.end_job(&id, Some(if report.ok { 0 } else { 1 }));
-        if let Ok(Some(job)) = store.job(&id) {
-            let _ = watcher.events.send(Event::Job(job.json()));
-        }
-    });
-    Ok(Json(job_info(job)))
-}
-
-/// Start a job of `what` for a host that runs `work` in a thread of its own,
-/// with its output in the job's log. It ends with 0 when `work` says it went
-/// well, and with 1 otherwise.
-pub(super) fn start_job(
-    state: &Arc<Serve>,
-    host: &str,
-    what: &str,
-    work: impl FnOnce(&mut std::fs::File) -> bool + Send + 'static,
-) -> Answer<JobInfo> {
-    let id = new_id().map_err(internal)?;
-    std::fs::create_dir_all(&state.jobs_dir).map_err(internal)?;
-    let path = state.jobs_dir.join(format!("{id}.log"));
-    let mut output = std::fs::File::create(&path).map_err(internal)?;
-    let job = store::Job {
-        id: id.clone(),
-        host: host.to_owned(),
-        what: what.to_owned(),
-        started: berth_api::now(),
-        ended: None,
-        exit_code: None,
-        output_path: path.to_string_lossy().into_owned(),
-    };
-    state.store.add_job(&job)?;
-    let _ = state.events.send(Event::Job(job.json()));
-    let watcher = state.clone();
-    std::thread::spawn(move || {
-        let ok = work(&mut output);
-        let store = &watcher.store;
-        let _ = store.end_job(&id, Some(if ok { 0 } else { 1 }));
-        if let Ok(Some(job)) = store.job(&id) {
-            let _ = watcher.events.send(Event::Job(job.json()));
-        }
-    });
-    Ok(job_info(job))
 }
 
 // ── Jobs ────────────────────────────────────────────────────────────────────
@@ -1209,7 +996,7 @@ async fn proxy(
     if method == Method::POST && rest.trim_end_matches('/') == "tasks/secrets" {
         return Err(Fail::new(
             code::FORBIDDEN,
-            "The secrets task takes the server's secrets: call hosts.secrets (POST /v1/hosts/NAME/secrets)",
+            "The secrets task takes the server's secrets: run the host's secrets action (POST /v1/hosts/NAME/actions/secrets)",
         ));
     }
     let Some(link) = &remote.link else {

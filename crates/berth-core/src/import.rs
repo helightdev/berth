@@ -32,6 +32,9 @@ pub const MARKER: &str = "import:settings";
 pub const PROFILES_MARKER: &str = "import:profiles";
 /// The marker of the third import, of the keys, the tokens and the plugins.
 pub const KEYS_MARKER: &str = "import:keys";
+/// The marker of the fourth, which moves how hosts are reached out of
+/// `builder` into `access` and berth's own key into the key ring.
+pub const ACCESS_MARKER: &str = "import:access";
 
 /// What a row of the import is.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -59,6 +62,7 @@ pub fn run(paths: &Paths, installation: &Installation, store: &Store) -> Result<
         && !profiles_leftover(paths)
         && marked(store, KEYS_MARKER)?
         && !setup_key_file(paths).exists()
+        && marked(store, ACCESS_MARKER)?
     {
         return Ok(());
     }
@@ -111,7 +115,308 @@ pub fn run(paths: &Paths, installation: &Installation, store: &Store) -> Result<
     if file.exists() {
         fs::remove_file(&file).map_err(|error| format!("{}: {error}", file.display()))?;
     }
+    if !marked(store, ACCESS_MARKER)? {
+        let known_hosts =
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".ssh/known_hosts"));
+        for notice in take_in_access(paths, store, known_hosts.as_deref())? {
+            eprintln!("berth: {notice}");
+        }
+    }
     Ok(())
+}
+
+/// What becomes of a profile's access fields: the rows to write besides the
+/// profile, and what to tell the user.
+#[derive(Default)]
+pub(crate) struct Converted {
+    /// Keys taken into the ring, by name.
+    pub keys: Vec<(String, crate::keys::ring::Halves)>,
+    pub notices: Vec<String>,
+}
+
+/// Move a profile's access fields from `builder` into `access`, in place.
+/// `served` is a profile of a berth server's host, which the server logs in
+/// to with its own key. A key file the profile named becomes a key of the
+/// ring when it can be read; `ring` is what the ring has, with what this
+/// conversion added so far. Returns whether the profile changed.
+pub(crate) fn convert_access(
+    paths: &Paths,
+    title: &str,
+    config: &mut Value,
+    served: bool,
+    ring: &mut Vec<(String, String)>,
+    converted: &mut Converted,
+) -> bool {
+    use berth_api::profile::{Access, Auth};
+    let Some(old) = berth_api::profile::take_builder_access(config) else {
+        return false;
+    };
+    let auth = if !config["access"]["auth"].is_null() {
+        return true;
+    } else if old.ask_pass {
+        Auth::Password
+    } else if served {
+        Auth::Berth
+    } else if old.key_file.is_empty() {
+        // What every connection offered: the user's own keys and berth's.
+        Auth::Ssh
+    } else {
+        let file = crate::discovery::expand_path(&old.key_file);
+        let taken = fs::read(&file)
+            .map_err(|error| error.to_string().into())
+            .and_then(|data| crate::keys::ring::validate(paths, &data));
+        match taken {
+            Ok(halves) => {
+                let blob = crate::keys::ring::blob(&halves.public);
+                let name = match ring.iter().find(|(_, public)| *public == blob) {
+                    Some((name, _)) => name.clone(),
+                    None => {
+                        let stem: String = file
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_default()
+                            .chars()
+                            .map(
+                                |ch| match ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                                    true => ch,
+                                    false => '-',
+                                },
+                            )
+                            .collect();
+                        let stem = stem.trim_matches('-').to_owned();
+                        let stem = match stem.as_str() {
+                            "" | "berth" => "key".to_owned(),
+                            _ => stem.chars().take(48).collect(),
+                        };
+                        let mut name = stem.clone();
+                        let mut number = 2;
+                        while ring.iter().any(|(known, _)| *known == name) {
+                            name = format!("{stem}-{number}");
+                            number += 1;
+                        }
+                        ring.push((name.clone(), blob));
+                        converted.keys.push((name.clone(), halves));
+                        converted.notices.push(format!(
+                            "took the key file {} of {title} into the key ring as {name}",
+                            file.display()
+                        ));
+                        name
+                    }
+                };
+                Auth::Key(name)
+            }
+            Err(error) => {
+                converted.notices.push(format!(
+                    "{title} named the key file {}, which berth could not take into its key ring ({error}). It logs in with your SSH configuration now. Add the key with: berth key add NAME FILE, and choose it as the host's login",
+                    file.display()
+                ));
+                Auth::Ssh
+            }
+        }
+    };
+    let mut access = Access::of(config);
+    access.auth = auth;
+    let sudo = config["access"]["sudo"].clone();
+    access.write(config);
+    if sudo.is_null()
+        && let Some(object) = config["access"].as_object_mut()
+    {
+        object.remove("sudo");
+    }
+    true
+}
+
+/// The host keys a known-hosts file such as `~/.ssh/known_hosts` has for a
+/// host at `address` and `port`.
+fn known_host_keys(known_hosts: &Path, address: &str, port: &str) -> Vec<String> {
+    let names = match port {
+        "" | "22" => vec![address.to_owned()],
+        port => vec![format!("[{address}]:{port}")],
+    };
+    for name in names {
+        let Ok(found) = std::process::Command::new("ssh-keygen")
+            .args(["-F", &name, "-f"])
+            .arg(known_hosts)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+        else {
+            continue;
+        };
+        let keys: Vec<String> = String::from_utf8_lossy(&found.stdout)
+            .lines()
+            .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+            .filter_map(|line| {
+                let mut words = line.split_whitespace().skip(1);
+                Some(format!("{} {}", words.next()?, words.next()?))
+            })
+            .collect();
+        if !keys.is_empty() {
+            return keys;
+        }
+    }
+    vec![]
+}
+
+/// The fourth import, in one change with its marker: berth's own key from
+/// the rows `ssh` and `ssh.pub` into the ring as `berth`, and the access
+/// fields of every stored profile, of every scope, into `access`. A host of
+/// this installation whose key `known_hosts` has keeps that key. Returns
+/// what to tell the user.
+pub(crate) fn take_in_access(
+    paths: &Paths,
+    store: &Store,
+    known_hosts: Option<&Path>,
+) -> Result<Vec<String>> {
+    use crate::keys::ring::{Halves, blob};
+    let mut writes: Vec<(&'static str, String, String, Vec<u8>)> = vec![];
+    let mut removals: Vec<(&'static str, String, String)> = vec![];
+    let mut converted = Converted::default();
+    let names = store.names(kind::KEY, OWN)?;
+    let has = |name: &str| names.iter().any(|known| known == name);
+    if has("ssh") && has("ssh.pub") && !has(berth_api::profile::BERTH_KEY) {
+        let private = store.read(kind::KEY, OWN, "ssh")?.unwrap_or_default();
+        let public = store.read(kind::KEY, OWN, "ssh.pub")?.unwrap_or_default();
+        let halves = Halves {
+            private: String::from_utf8_lossy(&private).into_owned(),
+            public: String::from_utf8_lossy(&public).trim().to_owned(),
+        };
+        writes.push((
+            kind::KEY,
+            OWN.into(),
+            berth_api::profile::BERTH_KEY.into(),
+            serde_json::to_vec(&halves)?,
+        ));
+    }
+    if has("ssh") || has("ssh.pub") {
+        removals.push((kind::KEY, OWN.into(), "ssh".into()));
+        removals.push((kind::KEY, OWN.into(), "ssh.pub".into()));
+    }
+    // What the ring has, by the type and base64 of each public half.
+    let mut ring: Vec<(String, String)> = vec![];
+    for (name, value) in store.entries(kind::KEY, OWN)? {
+        if let Ok(halves) = serde_json::from_slice::<Halves>(&value) {
+            ring.push((name, blob(&halves.public)));
+        }
+    }
+    let mut scopes = std::collections::BTreeSet::new();
+    if let crate::store::Rows::State(rows) = store.export(crate::store::Table::State)? {
+        for row in rows.into_iter().filter(|row| row.kind == kind::PROFILE) {
+            scopes.insert(row.scope);
+        }
+    }
+    for scope in scopes {
+        for (name, value) in store.entries(kind::PROFILE, &scope)? {
+            let Ok(mut config) = serde_json::from_slice::<Value>(&value) else {
+                continue;
+            };
+            let served =
+                crate::store::served_scope(&scope) || config["builder"]["served"].is_string();
+            if !convert_access(paths, &name, &mut config, served, &mut ring, &mut converted) {
+                continue;
+            }
+            if let (false, Some(file)) = (served, known_hosts) {
+                let access = berth_api::profile::Access::of(&config);
+                let keys = match access.address.is_empty() {
+                    true => vec![],
+                    false => known_host_keys(file, &access.address, &access.port),
+                };
+                if !keys.is_empty() {
+                    let record = crate::keys::known::Record {
+                        host_keys: keys,
+                        trusts: vec![],
+                    };
+                    writes.push((
+                        kind::ACCESS,
+                        scope.clone(),
+                        name.clone(),
+                        serde_json::to_vec(&record)?,
+                    ));
+                }
+            }
+            writes.push((
+                kind::PROFILE,
+                scope.clone(),
+                name,
+                config.to_string().into_bytes(),
+            ));
+        }
+    }
+    for (name, halves) in &converted.keys {
+        writes.push((
+            kind::KEY,
+            OWN.into(),
+            name.clone(),
+            serde_json::to_vec(halves)?,
+        ));
+    }
+    let marker =
+        json!({"version": berth_api::VERSION, "at": berth_api::rfc3339(berth_api::unix_now())});
+    writes.push((
+        kind::META,
+        OWN.into(),
+        ACCESS_MARKER.into(),
+        marker.to_string().into_bytes(),
+    ));
+    let writes: Vec<(&str, &str, &str, Vec<u8>)> = writes
+        .iter()
+        .map(|(kind, scope, name, value)| (*kind, scope.as_str(), name.as_str(), value.clone()))
+        .collect();
+    let removals: Vec<(&str, &str, &str)> = removals
+        .iter()
+        .map(|(kind, scope, name)| (*kind, scope.as_str(), name.as_str()))
+        .collect();
+    store.change(&writes, &removals)?;
+    Ok(converted.notices)
+}
+
+/// A profile of an older layout as it is read or given: of the access
+/// layout, its key file taken into the ring. A file is written only when the
+/// user saves it.
+pub fn convert_profile(paths: &Paths, title: &str, config: &mut Value) {
+    use crate::keys::ring::{Halves, blob};
+    if config["builder"].as_object().is_none_or(|builder| {
+        ![
+            "ssh_host",
+            "ssh_user",
+            "ssh_port",
+            "ssh_key",
+            "ask_become_pass",
+            "ask_pass",
+            "link",
+        ]
+        .iter()
+        .any(|key| builder.contains_key(*key))
+    }) {
+        return;
+    }
+    let store = crate::store::shared(paths).ok();
+    let mut ring: Vec<(String, String)> = store
+        .as_ref()
+        .and_then(|store| store.entries(kind::KEY, OWN).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(name, value)| {
+            let halves = serde_json::from_slice::<Halves>(&value).ok()?;
+            Some((name, blob(&halves.public)))
+        })
+        .collect();
+    let mut converted = Converted::default();
+    let served = config["builder"]["served"].is_string();
+    convert_access(paths, title, config, served, &mut ring, &mut converted);
+    let Some(store) = store else {
+        return;
+    };
+    for (name, halves) in &converted.keys {
+        if let Ok(value) = serde_json::to_vec(halves)
+            && let Err(error) = store.write(kind::KEY, OWN, name, &value)
+        {
+            eprintln!("berth: the key {name} was not taken into the key ring: {error}");
+        }
+    }
+    for notice in converted.notices {
+        eprintln!("berth: {notice}");
+    }
 }
 
 /// Where berth 0.4 kept the setup key of `berth serve`.
@@ -129,10 +434,27 @@ pub(crate) fn take_in_keys(paths: &Paths, store: &Store) -> Result<Vec<&'static 
     let has = |kind: &str, name: &str| -> Result<bool> {
         Ok(store.names(kind, OWN)?.iter().any(|known| known == name))
     };
-    for (kept, what) in [
-        (crate::kept::own_key(paths), "berth's own SSH key"),
-        (crate::kept::serve_token(paths), "the token of berth serve"),
-    ] {
+    // berth 0.4 kept its own key in data_dir/id_ed25519; it becomes the key
+    // berth of the ring, unless the store has one.
+    let own = paths.data_dir.join("id_ed25519");
+    if !has(kind::KEY, berth_api::profile::BERTH_KEY)?
+        && !has(kind::KEY, "ssh")?
+        && let (Ok(private), Ok(public)) = (fs::read(&own), fs::read(own.with_extension("pub")))
+        && !private.is_empty()
+        && !public.is_empty()
+    {
+        let halves = crate::keys::ring::Halves {
+            private: String::from_utf8_lossy(&private).into_owned(),
+            public: String::from_utf8_lossy(&public).trim().to_owned(),
+        };
+        rows.push((
+            kind::KEY,
+            berth_api::profile::BERTH_KEY.to_owned(),
+            serde_json::to_vec(&halves)?,
+        ));
+        taken.push("berth's own SSH key");
+    }
+    for (kept, what) in [(crate::kept::serve_token(paths), "the token of berth serve")] {
         let Some(values) = kept.from_files()? else {
             continue;
         };
@@ -726,10 +1048,11 @@ mod tests {
         let (_dir, paths) = scratch();
         let store = open(&paths);
         let report = store.seal_report().unwrap();
-        assert_eq!((report.sealed, report.plain), (0, 3));
+        assert_eq!((report.sealed, report.plain), (0, 4));
         assert!(read(&store, kind::META, MARKER).is_some());
         assert!(read(&store, kind::META, PROFILES_MARKER).is_some());
         assert!(read(&store, kind::META, KEYS_MARKER).is_some());
+        assert!(read(&store, kind::META, ACCESS_MARKER).is_some());
         assert!(!paths.config_dir.join("migrated").exists());
         assert!(!paths.settings_file().exists());
     }
@@ -743,8 +1066,8 @@ mod tests {
         let store = open(&paths);
         assert!(store.encrypted());
         let report = store.seal_report().unwrap();
-        // Two secrets, a registry, two settings and the three markers.
-        assert_eq!((report.sealed, report.plain), (8, 0));
+        // Two secrets, a registry, two settings and the four markers.
+        assert_eq!((report.sealed, report.plain), (9, 0));
         assert_eq!(read(&store, kind::SECRET, "github").unwrap(), "ghp-made-up");
     }
 
@@ -805,9 +1128,10 @@ mod tests {
         let (_dir, paths) = scratch();
         old_hosts(&paths);
         let store = open(&paths);
+        // In the layout of now: an empty key file was the user's keys and berth's.
         assert_eq!(
             json_row(&store, kind::PROFILE, "studio").unwrap(),
-            serde_json::from_str::<Value>(STUDIO).unwrap()
+            json!({"hostname": "studio", "builder": {}, "access": {"address": "192.0.2.10", "auth": "ssh"}})
         );
         assert!(json_row(&store, kind::PROFILE, "attic").is_some());
         assert_eq!(
@@ -962,11 +1286,13 @@ mod tests {
             .write(kind::TOKEN, OWN, "serve", b"restored-token")
             .unwrap();
         run(&paths, &found, &store).unwrap();
-        assert_eq!(read(&store, kind::KEY, "ssh").unwrap(), "private");
+        let berth: Value =
+            serde_json::from_str(&read(&store, kind::KEY, "berth").unwrap()).unwrap();
         assert_eq!(
-            read(&store, kind::KEY, "ssh.pub").unwrap(),
-            "ssh-ed25519 AAAA berth@studio"
+            berth,
+            json!({"private": "private", "public": "ssh-ed25519 AAAA berth@studio"})
         );
+        assert!(read(&store, kind::KEY, "ssh").is_none());
         assert_eq!(
             read(&store, kind::TOKEN, "serve").unwrap(),
             "restored-token"
@@ -988,5 +1314,175 @@ mod tests {
         run(&paths, &found, &store).unwrap();
         assert!(read(&store, kind::TOKEN, "setup-key").is_none());
         assert!(!data.join("serve.setup-key").exists());
+    }
+
+    /// A private key made by ssh-keygen, at `file`.
+    fn key_file(file: &Path) {
+        let made = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-C", "made-up", "-f"])
+            .arg(file)
+            .stdin(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(made.success());
+    }
+
+    #[test]
+    fn how_hosts_are_reached_moves_into_access_once_for_every_scope() {
+        let (dir, paths) = scratch();
+        let found = installation(&paths);
+        let store = found.open().unwrap();
+        let deploy = dir.path().join("deploy_key");
+        key_file(&deploy);
+        let served = "served:http://192.0.2.7:7777";
+        let profiles = [
+            (
+                OWN,
+                "studio",
+                json!({"builder": {"ssh_host": "192.0.2.10", "ssh_user": "ops", "ssh_key": ""}}),
+            ),
+            (
+                OWN,
+                "keyed",
+                json!({"builder": {"ssh_host": "192.0.2.11", "ssh_port": "2222", "ssh_key": deploy}}),
+            ),
+            (
+                OWN,
+                "again",
+                json!({"builder": {"ssh_host": "192.0.2.12", "ssh_key": deploy}}),
+            ),
+            (
+                OWN,
+                "lost",
+                json!({"builder": {"ssh_host": "192.0.2.13", "ssh_key": "/nowhere/key"}}),
+            ),
+            (
+                OWN,
+                "typed",
+                json!({"builder": {"ssh_host": "192.0.2.14", "ask_pass": true, "ask_become_pass": true}}),
+            ),
+            (
+                OWN,
+                "container",
+                json!({"builder": {"link": ["docker", "exec", "-i", "c", "berthd", "connect"]}}),
+            ),
+            (
+                OWN,
+                "new",
+                json!({"access": {"address": "192.0.2.15", "auth": "berth"}}),
+            ),
+            (
+                served,
+                "yard",
+                json!({"builder": {"ssh_host": "192.0.2.20", "served": "http://192.0.2.7:7777"}}),
+            ),
+        ];
+        for (scope, name, profile) in &profiles {
+            store
+                .write_json(kind::PROFILE, scope, name, profile)
+                .unwrap();
+        }
+        // berth 0.5 before this import kept its key in two rows.
+        store
+            .write(kind::KEY, OWN, "ssh", b"made-up private")
+            .unwrap();
+        store
+            .write(
+                kind::KEY,
+                OWN,
+                "ssh.pub",
+                b"ssh-ed25519 AAAAown berth@studio",
+            )
+            .unwrap();
+        // The user's known_hosts knows studio.
+        let known_hosts = dir.path().join("known_hosts");
+        fs::write(&known_hosts, "192.0.2.10 ssh-ed25519 AAAAhostkey\n").unwrap();
+        let notices = take_in_access(&paths, &store, Some(&known_hosts)).unwrap();
+        let access = |scope: &str, name: &str| {
+            store
+                .read_json(kind::PROFILE, scope, name)
+                .unwrap()
+                .unwrap()["access"]
+                .clone()
+        };
+        assert_eq!(
+            access(OWN, "studio"),
+            json!({"address": "192.0.2.10", "user": "ops", "auth": "ssh"})
+        );
+        assert_eq!(access(OWN, "keyed")["auth"], "key:deploy_key");
+        assert_eq!(access(OWN, "keyed")["port"], "2222");
+        assert_eq!(access(OWN, "again")["auth"], "key:deploy_key");
+        assert_eq!(access(OWN, "lost")["auth"], "ssh");
+        assert_eq!(
+            access(OWN, "typed"),
+            json!({"address": "192.0.2.14", "auth": "password", "sudo": "password"})
+        );
+        assert_eq!(access(OWN, "container")["link"][0], "docker");
+        assert_eq!(
+            access(OWN, "new"),
+            json!({"address": "192.0.2.15", "auth": "berth"})
+        );
+        assert_eq!(access(served, "yard")["auth"], "berth");
+        assert!(
+            notices.iter().any(|notice| notice.contains("/nowhere/key")),
+            "{notices:?}"
+        );
+        // The key file is a key of the ring, once; berth's key moved.
+        let keys = crate::keys::ring::names(&store).unwrap();
+        assert_eq!(keys, ["berth", "deploy_key"]);
+        let berth = crate::keys::ring::read(&store, "berth", false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(berth.private, "made-up private");
+        assert!(store.read(kind::KEY, OWN, "ssh.pub").unwrap().is_none());
+        let record = crate::keys::known::Record::load(
+            &store,
+            &crate::profiles::Place::own("studio").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(record.host_keys, ["ssh-ed25519 AAAAhostkey"]);
+        assert!(
+            store
+                .read_json(kind::META, OWN, ACCESS_MARKER)
+                .unwrap()
+                .is_some()
+        );
+
+        // A second run, as after an interruption once the change was made, changes nothing.
+        let before: Vec<_> = profiles
+            .iter()
+            .map(|(scope, name, _)| access(scope, name))
+            .collect();
+        store.forget(kind::META, OWN, ACCESS_MARKER).unwrap();
+        assert!(
+            take_in_access(&paths, &store, Some(&known_hosts))
+                .unwrap()
+                .is_empty()
+        );
+        let after: Vec<_> = profiles
+            .iter()
+            .map(|(scope, name, _)| access(scope, name))
+            .collect();
+        assert_eq!(before, after);
+        assert_eq!(crate::keys::ring::names(&store).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_profile_in_a_file_is_read_in_the_new_layout_and_written_so_when_saved() {
+        let (dir, paths) = scratch();
+        let file = dir.path().join("studio.json");
+        let old = r#"{"builder": {"ssh_host": "192.0.2.10", "ask_become_pass": false}}"#;
+        fs::write(&file, old).unwrap();
+        let place = crate::profiles::Place::File(file.clone());
+        let loaded = place.load(&paths).unwrap().unwrap();
+        assert_eq!(
+            loaded["access"],
+            json!({"address": "192.0.2.10", "auth": "ssh", "sudo": "none"})
+        );
+        assert_eq!(fs::read_to_string(&file).unwrap(), old);
+        place.save(&paths, &loaded).unwrap();
+        let saved: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(saved["access"]["address"], "192.0.2.10");
+        assert!(saved["builder"].get("ssh_host").is_none());
     }
 }

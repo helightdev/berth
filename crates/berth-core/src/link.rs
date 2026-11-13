@@ -31,6 +31,10 @@ pub struct LinkSpec {
     pub first_line: Option<String>,
     /// Instead of a command: the host of this name behind a `berth serve`.
     pub via: Option<(Server, String)>,
+    /// Set in the command's environment, as ssh's askpass helper needs.
+    pub env: Vec<(String, String)>,
+    /// The host's name, for what is said when it fails.
+    pub name: String,
 }
 
 /// A private directory for sockets of ours.
@@ -117,6 +121,7 @@ impl Link {
     pub async fn connect(&self) -> client::Result<Conn> {
         let mut child = tokio::process::Command::new(&self.spec.program)
             .args(&self.spec.args)
+            .envs(self.spec.env.iter().map(|(name, value)| (name, value)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -158,6 +163,8 @@ impl Link {
         let said = self.complaints.lock().unwrap().trim().to_owned();
         Error::Transport(if said.is_empty() {
             message
+        } else if let Some(changed) = crate::keys::known::changed_key(&self.spec.name, &said) {
+            changed
         } else if said.contains("a password is required") {
             format!("{said}: set BERTH_SUDO_PASSWORD")
         } else {
@@ -234,6 +241,26 @@ impl Link {
 
     pub async fn post<T: DeserializeOwned>(&self, path: &str, body: &Value) -> client::Result<T> {
         self.call("POST", path, Some(body)).await
+    }
+
+    /// Run a task of the host, as `tasks.run` takes it, and the session it
+    /// runs as. Through a berth server it is the host's action there, which
+    /// the server keeps a job of and gives the server's secrets to.
+    pub async fn run_task(&self, name: &str, body: &Value) -> client::Result<berth_api::Session> {
+        let Some((server, host)) = &self.spec.via else {
+            let path = format!("/v1/tasks/{}", client::encode(name));
+            return self.post(&path, body).await;
+        };
+        let portal = self.portal(server).await?;
+        let args = serde_json::json!({"name": host, "action": name});
+        let acted = portal
+            .call("hosts.act", None, args, Some(body.clone()))
+            .await?;
+        serde_json::from_value(acted["session"].clone()).map_err(|_| {
+            Error::Transport(format!(
+                "{name} on {host} is not a task of the host: run it with berth run {host} {name}"
+            ))
+        })
     }
 
     /// Open a stream. It holds its connection for as long as it lives.

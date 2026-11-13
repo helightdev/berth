@@ -94,7 +94,7 @@ python3 -m venv .venv && .venv/bin/pip install -r provision/requirements.txt
 | Settings of this machine, listed below | `~/.config/berth/config.json` |
 | The other settings, registries, secret values and registry passwords | berth's store, by default `~/.local/share/berth/berth.db` |
 | One profile per host, its generated passwords and the record of a machine berth created for it | berth's store too. `berth profile HOST` prints a profile and `berth credentials HOST` the passwords |
-| berth's own SSH key, and the token and setup key of `berth serve` | berth's store. The key is written to `~/.local/share/berth/id_ed25519` and the token to `serve.token` beside it |
+| berth's SSH keys, and the token and setup key of `berth serve` | berth's store. A key is written to `~/.local/share/berth/keys/NAME` when ssh needs it, and the token to `serve.token` |
 | The key file of an encrypted store | `~/.config/berth/store.key` (setting `store_key`) |
 | Locks held while berth creates or changes a host's machine | `~/.local/share/berth/locks/` |
 | Your own plugins | `~/.config/berth/plugins/`, and in berth's store what reinstalls them |

@@ -54,27 +54,292 @@ pub fn operator_passwordless_sudo(config: &Value) -> bool {
 /// first. A profile that does not say follows the operator's sudo, as the
 /// SSH user is the operator once the host is set up; root needs no sudo.
 pub fn asks_become_pass(config: &Value) -> bool {
-    let builder = &config["builder"];
-    let stored = &builder["ask_become_pass"];
-    // Older profiles stored the switch as the strings "true" and "false".
-    if let Some(asks) = stored
-        .as_bool()
-        .or_else(|| stored.as_str().map(|text| text == "true"))
-    {
-        return asks;
+    let access = Access::of(config);
+    match access.sudo {
+        Some(asks) => asks,
+        None => access.user != "root" && !operator_passwordless_sudo(config),
     }
-    builder["ssh_user"] != "root" && !operator_passwordless_sudo(config)
 }
 
-/// The keys the operator account gets: the profile's, and with `own` the key
-/// of the berth that sets the host up.
-pub fn operator_keys(config: &Value, own: Option<&str>) -> Vec<String> {
-    let mut keys = account_keys(config, "operator");
-    if let Some(own) = own.map(str::trim).filter(|own| !own.is_empty())
-        && takes_own_key(config)
-        && !keys.iter().any(|known| known == own)
+/// How berth logs in to a host over SSH: `access.auth` of its profile.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Auth {
+    /// The installation's own key, the key `berth` of its key ring.
+    #[default]
+    Berth,
+    /// Another key of the key ring, by name.
+    Key(String),
+    /// A password, kept as the secret `ssh/HOST` or asked for.
+    Password,
+    /// The SSH configuration and agent of whoever runs berth, with berth's
+    /// own key offered after them.
+    Ssh,
+}
+
+impl Auth {
+    /// What a profile says, or `None` for something berth does not know.
+    pub fn parse(text: &str) -> Option<Auth> {
+        Some(match text {
+            "" | "berth" => Auth::Berth,
+            "password" => Auth::Password,
+            "ssh" => Auth::Ssh,
+            _ => {
+                let name = text.strip_prefix("key:")?;
+                if !valid_key_name(name) {
+                    return None;
+                }
+                Auth::Key(name.to_owned())
+            }
+        })
+    }
+
+    /// The key of the key ring it logs in with, if it does.
+    pub fn key(&self) -> Option<&str> {
+        match self {
+            Auth::Berth => Some(BERTH_KEY),
+            Auth::Key(name) => Some(name),
+            Auth::Password | Auth::Ssh => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Auth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Auth::Berth => f.write_str("berth"),
+            Auth::Key(name) => write!(f, "key:{name}"),
+            Auth::Password => f.write_str("password"),
+            Auth::Ssh => f.write_str("ssh"),
+        }
+    }
+}
+
+/// The name of the installation's own key in its key ring.
+pub const BERTH_KEY: &str = "berth";
+
+/// Whether a name can be a key's: a word of letters, digits, `-` and `_`,
+/// as it becomes a file name and part of `key:NAME`.
+pub fn valid_key_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+}
+
+/// Where a host is and how berth logs in to it: the `access` object of its
+/// profile.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Access {
+    /// A host name, an address or an alias of the SSH configuration.
+    pub address: String,
+    /// The SSH user; empty leaves it to the SSH configuration.
+    pub user: String,
+    /// The SSH port; empty leaves it to the SSH configuration.
+    pub port: String,
+    pub auth: Auth,
+    /// Whether the SSH user's sudo takes a password; `None` follows the
+    /// operator's sudo.
+    pub sudo: Option<bool>,
+    /// A command that replaces SSH, as for a container.
+    pub link: Option<Vec<String>>,
+}
+
+impl Access {
+    /// What a profile says. Values berth does not know read as their default,
+    /// and [`Access::problems`] names them.
+    pub fn of(config: &Value) -> Access {
+        let access = &config["access"];
+        let text = |key: &str| match &access[key] {
+            Value::String(text) => text.trim().to_owned(),
+            Value::Number(number) => number.to_string(),
+            _ => String::new(),
+        };
+        Access {
+            address: text("address"),
+            user: text("user"),
+            port: text("port"),
+            auth: Auth::parse(&text("auth")).unwrap_or_default(),
+            sudo: match text("sudo").as_str() {
+                "password" => Some(true),
+                "none" => Some(false),
+                _ => None,
+            },
+            link: access["link"].as_array().map(|words| {
+                words
+                    .iter()
+                    .filter_map(|word| word.as_str().map(str::to_owned))
+                    .collect()
+            }),
+        }
+    }
+
+    /// Write it into a profile, leaving out what is empty.
+    pub fn write(&self, config: &mut Value) {
+        if !config.is_object() {
+            *config = json!({});
+        }
+        let mut access = serde_json::Map::new();
+        for (key, value) in [
+            ("address", &self.address),
+            ("user", &self.user),
+            ("port", &self.port),
+        ] {
+            if !value.is_empty() {
+                access.insert(key.into(), json!(value));
+            }
+        }
+        access.insert("auth".into(), json!(self.auth.to_string()));
+        if let Some(asks) = self.sudo {
+            access.insert("sudo".into(), json!(if asks { "password" } else { "none" }));
+        }
+        if let Some(link) = &self.link {
+            access.insert("link".into(), json!(link));
+        }
+        config["access"] = Value::Object(access);
+    }
+
+    /// Whether berth reaches the host: at an address, or through its own command.
+    pub fn reachable(&self) -> bool {
+        !self.address.is_empty() || self.link.is_some()
+    }
+
+    /// What is wrong with the `access` object of a profile, in sentences.
+    pub fn problems(config: &Value) -> Vec<String> {
+        let access = &config["access"];
+        let mut problems = vec![];
+        if access.is_null() {
+            return problems;
+        }
+        if !access.is_object() {
+            return vec!["access must be an object".into()];
+        }
+        let auth = access["auth"].as_str().unwrap_or("");
+        if Auth::parse(auth).is_none() {
+            problems.push(format!(
+                "access.auth is berth, key:NAME, password or ssh, not {auth}"
+            ));
+        }
+        let sudo = access["sudo"].as_str().unwrap_or("");
+        if !["", "none", "password"].contains(&sudo) {
+            problems.push(format!("access.sudo is none or password, not {sudo}"));
+        }
+        let port = Access::of(config).port;
+        if !port.is_empty() && !port.parse::<u16>().is_ok_and(|port| port != 0) {
+            problems.push("access.port must be between 1 and 65535".into());
+        }
+        if !access["link"].is_null()
+            && !access["link"]
+                .as_array()
+                .is_some_and(|words| !words.is_empty() && words.iter().all(Value::is_string))
+        {
+            problems.push("access.link is a command: a list of words".into());
+        }
+        problems
+    }
+}
+
+/// What a profile of berth 0.4 said under `builder` of how it is reached,
+/// taken out of there by [`take_builder_access`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OldAccess {
+    /// `builder.ssh_key`: the path of a private key on the machine that ran berth.
+    pub key_file: String,
+    /// `builder.ask_pass`: Ansible asked for an SSH password.
+    pub ask_pass: bool,
+}
+
+/// The fields of `builder` that `access` took over.
+const OLD_ACCESS: &[&str] = &[
+    "ssh_host",
+    "ssh_user",
+    "ssh_port",
+    "ssh_key",
+    "ask_become_pass",
+    "ask_pass",
+    "link",
+];
+
+/// Move the access fields of an older profile from `builder` into `access`,
+/// leaving `access.auth` to the caller, which knows what the key file was.
+/// What `access` has already stays. `None` when there was nothing to move.
+pub fn take_builder_access(config: &mut Value) -> Option<OldAccess> {
+    let builder = config.get_mut("builder")?.as_object_mut()?;
+    if !OLD_ACCESS.iter().any(|key| builder.contains_key(*key)) {
+        return None;
+    }
+    let mut taken = serde_json::Map::new();
+    for key in OLD_ACCESS {
+        if let Some(value) = builder.remove(*key) {
+            taken.insert((*key).to_owned(), value);
+        }
+    }
+    let text = |key: &str| match taken.get(key) {
+        Some(Value::String(text)) => text.trim().to_owned(),
+        Some(Value::Number(number)) => number.to_string(),
+        _ => String::new(),
+    };
+    // Older profiles stored the switches as the strings "true" and "false".
+    let switch = |key: &str| match taken.get(key) {
+        Some(Value::Bool(on)) => Some(*on),
+        Some(Value::String(text)) if text == "true" || text == "false" => Some(text == "true"),
+        _ => None,
+    };
+    let mut access = Access::of(config);
+    let had_access = config["access"].is_object();
+    for (field, key) in [
+        (&mut access.address, "ssh_host"),
+        (&mut access.user, "ssh_user"),
+        (&mut access.port, "ssh_port"),
+    ] {
+        if field.is_empty() {
+            *field = text(key);
+        }
+    }
+    if access.sudo.is_none() {
+        access.sudo = switch("ask_become_pass");
+    }
+    if access.link.is_none()
+        && let Some(Value::Array(words)) = taken.get("link")
     {
-        keys.push(own.to_owned());
+        access.link = Some(
+            words
+                .iter()
+                .filter_map(|word| word.as_str().map(str::to_owned))
+                .collect(),
+        );
+    }
+    let old = OldAccess {
+        key_file: text("ssh_key"),
+        ask_pass: switch("ask_pass").unwrap_or(false),
+    };
+    // An access object written by a later berth keeps its own way of logging in.
+    let auth = config["access"]["auth"].clone();
+    access.write(config);
+    if had_access && auth.is_string() {
+        config["access"]["auth"] = auth;
+    } else if let Some(access) = config["access"].as_object_mut() {
+        access.remove("auth");
+    }
+    Some(old)
+}
+
+/// The keys the operator account gets: the profile's, and `own`, the keys of
+/// the berth that sets the host up.
+pub fn operator_keys(config: &Value, own: &[String]) -> Vec<String> {
+    let mut keys = account_keys(config, "operator");
+    if !takes_own_key(config) {
+        return keys;
+    }
+    for own in own
+        .iter()
+        .map(|own| own.trim())
+        .filter(|own| !own.is_empty())
+    {
+        if !keys.iter().any(|known| known == own) {
+            keys.push(own.to_owned());
+        }
     }
     keys
 }
@@ -159,31 +424,92 @@ mod tests {
 
     #[test]
     fn the_operator_takes_the_key_of_its_berth_unless_told_not_to() {
-        let own = Some("ssh-ed25519 OWN berth");
+        let own = ["ssh-ed25519 OWN berth".to_owned()];
         let config = json!({"operator_ssh_public_keys": ["ssh-ed25519 AAAA one"]});
-        assert_eq!(operator_keys(&config, own).len(), 2);
-        assert_eq!(operator_keys(&config, None).len(), 1);
+        assert_eq!(operator_keys(&config, &own).len(), 2);
+        assert_eq!(operator_keys(&config, &[]).len(), 1);
         let config = json!({"berth_ssh_key": false});
-        assert!(operator_keys(&config, own).is_empty());
+        assert!(operator_keys(&config, &own).is_empty());
     }
 
     #[test]
     fn sudo_asks_for_a_password_only_when_the_operator_needs_one() {
         assert!(operator_passwordless_sudo(&json!({})));
         assert!(!asks_become_pass(&json!({})));
-        assert!(!asks_become_pass(&json!({"builder": {"ssh_user": "ops"}})));
-        let typed = json!({"operator_passwordless_sudo": false, "builder": {"ssh_user": "ops"}});
+        assert!(!asks_become_pass(&json!({"access": {"user": "ops"}})));
+        let typed = json!({"operator_passwordless_sudo": false, "access": {"user": "ops"}});
         assert!(asks_become_pass(&typed));
-        let root = json!({"operator_passwordless_sudo": false, "builder": {"ssh_user": "root"}});
+        let root = json!({"operator_passwordless_sudo": false, "access": {"user": "root"}});
         assert!(!asks_become_pass(&root));
-        // What the profile says wins, also in the older form.
-        assert!(asks_become_pass(
-            &json!({"builder": {"ask_become_pass": true}})
-        ));
+        // What the profile says wins.
+        assert!(asks_become_pass(&json!({"access": {"sudo": "password"}})));
         assert!(!asks_become_pass(&json!({
             "operator_passwordless_sudo": false,
-            "builder": {"ask_become_pass": "false"}
+            "access": {"sudo": "none"}
         })));
+    }
+
+    #[test]
+    fn the_access_fields_move_out_of_builder_once() {
+        let mut old = json!({"builder": {
+            "ssh_host": "192.0.2.10", "ssh_user": "ops", "ssh_port": "2222",
+            "ssh_key": "~/.ssh/studio", "ask_become_pass": "true", "ask_pass": false,
+            "iso": "/x.iso"
+        }});
+        let taken = take_builder_access(&mut old).unwrap();
+        assert_eq!(taken.key_file, "~/.ssh/studio");
+        assert_eq!(
+            old,
+            json!({"builder": {"iso": "/x.iso"},
+                   "access": {"address": "192.0.2.10", "user": "ops", "port": "2222", "sudo": "password"}})
+        );
+        assert!(take_builder_access(&mut old).is_none());
+        let access = Access::of(&old);
+        assert_eq!((access.auth, access.sudo), (Auth::Berth, Some(true)));
+        // A link moves too, and sudo left unsaid stays so.
+        let mut container =
+            json!({"builder": {"link": ["docker", "exec", "-i", "c", "berthd", "connect"]}});
+        take_builder_access(&mut container).unwrap();
+        assert_eq!(Access::of(&container).link.unwrap().len(), 6);
+        assert!(container["access"]["sudo"].is_null());
+        // What a later berth wrote stays.
+        let mut both = json!({"access": {"address": "192.0.2.20", "auth": "key:deploy"},
+                              "builder": {"ssh_host": "192.0.2.10"}});
+        take_builder_access(&mut both).unwrap();
+        assert_eq!(
+            both["access"],
+            json!({"address": "192.0.2.20", "auth": "key:deploy"})
+        );
+    }
+
+    #[test]
+    fn access_reads_what_it_knows_and_names_the_rest() {
+        for (auth, parsed) in [
+            ("", Some(Auth::Berth)),
+            ("berth", Some(Auth::Berth)),
+            ("key:deploy", Some(Auth::Key("deploy".into()))),
+            ("password", Some(Auth::Password)),
+            ("ssh", Some(Auth::Ssh)),
+            ("key:", None),
+            ("key:../x", None),
+            ("agent", None),
+        ] {
+            assert_eq!(Auth::parse(auth), parsed, "{auth}");
+            if let Some(parsed) = parsed.filter(|_| !auth.is_empty()) {
+                assert_eq!(parsed.to_string(), auth);
+            }
+        }
+        let config = json!({"access": {"address": "studio", "port": 2222, "auth": "agent", "sudo": "maybe"}});
+        assert_eq!(Access::of(&config).port, "2222");
+        let problems = Access::problems(&config);
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(Access::problems(&json!({"access": {"port": "70000"}}))[0].contains("port"));
+        let mut written = json!({});
+        Access::of(&config).write(&mut written);
+        assert_eq!(
+            written["access"],
+            json!({"address": "studio", "port": "2222", "auth": "berth"})
+        );
     }
 
     #[test]

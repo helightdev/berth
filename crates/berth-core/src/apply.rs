@@ -28,8 +28,9 @@ pub fn plugin_dirs(plugins: &[plugins::Plugin]) -> Value {
 }
 
 /// Variables for a direct Ansible run, matching what the seed builder embeds.
-/// `own` is the public key of the berth that applies them.
-pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: Option<&str>) -> Value {
+/// `own` are the public keys of the berth that applies them: its key, and
+/// the key replacing it while a rotation runs.
+pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: &[String]) -> Value {
     let mut config = config.clone();
     berth_api::profile::retire_qemu(&mut config);
     let config = &config;
@@ -111,8 +112,8 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
     let source = paths.source()?;
     let plugins = plugins::load(&[source.join("plugins"), paths.config_dir.join("plugins")]);
     let dirs = plugin_dirs(&plugins);
-    let own = paths.own_public_key();
-    let mut vars = ansible_vars(&host.config, &dirs, own.as_deref());
+    let own = crate::keys::operator_keys(paths);
+    let mut vars = ansible_vars(&host.config, &dirs, &own);
     add_tailnet(&mut vars, paths, &host.config, &host.place)?;
     // The role keeps this on the host, for the plugins the host has, so
     // berth can tell later whether the host is behind.
@@ -123,12 +124,25 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
     if let Some(password) = become_password {
         vars["ansible_become_password"] = json!(password);
     }
+    // A host logged in to with a password: Ansible hands it to ssh through
+    // an askpass helper of its own, and takes it from this private file.
+    let login = crate::keys::login_of(paths, host)?;
+    let ssh_password = match login.auth {
+        berth_api::profile::Auth::Password if host.served(paths).is_none() => {
+            crate::registry::Store::own(crate::store::shared(paths)?)
+                .secret(&crate::keys::password_secret(&host.place))?
+        }
+        _ => None,
+    };
+    if let Some(password) = &ssh_password {
+        vars["ansible_password"] = json!(password);
+    }
     // Secrets go to private files rather than argv.
     let mut extra = tempfile::NamedTempFile::new()?;
     serde_json::to_writer(&mut extra, &vars)?;
     extra.flush()?;
     let mut inventory = tempfile::NamedTempFile::new()?;
-    serde_json::to_writer(&mut inventory, &host.inventory()?)?;
+    serde_json::to_writer(&mut inventory, &login.inventory()?)?;
     inventory.flush()?;
     let mut command = playbook(&source);
     command
@@ -137,19 +151,19 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
         .arg(format!("@{}", extra.path().display()))
         .arg("-i")
         .arg(inventory.path());
-    if host.config["builder"]["ask_pass"]
-        .as_bool()
-        .unwrap_or(false)
-    {
+    if login.auth == berth_api::profile::Auth::Password && ssh_password.is_none() {
         command.arg("--ask-pass");
     }
     if become_password.is_none() && host.asks_password() {
         command.arg("--ask-become-pass");
     }
+    // A password is Ansible's to hand to ssh, through its own helper; no
+    // other program, such as the desktop's dialog, is ever asked for one.
+    command.env("SSH_ASKPASS_REQUIRE", "never");
     command.env("DEVBOX_BUILD_DIR", paths.build_dir());
     command.env("BERTH_PLUGINS", dirs.to_string());
-    if let Some(own) = own {
-        command.env("BERTH_SSH_PUBLIC_KEY", own);
+    if !own.is_empty() {
+        command.env("BERTH_SSH_PUBLIC_KEY", own.join("\n"));
     }
     Ok(Prepared {
         command,
@@ -171,11 +185,11 @@ mod tests {
         let vars = ansible_vars(
             &config,
             &json!({"demo": "/p/demo"}),
-            Some("ssh-ed25519 OWN"),
+            &["ssh-ed25519 OWN".to_owned(), "ssh-ed25519 NEXT".to_owned()],
         );
         assert_eq!(
             vars["devbox_operator_ssh_public_key"],
-            "ssh-ed25519 ME\nssh-ed25519 OWN"
+            "ssh-ed25519 ME\nssh-ed25519 OWN\nssh-ed25519 NEXT"
         );
         assert_eq!(vars["devbox_agent_ssh_public_key"], "");
         assert_eq!(vars["devbox_user"], "bot");
@@ -187,16 +201,16 @@ mod tests {
         // A pasted key without a login server goes to Tailscale, as always.
         assert!(vars.get("devbox_tailscale_login_server").is_none());
         // A profile of the qemu kind there once was is applied as cloud, reached from the QEMU host.
-        let qemu = ansible_vars(&json!({"profile": "qemu"}), &json!({}), None);
+        let qemu = ansible_vars(&json!({"profile": "qemu"}), &json!({}), &[]);
         assert_eq!(qemu["devbox_profile"], "cloud");
         assert_eq!(qemu["devbox_bootstrap_ssh_cidr"], "10.0.2.2/32");
         let headscale = json!({"tailscale_login_server": "https://hs.example.org"});
         assert_eq!(
-            ansible_vars(&headscale, &json!({}), None)["devbox_tailscale_login_server"],
+            ansible_vars(&headscale, &json!({}), &[])["devbox_tailscale_login_server"],
             "https://hs.example.org"
         );
         assert!(
-            ansible_vars(&json!({}), &json!({}), None)
+            ansible_vars(&json!({}), &json!({}), &[])
                 .get("devbox_tailscale_auth_key")
                 .is_none()
         );
@@ -217,8 +231,7 @@ mod tests {
         let host = Host {
             name: "box".into(),
             place: Place::own("box").unwrap(),
-            key: None,
-            config: json!({"profile": "cloud", "builder": {"ssh_host": "box", "ssh_user": "ops", "ask_become_pass": true}}),
+            config: json!({"profile": "cloud", "access": {"address": "box", "user": "ops", "sudo": "password"}}),
         };
         let prepared = prepare(&paths, &host, Some("hunter2")).unwrap();
         let args: Vec<String> = prepared

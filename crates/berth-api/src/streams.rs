@@ -236,7 +236,7 @@ pub const SERVE: &[Stream] = &[
             text(
                 "job",
                 "A job started or ended.",
-                r#"{"source":"job","job":{"id":"j1","host":"server","what":"apply","started":"2026-11-12T10:00:00Z"}}"#,
+                r#"{"source":"job","job":{"id":"j1","subject":"host:server","action":"apply","host":"server","started":"2026-11-12T10:00:00Z"}}"#,
             ),
             text(
                 "kv",

@@ -29,6 +29,10 @@ pub(super) const MIGRATIONS: &[&str] = &[
          kind TEXT NOT NULL, scope TEXT NOT NULL, name TEXT NOT NULL,
          value BLOB NOT NULL, sealed INTEGER NOT NULL, updated TEXT NOT NULL,
          PRIMARY KEY (kind, scope, name));",
+    "ALTER TABLE jobs ADD COLUMN subject TEXT NOT NULL DEFAULT '';
+     ALTER TABLE jobs ADD COLUMN action TEXT NOT NULL DEFAULT '';
+     ALTER TABLE jobs ADD COLUMN token TEXT;
+     CREATE UNIQUE INDEX jobs_token ON jobs(subject, action, token) WHERE token IS NOT NULL;",
 ];
 
 impl std::convert::From<rusqlite::Error> for Error {
@@ -88,6 +92,9 @@ fn stored(row: &rusqlite::Row<'_>) -> rusqlite::Result<Stored> {
 const MESSAGE_COLUMNS: &str =
     "seq, host, id, topic, body, keep, from_level, from_uid, session, time, done";
 
+const JOB_COLUMNS: &str =
+    "id, host, what, started, ended, exit_code, output_path, subject, action, token";
+
 fn job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
     Ok(Job {
         id: row.get(0)?,
@@ -97,7 +104,32 @@ fn job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
         ended: row.get(4)?,
         exit_code: row.get(5)?,
         output_path: row.get(6)?,
+        subject: row.get(7)?,
+        action: row.get(8)?,
+        token: row.get(9)?,
     })
+}
+
+/// Write a job, unless its id or its token is taken: the job there stays.
+fn insert_job(db: &Connection, job: &Job) -> rusqlite::Result<usize> {
+    db.execute(
+        &format!(
+            "INSERT INTO jobs({JOB_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT DO NOTHING"
+        ),
+        params![
+            job.id,
+            job.host,
+            job.what,
+            job.started,
+            job.ended,
+            job.exit_code,
+            job.output_path,
+            job.subject,
+            job.action,
+            job.token
+        ],
+    )
 }
 
 fn entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
@@ -374,21 +406,36 @@ impl Backend for SqliteBackend {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    fn add_job(&mut self, job: &Job) -> Result<()> {
-        self.db.execute(
-            "INSERT INTO jobs(id, host, what, started, ended, exit_code, output_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                job.id,
-                job.host,
-                job.what,
-                job.started,
-                job.ended,
-                job.exit_code,
-                job.output_path
-            ],
-        )?;
-        Ok(())
+    fn add_job(&mut self, job: &Job) -> Result<Job> {
+        let transaction = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        insert_job(&transaction, job)?;
+        let stored = match &job.token {
+            Some(token) => transaction.query_row(
+                &format!(
+                    "SELECT {JOB_COLUMNS} FROM jobs WHERE subject = ?1 AND action = ?2 AND token = ?3"
+                ),
+                params![job.subject, job.action, token],
+                self::job,
+            )?,
+            None => job.clone(),
+        };
+        transaction.commit()?;
+        Ok(stored)
+    }
+
+    fn job_by_token(&mut self, subject: &str, action: &str, token: &str) -> Result<Option<Job>> {
+        Ok(self
+            .db
+            .query_row(
+                &format!(
+                    "SELECT {JOB_COLUMNS} FROM jobs WHERE subject = ?1 AND action = ?2 AND token = ?3"
+                ),
+                params![subject, action, token],
+                job,
+            )
+            .optional()?)
     }
 
     fn end_job(&mut self, id: &str, exit_code: Option<i32>, ended: &str) -> Result<()> {
@@ -409,7 +456,7 @@ impl Backend for SqliteBackend {
         let found = self
             .db
             .query_row(
-                "SELECT id, host, what, started, ended, exit_code, output_path FROM jobs WHERE id = ?1",
+                &format!("SELECT {JOB_COLUMNS} FROM jobs WHERE id = ?1"),
                 [id],
                 job,
             )
@@ -418,10 +465,9 @@ impl Backend for SqliteBackend {
     }
 
     fn jobs(&mut self, limit: usize) -> Result<Vec<Job>> {
-        let mut statement = self.db.prepare(
-            "SELECT id, host, what, started, ended, exit_code, output_path FROM jobs
-             ORDER BY started DESC, id DESC LIMIT ?1",
-        )?;
+        let mut statement = self.db.prepare(&format!(
+            "SELECT {JOB_COLUMNS} FROM jobs ORDER BY started DESC, id DESC LIMIT ?1"
+        ))?;
         let rows = statement.query_map([limit as i64], job)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -606,9 +652,9 @@ impl Backend for SqliteBackend {
                 Rows::Kv(rows.collect::<rusqlite::Result<_>>()?)
             }
             Table::Jobs => {
-                let mut statement = all(
-                    "SELECT id, host, what, started, ended, exit_code, output_path FROM jobs ORDER BY started, id",
-                )?;
+                let mut statement = all(&format!(
+                    "SELECT {JOB_COLUMNS} FROM jobs ORDER BY started, id"
+                ))?;
                 let rows = statement.query_map([], job)?;
                 Rows::Jobs(rows.collect::<rusqlite::Result<_>>()?)
             }
@@ -682,20 +728,8 @@ impl Backend for SqliteBackend {
                 }
             }
             Rows::Jobs(rows) => {
-                let mut statement = transaction.prepare(
-                    "INSERT INTO jobs(id, host, what, started, ended, exit_code, output_path)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT DO NOTHING",
-                )?;
                 for job in rows {
-                    added += statement.execute(params![
-                        job.id,
-                        job.host,
-                        job.what,
-                        job.started,
-                        job.ended,
-                        job.exit_code,
-                        job.output_path
-                    ])?;
+                    added += insert_job(&transaction, job)?;
                 }
             }
         }

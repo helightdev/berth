@@ -41,7 +41,7 @@ The software berth puts on a host is called *devbox*. The name appears in paths 
 
 ## Connecting to a host
 
-berth connects to a host by running `ssh HOST sudo -n berthd connect` and talking HTTP to berthd over that connection. Several requests share one SSH connection. A profile can name another command instead in `builder.link`, which is how a container is reached:
+berth connects to a host by running `ssh HOST sudo -n berthd connect` and talking HTTP to berthd over that connection. Several requests share one SSH connection. A profile can name another command instead in `access.link`, which is how a container is reached:
 
 ```json title="In the host's profile"
 { "builder": { "link": ["docker", "exec", "-i", "CONTAINER", "berthd", "connect"] } }

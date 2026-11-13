@@ -1,8 +1,9 @@
-//! What berth keeps in its store and also uses as files on this machine: its
-//! own SSH key, which ssh and Ansible are given as a file, and the token of
-//! `berth serve`, which recipes and people read from `serve.token`. The store
-//! holds the value, so an installation restored from it gets them back, and
-//! the files are written from it.
+//! What berth keeps in its store and also uses as files on this machine: the
+//! keys of its key ring, which ssh and Ansible are given as files
+//! ([`crate::keys::ring`]), and the token of `berth serve`, which recipes and
+//! people read from `serve.token`. The store holds the value, so an
+//! installation restored from it gets them back, and the files are written
+//! from it.
 //!
 //! The store wins over a file that differs from it. Such a file is moved
 //! aside to `<file>.replaced` rather than overwritten, as it may be the only
@@ -28,20 +29,6 @@ pub struct Kept {
     pub files: Vec<(&'static str, PathBuf, u32)>,
     /// Whether the files' contents can be taken.
     usable: fn(&[Vec<u8>]) -> bool,
-}
-
-/// berth's own SSH key: `ssh` is the private half and `ssh.pub` the public.
-pub fn own_key(paths: &Paths) -> Kept {
-    let key = paths.data_dir.join("id_ed25519");
-    Kept {
-        kind: kind::KEY,
-        lock: "own-key",
-        files: vec![
-            ("ssh", key.clone(), 0o600),
-            ("ssh.pub", key.with_extension("pub"), 0o644),
-        ],
-        usable: |values| values.iter().all(|value| !value.is_empty()),
-    }
 }
 
 /// The token clients of `berth serve` show over TCP, in `serve.token`.
@@ -75,6 +62,31 @@ fn aside(file: &Path) -> PathBuf {
         })
         .find(|candidate| !candidate.exists())
         .unwrap_or(first)
+}
+
+/// Make `file` hold `value` with `mode`, moving a file that holds something
+/// else aside first, as it may be the only copy of a key some machine trusts.
+pub fn write_file(file: &Path, value: &[u8], mode: u32) -> Result<()> {
+    match fs::read(file) {
+        Ok(there) if there == value => {
+            fs::set_permissions(file, fs::Permissions::from_mode(mode))?;
+            return Ok(());
+        }
+        Ok(_) => {
+            let moved = aside(file);
+            fs::rename(file, &moved)?;
+            eprintln!(
+                "berth: {} differed from berth's store, which has the one in use; the file that was there is {} now",
+                file.display(),
+                moved.display()
+            );
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("{}: {error}", file.display()).into()),
+    }
+    write_private(file, value)?;
+    fs::set_permissions(file, fs::Permissions::from_mode(mode))?;
+    Ok(())
 }
 
 impl Kept {
@@ -132,25 +144,7 @@ impl Kept {
     /// else aside first.
     pub fn write_files(&self, values: &[Vec<u8>]) -> Result<()> {
         for ((_, file, mode), value) in self.files.iter().zip(values) {
-            match fs::read(file) {
-                Ok(there) if &there == value => {
-                    fs::set_permissions(file, fs::Permissions::from_mode(*mode))?;
-                    continue;
-                }
-                Ok(_) => {
-                    let moved = aside(file);
-                    fs::rename(file, &moved)?;
-                    eprintln!(
-                        "berth: {} differed from berth's store, which has the one in use; the file that was there is {} now",
-                        file.display(),
-                        moved.display()
-                    );
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(format!("{}: {error}", file.display()).into()),
-            }
-            write_private(file, value)?;
-            fs::set_permissions(file, fs::Permissions::from_mode(*mode))?;
+            write_file(file, value, *mode)?;
         }
         Ok(())
     }
@@ -165,7 +159,7 @@ impl Kept {
         store: &Store,
         make: &dyn Fn() -> Result<Vec<Vec<u8>>>,
     ) -> Result<Vec<Vec<u8>>> {
-        let _lock = wait_lock(&self.lock_file(paths), "making berth's own key or token")?;
+        let _lock = wait_lock(&self.lock_file(paths), "making the token of berth serve")?;
         // Read after the lock is held: another berth may have just made it.
         if let Some(values) = self.from_store(store)? {
             self.write_files(&values)?;
@@ -184,6 +178,11 @@ impl Kept {
 
 /// A new ed25519 key, private and public half, as ssh-keygen makes it.
 pub fn generate_key(paths: &Paths) -> Result<Vec<Vec<u8>>> {
+    generate_key_named(paths, "berth")
+}
+
+/// A new ed25519 key whose comment says which key of the ring it is.
+pub fn generate_key_named(paths: &Paths, name: &str) -> Result<Vec<Vec<u8>>> {
     use std::os::unix::fs::DirBuilderExt;
     fs::DirBuilder::new()
         .recursive(true)
@@ -194,9 +193,13 @@ pub fn generate_key(paths: &Paths) -> Result<Vec<Vec<u8>>> {
     // The comment only tells the keys of several berths apart in authorized_keys.
     let machine = fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
     let machine = machine.trim().split('.').next().unwrap_or("");
+    let who = match name {
+        "berth" => "berth".to_owned(),
+        name => format!("berth-{name}"),
+    };
     let comment = match machine {
-        "" => "berth".to_owned(),
-        machine => format!("berth@{machine}"),
+        "" => who,
+        machine => format!("{who}@{machine}"),
     };
     let made = std::process::Command::new("ssh-keygen")
         .args(["-q", "-t", "ed25519", "-N", "", "-C"])
@@ -281,33 +284,21 @@ mod tests {
     #[test]
     fn the_store_wins_and_a_differing_file_is_moved_aside() {
         let (_dir, paths) = scratch();
-        let store = store(&paths);
-        let key = own_key(&paths);
-        store
-            .change(
-                &[
-                    (kind::KEY, OWN, "ssh", b"private".to_vec()),
-                    (kind::KEY, OWN, "ssh.pub", b"public".to_vec()),
-                ],
-                &[],
-            )
-            .unwrap();
         fs::create_dir_all(&paths.data_dir).unwrap();
-        let (private, public) = (&key.files[0].1, &key.files[1].1);
-        fs::write(private, "other").unwrap();
-        fs::write(paths.data_dir.join("id_ed25519.replaced"), "older").unwrap();
-        let made = || -> Result<Vec<Vec<u8>>> { panic!("nothing is made") };
-        key.settle(&paths, &store, &made).unwrap();
-        assert_eq!(fs::read(private).unwrap(), b"private");
-        assert_eq!(fs::read(public).unwrap(), b"public");
-        assert_eq!((mode(private), mode(public)), (0o600, 0o644));
+        let private = paths.data_dir.join("keys/berth");
+        fs::create_dir_all(private.parent().unwrap()).unwrap();
+        fs::write(&private, "other").unwrap();
+        fs::write(paths.data_dir.join("keys/berth.replaced"), "older").unwrap();
+        write_file(&private, b"private", 0o600).unwrap();
+        assert_eq!(fs::read(&private).unwrap(), b"private");
+        assert_eq!(mode(&private), 0o600);
         assert_eq!(
-            fs::read_to_string(paths.data_dir.join("id_ed25519.replaced.1")).unwrap(),
+            fs::read_to_string(paths.data_dir.join("keys/berth.replaced.1")).unwrap(),
             "other"
         );
         // Settled, nothing moves again.
-        key.settle(&paths, &store, &made).unwrap();
-        assert!(!paths.data_dir.join("id_ed25519.replaced.2").exists());
+        write_file(&private, b"private", 0o600).unwrap();
+        assert!(!paths.data_dir.join("keys/berth.replaced.2").exists());
     }
 
     #[test]

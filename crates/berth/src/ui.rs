@@ -738,7 +738,7 @@ fn question_event(app: &mut App, event: &Event) -> Flow {
     };
     match key.code {
         KeyCode::Char('y' | 'Y') => match app.host.question.take() {
-            Some((_, crate::remote::Pending::Task(index))) => app.begin_task(index, true),
+            Some((_, crate::remote::Pending::Action(index))) => app.begin_task(index, true),
             Some((_, crate::remote::Pending::Apply)) => return apply(app, true),
             None => {}
         },
@@ -2105,9 +2105,10 @@ struct Home {
     started: std::time::Instant,
     /// The link that opens the server's page, as a QR code, while it is shown.
     qr: Option<berth_tui::qr::Overlay>,
-    /// The SSH key of this berth, or of the berth server it uses, and that
-    /// server. Asked for when Settings is first shown; empty when unknown.
-    berth_key: Option<(String, Option<String>)>,
+    /// The SSH keys of this berth's key ring, or of the berth server it
+    /// uses, by name and public half, and that server. Asked for when
+    /// Settings is first shown; empty when unknown.
+    berth_key: Option<RingKeys>,
     /// The tailnet settings of the berth server this berth uses, which are
     /// the server's to keep. Asked for with the key.
     served: Option<serde_json::Map<String, serde_json::Value>>,
@@ -2180,21 +2181,22 @@ fn reload_hosts(home: &mut Home, paths: &Paths) {
     home.served = None;
 }
 
+/// The keys of a key ring by name and public half, and the berth server
+/// whose ring it is.
+type RingKeys = (Vec<(String, String)>, Option<String>);
+
 /// The rows of the Settings tab after berth's own settings.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SettingsRow {
-    BerthKey,
+    /// A key of the ring, by its place in the list.
+    Key(usize),
     Connect,
 }
 
 fn settings_extras(home: &Home, paths: &Paths) -> Vec<SettingsRow> {
     let mut extras = vec![];
-    if home
-        .berth_key
-        .as_ref()
-        .is_some_and(|(key, _)| !key.is_empty())
-    {
-        extras.push(SettingsRow::BerthKey);
+    if let Some((keys, _)) = &home.berth_key {
+        extras.extend((0..keys.len()).map(SettingsRow::Key));
     }
     if connect_link(paths).is_some() {
         extras.push(SettingsRow::Connect);
@@ -2202,19 +2204,21 @@ fn settings_extras(home: &Home, paths: &Paths) -> Vec<SettingsRow> {
     extras
 }
 
-/// The SSH key hosts set up from here take: the server's for a berth that
-/// uses one, which only someone who may set the server up is told.
-fn berth_key(paths: &Paths) -> (String, Option<String>) {
-    match berth_core::server::Server::configured(paths) {
-        Some(server) => {
-            let key = server
-                .call("setup.catalogue", json!({}), None)
-                .ok()
-                .and_then(|found| found["key"].as_str().map(str::to_owned));
-            (key.unwrap_or_default(), Some(server.url))
-        }
-        None => (paths.own_public_key().unwrap_or_default(), None),
-    }
+/// The SSH keys hosts set up from here are logged in to with: the server's
+/// for a berth that uses one, which only someone who may set the server up
+/// is told.
+fn berth_key(paths: &Paths) -> RingKeys {
+    let server = berth_core::server::Server::configured(paths);
+    let keys = match &server {
+        Some(server) => crate::key_command::listed(server),
+        None => crate::key_command::local(paths),
+    };
+    let keys = keys
+        .unwrap_or_default()
+        .into_iter()
+        .map(|key| (key.name, key.public))
+        .collect();
+    (keys, server.map(|server| server.url))
 }
 
 /// The tailnet settings of the berth server this berth uses, by key.
@@ -2605,10 +2609,13 @@ fn home_key(
                 *editor = Some(Input::new(setting(paths, home.served.as_ref(), name).0));
             }
             KeyCode::Enter | KeyCode::Char('c')
-                if extra(*selected) == Some(SettingsRow::BerthKey) =>
+                if matches!(extra(*selected), Some(SettingsRow::Key(_))) =>
             {
-                if let Some((key, _)) = &home.berth_key {
-                    home.status = berth_tui::berth_key::copy(platform, key);
+                if let (Some(SettingsRow::Key(index)), Some((keys, _))) =
+                    (extra(*selected), &home.berth_key)
+                    && let Some((_, public)) = keys.get(index)
+                {
+                    home.status = berth_tui::berth_key::copy(platform, public);
                 }
             }
             KeyCode::Enter | KeyCode::Char('r')
@@ -2724,7 +2731,7 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
         HomeMode::Settings(selected, editor) => {
             let connect = connect_link(paths);
             let extras = settings_extras(home, paths);
-            let (public, server) = home.berth_key.clone().unwrap_or_default();
+            let (keys, server) = home.berth_key.clone().unwrap_or_default();
             let mut rows: Vec<Line> = crate::paths::SETTINGS
                 .iter()
                 .map(|(name, _)| {
@@ -2751,7 +2758,10 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                 .collect();
             for extra in &extras {
                 rows.push(match extra {
-                    SettingsRow::BerthKey => berth_tui::berth_key::row(&public),
+                    SettingsRow::Key(index) => {
+                        let (name, public) = &keys[*index];
+                        berth_tui::berth_key::row(name, public)
+                    }
                     SettingsRow::Connect => Line::from(vec![
                         Span::styled("Open on another device  ", Style::new().fg(theme::TEXT)),
                         Span::styled("QR code and link, with the token", muted),
@@ -2783,8 +2793,8 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                     ),
                     "↑↓ select · Enter change · Tab registries · q quit",
                 ),
-                (None, Some(SettingsRow::BerthKey), _) => (
-                    berth_tui::berth_key::help(&public, server.as_deref()),
+                (None, Some(SettingsRow::Key(index)), _) => (
+                    berth_tui::berth_key::help(&keys[*index].0, &keys[*index].1, server.as_deref()),
                     "↑↓ select · Enter copy the key · Tab registries · q quit",
                 ),
                 (None, Some(SettingsRow::Connect), Some((url, _))) => (
@@ -3219,6 +3229,28 @@ mod tests {
             Place::File(directory.join(name)),
             parse_config(config).unwrap(),
         )
+    }
+
+    #[test]
+    fn applying_from_the_ui_holds_the_hosts_lock() {
+        use berth_core::runner::{Subject, lock};
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = file_app(dir.path(), "studio.json", b"{}");
+        app.action = Action::Ssh;
+        let subject = Subject::Host(app.place.argument());
+        let held = lock(&app.paths, &subject, "rollout").unwrap();
+        let refused = app
+            .run_command(Command::new("true"), vec![])
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("(rollout, process "), "{refused}");
+        drop(held);
+        app.run_command(Command::new("true"), vec![]).unwrap();
+        let failed = app.run_command(Command::new("false"), vec![]).unwrap_err();
+        assert!(failed.to_string().contains("exit status: 1"), "{failed}");
+        // Once it has ended, the lock is free for the next one.
+        lock(&app.paths, &subject, "apply").unwrap();
     }
 
     /// A clipboard of the test's own, so none of the desktop's is touched.
@@ -3912,7 +3944,7 @@ mod tests {
         // A host the mirror brings is listed once it is there, and not before.
         Place::own("studio")
             .unwrap()
-            .save(&paths, &json!({"builder": {"ssh_host": "192.0.2.10"}}))
+            .save(&paths, &json!({"access": {"address": "192.0.2.10"}}))
             .unwrap();
         assert!(home.hosts.is_empty());
         release.send(Ok(())).unwrap();
@@ -3951,7 +3983,7 @@ mod tests {
         ] {
             Place::stored(&server.scope(), name)
                 .unwrap()
-                .save(&paths, &json!({"builder": {"ssh_host": address}}))
+                .save(&paths, &json!({"access": {"address": address}}))
                 .unwrap();
         }
         let state = |version: &str| {
@@ -4052,7 +4084,7 @@ mod tests {
         // Without a server it reads the saved hosts again.
         Place::own("studio")
             .unwrap()
-            .save(&paths, &json!({"builder": {"ssh_host": "192.0.2.10"}}))
+            .save(&paths, &json!({"access": {"address": "192.0.2.10"}}))
             .unwrap();
         let rows = home_screen(&paths, &home);
         let last = rows
@@ -4146,7 +4178,7 @@ mod tests {
         // What a mirror writes: the profile under the server's scope.
         let write = |address: &str| {
             place
-                .save(&paths, &json!({"builder": {"ssh_host": address}}))
+                .save(&paths, &json!({"access": {"address": address}}))
                 .unwrap()
         };
         write("192.0.2.20");
@@ -4179,7 +4211,7 @@ mod tests {
         };
         let place = Place::own("studio").unwrap();
         place
-            .save(&paths, &json!({"builder": {"ssh_user": "ops"}}))
+            .save(&paths, &json!({"access": {"user": "ops"}}))
             .unwrap();
         let open = || {
             let stored = place.load(&paths).unwrap().unwrap();
@@ -4193,8 +4225,8 @@ mod tests {
         // and the cloud profile go into the stored profile.
         let provisioned = |port: &str| {
             let mut kept = place.load(&paths).unwrap().unwrap();
-            kept["builder"]["ssh_host"] = json!("192.0.2.40");
-            kept["builder"]["ssh_port"] = json!(port);
+            kept["access"]["address"] = json!("192.0.2.40");
+            kept["access"]["port"] = json!(port);
             kept["profile"] = json!("cloud");
             place.save(&paths, &kept).unwrap();
         };
@@ -4205,7 +4237,7 @@ mod tests {
         assert!(!app.unsaved());
         app.save().unwrap();
         let kept = place.load(&paths).unwrap().unwrap();
-        assert_eq!(kept["builder"]["ssh_host"], "192.0.2.40");
+        assert_eq!(kept["access"]["address"], "192.0.2.40");
 
         // With changes not saved yet the address joins them, and saving keeps both.
         let mut app = open();
@@ -4218,11 +4250,7 @@ mod tests {
         app.save().unwrap();
         let kept = place.load(&paths).unwrap().unwrap();
         assert_eq!(
-            (
-                &kept["builder"]["ssh_port"],
-                &kept["keyboard"],
-                &kept["profile"]
-            ),
+            (&kept["access"]["port"], &kept["keyboard"], &kept["profile"]),
             (&json!("2200"), &json!("us"), &json!("cloud"))
         );
     }
@@ -4493,7 +4521,7 @@ mod tests {
             app.list.select(Some(at.unwrap()));
         };
         // The information box says what the plugins' steps add.
-        select(&mut app, Entry::HostTask(2));
+        select(&mut app, Entry::HostTask(1));
         let help = app.help();
         assert!(
             help.contains("### From plugins") && help.contains("**Claude Code sign-in**: Whether")
@@ -4501,11 +4529,11 @@ mod tests {
         assert!(help.contains("berth run HOST sign-in:status"));
 
         // A task with a question waits for the yes.
-        select(&mut app, Entry::HostTask(4));
+        select(&mut app, Entry::HostTask(3));
         assert!(!press(&mut app, &[KeyCode::Enter]));
         assert_eq!(
             app.host.question,
-            Some(("Restart the host?".into(), Pending::Task(4)))
+            Some(("Restart the host?".into(), Pending::Action(3)))
         );
         assert!(screen_text(&mut app).contains("Restart the host?"));
         question_event(
@@ -4515,7 +4543,7 @@ mod tests {
         assert!(app.host.question.is_none());
 
         // A task with arguments asks for each; a needed one cannot be left empty.
-        select(&mut app, Entry::HostTask(5));
+        select(&mut app, Entry::HostTask(4));
         press(&mut app, &[KeyCode::Enter]);
         let key = |app: &mut App, code| {
             arguments_event(
@@ -4591,6 +4619,12 @@ mod tests {
         press(&mut app, &[KeyCode::Char(' ')]);
         assert!(!app.as_agent && screen_text(&mut app).contains("the SSH user"));
         press(&mut app, &[KeyCode::Char(' ')]);
+        // ssh's options come from berth's key ring, which is in a store.
+        let scratch = tempfile::tempdir().unwrap();
+        app.paths = Paths {
+            config_dir: scratch.path().join("config"),
+            data_dir: scratch.path().join("data"),
+        };
         let command = format!("{:?}", app.agent_terminal().unwrap());
         assert!(command.contains("devbox.example") && command.contains("sudo -iu robot "));
         // The set-up tabs are a flow under the overview, opening on Install.
@@ -4629,7 +4663,10 @@ mod tests {
             status: String::new(),
             started: std::time::Instant::now(),
             qr: None,
-            berth_key: Some((BERTH_KEY.into(), Some("https://192.0.2.7:8443".into()))),
+            berth_key: Some((
+                vec![("berth".into(), BERTH_KEY.into())],
+                Some("https://192.0.2.7:8443".into()),
+            )),
             served: None,
             known: None,
             asking: false,
@@ -4690,7 +4727,7 @@ mod tests {
         );
         assert!(home.qr.is_some());
         // Without a key to give there is no row for it.
-        home.berth_key = Some((String::new(), None));
+        home.berth_key = Some((vec![], None));
         home.mode = HomeMode::Settings(settings, None);
         home.qr = None;
         home_key(

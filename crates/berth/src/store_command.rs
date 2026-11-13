@@ -571,7 +571,7 @@ mod tests {
             .unwrap();
         for (name, address) in [("studio", "192.0.2.10"), ("attic", "192.0.2.11")] {
             let place = Place::own(name).unwrap();
-            let profile = serde_json::json!({"hostname": name, "builder": {"ssh_host": address}});
+            let profile = serde_json::json!({"hostname": name, "builder": {}, "access": {"address": address}});
             place.save(paths, &profile).unwrap();
             berth_core::credentials::save(paths, &place, "ops", &format!("pw-of-{name}")).unwrap();
         }
@@ -583,14 +583,16 @@ mod tests {
         }
         .save(paths, "studio")
         .unwrap();
-        // A key of its own from files, so no ssh-keygen is needed.
-        fs::create_dir_all(&paths.data_dir).unwrap();
-        fs::write(paths.data_dir.join("id_ed25519"), "made-up private key\n").unwrap();
-        fs::write(
-            paths.data_dir.join("id_ed25519.pub"),
-            "ssh-ed25519 AAAA berth@studio\n",
-        )
-        .unwrap();
+        // A key of its own in the ring, so no ssh-keygen is needed.
+        berth_core::store::shared(paths)
+            .unwrap()
+            .write(
+                berth_core::store::kind::KEY,
+                berth_core::store::OWN,
+                "berth",
+                br#"{"private": "made-up private key\n", "public": "ssh-ed25519 AAAA berth@studio"}"#,
+            )
+            .unwrap();
         paths.own_key().unwrap();
         let token = crate::serve::token(paths).unwrap();
         // A plugin from an upload and one copied in as a folder.
@@ -645,7 +647,7 @@ mod tests {
         );
         // The key and the token are written back as the files they are used as.
         let file = paths.own_key().unwrap();
-        assert_eq!(file, paths.data_dir.join("id_ed25519"));
+        assert_eq!(file, paths.data_dir.join("keys/berth"));
         assert_eq!(fs::read(&file).unwrap(), key);
         assert_eq!(crate::serve::token(paths).unwrap(), token);
         assert_eq!(
@@ -677,7 +679,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let first = installation_in(&dir.path().join("a"));
         let token = set_up(&first);
-        let key = fs::read(first.data_dir.join("id_ed25519")).unwrap();
+        let key = fs::read(first.data_dir.join("keys/berth")).unwrap();
         let database = store::default_file(&first);
         let key_copy = dir.path().join("kept/store.key");
         fs::create_dir_all(key_copy.parent().unwrap()).unwrap();

@@ -25,6 +25,162 @@
         ],
         "type": "object"
       },
+      "Act": {
+        "description": "What running an action is given.",
+        "properties": {
+          "arguments": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "cols": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rows": {
+            "description": "The size of the terminal, for an action that runs in one.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sudo_password": {
+            "description": "The SSH user's sudo password, for an action that logs in to a host\nwhose sudo asks for one. It is neither shown nor kept.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token": {
+            "description": "Any text of the caller's. The same token again for the same subject\nand action answers with the job the first call started.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Acted": {
+        "description": "What running an action answers: one of the three.",
+        "properties": {
+          "job": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/JobInfo",
+                "description": "The job that runs it, for an action of berth that changes something."
+              }
+            ]
+          },
+          "result": {
+            "description": "What an action that answers at once and changes nothing said."
+          },
+          "session": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Session",
+                "description": "The session on the host, for an action the host runs."
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Action": {
+        "description": "Something that can be done to a subject: a host, the installation, and\nlater a provisioner or a resource. It says enough to build a form from.",
+        "properties": {
+          "arguments": {
+            "items": {
+              "$ref": "#/components/schemas/Argument"
+            },
+            "type": "array"
+          },
+          "available": {
+            "description": "False, with `why`, when the subject's state rules it out now.",
+            "type": "boolean"
+          },
+          "changes": {
+            "description": "False when it only reads, and may be called at any time.",
+            "type": "boolean"
+          },
+          "confirm": {
+            "description": "The question to answer yes to before it runs.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group": {
+            "description": "The group of the page it is listed in; `System` when empty.",
+            "type": "string"
+          },
+          "help": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role",
+            "description": "The least role that may run it."
+          },
+          "runs": {
+            "$ref": "#/components/schemas/Runs"
+          },
+          "steps": {
+            "description": "What plugins add to it, in the order they run.",
+            "items": {
+              "$ref": "#/components/schemas/ActionStep"
+            },
+            "type": "array"
+          },
+          "terminal": {
+            "description": "It needs a terminal session attached; only a host runs these.",
+            "type": "boolean"
+          },
+          "why": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "ActionStep": {
+        "description": "What a plugin adds to an action: a step run after it in the same run.",
+        "properties": {
+          "help": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "type": "object"
+      },
       "Applied": {
         "description": "What berth recorded on a host when it applied the configuration: its own\nversion and the plugins whose features the host has.",
         "properties": {
@@ -68,19 +224,6 @@
         ],
         "type": "object"
       },
-      "ApplyWith": {
-        "description": "What applying may be given.",
-        "properties": {
-          "sudo_password": {
-            "description": "The SSH user's sudo password, for a host that asks for one.",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "type": "object"
-      },
       "Argument": {
         "properties": {
           "choices": {
@@ -105,6 +248,10 @@
             "type": "string"
           },
           "required": {
+            "type": "boolean"
+          },
+          "secret": {
+            "description": "What is given is a secret, such as a password: it is not shown as it\nis typed, nor kept, nor written to a job's output.",
             "type": "boolean"
           },
           "values": {
@@ -144,13 +291,6 @@
               "$ref": "#/components/schemas/FeatureInfo"
             },
             "type": "array"
-          },
-          "key": {
-            "description": "The server's own SSH public key, which the operator of a host it sets\nup takes unless the profile says otherwise.",
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "template": {
             "description": "The profile a new host starts from."
@@ -541,7 +681,12 @@
         "type": "object"
       },
       "JobInfo": {
+        "description": "A job of berth: one run of an action, with its output kept where it ran.",
         "properties": {
+          "action": {
+            "description": "The action it runs, such as `apply`, `rollout` or `provision`.",
+            "type": "string"
+          },
           "ended": {
             "type": [
               "string",
@@ -556,6 +701,7 @@
             ]
           },
           "host": {
+            "description": "The hosts it is about, for a reader: a name, or several with commas.",
             "type": "string"
           },
           "id": {
@@ -575,15 +721,13 @@
           "started": {
             "type": "string"
           },
-          "what": {
-            "description": "What it does: `apply`, `rollout`, `provision` or `unprovision`.",
+          "subject": {
+            "description": "What it was done to: `host:NAME`, `provisioner:PLUGIN/ID`,\n`resource:ID` or `installation`. Empty for a job from before 0.5.",
             "type": "string"
           }
         },
         "required": [
           "id",
-          "host",
-          "what",
           "started"
         ],
         "type": "object"
@@ -595,6 +739,60 @@
           "log"
         ],
         "type": "string"
+      },
+      "KeyInfo": {
+        "description": "A key of the ring, by its public half.",
+        "properties": {
+          "fingerprint": {
+            "description": "Its SHA256 fingerprint, as `ssh-keygen -l` shows it.",
+            "type": "string"
+          },
+          "hosts": {
+            "description": "The server's hosts that log in with it.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pending": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/KeyInfo",
+                "description": "The key replacing it while a rotation runs."
+              }
+            ]
+          },
+          "public": {
+            "description": "The public half, a line of `authorized_keys`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "public",
+          "fingerprint"
+        ],
+        "type": "object"
+      },
+      "KeyList": {
+        "properties": {
+          "keys": {
+            "items": {
+              "$ref": "#/components/schemas/KeyInfo"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "keys"
+        ],
+        "type": "object"
       },
       "KvEntry": {
         "properties": {
@@ -1132,34 +1330,14 @@
         ],
         "type": "object"
       },
-      "Rollout": {
-        "description": "What a roll-out does: apply the hosts that are behind one after another,\nstopping at the first that fails.",
-        "properties": {
-          "all": {
-            "description": "Also the hosts that are current.",
-            "type": "boolean"
-          },
-          "force": {
-            "description": "Reboot although sessions run, which ends them.",
-            "type": "boolean"
-          },
-          "hosts": {
-            "description": "These hosts, in this order; all saved hosts by name when empty.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "reboot": {
-            "description": "Reboot a host that says it needs it, and wait for it to come back.",
-            "type": "boolean"
-          },
-          "update": {
-            "description": "Run each host's `update` task after applying.",
-            "type": "boolean"
-          }
-        },
-        "type": "object"
+      "Role": {
+        "description": "What a caller has to be allowed for an operation. Each role includes the\nones before it.",
+        "enum": [
+          "view",
+          "operate",
+          "admin"
+        ],
+        "type": "string"
       },
       "RolloutHost": {
         "properties": {
@@ -1228,6 +1406,14 @@
         ],
         "type": "string"
       },
+      "Runs": {
+        "description": "Where an action runs.",
+        "enum": [
+          "berth",
+          "host"
+        ],
+        "type": "string"
+      },
       "SecretNames": {
         "description": "The names of the secrets the server keeps. Their values never leave it\nexcept to a host.",
         "properties": {
@@ -1252,19 +1438,6 @@
         },
         "required": [
           "value"
-        ],
-        "type": "object"
-      },
-      "Seed": {
-        "description": "What a new machine is started with to become the host.",
-        "properties": {
-          "user_data": {
-            "description": "cloud-init user data, for the provider's field of that name.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "user_data"
         ],
         "type": "object"
       },
@@ -1519,7 +1692,7 @@
       }
     }
   },
-  "description": "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME. Only the `secrets` task is refused; `hosts.secrets` sends the server's own. Each operation names the least role a caller over TCP needs: view, operate or admin.",
+  "description": "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME. Only the `secrets` task is refused; the host's `secrets` action sends the server's own. An action's own role is asked when it runs. Each operation names the least role a caller over TCP needs: view, operate or admin.",
   "hosts": true,
   "operations": [
     {
@@ -1828,19 +2001,6 @@
           "required": true
         }
       ],
-      "data": {
-        "description": "Nothing, or what the run needs that the server does not have",
-        "schema": {
-          "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "$ref": "#/components/schemas/ApplyWith"
-            }
-          ]
-        }
-      },
       "errors": [
         {
           "description": "No such host",
@@ -1849,130 +2009,165 @@
       ],
       "group": "hosts",
       "http": {
-        "method": "POST",
-        "path": "/v1/hosts/{name}/apply"
+        "method": "GET",
+        "path": "/v1/hosts/{name}/actions"
       },
       "kind": "call",
-      "name": "hosts.apply",
+      "name": "hosts.actions",
       "portal": true,
       "result": {
         "schema": {
-          "$ref": "#/components/schemas/JobInfo"
+          "items": {
+            "$ref": "#/components/schemas/Action"
+          },
+          "type": "array"
         }
       },
-      "role": "admin",
-      "summary": "Apply the host's profile to it, as a job."
+      "role": "view",
+      "summary": "What can be done to a host: the tasks its controller lists, and berth's own actions."
+    },
+    {
+      "args": [
+        {
+          "description": "A saved host",
+          "in": "path",
+          "name": "name",
+          "required": true
+        },
+        {
+          "description": "The action, as hosts.actions names it",
+          "in": "path",
+          "name": "action",
+          "required": true
+        }
+      ],
+      "data": {
+        "description": "Its arguments, and a token that makes asking again safe",
+        "schema": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/components/schemas/Act"
+            }
+          ]
+        }
+      },
+      "errors": [
+        {
+          "description": "An argument is missing, or the body is not one",
+          "status": "400"
+        },
+        {
+          "description": "The caller's role is below the action's",
+          "status": "403"
+        },
+        {
+          "description": "No such host or action",
+          "status": "404"
+        },
+        {
+          "description": "Something else is being done to the host",
+          "status": "409"
+        },
+        {
+          "description": "It cannot run on this host now; the message says why",
+          "status": "501"
+        },
+        {
+          "description": "The host could not be reached",
+          "status": "502"
+        }
+      ],
+      "group": "hosts",
+      "http": {
+        "method": "POST",
+        "path": "/v1/hosts/{name}/actions/{action}"
+      },
+      "kind": "call",
+      "name": "hosts.act",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Acted"
+        }
+      },
+      "role": "view",
+      "summary": "Run one of a host's actions. One of berth's that changes something is a job; a task of the host is a session there, which a job follows unless it needs a terminal."
     },
     {
       "args": [],
+      "group": "actions",
+      "http": {
+        "method": "GET",
+        "path": "/v1/actions"
+      },
+      "kind": "call",
+      "name": "actions.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/Action"
+          },
+          "type": "array"
+        }
+      },
+      "role": "view",
+      "summary": "What can be done to the installation as a whole, such as a roll-out over its hosts."
+    },
+    {
+      "args": [
+        {
+          "description": "The action, as actions.list names it",
+          "in": "path",
+          "name": "action",
+          "required": true
+        }
+      ],
       "data": {
-        "description": "Which hosts and what to do; by default the saved hosts that are behind, applied only",
+        "description": "Its arguments, and a token that makes asking again safe",
         "schema": {
           "oneOf": [
             {
               "type": "null"
             },
             {
-              "$ref": "#/components/schemas/Rollout"
+              "$ref": "#/components/schemas/Act"
             }
           ]
         }
       },
       "errors": [
         {
-          "description": "The body is not a roll-out",
+          "description": "An argument is wrong, or the body is not one",
           "status": "400"
         },
         {
-          "description": "No such host",
-          "status": "404"
-        }
-      ],
-      "group": "hosts",
-      "http": {
-        "method": "POST",
-        "path": "/v1/rollout"
-      },
-      "kind": "call",
-      "name": "hosts.rollout",
-      "portal": true,
-      "result": {
-        "schema": {
-          "$ref": "#/components/schemas/JobInfo"
-        }
-      },
-      "role": "admin",
-      "summary": "Bring hosts up to date one after another, as a job: apply each that is behind, maybe run its update and reboot it, and check it. The first that fails stops the rest."
-    },
-    {
-      "args": [
-        {
-          "description": "A saved host",
-          "in": "path",
-          "name": "name",
-          "required": true
-        }
-      ],
-      "errors": [
-        {
-          "description": "The profile cannot be installed this way; the message says why",
-          "status": "400"
+          "description": "The caller's role is below the action's",
+          "status": "403"
         },
         {
-          "description": "No such host",
+          "description": "No such action, or a host it names",
           "status": "404"
-        }
-      ],
-      "group": "hosts",
-      "http": {
-        "method": "POST",
-        "path": "/v1/hosts/{name}/seed"
-      },
-      "kind": "call",
-      "name": "hosts.seed",
-      "portal": true,
-      "result": {
-        "schema": {
-          "$ref": "#/components/schemas/Seed"
-        }
-      },
-      "role": "admin",
-      "summary": "Render the cloud-init seed that installs the host on a new machine."
-    },
-    {
-      "args": [
-        {
-          "description": "A saved host",
-          "in": "path",
-          "name": "name",
-          "required": true
-        }
-      ],
-      "errors": [
-        {
-          "description": "A secret has no value, or a registry is not known",
-          "status": "400"
         },
         {
-          "description": "No such host",
-          "status": "404"
+          "description": "Another one is running",
+          "status": "409"
         }
       ],
-      "group": "hosts",
+      "group": "actions",
       "http": {
         "method": "POST",
-        "path": "/v1/hosts/{name}/secrets"
+        "path": "/v1/actions/{action}"
       },
       "kind": "call",
-      "name": "hosts.secrets",
+      "name": "actions.act",
       "portal": true,
-      "result": {
-        "schema": {
-          "$ref": "#/components/schemas/Session"
-        }
-      },
-      "role": "admin",
-      "summary": "Send the host the secrets and registry logins its profile names."
+      "result": null,
+      "role": "view",
+      "summary": "Run one of the installation's actions, as a job."
     },
     {
       "args": [],
@@ -2059,6 +2254,132 @@
       },
       "role": "admin",
       "summary": "Remove a secret."
+    },
+    {
+      "args": [],
+      "group": "keys",
+      "http": {
+        "method": "GET",
+        "path": "/v1/keys"
+      },
+      "kind": "call",
+      "name": "keys.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/KeyList"
+        }
+      },
+      "role": "admin",
+      "summary": "The SSH keys of the server's key ring, by their public halves, with the hosts that log in with each and the key that replaces it while it rotates."
+    },
+    {
+      "args": [
+        {
+          "description": "The key's name: letters, digits, - and _",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "data": {
+        "bytes": true
+      },
+      "errors": [
+        {
+          "description": "Not a name, not a private key, or a key with a passphrase",
+          "status": "400"
+        },
+        {
+          "description": "There is a key of that name",
+          "status": "409"
+        }
+      ],
+      "group": "keys",
+      "http": {
+        "method": "PUT",
+        "path": "/v1/keys/{name}"
+      },
+      "kind": "call",
+      "name": "keys.add",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/KeyInfo"
+        }
+      },
+      "role": "admin",
+      "summary": "Add a key to the ring: a new ed25519 key without a body, or the OpenSSH private key in the body, which may have no passphrase. The answer has its public half only."
+    },
+    {
+      "args": [
+        {
+          "description": "The key",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such key",
+          "status": "404"
+        },
+        {
+          "description": "It is berth's, in use or rotating",
+          "status": "409"
+        }
+      ],
+      "group": "keys",
+      "http": {
+        "method": "DELETE",
+        "path": "/v1/keys/{name}"
+      },
+      "kind": "call",
+      "name": "keys.remove",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "role": "admin",
+      "summary": "Remove a key from the ring. Refused for the key berth, while a host logs in with the key, and while it rotates."
+    },
+    {
+      "args": [
+        {
+          "description": "The key",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such key",
+          "status": "404"
+        },
+        {
+          "description": "A rotation runs already",
+          "status": "409"
+        }
+      ],
+      "group": "keys",
+      "http": {
+        "method": "POST",
+        "path": "/v1/keys/{name}/rotate"
+      },
+      "kind": "call",
+      "name": "keys.rotate",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Acted"
+        }
+      },
+      "role": "admin",
+      "summary": "Replace a key on every host that takes it, as a job: a new key beside it, and on each host the new one added, a login with it checked, and the old one removed. A host that does not answer stays pending; running it again goes on from there. When none is pending the old key is deleted."
     },
     {
       "args": [],
@@ -3286,10 +3607,11 @@
           "description": "A job started or ended.",
           "example": {
             "job": {
+              "action": "apply",
               "host": "server",
               "id": "j1",
               "started": "2026-11-12T10:00:00Z",
-              "what": "apply"
+              "subject": "host:server"
             },
             "source": "job"
           },

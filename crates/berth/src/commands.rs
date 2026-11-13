@@ -14,7 +14,7 @@ use berth_core::{
     link::{self, Link},
     paths::Paths,
     profiles::Place,
-    provision, registry,
+    provision, registry, runner,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -52,7 +52,7 @@ impl Drop for Reach {
 
 fn reach(paths: &Paths, name: &str) -> Result<Reach> {
     let host = Host::load(paths, name)?;
-    let password = host.sudo_password()?;
+    let password = host.sudo_password(paths)?;
     let link = Link::new(host.link(paths, password.as_deref())?);
     Ok(Reach {
         host,
@@ -160,7 +160,7 @@ pub fn inventory(paths: &Paths, names: &[&str]) -> Result<()> {
     let mut entries = vec![];
     for host in hosts {
         let inventory = host
-            .inventory()
+            .inventory(paths)
             .map_err(|error| format!("{}: {error}", host.name))?;
         entries.push((host.name, inventory));
     }
@@ -510,29 +510,45 @@ fn host_tasks(reach: &Reach) -> Result<Vec<api::Task>> {
         .map_err(|error| explain(error, &reach.host.name))
 }
 
+/// What a host can do, with the tasks its controller lists for a host of
+/// this machine. A berth server's host has the server's list of its
+/// actions, which has berth's own beside its tasks.
+fn host_actions(paths: &Paths, reach: &Reach) -> Result<(Vec<api::Action>, Vec<api::Task>)> {
+    match reach.host.served(paths) {
+        Some(server) => {
+            let listed = server.call("hosts.actions", json!({"name": reach.host.name}), None)?;
+            Ok((serde_json::from_value(listed)?, vec![]))
+        }
+        None => {
+            let tasks = host_tasks(reach)?;
+            Ok((api::Action::of_tasks(&tasks), tasks))
+        }
+    }
+}
+
 /// `berth tasks HOST`: what the host can do, by group.
 pub fn tasks(paths: &Paths, name: &str) -> Result<()> {
     let reach = reach(paths, name)?;
-    let tasks = host_tasks(&reach)?;
-    let mut groups: Vec<(&str, Vec<&api::Task>)> = vec![];
-    for task in tasks.iter().filter(|task| task.extends.is_empty()) {
-        let title = if task.group.is_empty() {
+    let (actions, _) = host_actions(paths, &reach)?;
+    let mut groups: Vec<(&str, Vec<&api::Action>)> = vec![];
+    for action in &actions {
+        let title = if action.group.is_empty() {
             "System"
         } else {
-            task.group.as_str()
+            action.group.as_str()
         };
         match groups
             .iter_mut()
             .find(|(known, _)| known.eq_ignore_ascii_case(title))
         {
-            Some((_, list)) => list.push(task),
-            None => groups.push((title, vec![task])),
+            Some((_, list)) => list.push(action),
+            None => groups.push((title, vec![action])),
         }
     }
     for (title, list) in groups {
         println!("{title}");
-        for task in list {
-            let arguments: Vec<String> = task
+        for action in list {
+            let arguments: Vec<String> = action
                 .arguments
                 .iter()
                 .map(|argument| match argument.required {
@@ -540,16 +556,17 @@ pub fn tasks(paths: &Paths, name: &str) -> Result<()> {
                     false => format!("[{}=…]", argument.name),
                 })
                 .collect();
+            let why = match action.available {
+                true => String::new(),
+                false => format!("  ({})", action.why),
+            };
             println!(
-                "  {:<22} {}  {}",
-                task.name,
-                task.label,
+                "  {:<22} {}  {}{why}",
+                action.name,
+                action.label,
                 arguments.join(" ")
             );
-            for step in tasks
-                .iter()
-                .filter(|step| step.extends.contains(&task.name))
-            {
+            for step in &action.steps {
                 println!("  {:<22}   + {}", "", step.label);
             }
         }
@@ -565,20 +582,23 @@ fn ask(question: &str) -> Result<String> {
     Ok(answer.trim().to_owned())
 }
 
-/// `berth run HOST TASK [NAME=VALUE…] [--yes]`: run one of the host's tasks
-/// and leave with its exit code.
-pub fn run(paths: &Paths, name: &str, task: &str, args: &[&str]) -> Result<()> {
-    let (mut values, yes) = parse_arguments(args)?;
-    let reach = reach(paths, name)?;
-    let tasks = host_tasks(&reach)?;
-    let Some(found) = tasks.iter().find(|known| known.name == task) else {
-        let names: Vec<&str> = tasks
-            .iter()
-            .filter(|task| task.extends.is_empty())
-            .map(|task| task.name.as_str())
-            .collect();
-        return Err(format!("{name} has no task {task}. Tasks: {}", names.join(", ")).into());
+/// The action of that name, with the values of its arguments: those given,
+/// and the required ones asked for on a terminal. Its question is asked
+/// unless `yes`.
+fn ready(
+    subject: &str,
+    actions: &[api::Action],
+    name: &str,
+    mut values: BTreeMap<String, String>,
+    yes: bool,
+) -> Result<(api::Action, BTreeMap<String, String>)> {
+    let Some(found) = actions.iter().find(|known| known.name == name) else {
+        let names: Vec<&str> = actions.iter().map(|known| known.name.as_str()).collect();
+        return Err(format!("{subject} has no task {name}. Tasks: {}", names.join(", ")).into());
     };
+    if !found.available {
+        return Err(format!("{name} cannot run now: {}", found.why).into());
+    }
     for argument in &found.arguments {
         if values.contains_key(&argument.name) {
             continue;
@@ -589,9 +609,13 @@ pub fn run(paths: &Paths, name: &str, task: &str, args: &[&str]) -> Result<()> {
             } else {
                 &argument.label
             };
-            values.insert(argument.name.clone(), ask(&format!("{label}:"))?);
+            let value = match argument.secret {
+                true => registry::read_secret(label)?,
+                false => ask(&format!("{label}:"))?,
+            };
+            values.insert(argument.name.clone(), value);
         } else if argument.required {
-            return Err(format!("{task} needs {}=VALUE", argument.name).into());
+            return Err(format!("{name} needs {}=VALUE", argument.name).into());
         }
     }
     if let (Some(question), false) = (&found.confirm, yes)
@@ -599,38 +623,67 @@ pub fn run(paths: &Paths, name: &str, task: &str, args: &[&str]) -> Result<()> {
     {
         return Err("Not run".into());
     }
-    let mut body = json!({"arguments": values});
-    if found.terminal {
+    Ok((found.clone(), values))
+}
+
+/// `berth run HOST TASK [NAME=VALUE…] [--yes]`: run one of the host's
+/// actions and leave with its exit code.
+pub fn run(paths: &Paths, name: &str, task: &str, args: &[&str]) -> Result<()> {
+    let (values, yes) = parse_arguments(args)?;
+    let reach = reach(paths, name)?;
+    let (actions, tasks) = host_actions(paths, &reach)?;
+    let (action, values) = ready(name, &actions, task, values, yes)?;
+    let mut act = api::Act {
+        arguments: values,
+        ..api::Act::default()
+    };
+    if action.terminal {
         let (rows, cols) = terminal_size();
+        (act.rows, act.cols) = (Some(rows), Some(cols));
+    }
+    let code = match reach.host.served(paths) {
+        Some(server) => {
+            // The server has no terminal to ask on: a password it needs is asked for here.
+            act.sudo_password = reach.host.sudo_password(paths)?;
+            let acted = act_on(&server, Some(name), &action.name, &act)?;
+            follow_acted(&server, Some(&reach), acted, &mut std::io::stdout())?
+        }
+        None => run_here(paths, &reach, &tasks, &action, act)?,
+    };
+    std::process::exit(code);
+}
+
+/// Run a task of a host of this machine as a session there and follow it.
+fn run_here(
+    paths: &Paths,
+    reach: &Reach,
+    tasks: &[api::Task],
+    action: &api::Action,
+    act: api::Act,
+) -> Result<i32> {
+    let mut body = json!({"arguments": act.arguments});
+    if let (Some(rows), Some(cols)) = (act.rows, act.cols) {
         (body["rows"], body["cols"]) = (json!(rows), json!(cols));
     }
-    // Secrets are built here and travel on the task's standard input. A
-    // server builds them from its own, and starts the task itself.
-    let served = match found.input.as_deref() {
-        Some("secrets") => reach.host.served(paths),
-        _ => None,
-    };
-    let started = match &served {
-        Some(server) => Some(server.call("hosts.secrets", json!({"name": name}), None)?),
-        None => None,
-    };
-    if found.input.as_deref() == Some("secrets") && served.is_none() {
+    // Secrets are built here and travel on the task's standard input.
+    let task = tasks.iter().find(|task| task.name == action.name);
+    if task.and_then(|task| task.input.as_deref()) == Some("secrets") {
         let payload = registry::Store::new(paths)?.host_payload(&reach.host.config)?;
         body["input_b64"] = json!(api::b64(format!("{payload}\n").as_bytes()));
     }
-    let code = reach.wait(async {
-        let path = format!("/v1/tasks/{}", encode(task));
-        let session: api::Session = match started {
-            Some(session) => serde_json::from_value(session)?,
-            None => reach.link.post(&path, &body).await?,
-        };
-        let ended = match session.kind {
-            api::SessionKind::Terminal => follow_terminal(&reach.link, &session.id).await?,
-            api::SessionKind::Process => follow_process(&reach.link, &session.id, 0, false).await?,
-        };
-        Ok::<i32, Box<dyn std::error::Error>>(finish(&reach, &session.id, ended, true).await)
-    })?;
-    std::process::exit(code);
+    reach.wait(async {
+        let path = format!("/v1/tasks/{}", encode(&action.name));
+        let session: api::Session = reach.link.post(&path, &body).await?;
+        let ended = follow_session(&reach.link, &session).await?;
+        Ok::<i32, Box<dyn std::error::Error>>(finish(reach, &session.id, ended, true).await)
+    })
+}
+
+async fn follow_session(link: &Link, session: &api::Session) -> Result<Ended> {
+    match session.kind {
+        api::SessionKind::Terminal => follow_terminal(link, &session.id).await,
+        api::SessionKind::Process => follow_process(link, &session.id, 0, false).await,
+    }
 }
 
 /// `berth channel HOST [TOPIC-PREFIX] [--since ID]`: messages as they come,
@@ -701,17 +754,100 @@ pub fn call(
 pub fn apply(paths: &Paths, name: &str) -> Result<()> {
     let host = Host::load(paths, name)?;
     let Some(server) = host.served(paths) else {
-        let password = host.sudo_password()?;
-        let mut prepared = berth_core::apply::prepare(paths, &host, password.as_deref())?;
-        let status = prepared.command.status()?;
-        std::process::exit(status.code().unwrap_or(1));
+        let password = host.sudo_password(paths)?;
+        let prepared = berth_core::apply::prepare(paths, &host, password.as_deref())?;
+        let work = runner::Work::Program(Box::new(runner::Program {
+            command: prepared.command,
+            input: None,
+            files: prepared.files,
+        }));
+        let request = runner::Request::new(runner::Subject::Host(name.to_owned()), "apply");
+        let code = runner::here(paths, request, work, &mut std::io::stdout())?;
+        std::process::exit(code.unwrap_or(1));
     };
     // The server has no terminal to ask on: a password it needs is asked for here.
-    let with = host
-        .sudo_password()?
-        .map(|password| json!({"sudo_password": password}));
-    let code = served_job(&server, "hosts.apply", json!({"name": name}), with)?;
+    let act = api::Act {
+        sudo_password: host.sudo_password(paths)?,
+        ..api::Act::default()
+    };
+    let acted = act_on(&server, Some(name), "apply", &act)?;
+    let code = follow_acted(&server, None, acted, &mut std::io::stdout())?;
     std::process::exit(code);
+}
+
+/// Run an action of a berth server's: of the host `host`, or of the
+/// installation without one.
+pub(crate) fn act_on(
+    server: &berth_core::server::Server,
+    host: Option<&str>,
+    action: &str,
+    act: &api::Act,
+) -> Result<api::Acted> {
+    let (op, args) = match host {
+        Some(name) => ("hosts.act", json!({"name": name, "action": action})),
+        None => ("actions.act", json!({"action": action})),
+    };
+    let acted = server.call(op, args, Some(serde_json::to_value(act)?))?;
+    Ok(serde_json::from_value(acted)?)
+}
+
+/// Follow the job of an action a berth server started, such as a key's rotation.
+pub(crate) fn follow_server_job(
+    server: &berth_core::server::Server,
+    acted: api::Acted,
+    out: &mut dyn Write,
+) -> Result<i32> {
+    follow_acted(server, None, acted, out)
+}
+
+/// Follow what running an action answered to its end: a session on the
+/// host through `reach`, or the job, whose output goes to `out`. A result
+/// is written out as it is. The exit code.
+fn follow_acted(
+    server: &berth_core::server::Server,
+    reach: Option<&Reach>,
+    acted: api::Acted,
+    out: &mut dyn Write,
+) -> Result<i32> {
+    if let (Some(session), Some(reach)) = (&acted.session, reach) {
+        return reach.wait(async {
+            let ended = follow_session(&reach.link, session).await?;
+            // The server's job copies the session's output; it is forgotten
+            // on the host once the job has all of it.
+            let copied = match (&ended, &acted.job) {
+                (Ended::Exited(_), Some(job)) => {
+                    let portal = server.portal().await?;
+                    job_ended(&portal, &job.id).await
+                }
+                (Ended::Exited(_), None) => true,
+                _ => false,
+            };
+            Ok::<i32, Box<dyn std::error::Error>>(finish(reach, &session.id, ended, copied).await)
+        });
+    }
+    if let Some(job) = &acted.job {
+        return link::runtime()?.block_on(async {
+            let portal = server.portal().await?;
+            eprintln!("Job {} on the berth server at {}", job.id, server.url);
+            follow_job(&portal, &job.id, out).await
+        });
+    }
+    if let Some(result) = &acted.result {
+        writeln!(out, "{}", serde_json::to_string_pretty(result)?)?;
+    }
+    Ok(0)
+}
+
+/// Wait a little for a job to end: whether it did.
+async fn job_ended(portal: &api::portal::Portal, id: &str) -> bool {
+    for _ in 0..50 {
+        let job = portal.call("jobs.get", None, json!({"id": id}), None).await;
+        if job.is_ok_and(|job| !job["ended"].is_null()) {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    false
 }
 
 /// Start a job of the berth server with an operation, and its id.
@@ -772,17 +908,23 @@ pub fn rollout(
 ) -> Result<api::RolloutReport> {
     let Some(server) = berth_core::server::Server::configured(paths) else {
         let password = |host: &Host| match ask {
-            true => host.sudo_password().ok().flatten(),
+            true => host.sudo_password(paths).ok().flatten(),
             false => std::env::var("BERTH_SUDO_PASSWORD")
                 .ok()
                 .filter(|_| host.asks_password()),
         };
+        // One roll-out at a time, as a job of a server holds the lock too.
+        let _lock = runner::lock(paths, &runner::Subject::Installation, "rollout")?;
         return berth_core::rollout::local(paths, options, &password, out);
     };
+    let act = api::Act {
+        arguments: options.arguments(),
+        ..api::Act::default()
+    };
+    let acted = act_on(&server, None, "rollout", &act)?;
+    let id = acted.job.map(|job| job.id).unwrap_or_default();
     link::runtime()?.block_on(async {
         let portal = server.portal().await?;
-        let options = Some(serde_json::to_value(options)?);
-        let id = start_job(&portal, "hosts.rollout", Value::Null, options).await?;
         let _ = writeln!(out, "Job {id} on the berth server at {}", server.url);
         follow_job(&portal, &id, out).await?;
         let ended = portal
@@ -882,7 +1024,9 @@ pub fn update_plugins(paths: &Paths, args: &[&str]) -> Result<()> {
 pub fn seed(paths: &Paths, name: &str) -> Result<()> {
     let host = Host::load(paths, name)?;
     let server = host.served(paths).ok_or("Not a host of a berth server")?;
-    let seed = server.call("hosts.seed", json!({"name": name}), None)?;
+    let seed = act_on(&server, Some(name), "seed", &api::Act::default())?
+        .result
+        .unwrap_or_default();
     let dir = paths.build_dir().join(name).join("cloud");
     {
         use std::os::unix::fs::DirBuilderExt;
@@ -958,6 +1102,8 @@ pub fn set_profile(paths: &Paths, name: &str, file: &str) -> Result<()> {
     crate::app::parse_config(&data).map_err(|error| format!("Not a profile: {error}"))?;
     let mut profile: Value = serde_json::from_slice(&data)?;
     let place = Place::resolve(paths, name)?;
+    // A profile of an older layout is kept in the one of now.
+    berth_core::import::convert_profile(paths, &place.title(), &mut profile);
     if let Some(url) = place.server_url() {
         let server = berth_core::server::Server::configured(paths)
             .filter(|server| server.url == url)
@@ -1384,7 +1530,7 @@ mod tests {
         paths.prepare().unwrap();
         let place = Place::own("studio").unwrap();
         place
-            .save(&paths, &json!({"builder": {"ssh_host": "192.0.2.20"}}))
+            .save(&paths, &json!({"access": {"address": "192.0.2.20"}}))
             .unwrap();
         berth_core::credentials::save(&paths, &place, "ops", "made-up").unwrap();
         let mut record = provision::Record {
@@ -1411,6 +1557,41 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_that_lists_its_features_keeps_them_without_the_marker() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: home.path().join("config"),
+            data_dir: home.path().join("data"),
+        };
+        let file = home.path().join("studio.json");
+        std::fs::write(
+            &file,
+            r#"{"hostname": "studio", "ansible_vars": {"devbox_plugin_features": ["codex/cli"]}}"#,
+        )
+        .unwrap();
+        set_profile(&paths, "studio", file.to_str().unwrap()).unwrap();
+        let place = Place::own("studio").unwrap();
+        let kept = place.load(&paths).unwrap().unwrap();
+        let config = crate::app::parse_config(kept.to_string().as_bytes()).unwrap();
+        let mut app = crate::app::App::new(paths.clone(), place.clone(), config);
+        app.save().unwrap();
+        let saved = place.load(&paths).unwrap().unwrap();
+        assert_eq!(
+            saved["ansible_vars"]["devbox_plugin_features"],
+            json!(["codex/cli"])
+        );
+        // One of the old layout is still converted.
+        let old = crate::app::parse_config(br#"{"ansible_vars": {"devbox_agent_codex": false}}"#)
+            .unwrap();
+        assert!(
+            !old["ansible_vars"]["devbox_plugin_features"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("codex/cli"))
+        );
+    }
+
+    #[test]
     fn a_profile_goes_out_and_in_and_passwords_only_to_a_terminal() {
         let home = tempfile::tempdir().unwrap();
         let paths = Paths {
@@ -1420,13 +1601,13 @@ mod tests {
         let file = home.path().join("studio.json");
         std::fs::write(
             &file,
-            r#"{"hostname": "studio", "builder": {"ssh_host": "192.0.2.20"}}"#,
+            r#"{"hostname": "studio", "builder": {}, "access": {"address": "192.0.2.20"}}"#,
         )
         .unwrap();
         set_profile(&paths, "studio", file.to_str().unwrap()).unwrap();
         let place = Place::own("studio").unwrap();
         let kept = place.load(&paths).unwrap().unwrap();
-        assert_eq!(kept["builder"]["ssh_host"], "192.0.2.20");
+        assert_eq!(kept["access"]["address"], "192.0.2.20");
         // What is not a profile is refused, and the one kept stays.
         std::fs::write(&file, r#"{"builder": []}"#).unwrap();
         assert!(set_profile(&paths, "studio", file.to_str().unwrap()).is_err());
@@ -1446,8 +1627,21 @@ mod tests {
 
     #[test]
     fn hosts_share_one_inventory() {
-        let one = berth_core::host::inventory("10.0.0.1", "ops", "", "").unwrap();
-        let two = berth_core::host::inventory("box", "", "2222", "").unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: home.path().join("config"),
+            data_dir: home.path().join("data"),
+        };
+        let inventory = |name: &str, access: Value| {
+            let host = Host {
+                name: name.into(),
+                place: Place::own(name).unwrap(),
+                config: json!({"access": access}),
+            };
+            host.inventory(&paths).unwrap()
+        };
+        let one = inventory("server", json!({"address": "192.0.2.1", "user": "ops"}));
+        let two = inventory("laptop", json!({"address": "box", "port": "2222"}));
         let merged = merge_inventory(&[("server".into(), one), ("laptop".into(), two)]);
         assert_eq!(merged["all"]["hosts"]["server"]["ansible_user"], "ops");
         assert_eq!(merged["all"]["hosts"]["laptop"]["ansible_port"], 2222);

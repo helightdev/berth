@@ -150,9 +150,14 @@ impl Row {
     }
 }
 
-/// The secrets a host can be given: all but the one berth keeps for itself.
+/// The secrets a host can be given: all but those berth keeps for itself,
+/// the tailnet's API key and the passwords it logs in to hosts with.
 pub fn host_secrets(mut names: Vec<String>) -> Vec<String> {
-    names.retain(|name| name != berth_api::profile::TAILNET_API_KEY);
+    names.retain(|name| {
+        name != berth_api::profile::TAILNET_API_KEY
+            && !name.starts_with("ssh/")
+            && !name.starts_with("sudo/")
+    });
     names
 }
 
@@ -189,6 +194,11 @@ pub fn own_secret_help(name: &str) -> Option<&'static str> {
 }
 
 pub fn set_pointer(config: &mut Value, pointer: &str, value: Value) {
+    // The sudo switch is a word of the access object.
+    let value = match (pointer, &value) {
+        ("/access/sudo", Value::Bool(asks)) => json!(if *asks { "password" } else { "none" }),
+        _ => value,
+    };
     // A pasted key would win over the automatic one and is hidden from then on.
     if pointer == "/tailscale_auto_key"
         && value == json!(true)
@@ -392,7 +402,11 @@ pub fn commit(config: &mut Value, field: Field, value: &str) -> Result<(), Strin
     } else {
         value.trim()
     };
-    if let Kind::Choice(choices) = spec.kind
+    if field == Field::Login {
+        if berth_api::profile::Auth::parse(value).is_none() {
+            return Err("Log in with berth, key:NAME, password or ssh".into());
+        }
+    } else if let Kind::Choice(choices) = spec.kind
         && !choices.contains(&value)
     {
         return Err(format!("Choose one of: {}", choices.join(", ")));
@@ -435,6 +449,27 @@ pub fn release_stores(registries: &serde_json::Map<String, Value>) -> Vec<String
         }
     }
     stores
+}
+
+/// The ways to log in a host can choose: berth's key, each other key of the
+/// ring, a password, and the user's SSH configuration, which only a berth
+/// of this machine has, so a berth server's host is not offered it unless
+/// it has it already.
+pub fn login_choices(keys: &[String], current: &str, served: bool) -> Vec<String> {
+    let mut choices = vec!["berth".to_owned()];
+    choices.extend(
+        keys.iter()
+            .filter(|key| key.as_str() != "berth")
+            .map(|key| format!("key:{key}")),
+    );
+    choices.push("password".into());
+    if !served || current == "ssh" {
+        choices.push("ssh".into());
+    }
+    if !current.is_empty() && !choices.iter().any(|choice| choice == current) {
+        choices.push(current.to_owned());
+    }
+    choices
 }
 
 /// What comes after `current` when stepping through `all` and then nothing.
@@ -485,10 +520,15 @@ impl<'a> Profile<'a> {
     }
 
     pub fn text(&self, field: Field) -> &'a str {
-        self.config
+        let text = self
+            .config
             .pointer(field.spec().pointer)
             .and_then(Value::as_str)
-            .unwrap_or("")
+            .unwrap_or("");
+        match (field, text) {
+            (Field::Login, "") => "berth",
+            _ => text,
+        }
     }
 
     /// State of a toggle. Unset feature switches are on, like the role defaults,
@@ -773,7 +813,7 @@ impl<'a> Profile<'a> {
         if self.locked() {
             return vec![];
         }
-        vec![SshHost, SshUser, SshPort, SshKey, AskBecomePass]
+        vec![SshHost, SshUser, SshPort, Login, AskBecomePass]
     }
 
     /// The fields of the Install tab: those before the provisioner's rows,
@@ -791,7 +831,7 @@ impl<'a> Profile<'a> {
         };
         let mut after = vec![];
         if action == Action::Ssh {
-            after.extend([SshHost, SshUser, SshPort, SshKey, AskPass, AskBecomePass]);
+            after.extend([SshHost, SshUser, SshPort, Login, AskBecomePass]);
         }
         if action.installer() || action.seeds() {
             after.push(Hostname);

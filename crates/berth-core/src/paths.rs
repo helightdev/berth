@@ -7,9 +7,11 @@
 //!   names another
 //! - the hosts' profiles, their generated passwords and the records of the
 //!   machines berth created are in the store too ([`crate::profiles`])
-//! - berth's own SSH key and the token of `berth serve` are in the store, and
-//!   written from it to `id_ed25519` and `serve.token` of the data directory
-//!   ([`crate::kept`]); the user's own plugins are in `plugins/` of the
+//! - the SSH keys of the key ring and the token of `berth serve` are in the
+//!   store, and written from it to `keys/NAME` and `serve.token` of the data
+//!   directory when they are needed as files ([`crate::keys::ring`],
+//!   [`crate::kept`]); each host's known-hosts file is in `known_hosts/`,
+//!   written from the store ([`crate::keys::known`]); the user's own plugins are in `plugins/` of the
 //!   configuration directory, which is rebuilt from the store
 //!   ([`crate::plugin_state`])
 //! - `~/.local/share/berth/locks/`: the locks held while something is done
@@ -253,49 +255,21 @@ impl Paths {
         self.data_dir.join("build")
     }
 
-    /// The private half of this berth's own SSH key, an ed25519 one made the
-    /// first time it is asked for. Hosts it sets up take the public half for
-    /// their operator, so this berth reaches them without a key of the user's.
-    ///
-    /// The store holds the key and the files `id_ed25519` and
-    /// `id_ed25519.pub` are written from it ([`crate::kept`]). That is done
-    /// once per process; after it the files are taken as they are.
+    /// The private half of this berth's own SSH key, the key `berth` of the
+    /// key ring, as a file: an ed25519 key made the first time it is asked
+    /// for. Hosts it sets up take the public half for their operator, so
+    /// this berth reaches them without a key of the user's.
     pub fn own_key(&self) -> Result<PathBuf> {
-        static SETTLED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
-        let kept = crate::kept::own_key(self);
-        let key = kept.files[0].1.clone();
-        let there = || kept.files.iter().all(|(_, file, _)| file.is_file());
-        let settled = || {
-            SETTLED
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .contains(&key)
-        };
-        if settled() && there() {
-            return Ok(key);
-        }
-        // A store that cannot be opened or read leaves the files as they
-        // are, so that berth ssh HOST still works while the database is
-        // down; it is not asked again in this process, as each try may wait.
-        let found = crate::store::shared(self)
-            .and_then(|store| kept.settle(self, &store, &|| crate::kept::generate_key(self)));
-        match found {
-            Ok(_) => {}
-            Err(_) if there() => {}
-            Err(error) => return Err(error),
-        }
-        SETTLED
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(key.clone());
-        Ok(key)
+        let store = crate::store::shared(self)?;
+        crate::keys::ring::file(self, &store, berth_api::profile::BERTH_KEY, false)?
+            .ok_or_else(|| "berth's own key is missing".into())
     }
 
     /// The public half of this berth's own SSH key.
     pub fn own_public_key(&self) -> Option<String> {
-        let key = self.own_key().ok()?;
-        let public = fs::read_to_string(key.with_extension("pub")).ok()?;
-        Some(public.trim().to_owned()).filter(|public| !public.is_empty())
+        let store = crate::store::shared(self).ok()?;
+        let key = crate::keys::ring::public(self, &store, berth_api::profile::BERTH_KEY).ok()?;
+        Some(key.public).filter(|public| !public.is_empty())
     }
 
     /// Create the private directories berth writes to.
@@ -487,10 +461,7 @@ impl Paths {
         crate::profiles::list(self, &crate::profiles::scope(self))
             .unwrap_or_default()
             .into_iter()
-            .map(|(name, profile)| {
-                let address = profile["builder"]["ssh_host"].as_str().unwrap_or("");
-                (name, address.to_owned())
-            })
+            .map(|(name, profile)| (name, berth_api::profile::Access::of(&profile).address))
             .collect()
     }
 }
@@ -527,7 +498,7 @@ mod tests {
         paths.prepare().unwrap();
         crate::profiles::Place::own("laptop")
             .unwrap()
-            .save(&paths, &json!({"builder": {"ssh_host": "100.64.0.1"}}))
+            .save(&paths, &json!({"access": {"address": "100.64.0.1"}}))
             .unwrap();
         crate::profiles::Place::own("attic")
             .unwrap()

@@ -37,7 +37,12 @@ With a [berth server](/docs/use/server) set, by `--server` or the `server` setti
 | `berth apply HOST` | Apply the host's profile to it over SSH. With a [berth server](/docs/use/server) set, as a job there |
 | `berth apply --behind [--update] [--reboot [--force]]` | Apply every host that is behind, one at a time ([Updates](/docs/use/updates#bringing-hosts-up-to-date)). `--all` takes the current ones too |
 | `berth remove HOST` | Forget a host. The machine itself is left as it is, and a machine berth created for the host must be deleted first |
-| `berth key` | Print the SSH public key of this berth, which the operator of a host it sets up [takes](/docs/reference/profile#the-key-of-berth-itself) |
+| `berth key` | The SSH keys of berth's [key ring](/docs/use/accounts#keys), with their public halves, the hosts that use each, and what is being replaced. With a berth server set, the server's |
+| `berth key new NAME`, `berth key add NAME FILE\|-` | Make a key, or take in a private key from a file or standard input |
+| `berth key show [NAME]`, `berth key remove NAME` | Print a public half, the key `berth`'s by default. Remove a key, which berth refuses while a host logs in with it |
+| `berth key rotate [NAME]` | Replace a key on the hosts that take it ([Rekeying](/docs/use/accounts#rekeying)) |
+| `berth key trust HOST [--key FILE] [--keep-password]` | Install the host's key with a password or a key used once ([First contact](/docs/use/accounts#first-contact)) |
+| `berth key host HOST [--accept]` | The host's recorded SSH host key; accept a changed one |
 | `berth connect URL` | Use the [berth server](/docs/use/server#with-a-setup-key) at URL, with the token a setup key collects. The key comes on standard input |
 | `berth login`, `berth logout` | Log in to a [berth server](/docs/use/server#with-a-login-in-place-of-the-token) through its OAuth 2.0 issuer, and forget that login |
 | `berth publish REGISTRY[/REPOSITORY] [HOST [--login [REGISTRY]]]` | Upload the release archive and use it as HOST's release address ([Registries](/docs/use/registries#publishing-the-release-archive)) |
@@ -68,6 +73,8 @@ berth run studio claude:login            # a sign-in runs in your terminal
 ```
 
 `berth run HOST TASK` runs a task and its plugin steps and leaves with the task's exit code. A task's arguments are given as `NAME=VALUE`, and `--yes` answers its confirmation. `berth manage HOST TASK` is the same command. Tasks that need a terminal, such as sign-ins, run in your terminal over `ssh -t`.
+
+When a [berth server](/docs/use/server) keeps the host, `berth tasks` lists the server's actions for the host: its tasks, and berth's own such as `apply` and `seed`. `berth run` runs any of them through the server, which keeps a job of each run ([Actions](/docs/extend/serve#actions)).
 
 ## Sessions and commands
 

@@ -268,6 +268,10 @@ pub struct Argument {
     /// few. Empty for one that takes any text.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub values: Vec<String>,
+    /// What is given is a secret, such as a password: it is not shown as it
+    /// is typed, nor kept, nor written to a job's output.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
 }
 
 impl Argument {
@@ -326,6 +330,190 @@ pub struct RunTask {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Choices {
     pub choices: Vec<String>,
+}
+
+// ── Actions ─────────────────────────────────────────────────────────────────
+
+/// Where an action runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Runs {
+    /// Where berth runs, as a function of berth or a plugin's program. A run
+    /// that changes something is a job.
+    #[default]
+    Berth,
+    /// On the host, by its controller, as a session there.
+    Host,
+}
+
+/// What a plugin adds to an action: a step run after it in the same run.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ActionStep {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub help: String,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn operate() -> crate::ops::Role {
+    crate::ops::Role::Operate
+}
+
+/// Something that can be done to a subject: a host, the installation, and
+/// later a provisioner or a resource. It says enough to build a form from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct Action {
+    pub name: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub help: String,
+    /// The group of the page it is listed in; `System` when empty.
+    #[serde(default)]
+    pub group: String,
+    #[serde(default)]
+    pub arguments: Vec<Argument>,
+    /// The question to answer yes to before it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<String>,
+    #[serde(default)]
+    pub runs: Runs,
+    /// It needs a terminal session attached; only a host runs these.
+    #[serde(default)]
+    pub terminal: bool,
+    /// False when it only reads, and may be called at any time.
+    #[serde(default = "yes")]
+    pub changes: bool,
+    /// The least role that may run it.
+    #[serde(default = "operate")]
+    pub role: crate::ops::Role,
+    /// False, with `why`, when the subject's state rules it out now.
+    #[serde(default = "yes")]
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub why: String,
+    /// What plugins add to it, in the order they run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<ActionStep>,
+}
+
+impl Default for Action {
+    fn default() -> Action {
+        Action {
+            name: String::new(),
+            label: String::new(),
+            help: String::new(),
+            group: String::new(),
+            arguments: vec![],
+            confirm: None,
+            runs: Runs::Berth,
+            terminal: false,
+            changes: true,
+            role: crate::ops::Role::Operate,
+            available: true,
+            why: String::new(),
+            steps: vec![],
+        }
+    }
+}
+
+impl Action {
+    /// The actions of a host's tasks, in the order the host lists them: each
+    /// task that is no step of another, with the steps plugins add to it. The
+    /// host keeps the rest of a task (its user, its command, its input), and
+    /// runs it by name.
+    pub fn of_tasks(tasks: &[Task]) -> Vec<Action> {
+        tasks
+            .iter()
+            .filter(|task| task.extends.is_empty())
+            .map(|task| Action {
+                name: task.name.clone(),
+                label: task.label.clone(),
+                help: task.help.clone(),
+                group: task.group.clone(),
+                arguments: task.arguments.clone(),
+                confirm: task.confirm.clone(),
+                runs: Runs::Host,
+                terminal: task.terminal,
+                steps: tasks
+                    .iter()
+                    .filter(|step| step.extends.contains(&task.name))
+                    .map(|step| ActionStep {
+                        label: step.label.clone(),
+                        help: step.help.clone(),
+                    })
+                    .collect(),
+                ..Action::default()
+            })
+            .collect()
+    }
+
+    /// What it is called on screen.
+    pub fn title(&self) -> &str {
+        match self.label.is_empty() {
+            true => &self.name,
+            false => &self.label,
+        }
+    }
+}
+
+/// What running an action is given.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct Act {
+    #[serde(default)]
+    pub arguments: BTreeMap<String, String>,
+    /// Any text of the caller's. The same token again for the same subject
+    /// and action answers with the job the first call started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// The SSH user's sudo password, for an action that logs in to a host
+    /// whose sudo asks for one. It is neither shown nor kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sudo_password: Option<String>,
+    /// The size of the terminal, for an action that runs in one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cols: Option<u16>,
+}
+
+/// What running an action answers: one of the three.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct Acted {
+    /// The job that runs it, for an action of berth that changes something.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<JobInfo>,
+    /// The session on the host, for an action the host runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Session>,
+    /// What an action that answers at once and changes nothing said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+}
+
+/// A job of berth: one run of an action, with its output kept where it ran.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct JobInfo {
+    pub id: String,
+    /// What it was done to: `host:NAME`, `provisioner:PLUGIN/ID`,
+    /// `resource:ID` or `installation`. Empty for a job from before 0.5.
+    #[serde(default)]
+    pub subject: String,
+    /// The action it runs, such as `apply`, `rollout` or `provision`.
+    #[serde(default)]
+    pub action: String,
+    /// The hosts it is about, for a reader: a name, or several with commas.
+    #[serde(default)]
+    pub host: String,
+    pub started: String,
+    pub ended: Option<String>,
+    pub exit_code: Option<i32>,
+    /// How a roll-out went, host by host, once it has ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<RolloutReport>,
 }
 
 // ── System ──────────────────────────────────────────────────────────────────
@@ -910,6 +1098,51 @@ pub struct Rollout {
     pub force: bool,
 }
 
+impl Rollout {
+    /// The arguments of the `rollout` action that ask for this.
+    pub fn arguments(&self) -> BTreeMap<String, String> {
+        let word = |on: bool| if on { "yes" } else { "no" }.to_owned();
+        let mut arguments = BTreeMap::from([
+            ("all".to_owned(), word(self.all)),
+            ("update".to_owned(), word(self.update)),
+            ("reboot".to_owned(), word(self.reboot)),
+            ("force".to_owned(), word(self.force)),
+        ]);
+        if !self.hosts.is_empty() {
+            arguments.insert("hosts".into(), self.hosts.join(","));
+        }
+        arguments
+    }
+
+    /// What the arguments of the `rollout` action ask for.
+    pub fn from_arguments(arguments: &BTreeMap<String, String>) -> Result<Rollout, String> {
+        let flag = |name: &str| match arguments.get(name).map(|value| value.trim()) {
+            None | Some("" | "no" | "false") => Ok(false),
+            Some("yes" | "true") => Ok(true),
+            Some(other) => Err(format!("{name} is yes or no, not {other}")),
+        };
+        let hosts = arguments.get("hosts").map_or(vec![], |hosts| {
+            hosts
+                .split(',')
+                .map(str::trim)
+                .filter(|host| !host.is_empty())
+                .map(str::to_owned)
+                .collect()
+        });
+        let rollout = Rollout {
+            hosts,
+            all: flag("all")?,
+            update: flag("update")?,
+            reboot: flag("reboot")?,
+            force: flag("force")?,
+        };
+        if rollout.force && !rollout.reboot {
+            return Err("force only goes with reboot".into());
+        }
+        Ok(rollout)
+    }
+}
+
 /// How one host of a roll-out went.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
@@ -918,7 +1151,8 @@ pub enum RolloutState {
     Done,
     /// Nothing to do: it was current.
     Current,
-    /// Not started, because an earlier host stopped the roll-out.
+    /// Not started, because an earlier host stopped the roll-out, or left
+    /// because something else was changing it, as its `error` says.
     #[default]
     Skipped,
     /// Something went wrong; the roll-out stopped here.

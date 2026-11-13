@@ -31,6 +31,13 @@ pub trait Target {
     fn reboot(&mut self, force: bool) -> std::result::Result<(), String>;
     /// Wait this long before asking again.
     fn pause(&mut self, seconds: u64);
+    /// Take the host's lock for as long as it is worked on, so that nothing
+    /// else changes it meanwhile; why not when something else does.
+    fn hold(&mut self) -> std::result::Result<(), String> {
+        Ok(())
+    }
+    /// Let go of the lock [`Target::hold`] took.
+    fn release(&mut self) {}
 }
 
 /// What a host that says what it was applied from is: current, or behind.
@@ -73,6 +80,8 @@ pub fn run(
 ) -> RolloutReport {
     let mut hosts = vec![];
     let mut stopped = false;
+    // A host something else was changing is left, and the roll-out goes on.
+    let mut busy = false;
     for target in targets.iter_mut() {
         let mut host = RolloutHost {
             name: target.name().to_owned(),
@@ -83,7 +92,10 @@ pub fn run(
             continue;
         }
         let failed = one(target.as_mut(), options, behind, &mut host, out);
-        if let Err(error) = failed {
+        target.release();
+        if failed.is_ok() && host.state == RolloutState::Skipped {
+            busy = true;
+        } else if let Err(error) = failed {
             say(out, &format!("✗ {}: {error}", host.name));
             host.state = RolloutState::Failed;
             host.error = error;
@@ -103,13 +115,13 @@ pub fn run(
     }
     let skipped: Vec<&str> = hosts
         .iter()
-        .filter(|host| host.state == RolloutState::Skipped)
+        .filter(|host| host.state == RolloutState::Skipped && host.error.is_empty())
         .map(|host| host.name.as_str())
         .collect();
     if !skipped.is_empty() {
         say(out, &format!("! Not started: {}", skipped.join(", ")));
     }
-    let ok = !stopped;
+    let ok = !stopped && !busy;
     RolloutReport { hosts, ok }
 }
 
@@ -130,6 +142,14 @@ fn one(
             say(out, &format!("✓ {name} is current"));
             return Ok(());
         }
+        _ => {}
+    }
+    if let Err(why) = target.hold() {
+        say(out, &format!("! {name}: skipped, {why}"));
+        host.error = why;
+        return Ok(());
+    }
+    match seen(&version, behind) {
         Seen::Behind(behind) => {
             say(out, &format!("▸ {name}: applying ({})", behind.text()));
             host.changes = behind.changes;
@@ -242,6 +262,7 @@ pub struct Live<'a> {
     password: Option<String>,
     link: Link,
     runtime: tokio::runtime::Runtime,
+    held: Option<crate::runner::Lock>,
 }
 
 impl<'a> Live<'a> {
@@ -253,6 +274,7 @@ impl<'a> Live<'a> {
             password,
             link,
             runtime: crate::link::runtime()?,
+            held: None,
         })
     }
 
@@ -366,6 +388,19 @@ impl Target for Live<'_> {
     fn pause(&mut self, seconds: u64) {
         std::thread::sleep(std::time::Duration::from_secs(seconds));
     }
+
+    fn hold(&mut self) -> std::result::Result<(), String> {
+        let path = self.host.place.lock_file(self.paths);
+        let lock = crate::runner::lock_at(&path, "rollout", |holder| {
+            format!("something else is being done to it{holder}")
+        });
+        self.held = Some(lock.map_err(|error| error.to_string())?);
+        Ok(())
+    }
+
+    fn release(&mut self) {
+        self.held = None;
+    }
 }
 
 /// Roll out to this machine's saved hosts, applying from here. Passwords for
@@ -441,6 +476,10 @@ mod tests {
         comes_back: bool,
         rebooting: bool,
         uptime: u64,
+        /// Something else holds its lock.
+        busy: bool,
+        /// When it was held and let go, apart from what it was asked.
+        locks: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
         log: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
     }
 
@@ -497,6 +536,18 @@ mod tests {
             Ok(())
         }
         fn pause(&mut self, _seconds: u64) {}
+        fn hold(&mut self) -> std::result::Result<(), String> {
+            self.locks.borrow_mut().push(format!("{} hold", self.name));
+            match self.busy {
+                true => Err("something else is being done to it (apply, process 7)".into()),
+                false => Ok(()),
+            }
+        }
+        fn release(&mut self) {
+            self.locks
+                .borrow_mut()
+                .push(format!("{} release", self.name));
+        }
     }
 
     fn record(version: &str) -> Applied {
@@ -540,6 +591,51 @@ mod tests {
             .iter()
             .map(|host| (host.name.as_str(), host.state))
             .collect()
+    }
+
+    #[test]
+    fn a_host_something_else_changes_is_skipped_and_the_rest_go_on() {
+        let log: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
+        let locks: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
+        let fake = |name: &str, version: &str, busy: bool| {
+            Box::new(Fake {
+                name: name.into(),
+                applied: Some(record(version)),
+                records: record("2"),
+                uptime: 1000,
+                busy,
+                log: log.clone(),
+                locks: locks.clone(),
+                ..Default::default()
+            }) as Box<dyn Target>
+        };
+        let mut targets = vec![
+            fake("a", "1", false),
+            fake("b", "1", true),
+            fake("c", "2", false),
+        ];
+        let mut out = vec![];
+        let report = run(&mut targets, &Rollout::default(), &now, &mut out);
+        assert!(!report.ok);
+        assert_eq!(
+            states(&report),
+            [
+                ("a", RolloutState::Done),
+                ("b", RolloutState::Skipped),
+                ("c", RolloutState::Current)
+            ]
+        );
+        assert!(report.hosts[1].error.contains("(apply, process 7)"));
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("! b: skipped, something else"), "{text}");
+        assert!(!text.contains("Not started"), "{text}");
+        // Each host is held while it is worked on and let go after; a busy
+        // one is not applied, and a current one is not held.
+        assert_eq!(*log.borrow(), ["a apply", "a status"]);
+        assert_eq!(
+            *locks.borrow(),
+            ["a hold", "a release", "b hold", "b release", "c release"]
+        );
     }
 
     #[test]

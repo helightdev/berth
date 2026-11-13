@@ -129,7 +129,7 @@ class ThroughTheServer(Joined, unittest.TestCase):
         self.assertNotIn('Consume enrollment key', changed(self.second))
 
     def test_a_seed_carries_a_key_made_for_it(self):
-        draft = {**self.kept, 'hostname': 'cloud-5', 'builder': {}, 'tailscale_auto_key': True,
+        draft = {**self.kept, 'hostname': 'cloud-5', 'builder': {}, 'access': {}, 'tailscale_auto_key': True,
                  'operator_password_hash': '$6$e2e$' + 'x' * 86,
                  'release_url': 'https://192.0.2.30/berth-release.tar.gz'}
         self.serve.call('PUT', '/v1/hosts/cloud-5/profile', joining(draft))

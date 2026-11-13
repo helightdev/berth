@@ -204,8 +204,11 @@ class SetUp(unittest.TestCase):
         catalogue = self.serve.call('GET', '/v1/setup')
         self.assertIn('operator_ssh_public_keys', catalogue['template'])
         self.assertIn('claude/cli', [feature['key'] for feature in catalogue['features']])
-        own = self.serve.station.own_key.with_suffix('.pub').read_text().strip()
-        self.assertEqual(catalogue['key'], own)
+        own = self.serve.station.own_public()
+        self.assertNotIn('key', catalogue)
+        keys = {key['name']: key for key in self.serve.call('GET', '/v1/keys')['keys']}
+        self.assertEqual(keys['berth']['public'], own)
+        self.assertNotIn('PRIVATE KEY', json.dumps(keys))
         name = self.serve.call('POST', '/v1/setup/generate', {'what': 'hostname'})['value']
         self.assertRegex(name, r'^devbox-')
         made = self.serve.call('POST', '/v1/setup/generate', {'what': 'password', 'host': 'draft', 'user': 'ops'})
@@ -215,12 +218,12 @@ class SetUp(unittest.TestCase):
 
     def test_a_host_is_made_seeded_and_removed(self):
         self.serve.call('PUT', '/v1/hosts/cloud-2/profile', {
-            **provisioned().read_profile(), 'hostname': 'cloud-2', 'builder': {},
+            **provisioned().read_profile(), 'hostname': 'cloud-2', 'builder': {}, 'access': {},
             'operator_password_hash': '$6$e2e$' + 'x' * 86,
             'release_url': 'https://192.0.2.30/berth-release.tar.gz'})
         self.assertFalse(self.serve.call('GET', '/v1/hosts/cloud-2')['reachable'])
-        seed = self.serve.call('POST', '/v1/hosts/cloud-2/seed')['user_data']
-        own = self.serve.station.own_key.with_suffix('.pub').read_text().split()[1]
+        seed = self.serve.call('POST', '/v1/hosts/cloud-2/actions/seed')['result']['user_data']
+        own = self.serve.station.own_public().split()[1]
         self.assertTrue(seed.startswith('#cloud-config'))
         self.assertIn(own, seed)
         self.serve.call('DELETE', '/v1/hosts/cloud-2')
@@ -235,7 +238,7 @@ class SetUp(unittest.TestCase):
         profile['secrets'] = [{'name': 'server-token', 'env': 'SERVER_TOKEN'}]
         self.serve.call('PUT', f'/v1/hosts/{HOST}/profile', profile)
         try:
-            session = self.serve.call('POST', f'/v1/hosts/{HOST}/secrets')
+            session = self.serve.call('POST', f'/v1/hosts/{HOST}/actions/secrets', expect=202)['session']
             wait_for('the secrets task to end', lambda: self.serve.call(
                 'GET', f'/v1/hosts/{HOST}/sessions/{session["id"]}').get('exit_code') == 0)
             env = provisioned().root_on_host(f'cat /home/{AGENT}/.config/devbox/secrets.env').stdout
@@ -274,7 +277,7 @@ class ApplyJob(unittest.TestCase):
         self.assertIn('failed=0', unb64(output['data_b64']) if isinstance(output, dict) else output)
         # The operator now takes the server's key as well.
         keys = provisioned().ssh('ops', 'cat ~/.ssh/authorized_keys').stdout
-        own = self.serve.station.own_key.with_suffix('.pub').read_text().strip()
+        own = self.serve.station.own_public()
         self.assertIn(own, keys)
 
 

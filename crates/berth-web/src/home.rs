@@ -237,7 +237,8 @@ pub struct Home {
 /// The rows of the Settings tab after the server's own settings.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsRow {
-    BerthKey,
+    /// A key of the server's ring, by its place in the list.
+    Key(usize),
     Connect,
 }
 
@@ -306,9 +307,7 @@ impl Home {
         if data.settings.is_empty() {
             return extras;
         }
-        if !data.own_key.is_empty() {
-            extras.push(SettingsRow::BerthKey);
-        }
+        extras.extend((0..data.keys.len()).map(SettingsRow::Key));
         if self.connect.is_some() {
             extras.push(SettingsRow::Connect);
         }
@@ -342,7 +341,9 @@ impl Home {
             .collect();
         for extra in &extras {
             rows.push(match extra {
-                SettingsRow::BerthKey => berth_key::row(&data.own_key),
+                SettingsRow::Key(index) => {
+                    berth_key::row(&data.keys[*index].0, &data.keys[*index].1)
+                }
                 SettingsRow::Connect => Line::from(vec![
                     Span::styled("Open on another device  ", Style::new().fg(theme::TEXT)),
                     Span::styled("QR code and link, with the token", muted),
@@ -368,8 +369,9 @@ impl Home {
                     ),
                 }
             }
-            (None, Some(SettingsRow::BerthKey), _) => {
-                berth_key::help(&data.own_key, Some(&self.server))
+            (None, Some(SettingsRow::Key(index)), _) => {
+                let (name, public) = &data.keys[index];
+                berth_key::help(name, public, Some(&self.server))
             }
             (None, Some(SettingsRow::Connect), Some((server, _))) => {
                 berth_tui::qr::connect_help(server, false)
@@ -383,7 +385,7 @@ impl Home {
             help,
             keys: match (&self.editor, extra) {
                 (Some(_), _) => "Enter accept · Esc cancel · Ctrl+O copy",
-                (None, Some(SettingsRow::BerthKey)) => {
+                (None, Some(SettingsRow::Key(_))) => {
                     "↑↓ select · Enter copy the key · Tab registries · Esc hosts"
                 }
                 (None, Some(SettingsRow::Connect)) => {
@@ -401,7 +403,7 @@ impl Home {
         let count = settings + extras.len();
         let selected = self.selected[SETTINGS].min(count.saturating_sub(1));
         let setting = data.settings.get(selected).cloned().unwrap_or_default();
-        let own_key = data.own_key.clone();
+        let keys = data.keys.clone();
         drop(data);
         let extra = selected
             .checked_sub(settings)
@@ -422,10 +424,11 @@ impl Home {
             }
             return None;
         }
-        if extra == Some(SettingsRow::BerthKey)
+        if let Some(SettingsRow::Key(index)) = extra
             && (key.code == Code::Enter || berth_key::is_copy(&key))
         {
-            return Some(berth_key::copy(&mut Browser, &own_key));
+            let public = keys.get(index).map(|(_, public)| public.as_str());
+            return Some(berth_key::copy(&mut Browser, public.unwrap_or("")));
         }
         // The last row shows the link that opens this page.
         if extra == Some(SettingsRow::Connect)

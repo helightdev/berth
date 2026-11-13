@@ -4,7 +4,7 @@
 
 use super::{
     Serve,
-    api::{Answer, App, Fail, JobInfo, internal, start_job},
+    api::{Answer, App, Fail, internal, job_info},
     setup::saved_profile,
 };
 use axum::{
@@ -12,12 +12,15 @@ use axum::{
     body::Bytes,
     extract::{Path, Query, State},
 };
-use berth_api::{Done, ErrorBody, Instance, ListedInstance, Provision, ProvisionerInfo, code};
+use berth_api::{
+    Done, ErrorBody, Instance, JobInfo, ListedInstance, Provision, ProvisionerInfo, code,
+};
 use berth_core::{
     host::Host,
     paths::Paths,
     provision::{self, Record},
     registry::Store,
+    runner::{Request, Subject, Work},
 };
 use serde_json::Value;
 use std::{collections::BTreeMap, io::Write};
@@ -82,7 +85,7 @@ fn idle(state: &Serve, name: &str) -> Answer<()> {
 fn reached(paths: &Paths, name: &str) -> Value {
     berth_core::profiles::Place::own(name)
         .and_then(|place| Host::load_at(paths, place))
-        .map(|host| host.config["builder"].clone())
+        .map(|host| host.config["access"].clone())
         .unwrap_or_default()
 }
 
@@ -142,11 +145,14 @@ pub async fn create(
     }
     idle(&state, &name)?;
     // Checked before there is a job, so a refusal is an answer of its own.
-    let prepared = provision::prepare(&state.paths, &registries, &name, &asked).map_err(bad)?;
+    let mut prepared = provision::prepare(&state.paths, &registries, &name, &asked).map_err(bad)?;
     let before = reached(&state.paths, &name);
     let (watcher, runtime) = (state.clone(), tokio::runtime::Handle::current());
-    let host = name.clone();
-    let job = start_job(&state, &name, "provision", move |output| {
+    let mut request = Request::new(Subject::Host(name.clone()), "provision");
+    request.held = prepared.take_lock();
+    request.secrets = prepared.secrets();
+    let host = name;
+    let work = Work::Function(Box::new(move |output| {
         let paths = &watcher.paths;
         let done = prepared.run(paths, &registries, &(watcher.provision)(), output);
         if let Err(error) = &done {
@@ -159,8 +165,9 @@ pub async fn create(
             watcher.refresh(false);
         }
         done.is_ok()
-    })?;
-    Ok(Json(job))
+    }));
+    let job = state.runner.start(request, work).map_err(internal)?;
+    Ok(Json(job_info(job)))
 }
 
 #[utoipa::path(get, path = "/v1/hosts/{name}/instance", summary = "The machine berth created for a host, and what its provisioner says of it now.", tag = "set-up",
@@ -240,8 +247,11 @@ pub async fn destroy(State(state): App, Path(name): Path<String>) -> Answer<Json
         }
     }
     let watcher = state.clone();
-    let host = name.clone();
-    let job = start_job(&state, &name, "unprovision", move |output| {
+    let mut request = Request::new(Subject::Host(name.clone()), "unprovision");
+    // Deleting takes the host's lock itself, for as long as it runs.
+    request.changes = false;
+    let host = name;
+    let work = Work::Function(Box::new(move |output| {
         let done = provision::destroy(
             &watcher.paths,
             &registries,
@@ -253,6 +263,7 @@ pub async fn destroy(State(state): App, Path(name): Path<String>) -> Answer<Json
             let _ = writeln!(output, "✗ {error}");
         }
         done.is_ok()
-    })?;
-    Ok(Json(job))
+    }));
+    let job = state.runner.start(request, work).map_err(internal)?;
+    Ok(Json(job_info(job)))
 }

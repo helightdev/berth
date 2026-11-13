@@ -28,7 +28,7 @@ class Apply(unittest.TestCase):
         print(f'\n  first apply: {self.station.apply_seconds:.0f}s, {recap}', end=' ')
 
     def test_the_operator_takes_berths_own_key(self):
-        own = self.station.berth('key').stdout.strip()
+        own = self.station.own_public()
         self.assertTrue(own.startswith('ssh-ed25519 '), own)
         self.assertEqual(own, self.station.own_key.with_suffix('.pub').read_text().strip())
         self.assertEqual(self.station.own_key.stat().st_mode & 0o777, 0o600)

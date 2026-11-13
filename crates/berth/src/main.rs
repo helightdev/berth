@@ -1,6 +1,7 @@
 mod app;
 mod commands;
 mod fields;
+mod key_command;
 mod keys;
 mod mirror;
 mod picker;
@@ -304,42 +305,44 @@ fn open(paths: &Paths, host: &str) -> Result<App> {
     // A host is reached without the store; what needs it says why it is missing.
     app.access = registry::Store::new(paths)
         .map_err(|error| format!("berth's store does not open: {error}"));
-    // A server's host is set up from the server, and takes the server's key.
-    match app.served() {
-        Some(_) => {
-            let known = app
-                .host_profile()
-                .served(paths)
-                .and_then(|server| server.call("setup.catalogue", json!({}), None).ok());
-            // The server's plugins are what its hosts can have.
-            if let Some(features) = known
-                .as_ref()
-                .and_then(|found| found["features"].as_array())
-            {
-                let text = |feature: &serde_json::Value, key: &str| {
-                    feature[key].as_str().unwrap_or("").to_owned()
-                };
-                app.set_features(
-                    features
-                        .iter()
-                        .map(|feature| berth_tui::setup::Feature {
-                            key: text(feature, "key"),
-                            label: text(feature, "label"),
-                            group: text(feature, "group"),
-                            help: text(feature, "help"),
-                        })
-                        .collect(),
-                );
-            }
-            app.own_public = known
-                .and_then(|found| found["key"].as_str().map(str::to_owned))
-                .unwrap_or_default();
-        }
-        None => {
-            app.own_key = paths.own_key().ok();
-            app.own_public = paths.own_public_key().unwrap_or_default();
+    // A server's host is set up from the server, with the server's plugins.
+    if app.served().is_some() {
+        let known = app
+            .host_profile()
+            .served(paths)
+            .and_then(|server| server.call("setup.catalogue", json!({}), None).ok());
+        // The server's plugins are what its hosts can have.
+        if let Some(features) = known
+            .as_ref()
+            .and_then(|found| found["features"].as_array())
+        {
+            let text = |feature: &serde_json::Value, key: &str| {
+                feature[key].as_str().unwrap_or("").to_owned()
+            };
+            app.set_features(
+                features
+                    .iter()
+                    .map(|feature| berth_tui::setup::Feature {
+                        key: text(feature, "key"),
+                        label: text(feature, "label"),
+                        group: text(feature, "group"),
+                        help: text(feature, "help"),
+                    })
+                    .collect(),
+            );
         }
     }
+    // The keys of the ring that logs in to the host: the server's for its hosts.
+    let ring = match app.host_profile().served(paths) {
+        Some(server) => key_command::listed(&server).unwrap_or_default(),
+        None => key_command::local(paths).unwrap_or_default(),
+    };
+    app.own_public = ring
+        .iter()
+        .find(|key| key.name == berth_api::profile::BERTH_KEY)
+        .map(|key| key.public.clone())
+        .unwrap_or_default();
+    app.ring_keys = ring.into_iter().map(|key| key.name).collect();
     app.load_access();
     app.detect();
     // A host that is installed opens on its maintenance tab.
@@ -474,6 +477,21 @@ fn main() {
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut args: Vec<&str> = args.iter().map(String::as_str).collect();
+    // ssh runs berth as its askpass helper, the program of SSH_ASKPASS, with
+    // the prompt as its one argument and the variable that says where the
+    // password is; the answer is all that may go to standard output.
+    if let Ok(source) = std::env::var(berth_core::keys::askpass::SOURCE) {
+        let prompt = match args[..] {
+            ["askpass", ref prompt @ ..] => Some(prompt.join(" ")),
+            [prompt] => Some(prompt.to_owned()),
+            _ => None,
+        };
+        if let Some(prompt) = prompt {
+            let answer = berth_core::keys::askpass::answer(&prompt, &source, None)?;
+            println!("{answer}");
+            return Ok(());
+        }
+    }
     // `--server URL [--token TOKEN]` first: this run only, through that berth serve.
     while let [flag @ ("--server" | "--token"), value, ..] = args[..] {
         let variable = if flag == "--server" {
@@ -509,6 +527,7 @@ fn run() -> Result<()> {
         "login",
         "logout",
         "key",
+        "askpass",
         "tailnet-key",
         "credentials",
         "connect",
@@ -676,13 +695,7 @@ fn run() -> Result<()> {
         ["iso", host, "--write", device] => return build_installer(&paths, host, Some(device)),
         ["login"] => return commands::login(&paths),
         ["logout"] => return commands::logout(&paths),
-        ["key"] => {
-            println!(
-                "{}",
-                fs::read_to_string(paths.own_key()?.with_extension("pub"))?.trim()
-            );
-            return Ok(());
-        }
+        ["key", ref rest @ ..] => return key_command::command(&paths, rest),
         ["apply", "--behind" | "--all", ..] => return commands::apply_hosts(&paths, &args[1..]),
         ["apply", host] => return commands::apply(&paths, host),
         ["remove", host] => return commands::remove(&paths, host),
@@ -785,7 +798,6 @@ mod tests {
 
     use super::*;
     use crate::fields::{Action, Field, Step};
-    use berth_core::host::inventory as remote_inventory;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use tui_input::{Input, backend::crossterm::EventHandler};
 
@@ -856,7 +868,7 @@ mod tests {
     #[test]
     fn plugin_features_join_groups() {
         use app::{Entry, Item};
-        let mut app = app(r#"{"builder":{"ssh_host":"box","shipped_plugins":true}}"#);
+        let mut app = app(r#"{"access":{"address":"box"},"builder":{"shipped_plugins":true}}"#);
         app.set_plugins(vec![demo_plugin()]);
         app.step = Step::Features;
         let groups = app.feature_groups();
@@ -989,16 +1001,15 @@ mod tests {
         assert_eq!(config["target_disk_mode"], "auto");
         assert_eq!(config["wifi_enabled"], false);
         assert_eq!(config["operator_passwordless_sudo"], true);
-        assert!(config["builder"]["ask_become_pass"].is_null());
+        assert!(config["access"]["sudo"].is_null());
         let legacy = parse_config(
             br#"{"target_disk_serial":"OLD_SSD","wifi":{"ssid":"saved"},
-                "release_url":"https://REPLACE.example/x","builder":{"ask_pass":"true"}}"#,
+                "release_url":"https://REPLACE.example/x"}"#,
         )
         .unwrap();
         assert_eq!(legacy["target_disk_mode"], "serial");
         assert_eq!(legacy["wifi_enabled"], true);
         assert_eq!(legacy["release_url"], "");
-        assert_eq!(legacy["builder"]["ask_pass"], true);
         // A profile of the qemu kind there once was shows as cloud, reached from the QEMU host.
         let qemu = parse_config(br#"{"profile": "qemu"}"#).unwrap();
         assert_eq!(qemu["profile"], "cloud");
@@ -1014,7 +1025,7 @@ mod tests {
     fn asking_for_the_sudo_password_follows_the_operator_until_chosen() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("studio.json");
-        let profile = r#"{"builder":{"ssh_host":"192.0.2.10","ssh_user":"ops"}}"#;
+        let profile = r#"{"access":{"address":"192.0.2.10","user":"ops"}}"#;
         let paths = Paths {
             config_dir: directory.path().join("config"),
             data_dir: directory.path().join("data"),
@@ -1031,7 +1042,6 @@ mod tests {
             name: "studio".into(),
             place: berth_core::profiles::Place::File(path.to_owned()),
             config: serde_json::from_slice(&fs::read(path).unwrap()).unwrap(),
-            key: None,
         };
         assert!(!app.enabled(Field::AskBecomePass));
         assert!(!host(&path).asks_password());
@@ -1043,7 +1053,7 @@ mod tests {
         app.activate(Field::AskBecomePass);
         app.save().unwrap();
         assert!(!app.enabled(Field::AskBecomePass) && !host(&path).asks_password());
-        assert_eq!(app.config["builder"]["ask_become_pass"], false);
+        assert_eq!(app.config["access"]["sudo"], "none");
     }
 
     #[test]
@@ -1126,7 +1136,7 @@ mod tests {
         app.action = Action::Ssh;
         assert_eq!(app.problems().len(), 1);
         app.commit(Field::SshPort, "22");
-        app.config["builder"]["ssh_host"] = json!("devbox.example");
+        app.config["access"]["address"] = json!("devbox.example");
         assert!(app.problems().is_empty());
     }
 
@@ -1192,16 +1202,5 @@ mod tests {
         assert_eq!(public.len(), 2);
         assert!(public.iter().any(|(_, key)| key.ends_with("storage")));
         assert_eq!(discovery::hosts(&directory.path().join("config")).len(), 2);
-    }
-
-    #[test]
-    fn ssh_inventory_uses_structured_connection_values() {
-        let inventory = remote_inventory("my-cloud", "operator", "2222", "").unwrap();
-        let target = &inventory["all"]["hosts"]["devbox_target"];
-        assert_eq!(target["ansible_host"], "my-cloud");
-        assert_eq!(target["ansible_port"], 2222);
-        assert!(remote_inventory("my-cloud", "", "0", "").is_err());
-        assert!(remote_inventory("-oProxyCommand=anything", "", "", "").is_err());
-        assert!(remote_inventory("", "", "", "").is_err());
     }
 }

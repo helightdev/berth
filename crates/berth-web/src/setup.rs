@@ -69,6 +69,8 @@ pub struct Setup {
     stores: Vec<String>,
     /// The server's own SSH public key.
     own_key: String,
+    /// The names of the keys of the server's key ring.
+    ring_keys: Vec<String>,
     list: ListState,
     display: ListState,
     editing: Option<Input>,
@@ -124,6 +126,7 @@ impl Setup {
             secrets: vec![],
             stores: vec![],
             own_key: String::new(),
+            ring_keys: vec![],
             list: ListState::default().with_selected(Some(0)),
             display: ListState::default(),
             editing: None,
@@ -184,6 +187,17 @@ impl Setup {
         self.secrets = setup::host_secrets(names);
         self.stores = setup::release_stores(&data.registries);
         self.own_key = data.own_key.clone();
+        self.ring_keys = data.keys.iter().map(|(name, _)| name.clone()).collect();
+    }
+
+    /// The ways the host can be logged in to: the server's keys, a password,
+    /// and its account's SSH configuration only for a host that has it.
+    fn login_choices(&self) -> Vec<String> {
+        setup::login_choices(
+            &self.ring_keys,
+            self.config["access"]["auth"].as_str().unwrap_or(""),
+            true,
+        )
     }
 
     fn view(&self) -> Profile<'_> {
@@ -331,6 +345,16 @@ impl Setup {
 
     /// Toggle or cycle the field, or open the editor for free text.
     fn activate(&mut self, field: Field) -> Option<String> {
+        if field == Field::Login {
+            let choices = self.login_choices();
+            let current = self.view().text(field);
+            let next = choices
+                .iter()
+                .position(|choice| choice == current)
+                .map_or(0, |index| (index + 1) % choices.len());
+            self.set(field, json!(choices[next]));
+            return None;
+        }
         if field == Field::ReleaseStore {
             let next = setup::next_of(&self.stores, self.view().text(field));
             self.set(field, json!(next));

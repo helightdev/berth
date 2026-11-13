@@ -39,13 +39,13 @@ A provisioner sets up the new machine in one of two ways. The plugin chooses.
 | Kind | The new machine | berth waits for | What the profile needs |
 | --- | --- | --- | --- |
 | `seed` | Boots with berth's [cloud seed](/docs/deploy/cloud) made from the profile and sets itself up | berthd to answer, up to 30 minutes. It then prints the machine's provision state | What `berth seed` needs. A provisioner that puts the release archive into the machine itself does without a `release_url` |
-| `apply` | Starts with SSH and an account for berth | SSH to answer, up to 5 minutes. berth then applies the profile as `berth apply` does | An SSH user, `builder.ssh_user` |
+| `apply` | Starts with SSH and an account for berth | SSH to answer, up to 5 minutes. berth then applies the profile as `berth apply` does | An SSH user, `access.user` |
 
 For an `apply` provisioner the account is the profile's SSH user. It takes berth's [own key](/docs/reference/profile#the-key-of-berth-itself) and the keys of the profile's operator. If that user's sudo asks for a password, set `BERTH_SUDO_PASSWORD` for the command, or apply later with `berth apply HOST`.
 
-A provisioner may report the machine's address and SSH port. berth writes them to `builder.ssh_host` and `builder.ssh_port` of the profile, but only where those are empty. A machine just made has a new SSH host key, so berth forgets the key known for that address first.
+A provisioner may report the machine's address and SSH port. berth writes them to `access.address` and `access.port` of the profile, but only where those are empty. A machine just made has a new SSH host key, so berth forgets the host key it recorded for the host and records the new one at the first login.
 
-A seeded machine whose address berth does not know is not waited for. berth says so and ends. The machine sets itself up on its own, and you set `builder.ssh_host` to reach it.
+A seeded machine whose address berth does not know is not waited for. berth says so and ends. The machine sets itself up on its own, and you set `access.address` to reach it.
 
 ## Create the machine
 

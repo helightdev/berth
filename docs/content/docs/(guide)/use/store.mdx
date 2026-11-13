@@ -45,13 +45,14 @@ Stop `berth serve` before you run them, as it would go on sealing with the key i
 | In the store | Kept as a file on the machine | Made again |
 | --- | --- | --- |
 | Host profiles, the passwords berth generated and the records of the machines it created | `config.json`, the settings of this machine, such as `store` | The provisioning source, from the program |
-| Registries, secrets and the other settings | The key file, `store.key` | `id_ed25519` and `serve.token`, written from the store |
-| berth's own SSH key | Logins to an OAuth 2.0 issuer, `oauth.json` | The plugin directory, from the store and npm |
+| Registries, secrets and the other settings, with the SSH and sudo passwords of hosts | The key file, `store.key` | The key files in `keys/` and `serve.token`, written from the store |
+| The SSH keys of the key ring, with a key being replaced beside its successor | Logins to an OAuth 2.0 issuer, `oauth.json` | The plugin directory, from the store and npm |
+| Each host's SSH host keys and the keys it takes | | The known-hosts files in `known_hosts/`, written from the store |
 | The token of `berth serve` and its setup key | The output of jobs, in `jobs/` of the data directory | What this berth knows of a berth server, from its next mirror |
 | Your own plugins, as npm's `package.json` and lock file, uploaded `.tgz` files and folders you copied in | Builds and installer ISOs | |
 | The inbox, the jobs and the key-value store of `berth serve` | | |
 
-berth still uses its SSH key and the token as files, as ssh, Ansible and people read them there. When the store has them, berth writes the files from it. A file that differs is moved aside to `id_ed25519.replaced` or `serve.token.replaced`, and berth says so.
+berth still uses the SSH keys and the token as files, as ssh, Ansible and people read them there. When the store has them, berth writes the files from it, each key to `keys/NAME` of the data directory when ssh needs it. A file that differs is moved aside to `keys/NAME.replaced` or `serve.token.replaced`, and berth says so. berth 0.4 kept its key in `id_ed25519` of the data directory. berth takes that file into the store once as the key `berth`. The file stays where it is.
 
 On a machine whose plugin directory lacks plugins of the store, berth writes them back and runs `npm ci` or `npm install` there. That happens when `berth serve` starts, and before the terminal UI or a command that uses plugins. A plugin installed from a folder or file of another machine is left out, and berth names it. Without npm, berth says so and goes on without the plugins npm installs.
 

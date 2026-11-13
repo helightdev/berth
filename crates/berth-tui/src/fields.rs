@@ -5,6 +5,9 @@ pub const DISK_MODES: &[&str] = &[
     "auto", "serial", "model", "path", "largest", "smallest", "ssd", "hdd",
 ];
 pub const DISK_TYPES: &[&str] = &["any", "ssd", "hdd"];
+/// The ways to log in that are not a key of the ring; `key:NAME` is offered
+/// for each of those.
+pub const LOGINS: &[&str] = &["berth", "password", "ssh"];
 
 /// The pages of a host: its overview (`Manage`) and the tabs of the set-up
 /// flow. Each tab depends only on the ones before it.
@@ -142,7 +145,7 @@ impl Action {
                 "Look after a host that is already set up, over SSH: show its status and access links, publish the desktop on the tailnet, run the smoke test, install updates or reboot. Pick the task on the overview."
             }
             Action::Ssh => {
-                "Install on an existing Ubuntu host over SSH. Enter a hostname, IP address or SSH config alias. Credentials and sudo prompts use the normal terminal."
+                "Install on an existing Ubuntu host over SSH. Enter a hostname, IP address or SSH config alias, and how berth logs in: its own key by default. A host that does not take that key yet gets it with berth key trust HOST and a password used once. Sudo prompts use the normal terminal."
             }
         }
     }
@@ -234,8 +237,7 @@ pub enum Field {
     SshHost,
     SshUser,
     SshPort,
-    SshKey,
-    AskPass,
+    Login,
 }
 
 impl Field {
@@ -379,7 +381,7 @@ impl Field {
                 "This berth's SSH key",
                 "/berth_ssh_key",
                 Toggle,
-                "The operator also takes the SSH key of the berth that sets the host up. berth makes that key itself, an ed25519 one, and offers it when it connects, so it reaches the host without a key of yours. For a host set up from a berth server it is the server's key. c copies it, to add it at a cloud provider or on a host yourself.",
+                "The operator also takes the SSH key of the berth that sets the host up, the key berth of its key ring, so berth reaches the host without a key of yours. While that key is being replaced, the operator takes the new one too. For a host set up from a berth server it is the server's key. c copies it, to add it at a cloud provider or on a host yourself.",
             ),
             OperatorHash => (
                 "Operator password hash",
@@ -521,45 +523,39 @@ impl Field {
             ),
             AskBecomePass => (
                 "Ask for sudo password",
-                "/builder/ask_become_pass",
+                "/access/sudo",
                 Toggle,
-                "Ask for your sudo password on the target. Until it is switched, it follows the operator: on when the operator has no passwordless sudo, off when it has.",
+                "Ask for the SSH user's sudo password on the host. Until it is switched, it follows the operator: on when the operator has no passwordless sudo, off when it has. The password is asked for when it is needed and kept until berth is closed, or kept as the secret sudo/HOST if you store it there.",
             ),
             SshHost => (
-                "SSH host",
-                "/builder/ssh_host",
+                "SSH address",
+                "/access/address",
                 Text,
-                "Remote hostname, IP or Host alias from ~/.ssh/config. OpenSSH uses your existing config and agent.",
+                "The host's name or IP address, or a Host alias from ~/.ssh/config.",
             ),
             SshUser => (
                 "SSH user",
-                "/builder/ssh_user",
+                "/access/user",
                 Text,
-                "Remote login user. Leave blank to use your SSH configuration.",
+                "The account berth logs in as. Leave blank to use your SSH configuration.",
             ),
             SshPort => (
                 "SSH port",
-                "/builder/ssh_port",
+                "/access/port",
                 Text,
                 "SSH port. Leave blank for the SSH configuration default.",
             ),
-            SshKey => (
-                "SSH private key",
-                "/builder/ssh_key",
-                Path,
-                "Optional private key path. Leave blank to use ssh-agent or SSH configuration.",
+            Login => (
+                "Log in with",
+                "/access/auth",
+                Choice(LOGINS),
+                "How berth logs in. berth: the installation's own key, which hosts it sets up take. key:NAME: another key of berth's key ring (the Settings tab of the home screen lists them). password: a password, kept as the secret ssh/HOST or asked for. ssh: your own SSH configuration and agent, with berth's key offered after them. A host that does not take its key yet gets it with: berth key trust HOST.",
             ),
             UsbDevice => (
                 "Then write to USB drive",
                 "/builder/usb_device",
                 Text,
                 "Enter switches between not writing and each connected USB drive. The chosen drive is erased and gets the finished ISO; that asks for confirmation and your sudo password. You can also press w after the build instead.",
-            ),
-            AskPass => (
-                "Ask for SSH password",
-                "/builder/ask_pass",
-                Toggle,
-                "Prompt for an SSH login password. Encrypted keys can use ssh-agent instead.",
             ),
         };
         Spec {
@@ -587,7 +583,7 @@ impl Field {
             TailscaleKey | TailscaleAuto | TailscaleLoginServer => Group::Under(Tailscale),
             ReleaseUrl | ReleasePrivate => Group::Under(ReleaseStore),
             IsoSha | UsbDevice => Group::Under(Iso),
-            SshUser | SshPort | SshKey | AskPass => Group::Under(SshHost),
+            SshUser | SshPort | Login => Group::Under(SshHost),
             _ => return None,
         })
     }

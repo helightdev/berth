@@ -472,13 +472,6 @@ impl App {
                         setup.machine.found(found);
                     }
                 }
-                Arrived::Session(session) => {
-                    if self.screen == Screen::Host
-                        && let Ok(session) = serde_json::from_value(session)
-                    {
-                        self.host.open(&session);
-                    }
-                }
             }
         }
         if let Some(setup) = &mut self.setup {
@@ -644,28 +637,15 @@ impl App {
         self.screen = Screen::Host;
     }
 
+    /// Run an action of the host. The server runs it as the host's action,
+    /// with its own secrets for one that sends them.
     fn launch(&mut self, index: usize, values: BTreeMap<String, String>) {
-        let Some(task) = self.host.tasks.get(index).cloned() else {
+        let Some(action) = self.host.actions().get(index).cloned() else {
             return;
         };
-        // Secrets are kept by the server, and travel from there.
-        if task.input.as_deref() == Some("secrets") {
-            if let (true, Some(admin)) = (self.is_admin(), &self.admin) {
-                self.status = format!("Starting {}…", host::task_label(&task));
-                admin.send_secrets(&self.name);
-                return;
-            }
-            self.status = format!(
-                "{} sends secrets, which this page does not hold: berth run {} {}",
-                host::task_label(&task),
-                self.name,
-                task.name
-            );
-            return;
-        }
-        let body = self.host.task_body(&task, &values);
-        self.status = format!("Starting {}…", host::task_label(&task));
-        self.host.run(&task.name, body);
+        let body = self.host.task_body(&action, &values);
+        self.status = format!("Starting {}…", action.title());
+        self.host.run(&action.name, body);
     }
 
     fn choose(&mut self, entry: Entry) {
@@ -779,7 +759,7 @@ impl App {
             };
             match key.code {
                 Code::Char('y' | 'Y') => match self.host.question.take() {
-                    Some((_, Pending::Task(index))) => {
+                    Some((_, Pending::Action(index))) => {
                         if let Some((index, values)) = self.host.begin_task(index, true) {
                             self.launch(index, values);
                         }

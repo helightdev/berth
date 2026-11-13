@@ -119,7 +119,8 @@ def account_keys(config, account):
     keys = [key.strip() for key in listed]
     keys += [key.strip() for key in text(config, f'{account}_ssh_public_key').splitlines()]
     if account == 'operator' and flag(config, 'berth_ssh_key', True):
-        keys.append(os.environ.get('BERTH_SSH_PUBLIC_KEY', '').strip())
+        # One key to a line: berth's own, and the one replacing it while it rotates.
+        keys += [key.strip() for key in os.environ.get('BERTH_SSH_PUBLIC_KEY', '').splitlines()]
     unique = []
     for key in keys:
         if key and key not in unique:

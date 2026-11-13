@@ -1,10 +1,9 @@
 //! A host as its profile describes it: where it is and how it is reached.
 
-use crate::{
-    Result, discovery::expand_path, link::LinkSpec, paths::Paths, profiles::Place, server::Server,
-};
-use serde_json::{Value, json};
-use std::{path::PathBuf, process::Command};
+use crate::{Result, link::LinkSpec, paths::Paths, profiles::Place, server::Server};
+use berth_api::profile::Access;
+use serde_json::Value;
+use std::process::Command;
 
 pub struct Host {
     /// The name it is saved under, or the path of its file.
@@ -12,8 +11,6 @@ pub struct Host {
     /// Where its profile is.
     pub place: Place,
     pub config: Value,
-    /// This berth's own SSH key, offered to the host besides the user's.
-    pub key: Option<PathBuf>,
 }
 
 impl Host {
@@ -31,7 +28,6 @@ impl Host {
             name: place.argument(),
             place,
             config,
-            key: paths.own_key().ok(),
         })
     }
 
@@ -46,21 +42,19 @@ impl Host {
                     place: Place::stored(&scope, &name).ok()?,
                     name,
                     config,
-                    key: paths.own_key().ok(),
                 })
             })
-            .filter(|host| {
-                !host.builder("ssh_host").is_empty() || host.config["builder"]["link"].is_array()
-            })
+            .filter(|host| host.access().reachable())
             .collect()
     }
 
-    fn builder(&self, key: &str) -> &str {
-        self.config["builder"][key].as_str().unwrap_or("")
+    /// Where the host is and how berth logs in to it.
+    pub fn access(&self) -> Access {
+        Access::of(&self.config)
     }
 
-    pub fn address(&self) -> &str {
-        self.builder("ssh_host")
+    pub fn address(&self) -> String {
+        self.access().address
     }
 
     /// The SSH user sudo asks for a password.
@@ -88,11 +82,15 @@ impl Host {
         }
     }
 
-    /// The SSH user's sudo password, for a host that asks for one: from
-    /// `BERTH_SUDO_PASSWORD`, or asked for on a terminal. The UI has its own dialog.
-    pub fn sudo_password(&self) -> Result<Option<String>> {
+    /// The SSH user's sudo password, for a host that asks for one: the
+    /// secret `sudo/HOST` when it is kept, `BERTH_SUDO_PASSWORD`, or asked
+    /// for on a terminal. The UI has its own dialog.
+    pub fn sudo_password(&self, paths: &Paths) -> Result<Option<String>> {
         if !self.asks_password() {
             return Ok(None);
+        }
+        if let Some(kept) = self.kept_sudo_password(paths) {
+            return Ok(Some(kept));
         }
         if let Ok(password) = std::env::var("BERTH_SUDO_PASSWORD") {
             return Ok(Some(password));
@@ -105,68 +103,33 @@ impl Host {
         crate::registry::read_secret(&format!("Your sudo password on {}", self.name)).map(Some)
     }
 
-    /// The host as an Ansible inventory.
-    pub fn inventory(&self) -> Result<Value> {
-        // A server's host is reached with a key on the server.
-        let served = self.config["builder"]["served"].is_string();
-        let mut inventory = inventory(
-            self.builder("ssh_host"),
-            self.builder("ssh_user"),
-            self.builder("ssh_port"),
-            match served {
-                true => "",
-                false => self.builder("ssh_key"),
-            },
-        )?;
-        let own = self.own_identity();
-        if !served && !own.is_empty() {
-            inventory["all"]["hosts"]["devbox_target"]["ansible_ssh_extra_args"] =
-                json!(own.join(" "));
+    /// The sudo password kept as the secret `sudo/HOST`, for a host whose
+    /// user chose to keep it.
+    pub fn kept_sudo_password(&self, paths: &Paths) -> Option<String> {
+        if self.served(paths).is_some() {
+            return None;
         }
-        Ok(inventory)
+        let store = crate::store::shared(paths).ok()?;
+        crate::registry::Store::own(store)
+            .secret(&crate::keys::sudo_secret(&self.place))
+            .ok()
+            .flatten()
     }
 
-    /// The ssh options that offer this berth's own key, when the profile
-    /// names no key. Naming an identity makes ssh leave out the ones it tries
-    /// by default, so those that exist are named with it.
-    fn own_identity(&self) -> Vec<String> {
-        let Some(key) = self
-            .key
-            .as_ref()
-            .filter(|_| self.builder("ssh_key").is_empty())
-        else {
-            return vec![];
-        };
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        let usual = [
-            "id_rsa",
-            "id_ecdsa",
-            "id_ecdsa_sk",
-            "id_ed25519",
-            "id_ed25519_sk",
-        ]
-        .iter()
-        .filter_map(|name| Some(home.as_ref()?.join(".ssh").join(name)))
-        .filter(|path| path.is_file());
-        usual
-            .chain([key.clone()])
-            .filter_map(|path| path.to_str().map(str::to_owned))
-            // Each is one word of a command line.
-            .filter(|path| !path.contains(char::is_whitespace))
-            .flat_map(|path| ["-o".to_owned(), format!("IdentityFile={path}")])
-            .collect()
+    /// The host as an Ansible inventory.
+    pub fn inventory(&self, paths: &Paths) -> Result<Value> {
+        crate::keys::login_of(paths, self)?.inventory()
     }
 
     /// `user@host`, or the host alone.
     pub fn target(&self) -> String {
-        target(self.builder("ssh_host"), self.builder("ssh_user"))
+        let access = self.access();
+        target(&access.address, &access.user)
     }
 
-    /// `ssh` with this host's port and key.
-    pub fn ssh(&self) -> Command {
-        let mut command = ssh(self.builder("ssh_port"), self.builder("ssh_key"));
-        command.args(self.own_identity());
-        command
+    /// `ssh` with this host's options; the target and command come after.
+    pub fn ssh(&self, paths: &Paths) -> Result<Command> {
+        Ok(crate::keys::login_of(paths, self)?.ssh())
     }
 
     /// How to open a connection to the host's berthd. `password` is the SSH
@@ -175,33 +138,23 @@ impl Host {
         if let Some(server) = self.served(paths) {
             return Ok(LinkSpec {
                 via: Some((server, self.name.clone())),
+                name: self.name.clone(),
                 ..LinkSpec::default()
             });
         }
         // A profile can name the command itself, as for a container:
         // ["docker", "exec", "-i", "NAME", "berthd", "connect"].
-        if let Some(command) = self.config["builder"]["link"].as_array() {
-            let mut words = command
-                .iter()
-                .filter_map(|word| word.as_str().map(str::to_owned));
-            let program = words.next().ok_or("builder.link is empty")?;
+        if let Some(command) = self.access().link {
+            let mut words = command.into_iter();
+            let program = words.next().ok_or("access.link is empty")?;
             return Ok(LinkSpec {
                 program,
                 args: words.collect(),
-                first_line: None,
-                via: None,
+                name: self.name.clone(),
+                ..LinkSpec::default()
             });
         }
-        self.inventory()?;
-        let mut spec = link(
-            self.builder("ssh_host"),
-            self.builder("ssh_user"),
-            self.builder("ssh_port"),
-            self.builder("ssh_key"),
-            password,
-        );
-        spec.args.splice(0..0, self.own_identity());
-        Ok(spec)
+        crate::keys::login_of(paths, self)?.link(password)
     }
 }
 
@@ -212,109 +165,17 @@ pub fn target(host: &str, user: &str) -> String {
     }
 }
 
-pub fn ssh(port: &str, key: &str) -> Command {
-    let mut command = Command::new("ssh");
-    if !port.is_empty() {
-        command.args(["-p", port]);
-    }
-    if !key.is_empty() {
-        command.arg("-i").arg(expand_path(key));
-    }
-    command
-}
-
-/// The link to a host over SSH. Connections share one SSH connection, so only
-/// the first pays for the handshake.
-pub fn link(host: &str, user: &str, port: &str, key: &str, password: Option<&str>) -> LinkSpec {
-    let mut args: Vec<String> = vec![];
-    if !port.is_empty() {
-        args.extend(["-p".into(), port.into()]);
-    }
-    if !key.is_empty() {
-        args.extend(["-i".into(), expand_path(key).to_string_lossy().into_owned()]);
-    }
-    let control = crate::link::runtime_dir().join("ssh-%C");
-    for option in [
-        "BatchMode=yes".to_owned(),
-        "ConnectTimeout=10".to_owned(),
-        "ControlMaster=auto".to_owned(),
-        format!("ControlPath={}", control.display()),
-        "ControlPersist=60".to_owned(),
-    ] {
-        args.extend(["-o".into(), option]);
-    }
-    args.extend(["-T".into(), target(host, user)]);
-    // The line sent first is read by the shell, never by berthd, and handed to
-    // sudo only when sudo asks: applying the role lets the SSH user off the
-    // password, and the profile still says to ask for it.
-    args.push(match password {
-        Some(_) => PASSWORD_LINK.into(),
-        None => "sudo -n berthd connect".into(),
-    });
-    LinkSpec {
-        program: "ssh".into(),
-        args,
-        first_line: password.map(str::to_owned),
-        via: None,
-    }
-}
-
-const PASSWORD_LINK: &str = r#"sh -c 'IFS= read -r p; if sudo -n true 2>/dev/null; then exec sudo -n berthd connect; fi; { printf "%s\n" "$p"; exec cat; } | sudo -S -k -p "" berthd connect'"#;
-
-pub fn inventory(host: &str, user: &str, port: &str, key: &str) -> Result<Value> {
-    if host.is_empty()
-        || host.starts_with('-')
-        || host.chars().any(|ch| ch.is_whitespace() || ch.is_control())
-    {
-        return Err("Enter an SSH hostname, IP address or config alias".into());
-    }
-    let mut target = json!({"ansible_host": host, "ansible_connection": "ssh"});
-    if !user.is_empty() {
-        target["ansible_user"] = json!(user);
-    }
-    if !port.is_empty() {
-        let port = port
-            .parse::<u16>()
-            .ok()
-            .filter(|port| *port != 0)
-            .ok_or("SSH port must be between 1 and 65535")?;
-        target["ansible_port"] = json!(port);
-    }
-    if !key.is_empty() {
-        let key = expand_path(key);
-        if !key.is_file() {
-            return Err("SSH private key file does not exist".into());
-        }
-        target["ansible_ssh_private_key_file"] = json!(key);
-    }
-    Ok(json!({"all": {"hosts": {"devbox_target": target}}}))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_link_goes_through_sudo_and_shares_the_connection() {
-        let spec = link("box", "ops", "2222", "", None);
-        assert_eq!(spec.program, "ssh");
-        assert_eq!(spec.args.last().unwrap(), "sudo -n berthd connect");
-        assert!(spec.args.windows(2).any(|pair| pair == ["-p", "2222"]));
-        assert!(spec.args.contains(&"ops@box".to_owned()));
-        assert!(spec.args.iter().any(|arg| arg.starts_with("ControlPath=")));
-        let spec = link("box", "", "", "", Some("secret"));
-        assert_eq!(spec.first_line.as_deref(), Some("secret"));
-        assert!(spec.args.last().unwrap().contains("sudo -S -k"));
-        assert!(!spec.args.iter().any(|arg| arg.contains("secret")));
-    }
+    use serde_json::json;
 
     #[test]
     fn a_profile_can_name_its_own_link() {
         let host = Host {
             name: "c".into(),
             place: Place::File("/c.json".into()),
-            key: None,
-            config: json!({"builder": {"link": ["docker", "exec", "-i", "c", "berthd", "connect"]}}),
+            config: json!({"access": {"link": ["docker", "exec", "-i", "c", "berthd", "connect"]}}),
         };
         let paths = Paths {
             config_dir: "/nonexistent/config".into(),
@@ -322,7 +183,6 @@ mod tests {
         };
         let spec = host.link(&paths, None).unwrap();
         assert_eq!((spec.program.as_str(), spec.args.len()), ("docker", 5));
-        assert!(inventory("-oProxyCommand=x", "", "", "").is_err());
-        assert!(inventory("box", "", "0", "").is_err());
+        assert!(spec.env.is_empty());
     }
 }

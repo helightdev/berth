@@ -8,6 +8,7 @@ pub mod fields;
 pub mod host;
 pub mod machine;
 pub mod markdown;
+pub mod page;
 pub mod plugins;
 pub mod qr;
 pub mod screen;

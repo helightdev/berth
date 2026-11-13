@@ -66,8 +66,9 @@ HOSTS = {
         'e2e_client.ClientApply',
         'e2e_update.UpdateServed',
     ],
-    # A host that only ever takes berth's own key.
-    'dock': ['e2e_own_key'],
+    # The bare host first: the ways berth logs in, which leave it as they
+    # found it. Then a host that only ever takes berth's own key.
+    'dock': ['e2e_access', 'e2e_own_key'],
 }
 
 

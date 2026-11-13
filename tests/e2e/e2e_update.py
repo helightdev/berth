@@ -231,7 +231,7 @@ class UpdateServed(unittest.TestCase):
         self.assertIn(f'✓ {HOST} is up to date', rolled.stdout)
         self.assertRegex(rolled.stdout, rf'(?m)^{HOST}: up to date$')
         jobs = self.serve.call('GET', '/v1/jobs')
-        rollout = next(job for job in jobs if job['what'] == 'rollout')
+        rollout = next(job for job in jobs if job['action'] == 'rollout')
         self.assertEqual(rollout['report']['hosts'][0]['state'], 'done')
         self.assertTrue(rollout['report']['ok'])
         # What the server last heard from the host is kept a few seconds.

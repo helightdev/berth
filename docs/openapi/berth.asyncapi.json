@@ -330,10 +330,11 @@
           {
             "payload": {
               "job": {
+                "action": "apply",
                 "host": "server",
                 "id": "j1",
                 "started": "2026-11-12T10:00:00Z",
-                "what": "apply"
+                "subject": "host:server"
               },
               "source": "job"
             }

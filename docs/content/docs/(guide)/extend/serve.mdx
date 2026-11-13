@@ -16,17 +16,40 @@ It prints where it listens and how many hosts it knows. Only one runs per user. 
 
 | Operations | For |
 | --- | --- |
-| [`hosts.*`](/docs/api/serve/hosts) | The saved hosts and their profiles. A host can be added, changed, removed and applied as a job, and `hosts.rollout` applies the hosts that are behind one after another. Each host says whether it is behind. The server also renders its cloud-init seed and sends its secrets |
+| [`hosts.*`](/docs/api/serve/hosts) | The saved hosts and their profiles, and whether each is behind. `hosts.actions` lists what can be done to a host and `hosts.act` runs one of those [actions](#actions) |
+| [`actions.*`](/docs/api/serve/actions) | The actions of the installation itself, such as `rollout`, which applies the hosts that are behind one after another |
 | [`secrets.*`](/docs/api/serve/secrets), [`registries.*`](/docs/api/serve/registries), [`settings.*`](/docs/api/serve/settings) | What the server keeps beside the hosts. A secret's value goes in and never comes back out |
 | [`plugins.*`](/docs/api/serve/plugins) | The server's plugins. One is installed from its npm registry, from an `https://` address, or from a `.tgz` that is sent, and one of its own is removed. `plugins.check` asks the registries for newer versions and `plugins.update` installs them. `setup.catalogue` lists the new features straight away |
 | [`provisioners.*`](/docs/api/serve/provisioners), [`instances.*`](/docs/api/serve/instances) | The provisioners of the plugins, and the machine berth created for a host. A machine is created and deleted as a job, and started and stopped with `instances.power`. The role `admin` is needed ([Machine from a provisioner](/docs/deploy/provisioners)) |
-| Every [berthd operation](/docs/api/host) | With a host: `"host": "NAME"` on the portal, `/v1/hosts/NAME/…` over HTTP. Only the `secrets` task is refused; `hosts.secrets` sends the server's own |
-| [`jobs.*`](/docs/api/serve/jobs) | Jobs such as an apply or a roll-out, with their output. A roll-out's job has a report, host by host |
+| Every [berthd operation](/docs/api/host) | With a host: `"host": "NAME"` on the portal, `/v1/hosts/NAME/…` over HTTP. Only the `secrets` task is refused; the host's `secrets` action sends the server's own |
+| [`jobs.*`](/docs/api/serve/jobs) | Jobs, one for each run of an action that runs here or follows a task, with their output. Each says its subject and its action. A roll-out's job has a report, host by host |
 | [`inbox.*`](/docs/api/serve/inbox) | Messages the hosts published on their channels and kept, taken in while `berth serve` runs; each can be marked done |
 | [`kv.*`](/docs/api/serve/kv) | A key-value store with revisions, for user interfaces to keep state in |
 | [`events.follow`](/docs/api/serve/events) | One stream of channel messages, jobs and key-value changes, at `/v1/events` |
 
 All of it is also on the [portal](/docs/api/portal), the one WebSocket at `/v1/portal` for calls and streams together.
+
+## Actions
+
+What berth does to a host or to the installation is an *action*. `GET /v1/hosts/NAME/actions` lists a host's, and `GET /v1/actions` lists those of the installation. A form can be built from an action's description. It has the arguments with their defaults and choices, a question to confirm, the least role, and whether it can run now.
+
+| Action | Of | Runs | Answers |
+| --- | --- | --- | --- |
+| A task of the host, such as `status` | The host | On the host, as a session | `202` with the session and a job that copies its output. A task that needs a terminal answers `200` with the session alone, to attach to |
+| `apply` | The host | Here, as a job | `202` with the job |
+| `seed` | The host | Here, at once | `200` with the seed's `user_data` as the result |
+| `secrets` | The host | On the host, with the server's secrets | `202` with the session and its job |
+| `rollout` | The installation | Here, as a job | `202` with the job; its report says how each host went |
+
+To run one, POST to its name with its arguments:
+
+```bash
+curl --unix-socket "$XDG_RUNTIME_DIR/berth/serve.sock" -X POST \
+  -d '{"arguments": {"update": "yes"}, "token": "nightly-2026-11-13"}' \
+  http://berth/v1/actions/rollout
+```
+
+The token is optional. The same token again for the same subject and action answers with the job the first request started, and nothing runs a second time. That lets a caller that lost the answer ask again. While an action changes a host, a second one that changes it is refused with `409` until the first has ended, and so is a second roll-out. A job is followed with `jobs.get`, `jobs.output` and the `jobs.follow` stream, and the events stream says when it starts and ends.
 
 The inbox, jobs and key-value store are kept in berth's store for `retention_days` (90 by default), and are also readable without the server:
 
@@ -102,6 +125,8 @@ A caller over TCP shows the server's token or an OAuth 2.0 access token, and act
 | `operate` | Work on the hosts with tasks, commands, terminals and files. Units, power and the key-value store are included |
 | `admin` | Change profiles, secrets, registries, settings and plugins, apply a profile to a host, and create or delete the machine of a host |
 
+Each action has a role of its own, which is checked when it runs. A host's tasks need `operate`, berth's own actions `admin`.
+
 The server's token is `admin`. The socket doesn't ask for a token and is `admin` too. The [API reference](/docs/api/serve) lists the role of each operation, and [`access`](/docs/api/serve/general) tells a caller its own.
 
 ### Access tokens from an OAuth 2.0 issuer
@@ -150,7 +175,7 @@ berth config serve_setup off
 A caller over TCP is then `operate` at most, and the socket stays `admin`. Some things are refused from a caller of any role:
 
 - The settings that say who gets in and where the server's files are. `settings.set` takes only `default_host` and `retention_days`.
-- A profile's `builder.link`, which is a command the server runs.
+- A profile's `access.link`, which is a command the server runs, and `access.auth` `ssh`, the SSH configuration of the server's own account.
 - A path on the server as what `plugins.add` installs. It takes a package name or an `https://` address, and `plugins.upload` takes a `.tgz`.
 - Building a USB installer, which needs the drive.
 

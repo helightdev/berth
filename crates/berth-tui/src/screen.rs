@@ -3,7 +3,7 @@
 
 use crate::{
     event::{Click, Code, Event, Key, edit, paste},
-    host::{HostView, View, argument_label},
+    host::{Arguments, HostView, View, argument_label},
     theme,
 };
 use ratatui::{
@@ -486,12 +486,16 @@ pub fn draw_question(frame: &mut Frame, question: &str) {
     dialog(frame, " Are you sure? ", " y yes · n no ", lines);
 }
 
-/// The dialog that asks for the arguments of a task, one after another.
+/// The dialog that asks for the arguments of an action, one after another.
 pub fn draw_arguments(frame: &mut Frame, host: &HostView) {
-    let Some(asked) = &host.arguments else {
-        return;
-    };
-    let Some(task) = host.tasks.get(asked.task) else {
+    if let Some(asked) = &host.arguments {
+        draw_action_arguments(frame, &host.actions(), asked);
+    }
+}
+
+/// The dialog that asks for the arguments of one of a subject's actions.
+pub fn draw_action_arguments(frame: &mut Frame, actions: &[berth_api::Action], asked: &Arguments) {
+    let Some(task) = actions.get(asked.action) else {
         return;
     };
     let Some(argument) = task.arguments.get(asked.index) else {
@@ -510,7 +514,11 @@ pub fn draw_arguments(frame: &mut Frame, host: &HostView) {
         ));
     }
     lines.push(Line::raw(""));
-    let typed = ellipsize(asked.input.value(), 52);
+    // A secret is not shown as it is typed, only how much of it there is.
+    let typed = match argument.secret {
+        true => "•".repeat(asked.input.value().chars().count().min(52)),
+        false => ellipsize(asked.input.value(), 52),
+    };
     lines.push(Line::from(vec![
         Span::styled("› ", Style::new().fg(theme::ACCENT)),
         Span::raw(typed.clone()),
@@ -518,7 +526,7 @@ pub fn draw_arguments(frame: &mut Frame, host: &HostView) {
     let title = ellipsize(
         &format!(
             " {} · {} of {} ",
-            task.label,
+            task.title(),
             asked.index + 1,
             task.arguments.len()
         ),
@@ -686,13 +694,23 @@ pub fn arguments_event(
     platform: &mut dyn Platform,
     said: &mut Option<String>,
 ) -> bool {
-    let Some(asked) = &mut host.arguments else {
+    action_arguments_event(&mut host.arguments, event, platform, said)
+}
+
+/// Keys of the dialog that asks for the arguments of any subject's action.
+pub fn action_arguments_event(
+    dialog: &mut Option<Arguments>,
+    event: &Event,
+    platform: &mut dyn Platform,
+    said: &mut Option<String>,
+) -> bool {
+    let Some(asked) = dialog else {
         return false;
     };
     match event {
         Event::Key(key) if is_copy_field(key) => *said = Some(copy_field(platform, &asked.input)),
         Event::Key(key) => match key.code {
-            Code::Esc => host.arguments = None,
+            Code::Esc => *dialog = None,
             Code::Enter => return true,
             Code::Up | Code::Down if !asked.choices.is_empty() => {
                 let count = asked.choices.len().min(8);

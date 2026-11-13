@@ -138,10 +138,14 @@ impl Place {
                 Ok(store::shared(paths)?.read_json(kind::PROFILE, scope, name)?)
             }
             Place::File(path) => match fs::read(path) {
-                Ok(data) => Ok(Some(
-                    serde_json::from_slice(&data)
-                        .map_err(|error| format!("{}: {error}", path.display()))?,
-                )),
+                Ok(data) => {
+                    let mut profile: Value = serde_json::from_slice(&data)
+                        .map_err(|error| format!("{}: {error}", path.display()))?;
+                    // A profile of berth 0.4 is read in the access layout; the
+                    // file keeps the old one until the user saves.
+                    crate::import::convert_profile(paths, &self.title(), &mut profile);
+                    Ok(Some(profile))
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
                 Err(error) => Err(format!("{}: {error}", path.display()).into()),
             },
@@ -184,14 +188,22 @@ pub fn list(paths: &Paths, scope: &str) -> Result<Vec<(String, Value)>> {
         .collect())
 }
 
-/// Forget a host: its profile, its generated passwords and the record of its
-/// machine, in one change. A profile in a file is removed with the file.
+/// Forget a host: its profile, its generated passwords, the record of its
+/// machine, what berth knows of its SSH and the passwords it keeps for
+/// logging in, in one change. A profile in a file is removed with the file.
 pub fn remove(paths: &Paths, place: &Place) -> Result<()> {
     let (scope, name) = place.side();
+    let password = crate::keys::password_secret(place);
+    let sudo = crate::keys::sudo_secret(place);
     let mut removals = vec![
         (kind::CREDENTIALS, scope.as_str(), name.as_str()),
         (kind::INSTANCE, scope.as_str(), name.as_str()),
+        (kind::ACCESS, scope.as_str(), name.as_str()),
     ];
+    if scope == OWN || matches!(place, Place::File(_)) {
+        removals.push((kind::SECRET, OWN, password.as_str()));
+        removals.push((kind::SECRET, OWN, sudo.as_str()));
+    }
     if let Place::Stored { .. } = place {
         removals.push((kind::PROFILE, scope.as_str(), name.as_str()));
     }
@@ -205,6 +217,7 @@ pub fn remove(paths: &Paths, place: &Place) -> Result<()> {
         }
     }
     let _ = fs::remove_file(place.lock_file(paths));
+    let _ = fs::remove_file(crate::keys::known::file(paths, place));
     Ok(())
 }
 
@@ -266,10 +279,10 @@ mod tests {
         ] {
             assert_eq!(place.load(&paths).unwrap(), None);
             place
-                .save(&paths, &json!({"builder": {"ssh_host": address}}))
+                .save(&paths, &json!({"access": {"address": address}}))
                 .unwrap();
             let loaded = place.load(&paths).unwrap().unwrap();
-            assert_eq!(loaded["builder"]["ssh_host"], address);
+            assert_eq!(loaded["access"]["address"], address);
         }
         // Each scope lists its own; a file is no saved host.
         let names = |scope: &str| -> Vec<String> {

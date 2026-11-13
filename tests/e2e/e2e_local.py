@@ -9,25 +9,35 @@ from harness import HOST, OPERATOR, Workstation, needs_e2e, profile, provisioned
 @needs_e2e
 class Key(unittest.TestCase):
     def test_berth_makes_its_own_key_once(self):
-        station = Workstation('keys', ssh_key=False)
+        station = Workstation('keys', ssh_key=False, trust=False)
         self.assertFalse(station.own_key.exists())
-        first = station.berth('key').stdout.strip()
+        first = station.own_public()
         self.assertRegex(first, r'^ssh-ed25519 \S+ berth@\S+$')
-        self.assertEqual(station.berth('key').stdout.strip(), first)
+        self.assertEqual(station.own_public(), first)
+        listed = station.berth('key').stdout
+        self.assertRegex(listed, r'(?m)^berth\tSHA256:\S+\tssh-ed25519 ')
+        self.assertIn(first, listed)
+        # The key lives in the store; it is a file only once ssh needs one.
+        self.assertFalse(station.own_key.exists())
+        station.write_profile(profile(hostname='attic', access={'address': '192.0.2.61'}), name='attic')
+        inventory = json.loads(station.berth('inventory', 'attic').stdout)['all']['hosts']['attic']
+        self.assertIn(f'IdentityFile={station.own_key}', inventory['ansible_ssh_common_args'])
         self.assertEqual(station.own_key.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(station.own_key.with_suffix('.pub').read_text().strip(), first)
         # The store keeps both halves, so a lost file comes back as it was.
         station.own_key.with_suffix('.pub').unlink()
-        self.assertEqual(station.berth('key').stdout.strip(), first)
-        self.assertTrue(station.own_key.with_suffix('.pub').exists())
+        station.berth('inventory', 'attic')
+        self.assertEqual(station.own_key.with_suffix('.pub').read_text().strip(), first)
+        self.assertEqual(station.own_public(), first)
 
 
 @needs_e2e
 class Seed(unittest.TestCase):
     def test_the_cloud_seed_carries_the_operators_keys(self):
         station = Workstation('seeds')
-        own = station.berth('key').stdout.strip()
+        own = station.own_public()
         station.write_profile(profile(
-            hostname='cloud-1', operator_ssh_public_keys=[station.public], builder={},
+            hostname='cloud-1', operator_ssh_public_keys=[station.public], access={},
             # What F5 or mkpasswd would store; nobody logs in with it.
             operator_password_hash='$6$e2e$' + 'x' * 86,
             release_url='https://192.0.2.30/berth-release.tar.gz'), name='cloud-1')
@@ -48,7 +58,7 @@ class Profiles(unittest.TestCase):
 
     def test_a_profile_goes_out_and_in_and_is_removed_with_what_is_kept_of_it(self):
         station = Workstation('profiles', ssh_key=False, trust=False)
-        kept = profile(hostname='yard', builder={'ssh_host': '192.0.2.50', 'ssh_user': OPERATOR})
+        kept = profile(hostname='yard', access={'address': '192.0.2.50', 'user': OPERATOR})
         station.write_profile(kept, name='yard')
         self.assertEqual(station.read_profile('yard'), kept)
         self.assertRegex(station.berth('list').stdout, r'(?m)^yard\s+192\.0\.2\.50$')
@@ -70,7 +80,9 @@ class Profiles(unittest.TestCase):
         station = Workstation('older-hosts', ssh_key=False, trust=False)
         hosts = station.berth_dir / 'hosts'
         hosts.mkdir(parents=True, mode=0o700)
-        old = profile(hostname='attic', builder={'ssh_host': '192.0.2.60'})
+        # A profile of berth 0.4, which kept how it is reached under builder.
+        old = profile(hostname='attic', builder={'ssh_host': '192.0.2.60', 'shipped_plugins': True})
+        old.pop('access')
         (hosts / 'attic.json').write_text(json.dumps(old))
         (hosts / 'attic.credentials.json').write_text(json.dumps({OPERATOR: 'made-up-password'}))
         (hosts / 'attic.instance.lock').write_text('')
@@ -83,7 +95,9 @@ class Profiles(unittest.TestCase):
         self.assertFalse(hosts.exists())
         self.assertTrue((station.berth_dir / 'migrated/hosts/attic.json').is_file())
         self.assertFalse((station.data / 'berth/served').exists())
-        self.assertEqual(station.read_profile('attic'), old)
+        # It is kept in the layout of now; without a key file it logs in as it did.
+        self.assertEqual(station.read_profile('attic'), {
+            **old, 'builder': {'shipped_plugins': True}, 'access': {'address': '192.0.2.60', 'auth': 'ssh'}})
         shown = station.berth('credentials', 'attic', '--show').stdout
         self.assertEqual(shown, f'{OPERATOR} made-up-password\n')
         # Once is enough.
@@ -129,7 +143,8 @@ class Listings(unittest.TestCase):
         inventory = json.loads(self.station.berth('inventory', HOST).stdout)
         target = inventory['all']['hosts'][HOST]
         self.assertEqual((target['ansible_host'], target['ansible_user']), (HOST, OPERATOR))
-        self.assertIn('IdentityFile=', target['ansible_ssh_extra_args'])
+        self.assertIn(f'IdentityFile={self.station.own_key}', target['ansible_ssh_common_args'])
+        self.assertIn('HostKeyAlias=', target['ansible_ssh_common_args'])
 
     def test_the_settings_say_where_things_are(self):
         shown = self.station.berth('config').stdout

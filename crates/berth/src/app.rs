@@ -100,10 +100,12 @@ pub struct App {
     pub as_agent: bool,
     /// Plugins found in the source and in the user's plugin directory.
     pub plugins: Vec<Plugin>,
-    /// This berth's own SSH key: the private half's path, and the public half
-    /// that hosts take. For a server's host the public half is the server's.
-    pub own_key: Option<PathBuf>,
+    /// The public half of this berth's own SSH key, which hosts take. For a
+    /// server's host it is the server's.
     pub own_public: String,
+    /// The names of the keys of the key ring that logs in to this host: this
+    /// berth's, or the server's for a server's host.
+    pub ring_keys: Vec<String>,
     /// What those plugins can install, for the Features page.
     catalogue: Vec<setup::Feature>,
     /// The registries and secrets the host can be given: of this berth, or
@@ -261,8 +263,8 @@ impl App {
             tailnet_hosts: vec![],
             wifi_networks: vec![],
             plugins: vec![],
-            own_key: None,
             own_public: String::new(),
+            ring_keys: vec![],
             catalogue: vec![],
             access: Err("berth's store is not open, so there are no secrets or registries".into()),
             registry_names: vec![],
@@ -431,7 +433,7 @@ impl App {
         set_pointer(&mut self.config, field.spec().pointer, value);
         // Another address is another host to ask.
         use Field::*;
-        if matches!(field, SshHost | SshUser | SshPort | SshKey | AskBecomePass) {
+        if matches!(field, SshHost | SshUser | SshPort | Login | AskBecomePass) {
             self.reconnect_host();
         }
     }
@@ -454,7 +456,7 @@ impl App {
         if self.unsaved() {
             return Some((false, profile));
         }
-        let moved = profile["builder"]["ssh_host"] != self.config["builder"]["ssh_host"];
+        let moved = profile["access"] != self.config["access"];
         self.config = profile.clone();
         self.saved = profile;
         if moved {
@@ -485,9 +487,10 @@ impl App {
         }
         let mut changed = false;
         for pointer in [
-            "/builder/ssh_host",
-            "/builder/ssh_port",
-            "/builder/ssh_user",
+            "/access/address",
+            "/access/port",
+            "/access/user",
+            "/access/auth",
             "/profile",
         ] {
             let kept = profile.pointer(pointer).cloned().unwrap_or(Value::Null);
@@ -949,16 +952,9 @@ impl App {
             }
         }
         let value = self.editing.as_ref().map_or("", |input| input.value());
-        let wants_key = matches!(entry, Some(Entry::Field(Field::SshKey)));
-        let start = if !value.is_empty() {
-            value.to_owned()
-        } else if wants_key && let Some(home) = std::env::var_os("HOME") {
-            PathBuf::from(home)
-                .join(".ssh")
-                .to_string_lossy()
-                .into_owned()
-        } else {
-            ".".into()
+        let start = match value.is_empty() {
+            false => value.to_owned(),
+            true => ".".into(),
         };
         match Picker::new(&start) {
             Ok(picker) => self.picker = Some(picker),
@@ -1081,6 +1077,11 @@ impl App {
                 self.machine.argument_choices(index)
             }
             Some(Entry::Field(field)) => match (field, field.spec().kind) {
+                (Field::Login, _) => self
+                    .login_choices()
+                    .into_iter()
+                    .map(|choice| (choice.clone(), choice))
+                    .collect(),
                 (_, Kind::Choice(values)) => own(values),
                 (Field::SshHost, _) => self
                     .tailnet_hosts
@@ -1093,7 +1094,6 @@ impl App {
                     .iter()
                     .map(|(ssid, _)| (ssid.clone(), ssid.clone()))
                     .collect(),
-                (Field::SshKey, _) => self.private_keys.clone(),
                 _ => vec![],
             },
             _ => vec![],
@@ -1219,6 +1219,13 @@ impl App {
             self.set(field, json!(device));
             return;
         }
+        if field == Field::Login {
+            let choices = self.login_choices();
+            let current = choices.iter().position(|choice| choice == self.text(field));
+            let next = current.map_or(0, |index| (index + 1) % choices.len());
+            self.set(field, json!(choices[next]));
+            return;
+        }
         match field.spec().kind {
             Kind::Toggle => self.set_toggle(field, !self.enabled(field)),
             Kind::Choice(choices) => {
@@ -1239,7 +1246,12 @@ impl App {
         } else {
             value.trim()
         };
-        if let Kind::Choice(choices) = spec.kind
+        if field == Field::Login {
+            if !self.login_choices().iter().any(|choice| choice == value) {
+                self.status = format!("Choose one of: {}", self.login_choices().join(", "));
+                return;
+            }
+        } else if let Kind::Choice(choices) = spec.kind
             && !choices.contains(&value)
         {
             self.status = format!("Choose one of: {}", choices.join(", "));
@@ -1379,7 +1391,6 @@ impl App {
             let field = match name {
                 "user" => Field::SshUser,
                 "port" => Field::SshPort,
-                "identityfile" if expand_path(value).is_file() => Field::SshKey,
                 _ => continue,
             };
             if self.text(field).is_empty() {
@@ -1454,8 +1465,8 @@ impl App {
         use setup::Problem;
         let action = self.action;
         if action == Action::Manage {
-            return self
-                .remote_inventory()
+            let access = self.host_profile().access();
+            return berth_core::keys::check(&access.address, &access.port)
                 .err()
                 .map(|error| Problem::new(Step::Manage, error.to_string()))
                 .into_iter()
@@ -1500,7 +1511,8 @@ impl App {
                 );
             }
             Action::Ssh => {
-                if let Err(error) = self.remote_inventory() {
+                let access = self.host_profile().access();
+                if let Err(error) = berth_core::keys::check(&access.address, &access.port) {
                     problems.push(Problem::new(Step::Install, error.to_string()));
                 }
             }
@@ -1509,8 +1521,25 @@ impl App {
         problems
     }
 
-    fn remote_inventory(&self) -> Result<Value> {
-        self.host_profile().inventory()
+    /// The ways this host can be logged in to, with the keys of the ring.
+    pub fn login_choices(&self) -> Vec<String> {
+        setup::login_choices(
+            &self.ring_keys,
+            self.config["access"]["auth"].as_str().unwrap_or(""),
+            self.served().is_some(),
+        )
+    }
+
+    /// The public keys a host set up from here takes for berth: this
+    /// berth's, with the one replacing it while it rotates, or the server's.
+    fn own_keys(&self) -> Vec<String> {
+        match self.served() {
+            Some(_) => vec![self.own_public.clone()]
+                .into_iter()
+                .filter(|key| !key.is_empty())
+                .collect(),
+            None => berth_core::keys::operator_keys(&self.paths),
+        }
     }
 
     /// This host as its profile describes it, for reaching and applying it.
@@ -1519,7 +1548,6 @@ impl App {
             name: self.place.title(),
             place: self.place.clone(),
             config: self.config.clone(),
-            key: self.own_key.clone(),
         }
     }
 
@@ -1527,8 +1555,7 @@ impl App {
     /// password gets the dialog first, once.
     pub fn connect_host(&mut self) {
         let host = self.host_profile();
-        let own_link =
-            host.config["builder"]["link"].is_array() || host.served(&self.paths).is_some();
+        let own_link = host.access().link.is_some() || host.served(&self.paths).is_some();
         if host.asks_password() && !own_link && self.host.password.is_none() {
             self.host.state = State::Password;
             if !std::mem::replace(&mut self.password_asked, true) {
@@ -1621,24 +1648,17 @@ impl App {
     }
 
     fn launch_task(&mut self, index: usize, values: std::collections::BTreeMap<String, String>) {
-        let Some(task) = self.host.tasks.get(index).cloned() else {
+        let Some(action) = self.host.actions().get(index).cloned() else {
             return;
         };
-        let mut body = self.host.task_body(&task, &values);
-        // A server sends its own secrets, as a session of the host like any other.
-        if task.input.as_deref() == Some("secrets")
-            && let Some(server) = self.server()
-        {
-            let _ = self.save();
-            let sent = server.call("hosts.secrets", json!({"name": self.name()}), None);
-            self.status = match sent {
-                Ok(_) => "The berth server is sending the secrets. The session is below.".into(),
-                Err(error) => error.to_string(),
-            };
-            return;
-        }
-        // Secrets are built here and travel on the task's standard input.
-        if task.input.as_deref() == Some("secrets") {
+        let mut body = self.host.task_body(&action, &values);
+        // Secrets are built here and travel on the task's standard input. A
+        // server's host is given the server's own, which its action sends.
+        let secrets = self
+            .host
+            .task(&action)
+            .and_then(|task| task.input.as_deref());
+        if secrets == Some("secrets") && self.served().is_none() {
             let payload = self
                 .access()
                 .and_then(|store| store.host_payload(&self.config));
@@ -1653,8 +1673,8 @@ impl App {
             }
         }
         let _ = self.save();
-        self.status = format!("Starting {}…", berth_tui::host::task_label(&task));
-        self.host.run(&task.name, body);
+        self.status = format!("Starting {}…", action.title());
+        self.host.run(&action.name, body);
     }
 
     /// A shell on the host as one of its sessions: the agent's, or the SSH user's.
@@ -1798,11 +1818,8 @@ impl App {
             }
             Action::Apply => {
                 command = apply::playbook(&std::env::current_dir()?);
-                let mut vars = apply::ansible_vars(
-                    &self.config,
-                    &self.plugin_dirs(),
-                    Some(self.own_public.as_str()),
-                );
+                let mut vars =
+                    apply::ansible_vars(&self.config, &self.plugin_dirs(), &self.own_keys());
                 apply::add_tailnet(&mut vars, &self.paths, &self.config, &self.place)?;
                 serde_json::to_writer(&mut extra, &vars)?;
                 extra.flush()?;
@@ -1846,7 +1863,7 @@ impl App {
         command.env("DEVBOX_BUILD_DIR", &self.build_dir);
         // The release archive packs the user's plugins next to the source's.
         command.env("BERTH_PLUGINS", self.plugin_dirs().to_string());
-        command.env("BERTH_SSH_PUBLIC_KEY", &self.own_public);
+        command.env("BERTH_SSH_PUBLIC_KEY", self.own_keys().join("\n"));
         let mut files = vec![extra, inventory];
         files.extend(seeded);
         Ok((command, files))
@@ -1914,18 +1931,48 @@ impl App {
         if self.action == Action::Save {
             return Ok(());
         }
-        let (mut command, _files) = self.command()?;
+        let (command, files) = self.command()?;
+        self.run_command(command, files)?;
+        println!("{}", self.next_hint());
+        Ok(())
+    }
+
+    /// Run the action's command in the normal terminal. Applying a host of
+    /// this machine holds the host's lock, as berth apply does, so that
+    /// nothing else changes the host meanwhile.
+    pub fn run_command(
+        &self,
+        mut command: Command,
+        files: Vec<tempfile::NamedTempFile>,
+    ) -> Result<()> {
+        let failed = |code: String| format!("{} failed ({code})", self.action.label());
+        if self.action == Action::Ssh && self.served().is_none() {
+            use berth_core::runner;
+            let subject = runner::Subject::Host(self.place.argument());
+            let request = runner::Request::new(subject, "apply");
+            let work = runner::Work::Program(Box::new(runner::Program {
+                command,
+                input: None,
+                files,
+            }));
+            let code = runner::here(&self.paths, request, work, &mut std::io::stdout())?;
+            return match code {
+                Some(0) => Ok(()),
+                Some(code) => Err(failed(format!("exit status: {code}")).into()),
+                None => Err(failed("ended by a signal".into()).into()),
+            };
+        }
+        let _files = files;
         let status = command.status().map_err(|error| {
             format!(
                 "Could not start {}: {error}",
                 command.get_program().to_string_lossy()
             )
         })?;
-        if !status.success() {
-            return Err(format!("{} failed ({status})", self.action.label()).into());
+        match status.success() {
+            true => Ok(()),
+            false => Err(failed(status.to_string()).into()),
         }
-        println!("{}", self.next_hint());
-        Ok(())
     }
 
     /// Run the chosen action inside the UI. Writing a USB drive first asks for
@@ -2009,9 +2056,9 @@ impl App {
         }
     }
 
-    /// `ssh` with this host's port and key.
-    fn ssh(&self) -> Command {
-        self.host_profile().ssh()
+    /// `ssh` with this host's options.
+    fn ssh(&self) -> Result<Command> {
+        self.host_profile().ssh(&self.paths)
     }
 
     fn ssh_target(&self) -> String {
@@ -2023,7 +2070,7 @@ impl App {
         if self.text(Field::SshHost).is_empty() {
             return Err("SSH host is required".into());
         }
-        let mut command = self.ssh();
+        let mut command = self.ssh()?;
         command.arg(self.ssh_target()).args(remote);
         Ok(command)
     }
@@ -2318,7 +2365,21 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
     // The coding agents, T3 Code and GitHub's CLI were switches once and are
     // features of plugins that come with berth now. They go first: later
     // plugins, such as Unity's, set themselves up for the agents they find.
-    if config["builder"]["shipped_plugins"] != true {
+    // Only a profile of that layout is converted: one with the old switches,
+    // or one with no list of features at all, which had every switch on. A
+    // profile that lists its features is left as it is, marked or not.
+    const OLD_AGENT_SWITCHES: [&str; 5] = [
+        "devbox_install_agents",
+        "devbox_agent_claude",
+        "devbox_agent_codex",
+        "devbox_agent_pi",
+        "devbox_install_t3",
+    ];
+    let old_layout = OLD_AGENT_SWITCHES
+        .iter()
+        .any(|key| !config["ansible_vars"][*key].is_null())
+        || config["ansible_vars"]["devbox_plugin_features"].is_null();
+    if config["builder"]["shipped_plugins"] != true && old_layout {
         let vars = &config["ansible_vars"];
         let on = |key: &str, default: bool| vars[key].as_bool().unwrap_or(default);
         let agents = on("devbox_install_agents", true);
@@ -2346,13 +2407,7 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
             config["ansible_vars"] = json!({});
         }
         let vars = config["ansible_vars"].as_object_mut().unwrap();
-        for old in [
-            "devbox_install_agents",
-            "devbox_agent_claude",
-            "devbox_agent_codex",
-            "devbox_agent_pi",
-            "devbox_install_t3",
-        ] {
+        for old in OLD_AGENT_SWITCHES {
             vars.remove(old);
         }
         vars.insert("devbox_plugin_features".into(), json!(features));
@@ -2372,20 +2427,9 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
     if let Some(builder) = config["builder"].as_object_mut() {
         builder.remove("usb_device");
     }
-    // Prompt switches were once stored as the strings "true" and "false".
-    // Asking for the sudo password stays unset until it is chosen, so that it
-    // follows the operator's sudo as `Host` reads it.
-    for key in ["ask_become_pass", "ask_pass"] {
-        let value = &config["builder"][key];
-        if let Some(enabled) = value
-            .as_bool()
-            .or_else(|| value.as_str().map(|text| text == "true"))
-        {
-            config["builder"][key] = json!(enabled);
-        }
-    }
-    if config["builder"]["ask_pass"].is_null() {
-        config["builder"]["ask_pass"] = json!(false);
+    let problems = berth_api::profile::Access::problems(&config);
+    if !problems.is_empty() {
+        return Err(problems.join("; ").into());
     }
     Ok(config)
 }

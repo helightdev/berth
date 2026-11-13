@@ -28,7 +28,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     fs,
     io::{BufRead, Read, Write},
-    os::unix::{fs::OpenOptionsExt, process::CommandExt},
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::mpsc,
@@ -60,9 +60,6 @@ pub struct Options {
     /// What is done once it answers: a seeded one's provision state is
     /// told, and the profile is applied to the other.
     pub finish: fn(&Paths, &Host, Setup, &mut dyn Write) -> Result<()>,
-    /// Forget the SSH host key known for the machine's address: a machine
-    /// just made has a new one, and the old one was another machine's.
-    pub forget: fn(&Host),
 }
 
 impl Default for Options {
@@ -76,7 +73,6 @@ impl Default for Options {
             every: Duration::from_secs(10),
             answers,
             finish,
-            forget,
         }
     }
 }
@@ -144,45 +140,17 @@ impl Record {
     }
 }
 
-/// Held while something is done to a host's machine. A second caller is
-/// refused rather than kept waiting.
-pub struct Lock(fs::File);
+pub use crate::runner::Lock;
 
-impl Drop for Lock {
-    /// Unlocked rather than only closed: a process started meanwhile may hold
-    /// a copy of the descriptor until it runs its program, and with it the lock.
-    fn drop(&mut self) {
-        use std::os::fd::AsRawFd;
-        // SAFETY: the descriptor is the open file's own.
-        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
-    }
-}
-
+/// Held while something is done to a host's machine: the lock of the host as
+/// a subject of jobs.
 pub fn lock(paths: &Paths, host: &str) -> Result<Lock> {
     let path = Place::resolve(paths, host)?.lock_file(paths);
-    if let Some(dir) = path.parent() {
-        use std::os::unix::fs::DirBuilderExt;
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)?;
-    }
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .mode(0o600)
-        .open(&path)?;
-    use std::os::fd::AsRawFd;
-    // SAFETY: the descriptor is the open file's own.
-    let taken = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
-    match taken {
-        true => Ok(Lock(file)),
-        false => Err(format!(
-            "Something else is being done to {host}'s machine. Try again when it has ended"
+    crate::runner::lock_at(&path, "work on the machine", |holder| {
+        format!(
+            "Something else is being done to {host}'s machine{holder}. Try again when it has ended"
         )
-        .into()),
-    }
+    })
 }
 
 /// Whether something is being done to a host's machine right now.
@@ -340,30 +308,13 @@ fn say(out: &mut dyn Write, line: &str) {
     let _ = out.flush();
 }
 
-/// The texts that must not be shown: each secret, and each longer line of
-/// one, as a key or a certificate is split over lines.
+/// The texts of the secrets a request carries, which are never shown.
 fn hidden(secrets: &Map<String, Value>) -> Vec<String> {
-    let mut texts = vec![];
-    for value in secrets.values().filter_map(Value::as_str) {
-        texts.push(value.to_owned());
-        texts.extend(
-            value
-                .lines()
-                .map(str::trim)
-                .filter(|line| line.len() >= 8)
-                .map(str::to_owned),
-        );
-    }
-    texts.retain(|text| !text.is_empty());
-    // The longest first, so a part does not leave the rest of a whole.
-    texts.sort_by_key(|text| std::cmp::Reverse(text.len()));
-    texts
+    crate::runner::hidden(secrets.values().filter_map(Value::as_str))
 }
 
 fn hide(line: String, hidden: &[String]) -> String {
-    hidden
-        .iter()
-        .fold(line, |line, text| line.replace(text.as_str(), "[secret]"))
+    String::from_utf8_lossy(&crate::runner::mask(line.as_bytes(), hidden)).into_owned()
 }
 
 fn words(time: Duration) -> String {
@@ -504,7 +455,7 @@ pub struct Prepared {
     provisioner: Provisioner,
     secrets: Map<String, Value>,
     record: Record,
-    _lock: Lock,
+    lock: Option<Lock>,
 }
 
 /// Check that `host` can have a machine made by what `asked` names, and take
@@ -537,14 +488,9 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &Provision) -> R
     let arguments = arguments(&asked.provisioner, provisioner, &asked.arguments)?;
     let (secrets, missing) = secrets(store, provisioner);
     needs_secrets(&asked.provisioner, &missing)?;
-    if provisioner.setup == Setup::Apply
-        && profile.config["builder"]["ssh_user"]
-            .as_str()
-            .unwrap_or("")
-            .is_empty()
-    {
+    if provisioner.setup == Setup::Apply && profile.access().user.is_empty() {
         return Err(format!(
-            "{} creates the machine with an account berth reaches over SSH: the profile of {host} needs builder.ssh_user",
+            "{} creates the machine with an account berth reaches over SSH: the profile of {host} needs access.user",
             asked.provisioner
         )
         .into());
@@ -567,7 +513,7 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &Provision) -> R
             arguments,
             created: berth_api::now(),
         },
-        _lock: lock,
+        lock: Some(lock),
     })
 }
 
@@ -606,6 +552,20 @@ pub fn provision(
 }
 
 impl Prepared {
+    /// The host's lock, for a job to hold while this runs in it.
+    pub fn take_lock(&mut self) -> Option<Lock> {
+        self.lock.take()
+    }
+
+    /// The secrets the provisioner is given, which its job never shows.
+    pub fn secrets(&self) -> Vec<String> {
+        self.secrets
+            .values()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    }
+
     /// Create the machine and wait for it to be the host. A failure after
     /// the machine was created leaves it and its record, and says so.
     pub fn run(
@@ -645,14 +605,14 @@ impl Prepared {
                 }
             }
             Setup::Apply => {
-                let mut keys: Vec<String> = paths.own_public_key().into_iter().collect();
+                let mut keys: Vec<String> = crate::keys::operator_keys(paths);
                 for key in berth_api::profile::account_keys(&profile.config, "operator") {
                     if !keys.contains(&key) {
                         keys.push(key);
                     }
                 }
                 request["access"] = json!({
-                    "user": profile.config["builder"]["ssh_user"],
+                    "user": profile.access().user,
                     "public_keys": keys,
                 });
             }
@@ -693,20 +653,18 @@ impl Prepared {
         let host = Host::load(paths, &self.host)?;
         let name = &self.host;
         let setup = self.provisioner.setup;
-        let reachable = !host.address().is_empty() || host.config["builder"]["link"].is_array();
+        let reachable = host.access().reachable();
         if !reachable && setup == Setup::Seed {
             say(
                 out,
                 &format!(
-                    "! {name} has no address berth knows: it sets itself up on its own. Set builder.ssh_host to reach it"
+                    "! {name} has no address berth knows: it sets itself up on its own. Set access.address to reach it"
                 ),
             );
             return Ok(());
         }
         if !reachable {
-            return Err(
-                format!("{name} has no address to reach it at: set builder.ssh_host").into(),
-            );
+            return Err(format!("{name} has no address to reach it at: set access.address").into());
         }
         let limit = match setup {
             Setup::Seed => options.boot,
@@ -723,8 +681,11 @@ impl Prepared {
                 words(limit)
             ),
         );
+        // The machine was made just now, and has a host key nobody has seen:
+        // the one recorded for the host was the old machine's.
         if !host.address().is_empty() {
-            (options.forget)(&host);
+            let store = store::shared(paths)?;
+            crate::keys::known::forget_host_key(paths, &store, &host.place)?;
         }
         let deadline = Instant::now() + limit;
         let status = request(
@@ -791,14 +752,14 @@ fn take_address(paths: &Paths, place: &Place, answer: &Value, out: &mut dyn Writ
     let mut profile = place
         .load(paths)?
         .ok_or_else(|| format!("No host {}", place.argument()))?;
-    if !profile["builder"].is_object() {
-        profile["builder"] = json!({});
-    }
+    let mut access = berth_api::profile::Access::of(&profile);
     let mut changed = false;
-    for (key, value) in [("ssh_host", address), ("ssh_port", port.as_str())] {
-        let kept = profile["builder"][key].as_str().unwrap_or("");
-        if kept.is_empty() && !value.is_empty() {
-            profile["builder"][key] = json!(value);
+    for (field, value) in [
+        (&mut access.address, address),
+        (&mut access.port, port.as_str()),
+    ] {
+        if field.is_empty() && !value.is_empty() {
+            *field = value.to_owned();
             changed = true;
         }
     }
@@ -808,15 +769,18 @@ fn take_address(paths: &Paths, place: &Place, answer: &Value, out: &mut dyn Writ
         .as_str()
         .unwrap_or("")
         .to_owned();
-    if changed
-        && profile["builder"]["ssh_user"]
-            .as_str()
-            .unwrap_or("")
-            .is_empty()
-        && usable(&operator)
-        && !operator.is_empty()
-    {
-        profile["builder"]["ssh_user"] = json!(operator);
+    if changed && access.user.is_empty() && usable(&operator) && !operator.is_empty() {
+        access.user = operator;
+    }
+    if changed {
+        // A profile that says nothing of its login logs in with berth's key.
+        let sudo = profile["access"]["sudo"].clone();
+        access.write(&mut profile);
+        if sudo.is_null()
+            && let Some(object) = profile["access"].as_object_mut()
+        {
+            object.remove("sudo");
+        }
     }
     if changed {
         place.save(paths, &profile)?;
@@ -829,57 +793,43 @@ fn take_address(paths: &Paths, place: &Place, answer: &Value, out: &mut dyn Writ
 
 /// The sudo password of a host whose SSH user's sudo asks for one, from the
 /// environment: nobody is there to ask.
-fn password(host: &Host) -> Option<String> {
-    std::env::var("BERTH_SUDO_PASSWORD")
-        .ok()
-        .filter(|_| host.asks_password())
-}
-
-fn forget(host: &Host) {
-    let port = host.config["builder"]["ssh_port"].as_str().unwrap_or("");
-    // ssh files a key under [ADDRESS]:PORT when the port is not its usual one.
-    let known = match port {
-        "" | "22" => host.address().to_owned(),
-        port => format!("[{}]:{port}", host.address()),
-    };
-    let _ = Command::new("ssh-keygen")
-        .args(["-R", &known])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+fn password(paths: &Paths, host: &Host) -> Option<String> {
+    if !host.asks_password() {
+        return None;
+    }
+    host.kept_sudo_password(paths)
+        .or_else(|| std::env::var("BERTH_SUDO_PASSWORD").ok())
 }
 
 /// Whether SSH lets berth in. A machine just made has a key nobody has seen;
 /// its first one is taken.
-fn ssh_answers(host: &Host) -> bool {
-    let mut ssh = host.ssh();
-    ssh.args([
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ConnectTimeout=10",
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-    ])
-    .arg(host.target())
-    .arg("true")
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::null());
-    ssh.status().is_ok_and(|status| status.success())
+fn ssh_answers(paths: &Paths, host: &Host) -> bool {
+    let Ok(login) = crate::keys::login_of(paths, host) else {
+        return false;
+    };
+    let mut ssh = login.batch_ssh();
+    ssh.arg(login.target())
+        .arg("true")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let answered = ssh.status().is_ok_and(|status| status.success());
+    if answered && let Ok(store) = store::shared(paths) {
+        let _ = crate::keys::known::absorb(paths, &store, &host.place);
+    }
+    answered
 }
 
 fn answers(paths: &Paths, host: &Host, setup: Setup) -> bool {
     match setup {
         Setup::Seed => {
             // The link goes over SSH, which has to know the machine's key first.
-            if !host.address().is_empty() && !ssh_answers(host) {
+            if !host.address().is_empty() && !ssh_answers(paths, host) {
                 return false;
             }
-            let (Ok(spec), Ok(runtime)) =
-                (host.link(paths, password(host).as_deref()), link::runtime())
-            else {
+            let (Ok(spec), Ok(runtime)) = (
+                host.link(paths, password(paths, host).as_deref()),
+                link::runtime(),
+            ) else {
                 return false;
             };
             let link = Link::new(spec);
@@ -894,14 +844,14 @@ fn answers(paths: &Paths, host: &Host, setup: Setup) -> bool {
             runtime.shutdown_background();
             matches!(asked, Ok(Ok(_)))
         }
-        Setup::Apply => ssh_answers(host),
+        Setup::Apply => ssh_answers(paths, host),
     }
 }
 
 fn finish(paths: &Paths, host: &Host, setup: Setup, out: &mut dyn Write) -> Result<()> {
     match setup {
         Setup::Seed => {
-            let link = Link::new(host.link(paths, password(host).as_deref())?);
+            let link = Link::new(host.link(paths, password(paths, host).as_deref())?);
             let runtime = link::runtime()?;
             let body = json!({
                 "kind": "process", "user": "root",
@@ -933,7 +883,7 @@ fn finish(paths: &Paths, host: &Host, setup: Setup, out: &mut dyn Write) -> Resu
             Ok(())
         }
         Setup::Apply => {
-            let password = password(host);
+            let password = password(paths, host);
             if host.asks_password() && password.is_none() {
                 return Err(format!(
                     "{}'s SSH user's sudo asks for a password: set BERTH_SUDO_PASSWORD, or apply it with: berth apply {}",
@@ -1310,7 +1260,7 @@ print(out)
             };
             world.profile(
                 "studio",
-                json!({"hostname": "studio", "builder": {"ssh_user": "ops"},
+                json!({"hostname": "studio", "access": {"user": "ops"},
                        "ansible_vars": {"devbox_install_tailscale": false}}),
             );
             world
@@ -1392,7 +1342,6 @@ print(out)
                 );
                 Ok(())
             },
-            forget: |_| {},
         }
     }
 
@@ -1462,7 +1411,7 @@ print(out)
         assert_eq!(world.record().unwrap().id, "vm-1");
         let host = Host::load(&world.paths, "studio").unwrap();
         assert_eq!(host.address(), "192.0.2.20");
-        assert_eq!(host.config["builder"]["ssh_port"], "2222");
+        assert_eq!(host.config["access"]["port"], "2222");
 
         let said = world
             .provision("fake/vm", &[("server", "x")])
@@ -1496,7 +1445,7 @@ print(out)
         );
         // berth applies to it over SSH, as a user the profile names.
         world.profile("studio", json!({"builder": {}}));
-        assert!(refused("fake/vm", &[("server", "x")]).contains("builder.ssh_user"));
+        assert!(refused("fake/vm", &[("server", "x")]).contains("access.user"));
         world.profile("other", json!({}));
         let said = world.provision("fake/vm", &[]).0;
         assert!(said.is_err());
@@ -1582,7 +1531,7 @@ print(out)
         world.file("answer.create", r#"{"id": "vm-1"}"#);
         world.profile(
             "studio",
-            json!({"builder": {"ssh_user": "ops", "ssh_host": "192.0.2.30"}}),
+            json!({"access": {"user": "ops", "address": "192.0.2.30"}}),
         );
         let (done, out) = world.provision("fake/vm", &[("server", "x")]);
         done.unwrap();
@@ -1642,7 +1591,7 @@ print(out)
         world.file("answer.create", r#"{"id": "vm-2"}"#);
         world.profile(
             "studio",
-            json!({"builder": {"ssh_user": "ops", "ssh_host": "192.0.2.20"}}),
+            json!({"access": {"user": "ops", "address": "192.0.2.20"}}),
         );
         world.provision("fake/vm", &[("server", "x")]).0.unwrap();
         world.file("answer.status", r#"{"state": "running"}"#);
@@ -1853,16 +1802,16 @@ print(out)
                 place.save(&paths, &profile).unwrap();
                 let answer = json!({"address": "192.0.2.40"});
                 take_address(&paths, &place, &answer, &mut Vec::new()).unwrap();
-                place.load(&paths).unwrap().unwrap()["builder"].clone()
+                place.load(&paths).unwrap().unwrap()["access"].clone()
             };
             assert_eq!(
                 taken(json!({"operator_username": "ops"})),
-                json!({"ssh_host": "192.0.2.40", "ssh_user": "ops"})
+                json!({"address": "192.0.2.40", "user": "ops", "auth": "berth"})
             );
             // A user the profile names is kept.
             assert_eq!(
-                taken(json!({"operator_username": "ops", "builder": {"ssh_user": "admin"}})),
-                json!({"ssh_host": "192.0.2.40", "ssh_user": "admin"})
+                taken(json!({"operator_username": "ops", "access": {"user": "admin"}})),
+                json!({"address": "192.0.2.40", "user": "admin", "auth": "berth"})
             );
         }
     }

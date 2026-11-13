@@ -2,9 +2,11 @@
 //! host through a link, as the UI does, and adds nothing to a host's own API.
 //! The commands that only read the store (`inbox`, `kv`) are here too.
 
+mod actions;
 mod api;
 mod auth;
 mod docs;
+pub(crate) mod keys;
 #[cfg(feature = "web")]
 mod page;
 mod provisioners;
@@ -110,6 +112,8 @@ pub struct Serve {
     /// Who is let in over TCP, and as what.
     pub auth: auth::Auth,
     pub jobs_dir: PathBuf,
+    /// What runs the jobs, with their records in the store.
+    pub runner: berth_core::runner::Runner,
     /// The tasks that take in the hosts' channels, by host.
     followers: Mutex<BTreeMap<String, tokio::task::AbortHandle>>,
     /// The sudo passwords given at the start, which outlive a changed profile.
@@ -128,13 +132,21 @@ impl Serve {
 
     pub fn with(paths: Paths, store: Arc<Store>, auth: auth::Auth) -> Arc<Serve> {
         let jobs_dir = paths.data_dir.join("jobs");
+        let events = broadcast::channel(1024).0;
+        let told = events.clone();
+        let notify = Arc::new(move |job: &store::Job| {
+            let _ = told.send(Event::Job(job.json()));
+        });
+        let runner =
+            berth_core::runner::Runner::new(paths.clone(), store.clone(), jobs_dir.clone(), notify);
         Arc::new(Serve {
             paths,
             store,
             hosts: RwLock::new(BTreeMap::new()),
-            events: broadcast::channel(1024).0,
+            events,
             auth,
             jobs_dir,
+            runner,
             followers: Mutex::new(BTreeMap::new()),
             passwords: Mutex::new(BTreeMap::new()),
             provision: Default::default,
@@ -191,19 +203,21 @@ impl Serve {
                 name,
                 place,
                 config,
-                key: self.paths.own_key().ok(),
             };
             // A link that is a command of its own goes through no sudo of ours.
-            let asks = host.asks_password() && !host.config["builder"]["link"].is_array();
+            let asks = host.asks_password() && host.access().link.is_none();
             let password = match (start, asks) {
                 (_, false) => Ok(None),
-                (true, true) => host.sudo_password().map_err(|error| error.to_string()),
+                (true, true) => host
+                    .sudo_password(&self.paths)
+                    .map_err(|error| error.to_string()),
                 (false, true) => self
                     .passwords
                     .lock()
                     .unwrap()
                     .get(&host.name)
                     .cloned()
+                    .or_else(|| host.kept_sudo_password(&self.paths))
                     .or_else(|| std::env::var("BERTH_SUDO_PASSWORD").ok())
                     .map(Some)
                     .ok_or_else(|| {
@@ -217,7 +231,7 @@ impl Serve {
                 let mut passwords = self.passwords.lock().unwrap();
                 passwords.insert(host.name.clone(), password.clone());
             }
-            let reachable = !host.address().is_empty() || host.config["builder"]["link"].is_array();
+            let reachable = host.access().reachable();
             let link = password.clone().and_then(|password| match reachable {
                 true => host
                     .link(&self.paths, password.as_deref())
@@ -225,10 +239,10 @@ impl Serve {
                 false => Err("its profile has no SSH address yet".into()),
             });
             let remote = match link {
-                Ok(spec) => Remote::new(&host.name, host.address(), spec),
+                Ok(spec) => Remote::new(&host.name, &host.address(), spec),
                 Err(problem) => Remote {
                     name: host.name.clone(),
-                    address: host.address().to_owned(),
+                    address: host.address(),
                     link: None,
                     password: None,
                     problem: Some(problem),

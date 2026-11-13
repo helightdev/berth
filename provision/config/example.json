@@ -18,5 +18,6 @@
   "tailscale_auth_key": "",
   "wifi_enabled": false,
   "wifi": null,
-  "ansible_vars": {}
+  "ansible_vars": {},
+  "access": {"auth": "berth"}
 }

@@ -45,6 +45,10 @@ pub(super) const MIGRATIONS: &[&str] = &[
          kind TEXT COLLATE \"C\" NOT NULL, scope TEXT COLLATE \"C\" NOT NULL,
          name TEXT COLLATE \"C\" NOT NULL, value BYTEA NOT NULL, sealed BOOLEAN NOT NULL,
          updated TEXT NOT NULL, PRIMARY KEY (kind, scope, name));",
+    "ALTER TABLE jobs ADD COLUMN subject TEXT NOT NULL DEFAULT '';
+     ALTER TABLE jobs ADD COLUMN action TEXT NOT NULL DEFAULT '';
+     ALTER TABLE jobs ADD COLUMN token TEXT;
+     CREATE UNIQUE INDEX jobs_token ON jobs(subject, action, token) WHERE token IS NOT NULL;",
 ];
 
 /// The advisory lock that keeps two berths from migrating at once.
@@ -214,6 +218,9 @@ fn entry(row: &Row) -> Entry {
     }
 }
 
+const JOB_COLUMNS: &str =
+    "id, host, what, started, ended, exit_code, output_path, subject, action, token";
+
 fn job(row: &Row) -> Job {
     Job {
         id: row.get(0),
@@ -223,7 +230,32 @@ fn job(row: &Row) -> Job {
         ended: row.get(4),
         exit_code: row.get(5),
         output_path: row.get(6),
+        subject: row.get(7),
+        action: row.get(8),
+        token: row.get(9),
     }
+}
+
+/// Write a job, unless its id or its token is taken: the job there stays.
+fn insert_job(client: &mut impl postgres::GenericClient, job: &Job) -> PgResult<u64> {
+    client.execute(
+        &format!(
+            "INSERT INTO jobs({JOB_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             ON CONFLICT DO NOTHING"
+        ),
+        &[
+            &job.id,
+            &job.host,
+            &job.what,
+            &job.started,
+            &job.ended,
+            &job.exit_code,
+            &job.output_path,
+            &job.subject,
+            &job.action,
+            &job.token,
+        ],
+    )
 }
 
 const STATE_COLUMNS: &str = "kind, scope, name, value, sealed, updated";
@@ -630,23 +662,37 @@ impl Backend for PostgresBackend {
         })
     }
 
-    fn add_job(&mut self, job: &Job) -> Result<()> {
+    fn add_job(&mut self, job: &Job) -> Result<Job> {
         let job = job.clone();
         self.call(move |client| {
-            client.execute(
-                "INSERT INTO jobs(id, host, what, started, ended, exit_code, output_path)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                &[
-                    &job.id,
-                    &job.host,
-                    &job.what,
-                    &job.started,
-                    &job.ended,
-                    &job.exit_code,
-                    &job.output_path,
-                ],
+            let mut transaction = client.transaction()?;
+            insert_job(&mut transaction, &job)?;
+            // A row another caller added with the token meanwhile is seen
+            // here: the unique index made this insert wait for it.
+            let stored = match &job.token {
+                Some(token) => self::job(&transaction.query_one(
+                    &format!(
+                        "SELECT {JOB_COLUMNS} FROM jobs WHERE subject = $1 AND action = $2 AND token = $3"
+                    ),
+                    &[&job.subject, &job.action, token],
+                )?),
+                None => job.clone(),
+            };
+            transaction.commit()?;
+            Ok(stored)
+        })
+    }
+
+    fn job_by_token(&mut self, subject: &str, action: &str, token: &str) -> Result<Option<Job>> {
+        let (subject, action, token) = (subject.to_owned(), action.to_owned(), token.to_owned());
+        self.call(move |client| {
+            let row = client.query_opt(
+                &format!(
+                    "SELECT {JOB_COLUMNS} FROM jobs WHERE subject = $1 AND action = $2 AND token = $3"
+                ),
+                &[&subject, &action, &token],
             )?;
-            Ok(())
+            Ok(row.as_ref().map(job))
         })
     }
 
@@ -674,7 +720,7 @@ impl Backend for PostgresBackend {
         let id = id.to_owned();
         self.call(move |client| {
             let row = client.query_opt(
-                "SELECT id, host, what, started, ended, exit_code, output_path FROM jobs WHERE id = $1",
+                &format!("SELECT {JOB_COLUMNS} FROM jobs WHERE id = $1"),
                 &[&id],
             )?;
             Ok(row.as_ref().map(job))
@@ -684,8 +730,7 @@ impl Backend for PostgresBackend {
     fn jobs(&mut self, limit: usize) -> Result<Vec<Job>> {
         self.call(move |client| {
             let rows = client.query(
-                "SELECT id, host, what, started, ended, exit_code, output_path FROM jobs
-                 ORDER BY started DESC, id DESC LIMIT $1",
+                &format!("SELECT {JOB_COLUMNS} FROM jobs ORDER BY started DESC, id DESC LIMIT $1"),
                 &[&(limit as i64)],
             )?;
             Ok(rows.iter().map(job).collect())
@@ -896,8 +941,7 @@ impl Backend for PostgresBackend {
                 }
                 Table::Jobs => {
                     let rows = client.query(
-                        "SELECT id, host, what, started, ended, exit_code, output_path FROM jobs
-                         ORDER BY started, id",
+                        &format!("SELECT {JOB_COLUMNS} FROM jobs ORDER BY started, id"),
                         &[],
                     )?;
                     Rows::Jobs(rows.iter().map(job).collect())
@@ -982,23 +1026,8 @@ impl Backend for PostgresBackend {
                     }
                 }
                 Rows::Jobs(rows) => {
-                    let statement = transaction.prepare(
-                        "INSERT INTO jobs(id, host, what, started, ended, exit_code, output_path)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING",
-                    )?;
                     for job in rows {
-                        added += transaction.execute(
-                            &statement,
-                            &[
-                                &job.id,
-                                &job.host,
-                                &job.what,
-                                &job.started,
-                                &job.ended,
-                                &job.exit_code,
-                                &job.output_path,
-                            ],
-                        )?;
+                        added += insert_job(&mut transaction, job)?;
                     }
                 }
             }

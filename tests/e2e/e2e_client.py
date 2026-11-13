@@ -47,7 +47,7 @@ class Client(unittest.TestCase):
 
     def test_the_seed_is_rendered_by_the_server(self):
         profile = self.serve.call('GET', f'/v1/hosts/{HOST}/profile')
-        draft = {**profile, 'hostname': 'cloud-3', 'builder': {},
+        draft = {**profile, 'hostname': 'cloud-3', 'builder': {}, 'access': {},
                  'operator_password_hash': '$6$e2e$' + 'x' * 86,
                  'release_url': 'https://192.0.2.30/berth-release.tar.gz'}
         self.serve.call('PUT', '/v1/hosts/cloud-3/profile', draft)
@@ -55,7 +55,7 @@ class Client(unittest.TestCase):
             written = self.station.berth('seed', 'cloud-3').stdout.strip()
             seed = open(written).read()
             self.assertTrue(seed.startswith('#cloud-config'))
-            own = self.serve.station.own_key.with_suffix('.pub').read_text().split()[1]
+            own = self.serve.station.own_public().split()[1]
             self.assertIn(own, seed)
         finally:
             self.serve.call('DELETE', '/v1/hosts/cloud-3')

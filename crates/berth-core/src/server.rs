@@ -273,8 +273,7 @@ impl Server {
                         example = Some(serde_json::from_slice(&std::fs::read(file)?)?);
                     }
                     let mut profile = example.clone().unwrap_or_default();
-                    profile["builder"]["ssh_host"] = host["address"].clone();
-                    profile["builder"]["ask_become_pass"] = json!(false);
+                    profile["access"] = json!({"address": host["address"], "sudo": "none"});
                     profile["builder"]["served_only"] = json!(true);
                     profile
                 }
@@ -536,7 +535,9 @@ mod tests {
             hosts: vec![
                 (
                     json!({"name": "studio", "reachable": true, "version": "0.3.0"}),
-                    Some(json!({"hostname": "studio", "builder": {"ssh_host": "192.0.2.20"}})),
+                    Some(
+                        json!({"hostname": "studio", "builder": {}, "access": {"address": "192.0.2.20"}}),
+                    ),
                 ),
                 (
                     json!({"name": "attic", "reachable": false, "error": "timed out"}),
@@ -568,7 +569,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(studio["builder"]["served"], json!(server.url));
-        assert_eq!(studio["builder"]["ssh_host"], "192.0.2.20");
+        assert_eq!(studio["access"]["address"], "192.0.2.20");
         assert!(!paths.data_dir.join("served").exists());
     }
 

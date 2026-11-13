@@ -1,7 +1,7 @@
 use super::api::{self, OutputQuery, piece};
 use super::{Remote, Serve};
 use berth_api::client::{self, Client, Frame};
-use berth_api::{Output, unb64};
+use berth_api::{Output, ops::Role, unb64};
 use berth_core::{
     link::LinkSpec,
     paths::Paths,
@@ -260,7 +260,7 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
     );
     assert_eq!(
         client
-            .post::<Value>("/v1/hosts/nope/apply", &json!({}))
+            .post::<Value>("/v1/hosts/nope/actions/apply", &json!({}))
             .await
             .unwrap_err()
             .status(),
@@ -276,6 +276,7 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
         ],
         first_line: None,
         via: None,
+        ..LinkSpec::default()
     };
     served.state.add(Remote::new("broken", "192.0.2.1", broken));
     let hosts: Value = client.get("/v1/hosts").await.unwrap();
@@ -310,12 +311,19 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
         ended: None,
         exit_code: None,
         output_path: log.to_string_lossy().into_owned(),
+        subject: "host:broken".into(),
+        action: "apply".into(),
+        token: None,
     };
     served.state.store.add_job(&job).unwrap();
     let jobs: Value = client.get("/v1/jobs").await.unwrap();
     assert_eq!(
         (&jobs[0]["id"], &jobs[0]["ended"]),
         (&json!("j1"), &Value::Null)
+    );
+    assert_eq!(
+        (&jobs[0]["subject"], &jobs[0]["action"]),
+        (&json!("host:broken"), &json!("apply"))
     );
     let output: Output = client.get("/v1/jobs/j1/output?tail=1").await.unwrap();
     assert_eq!(output.lines.unwrap(), ["ok: [devbox_target]"]);
@@ -531,12 +539,19 @@ impl Berthd {
     /// A berthd in single-user mode, or nothing when it is not built or does
     /// not answer yet.
     async fn start() -> Option<Berthd> {
+        Berthd::with_tasks(json!([])).await
+    }
+
+    /// The same, with these tasks in its `etc/tasks.json`.
+    async fn with_tasks(tasks: Value) -> Option<Berthd> {
         let program = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/berthd");
         if !program.is_file() {
             eprintln!("skipped: {} is not built", program.display());
             return None;
         }
         let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("etc")).unwrap();
+        std::fs::write(dir.path().join("etc/tasks.json"), tasks.to_string()).unwrap();
         let child = std::process::Command::new(&program)
             .arg("--single")
             .arg(dir.path())
@@ -568,6 +583,7 @@ impl Berthd {
             args: vec!["connect".into(), "--dir".into(), dir],
             first_line: None,
             via: None,
+            ..LinkSpec::default()
         }
     }
 
@@ -667,6 +683,191 @@ async fn a_hosts_api_is_passed_through() {
             other => panic!("the stream ended after {seen:?}: {other:?}"),
         }
     }
+}
+
+/// A job of the server once it has ended.
+async fn job_done(client: &mut Client, id: &str) -> Value {
+    for _ in 0..200 {
+        let job: Value = client.get(&format!("/v1/jobs/{id}")).await.unwrap();
+        if !job["ended"].is_null() {
+            return job;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("job {id} did not end");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hosts_actions_are_its_tasks_and_berths_own() {
+    let tasks = json!([
+        {"name": "status", "label": "Status", "group": "System", "user": "agent", "run": "echo up"},
+        {"name": "demo:status", "label": "Demo", "extends": ["status"], "user": "agent", "run": "echo demo; exit 4"},
+        {"name": "greet", "label": "Greet", "user": "agent", "run": "echo \"hello $BERTH_ARG_WHO\"",
+         "arguments": [{"name": "who", "required": true}]},
+        {"name": "ask", "label": "Ask", "user": "agent", "terminal": true, "run": "read c; echo got $c"},
+        {"name": "secrets", "label": "Send the secrets", "user": "agent", "input": "secrets", "run": "cat >/dev/null"},
+        {"name": "elevated", "label": "As root", "user": "root", "run": "true"},
+    ]);
+    let Some(host) = Berthd::with_tasks(tasks).await else {
+        return;
+    };
+    let served = served().await;
+    served
+        .state
+        .add(Remote::new("box", "198.51.100.1", host.link()));
+    let mut client = served.client().await;
+
+    let actions: Vec<berth_api::Action> = client.get("/v1/hosts/box/actions").await.unwrap();
+    let names: Vec<&str> = actions.iter().map(|action| action.name.as_str()).collect();
+    // The host's tasks, a step under the task it extends, then berth's own; the
+    // secrets task is berth's, which sends the server's secrets.
+    assert_eq!(
+        names,
+        [
+            "status",
+            "greet",
+            "ask",
+            "elevated",
+            "apply",
+            "seed",
+            "secrets",
+            "trust-key",
+            "host-key"
+        ]
+    );
+    let status = &actions[0];
+    assert_eq!(
+        (status.runs, status.role),
+        (berth_api::Runs::Host, Role::Operate)
+    );
+    assert_eq!(status.steps[0].label, "Demo");
+    let secrets = &actions[6];
+    assert_eq!(
+        (secrets.label.as_str(), secrets.role),
+        ("Send the secrets", Role::Admin)
+    );
+    assert!(secrets.available && actions[4].role == Role::Admin);
+
+    // A task that needs no terminal is a session there and a job here, which
+    // copies its output and ends with its exit code.
+    let run = |body: Value| {
+        let socket = served.socket.clone();
+        async move {
+            let mut client = Client::unix(&socket).await.unwrap();
+            client
+                .post::<Value>("/v1/hosts/box/actions/status", &body)
+                .await
+        }
+    };
+    let acted = run(json!({"token": "t-1"})).await.unwrap();
+    let id = acted["job"]["id"].as_str().unwrap().to_owned();
+    assert!(acted["session"]["id"].is_string(), "{acted}");
+    assert_eq!(
+        (&acted["job"]["subject"], &acted["job"]["action"]),
+        (&json!("host:box"), &json!("status"))
+    );
+    let job = job_done(&mut client, &id).await;
+    assert_eq!(job["exit_code"], 4, "the step's exit code: {job}");
+    let output: Output = client
+        .get(&format!("/v1/jobs/{id}/output?tail=10"))
+        .await
+        .unwrap();
+    let lines = output.lines.unwrap();
+    assert!(
+        lines.contains(&"up".to_owned()) && lines.contains(&"demo".to_owned()),
+        "{lines:?}"
+    );
+    // Asked again with its token, it is the same job, and nothing runs again.
+    let sessions = |value: Value| berth_tui::host::list::<Value>(value, "sessions").len();
+    let before = sessions(client.get("/v1/hosts/box/sessions").await.unwrap());
+    let again = run(json!({"token": "t-1"})).await.unwrap();
+    assert_eq!(again["job"]["id"], json!(id));
+    assert_eq!(
+        sessions(client.get("/v1/hosts/box/sessions").await.unwrap()),
+        before
+    );
+
+    // Callers at once with one new token start one session between them,
+    // and each is told of the one job.
+    let racers = (0..4).map(|_| run(json!({"token": "t-race"})));
+    let answers = futures_util::future::join_all(racers).await;
+    let ids: std::collections::BTreeSet<String> = answers
+        .into_iter()
+        .map(|answer| answer.unwrap()["job"]["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(ids.len(), 1, "{ids:?}");
+    job_done(&mut client, ids.first().unwrap()).await;
+    assert_eq!(
+        sessions(client.get("/v1/hosts/box/sessions").await.unwrap()),
+        before + 1
+    );
+
+    // A task the host will not start ends its job as failed, with the reason,
+    // and asked again with the token that is the answer.
+    let path = "/v1/hosts/box/actions/elevated";
+    let refused = client
+        .post::<Value>(path, &json!({"token": "t-root"}))
+        .await
+        .unwrap_err();
+    let again: Value = client
+        .post(path, &json!({"token": "t-root"}))
+        .await
+        .unwrap();
+    assert!(again["session"].is_null(), "{again}");
+    let id = again["job"]["id"].as_str().unwrap();
+    assert_eq!(job_done(&mut client, id).await["exit_code"], 1);
+    let output: Output = client
+        .get(&format!("/v1/jobs/{id}/output?tail=1"))
+        .await
+        .unwrap();
+    assert!(
+        output.lines.unwrap()[0].contains("The host did not start elevated"),
+        "{refused}"
+    );
+
+    // Its arguments reach the host; a needed one is asked for first.
+    let path = "/v1/hosts/box/actions/greet";
+    let missing = client.post::<Value>(path, &json!({})).await.unwrap_err();
+    assert_eq!(missing.status(), 400);
+    let acted: Value = client
+        .post(path, &json!({"arguments": {"who": "ann"}}))
+        .await
+        .unwrap();
+    let id = acted["job"]["id"].as_str().unwrap();
+    assert_eq!(job_done(&mut client, id).await["exit_code"], 0);
+    let output: Output = client
+        .get(&format!("/v1/jobs/{id}/output?tail=1"))
+        .await
+        .unwrap();
+    assert_eq!(output.lines.unwrap(), ["hello ann"]);
+
+    // One that needs a terminal is the session to attach to, without a job.
+    let acted: Value = client
+        .post(
+            "/v1/hosts/box/actions/ask",
+            &json!({"rows": 10, "cols": 40}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        acted["job"].is_null() && acted["session"]["kind"] == "terminal",
+        "{acted}"
+    );
+
+    let nothing = client
+        .post::<Value>("/v1/hosts/box/actions/nothing", &json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(nothing.status(), 404);
+    assert!(nothing.to_string().contains("status, greet"), "{nothing}");
+    // The jobs list says what each was done to.
+    let jobs: Value = client.get("/v1/jobs").await.unwrap();
+    assert!(
+        jobs.as_array()
+            .unwrap()
+            .iter()
+            .all(|job| job["subject"] == "host:box")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -864,7 +1065,7 @@ async fn the_server_is_set_up_through_the_api() {
     let served = served().await;
     let mut client = served.client().await;
     let client = &mut client;
-    let profile = json!({"hostname": "studio", "builder": {"ssh_host": "192.0.2.7", "ssh_user": "ops", "served": "x"}});
+    let profile = json!({"hostname": "studio", "builder": {"served": "x"}, "access": {"address": "192.0.2.7", "user": "ops"}});
 
     // A profile makes a host, and what it says is what comes back.
     assert_eq!(
@@ -880,7 +1081,7 @@ async fn the_server_is_set_up_through_the_api() {
         200
     );
     let (_, kept) = send(client, "GET", "/v1/hosts/studio/profile", Value::Null).await;
-    assert_eq!(kept["builder"]["ssh_host"], "192.0.2.7");
+    assert_eq!(kept["access"]["address"], "192.0.2.7");
     assert!(kept["builder"].get("served").is_none());
     let (_, hosts) = send(client, "GET", "/v1/hosts", Value::Null).await;
     assert_eq!(
@@ -910,7 +1111,7 @@ async fn the_server_is_set_up_through_the_api() {
             "{name}"
         );
     }
-    let linked = json!({"builder": {"link": ["sh", "-c", "id"]}});
+    let linked = json!({"builder": {}, "access": {"link": ["sh", "-c", "id"]}});
     assert_eq!(
         send(client, "PUT", "/v1/hosts/studio/profile", linked)
             .await
@@ -1034,14 +1235,20 @@ async fn the_server_is_set_up_through_the_api() {
     );
 
     // Sending secrets needs their values and the host.
-    let wanting = json!({"builder": {"ssh_host": "192.0.2.7"}, "secrets": [{"name": "github", "env": "GH_TOKEN"}]});
+    let wanting = json!({"builder": {}, "access": {"address": "192.0.2.7"}, "secrets": [{"name": "github", "env": "GH_TOKEN"}]});
     assert_eq!(
         send(client, "PUT", "/v1/hosts/studio/profile", wanting)
             .await
             .0,
         200
     );
-    let (status, said) = send(client, "POST", "/v1/hosts/studio/secrets", Value::Null).await;
+    let (status, said) = send(
+        client,
+        "POST",
+        "/v1/hosts/studio/actions/secrets",
+        Value::Null,
+    )
+    .await;
     assert_eq!(status, 400);
     assert!(
         said["error"]["message"]
@@ -1111,9 +1318,15 @@ async fn the_server_is_set_up_through_the_api() {
             .0,
         200
     );
-    let giving = json!({"builder": {"ssh_host": "192.0.2.7"}, "secrets": [{"name": "tailnet_api_key", "env": "KEY"}]});
+    let giving = json!({"builder": {}, "access": {"address": "192.0.2.7"}, "secrets": [{"name": "tailnet_api_key", "env": "KEY"}]});
     send(client, "PUT", "/v1/hosts/studio/profile", giving).await;
-    let (status, said) = send(client, "POST", "/v1/hosts/studio/secrets", Value::Null).await;
+    let (status, said) = send(
+        client,
+        "POST",
+        "/v1/hosts/studio/actions/secrets",
+        Value::Null,
+    )
+    .await;
     assert_eq!(status, 400);
     assert!(
         said["error"]["message"]
@@ -1227,8 +1440,12 @@ async fn plugins_are_managed_through_the_api() {
             "{said}"
         );
     }
-    let (status, said) = send(client, "POST", "/v1/rollout", json!({"hosts": ["nothing"]})).await;
+    let asked = json!({"arguments": {"hosts": "nothing"}});
+    let (status, said) = send(client, "POST", "/v1/actions/rollout", asked).await;
     assert_eq!(status, 404, "{said}");
+    let asked = json!({"arguments": {"force": "yes"}});
+    let (status, said) = send(client, "POST", "/v1/actions/rollout", asked).await;
+    assert_eq!(status, 400, "{said}");
     let (status, said) = send(client, "DELETE", "/v1/plugins/hello", Value::Null).await;
     assert_eq!(status, 200, "{said}");
     assert!(said["lines"][0].as_str().unwrap().starts_with('✓'));
@@ -1372,7 +1589,7 @@ async fn an_access_token_gets_in_with_the_role_it_names() {
         with("berth:operate"),
         with("berth:admin"),
     );
-    let profile = json!({"builder": {"ssh_host": "192.0.2.7"}});
+    let profile = json!({"builder": {}, "access": {"address": "192.0.2.7"}});
 
     // Looking is for every role, using for two, set-up for one.
     assert_eq!(
@@ -1443,6 +1660,22 @@ async fn an_access_token_gets_in_with_the_role_it_names() {
         .0,
         200
     );
+    // An action has its own role, asked when it is run.
+    for path in [
+        "/v1/hosts/a/actions/apply",
+        "/v1/hosts/a/actions/seed",
+        "/v1/actions/rollout",
+    ] {
+        let (status, said) = as_bearer(address, &operator, "POST", path, Value::Null).await;
+        assert_eq!(status, 403, "{path}: {said}");
+        assert!(
+            said["error"]["message"].as_str().unwrap().contains("admin"),
+            "{said}"
+        );
+    }
+    let (status, said) = as_bearer(address, &viewer, "GET", "/v1/actions", Value::Null).await;
+    assert_eq!((status, &said[0]["name"]), (200, &json!("rollout")));
+    assert_eq!(said[0]["role"], "admin");
     // Machines are created with the server's secrets: set-up too.
     for (method, path) in [
         ("GET", "/v1/provisioners"),
@@ -1542,7 +1775,7 @@ async fn set_up_can_be_closed_to_the_network() {
     let issuer = Issuer::new();
     let (_dir, address) = trusting(&issuer, false).await;
     let admin = issuer.token(json!({"scope": "berth:admin"}));
-    let profile = json!({"builder": {"ssh_host": "192.0.2.7"}});
+    let profile = json!({"builder": {}, "access": {"address": "192.0.2.7"}});
     for token in [admin.as_str(), "s3cret-token"] {
         let (status, said) = as_bearer(
             address,
@@ -1571,6 +1804,7 @@ async fn set_up_can_be_closed_to_the_network() {
             ("GET", "/v1/provisioners"),
             ("POST", "/v1/hosts/a/instance"),
             ("DELETE", "/v1/hosts/a/instance"),
+            ("POST", "/v1/actions/rollout"),
         ] {
             let (status, said) = as_bearer(address, token, method, path, json!({})).await;
             assert_eq!(status, 403, "{method} {path}: {said}");
@@ -1780,7 +2014,6 @@ fn quick() -> berth_core::provision::Options {
             writeln!(out, "finished {}", host.address())?;
             Ok(())
         },
-        forget: |_| {},
     }
 }
 
@@ -1842,7 +2075,7 @@ async fn machines_are_created_and_deleted_through_the_api() {
         .unwrap()
         .save(
             paths,
-            &json!({"builder": {"ssh_user": "ops", "link": ["sh", "-c", "exit 1"]}}),
+            &json!({"builder": {}, "access": {"user": "ops", "link": ["sh", "-c", "exit 1"]}}),
         )
         .unwrap();
     let message = |said: &Value| said["error"]["message"].as_str().unwrap_or("").to_owned();
@@ -1897,10 +2130,14 @@ async fn machines_are_created_and_deleted_through_the_api() {
     std::fs::write(fake.join("code.create"), "3").unwrap();
     std::fs::write(fake.join("say.create"), "quota exceeded\n").unwrap();
     let (status, job) = send(client, "POST", "/v1/hosts/studio/instance", asked.clone()).await;
-    assert_eq!((status, &job["what"]), (200, &json!("provision")), "{job}");
+    assert_eq!(
+        (status, &job["action"]),
+        (200, &json!("provision")),
+        "{job}"
+    );
     let started = text(&mut events).await;
     assert_eq!(
-        (&started["source"], &started["job"]["what"]),
+        (&started["source"], &started["job"]["action"]),
         (&json!("job"), &json!("provision"))
     );
     let (output, code) = job_ended(&served.socket, job["id"].as_str().unwrap()).await;
@@ -2035,7 +2272,7 @@ async fn machines_are_created_and_deleted_through_the_api() {
 
     let (status, job) = send(client, "DELETE", "/v1/hosts/studio/instance", Value::Null).await;
     assert_eq!(
-        (status, &job["what"]),
+        (status, &job["action"]),
         (200, &json!("unprovision")),
         "{job}"
     );
@@ -2276,7 +2513,7 @@ fn generated_passwords_are_kept_where_the_host_is_and_shown_to_an_admin() {
             send(&mut client, method, path, body).await
         })
     };
-    let profile = json!({"hostname": "studio", "builder": {"ssh_host": "192.0.2.7"}});
+    let profile = json!({"hostname": "studio", "builder": {}, "access": {"address": "192.0.2.7"}});
     let (status, _) = ask("PUT", "/v1/hosts/studio/profile", profile.clone());
     assert_eq!(status, 200);
 
@@ -2386,9 +2623,129 @@ fn pruning_removes_a_jobs_output_and_its_report() {
             ended: Some(long_ago),
             exit_code: Some(0),
             output_path: log.to_string_lossy().into_owned(),
+            ..Job::default()
         })
         .unwrap();
     state.prune();
     assert!(state.store.job("old").unwrap().is_none());
     assert!(!log.exists() && !log.with_extension("json").exists());
+}
+
+/// The routes of the key ring, with the helpers of these tests.
+mod keys;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn first_contact_and_keys_are_actions_of_the_server() {
+    let served = served().await;
+    let mut client = served.client().await;
+    let client = &mut client;
+    // A host that is reached by a command that fails at once, so that what
+    // needs no controller is told apart from what does, without waiting.
+    let profile = json!({"builder": {}, "access": {"address": "192.0.2.7", "auth": "password", "link": ["sh", "-c", "exit 1"]}});
+    berth_core::profiles::Place::own("studio")
+        .unwrap()
+        .save(&served.state.paths, &profile)
+        .unwrap();
+    let (status, listed) = send(client, "GET", "/v1/hosts/studio/actions", Value::Null).await;
+    assert_eq!(status, 200, "{listed}");
+    let action = |listed: &Value, name: &str| {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|action| action["name"] == name)
+            .unwrap_or_else(|| panic!("no {name} in {listed}"))
+            .clone()
+    };
+    // What makes a host reachable is there although its controller is not.
+    let trust = action(&listed, "trust-key");
+    assert_eq!(
+        (&trust["available"], &trust["role"]),
+        (&json!(true), &json!("admin"))
+    );
+    assert_eq!(trust["arguments"][0]["name"], "password");
+    assert_eq!(trust["arguments"][0]["secret"], true);
+    assert!(trust["arguments"][1].get("secret").is_none());
+    assert_eq!(action(&listed, "host-key")["available"], true);
+    // A host that logs in with a password a job cannot type is not applied,
+    // until the server keeps the password.
+    let apply = action(&listed, "apply");
+    assert_eq!(apply["available"], false);
+    assert!(
+        apply["why"].as_str().unwrap().contains("ssh/studio"),
+        "{apply}"
+    );
+    let (status, said) = send(
+        client,
+        "POST",
+        "/v1/hosts/studio/actions/apply",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 501, "{said}");
+    let value = json!({"value": "made-up-ssh-pw"});
+    assert_eq!(
+        send(client, "PUT", "/v1/secrets/ssh%2Fstudio", value)
+            .await
+            .0,
+        200
+    );
+    let (_, listed) = send(client, "GET", "/v1/hosts/studio/actions", Value::Null).await;
+    assert_eq!(action(&listed, "apply")["available"], true);
+
+    // First contact is a job; the password it is given is in neither the job
+    // nor its output.
+    let asked = json!({"arguments": {"password": "made-up-once-pw", "keep_password": "no"}});
+    let (status, acted) = send(client, "POST", "/v1/hosts/studio/actions/trust-key", asked).await;
+    assert_eq!(status, 202, "{acted}");
+    let id = acted["job"]["id"].as_str().unwrap().to_owned();
+    let (output, code) = job_ended(&served.socket, &id).await;
+    assert_eq!(code, 1, "{output}");
+    assert!(
+        output.contains("✗ studio is reached through its own command"),
+        "{output}"
+    );
+    let (_, job) = send(client, "GET", &format!("/v1/jobs/{id}"), Value::Null).await;
+    assert_eq!(
+        (&job["subject"], &job["action"]),
+        (&json!("host:studio"), &json!("trust-key"))
+    );
+    assert!(!job.to_string().contains("made-up-once-pw") && !output.contains("made-up-once-pw"));
+    let both = json!({"arguments": {"password": "x", "key": "berth"}});
+    let (status, _) = send(client, "POST", "/v1/hosts/studio/actions/trust-key", both).await;
+    assert_eq!(status, 400);
+    let nokey = json!({"arguments": {"key": "nothing"}});
+    let (status, _) = send(client, "POST", "/v1/hosts/studio/actions/trust-key", nokey).await;
+    assert_eq!(status, 404);
+
+    // The host keys answer at once: none are recorded yet.
+    let (status, acted) = send(
+        client,
+        "POST",
+        "/v1/hosts/studio/actions/host-key",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{acted}");
+    assert_eq!(acted["result"], json!({"host_keys": [], "accepted": false}));
+
+    // The installation rotates a key as keys.rotate does.
+    let (status, listed) = send(client, "GET", "/v1/actions", Value::Null).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        action(&listed, "rotate-key")["arguments"][0]["default"],
+        "berth"
+    );
+    let nothing = json!({"arguments": {"name": "nothing"}});
+    let (status, _) = send(client, "POST", "/v1/actions/rotate-key", nothing).await;
+    assert_eq!(status, 404);
+    let asked = json!({"arguments": {"name": "berth"}, "token": "rotate-1"});
+    let (status, acted) = send(client, "POST", "/v1/actions/rotate-key", asked.clone()).await;
+    assert_eq!(status, 202, "{acted}");
+    assert_eq!(acted["job"]["action"], "rotate-key:berth");
+    let id = acted["job"]["id"].as_str().unwrap().to_owned();
+    let (output, _) = job_ended(&served.socket, &id).await;
+    assert!(output.contains("Replacing the key berth"), "{output}");
+    let (_, again) = send(client, "POST", "/v1/actions/rotate-key", asked).await;
+    assert_eq!(again["job"]["id"], json!(id));
 }

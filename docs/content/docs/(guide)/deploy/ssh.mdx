@@ -32,14 +32,14 @@ On the host's **Install** tab, choose **Existing host over SSH**. The SSH rows f
 
 ### Give the address
 
-Enter a hostname, an IP address or a `Host` alias from your SSH configuration in **SSH host**. Machines on your tailnet and aliases from `~/.ssh/config` are suggested. Accepting the host fills blank user, port and private key fields from OpenSSH's effective configuration.
+Enter a hostname, an IP address or a `Host` alias from your SSH configuration in **SSH host**. Machines on your tailnet and aliases from `~/.ssh/config` are suggested. Accepting the host fills blank user and port fields from OpenSSH's effective configuration.
 
 </Step>
 <Step>
 
 ### Say how to log in
 
-Choose with **Ask for SSH password** and **Ask for sudo password** whether berth asks for them on the target. Instead of a key of yours, the login can take [the key of berth itself](/docs/reference/profile#the-key-of-berth-itself): copy it from the Settings tab of the home screen into the login's `~/.ssh/authorized_keys`. Your ssh-agent and SSH configuration apply as usual. OpenSSH's host key check applies too: if the host is new to you, connect once with `ssh HOST` to accept its key.
+**Log in with** says how berth logs in ([Logging in to hosts](/docs/use/accounts#logging-in-to-hosts)). The default is [the key of berth itself](/docs/reference/profile#the-key-of-berth-itself). `ssh` uses your own ssh-agent and SSH configuration. A host that doesn't take berth's key yet gets it with `berth key trust HOST` and a password used once. **Ask for sudo password** says whether berth asks for one on the target. berth records the host's SSH host key at the first login, and refuses the host if the key changes later.
 
 </Step>
 <Step>

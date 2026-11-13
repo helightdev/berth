@@ -70,6 +70,10 @@
           "required": {
             "type": "boolean"
           },
+          "secret": {
+            "description": "What is given is a secret, such as a password: it is not shown as it\nis typed, nor kept, nor written to a job's output.",
+            "type": "boolean"
+          },
           "values": {
             "description": "The values a provisioner's argument takes, when it is a choice of a\nfew. Empty for one that takes any text.",
             "items": {

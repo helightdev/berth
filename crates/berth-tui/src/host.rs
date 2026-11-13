@@ -3,10 +3,11 @@
 //! business; requests go out through it and what happened comes back.
 
 use crate::event::{Key, key_bytes};
+use crate::page::{self, Accepted, Begin};
+pub use crate::page::{Arguments, Launch, argument_label};
 use berth_api as api;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use tui_input::Input;
 use web_time::{Duration, Instant};
 
 /// The lowest `api` of a host this berth can work with.
@@ -220,20 +221,9 @@ pub enum State {
 /// Something to say yes to before it happens.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Pending {
-    /// Run the task at this index.
-    Task(usize),
+    /// Run the action at this index of [`HostView::actions`].
+    Action(usize),
     Apply,
-}
-
-/// The dialog that asks for a task's arguments, one after another.
-pub struct Arguments {
-    pub task: usize,
-    pub index: usize,
-    pub values: BTreeMap<String, String>,
-    pub input: Input,
-    pub choices: Vec<String>,
-    /// The choice last put into the input, for stepping through them.
-    pub chosen: Option<usize>,
 }
 
 /// What the overview knows of the host, and the panel onto one of its sessions.
@@ -322,79 +312,69 @@ impl HostView {
         });
     }
 
-    /// Begin a task: its question first, then its arguments. Returns the
-    /// task to run now when it needs neither.
+    /// What can be done on the host: its tasks as actions, each task that
+    /// is no step of another, with the steps plugins add to it.
+    pub fn actions(&self) -> Vec<api::Action> {
+        api::Action::of_tasks(&self.tasks)
+    }
+
+    /// Begin an action: its question first, then its arguments. Returns the
+    /// action to run now when it needs neither.
     pub fn begin_task(&mut self, index: usize, confirmed: bool) -> Option<Launch> {
-        let task = self.tasks.get(index)?.clone();
-        if let (Some(question), false) = (&task.confirm, confirmed) {
-            self.question = Some((question.clone(), Pending::Task(index)));
-            return None;
+        match page::begin(&self.actions(), index, confirmed) {
+            Begin::Ask(question) => self.question = Some((question, Pending::Action(index))),
+            Begin::Arguments(dialog) => {
+                self.arguments = Some(dialog);
+                self.ask_choices();
+            }
+            Begin::Run(launch) => return Some(launch),
+            Begin::Nothing => {}
         }
-        if task.arguments.is_empty() {
-            return Some((index, BTreeMap::new()));
-        }
-        self.arguments = Some(Arguments {
-            task: index,
-            index: 0,
-            values: BTreeMap::new(),
-            input: Input::new(task.arguments[0].default.clone()),
-            choices: vec![],
-            chosen: None,
-        });
-        self.ask_choices();
         None
     }
 
     fn ask_choices(&self) {
-        if let Some(dialog) = &self.arguments
-            && let Some(task) = self.tasks.get(dialog.task)
-            && let Some(argument) = task.arguments.get(dialog.index)
-            && !argument.choices.is_empty()
+        if let Some((task, argument)) = self
+            .arguments
+            .as_ref()
+            .and_then(|dialog| dialog.wants_choices(&self.actions()))
         {
-            self.send(Request::Choices {
-                task: task.name.clone(),
-                argument: argument.name.clone(),
-            });
+            self.send(Request::Choices { task, argument });
         }
     }
 
     /// Take the value typed for the argument being asked and go on to the
-    /// next. Returns the task to run after the last, or what is missing.
+    /// next. Returns the action to run after the last, or what is missing.
     pub fn accept_argument(&mut self) -> Result<Option<Launch>, String> {
-        let Some(mut dialog) = self.arguments.take() else {
+        let Some(dialog) = self.arguments.take() else {
             return Ok(None);
         };
-        let Some(task) = self.tasks.get(dialog.task).cloned() else {
-            return Ok(None);
-        };
-        let argument = &task.arguments[dialog.index];
-        let value = dialog.input.value().to_owned();
-        if value.is_empty() && argument.required {
-            self.arguments = Some(dialog);
-            return Err(format!("{} is needed", argument_label(argument)));
-        }
-        dialog.values.insert(argument.name.clone(), value);
-        dialog.index += 1;
-        match task.arguments.get(dialog.index) {
-            Some(next) => {
-                dialog.input = Input::new(next.default.clone());
-                dialog.choices.clear();
-                dialog.chosen = None;
-                self.arguments = Some(dialog);
+        match page::accept(&self.actions(), dialog) {
+            Accepted::Next(next) => {
+                self.arguments = Some(next);
                 self.ask_choices();
                 Ok(None)
             }
-            None => Ok(Some((dialog.task, dialog.values))),
+            Accepted::Run(launch) => Ok(Some(launch)),
+            Accepted::Missing(dialog, said) => {
+                self.arguments = Some(dialog);
+                Err(said)
+            }
         }
     }
 
     /// What starting a task sends: its arguments, and the panel's size for a terminal.
-    pub fn task_body(&self, task: &api::Task, values: &BTreeMap<String, String>) -> Value {
+    pub fn task_body(&self, action: &api::Action, values: &BTreeMap<String, String>) -> Value {
         let mut body = json!({"arguments": values});
-        if task.terminal {
+        if action.terminal {
             (body["rows"], body["cols"]) = (json!(self.size.0), json!(self.size.1));
         }
         body
+    }
+
+    /// The task an action of the host runs, with what the host keeps of it.
+    pub fn task(&self, action: &api::Action) -> Option<&api::Task> {
+        self.tasks.iter().find(|task| task.name == action.name)
     }
 
     /// Start a shell as `user`.
@@ -517,15 +497,9 @@ impl HostView {
                     argument,
                     choices,
                 } => {
-                    if let Some(dialog) = &mut self.arguments
-                        && let Some(known) = self.tasks.get(dialog.task)
-                        && known.name == task
-                        && known
-                            .arguments
-                            .get(dialog.index)
-                            .is_some_and(|known| known.name == argument)
-                    {
-                        dialog.choices = choices;
+                    let actions = self.actions();
+                    if let Some(dialog) = &mut self.arguments {
+                        dialog.offered(&actions, &task, &argument, choices);
                     }
                 }
                 Event::Error(message) => {
@@ -588,24 +562,6 @@ fn uptime(seconds: u64) -> String {
     }
 }
 
-/// A task and the values of its arguments, ready to run.
-pub type Launch = (usize, BTreeMap<String, String>);
-
-pub fn argument_label(argument: &api::Argument) -> &str {
-    match argument.label.is_empty() {
-        true => &argument.name,
-        false => &argument.label,
-    }
-}
-
-/// What a task is called on screen.
-pub fn task_label(task: &api::Task) -> &str {
-    match task.label.is_empty() {
-        true => &task.name,
-        false => &task.label,
-    }
-}
-
 /// How a session of the list is doing, in a word.
 pub fn session_state(session: &api::Session) -> String {
     match (session.running(), session.lost, session.exit_code) {
@@ -620,7 +576,7 @@ pub fn session_state(session: &api::Session) -> String {
 /// Something the overview of a host offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick {
-    /// A task, by index into what the host listed.
+    /// An action, by index into [`HostView::actions`].
     Task(usize),
     Terminal,
     /// A session, by index.
@@ -631,25 +587,10 @@ pub enum Pick {
 /// each in the group it names, with the terminal among the first and the
 /// host's sessions after them.
 pub fn groups(host: &HostView, terminal_user: &str) -> Vec<(String, Vec<(String, Pick)>)> {
-    let mut groups: Vec<(String, Vec<(String, Pick)>)> = vec![];
-    for (index, task) in host.tasks.iter().enumerate() {
-        // A step of another task has no row of its own.
-        if !task.extends.is_empty() {
-            continue;
-        }
-        let title = match task.group.is_empty() {
-            true => "System",
-            false => task.group.as_str(),
-        };
-        let row = (format!("  ▸ {}", task_label(task)), Pick::Task(index));
-        match groups
-            .iter_mut()
-            .find(|(known, _)| known.eq_ignore_ascii_case(title))
-        {
-            Some((_, rows)) => rows.push(row),
-            None => groups.push((title.to_owned(), vec![row])),
-        }
-    }
+    let mut groups: Vec<(String, Vec<(String, Pick)>)> = page::groups(&host.actions(), Pick::Task)
+        .into_iter()
+        .map(|group| (group.title, group.rows))
+        .collect();
     let terminal = (format!("  ▸ Terminal · as {terminal_user}"), Pick::Terminal);
     match groups.iter_mut().find(|(title, _)| title == "System") {
         Some((_, rows)) => rows.insert(1.min(rows.len()), terminal),
@@ -704,30 +645,12 @@ pub fn exited(frame: &Value) -> Option<Option<i32>> {
     Some(code.as_i64().map(|code| code as i32))
 }
 
-/// What the information box says of a task: its own help, what it asks for,
-/// and what plugins add to it.
+/// What the information box says of an action of the host.
 pub fn task_help(host: &HostView, index: usize) -> String {
-    let Some(task) = host.tasks.get(index) else {
-        return String::new();
-    };
-    let mut help = task.help.clone();
-    if !task.arguments.is_empty() {
-        let names: Vec<&str> = task.arguments.iter().map(argument_label).collect();
-        help += &format!("\n\nAsks for: {}.", names.join(", "));
+    match host.actions().get(index) {
+        Some(action) => page::help(action, &format!("berth run HOST {}", action.name)),
+        None => String::new(),
     }
-    let steps: Vec<_> = host
-        .tasks
-        .iter()
-        .filter(|step| step.extends.contains(&task.name))
-        .collect();
-    if !steps.is_empty() {
-        help += "\n\n### From plugins\n\n";
-        for step in steps {
-            help += &format!("- **{}**: {}\n", step.label, step.help.replace('\n', " "));
-        }
-    }
-    help += &format!("\n\nFrom the command line: `berth run HOST {}`", task.name);
-    help
 }
 
 /// What the information box says of a session of the list.

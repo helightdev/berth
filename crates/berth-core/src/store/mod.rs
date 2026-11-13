@@ -29,6 +29,8 @@ pub mod kind {
     pub const REGISTRY: &str = "registry";
     pub const SECRET: &str = "secret";
     pub const KEY: &str = "key";
+    /// What berth knows of a host's SSH: its host keys and the keys it trusts.
+    pub const ACCESS: &str = "access";
     pub const TOKEN: &str = "token";
     pub const PLUGIN: &str = "plugin";
     pub const MIRROR: &str = "mirror";
@@ -138,22 +140,36 @@ pub struct Entry {
     pub updated: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Job {
     pub id: String,
+    /// The hosts it is about, for a reader.
     pub host: String,
+    /// The action, as rows from before `action` was kept say it.
     pub what: String,
     pub started: String,
     pub ended: Option<String>,
     pub exit_code: Option<i32>,
     pub output_path: String,
+    /// `host:NAME`, `provisioner:PLUGIN/ID`, `resource:ID` or `installation`;
+    /// empty in rows from before it was kept.
+    pub subject: String,
+    pub action: String,
+    /// The caller's token: the same one again for the same subject and
+    /// action finds this job.
+    pub token: Option<String>,
 }
 
 impl Job {
     pub fn json(&self) -> Value {
+        // Rows from before actions were kept say it as what they did.
+        let action = match self.action.is_empty() {
+            true => &self.what,
+            false => &self.action,
+        };
         json!({
-            "id": self.id, "host": self.host, "what": self.what, "started": self.started,
-            "ended": self.ended, "exit_code": self.exit_code,
+            "id": self.id, "subject": self.subject, "action": action, "host": self.host,
+            "started": self.started, "ended": self.ended, "exit_code": self.exit_code,
         })
     }
 }
@@ -338,7 +354,11 @@ pub trait Backend: Send {
     fn remove(&mut self, namespace: &str, key: &str, when: When) -> Result<bool>;
     fn list(&mut self, namespace: &str) -> Result<Vec<Entry>>;
 
-    fn add_job(&mut self, job: &Job) -> Result<()>;
+    /// Add the job, unless one with its subject, action and token is there:
+    /// then that one is returned instead, in the same statement, so two
+    /// callers with one token get one job.
+    fn add_job(&mut self, job: &Job) -> Result<Job>;
+    fn job_by_token(&mut self, subject: &str, action: &str, token: &str) -> Result<Option<Job>>;
     fn end_job(&mut self, id: &str, exit_code: Option<i32>, ended: &str) -> Result<()>;
     fn end_lost_jobs(&mut self, ended: &str) -> Result<usize>;
     fn job(&mut self, id: &str) -> Result<Option<Job>>;
@@ -550,8 +570,15 @@ impl Store {
 
     // ── Jobs ────────────────────────────────────────────────────────────────
 
-    pub fn add_job(&self, job: &Job) -> Result<()> {
+    /// Add a job, and return the job the store has for it: this one, or
+    /// the one added before with the same subject, action and token.
+    pub fn add_job(&self, job: &Job) -> Result<Job> {
         self.backend().add_job(job)
+    }
+
+    /// The job started with this token for this subject and action.
+    pub fn job_by_token(&self, subject: &str, action: &str, token: &str) -> Result<Option<Job>> {
+        self.backend().job_by_token(subject, action, token)
     }
 
     pub fn end_job(&self, id: &str, exit_code: Option<i32>) -> Result<()> {

@@ -165,9 +165,10 @@ def make_demo(root: Path) -> dict:
         "studio", profile="laptop", operator_ssh_public_keys=[key], operator_password_hash=fake_hash,
         keyboard="us",
         ansible_vars={"devbox_plugin_features": features},
-        builder={"ssh_host": "100.64.0.12", "ssh_user": "ops", "ask_become_pass": False,
-                 # The demo host is the container; a real profile reaches berthd over SSH.
-                 "link": ["docker", "exec", "-i", CONTAINER, "berthd", "connect"]},
+        builder={},
+        access={"address": "100.64.0.12", "user": "ops", "sudo": "none",
+                # The demo host is the container; a real profile reaches berthd over SSH.
+                "link": ["docker", "exec", "-i", CONTAINER, "berthd", "connect"]},
     )
     cloud = profile(
         "cloud-1", profile="cloud", operator_ssh_public_keys=[key], keyboard="us",
@@ -177,7 +178,8 @@ def make_demo(root: Path) -> dict:
     laptop = profile(
         "garage-laptop", profile="laptop", operator_ssh_public_keys=[key], keyboard="us",
         ansible_vars={"devbox_plugin_features": features[:4]},
-        builder={"ssh_host": "192.0.2.31", "ssh_user": "ops"},
+        builder={},
+        access={"address": "192.0.2.31", "user": "ops"},
     )
     for host in (studio, cloud, laptop):
         run(env, "profile", host["hostname"], "--set", "-", stdin=json.dumps(host, indent=2) + "\n")

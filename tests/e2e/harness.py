@@ -171,8 +171,22 @@ class Workstation:
 
     @property
     def own_key(self):
-        """berth's own key, which it makes when first asked."""
-        return self.data / 'berth/id_ed25519'
+        """The file of berth's own key, the key `berth` of its key ring, which
+        berth writes from its store when ssh needs it."""
+        return self.data / 'berth/keys/berth'
+
+    def own_public(self):
+        """The public half of berth's own key, made when first asked for."""
+        return self.berth('key', 'show').stdout.strip()
+
+    def own_key_file(self):
+        """berth's own key as a file: berth writes it for an inventory, here
+        of a host that is only made for that and removed again."""
+        probe = 'key-file'
+        self.write_profile({'hostname': probe, 'builder': {}, 'access': {'address': '192.0.2.1'}}, name=probe)
+        self.berth('inventory', probe)
+        self.remove_host(probe)
+        return self.own_key
 
     def trust_host(self):
         """Know the test host's key, as after a first ssh with a check of its fingerprint."""
@@ -256,10 +270,11 @@ def profile(**values):
         'hostname': HOST, 'profile': 'cloud', 'keyboard': 'us',
         # The operator's sudo needs no password, as by default, so berth asks
         # for none. shipped_plugins says the features are chosen already, as
-        # in every profile berth saves: without it, the next command that
-        # opens the profile (such as `berth host HOST secret`) takes it for
-        # one from before the agents were plugins and turns them on.
-        'builder': {'ssh_host': HOST, 'ssh_user': OPERATOR, 'shipped_plugins': True},
+        # in every profile berth saves. berth logs in with the user's SSH
+        # configuration, which offers the user's key before berth's own: the
+        # host takes the user's key until the first apply gives it berth's.
+        'builder': {'shipped_plugins': True},
+        'access': {'address': HOST, 'user': OPERATOR, 'auth': 'ssh'},
         'ansible_vars': light_vars(),
     })
     base.update(values)
@@ -331,11 +346,12 @@ def served():
         return _provisioned['serve']
     station = provisioned()
     server = Workstation('server', ssh_key=False)
-    own = server.berth('key').stdout.strip()
+    own = server.own_public()
     # The server's key reaches the operator the way the first one did.
     hand_over_operator_key(station.public, own)
+    key = server.own_key_file()
     wait_for('the operator taking the server\'s key', lambda: server.ssh(
-        OPERATOR, 'true', key=server.own_key, check=False).returncode == 0)
+        OPERATOR, 'true', key=key, check=False).returncode == 0)
     issuer = Issuer(clients={'berth-client': ('client-secret', 'openid berth:operate')})
     serve = Serve(server, web=True, env={'BERTH_OAUTH_ISSUER': issuer.url, 'BERTH_OAUTH_AUDIENCE': 'berth',
                                          **package_registry().env()})
@@ -344,7 +360,9 @@ def served():
     # server keeps the workstation's keys; the server adds its own. What the
     # workstation turned on for its own tests stays there.
     host = station.read_profile()
-    host['operator_ssh_public_keys'].append(station.berth('key').stdout.strip())
+    host['operator_ssh_public_keys'].append(station.own_public())
+    # The server logs in with its own key; the SSH configuration is its own account's.
+    host['access']['auth'] = 'berth'
     host['ansible_vars'] = light_vars()
     for key in ('secrets', 'registries', 'tailscale_auto_key', 'tailscale_auth_key', 'tailscale_login_server'):
         host.pop(key, None)
@@ -553,7 +571,7 @@ def _enter_served_extended():
     before = last_key_id()
     first = client.berth('apply', HOST, timeout=900)
     after_first = last_key_id()
-    job = serve.call('POST', f'/v1/hosts/{HOST}/apply')
+    job = serve.call('POST', f'/v1/hosts/{HOST}/actions/apply', expect=202)['job']
     portal = serve.portal()
     try:
         texts, data, _ = portal.stream('jobs.follow', {'id': job['id']}, timeout=900,

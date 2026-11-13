@@ -11,7 +11,7 @@ berthd and `berth serve` answer the same kind of API. Each of their *operations*
 | berthd | every host, as root | unix sockets in `/run/berth` | [berthd](/docs/api/host) |
 | `berth serve` | your machine, or a server | a unix socket of your user, and optionally TCP | [berth serve](/docs/api/serve) |
 
-`berth serve` passes berthd's operations through to the host it names, so a program that talks to `berth serve` reaches all hosts.
+`berth serve` passes berthd's operations through to the host it names, so a program that talks to `berth serve` reaches all hosts. It also lists what can be done to each host and to the installation as [actions](/docs/extend/serve#actions), and runs one as a job it keeps.
 
 ## Ways to call an operation
 
@@ -54,12 +54,12 @@ Over HTTP an error is a status code with a JSON body; on the portal the same obj
 | 401 | `unauthorized` | No token, or the wrong one |
 | 403 | `forbidden` | This level may not call the operation |
 | 404 | `not_found` | No such operation, session, host or key |
-| 409 | `conflict` | The thing is in a state that does not allow this |
+| 409 | `conflict` | The thing is in a state that does not allow this, such as a host that another action is changing |
 | 412 | `precondition_failed` | Someone else wrote in between |
 | 413 | `too_large` | The input, or bytes on the portal, are too large |
 | 429 | `limit` | Too many at once |
 | 500 | `internal` | Something failed inside |
-| 501 | `not_available` | Not available here, such as systemd in a container, or this operation on the portal |
+| 501 | `not_available` | Not available here, such as systemd in a container, this operation on the portal, or an action that cannot run now |
 | 502 | `unreachable` | `berth serve` could not reach the host |
 | 503 | `not_served` | Nobody serves that service right now |
 | 504 | `timeout` | A service did not answer in time |

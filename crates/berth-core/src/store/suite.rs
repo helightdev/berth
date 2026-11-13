@@ -85,6 +85,7 @@ on_each_backend!(
     the_inbox_filters_pages_and_marks,
     two_writers_on_one_key_and_one_loses,
     old_messages_and_jobs_are_pruned_and_values_stay,
+    a_repeated_token_finds_the_job_it_started,
     a_store_is_up_to_date_and_says_what_it_is,
     state_rows_are_kept_listed_and_removed,
     replacing_states_leaves_other_scopes_and_kinds_alone,
@@ -393,6 +394,7 @@ fn old_messages_and_jobs_are_pruned_and_values_stay(place: &Place) {
         ended: ended.then(|| rfc3339(unix_now() - age * 86400)),
         exit_code: ended.then_some(0),
         output_path: format!("/tmp/{id}.log"),
+        ..Job::default()
     };
     store.add_job(&job("jold", 100, true)).unwrap();
     store.add_job(&job("jrunning", 100, false)).unwrap();
@@ -425,6 +427,62 @@ fn old_messages_and_jobs_are_pruned_and_values_stay(place: &Place) {
     let lost = store.job("jlost").unwrap().unwrap();
     assert_eq!((lost.ended.is_some(), lost.exit_code), (true, None));
     assert_eq!(store.end_lost_jobs().unwrap(), 0);
+}
+
+fn a_repeated_token_finds_the_job_it_started(place: &Place) {
+    let store = place.open();
+    let job = |id: &str, subject: &str, token: Option<&str>| Job {
+        id: id.into(),
+        host: "studio".into(),
+        what: "apply".into(),
+        started: rfc3339(unix_now()),
+        output_path: format!("/tmp/{id}.log"),
+        subject: subject.into(),
+        action: "apply".into(),
+        token: token.map(str::to_owned),
+        ..Job::default()
+    };
+    let first = store.add_job(&job("j1", "host:studio", Some("t"))).unwrap();
+    assert_eq!(first.id, "j1");
+    // The same token again is the job there is, and nothing is added.
+    let again = store.add_job(&job("j2", "host:studio", Some("t"))).unwrap();
+    assert_eq!(again, first);
+    assert!(store.job("j2").unwrap().is_none());
+    // It is one per subject and action, and jobs without one never meet.
+    assert_eq!(
+        store.add_job(&job("j3", "host:lab", Some("t"))).unwrap().id,
+        "j3"
+    );
+    assert_eq!(
+        store.add_job(&job("j4", "host:studio", None)).unwrap().id,
+        "j4"
+    );
+    assert_eq!(
+        store.add_job(&job("j5", "host:studio", None)).unwrap().id,
+        "j5"
+    );
+    let found = store.job_by_token("host:studio", "apply", "t").unwrap();
+    assert_eq!(found.map(|job| job.id), Some("j1".into()));
+    assert!(
+        store
+            .job_by_token("host:studio", "seed", "t")
+            .unwrap()
+            .is_none()
+    );
+    // Two callers at once with one token, each with a connection of its
+    // own, get one job between them.
+    let racers: Vec<_> = (0..4)
+        .map(|index| {
+            let store = place.open();
+            let job = job(&format!("r{index}"), "installation", Some("race"));
+            std::thread::spawn(move || store.add_job(&job).unwrap().id)
+        })
+        .collect();
+    let ids: std::collections::BTreeSet<String> = racers
+        .into_iter()
+        .map(|racer| racer.join().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 1);
 }
 
 fn a_store_is_up_to_date_and_says_what_it_is(place: &Place) {
@@ -1117,6 +1175,9 @@ fn filled(store: &Store) {
             ended: Some("2026-01-02T03:05:00Z".into()),
             exit_code: Some(2),
             output_path: "/srv/berth/jobs/j1.log".into(),
+            subject: "host:studio".into(),
+            action: "apply".into(),
+            token: Some("t-1".into()),
         })
         .unwrap();
     store
@@ -1128,6 +1189,7 @@ fn filled(store: &Store) {
             ended: None,
             exit_code: None,
             output_path: "/srv/berth/jobs/j2.log".into(),
+            ..Job::default()
         })
         .unwrap();
     store.write(kind::SETTING, OWN, "plain", b"1").unwrap();

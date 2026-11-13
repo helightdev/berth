@@ -67,7 +67,7 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
         .env("BERTH_PLUGINS", dirs.to_string())
         .env(
             "BERTH_SSH_PUBLIC_KEY",
-            paths.own_public_key().unwrap_or_default(),
+            crate::keys::operator_keys(paths).join("\n"),
         )
         .stdin(std::process::Stdio::null());
     if delivered {

@@ -252,12 +252,17 @@ impl Store {
         Ok(self.store.names(kind::SECRET, &self.scope)?)
     }
 
-    /// The secrets the user named, without the passwords of registries.
+    /// The secrets the user named, without the passwords of registries and
+    /// those berth logs in to hosts with.
     pub fn secret_names(&self) -> Vec<String> {
         self.all_secret_names()
             .unwrap_or_default()
             .into_iter()
-            .filter(|name| !name.starts_with("registry/"))
+            .filter(|name| {
+                !["registry/", "ssh/", "sudo/"]
+                    .iter()
+                    .any(|kept| name.starts_with(kept))
+            })
             .collect()
     }
 
@@ -762,11 +767,18 @@ pub fn secret_command(paths: &Paths, args: &[&str]) -> Result<()> {
             }
             Ok(())
         }
-        ["set", name] if valid_name(name) => {
+        // A host's SSH or sudo password is kept under the host's name.
+        ["set", name]
+            if valid_name(name)
+                || name
+                    .strip_prefix("ssh/")
+                    .or_else(|| name.strip_prefix("sudo/"))
+                    .is_some_and(crate::profiles::valid_name) =>
+        {
             store.set_secret(name, Some(&read_secret(&format!("Value of {name}"))?))
         }
         ["remove", name] => store.set_secret(name, None),
-        _ => Err("Usage: berth secret [set NAME | remove NAME]  (names: lower-case letters, digits, - and _)".into()),
+        _ => Err("Usage: berth secret [set NAME | remove NAME]  (names: lower-case letters, digits, - and _; ssh/HOST and sudo/HOST are a host's SSH and sudo passwords)".into()),
     }
 }
 

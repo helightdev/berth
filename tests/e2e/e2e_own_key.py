@@ -4,7 +4,7 @@ ssh-agent, and the operator's sudo as it is by default. Once straight from a
 workstation, and once from a berth serve on that workstation, which has only
 the same key, with a terminal client using it.
 
-It runs on a test host of its own, `dock`, which nothing else sets up: run.py
+It runs on a test host of its own, `dock`, which nothing else applies a profile to: run.py
 runs it there alongside the other modules on `studio`. Direct is the first
 apply that host sees; Served applies the server's profile over it."""
 import json
@@ -21,21 +21,18 @@ def bare_profile(template):
     """A profile for the test host as a new host starts, with no SSH key in it."""
     profile = json.loads(json.dumps(template))
     profile.update({'hostname': HOST, 'profile': 'cloud', 'keyboard': 'us', 'ansible_vars': light_vars()})
-    profile['builder'] = {'ssh_host': HOST, 'ssh_user': OPERATOR, 'shipped_plugins': True}
+    profile['builder'] = {'shipped_plugins': True}
+    profile['access'] = {'address': HOST, 'user': OPERATOR, 'auth': 'berth'}
     return profile
-
-
-def hand_over(*keys):
-    """The keys the host takes from its provider, and nothing else of the run's."""
-    hand_over_operator_key(*(key.with_suffix('.pub').read_text().strip() for key in keys))
 
 
 def keyed():
     """The workstation whose berth key is the only one the host takes, made once."""
     if 'own-key' not in _provisioned:
         station = Workstation('own-key', ssh_key=False)
-        station.berth('key')
-        hand_over(station.own_key)
+        # The key the host takes from its provider, and nothing else of the run's.
+        hand_over_operator_key(station.own_public())
+        station.own_key_file()
         wait_for('the operator taking the key of berth', lambda: station.ssh(
             OPERATOR, 'true', key=station.own_key, check=False).returncode == 0)
         _provisioned['own-key'] = station
@@ -64,7 +61,7 @@ class OwnKeyOnly:
         self.assertEqual(list(runner.glob('id_*')), [])
 
     def test_the_operator_takes_only_berths_key_and_sudo_needs_no_password(self):
-        own = self.keyed.own_key.with_suffix('.pub').read_text().strip()
+        own = self.keyed.own_public()
         block = self.root_on_host(f"sed -n '/BEGIN DEVBOX/,/END DEVBOX/p' /home/{OPERATOR}/.ssh/authorized_keys")
         self.assertEqual([line for line in block.splitlines() if not line.startswith('#')], [own])
         sudoers = self.root_on_host('cat /etc/sudoers.d/99-devbox-operator')
@@ -166,8 +163,13 @@ class Served(OwnKeyOnly, unittest.TestCase):
         cls.serve.stop()
 
     def test_the_server_hands_out_its_key_and_passwordless_sudo(self):
+        keys = self.serve.call('GET', '/v1/keys')['keys']
+        self.assertEqual([key['name'] for key in keys], ['berth'])
+        self.assertEqual(keys[0]['public'], self.keyed.own_public())
+        self.assertEqual(keys[0]['hosts'], [HOST])
+        self.assertNotIn('PRIVATE KEY', json.dumps(keys))
         catalogue = self.serve.call('GET', '/v1/setup')
-        self.assertEqual(catalogue['key'], self.keyed.own_key.with_suffix('.pub').read_text().strip())
+        self.assertNotIn('key', catalogue)
         self.assertIs(catalogue['template']['operator_passwordless_sudo'], True)
         self.assertEqual(catalogue['template']['operator_ssh_public_keys'], [])
 

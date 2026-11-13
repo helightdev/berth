@@ -56,7 +56,19 @@ pub enum Body {
 
 /// What a caller has to be allowed for an operation. Each role includes the
 /// ones before it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    utoipa::ToSchema,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum Role {
     /// Look: hosts, sessions and their output, logs, the inbox, the store.
     View,
@@ -228,13 +240,24 @@ pub static SERVE: &[Op] = &[
         "GET",
         "/v1/hosts/{name}/credentials",
     )),
-    admin(call("hosts.apply", "POST", "/v1/hosts/{name}/apply")),
-    admin(call("hosts.rollout", "POST", "/v1/rollout")),
-    admin(call("hosts.seed", "POST", "/v1/hosts/{name}/seed")),
-    admin(call("hosts.secrets", "POST", "/v1/hosts/{name}/secrets")),
+    call("hosts.actions", "GET", "/v1/hosts/{name}/actions"),
+    // Anyone let in may ask; the action's own role is checked when it is run.
+    role(
+        call("hosts.act", "POST", "/v1/hosts/{name}/actions/{action}"),
+        Role::View,
+    ),
+    call("actions.list", "GET", "/v1/actions"),
+    role(
+        call("actions.act", "POST", "/v1/actions/{action}"),
+        Role::View,
+    ),
     admin(call("secrets.list", "GET", "/v1/secrets")),
     admin(call("secrets.set", "PUT", "/v1/secrets/{name}")),
     admin(call("secrets.remove", "DELETE", "/v1/secrets/{name}")),
+    admin(call("keys.list", "GET", "/v1/keys")),
+    admin(bytes(call("keys.add", "PUT", "/v1/keys/{name}"))),
+    admin(call("keys.remove", "DELETE", "/v1/keys/{name}")),
+    admin(call("keys.rotate", "POST", "/v1/keys/{name}/rotate")),
     admin(call("registries.list", "GET", "/v1/registries")),
     admin(call("registries.save", "PUT", "/v1/registries/{name}")),
     admin(call("registries.remove", "DELETE", "/v1/registries/{name}")),
@@ -398,7 +421,8 @@ mod tests {
         assert_eq!(role(HOST, "sessions.list"), Role::View);
         assert_eq!(role(HOST, "files.read"), Role::Operate);
         assert_eq!(role(HOST, "sessions.attach"), Role::Operate);
-        assert_eq!(role(SERVE, "hosts.apply"), Role::Admin);
+        assert_eq!(role(SERVE, "hosts.save"), Role::Admin);
+        assert_eq!(role(SERVE, "hosts.act"), Role::View);
         assert_eq!(role(SERVE, "plugins.upload"), Role::Admin);
         assert_eq!(role(SERVE, "kv.set"), Role::Operate);
         assert!(Role::View < Role::Operate && Role::Operate < Role::Admin);

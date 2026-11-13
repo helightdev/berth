@@ -306,7 +306,7 @@ Each verb adds to it and answers like this:
 | `start`, `stop` | `id` | `{}` |
 | `list` | | `instances`, a list of `id`, `host` and `state` |
 
-`create` must answer with an `id`. berth keeps it, and every later verb uses that id. The `address` and `port` go into the profile's `builder.ssh_host` and `builder.ssh_port` when those are empty. Entries of `list` without an `id` are dropped.
+`create` must answer with an `id`. berth keeps it, and every later verb uses that id. The `address` and `port` go into the profile's `access.address` and `access.port` when those are empty. Entries of `list` without an `id` are dropped.
 
 A `seed` provisioner also receives the cloud seed:
 

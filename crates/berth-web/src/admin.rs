@@ -24,8 +24,6 @@ pub enum Arrived {
     Seed(String),
     /// Applying it needs the SSH user's sudo password.
     Password,
-    /// A session on the host to look at.
-    Session(Value),
     /// What can create the host's machine.
     Provisioners(Result<Vec<berth_api::ProvisionerInfo>, String>),
     /// The machine berth created for the host, if it has one.
@@ -43,6 +41,8 @@ pub struct Data {
     pub features: Vec<Feature>,
     /// The server's own SSH public key; empty when it has none to give.
     pub own_key: String,
+    /// The keys of the server's key ring, by name and public half.
+    pub keys: Vec<(String, String)>,
     pub registries: Map<String, Value>,
     /// Every secret's name; a registry's login is `registry/NAME`.
     pub secrets: Vec<String>,
@@ -139,7 +139,6 @@ impl Admin {
         self.call("setup.catalogue", json!({}), Value::Null, |admin, found| {
             let mut data = admin.data.borrow_mut();
             data.template = found["template"].clone();
-            data.own_key = found["key"].as_str().unwrap_or("").to_owned();
             data.features = found["features"]
                 .as_array()
                 .into_iter()
@@ -180,6 +179,24 @@ impl Admin {
         });
         self.call("settings.list", json!({}), Value::Null, |admin, found| {
             admin.data.borrow_mut().settings = found.as_array().cloned().unwrap_or_default();
+        });
+        self.call("keys.list", json!({}), Value::Null, |admin, found| {
+            let mut data = admin.data.borrow_mut();
+            data.keys = found["keys"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|key| {
+                    let text = |name: &str| key[name].as_str().unwrap_or("").to_owned();
+                    (text("name"), text("public"))
+                })
+                .collect();
+            data.own_key = data
+                .keys
+                .iter()
+                .find(|(name, _)| name == "berth")
+                .map(|(_, public)| public.clone())
+                .unwrap_or_default();
         });
         self.call("plugins.list", json!({}), Value::Null, |admin, found| {
             let listing: PluginList = serde_json::from_value(found).unwrap_or_default();
@@ -306,11 +323,12 @@ impl Admin {
             data.report = vec!["Rolling out…".into()];
         }
         let admin = self.clone();
-        let body = serde_json::to_value(options).unwrap_or_default();
+        let body = json!({"arguments": options.arguments()});
+        let asked = json!({"action": "rollout"});
         self.portal
-            .call("hosts.rollout", None, json!({}), body, move |result| {
+            .call("actions.act", None, asked, body, move |result| {
                 let job = match result {
-                    Ok(job) => job,
+                    Ok(acted) => acted["job"].clone(),
                     Err(error) => {
                         let mut data = admin.data.borrow_mut();
                         data.rolling = None;
@@ -512,24 +530,18 @@ impl Admin {
     pub fn seed(&self, name: &str) {
         self.say("Rendering the seed…");
         self.call(
-            "hosts.seed",
-            json!({"name": name}),
+            "hosts.act",
+            json!({"name": name, "action": "seed"}),
             Value::Null,
-            |admin, seed| {
+            |admin, acted| {
                 admin.say("");
                 admin.arrive(Arrived::Seed(
-                    seed["user_data"].as_str().unwrap_or("").to_owned(),
+                    acted["result"]["user_data"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned(),
                 ));
             },
-        );
-    }
-
-    pub fn send_secrets(&self, name: &str) {
-        self.call(
-            "hosts.secrets",
-            json!({"name": name}),
-            Value::Null,
-            |admin, session| admin.arrive(Arrived::Session(session)),
         );
     }
 
@@ -540,14 +552,14 @@ impl Admin {
             None => Value::Null,
         };
         let title = format!("Apply this configuration · {name}");
-        self.job("hosts.apply", name, body, title, size, |_| {});
+        self.job("apply", name, body, title, size, |_| {});
     }
 
-    /// Start a job of the server about a host and follow it in a panel;
-    /// `ended` is run when it has ended.
+    /// Run an action of a host that is a job of the server, and follow the
+    /// job in a panel; `ended` is run when it has ended.
     fn job(
         &self,
-        op: &str,
+        action: &str,
         name: &str,
         body: Value,
         title: String,
@@ -557,12 +569,13 @@ impl Admin {
         let admin = self.clone();
         self.say("Starting…");
         self.portal.call(
-            op,
+            "hosts.act",
             None,
-            json!({"name": name}),
+            json!({"name": name, "action": action}),
             body,
             move |result| match result {
-                Ok(job) => {
+                Ok(acted) => {
+                    let job = &acted["job"];
                     admin.say("");
                     admin.data.borrow_mut().job = Some(View::plain(&title, size.0, size.1));
                     let follower = admin.clone();
