@@ -37,8 +37,6 @@ Usage:
                              that need it unless sessions run (--force: even then)
   berth connect URL          use the berth server at URL: give it the setup key made
                              there with berth setup-key, on standard input
-  berth login                log in to a berth server that takes access tokens of an
-                             OAuth 2.0 issuer; berth logout forgets the login
   berth remove HOST          forget a host; the machine is left as it is
   berth provisioners         what can create machines, and what each asks for
   berth provisioners PLUGIN/ID [NAME=VALUE…]
@@ -400,8 +398,6 @@ fn run() -> Result<()> {
         "asyncapi",
         "operations",
         "update",
-        "login",
-        "logout",
         "key",
         "tailnet-key",
         "connect",
@@ -548,8 +544,6 @@ fn run() -> Result<()> {
         }
         ["iso", host] => return build_installer(&paths, host, None),
         ["iso", host, "--write", device] => return build_installer(&paths, host, Some(device)),
-        ["login"] => return commands::login(&paths),
-        ["logout"] => return commands::logout(&paths),
         ["key"] => {
             println!(
                 "{}",

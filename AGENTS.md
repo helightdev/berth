@@ -73,7 +73,7 @@ The end-to-end tests in `tests/e2e/` apply a profile to a throw-away Ubuntu cont
 
 CI builds berth once and runs the shards in `SHARDS` of `tests/e2e/run.py` at the same time, each on a fresh host. A shard's first test that needs the host applies the profile itself. A new module goes into a shard too, or the run refuses to start.
 
-`ci/run.sh boot` boots berth's cloud seed and its USB installer in QEMU, lets the first boot set the host up, and then runs `tests/e2e/boot_*.py` and part of the container suite against it. Each takes 10 to 15 minutes on a machine with KVM, so run it when a change touches provisioning, the role or first boot. Logs, timings and disk use are in `build/boot/`.
+`ci/run.sh boot` boots berth's cloud seed and its USB installer in QEMU, lets the first boot set the host up, and then runs `tests/e2e/boot_*.py` and part of the container suite against it. Each takes 10 to 15 minutes on a machine with KVM, so run it when a change touches provisioning, the role or first boot. CI runs both for changes to provisioning (the Boot workflow, on a hosted runner with KVM). Logs, timings and disk use are in `build/boot/`.
 
 ## API changes
 

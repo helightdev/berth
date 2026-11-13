@@ -127,8 +127,17 @@ fn archive(build: &std::path::Path, name: &str) -> Result<Archive> {
 
 pub fn sha256(path: &std::path::Path) -> Result<String> {
     use sha2::{Digest, Sha256};
+    use std::io::Read;
     let mut hash = Sha256::new();
-    std::io::copy(&mut fs::File::open(path)?, &mut hash)?;
+    let mut file = fs::File::open(path)?;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buf[..n]);
+    }
     Ok(hash
         .finalize()
         .iter()
