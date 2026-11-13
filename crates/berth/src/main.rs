@@ -38,6 +38,9 @@ Usage:
   berth connect URL          use the berth server at URL: give it the setup key made
                              there with berth setup-key, on standard input
   berth remove HOST          forget a host; the machine is left as it is
+  berth adopt HOST [USER@]ADDRESS [--port PORT] [--key FILE] [--force]
+                             save a host from the profile it keeps, read over SSH
+                             with sudo; --force replaces a host of that name
   berth provisioners         what can create machines, and what each asks for
   berth provisioners PLUGIN/ID [NAME=VALUE…]
                              the machines it has that berth created
@@ -554,6 +557,7 @@ fn run() -> Result<()> {
         ["apply", "--behind" | "--all", ..] => return commands::apply_hosts(&paths, &args[1..]),
         ["apply", host] => return commands::apply(&paths, host),
         ["remove", host] => return commands::remove(&paths, host),
+        ["adopt", host, ref rest @ ..] => return commands::adopt(&paths, host, rest),
         ["provisioners"] => return commands::provisioners(&paths),
         ["provisioners", name, ref rest @ ..] => {
             return commands::provisioner_instances(&paths, name, rest);

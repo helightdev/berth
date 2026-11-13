@@ -8,3 +8,31 @@
     mode: '0644'
     content: "{{ {'berth': devbox_berth_applied.berth, 'plugins': devbox_berth_applied.plugins | selectattr('id', 'in', devbox_plugin_features | map('regex_replace', '/.*$', '') | list) | list} | to_nice_json }}\n"
   when: devbox_berth_applied is defined
+# The profile itself, as berth holds it, so that a berth without it can take
+# the host over: berth adopt reads it over SSH, and berthd serves it to an
+# administrator. It holds the accounts' password hashes, so only root reads it.
+# The time of the write leaves the comparison, so applying the same profile
+# again changes nothing.
+- name: Read the profile the host keeps
+  ansible.builtin.slurp:
+    src: /etc/berth/profile.json
+  register: devbox_kept_profile
+  failed_when: false
+  no_log: true
+  when: devbox_berth_profile is defined
+- name: Keep the profile this configuration came from
+  vars:
+    devbox_kept_written: ',\n    "written": "[^"]*"\n}'
+    devbox_kept_new: "{{ devbox_berth_profile | combine({'written': now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ')}) | to_nice_json }}"
+    devbox_kept_old: "{{ devbox_kept_profile.content | default('') | b64decode }}"
+  ansible.builtin.copy:
+    dest: /etc/berth/profile.json
+    owner: root
+    group: root
+    mode: '0600'
+    content: "{{ devbox_kept_new }}\n"
+  no_log: true
+  diff: false
+  when:
+    - devbox_berth_profile is defined
+    - (devbox_kept_old | trim | regex_replace(devbox_kept_written, '\n}')) != (devbox_kept_new | regex_replace(devbox_kept_written, '\n}'))

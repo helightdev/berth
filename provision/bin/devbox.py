@@ -300,6 +300,9 @@ def deployment(c, sha):
         variables['devbox_tailscale_auth_key'] = c['tailscale_auth_key']
     if c.get('tailscale_login_server'):
         variables['devbox_tailscale_login_server'] = c['tailscale_login_server']
+    # berth hands over the profile as the host keeps it, and the role writes it.
+    if isinstance(c.get('berth_profile'), dict):
+        variables['devbox_berth_profile'] = c['berth_profile']
     return {'profile': c['profile'], 'release_sha256': sha,
             'release_url': '' if release_delivered() else c.get('release_url', ''), 'ansible_vars': variables}
 

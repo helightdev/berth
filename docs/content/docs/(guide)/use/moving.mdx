@@ -1,0 +1,97 @@
+---
+title: Moving a host
+description: Take a host over in another berth, or get a lost profile back, from the copy of its profile that the host keeps.
+icon: ArrowRightLeft
+---
+
+Every apply and every first boot from a seed leaves the host's profile on the host, at `/etc/berth/profile.json`. Only root can read it. A berth that does not have the profile can take the host over from it with `berth adopt`. This helps when:
+
+- you move to another berth installation
+- a berth lost its profiles
+- a broken set-up needs repair, even when berthd on the host does not answer
+
+## The kept profile
+
+The file contains the profile as berth stores it, with a few fields left out:
+
+| Field | Kept | Why |
+| --- | --- | --- |
+| `tailscale_auth_key` | No | An enrollment key works once. The new berth makes a new one when the host has to join again |
+| `builder.ssh_host`, `ssh_user`, `ssh_port` | No | `berth adopt` sets them from how it reached the host |
+| `builder.ssh_key`, `builder.link`, `builder.served` | No | A key file, a command and a server of the old berth's machine mean nothing to another one |
+| `secrets`, `registries` | Names only | Their values stay in each berth's own store and are never in a profile |
+| `operator_password_hash`, `agent_password_hash` | Yes | They are in `/etc/shadow` already. Without its hash, an apply would lock the agent's password |
+| `wifi` | Yes | The USB installer wrote the same network into the host's network settings |
+| The machine a provisioner made | Yes | Its record, so `berth instance` still works. Its token is a label on the machine and does not grant access |
+
+The file also says its format, the version of the berth that wrote it, the time, and the host's name there.
+
+berthd serves the same file to an administrator as `GET /v1/applied/profile`. Through a berth server that is `GET /v1/hosts/NAME/applied/profile`.
+
+## Adopt a host
+
+```bash
+berth adopt studio ops@192.0.2.10
+berth apply studio
+```
+
+`berth adopt NAME [USER@]ADDRESS` logs in over SSH as a user who can become root, reads the file with sudo and saves it as host `NAME`. It does not need berthd. `--port PORT` gives another SSH port. `--key FILE` offers one more identity file for this read only. `--force` replaces a saved host of the same name. Without it, berth refuses.
+
+berth asks on the terminal for a sudo password when sudo on the host needs one. `BERTH_SUDO_PASSWORD` gives it without a terminal.
+
+The output lists what the profile names and this berth lacks: secret values and registries. Set them before you apply. `berth apply` then makes the host this berth's.
+
+With a [berth server](/docs/use/server) set, `berth adopt` saves the host on the server. The server applies with its own key, and it does not take the record of a machine a provisioner made.
+
+## Getting in
+
+`berth adopt` logs in with this berth's own key, your SSH agent and your usual keys. A new berth's key is not on the host yet, so use one of these two ways.
+
+### Bring the old berth's key
+
+The old berth keeps its key as `id_ed25519` and `id_ed25519.pub` in its data directory, `~/.local/share/berth` by default. Copy both into the new berth's data directory before the new berth uses its own key. The copy goes through a pipe. The key is never part of a command line:
+
+```bash
+umask 077
+mkdir -p ~/.local/share/berth
+ssh old-machine 'cat ~/.local/share/berth/id_ed25519' > ~/.local/share/berth/id_ed25519
+ssh old-machine 'cat ~/.local/share/berth/id_ed25519.pub' > ~/.local/share/berth/id_ed25519.pub
+```
+
+The hosts keep taking the same key, so nothing on them changes.
+
+### Authorize the new berth's key
+
+Print the new berth's public key:
+
+```bash
+berth key
+```
+
+For a berth server, run `berth key` as the user that runs `berth serve`, or copy **This berth's SSH key** from the Settings tab of its page.
+
+Add that line to `~/.ssh/authorized_keys` of the operator on the host. Do it from the machine's console or from any login you still have:
+
+```bash
+echo 'ssh-ed25519 AAAA… berth@new-machine' >> ~/.ssh/authorized_keys
+```
+
+## The keys after the first apply
+
+In the operator's `authorized_keys`, the keys in the profile have one block. Each berth that applies the host has a block of its own, named `BERTH` and an ID. No later apply removes a berth's block. So after the first apply of the new berth:
+
+- the new berth's key is in its own block
+- the old berth's key is still in its block, and the old berth still has access
+- lines outside the blocks stay, such as a key you added by hand
+
+The new berth then logs in with its own key. You can remove the line you added.
+
+To take the old berth's access away, delete its block on the host as the operator. ID is the hex after `# BEGIN BERTH` on the line above the old berth's key:
+
+```bash
+sed -i '/^# BEGIN BERTH ID$/,/^# END BERTH ID$/d' ~/.ssh/authorized_keys
+```
+
+## A berth that still has the host
+
+There is nothing to do. Each apply writes the file again when the profile changed. The host keeps the profile of its last apply. A host set up by an older berth keeps nothing until the next apply.

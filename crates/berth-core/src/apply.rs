@@ -126,6 +126,8 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
         "berth": berth_api::VERSION,
         "plugins": plugins::records(&plugins),
     });
+    // The role keeps the profile on the host too, for a berth that lacks it.
+    vars["devbox_berth_profile"] = crate::kept::for_host(paths, host);
     if let Some(password) = become_password {
         vars["ansible_become_password"] = json!(password);
     }

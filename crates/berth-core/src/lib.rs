@@ -6,6 +6,7 @@ pub mod credentials;
 pub mod discovery;
 pub mod host;
 pub mod job;
+pub mod kept;
 pub mod link;
 pub mod paths;
 pub mod plugins;

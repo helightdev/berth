@@ -932,6 +932,155 @@ pub fn remove(paths: &Paths, name: &str) -> Result<()> {
     Ok(())
 }
 
+// ── Adopting a host ─────────────────────────────────────────────────────────
+
+/// What `berth adopt` is given after the name: `[USER@]ADDRESS`, and
+/// `--port PORT`, `--key FILE` and `--force` in any order.
+#[derive(Debug, Default, PartialEq)]
+pub struct Adopt {
+    pub address: String,
+    pub port: String,
+    pub key: Option<String>,
+    pub force: bool,
+}
+
+pub fn parse_adopt(args: &[&str]) -> Result<Adopt> {
+    let mut adopt = Adopt::default();
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        match *word {
+            "--force" => adopt.force = true,
+            "--port" | "-p" => adopt.port = words.next().ok_or("--port needs a port")?.to_string(),
+            "--key" | "-i" => {
+                adopt.key = Some(words.next().ok_or("--key needs a file")?.to_string())
+            }
+            word if word.starts_with('-') => {
+                return Err(format!("berth adopt has no option {word}").into());
+            }
+            word if adopt.address.is_empty() => adopt.address = word.to_owned(),
+            word => return Err(format!("berth adopt takes one address, not also {word}").into()),
+        }
+    }
+    if adopt.address.is_empty() {
+        return Err(
+            "Usage: berth adopt NAME [USER@]ADDRESS [--port PORT] [--key FILE] [--force]".into(),
+        );
+    }
+    Ok(adopt)
+}
+
+/// `berth adopt NAME [USER@]ADDRESS`: take a host over from the profile it
+/// keeps, read over SSH with sudo so that it works while berthd is down.
+pub fn adopt(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
+    use berth_core::kept;
+    let asked = parse_adopt(args)?;
+    let reach = kept::Reach::parse(&asked.address, &asked.port, asked.key.as_deref())?;
+    let server = berth_core::server::Server::configured(paths);
+    // Refused before anything is read, so the host is not asked for nothing.
+    let exists = match &server {
+        Some(server) => server
+            .call("hosts.profile", json!({"name": name}), None)
+            .is_ok(),
+        None => paths.profile(name)?.exists(),
+    };
+    if exists && !asked.force {
+        return Err(format!(
+            "There is a host {name} already. Choose another name, or replace it with --force"
+        )
+        .into());
+    }
+    let target = reach.target();
+    let password = || -> berth_core::Result<String> {
+        if let Ok(password) = std::env::var("BERTH_SUDO_PASSWORD") {
+            return Ok(password);
+        }
+        if !std::io::stdin().is_terminal() {
+            return Err(format!(
+                "sudo asks for a password on {target}: run on a terminal, or set BERTH_SUDO_PASSWORD"
+            )
+            .into());
+        }
+        registry::read_secret(&format!("Your sudo password on {target}"))
+    };
+    let found = kept::read(&reach, paths.own_key().ok(), &password)?;
+    let adopted = kept::adopted(&found, &reach)?;
+    let mut left = vec![];
+    match &server {
+        Some(server) => {
+            server.call(
+                "hosts.save",
+                json!({"name": name}),
+                Some(adopted.profile.clone()),
+            )?;
+            if let Some(record) = &adopted.instance {
+                left.push(format!(
+                    "the record of its machine, {} of {}: the berth server takes no record, so berth instance does not know the machine",
+                    record.id, record.provisioner
+                ));
+            }
+        }
+        None => {
+            kept::save(paths, name, &adopted, asked.force)?;
+        }
+    }
+    let written = match (adopted.berth.as_str(), adopted.written.as_str()) {
+        ("", _) => String::new(),
+        (berth, "") => format!(" by berth {berth}"),
+        (berth, when) => format!(" by berth {berth} at {when}"),
+    };
+    let was = match adopted.host.as_str() {
+        "" => String::new(),
+        old if old == name => String::new(),
+        old => format!(", where it was {old}"),
+    };
+    println!("Adopted {name} from {target}: its profile was written{written}{was}.");
+    let store = registry::Store::new(paths);
+    let known = store.secret_names();
+    for secret in adopted.secrets() {
+        if !known.contains(&secret) {
+            left.push(format!(
+                "the value of secret {secret}: berth secret set {secret}"
+            ));
+        }
+    }
+    let registries = store.registries().unwrap_or_default();
+    for registry in adopted.registries() {
+        if !registries.contains_key(&registry) {
+            left.push(format!(
+                "registry {registry}, with its login: berth registry add {registry} …"
+            ));
+        }
+    }
+    if berth_api::profile::joins_automatically(&adopted.profile)
+        && !known
+            .iter()
+            .any(|known| known == berth_api::profile::TAILNET_API_KEY)
+    {
+        left.push(format!(
+            "secret {}, which a host that has left the tailnet needs to join again",
+            berth_api::profile::TAILNET_API_KEY
+        ));
+    }
+    if !left.is_empty() {
+        println!("What did not come with it, and this berth has not got:");
+        for line in &left {
+            println!("  {line}");
+        }
+    }
+    println!(
+        "Next: berth apply {name}. It gives this berth's own key a block of its own in the operator's authorized_keys."
+    );
+    println!(
+        "The berth that set the host up still has access: its key keeps its BERTH block until you delete that block by hand."
+    );
+    if asked.key.is_some() {
+        println!(
+            "The key given with --key is not saved: if only it lets you in, add it with ssh-add for that apply."
+        );
+    }
+    Ok(())
+}
+
 // ── Provisioners ────────────────────────────────────────────────────────────
 
 /// Provisioners run where the hosts are kept: with a berth server that is
@@ -1204,6 +1353,26 @@ fn answer_error(status: u16, body: &[u8]) -> Box<dyn std::error::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adopt_takes_an_address_and_its_options_in_any_order() {
+        let adopt = parse_adopt(&["--force", "ops@192.0.2.10", "--port", "2222"]).unwrap();
+        assert_eq!(
+            adopt,
+            Adopt {
+                address: "ops@192.0.2.10".into(),
+                port: "2222".into(),
+                key: None,
+                force: true
+            }
+        );
+        let keyed = parse_adopt(&["192.0.2.10", "--key", "~/.ssh/old"]).unwrap();
+        assert_eq!(keyed.key.as_deref(), Some("~/.ssh/old"));
+        assert!(parse_adopt(&[]).is_err());
+        assert!(parse_adopt(&["192.0.2.10", "192.0.2.11"]).is_err());
+        assert!(parse_adopt(&["192.0.2.10", "--port"]).is_err());
+        assert!(parse_adopt(&["192.0.2.10", "--user"]).is_err());
+    }
 
     #[test]
     fn exec_takes_its_flags_before_the_command() {

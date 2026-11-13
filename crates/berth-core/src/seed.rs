@@ -52,7 +52,8 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
     // The seed is rendered from a private copy of the profile, which holds a
     // new enrollment key for a host that joins the tailnet automatically.
     let saved: Value = serde_json::from_slice(&fs::read(&host.path)?)?;
-    let config = named(tailnet::seed_profile(paths, &saved, name)?, name);
+    let mut config = named(tailnet::seed_profile(paths, &saved, name)?, name);
+    crate::kept::for_seed(&mut config, name, &saved);
     let seeded = tailnet::profile_file(&config)?;
     // The machine's operator takes this key, so that berth can always reach it.
     let own = paths

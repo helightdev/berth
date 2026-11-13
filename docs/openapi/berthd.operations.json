@@ -385,6 +385,42 @@
         ],
         "type": "string"
       },
+      "KeptProfile": {
+        "description": "The profile a host keeps of itself, at `/etc/berth/profile.json`: the\nprofile as berth holds it, without the enrollment key and without how the\nberth that wrote it reaches the host. A berth that does not have the host\ncan take it over from this.",
+        "properties": {
+          "berth": {
+            "description": "The version of the berth that wrote it.",
+            "type": "string"
+          },
+          "format": {
+            "description": "The format of this document; 1 for now.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "host": {
+            "description": "The name the host has in the berth that wrote it.",
+            "type": "string"
+          },
+          "instance": {
+            "description": "The record of the machine berth created for the host, when it did."
+          },
+          "profile": {
+            "description": "The profile."
+          },
+          "written": {
+            "description": "When it was written, in RFC 3339.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "format",
+          "berth",
+          "host",
+          "profile"
+        ],
+        "type": "object"
+      },
       "Level": {
         "enum": [
           "host",
@@ -1416,6 +1452,25 @@
       },
       "role": "operate",
       "summary": "Read the configuration files again. Sessions go on."
+    },
+    {
+      "args": [],
+      "group": "applied",
+      "http": {
+        "method": "GET",
+        "path": "/v1/applied/profile"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "applied.profile",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/KeptProfile"
+        }
+      },
+      "role": "admin",
+      "summary": "The profile the host keeps of itself, as the last apply or the first boot wrote it."
     },
     {
       "args": [

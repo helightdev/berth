@@ -1577,7 +1577,8 @@ impl App {
                 let saved: Value = serde_json::from_slice(&fs::read(&self.path)?)?;
                 let paths = crate::paths::Paths::locate()?;
                 let config = berth_core::tailnet::seed_profile(&paths, &saved, &self.name())?;
-                let config = berth_core::seed::named(config, &self.name());
+                let mut config = berth_core::seed::named(config, &self.name());
+                berth_core::kept::for_seed(&mut config, &self.name(), &saved);
                 Some(berth_core::tailnet::profile_file(&config)?)
             }
             _ => None,
@@ -1651,6 +1652,8 @@ impl App {
                     &self.plugin_dirs(),
                     Some(self.own_public.as_str()),
                 );
+                vars["devbox_berth_profile"] =
+                    berth_core::kept::document(&self.name(), &self.config, None);
                 let paths = crate::paths::Paths::locate()?;
                 apply::add_tailnet(
                     &mut vars,

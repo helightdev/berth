@@ -1,5 +1,5 @@
 {
   "title": "Using berth",
   "icon": "SquareTerminal",
-  "pages": ["terminal-ui", "overview", "cli", "server", "access", "accounts", "sign-ins", "secrets", "registries", "backups", "updates"]
+  "pages": ["terminal-ui", "overview", "cli", "server", "access", "accounts", "sign-ins", "secrets", "registries", "backups", "moving", "updates"]
 }
