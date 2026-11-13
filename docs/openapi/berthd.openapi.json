@@ -385,6 +385,42 @@
         ],
         "type": "string"
       },
+      "KeptProfile": {
+        "description": "The profile a host keeps of itself, at `/etc/berth/profile.json`: the\nprofile as berth holds it, without the enrollment key and without how the\nberth that wrote it reaches the host. A berth that does not have the host\ncan take it over from this.",
+        "properties": {
+          "berth": {
+            "description": "The version of the berth that wrote it.",
+            "type": "string"
+          },
+          "format": {
+            "description": "The format of this document; 1 for now.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "host": {
+            "description": "The name the host has in the berth that wrote it.",
+            "type": "string"
+          },
+          "instance": {
+            "description": "The record of the machine berth created for the host, when it did."
+          },
+          "profile": {
+            "description": "The profile."
+          },
+          "written": {
+            "description": "When it was written, in RFC 3339.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "format",
+          "berth",
+          "host",
+          "profile"
+        ],
+        "type": "object"
+      },
       "Level": {
         "enum": [
           "host",
@@ -1387,6 +1423,39 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/applied/profile": {
+      "get": {
+        "description": "Host level only.",
+        "operationId": "get_v1_applied_profile",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeptProfile"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "The profile the host keeps of itself, as the last apply or the first boot wrote it.",
+        "tags": [
+          "applied"
+        ]
+      }
+    },
     "/v1/channel": {
       "get": {
         "description": "Host and agent level.",

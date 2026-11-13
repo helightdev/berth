@@ -814,6 +814,28 @@ pub struct Applied {
     pub plugins: Vec<AppliedPlugin>,
 }
 
+/// The profile a host keeps of itself, at `/etc/berth/profile.json`: the
+/// profile as berth holds it, without the enrollment key and without how the
+/// berth that wrote it reaches the host. A berth that does not have the host
+/// can take it over from this.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct KeptProfile {
+    /// The format of this document; 1 for now.
+    pub format: u64,
+    /// The version of the berth that wrote it.
+    pub berth: String,
+    /// When it was written, in RFC 3339.
+    #[serde(default)]
+    pub written: String,
+    /// The name the host has in the berth that wrote it.
+    pub host: String,
+    /// The profile.
+    pub profile: Value,
+    /// The record of the machine berth created for the host, when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<Value>,
+}
+
 /// Something that changed since a host was applied: berth itself or a plugin.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Change {

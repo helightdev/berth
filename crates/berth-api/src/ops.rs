@@ -164,6 +164,8 @@ const fn headers(mut op: Op, headers: &'static [(&'static str, &'static str)]) -
 pub static HOST: &[Op] = &[
     call("version", "GET", "/v1/version"),
     call("reload", "POST", "/v1/reload"),
+    // It holds the accounts' password hashes.
+    admin(call("applied.profile", "GET", "/v1/applied/profile")),
     call("sessions.start", "POST", "/v1/sessions"),
     call("sessions.list", "GET", "/v1/sessions"),
     call("sessions.get", "GET", "/v1/sessions/{id}"),
@@ -392,6 +394,7 @@ mod tests {
         let role = |table, name| find(table, name).unwrap().role;
         assert_eq!(role(HOST, "sessions.list"), Role::View);
         assert_eq!(role(HOST, "files.read"), Role::Operate);
+        assert_eq!(role(HOST, "applied.profile"), Role::Admin);
         assert_eq!(role(HOST, "sessions.attach"), Role::Operate);
         assert_eq!(role(SERVE, "hosts.apply"), Role::Admin);
         assert_eq!(role(SERVE, "plugins.upload"), Role::Admin);
