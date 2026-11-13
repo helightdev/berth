@@ -40,6 +40,8 @@ pub enum Entry {
     /// A row of the machine berth creates for the host.
     Machine(crate::machine::Pick),
     Run,
+    /// Save the profile, as Ctrl+S does.
+    Save,
 }
 
 /// An account of a host that takes SSH keys.
@@ -170,7 +172,7 @@ pub fn default_enrollment(config: &mut Value, names: &[String]) {
     }
 }
 
-/// What the Secrets tab says of a secret berth uses itself, if it is one.
+/// What the home screen's Secrets tab says of a secret berth uses itself, if it is one.
 pub fn own_secret_help(name: &str) -> Option<&'static str> {
     (name == berth_api::profile::TAILNET_API_KEY).then_some(
         "The API key of the tailnet's control server: a Tailscale API access token, or a Headscale API key (headscale apikeys create). berth creates one-use enrollment keys with it, for hosts that join the tailnet automatically and for F4 on the key field. It is never sent to a host. Enter replaces it, x twice removes it.",
@@ -529,7 +531,7 @@ impl<'a> Profile<'a> {
             .to_owned()
     }
 
-    /// The rows of the Secrets page.
+    /// The registries and secrets of the Settings tab.
     pub fn access_rows(&self) -> Vec<Row> {
         let muted = Style::new().fg(theme::MUTED);
         let mut rows = vec![Row::heading("Registries")];
@@ -596,7 +598,12 @@ impl<'a> Profile<'a> {
     pub fn feature_groups(&self) -> Vec<FeatureGroup> {
         use Field::*;
         // The first two are filled by plugins that come with berth.
-        let builtin: [(&str, &[Field]); 5] = [
+        // A container image runs on a host that has its own services.
+        let services: &[Field] = match self.serves_host() {
+            true => &[Cockpit, Docker],
+            false => &[],
+        };
+        let builtin: [(&str, &[Field]); 6] = [
             ("Coding Agents", &[]),
             ("Agent Orchestrator", &[]),
             (
@@ -612,6 +619,7 @@ impl<'a> Profile<'a> {
             ),
             ("Browsers", &[ToolsChrome, Playwright]),
             ("Desktop", &[SoftwareRendering]),
+            ("Host Services", services),
         ];
         let mut groups: Vec<FeatureGroup> = builtin
             .iter()
@@ -698,110 +706,206 @@ impl<'a> Profile<'a> {
         rows
     }
 
-    /// Fields shown by the current step for the chosen action.
+    /// Fields shown by the current step for the chosen action, in order.
     pub fn fields(&self) -> Vec<Field> {
         use Field::*;
         match self.step {
-            Step::Features => vec![
-                ToolsWeb,
-                ToolsNative,
-                ToolsJvm,
-                ToolsDotnet,
-                ToolsScripting,
-                ToolsScientific,
-                ToolsChrome,
-                Playwright,
-                SoftwareRendering,
-            ],
-            Step::Install | Step::Manage => self.settings(),
-            Step::Secrets => vec![],
-            // The container only has the agent account.
-            Step::Accounts if self.action == Action::Docker => vec![AgentUser],
-            Step::Accounts => vec![
-                OperatorUser,
-                OperatorKey,
-                BerthKey,
-                OperatorHash,
-                OperatorSudo,
-                AgentUser,
-                AgentHash,
-                AgentKey,
-                AgentPrivileges,
-                AgentSudo,
-            ],
+            Step::Features => {
+                let mut fields = vec![
+                    ToolsWeb,
+                    ToolsNative,
+                    ToolsJvm,
+                    ToolsDotnet,
+                    ToolsScripting,
+                    ToolsScientific,
+                    ToolsChrome,
+                    Playwright,
+                    SoftwareRendering,
+                ];
+                if self.serves_host() {
+                    fields.extend([Cockpit, Docker]);
+                }
+                fields
+            }
+            Step::Install => {
+                let (before, after) = self.install_fields();
+                before.into_iter().chain(after).collect()
+            }
+            Step::Settings => {
+                let (accounts, sections) = self.settings_fields();
+                accounts
+                    .into_iter()
+                    .chain(sections.into_iter().flat_map(|(_, fields)| fields))
+                    .collect()
+            }
+            Step::Run => self.run_fields(),
+            Step::Manage => self.manage_fields(),
         }
     }
 
-    fn settings(&self) -> Vec<Field> {
+    /// Whether the chosen way installs a host of its own, which the services
+    /// of the host and its SSH settings are for. A container image has none.
+    fn serves_host(&self) -> bool {
+        !matches!(self.action, Action::Docker | Action::Save | Action::Release)
+    }
+
+    /// How a host on its overview is reached.
+    fn manage_fields(&self) -> Vec<Field> {
         use Field::*;
-        let action = self.action;
-        if matches!(action, Action::Save | Action::Release | Action::Docker) {
+        // How a server's host is reached is for whoever sets the server up.
+        if self.locked() {
             return vec![];
         }
-        if action == Action::Manage {
-            // How a server's host is reached is for whoever sets the server up.
-            if self.locked() {
-                return vec![];
-            }
-            return vec![SshHost, SshUser, SshPort, SshKey, AskBecomePass];
+        vec![SshHost, SshUser, SshPort, SshKey, AskBecomePass]
+    }
+
+    /// The fields of the Install tab: those before the provisioner's rows,
+    /// and those after them.
+    fn install_fields(&self) -> (Vec<Field>, Vec<Field>) {
+        use Field::*;
+        let action = self.action;
+        if !self.serves_host() {
+            return (vec![], vec![]);
         }
-        let mut fields = vec![Profile];
+        let mut after = vec![];
+        if action == Action::Ssh {
+            after.extend([SshHost, SshUser, SshPort, SshKey, AskPass, AskBecomePass]);
+        }
         if action.installer() || action.seeds() {
-            fields.push(Hostname);
+            after.push(Hostname);
         }
+        after.push(Tailscale);
+        if self.enabled(Tailscale) {
+            after.extend([TailscaleLoginServer, TailscaleAuto]);
+            if !self.enabled(TailscaleAuto) {
+                after.push(TailscaleKey);
+            }
+        }
+        (vec![Profile], after)
+    }
+
+    /// The fields of the Settings tab: the accounts, then the sections that
+    /// follow the registries and secrets, each under its heading.
+    fn settings_fields(&self) -> (Vec<Field>, Vec<(&'static str, Vec<Field>)>) {
+        use Field::*;
+        let action = self.action;
+        match action {
+            Action::Save | Action::Release | Action::Manage => return (vec![], vec![]),
+            // The container only has the agent account.
+            Action::Docker => return (vec![AgentUser], vec![]),
+            _ => {}
+        }
+        let accounts = vec![
+            OperatorUser,
+            OperatorKey,
+            BerthKey,
+            OperatorHash,
+            OperatorSudo,
+            AgentUser,
+            AgentHash,
+            AgentKey,
+            AgentPrivileges,
+            AgentSudo,
+            HardenSsh,
+        ];
+        let mut host = vec![Geometry];
+        // A machine a provisioner creates is behind its server, not on a public address.
+        if action != Action::Machine {
+            host.push(RecoveryCidr);
+        }
+        let mut sections = vec![("Host", host)];
         if action.installer() {
-            fields.push(DiskMode);
+            let mut installer = vec![DiskMode];
             let mode = self.text(DiskMode);
             match mode {
-                "serial" => fields.push(DiskSerial),
-                "model" => fields.push(DiskModel),
-                "path" => fields.push(DiskPath),
+                "serial" => installer.push(DiskSerial),
+                "model" => installer.push(DiskModel),
+                "path" => installer.push(DiskPath),
                 _ => {}
             }
             if !matches!(mode, "serial" | "ssd" | "hdd") {
-                fields.push(DiskType);
+                installer.push(DiskType);
             }
-            fields.push(Keyboard);
-        }
-        fields.push(Geometry);
-        if action.installer() {
-            fields.push(Wifi);
+            installer.extend([Keyboard, Wifi]);
             if self.enabled(Wifi) {
-                fields.extend([WifiSsid, WifiPassword, WifiInterface]);
+                installer.extend([WifiSsid, WifiPassword, WifiInterface]);
             }
+            sections.push(("Installer", installer));
         }
         if action == Action::CloudSeed {
-            fields.push(ReleaseStore);
-            fields.push(if self.text(ReleaseStore).is_empty() {
-                ReleaseUrl
-            } else {
-                ReleasePrivate
-            });
+            sections.push((
+                "Release",
+                vec![
+                    ReleaseStore,
+                    if self.text(ReleaseStore).is_empty() {
+                        ReleaseUrl
+                    } else {
+                        ReleasePrivate
+                    },
+                ],
+            ));
         }
-        // A machine a provisioner creates is behind its server, not on a public address.
-        if action != Action::Machine {
-            fields.push(RecoveryCidr);
-        }
-        match action {
-            Action::Iso => fields.extend([Iso, IsoSha]),
-            Action::Apply => fields.extend([Inventory, AskBecomePass]),
-            Action::Ssh => {
-                fields.extend([SshHost, SshUser, SshPort, SshKey, AskPass, AskBecomePass])
-            }
-            _ => {}
-        }
-        fields.extend([HardenSsh, Cockpit, Docker, Tailscale]);
-        if self.enabled(Tailscale) {
-            fields.extend([TailscaleLoginServer, TailscaleAuto]);
-            if !self.enabled(TailscaleAuto) {
-                fields.push(TailscaleKey);
-            }
-        }
-        fields
+        (accounts, sections)
     }
 
-    pub fn field_rows(&self) -> Vec<Row> {
-        let fields = self.fields();
+    /// The last few fields before running, for the ways that have them.
+    fn run_fields(&self) -> Vec<Field> {
+        use Field::*;
+        match self.action {
+            Action::Iso => vec![Iso, IsoSha, UsbDevice],
+            Action::Apply => vec![Inventory, AskBecomePass],
+            _ => vec![],
+        }
+    }
+
+    /// The rows of a field, or of an account's keys.
+    fn field_row(&self, field: Field, prefix: &str, rows: &mut Vec<Row>) {
+        let muted = Style::new().fg(theme::MUTED);
+        // An account's keys are a row each, and one more that adds a key.
+        let account = [Account::Operator, Account::Agent]
+            .into_iter()
+            .find(|account| account.field() == field);
+        if let Some(account) = account {
+            for (place, key) in self.keys(account).iter().enumerate() {
+                let mut line = value_line("SSH key", &short_key(key), Kind::Text);
+                line.spans.insert(0, Span::styled(prefix.to_owned(), muted));
+                rows.push(Row::entry(line, Entry::Key(account, Some(place))));
+            }
+            rows.push(Row::entry(
+                Line::from(vec![
+                    Span::styled(prefix.to_owned(), muted),
+                    Span::styled("+ Add SSH key", Style::new().fg(theme::ACCENT)),
+                ]),
+                Entry::Key(account, None),
+            ));
+            return;
+        }
+        let spec = field.spec();
+        let value = if spec.kind == Kind::Toggle {
+            self.enabled(field).to_string()
+        } else {
+            self.text(field).to_owned()
+        };
+        let (value, kind) = match field {
+            // Enough of the key to recognise it, not enough to use it.
+            Field::TailscaleKey if value.len() > 24 && value.is_ascii() => (
+                format!(
+                    "{}…{}",
+                    &value[..value.len().min(16)],
+                    &value[value.len() - 4..]
+                ),
+                Kind::Text,
+            ),
+            _ => (value, spec.kind),
+        };
+        let mut line = value_line(spec.label, &value, kind);
+        line.spans.insert(0, Span::styled(prefix.to_owned(), muted));
+        rows.push(Row::entry(line, Entry::Field(field)));
+    }
+
+    /// Rows of fields as they group themselves: under a heading of their
+    /// own, or under the field that reveals them.
+    fn rows_of(&self, fields: &[Field]) -> Vec<Row> {
         let mut rows = Vec::new();
         for (index, &field) in fields.iter().enumerate() {
             let group = field.group();
@@ -821,51 +925,45 @@ impl<'a> Profile<'a> {
                 }
                 Some(_) => "  └─ ",
             };
-            // An account's keys are a row each, and one more that adds a key.
-            let account = [Account::Operator, Account::Agent]
-                .into_iter()
-                .find(|account| account.field() == field);
-            if let Some(account) = account {
-                let muted = Style::new().fg(theme::MUTED);
-                for (place, key) in self.keys(account).iter().enumerate() {
-                    let mut line = value_line("SSH key", &short_key(key), Kind::Text);
-                    line.spans.insert(0, Span::styled(prefix, muted));
-                    rows.push(Row::entry(line, Entry::Key(account, Some(place))));
-                }
-                rows.push(Row::entry(
-                    Line::from(vec![
-                        Span::styled(prefix, muted),
-                        Span::styled("+ Add SSH key", Style::new().fg(theme::ACCENT)),
-                    ]),
-                    Entry::Key(account, None),
-                ));
-                continue;
-            }
-            let spec = field.spec();
-            let value = if spec.kind == Kind::Toggle {
-                self.enabled(field).to_string()
-            } else {
-                self.text(field).to_owned()
-            };
-            let (value, kind) = match field {
-                // Enough of the key to recognise it, not enough to use it.
-                Field::TailscaleKey if value.len() > 24 && value.is_ascii() => (
-                    format!(
-                        "{}…{}",
-                        &value[..value.len().min(16)],
-                        &value[value.len() - 4..]
-                    ),
-                    Kind::Text,
-                ),
-                _ => (value, spec.kind),
-            };
-            let mut line = value_line(spec.label, &value, kind);
-            line.spans
-                .insert(0, Span::styled(prefix, Style::new().fg(theme::MUTED)));
-            rows.push(Row::entry(line, Entry::Field(field)));
+            self.field_row(field, prefix, &mut rows);
         }
+        rows
+    }
+
+    /// Rows of fields under a heading, as a tree: the fields, and under
+    /// each the ones it reveals.
+    fn section_rows(&self, heading: &str, fields: &[Field]) -> Vec<Row> {
+        let mut rows = vec![Row::heading(heading)];
+        let top = |field: &Field| !matches!(field.group(), Some(Group::Under(_)));
+        for (index, &field) in fields.iter().enumerate() {
+            let prefix = match field.group() {
+                Some(Group::Under(parent)) => {
+                    // The parent goes on below while a field of the section follows it.
+                    let at = fields.iter().position(|known| *known == parent);
+                    let goes_on = at.is_some_and(|at| fields[at + 1..].iter().any(top));
+                    let last = !fields[index + 1..]
+                        .iter()
+                        .any(|next| next.group() == Some(Group::Under(parent)));
+                    match (goes_on, last) {
+                        (true, false) => "  │  ├─ ",
+                        (true, true) => "  │  └─ ",
+                        (false, false) => "     ├─ ",
+                        (false, true) => "     └─ ",
+                    }
+                }
+                _ if fields[index + 1..].iter().any(top) => "  ├─ ",
+                _ => "  └─ ",
+            };
+            self.field_row(field, prefix, &mut rows);
+        }
+        rows
+    }
+
+    /// The rows of the fields of the current step, as the overview shows them.
+    pub fn field_rows(&self) -> Vec<Row> {
+        let rows = self.rows_of(&self.fields());
         if rows.is_empty() {
-            rows.push(Row::info("This action needs no settings here."));
+            return vec![Row::info("This action needs no settings here.")];
         }
         rows
     }
@@ -883,9 +981,117 @@ impl<'a> Profile<'a> {
         rows
     }
 
-    /// What the Install page warns of when SSH is open to every address.
+    /// The rows of the current tab of the set-up flow. The client brings
+    /// what only it knows: the ways it offers, the machine, every problem,
+    /// and the notes of its own for the Run tab.
+    pub fn page_rows(&self, page: Page) -> Vec<Row> {
+        let mut rows = vec![];
+        match self.step {
+            Step::Install => {
+                rows = self.method_rows(page.methods);
+                let (before, after) = self.install_fields();
+                if !before.is_empty() || self.action == Action::Machine {
+                    rows.push(Row::info(""));
+                }
+                rows.extend(self.rows_of(&before));
+                if self.action == Action::Machine {
+                    rows.extend(page.machine.install_rows());
+                }
+                rows.extend(self.rows_of(&after));
+            }
+            Step::Features => rows = self.feature_rows(),
+            Step::Settings => {
+                if self.action == Action::Machine {
+                    rows.extend(page.machine.settings_rows());
+                }
+                let (accounts, sections) = self.settings_fields();
+                rows.extend(self.rows_of(&accounts));
+                rows.extend(self.access_rows());
+                for (heading, fields) in sections {
+                    rows.extend(self.section_rows(heading, &fields));
+                }
+            }
+            Step::Run => return self.run_rows(page),
+            Step::Manage => return self.field_rows(),
+        }
+        // Each tab lists its own problems under what it holds.
+        let own: Vec<&Problem> = page
+            .problems
+            .iter()
+            .filter(|problem| problem.step == self.step)
+            .collect();
+        if !own.is_empty() {
+            rows.push(Row::info(""));
+        }
+        for problem in own {
+            rows.push(Row::info(Line::styled(
+                format!("✗ {}", problem.text),
+                Style::new().fg(theme::BAD),
+            )));
+        }
+        rows
+    }
+
+    /// The Run tab: its fields, every problem under the tab it is on, what
+    /// to look out for, and the buttons.
+    fn run_rows(&self, page: Page) -> Vec<Row> {
+        let mut rows = self.rows_of(&self.run_fields());
+        if !rows.is_empty() {
+            rows.push(Row::info(""));
+        }
+        let bad = Style::new().fg(theme::BAD);
+        for step in Step::SETUP {
+            let mut placed = page
+                .problems
+                .iter()
+                .filter(|problem| problem.step == step)
+                .peekable();
+            if placed.peek().is_some() {
+                rows.push(Row::heading(step.label()));
+            }
+            for problem in placed {
+                rows.push(Row::info(Line::styled(
+                    format!("  ✗ {}", problem.text),
+                    bad,
+                )));
+            }
+        }
+        if self.action == Action::Apply && self.text(Field::Inventory).is_empty() {
+            rows.push(Row::info(Line::styled(
+                "! This installs on THIS MACHINE (no inventory set)",
+                Style::new().fg(theme::WARN).bold(),
+            )));
+        }
+        rows.extend(page.notes);
+        if let Some(text) = self.open_ssh_warning() {
+            rows.push(Row::info(Line::styled(text, Style::new().fg(theme::WARN))));
+        }
+        if page.problems.is_empty() {
+            rows.push(Row::info(Line::styled(
+                "✓ Ready",
+                Style::new().fg(theme::GOOD),
+            )));
+        }
+        rows.push(Row::info(""));
+        match self.action {
+            Action::Machine => rows.extend(page.machine.run_rows()),
+            _ => rows.push(Row::entry(
+                format!("[Run · {}]", self.action.label()),
+                Entry::Run,
+            )),
+        }
+        rows.push(Row::entry("[Save · Ctrl+S]", Entry::Save));
+        // A machine berth created is shown whatever way is chosen now.
+        if self.action != Action::Machine && page.machine.exists() {
+            rows.push(Row::info(""));
+            rows.extend(page.machine.run_rows());
+        }
+        rows
+    }
+
+    /// What the Run tab warns of when SSH is open to every address.
     pub fn open_ssh_warning(&self) -> Option<&'static str> {
-        if self.action == Action::Machine {
+        if matches!(self.action, Action::Machine | Action::Docker) {
             return None;
         }
         let cloud = self.action == Action::CloudSeed || self.text(Field::Profile) == "cloud";
@@ -901,44 +1107,75 @@ impl<'a> Profile<'a> {
     /// Reasons the chosen action would fail that the profile alone shows.
     /// What needs this machine's files is for whoever has them to add.
     pub fn problems(&self) -> Vec<String> {
+        self.placed_problems()
+            .into_iter()
+            .map(|problem| problem.text)
+            .collect()
+    }
+
+    /// Every problem the profile and the machine show, each on its tab.
+    pub fn problems_with(&self, machine: &crate::machine::Machine) -> Vec<Problem> {
+        let mut problems = self.placed_problems();
+        if self.action == Action::Machine && !machine.exists() {
+            problems.extend(machine.problems());
+        }
+        problems
+    }
+
+    /// [`Profile::problems`], each on the tab of the field it is about.
+    pub fn placed_problems(&self) -> Vec<Problem> {
         use Field::*;
         let action = self.action;
         let mut problems = Vec::new();
-        let mut check = |ok: bool, message: &str| {
+        let mut check = |ok: bool, step: Step, message: &str| {
             if !ok {
-                problems.push(message.to_owned());
+                problems.push(Problem::new(step, message));
             }
         };
         if matches!(action, Action::Save | Action::Release | Action::Manage) {
             return problems;
         }
+        let settings = Step::Settings;
         let agent = self.text(AgentUser);
         check(
             valid_username(agent),
+            settings,
             "Agent username is invalid or reserved by Ubuntu",
         );
         if action == Action::Docker {
             return problems;
         }
+        if action.installer() || action.seeds() {
+            let hostname = self.text(Hostname);
+            check(
+                valid_hostname(hostname) || hostname.is_empty() && self.named,
+                Step::Install,
+                "Hostname is missing or invalid (F4 generates)",
+            );
+        }
         let operator = self.text(OperatorUser);
         check(
             valid_username(operator),
+            settings,
             "Operator username is invalid or reserved by Ubuntu (operator and admin are)",
         );
         check(
             operator != agent,
+            settings,
             "Operator and agent need different usernames",
         );
         for (field, name) in [(OperatorHash, "Operator"), (AgentHash, "Agent")] {
             let hash = self.text(field);
             check(
                 hash.is_empty() || valid_password_hash(hash),
+                settings,
                 &format!("{name} password hash is not SHA-512 crypt or yescrypt"),
             );
         }
         for (account, name) in [(Account::Operator, "Operator"), (Account::Agent, "Agent")] {
             check(
                 self.keys(account).iter().all(|key| is_public_key(key)),
+                settings,
                 &format!("{name} has an SSH public key that is not a supported OpenSSH key"),
             );
         }
@@ -946,8 +1183,25 @@ impl<'a> Profile<'a> {
             self.enabled(AgentSudo)
                 || !self.text(AgentPrivileges).is_empty()
                 || !self.text(AgentHash).is_empty(),
+            settings,
             "Agent needs a password when passwordless sudo is off",
         );
+        if action.installer() || action.seeds() {
+            // Seeds are the only way into the new machine, so the operator must be able to log in.
+            check(
+                !self.keys(Account::Operator).is_empty()
+                    || self.enabled(BerthKey) && !self.own_key.is_empty(),
+                settings,
+                "Operator needs an SSH key: add one, or let it take this berth's",
+            );
+            // An installer's machine is logged in to at its own screen. One made
+            // from a seed is reached with the key, and needs a password only for sudo.
+            check(
+                !self.text(OperatorHash).is_empty() || action.seeds() && self.enabled(OperatorSudo),
+                settings,
+                "Operator password is required (F4 or F5)",
+            );
+        }
         let geometry = self.text(Geometry);
         check(
             geometry.is_empty()
@@ -956,39 +1210,24 @@ impl<'a> Profile<'a> {
                         (3..=4).contains(&n.len()) && n.chars().all(|c| c.is_ascii_digit())
                     })
                 }),
+            settings,
             "Desktop size must look like 1600x900",
         );
-        if action.installer() || action.seeds() {
-            // Seeds are the only way into the new machine, so the operator must be able to log in.
-            let hostname = self.text(Hostname);
-            check(
-                valid_hostname(hostname) || hostname.is_empty() && self.named,
-                "Hostname is missing or invalid (F4 generates)",
-            );
-            check(
-                !self.keys(Account::Operator).is_empty()
-                    || self.enabled(BerthKey) && !self.own_key.is_empty(),
-                "Operator needs an SSH key: add one, or let it take this berth's",
-            );
-            // An installer's machine is logged in to at its own screen. One made
-            // from a seed is reached with the key, and needs a password only for sudo.
-            check(
-                !self.text(OperatorHash).is_empty() || action.seeds() && self.enabled(OperatorSudo),
-                "Operator password is required (F4 or F5)",
-            );
-        }
         if action.installer() {
             match self.text(DiskMode) {
                 "serial" => check(
                     !self.text(DiskSerial).is_empty(),
+                    settings,
                     "Serial disk selection needs the target disk serial",
                 ),
                 "model" => check(
                     !self.text(DiskModel).is_empty(),
+                    settings,
                     "Model disk selection needs a model pattern",
                 ),
                 "path" => check(
                     self.text(DiskPath).starts_with("/dev/"),
+                    settings,
                     "Path disk selection needs a /dev/ path or pattern",
                 ),
                 _ => {}
@@ -998,6 +1237,7 @@ impl<'a> Profile<'a> {
                     [WifiSsid, WifiPassword]
                         .iter()
                         .all(|field| !self.text(*field).is_empty()),
+                    settings,
                     "Wi-Fi needs an SSID and password",
                 );
             }
@@ -1006,6 +1246,7 @@ impl<'a> Profile<'a> {
             check(
                 !self.text(ReleaseStore).is_empty()
                     || self.text(ReleaseUrl).starts_with("https://"),
+                settings,
                 "Choose where to publish the release, or enter its HTTPS address",
             );
         }
@@ -1013,7 +1254,34 @@ impl<'a> Profile<'a> {
     }
 }
 
-/// What a row of the Features and Secrets pages is for.
+/// What a client brings to the rows of a tab of the set-up flow.
+pub struct Page<'a> {
+    /// The ways to install it offers.
+    pub methods: &'a [Action],
+    pub machine: &'a crate::machine::Machine,
+    /// Every problem, its own among them.
+    pub problems: &'a [Problem],
+    /// What the Run tab says besides, such as whether the Wi-Fi password matches.
+    pub notes: Vec<Row>,
+}
+
+/// Something in the way of installing, on the tab that holds what it is about.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Problem {
+    pub step: Step,
+    pub text: String,
+}
+
+impl Problem {
+    pub fn new(step: Step, text: impl Into<String>) -> Self {
+        Problem {
+            step,
+            text: text.into(),
+        }
+    }
+}
+
+/// What a row of the Features and Settings tabs is for.
 pub const GROUP_HELP: &str = "A group of things to install. Space switches all of it on, or off when all of it is on. Plugins add their own entries to these groups.";
 pub const REGISTRY_HELP: &str = "Give this host the login of this registry. Its npm repositories become the agent's npm registry with the login in ~/.npmrc, and its Docker addresses get the login in ~/.docker/config.json. Registries are set up on the Registries tab of the home screen.";
 pub const SECRET_HELP: &str = "How this host gets the secret. Enter, then type a variable name such as GH_TOKEN to put it in the agent's environment, or a path such as ~/.config/app/token to write it to a file. Empty, or x, means the host does not get it. A secret given as GH_TOKEN also logs git in to GitHub through gh. Values are set on the Secrets tab of the home screen.";
@@ -1165,5 +1433,275 @@ mod tests {
             default_enrollment(&mut profile, &names);
             assert_eq!(profile, kept);
         }
+    }
+
+    /// The text of each row of a tab.
+    fn tab(
+        config: &Value,
+        action: Action,
+        step: Step,
+        machine: &crate::machine::Machine,
+    ) -> Vec<String> {
+        let profile = Profile {
+            config,
+            step,
+            action,
+            features: &[],
+            registries: &[],
+            secrets: &[],
+            own_key: "ssh-ed25519 AAAA berth@studio",
+            named: true,
+        };
+        let problems = profile.problems_with(machine);
+        profile
+            .page_rows(Page {
+                methods: &Action::METHODS,
+                machine,
+                problems: &problems,
+                notes: vec![],
+            })
+            .iter()
+            .map(|row| row.line.to_string())
+            .collect()
+    }
+
+    fn incus() -> crate::machine::Machine {
+        let argument = |name: &str, required: bool, resource: bool| berth_api::Argument {
+            name: name.into(),
+            label: name.into(),
+            required,
+            default: if required { "" } else { "1" }.into(),
+            kind: if resource { "resource" } else { "" }.into(),
+            ..Default::default()
+        };
+        let mut machine = crate::machine::Machine::default();
+        machine.asking();
+        machine.listed(Ok(vec![berth_api::ProvisionerInfo {
+            id: "incus/vm".into(),
+            label: "Incus virtual machine".into(),
+            setup: "seed".into(),
+            arguments: vec![
+                argument("server", true, false),
+                argument("cpus", false, true),
+                argument("memory", false, true),
+                argument("image", false, false),
+            ],
+            ..Default::default()
+        }]));
+        machine.found(Ok(None));
+        machine
+    }
+
+    fn place(rows: &[String], text: &str) -> usize {
+        rows.iter()
+            .position(|row| row.contains(text))
+            .unwrap_or_else(|| panic!("no {text} in {rows:#?}"))
+    }
+
+    #[test]
+    fn the_tabs_are_install_features_settings_run() {
+        assert_eq!(
+            Step::SETUP.map(Step::label),
+            ["Install", "Features", "Settings", "Run"]
+        );
+        assert_eq!(Step::Install.offset(-1), Step::Run);
+        assert_eq!(Step::Features.offset(2), Step::Run);
+    }
+
+    #[test]
+    fn creating_a_machine_chooses_on_install_and_sizes_on_settings() {
+        let config = json!({"operator_username": "ops", "agent_username": "agent",
+            "operator_passwordless_sudo": true, "agent_passwordless_sudo": true});
+        let machine = incus();
+        let install = tab(&config, Action::Machine, Step::Install, &machine);
+        // What has to be chosen, in order, and none of what has a default.
+        let order = [
+            "● Create a machine",
+            "Host profile",
+            "Provisioner  Incus virtual machine",
+            "└─ server *  Not set",
+            "Hostname",
+            "Tailscale",
+        ];
+        for pair in order.windows(2) {
+            assert!(
+                place(&install, pair[0]) < place(&install, pair[1]),
+                "{pair:?}"
+            );
+        }
+        for elsewhere in [
+            "cpus",
+            "Operator username",
+            "Desktop size",
+            "Cockpit",
+            "[Run",
+        ] {
+            assert!(
+                !install.iter().any(|row| row.contains(elsewhere)),
+                "{elsewhere}"
+            );
+        }
+        // Its own problem is at its bottom.
+        assert_eq!(install.last().unwrap(), "✗ server is required");
+
+        let settings = tab(&config, Action::Machine, Step::Settings, &machine);
+        let order = [
+            "Machine",
+            "├─ cpus  1",
+            "└─ memory  1",
+            "Provisioner Options",
+            "└─ image  1",
+            "Operator Account",
+            "Agent Account",
+            "SSH hardening",
+            "Registries",
+            "Secrets",
+            "Host",
+            "Desktop size",
+        ];
+        for pair in order.windows(2) {
+            assert!(
+                place(&settings, pair[0]) < place(&settings, pair[1]),
+                "{pair:?}"
+            );
+        }
+        // A created machine is behind its server, so no recovery CIDR.
+        assert!(!settings.iter().any(|row| row.contains("Recovery SSH CIDR")));
+        assert!(!settings.iter().any(|row| row.contains("server *")));
+
+        let features = tab(&config, Action::Machine, Step::Features, &machine);
+        assert!(place(&features, "Host Services") < place(&features, "Cockpit web console"));
+        assert!(place(&features, "Cockpit web console") < place(&features, "Docker on host"));
+
+        let run = tab(&config, Action::Machine, Step::Run, &machine);
+        assert!(place(&run, "Install") < place(&run, "  ✗ server is required"));
+        assert!(
+            place(&run, "✗ server is required")
+                < place(&run, "[Create machine · Incus virtual machine]")
+        );
+        assert!(place(&run, "[Create machine") < place(&run, "[Save · Ctrl+S]"));
+        assert!(
+            !run.iter()
+                .any(|row| row.contains("✓ Ready") || row.contains("[Run ·"))
+        );
+    }
+
+    #[test]
+    fn a_cloud_seed_and_a_usb_installer_have_their_settings_and_last_things() {
+        let config = json!({"operator_username": "ops", "agent_username": "agent",
+            "hostname": "studio", "target_disk_mode": "auto",
+            "operator_passwordless_sudo": true, "agent_passwordless_sudo": true});
+        let machine = crate::machine::Machine::default();
+        let install = tab(&config, Action::CloudSeed, Step::Install, &machine);
+        assert!(place(&install, "Host profile") < place(&install, "Hostname  studio"));
+        assert!(
+            !install
+                .iter()
+                .any(|row| row.contains("Provisioner") || row.contains("Publish"))
+        );
+        let settings = tab(&config, Action::CloudSeed, Step::Settings, &machine);
+        assert!(place(&settings, "Host") < place(&settings, "Recovery SSH CIDR"));
+        assert!(place(&settings, "Recovery SSH CIDR") < place(&settings, "Release"));
+        assert!(place(&settings, "Release") < place(&settings, "└─ Publish release to"));
+        assert!(
+            !settings
+                .iter()
+                .any(|row| row.contains("Disk selection") || row.contains("Machine"))
+        );
+        assert_eq!(
+            settings.last().unwrap(),
+            "✗ Choose where to publish the release, or enter its HTTPS address"
+        );
+        let run = tab(&config, Action::CloudSeed, Step::Run, &machine);
+        assert!(place(&run, "Settings") < place(&run, "  ✗ Choose where to publish"));
+        assert!(place(&run, "[Run · Cloud-init seed]") < place(&run, "[Save · Ctrl+S]"));
+
+        let install = tab(&config, Action::Iso, Step::Install, &machine);
+        assert!(place(&install, "● USB installer") < place(&install, "Hostname"));
+        assert!(
+            !install
+                .iter()
+                .any(|row| row.contains("Source ISO") || row.contains("Disk"))
+        );
+        let settings = tab(&config, Action::Iso, Step::Settings, &machine);
+        let order = [
+            "Installer",
+            "├─ Disk selection  auto",
+            "│  └─ Disk type filter",
+            "├─ Keyboard layout",
+            "└─ Wi-Fi",
+        ];
+        for pair in order.windows(2) {
+            assert!(
+                place(&settings, pair[0]) < place(&settings, pair[1]),
+                "{pair:?}"
+            );
+        }
+        let run = tab(&config, Action::Iso, Step::Run, &machine);
+        assert_eq!(
+            run[..3],
+            [
+                "Source ISO  Not set",
+                "  ├─ ISO SHA256  Not set",
+                "  └─ Then write to USB drive  Not set"
+            ]
+        );
+        assert!(place(&run, "Settings") < place(&run, "  ✗ Operator password is required"));
+        assert!(place(&run, "[Run · USB installer]") < place(&run, "[Save"));
+    }
+
+    #[test]
+    fn each_problem_is_on_its_own_tab_and_all_of_them_on_run() {
+        let config =
+            json!({"operator_username": "ops", "agent_username": "ops", "hostname": "Bad Name"});
+        let machine = crate::machine::Machine::default();
+        let profile = Profile {
+            config: &config,
+            step: Step::Install,
+            action: Action::CloudSeed,
+            features: &[],
+            registries: &[],
+            secrets: &[],
+            own_key: "ssh-ed25519 AAAA berth@studio",
+            named: true,
+        };
+        let placed = profile.placed_problems();
+        let on = |step: Step| -> Vec<String> {
+            placed
+                .iter()
+                .filter(|problem| problem.step == step)
+                .map(|problem| format!("✗ {}", problem.text))
+                .collect()
+        };
+        assert_eq!(
+            on(Step::Install),
+            ["✗ Hostname is missing or invalid (F4 generates)"]
+        );
+        assert!(
+            on(Step::Settings)
+                .contains(&"✗ Operator and agent need different usernames".to_owned())
+        );
+        for step in [Step::Install, Step::Features, Step::Settings] {
+            let rows = tab(&config, Action::CloudSeed, step, &machine);
+            let listed: Vec<String> = rows
+                .iter()
+                .filter(|row| row.starts_with('✗'))
+                .cloned()
+                .collect();
+            assert_eq!(listed, on(step), "{step:?}");
+        }
+        let run = tab(&config, Action::CloudSeed, Step::Run, &machine);
+        let install = place(&run, "Install");
+        let settings = place(&run, "Settings");
+        assert!(
+            install < place(&run, "  ✗ Hostname is missing")
+                && place(&run, "  ✗ Hostname is missing") < settings
+        );
+        assert!(settings < place(&run, "  ✗ Operator and agent need different usernames"));
+        assert_eq!(
+            run.iter().filter(|row| row.contains('✗')).count(),
+            placed.len()
+        );
+        assert!(!run.iter().any(|row| row == "Features"));
     }
 }

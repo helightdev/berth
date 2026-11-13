@@ -257,6 +257,20 @@ pub struct Argument {
     /// A command whose lines are the values to offer.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub choices: String,
+    /// `resource` for an argument of a provisioner that sizes the machine:
+    /// its CPUs, memory or disk. Empty for any other argument.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+}
+
+impl Argument {
+    /// The kind that marks a resource of the machine.
+    pub const RESOURCE: &'static str = "resource";
+
+    /// Whether it sizes the machine a provisioner creates.
+    pub fn is_resource(&self) -> bool {
+        self.kind == Self::RESOURCE
+    }
 }
 
 /// An entry of `/etc/berth/tasks.json`. Listed without `run`.

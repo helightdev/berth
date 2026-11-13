@@ -1,10 +1,12 @@
 //! The machine berth creates for a host with a provisioner of a plugin, as
-//! the host's Install tab shows it: what there is to create it with, what the
-//! chosen one asks for, and the machine once there is one. berth and its page
-//! in a browser ask for these and run the jobs each their own way.
+//! the host's set-up tabs show it: what there is to create it with and what
+//! the chosen one requires on the Install tab, the machine's size and the
+//! rest of its arguments on the Settings tab, and creating it, or the machine
+//! once there is one, on the Run tab. berth and its page in a browser ask for
+//! these and run the jobs each their own way.
 
-use crate::fields::Kind;
-use crate::setup::{Entry, Row, value_line};
+use crate::fields::{Kind, Step};
+use crate::setup::{Entry, Problem, Row, value_line};
 use crate::theme;
 use berth_api::{Instance, Provision, ProvisionerInfo};
 use ratatui::{
@@ -13,11 +15,11 @@ use ratatui::{
 };
 use std::collections::BTreeMap;
 
-/// A row of the machine's part of the Install tab that does something.
+/// A row of the machine's part of the set-up tabs that does something.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Pick {
-    /// A provisioner to create the machine with, by index into those there are.
-    Provisioner(usize),
+    /// The provisioner to create the machine with; Enter switches to the next.
+    Provisioner,
     /// An argument of the chosen provisioner, by index into its arguments.
     Argument(usize),
     Create,
@@ -87,6 +89,45 @@ pub fn editor_title(pick: Pick, host: &str) -> String {
     }
 }
 
+/// A count of CPUs: a positive number, such as 4 or 1.5.
+pub fn valid_count(value: &str) -> bool {
+    value
+        .parse::<f64>()
+        .is_ok_and(|count| count > 0.0 && count.is_finite())
+        && value.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
+}
+
+/// A size with its unit, such as 8GiB, 512MiB or 4g.
+pub fn valid_size(value: &str) -> bool {
+    let split = value
+        .find(|ch: char| !ch.is_ascii_digit() && ch != '.')
+        .unwrap_or(value.len());
+    let (number, unit) = value.split_at(split);
+    let units = [
+        "b", "k", "kb", "kib", "m", "mb", "mib", "g", "gb", "gib", "t", "tb", "tib",
+    ];
+    valid_count(number) && units.contains(&unit.to_ascii_lowercase().as_str())
+}
+
+/// Why a resource's value would not do, by what its name says it is.
+fn resource_problem(argument: &berth_api::Argument, value: &str) -> Option<String> {
+    let name = argument.name.to_ascii_lowercase();
+    let sized = ["memory", "mem", "ram", "disk", "size", "storage", "swap"];
+    if name.contains("cpu") {
+        (!valid_count(value))
+            .then(|| format!("{} must be a positive number, such as 4", label(argument)))
+    } else if sized.iter().any(|word| name.contains(word)) {
+        (!valid_size(value)).then(|| {
+            format!(
+                "{} must be a size with its unit, such as 8GiB, 512MiB or 4g",
+                label(argument)
+            )
+        })
+    } else {
+        None
+    }
+}
+
 impl Machine {
     /// Forget what was known, before asking again. The form stays.
     pub fn asking(&mut self) {
@@ -95,12 +136,15 @@ impl Machine {
         self.instance = None;
     }
 
+    /// Take in the provisioners there are. The first is chosen until
+    /// another is, as a choice of a field has a value from the start.
     pub fn listed(&mut self, provisioners: Result<Vec<ProvisionerInfo>, String>) {
         self.provisioners = Some(provisioners);
         // One that is gone takes its form with it.
         if self.provisioner().is_none() {
             self.chosen = None;
             self.values.clear();
+            self.choose(0);
         }
     }
 
@@ -146,27 +190,94 @@ impl Machine {
         self.values = values;
     }
 
-    /// Why creating with the chosen provisioner would be refused.
-    pub fn problems(&self) -> Vec<String> {
-        let Some(provisioner) = self.provisioner() else {
-            return vec![];
+    /// Choose the provisioner after the chosen one, and the first after the last.
+    pub fn choose_next(&mut self) {
+        let count = self.all().len();
+        if count == 0 {
+            return;
+        }
+        let next = match self.chosen.as_ref() {
+            Some(chosen) => self
+                .all()
+                .iter()
+                .position(|known| &known.id == chosen)
+                .map_or(0, |index| (index + 1) % count),
+            None => 0,
         };
+        self.choose(next);
+    }
+
+    /// The tab an argument of the chosen provisioner is on: a required one
+    /// has to be chosen, the rest have defaults.
+    pub fn step_of(argument: &berth_api::Argument) -> Step {
+        match argument.required {
+            true => Step::Install,
+            false => Step::Settings,
+        }
+    }
+
+    /// Whether the answers have come, so what they say can be judged.
+    fn answered(&self) -> bool {
+        self.provisioners.is_some() && self.instance.is_some()
+    }
+
+    /// Why creating with the chosen provisioner would be refused, each on
+    /// the tab of what it is about. Nothing before anything was asked.
+    pub fn problems(&self) -> Vec<Problem> {
+        if !self.asked || !self.answered() || self.exists() {
+            return vec![];
+        }
         let mut problems = vec![];
+        if let Some(Err(error)) = &self.instance {
+            problems.push(Problem::new(Step::Run, error.clone()));
+        }
+        match &self.provisioners {
+            Some(Err(error)) => problems.push(Problem::new(Step::Install, error.clone())),
+            Some(Ok(all)) if all.is_empty() => problems.push(Problem::new(
+                Step::Install,
+                "No provisioner is installed. Plugins bring them.",
+            )),
+            _ => {}
+        }
+        let Some(provisioner) = self.provisioner() else {
+            if !self.all().is_empty() {
+                problems.push(Problem::new(Step::Install, "Choose a provisioner"));
+            }
+            return problems;
+        };
         if !provisioner.missing_secrets.is_empty() {
-            problems.push(format!(
-                "Needs the secret{} {}: berth secret set NAME, or the Secrets tab of the home screen",
-                if provisioner.missing_secrets.len() == 1 {
-                    ""
-                } else {
-                    "s"
-                },
-                provisioner.missing_secrets.join(", ")
+            problems.push(Problem::new(
+                Step::Install,
+                format!(
+                    "Needs the secret{} {}: berth secret set NAME, or the Secrets tab of the home screen",
+                    if provisioner.missing_secrets.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    },
+                    provisioner.missing_secrets.join(", ")
+                ),
             ));
         }
         for argument in &provisioner.arguments {
-            let value = self.values.get(&argument.name).map_or("", String::as_str);
-            if argument.required && value.trim().is_empty() {
-                problems.push(format!("{} is required", label(argument)));
+            let value = self
+                .values
+                .get(&argument.name)
+                .map_or("", |value| value.trim());
+            let step = Machine::step_of(argument);
+            if value.is_empty() {
+                if argument.required {
+                    problems.push(Problem::new(
+                        step,
+                        format!("{} is required", label(argument)),
+                    ));
+                }
+                continue;
+            }
+            if argument.is_resource()
+                && let Some(problem) = resource_problem(argument, value)
+            {
+                problems.push(Problem::new(step, problem));
             }
         }
         problems
@@ -176,7 +287,7 @@ impl Machine {
     pub fn request(&self) -> Result<Provision, String> {
         let provisioner = self.provisioner().ok_or("Choose a provisioner first")?;
         if let Some(problem) = self.problems().into_iter().next() {
-            return Err(problem);
+            return Err(problem.text);
         }
         let arguments = provisioner
             .arguments
@@ -204,149 +315,160 @@ impl Machine {
         picks
     }
 
-    /// Whether berth created a machine for the host, which the Install tab
+    /// Whether berth created a machine for the host, which the Run tab
     /// then shows whatever way of installing is chosen.
     pub fn exists(&self) -> bool {
         matches!(self.instance, Some(Ok(Some(_))))
     }
 
-    /// The rows of the machine's part of the Install tab; none before
-    /// anything was asked.
-    pub fn rows(&self) -> Vec<Row> {
+    /// The rows of arguments of the chosen provisioner that are on `step`
+    /// and pass `keep`, as a tree under what is above them.
+    fn argument_rows(&self, step: Step, keep: impl Fn(&berth_api::Argument) -> bool) -> Vec<Row> {
+        let Some(provisioner) = self.provisioner() else {
+            return vec![];
+        };
+        let muted = Style::new().fg(theme::MUTED);
+        let shown: Vec<(usize, &berth_api::Argument)> = provisioner
+            .arguments
+            .iter()
+            .enumerate()
+            .filter(|(_, argument)| Machine::step_of(argument) == step && keep(argument))
+            .collect();
+        let count = shown.len();
+        shown
+            .into_iter()
+            .enumerate()
+            .map(|(place, (index, argument))| {
+                let branch = if place + 1 < count {
+                    "  ├─ "
+                } else {
+                    "  └─ "
+                };
+                let name = match argument.required {
+                    true => format!("{} *", label(argument)),
+                    false => label(argument).to_owned(),
+                };
+                let value = self.values.get(&argument.name).map_or("", String::as_str);
+                let mut line = value_line(&name, value, Kind::Text);
+                line.spans.insert(0, Span::styled(branch, muted));
+                Row::entry(line, Entry::Machine(Pick::Argument(index)))
+            })
+            .collect()
+    }
+
+    /// The provisioner's rows of the Install tab: the one chosen, and what
+    /// it requires under it. Its problems are listed with the tab's.
+    pub fn install_rows(&self) -> Vec<Row> {
         if !self.asked {
             return vec![];
         }
         let muted = Style::new().fg(theme::MUTED);
-        let bad = |text: String| Row::info(Line::styled(text, Style::new().fg(theme::BAD)));
-        let mut rows = vec![];
-        let (Some(provisioners), Some(instance)) = (&self.provisioners, &self.instance) else {
-            rows.push(Row::heading("Machine"));
-            rows.push(Row::info(Line::styled(
-                "  Asking for the machine and the provisioners…",
-                muted,
-            )));
-            return rows;
+        let note = |text: &str| {
+            Row::info(Line::from(vec![
+                Span::styled("Provisioner  ", Style::new().fg(theme::TEXT)),
+                Span::styled(text.to_owned(), muted.italic()),
+            ]))
         };
-        match instance {
-            Err(error) => {
-                rows.push(Row::heading("Machine"));
-                rows.push(bad(format!("  ✗ {error}")));
-            }
-            Ok(Some(instance)) => {
-                rows.push(Row::heading("Machine"));
-                let line =
-                    |label: &str, value: &str| Row::info(value_line(label, value, Kind::Text));
-                rows.push(line("  Created with", &instance.provisioner));
-                rows.push(line("  Machine", &instance.id));
-                let colour = match instance.state.as_str() {
-                    "running" => theme::GOOD,
-                    "gone" => theme::BAD,
-                    "stopped" => theme::MUTED,
-                    _ => theme::WARN,
-                };
-                rows.push(Row::info(Line::from(vec![
-                    Span::styled("  State  ", Style::new().fg(theme::TEXT)),
-                    Span::styled(instance.state.clone(), Style::new().fg(colour)),
-                ])));
-                if !instance.address.is_empty() {
-                    rows.push(line("  Address", &instance.address));
-                }
-                if !instance.problem.is_empty() {
-                    rows.push(Row::info(Line::styled(
-                        format!("  ! {}", instance.problem),
-                        Style::new().fg(theme::WARN),
-                    )));
-                }
-                for pick in Machine::actions(instance) {
-                    let text = match pick {
-                        Pick::Start => "  ▸ Start machine",
-                        Pick::Stop => "  ▸ Stop machine",
-                        _ => "  ▸ Delete machine",
-                    };
-                    rows.push(Row::entry(text, Entry::Machine(pick)));
-                }
-            }
-            Ok(None) => {
-                rows.push(Row::heading("Provisioner"));
-                match provisioners {
-                    Err(error) => rows.push(bad(format!("  ✗ {error}"))),
-                    Ok(all) if all.is_empty() => rows.push(Row::info(Line::styled(
-                        "  No provisioner is installed. Plugins bring them.",
-                        muted,
-                    ))),
-                    Ok(all) => self.form_rows(all, &mut rows),
-                }
-            }
+        if !self.answered() {
+            return vec![note("Asking for the machine and the provisioners…")];
+        }
+        if let Some(instance) = self.machine() {
+            return vec![note(&format!(
+                "{} created it · the Run tab has the machine",
+                instance.provisioner
+            ))];
+        }
+        let Some(provisioner) = self.provisioner() else {
+            return vec![note("None to choose")];
+        };
+        let mut line = value_line("Provisioner", &provisioner.label, Kind::Text);
+        line.spans.push(Span::styled(
+            format!("  · {}", setup_note(provisioner)),
+            muted,
+        ));
+        let mut rows = vec![Row::entry(line, Entry::Machine(Pick::Provisioner))];
+        rows.extend(self.argument_rows(Step::Install, |_| true));
+        rows
+    }
+
+    /// The provisioner's rows of the Settings tab: the machine's size, then
+    /// its other arguments, each under a heading when it has any.
+    pub fn settings_rows(&self) -> Vec<Row> {
+        if self.exists() {
+            return vec![];
+        }
+        let mut rows = vec![];
+        let resources = self.argument_rows(Step::Settings, |argument| argument.is_resource());
+        if !resources.is_empty() {
+            rows.push(Row::heading("Machine"));
+            rows.extend(resources);
+        }
+        let others = self.argument_rows(Step::Settings, |argument| !argument.is_resource());
+        if !others.is_empty() {
+            rows.push(Row::heading("Provisioner Options"));
+            rows.extend(others);
         }
         rows
     }
 
-    fn form_rows(&self, all: &[ProvisionerInfo], rows: &mut Vec<Row>) {
+    /// The machine's rows of the Run tab: the button that creates it, or the
+    /// machine once there is one, with what can be done to it.
+    pub fn run_rows(&self) -> Vec<Row> {
         let muted = Style::new().fg(theme::MUTED);
-        for (index, provisioner) in all.iter().enumerate() {
-            let chosen = self.chosen.as_ref() == Some(&provisioner.id);
-            rows.push(Row::entry(
-                Line::from(vec![
-                    Span::raw(format!(
-                        "  {} {}",
-                        if chosen { "●" } else { "○" },
-                        provisioner.label
-                    )),
-                    Span::styled(format!("  · {}", setup_note(provisioner)), muted),
-                ]),
-                Entry::Machine(Pick::Provisioner(index)),
-            ));
-            if chosen {
-                self.chosen_rows(provisioner, rows);
-            }
+        if self.asked && !self.answered() {
+            return vec![Row::info(Line::styled(
+                "Asking for the machine and the provisioners…",
+                muted,
+            ))];
         }
-    }
-
-    /// The form of the chosen provisioner, under it.
-    fn chosen_rows(&self, provisioner: &ProvisionerInfo, rows: &mut Vec<Row>) {
-        let muted = Style::new().fg(theme::MUTED);
-        let bad = |problem: String| {
-            Row::info(Line::styled(
-                format!("    ✗ {problem}"),
-                Style::new().fg(theme::BAD),
-            ))
-        };
-        let mut problems = self.problems().into_iter();
-        // The secrets first: without them nothing below can be done.
-        if !provisioner.missing_secrets.is_empty() {
-            rows.extend(problems.next().map(bad));
-        }
-        let count = provisioner.arguments.len();
-        for (index, argument) in provisioner.arguments.iter().enumerate() {
-            let branch = if index + 1 < count {
-                "    ├─ "
-            } else {
-                "    └─ "
-            };
-            let name = match argument.required {
-                true => format!("{} *", label(argument)),
-                false => label(argument).to_owned(),
-            };
-            let value = self.values.get(&argument.name).map_or("", String::as_str);
-            let mut line = value_line(&name, value, Kind::Text);
-            line.spans.insert(0, Span::styled(branch, muted));
-            rows.push(Row::entry(line, Entry::Machine(Pick::Argument(index))));
-        }
-        rows.extend(problems.map(bad));
-        // Without its secrets the provisioner is refused, so it is not offered.
-        if provisioner.missing_secrets.is_empty() {
-            rows.push(Row::entry(
-                format!("    [Create machine · {}]", provisioner.label),
+        let Some(instance) = self.machine() else {
+            let label = self
+                .provisioner()
+                .map_or(String::new(), |known| format!(" · {}", known.label));
+            return vec![Row::entry(
+                format!("[Create machine{label}]"),
                 Entry::Machine(Pick::Create),
-            ));
+            )];
+        };
+        let mut rows = vec![Row::heading("Machine")];
+        let line = |label: &str, value: &str| Row::info(value_line(label, value, Kind::Text));
+        rows.push(line("  Created with", &instance.provisioner));
+        rows.push(line("  Machine", &instance.id));
+        let colour = match instance.state.as_str() {
+            "running" => theme::GOOD,
+            "gone" => theme::BAD,
+            "stopped" => theme::MUTED,
+            _ => theme::WARN,
+        };
+        rows.push(Row::info(Line::from(vec![
+            Span::styled("  State  ", Style::new().fg(theme::TEXT)),
+            Span::styled(instance.state.clone(), Style::new().fg(colour)),
+        ])));
+        if !instance.address.is_empty() {
+            rows.push(line("  Address", &instance.address));
         }
+        if !instance.problem.is_empty() {
+            rows.push(Row::info(Line::styled(
+                format!("  ! {}", instance.problem),
+                Style::new().fg(theme::WARN),
+            )));
+        }
+        for pick in Machine::actions(instance) {
+            let text = match pick {
+                Pick::Start => "  ▸ Start machine",
+                Pick::Stop => "  ▸ Stop machine",
+                _ => "  ▸ Delete machine",
+            };
+            rows.push(Row::entry(text, Entry::Machine(pick)));
+        }
+        rows
     }
 
     /// What the information box says of a row.
     pub fn help(&self, pick: Pick) -> String {
         match pick {
-            Pick::Provisioner(index) => {
-                let Some(provisioner) = self.all().get(index) else {
+            Pick::Provisioner => {
+                let Some(provisioner) = self.provisioner() else {
                     return String::new();
                 };
                 let mut text = format!("{}\n\n", provisioner.description);
@@ -366,7 +488,16 @@ impl Machine {
                         provisioner.missing_secrets.join(", ")
                     );
                 }
-                text + "\n\nEnter chooses it and shows what it asks for."
+                let others: Vec<&str> = self
+                    .all()
+                    .iter()
+                    .filter(|known| known.id != provisioner.id)
+                    .map(|known| known.label.as_str())
+                    .collect();
+                if !others.is_empty() {
+                    text += &format!("\n\nEnter switches to the next of: {}.", others.join(", "));
+                }
+                text + "\n\nWhat it requires is below. The machine's size and its other arguments are on the Settings tab."
             }
             Pick::Argument(index) => {
                 let Some(argument) = self
@@ -378,6 +509,9 @@ impl Machine {
                 let mut text = format!("{} (`{}`).", label(argument), argument.name);
                 if argument.required {
                     text += " Required.";
+                }
+                if argument.is_resource() {
+                    text += " Part of the machine's size.";
                 }
                 if !argument.default.is_empty() {
                     text += &format!(" Default: {}.", argument.default);
@@ -394,8 +528,8 @@ impl Machine {
     /// Enter on a row.
     pub fn enter(&mut self, pick: Pick, host: &str) -> Next {
         match pick {
-            Pick::Provisioner(index) => {
-                self.choose(index);
+            Pick::Provisioner => {
+                self.choose_next();
                 Next::Nothing
             }
             Pick::Argument(index) => {
@@ -513,51 +647,176 @@ mod tests {
         machine
     }
 
-    #[test]
-    fn nothing_shows_before_it_was_asked_and_little_while_it_is() {
-        let mut machine = Machine::default();
-        assert!(machine.rows().is_empty());
-        machine.asking();
-        assert!(text(&machine.rows())[1].contains("Asking"));
-        let none = without_machine(vec![]);
-        let shown = text(&none.rows());
-        assert_eq!(shown.len(), 2);
-        assert!(shown[1].contains("No provisioner is installed"));
-        assert!(picks(&none.rows()).is_empty());
+    fn texts(problems: Vec<Problem>) -> Vec<(Step, String)> {
+        problems
+            .into_iter()
+            .map(|problem| (problem.step, problem.text))
+            .collect()
+    }
+
+    /// A provisioner that sizes its machine, as the Incus plugin's does.
+    fn sized(id: &str, label: &str, resources: &[&str]) -> ProvisionerInfo {
+        let mut arguments = vec![Argument {
+            name: "server".into(),
+            label: "Server".into(),
+            required: true,
+            ..Default::default()
+        }];
+        for name in resources {
+            arguments.push(Argument {
+                name: (*name).into(),
+                label: (*name).into(),
+                default: "1".into(),
+                kind: Argument::RESOURCE.into(),
+                ..Default::default()
+            });
+        }
+        arguments.push(Argument {
+            name: "image".into(),
+            label: "Image".into(),
+            default: "ubuntu".into(),
+            ..Default::default()
+        });
+        ProvisionerInfo {
+            id: id.into(),
+            label: label.into(),
+            setup: "seed".into(),
+            arguments,
+            ..Default::default()
+        }
     }
 
     #[test]
-    fn a_chosen_provisioner_is_a_form_from_its_arguments() {
-        let mut machine = without_machine(vec![provisioner(&[])]);
-        assert_eq!(picks(&machine.rows()), [Pick::Provisioner(0)]);
-        assert!(text(&machine.rows())[1].contains("sets itself up from the cloud seed"));
-        assert_eq!(machine.enter(Pick::Provisioner(0), "studio"), Next::Nothing);
-        let rows = machine.rows();
+    fn nothing_shows_before_it_was_asked_and_little_while_it_is() {
+        let mut machine = Machine::default();
+        assert!(machine.install_rows().is_empty() && machine.problems().is_empty());
+        machine.asking();
+        assert!(text(&machine.install_rows())[0].contains("Asking"));
+        assert!(text(&machine.run_rows())[0].contains("Asking"));
+        let none = without_machine(vec![]);
+        assert_eq!(text(&none.install_rows()), ["Provisioner  None to choose"]);
+        assert!(picks(&none.install_rows()).is_empty());
         assert_eq!(
-            picks(&rows),
-            [
-                Pick::Provisioner(0),
-                Pick::Argument(0),
-                Pick::Argument(1),
-                Pick::Create
-            ]
+            texts(none.problems()),
+            [(
+                Step::Install,
+                "No provisioner is installed. Plugins bring them.".into()
+            )]
         );
+    }
+
+    #[test]
+    fn the_chosen_provisioner_is_one_row_with_what_it_requires_under_it() {
+        let mut machine = without_machine(vec![provisioner(&[])]);
+        // The first is chosen when they arrive, as a choice has a value.
+        let rows = machine.install_rows();
+        assert_eq!(picks(&rows), [Pick::Provisioner, Pick::Argument(0)]);
         let shown = text(&rows);
-        assert!(shown[1].starts_with("  ● Lab machine"), "{shown:?}");
-        // The required one is marked and empty; the other has its default.
-        assert_eq!(shown[2], "    ├─ Lab server *  Not set");
-        assert_eq!(shown[3], "    └─ vCPUs  4");
-        assert!(shown.contains(&"    ✗ Lab server is required".to_owned()));
+        assert_eq!(
+            shown[0],
+            "Provisioner  Lab machine  · sets itself up from the cloud seed"
+        );
+        // Only the required one is on Install; the other has its default on Settings.
+        assert_eq!(shown[1], "  └─ Lab server *  Not set");
+        assert_eq!(
+            text(&machine.settings_rows()),
+            ["Provisioner Options", "  └─ vCPUs  4"]
+        );
+        assert_eq!(
+            texts(machine.problems()),
+            [(Step::Install, "Lab server is required".into())]
+        );
         assert_eq!(
             machine.enter(Pick::Argument(1), "studio"),
             Next::Edit("4".into())
         );
+        assert_eq!(picks(&machine.run_rows()), [Pick::Create]);
+        assert_eq!(
+            text(&machine.run_rows()),
+            ["[Create machine · Lab machine]"]
+        );
+    }
+
+    #[test]
+    fn resources_are_the_machine_and_switching_the_provisioner_changes_them() {
+        let mut machine = without_machine(vec![
+            sized(
+                "incus/vm",
+                "Incus virtual machine",
+                &["cpus", "memory", "disk"],
+            ),
+            sized("docker/container", "Docker container", &["cpus", "memory"]),
+        ]);
+        assert_eq!(
+            text(&machine.settings_rows()),
+            [
+                "Machine",
+                "  ├─ cpus  1",
+                "  ├─ memory  1",
+                "  └─ disk  1",
+                "Provisioner Options",
+                "  └─ Image  ubuntu"
+            ]
+        );
+        // Enter on the row switches to the next, and around again.
+        assert_eq!(machine.enter(Pick::Provisioner, "studio"), Next::Nothing);
+        assert_eq!(machine.chosen.as_deref(), Some("docker/container"));
+        assert!(text(&machine.install_rows())[0].contains("Docker container"));
+        let machine_rows = text(&machine.settings_rows());
+        assert_eq!(
+            machine_rows[..3],
+            ["Machine", "  ├─ cpus  1", "  └─ memory  1"]
+        );
+        assert!(
+            machine
+                .help(Pick::Provisioner)
+                .contains("Incus virtual machine")
+        );
+        machine.choose_next();
+        assert_eq!(machine.chosen.as_deref(), Some("incus/vm"));
+    }
+
+    #[test]
+    fn a_bad_resource_is_a_problem_of_the_settings_tab_and_blocks_creating() {
+        let mut machine = without_machine(vec![sized(
+            "incus/vm",
+            "Incus virtual machine",
+            &["cpus", "memory", "disk"],
+        )]);
+        machine.typed(Pick::Argument(0), "https://192.0.2.10:8443", "studio");
+        for (index, value) in [(1, "4"), (2, "8GiB"), (3, "60g")] {
+            machine.typed(Pick::Argument(index), value, "studio");
+        }
+        assert!(machine.problems().is_empty());
+        machine.typed(Pick::Argument(1), "four", "studio");
+        machine.typed(Pick::Argument(2), "8", "studio");
+        assert_eq!(
+            texts(machine.problems()),
+            [
+                (
+                    Step::Settings,
+                    "cpus must be a positive number, such as 4".into()
+                ),
+                (
+                    Step::Settings,
+                    "memory must be a size with its unit, such as 8GiB, 512MiB or 4g".into()
+                ),
+            ]
+        );
+        assert!(
+            matches!(machine.enter(Pick::Create, "studio"), Next::Say(problem) if problem.contains("cpus"))
+        );
+        // An optional one left empty takes the provisioner's own default.
+        machine.typed(Pick::Argument(1), "", "studio");
+        machine.typed(Pick::Argument(2), "512MiB", "studio");
+        assert!(machine.problems().is_empty());
+        assert!(valid_count("1.5") && !valid_count("0") && !valid_count("-2"));
+        assert!(valid_size("4g") && valid_size("512MiB") && !valid_size("GiB"));
     }
 
     #[test]
     fn creating_asks_once_with_what_was_filled_in() {
         let mut machine = without_machine(vec![provisioner(&[])]);
-        machine.choose(0);
         assert_eq!(
             machine.enter(Pick::Create, "studio"),
             Next::Say("Lab server is required".into())
@@ -585,19 +844,19 @@ mod tests {
     }
 
     #[test]
-    fn missing_secrets_are_named_and_creating_is_not_offered() {
-        let mut machine = without_machine(vec![provisioner(&["lab_token"])]);
-        machine.choose(0);
-        let rows = machine.rows();
-        assert!(!picks(&rows).contains(&Pick::Create));
-        let shown = text(&rows).join("\n");
+    fn missing_secrets_are_a_problem_of_the_install_tab() {
+        let machine = without_machine(vec![provisioner(&["lab_token"])]);
+        let problems = texts(machine.problems());
+        assert_eq!(problems[0].0, Step::Install);
         assert!(
-            shown.contains("Needs the secret lab_token: berth secret set NAME, or the Secrets tab")
+            problems[0]
+                .1
+                .contains("Needs the secret lab_token: berth secret set NAME, or the Secrets tab")
         );
         assert!(machine.request().is_err());
         assert!(
             machine
-                .help(Pick::Provisioner(0))
+                .help(Pick::Provisioner)
                 .contains("Not set yet: lab_token")
         );
     }
@@ -624,7 +883,10 @@ mod tests {
         machine.asking();
         machine.listed(Ok(vec![provisioner(&[])]));
         machine.found(Ok(Some(instance)));
-        let rows = machine.rows();
+        // The machine is on the Run tab; there is nothing to choose or size.
+        assert!(picks(&machine.install_rows()).is_empty());
+        assert!(machine.settings_rows().is_empty() && machine.problems().is_empty());
+        let rows = machine.run_rows();
         let shown = text(&rows);
         assert_eq!(shown[0], "Machine");
         assert!(shown.contains(&"  State  unknown".to_owned()));
@@ -650,5 +912,14 @@ mod tests {
         assert!(absent("studio has no machine that berth created"));
         assert!(absent("No host studio"));
         assert!(!absent("The berth server did not answer"));
+        // An error asking for it is in the way of creating it.
+        let mut machine = Machine::default();
+        machine.asking();
+        machine.listed(Ok(vec![provisioner(&[])]));
+        machine.found(Err("The berth server did not answer".into()));
+        assert!(
+            texts(machine.problems())
+                .contains(&(Step::Run, "The berth server did not answer".into()))
+        );
     }
 }

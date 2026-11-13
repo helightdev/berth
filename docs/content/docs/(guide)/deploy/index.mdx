@@ -6,7 +6,7 @@ icon: HardDriveDownload
 
 import { Boxes, Cloud, Container, FlaskConical, Server, Terminal, Usb } from 'lucide-react';
 
-The install methods all run the same Ansible role with the settings of the host's profile. Choose one on the **Install** tab of a host, or use the matching command.
+The install methods all run the same Ansible role with the settings of the host's profile. Choose one under **How To Install** on the **Install** tab of a host, or use the matching command.
 
 | Method | For | Command |
 | --- | --- | --- |
@@ -45,7 +45,16 @@ The target is Ubuntu 26.04 on amd64. The USB installer installs it, and the othe
 
 ## Before you run
 
-The Install tab lists what is still missing above **Run**, and Run does not start while a problem is listed. Warnings, such as SSH being open to any address, are listed too but do not stop it.
+The set-up of a host has four tabs. Each tab depends only on the tabs before it.
+
+| Tab | What it holds |
+| --- | --- |
+| Install | How to install, with the host profile, the provisioner and its required arguments, the SSH address, the hostname and Tailscale |
+| Features | What gets installed, including Cockpit and Docker on the host |
+| Settings | Everything with a default, such as the machine's resources, the accounts, registries and secrets, and the installer's disk and Wi-Fi |
+| Run | The last files for the method, every problem, and the buttons |
+
+A setting shows only when the method and features it belongs to are chosen. Each of the first three tabs lists its own problems at the bottom. **Run** lists all of them under the name of their tab, and does not start while one is listed. Warnings, such as SSH being open to any address, are listed too but do not stop it. **Save** on Run, or Ctrl+S anywhere, saves the profile.
 
 Builds run inside berth with their output and a progress bar. Esc cancels and Enter returns. Installing over SSH and *This machine or an inventory* continue in the normal terminal, where Ansible and SSH can ask for passwords, and return to berth when they finish.
 

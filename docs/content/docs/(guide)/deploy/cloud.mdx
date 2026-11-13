@@ -17,14 +17,14 @@ The seed gives the operator [the key of berth itself](/docs/reference/profile#th
 
 ### Set the profile
 
-Create the host and set **Host profile** to `cloud`. For it to join the tailnet on first boot, give it an enrollment key or switch on **Automatic enrollment key** ([joining the tailnet](/docs/use/access#joining-the-tailnet)).
+Create the host. On **Install**, choose **Cloud-init seed**, which switches a `laptop` **Host profile** to `cloud`. For the host to join the tailnet on first boot, give it an enrollment key there or switch on **Automatic enrollment key** ([joining the tailnet](/docs/use/access#joining-the-tailnet)).
 
 </Step>
 <Step>
 
 ### Choose the release source
 
-The machine downloads the generic release archive on first boot. On **Install** with **Cloud-init seed** chosen:
+The machine downloads the generic release archive on first boot. Under **Release** on the **Settings** tab:
 
 - **Publish release to** switches between the file servers and raw repositories from the Registries tab. Berth uploads the archive there when it makes the seed. See [Publishing the release archive](/docs/use/registries#publishing-the-release-archive).
 - Or upload it yourself and enter its HTTPS address in **Release HTTPS URL** (`release_url`).
@@ -34,14 +34,14 @@ The machine downloads the generic release archive on first boot. On **Install** 
 
 ### Limit SSH
 
-Enter your network in **Recovery SSH CIDR**, such as `198.51.100.7/32`. It is `devbox_bootstrap_ssh_cidr` under `ansible_vars`.
+On **Settings**, enter your network in **Recovery SSH CIDR** under **Host**, such as `198.51.100.7/32`. It is `devbox_bootstrap_ssh_cidr` under `ansible_vars`.
 
 </Step>
 <Step>
 
 ### Make it
 
-Run **Cloud-init seed**, or:
+On **Run**, check that no problem is listed and press Enter on **Run · Cloud-init seed**, or:
 
 ```bash
 berth seed cloud-1
@@ -50,7 +50,7 @@ berth seed cloud-1
 </Step>
 </Steps>
 
-<Screen name="install-cloud" alt="The Install tab of a cloud host with Cloud-init seed chosen, two problems and a warning listed above Run" />
+<Screen name="install-cloud" alt="The Run tab of a cloud host with Cloud-init seed chosen: two problems grouped by tab, a warning, and the Run and Save buttons" />
 
 <Callout type="warn" title="No recovery CIDR means SSH from anywhere">
   Without a recovery SSH CIDR, a cloud host accepts SSH from any address. Keep **SSH hardening** on in that case, so only keys work, and use a provider firewall scoped to your admin IP. Do not open VNC, T3 or Cockpit to the internet.

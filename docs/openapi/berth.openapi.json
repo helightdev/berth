@@ -90,6 +90,10 @@
           "default": {
             "type": "string"
           },
+          "kind": {
+            "description": "`resource` for an argument of a provisioner that sizes the machine:\nits CPUs, memory or disk. Empty for any other argument.",
+            "type": "string"
+          },
           "label": {
             "type": "string"
           },

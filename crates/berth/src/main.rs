@@ -622,6 +622,7 @@ fn run() -> Result<()> {
                 },
             };
             let mut app = open(&paths, &name)?;
+            app.start();
             // Terminal actions (Ansible) suspend the UI and come back to it.
             while ui::run(&mut terminal, &mut app)? {
                 leave();
@@ -800,7 +801,8 @@ mod tests {
             json!([])
         );
 
-        app.step = Step::Accounts;
+        // The accounts on the Settings tab start with a heading.
+        app.step = Step::Settings;
         assert_eq!(selectable(&app)[0], 1);
         app.action = Action::Docker;
         assert_eq!(app.fields(), [Field::AgentUser]);
@@ -812,7 +814,10 @@ mod tests {
         app.step = Step::Install;
         app.action = Action::Docker;
         assert!(app.fields().is_empty());
+        // What an installer picks the disk and network with has defaults.
         app.action = Action::UsbSeed;
+        assert!(!app.fields().contains(&Field::DiskMode));
+        app.step = Step::Settings;
         assert!(app.fields().contains(&Field::DiskType));
         assert!(!app.fields().contains(&Field::DiskSerial));
         assert!(!app.fields().contains(&Field::WifiSsid));
@@ -821,6 +826,7 @@ mod tests {
         let fields = app.fields();
         assert!(fields.contains(&Field::DiskSerial) && !fields.contains(&Field::DiskType));
         assert!(fields.contains(&Field::WifiSsid));
+        app.step = Step::Install;
         app.action = Action::Ssh;
         assert!(app.fields().contains(&Field::SshHost));
         assert!(!app.fields().contains(&Field::Hostname));
@@ -942,7 +948,7 @@ mod tests {
         // A cloud seed needs somewhere to get the release from, but no SSH network.
         app.action = Action::CloudSeed;
         assert_eq!(app.problems().len(), 1);
-        let step = std::mem::replace(&mut app.step, Step::Install);
+        let step = std::mem::replace(&mut app.step, Step::Settings);
         assert!(app.fields().contains(&Field::ReleaseUrl));
         app.config["release_store"] = json!("nexus/releases");
         assert!(app.problems().is_empty());

@@ -27,8 +27,8 @@
           {"name": "ssh_port", "label": "Published SSH port (empty: none)", "default": ""},
           {"name": "publish_address", "label": "Address to reach the published port", "default": "127.0.0.1"},
           {"name": "volume", "label": "Volume for /srv/agent (empty: berth-HOST-data)", "default": ""},
-          {"name": "cpus", "label": "CPUs", "default": ""},
-          {"name": "memory", "label": "Memory", "default": ""},
+          {"name": "cpus", "label": "CPUs", "default": "", "kind": "resource"},
+          {"name": "memory", "label": "Memory", "default": "", "kind": "resource"},
           {"name": "keep_volume", "label": "Keep the volume on destroy (yes or no)", "default": "no"}
         ]
       }

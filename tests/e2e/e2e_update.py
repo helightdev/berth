@@ -268,8 +268,9 @@ class UpdateServed(unittest.TestCase):
         kept.plant(station, run)
 
         self.registry.publish(plugin_version('2.0.0', 'berth-plugin-served'))
-        # The tab of the terminal client asks the server.
-        home = station.terminal(cols=160)
+        # The tab of the terminal client asks the server. It lists every plugin
+        # with its features before the row that adds one, so it is tall.
+        home = station.terminal(cols=160, rows=46)
         try:
             home.expect(HOST)
             home.send('5')

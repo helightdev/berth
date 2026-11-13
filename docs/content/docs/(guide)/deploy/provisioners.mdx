@@ -54,7 +54,7 @@ A seeded machine whose address berth does not know is not waited for. berth says
 
 ### Save the host
 
-Make the profile as for any host, and choose its features and accounts. The provisioner works from the saved profile.
+Make the profile as for any host. The provisioner works from the saved profile.
 
 </Step>
 <Step>
@@ -86,7 +86,15 @@ The output of the provisioner and of the set-up follows as it runs. berth ends w
 </Step>
 </Steps>
 
-On the Install tab of the host, **Create a machine** under **How To Install** does the same. It lists the provisioners below the host's settings. Enter on a provisioner shows what it asks for, and Enter on an argument changes it. **Create machine** asks once before it saves the profile and starts, and does not start while a problem is listed. The output is shown as it runs. The page of [`berth serve --web`](/docs/use/server#in-a-browser) has the same choice.
+In the terminal UI, choose **Create a machine** under **How To Install** on the host's Install tab. The arguments of the provisioner are spread over the tabs:
+
+| Tab | Shows |
+| --- | --- |
+| Install | **Provisioner**, whose value Enter switches through the installed ones, and under it the required arguments, marked `*` |
+| Settings | Under **Machine**, the resources it has, such as CPUs, memory and disk. Under **Provisioner Options**, its other arguments |
+| Run | **Create machine**, and every problem |
+
+The first provisioner is chosen when the list arrives. Enter on an argument changes it. A missing secret is a problem of the Install tab, and a bad resource value one of the Settings tab. **Create machine** on the Run tab asks once before it saves the profile and starts, and does not start while a problem is listed. The output is shown as it runs. The page of [`berth serve --web`](/docs/use/server#in-a-browser) has the same tabs.
 
 Only one thing runs at a time for a host. A second command for the same host is refused until the first ends.
 
@@ -114,7 +122,7 @@ The state comes from the provisioner each time you ask.
 | `creating` | A command is creating it now |
 | `unknown` | The provisioner did not answer. A `Problem` line says why |
 
-`berth instance HOST start` and `stop` work only when the provisioner offers them. The list above says which. The Install tab shows a **Start machine** and **Stop machine** row in the same cases.
+`berth instance HOST start` and `stop` work only when the provisioner offers them. The list above says which. The Run tab shows the machine's state and a **Start machine** and **Stop machine** row in the same cases, whatever install method is chosen.
 
 `berth provisioners PLUGIN/ID [NAME=VALUE…]` lists the machines that provisioner has and berth made, such as `berth provisioners incus/vm server=https://192.0.2.10:8443`. It works for provisioners that offer `list`.
 
@@ -143,7 +151,7 @@ Deleting needs the provisioner's plugin and its required secrets. Removing a hos
 
 ## With a berth server
 
-With a [berth server](/docs/use/server) set, the server creates the machines. Its commands and the Install tab go to the server, and the provisioner runs on the server's machine with the server's plugins and secrets. Creating and deleting are jobs there, named `provision` and `unprovision`, and their output follows as for an apply.
+With a [berth server](/docs/use/server) set, the server creates the machines. Its commands and the set-up tabs go to the server, and the provisioner runs on the server's machine with the server's plugins and secrets. Creating and deleting are jobs there, named `provision` and `unprovision`, and their output follows as for an apply.
 
 All of it needs the role `admin`. A server with `serve_setup off` does not take these over the network, only on its own socket ([Closing set-up](/docs/extend/serve#closing-set-up)).
 

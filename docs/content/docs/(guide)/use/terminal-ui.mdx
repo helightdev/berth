@@ -27,18 +27,34 @@ The home screen has five tabs, switched with the number keys or Tab.
 
 ## A host
 
-A host has its **overview**, for the running machine, and four **set-up** tabs for its profile. The overview is described in [A host's overview](/docs/use/overview). **Change what is installed, accounts or install method** on the overview opens the set-up tabs, and Esc returns.
+A host has its **overview**, for the running machine, and four **set-up** tabs for its profile. The overview is described in [A host's overview](/docs/use/overview). **Change what is installed, accounts or install method** on the overview opens the set-up tabs on Install, and Esc returns. A new host opens on Install.
+
+Each tab depends only on the tabs before it. Install holds what you have to choose, and Settings what has a default. A new host can be made by filling in Install and pressing Enter on Run.
 
 | Set-up tab | For |
 | --- | --- |
-| `1` Features | The coding agents and T3 Code, with tool categories, browsers, graphics and plugin features |
-| `2` Accounts | Operator and agent usernames, their SSH keys, passwords and sudo policy; can fill in from the keys on this machine |
-| `3` Secrets | Which registries and secrets this host gets, and how |
-| `4` Install | How to install, the settings that method needs, what is still missing, and Run |
+| `1` Install | How to install, with the host profile, the provisioner and its required arguments, the SSH address, the hostname and Tailscale |
+| `2` Features | The coding agents and T3 Code, with tool categories, browsers, graphics, Cockpit, Docker on the host and plugin features |
+| `3` Settings | Everything with a default. See the list below |
+| `4` Run | The last files for the method, every problem grouped by tab, warnings, and the Run, Create machine and Save buttons |
+
+The Settings tab has these groups, in this order:
+
+| Group | Holds | Shown for |
+| --- | --- | --- |
+| Machine | The provisioner's CPUs, memory and disk | Create a machine |
+| Provisioner Options | The provisioner's other arguments | Create a machine |
+| Operator Account, Agent Account, SSH hardening | The accounts. Container image has only the agent's username | Every method |
+| Registries, Secrets | The logins and secrets the host gets | Every method |
+| Host | Desktop size, and Recovery SSH CIDR | Every method but Container image. No recovery CIDR for Create a machine |
+| Installer | Disk selection, keyboard layout and Wi-Fi | USB installer |
+| Release | Where the release is published | Cloud-init seed |
+
+A row shows only when the method and features it belongs to are chosen. Each of the first three tabs lists its own problems at the bottom. Run lists all of them, grouped by tab, and does not start while one is listed.
 
 The **Information** panel on the right explains the selected row. **Apply this configuration** on the overview sends changes to a running host.
 
-<Screen name="secrets" alt="The Secrets tab of a host: registries switched on or off, and a secret given as the variable GH_TOKEN" />
+<Screen name="secrets" alt="The Registries and Secrets of a host's Settings tab: registries switched on or off, and a secret given as the variable GH_TOKEN" />
 
 ## Keys
 
@@ -52,7 +68,7 @@ The **Information** panel on the right explains the selected row. **Apply this c
 | F5 | Type a password and store its hash; on Wi-Fi fields, unlock the saved passwords |
 | c | On **This berth's SSH key**, copy the key to the clipboard |
 | Alt+R | In a panel, show its links as QR codes to scan with a phone. Left and Right go to the other links, any other key closes it |
-| Ctrl+S | Save the profile |
+| Ctrl+S | Save the profile, as **Save** on the Run tab does |
 | Ctrl+U, Esc | Clear the field being edited, cancel the edit |
 | x or Delete | Unset the selected text, path or secret field |
 | q or Esc | From set-up back to the overview, from there to the home screen; asks again when there are unsaved changes |

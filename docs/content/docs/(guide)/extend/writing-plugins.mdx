@@ -199,7 +199,8 @@ A provisioner creates the machine for a saved host. Its plugin lists it under `b
         "secrets": ["lab_token", {"name": "lab_ca", "required": false}],
         "arguments": [
           {"name": "server", "label": "Lab server", "required": true},
-          {"name": "cpus", "label": "vCPUs", "default": "4"}
+          {"name": "cpus", "label": "vCPUs", "default": "4", "kind": "resource"},
+          {"name": "image", "label": "Image", "default": "ubuntu-26.04"}
         ]
       }
     ]
@@ -221,9 +222,39 @@ The provisioner is referred to as `PLUGIN/ID`, here `lab/vm`.
     archive: { type: 'boolean', default: 'false', description: 'Only for seed. The provisioner puts the release archive into the machine itself, so the profile needs no release_url.' },
     verbs: { type: 'string[]', description: 'Of start, stop and list, the ones it answers. create, status and destroy are always required.' },
     secrets: { type: '(string | Secret)[]', description: 'Names of berth secrets it is given. A string is required. {"name", "required": false} is given when it has a value. It gets no others.' },
-    arguments: { type: 'Argument[]', description: 'Values asked for: {name, label, required, default}. All values are strings, and choices is not used.' },
+    arguments: { type: 'Argument[]', description: 'Values asked for: {name, label, required, default, kind}. All values are strings, and choices is not used.' },
   }}
 />
+
+### Arguments
+
+Each entry of `arguments` is one value the provisioner takes. berth shows it on the host's set-up tabs by what it is.
+
+<TypeTable
+  type={{
+    name: { type: 'string', required: true, description: 'Lower-case letters, digits, - and _, starting with a letter. The key in the request.' },
+    label: { type: 'string', default: 'the name', description: 'Name in berth.' },
+    required: { type: 'boolean', default: 'false', description: 'Creating is refused while it is empty.' },
+    default: { type: 'string', default: '""', description: 'The value it starts with.' },
+    kind: { type: '"resource"', description: 'Marks a resource of the machine, such as CPUs, memory or disk. Without it, the argument is an ordinary one.' },
+  }}
+/>
+
+| Argument | Where berth shows it |
+| --- | --- |
+| `required` | On the Install tab, under the Provisioner row |
+| `"kind": "resource"`, not required | Under Machine on the Settings tab |
+| Any other | Under Provisioner Options on the Settings tab |
+
+berth checks the value of a resource before it creates the machine. It goes by the name of the argument:
+
+| Name contains | The value has to be |
+| --- | --- |
+| `cpu` | A positive number, such as `4` |
+| `memory`, `mem`, `ram`, `disk`, `size`, `storage` or `swap` | A size with its unit, such as `8GiB`, `512MiB` or `4g` |
+| anything else | Not checked |
+
+An argument that is not required may be left empty. berth lists a bad value as a problem of the tab that shows the argument. The command line does not check resources. The provisioner checks what it is given in any case.
 
 ### How it is run
 

@@ -1014,7 +1014,7 @@ fn choose(app: &mut App, entry: Entry) -> Flow {
             }
         }
         Entry::Field(field) => app.activate(field),
-        Entry::Setup => app.set_step(Step::Features),
+        Entry::Setup => app.set_step(Step::Install),
         Entry::HostRegistry(index) => app.toggle_host_registry(index),
         Entry::HostSecret(index) => app.editing = Some(Input::new(app.host_secret(index))),
         // A key is pasted whole, not changed letter by letter.
@@ -1038,6 +1038,7 @@ fn choose(app: &mut App, entry: Entry) -> Flow {
         Entry::Task("connect") => app.reconnect_host(),
         Entry::Task("apply") => return apply(app, false),
         Entry::Machine(pick) => app.machine_enter(pick),
+        Entry::Save => save(app),
         Entry::Task(_) => {}
         Entry::Run => {
             if !app.problems().is_empty() {
@@ -1051,6 +1052,14 @@ fn choose(app: &mut App, entry: Entry) -> Flow {
         }
     }
     Flow::Continue
+}
+
+/// Save the profile and say how that went.
+fn save(app: &mut App) {
+    app.status = match app.save() {
+        Ok(()) => format!("Saved {}", app.path.display()),
+        Err(error) => format!("Save failed · {error}"),
+    };
 }
 
 /// The size of the terminal panel for the window as it is now.
@@ -1073,10 +1082,7 @@ fn key_event(
     match key.code {
         KeyCode::Char('s') if control => {
             app.accept_edit();
-            app.status = match app.save() {
-                Ok(()) => format!("Saved {}", app.path.display()),
-                Err(error) => format!("Save failed · {error}"),
-            };
+            save(app);
             return Flow::Continue;
         }
         KeyCode::F(3) => {
@@ -3024,11 +3030,21 @@ mod tests {
         store.set_secret("registry/nexus", Some("pw")).unwrap();
         assert_eq!(store.secret_names(), ["github"]);
 
-        // On a host: its Secrets page lists it, and takes how the host gets it.
+        // On a host: its Settings tab lists it, and takes how the host gets it.
         let mut app = App::new("x.json".into(), parse_config(b"{}").unwrap());
         app.config_dir = paths.config_dir.clone();
-        app.set_step(Step::Secrets);
-        assert_eq!(app.entries(), [Entry::HostSecret(0)]);
+        app.set_step(Step::Settings);
+        let secrets: Vec<Entry> = app
+            .entries()
+            .into_iter()
+            .filter(|entry| matches!(entry, Entry::HostSecret(_)))
+            .collect();
+        assert_eq!(secrets, [Entry::HostSecret(0)]);
+        let at = app
+            .entries()
+            .iter()
+            .position(|entry| *entry == Entry::HostSecret(0));
+        app.list.select(at);
         press(&mut app, &[KeyCode::Enter]);
         for code in typed("GH_TOKEN") {
             press(&mut app, &[code]);
@@ -3485,42 +3501,76 @@ mod tests {
         );
     }
 
+    /// The text of the rows of the current tab.
+    fn lines(app: &App) -> Vec<String> {
+        app.rows().iter().map(|row| row.line.to_string()).collect()
+    }
+
+    fn select(app: &mut App, entry: Entry) {
+        let at = app.entries().iter().position(|known| *known == entry);
+        app.list
+            .select(Some(at.unwrap_or_else(|| panic!("no {entry:?}"))));
+    }
+
     #[test]
-    fn install_tab_goes_from_method_to_a_blocked_run() {
+    fn the_set_up_tabs_go_from_install_to_a_blocked_run() {
         let directory = tempfile::tempdir().unwrap();
         let mut app = App::new(
             directory.path().join("profile.json"),
             parse_config(b"{}").unwrap(),
         );
         use KeyCode::*;
-        // Install: the USB installer is the default method; its settings follow.
-        press(
-            &mut app,
-            &[Tab, Tab, Tab, Down, Down, Down, Down, Down, Down],
-        );
+        // A new host opens on Install; the tabs say nothing but their names.
+        assert_eq!(app.step, Step::Install);
+        let install = screen(&mut app);
+        let header = install.lines().nth(1).unwrap();
+        let place = |text: &str| header.find(text).unwrap();
+        assert!(place("Install") < place("Features") && place("Features") < place("Settings"));
+        assert!(place("Settings") < place("Run") && !header.contains('✗'));
+        assert!(install.contains("1-4 tab"));
+        // The USB installer is the default method; what it needs chosen follows.
+        press(&mut app, &[Down, Enter, Down, Down, Down, Down, Down]);
         assert_eq!(app.action, Action::Iso);
         let install = screen(&mut app);
         assert!(install.contains("● USB installer"));
-        assert!(install.contains("▌ Host profile  laptop"));
+        assert!(install.contains("▌ Host profile  laptop"), "{install}");
         assert!(install.contains("Suggestions"));
+        assert!(!install.contains("Disk selection") && !install.contains("Source ISO"));
 
-        // Type a hostname, then cycle the disk mode from the suggestions.
+        // Type a hostname here, then cycle the disk mode on Settings from the suggestions.
         press(
             &mut app,
-            &[Down, Enter, Char('b'), Char('o'), Char('x'), Down],
+            &[Down, Enter, Char('b'), Char('o'), Char('x'), Enter],
         );
         assert_eq!(app.text(Field::Hostname), "box");
+        press(&mut app, &[Char('3')]);
+        assert_eq!(app.step, Step::Settings);
+        select(&mut app, Entry::Field(Field::DiskMode));
         press(&mut app, &[Right, Down, Enter]);
         assert_eq!(app.text(Field::DiskMode), "serial");
-        assert!(screen(&mut app).contains("  └─ Target disk serial  Not set"));
+        let settings = lines(&app);
+        assert!(settings.contains(&"  │  └─ Target disk serial  Not set".to_owned()));
+        assert_eq!(
+            settings.last().unwrap(),
+            "✗ Serial disk selection needs the target disk serial"
+        );
 
-        // Run sits below the list of what is missing and refuses to start.
-        app.list.select(Some(app.entries().len() - 1));
+        // Run has the ISO, every problem under its tab, and a button that refuses.
+        press(&mut app, &[Char('4')]);
+        let run = lines(&app);
+        assert!(run[0].starts_with("Source ISO"));
+        let at = |text: &str| run.iter().position(|row| row.contains(text)).unwrap();
+        assert!(at("Settings") < at("  ✗ Serial disk selection needs the target disk serial"));
+        assert!(at("Run") < at("  ✗ Source ISO file does not exist"));
+        select(&mut app, Entry::Run);
         assert!(!press(&mut app, &[Enter]));
-        let review = screen(&mut app);
-        assert!(review.contains("✗ Serial disk selection needs the target disk serial"));
-        assert!(review.contains("[Run · USB installer]"));
+        assert!(screen(&mut app).contains("[Run · USB installer]"));
         assert!(app.status.contains("Fix the listed problems"));
+        // Save does what Ctrl+S does.
+        select(&mut app, Entry::Save);
+        press(&mut app, &[Enter]);
+        assert!(app.path.is_file() && !app.unsaved());
+        app.commit(Field::Keyboard, "us");
 
         // Unsaved changes need a second q; Ctrl+S clears that.
         let mut armed = false;
@@ -3778,10 +3828,12 @@ mod tests {
         press(&mut app, &[KeyCode::Char(' ')]);
         let command = format!("{:?}", app.agent_terminal().unwrap());
         assert!(command.contains("devbox.example") && command.contains("sudo -iu robot "));
-        // The set-up pages are a flow under the overview, with the install method.
+        // The set-up tabs are a flow under the overview, opening on Install.
         select(&mut app, Entry::Setup);
-        press(&mut app, &[KeyCode::Enter, KeyCode::Char('4')]);
+        press(&mut app, &[KeyCode::Enter]);
         assert_eq!((app.step, app.action), (Step::Install, Action::Iso));
+        press(&mut app, &[KeyCode::Char('4')]);
+        assert_eq!(app.step, Step::Run);
         press(&mut app, &[KeyCode::Esc]);
         assert_eq!(app.step, Step::Manage);
         // x removes the value of the selected field, and with the address
@@ -3886,7 +3938,7 @@ mod tests {
     fn the_field_of_berths_key_copies_it() {
         let mut app = App::new("x.json".into(), parse_config(b"{}").unwrap());
         app.own_public = BERTH_KEY.into();
-        app.set_step(Step::Accounts);
+        app.set_step(Step::Settings);
         let at = app
             .entries()
             .iter()
@@ -3912,8 +3964,31 @@ mod tests {
         assert!(clipboard.0.is_none());
     }
 
+    fn lab(id: &str, label: &str, resources: &[&str]) -> berth_api::ProvisionerInfo {
+        let mut arguments = vec![berth_api::Argument {
+            name: "server".into(),
+            label: "Lab server".into(),
+            required: true,
+            ..Default::default()
+        }];
+        arguments.extend(resources.iter().map(|name| berth_api::Argument {
+            name: (*name).into(),
+            label: format!("Lab {name}"),
+            default: "4".into(),
+            kind: berth_api::Argument::RESOURCE.into(),
+            ..Default::default()
+        }));
+        berth_api::ProvisionerInfo {
+            id: id.into(),
+            label: label.into(),
+            setup: "apply".into(),
+            arguments,
+            ..Default::default()
+        }
+    }
+
     #[test]
-    fn the_install_tab_creates_and_deletes_the_machine() {
+    fn the_tabs_create_and_delete_the_machine() {
         use berth_tui::machine::Pick;
         let profile = format!(
             r#"{{"hostname": "studio", "operator_password_hash": "$6${}",
@@ -3926,41 +4001,62 @@ mod tests {
         );
         app.set_step(Step::Install);
         app.action = Action::Machine;
+        let machine_rows = |app: &App| -> Vec<Entry> {
+            app.entries()
+                .into_iter()
+                .filter(|entry| matches!(entry, Entry::Machine(_)))
+                .collect()
+        };
         // Nothing was asked without berth's own folders, so nothing shows.
-        assert!(
-            !app.entries()
-                .iter()
-                .any(|entry| matches!(entry, Entry::Machine(_)))
-        );
-        let provisioner = berth_api::ProvisionerInfo {
-            id: "lab/vm".into(),
-            label: "Lab machine".into(),
-            setup: "apply".into(),
-            arguments: vec![berth_api::Argument {
-                name: "server".into(),
-                label: "Lab server".into(),
-                required: true,
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
+        assert!(machine_rows(&app).is_empty());
         app.machine.asking();
-        app.machine.listed(Ok(vec![provisioner]));
+        app.machine.listed(Ok(vec![
+            lab("lab/vm", "Lab machine", &["cpus", "memory"]),
+            lab("lab/box", "Lab box", &["cpus"]),
+        ]));
         app.machine.found(Ok(None));
-        let select = |app: &mut App, entry: Entry| {
-            let at = app.entries().iter().position(|known| *known == entry);
-            app.list.select(Some(at.unwrap()));
-        };
-        select(&mut app, Entry::Machine(Pick::Provisioner(0)));
+        // The provisioner is one row, and what it requires is under it.
+        assert!(lines(&app).contains(
+            &"Provisioner  Lab machine  · berth applies the profile over SSH".to_owned()
+        ));
+        assert_eq!(
+            machine_rows(&app),
+            [
+                Entry::Machine(Pick::Provisioner),
+                Entry::Machine(Pick::Argument(0))
+            ]
+        );
+        let install = lines(&app);
+        assert!(install.contains(&"  └─ Lab server *  Not set".to_owned()));
+        assert_eq!(install.last().unwrap(), "✗ Lab server is required");
+        // Its size is under Machine on Settings, and goes with the provisioner.
+        press(&mut app, &[KeyCode::Char('3')]);
+        let settings = lines(&app);
+        assert_eq!(
+            settings[..3],
+            ["Machine", "  ├─ Lab cpus  4", "  └─ Lab memory  4"]
+        );
+        press(&mut app, &[KeyCode::Char('1')]);
+        select(&mut app, Entry::Machine(Pick::Provisioner));
+        press(&mut app, &[KeyCode::Enter, KeyCode::Char('3')]);
+        assert_eq!(lines(&app)[..2], ["Machine", "  └─ Lab cpus  4"]);
+        press(&mut app, &[KeyCode::Char('1')]);
+        select(&mut app, Entry::Machine(Pick::Provisioner));
         press(&mut app, &[KeyCode::Enter]);
-        let shown = screen_text(&mut app);
-        assert!(shown.contains("● Lab machine  · berth applies the profile over SSH"));
-        let lines: Vec<String> = app.rows().iter().map(|row| row.line.to_string()).collect();
-        assert!(lines.contains(&"    ✗ Lab server is required".to_owned()));
+        assert!(
+            lines(&app)
+                .iter()
+                .any(|row| row.contains("Provisioner  Lab machine"))
+        );
+
         // Creating with a required argument empty is refused before asking.
+        press(&mut app, &[KeyCode::Char('4')]);
+        let run = lines(&app);
+        assert!(run.contains(&"  ✗ Lab server is required".to_owned()));
         select(&mut app, Entry::Machine(Pick::Create));
         press(&mut app, &[KeyCode::Enter]);
-        assert!(app.machine.question.is_none() && app.status.contains("required"));
+        assert!(app.machine.question.is_none() && app.status.contains("Fix the listed problems"));
+        press(&mut app, &[KeyCode::Char('1')]);
         select(&mut app, Entry::Machine(Pick::Argument(0)));
         press(&mut app, &[KeyCode::Enter]);
         for ch in "192.0.2.10".chars() {
@@ -3968,6 +4064,35 @@ mod tests {
         }
         press(&mut app, &[KeyCode::Enter]);
         assert_eq!(app.machine.values["server"], "192.0.2.10");
+        // A size that is no size is a problem of Settings, and blocks Create.
+        press(&mut app, &[KeyCode::Char('3')]);
+        select(&mut app, Entry::Machine(Pick::Argument(2)));
+        press(
+            &mut app,
+            &[KeyCode::Enter, KeyCode::Char('x'), KeyCode::Enter],
+        );
+        let settings = lines(&app);
+        assert_eq!(
+            settings.last().unwrap(),
+            "✗ Lab memory must be a size with its unit, such as 8GiB, 512MiB or 4g"
+        );
+        press(&mut app, &[KeyCode::Char('4')]);
+        assert!(
+            lines(&app)
+                .iter()
+                .any(|row| row.contains("  ✗ Lab memory must be a size"))
+        );
+        select(&mut app, Entry::Machine(Pick::Create));
+        press(&mut app, &[KeyCode::Enter]);
+        assert!(app.machine.question.is_none() && app.status.contains("Fix the listed problems"));
+        press(&mut app, &[KeyCode::Char('3')]);
+        select(&mut app, Entry::Machine(Pick::Argument(2)));
+        press(&mut app, &[KeyCode::Enter, KeyCode::Backspace]);
+        for ch in "8GiB".chars() {
+            press(&mut app, &[KeyCode::Char(ch)]);
+        }
+        press(&mut app, &[KeyCode::Enter, KeyCode::Char('4')]);
+        assert!(lines(&app).contains(&"✓ Ready".to_owned()));
         select(&mut app, Entry::Machine(Pick::Create));
         press(&mut app, &[KeyCode::Enter]);
         let shown = screen_text(&mut app);
@@ -3980,12 +4105,9 @@ mod tests {
 
         // Another way to install has no provisioner to choose.
         app.action = Action::Ssh;
-        assert!(
-            !app.entries()
-                .iter()
-                .any(|entry| matches!(entry, Entry::Machine(_)))
-        );
-        // With a machine, its state and what can be done to it, whatever the way.
+        app.set_step(Step::Install);
+        assert!(machine_rows(&app).is_empty());
+        // With a machine, its state and what can be done to it are on Run, whatever the way.
         app.machine.found(Ok(Some(berth_api::Instance {
             provisioner: "lab/vm".into(),
             id: "studio".into(),
@@ -3993,13 +4115,9 @@ mod tests {
             verbs: vec!["start".into()],
             ..Default::default()
         })));
-        let machine: Vec<Entry> = app
-            .entries()
-            .into_iter()
-            .filter(|entry| matches!(entry, Entry::Machine(_)))
-            .collect();
+        app.set_step(Step::Run);
         assert_eq!(
-            machine,
+            machine_rows(&app),
             [Entry::Machine(Pick::Start), Entry::Machine(Pick::Delete)]
         );
         select(&mut app, Entry::Machine(Pick::Delete));

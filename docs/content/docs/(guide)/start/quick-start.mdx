@@ -4,7 +4,7 @@ description: Create a profile for a host, install it, and open its desktop.
 icon: Zap
 ---
 
-This walks through a first host from berth's terminal UI. The example uses an Ubuntu 26.04 server you can already reach over SSH. The other ways to install differ only in step 4.
+This walks through a first host from berth's terminal UI. The example uses an Ubuntu 26.04 server you can already reach over SSH. The other ways to install differ only in what you choose on the Install tab.
 
 <Callout title="Try it without a machine">
   The [container](/docs/deploy/container) runs the same desktop on Docker, and [QEMU](/docs/deploy/qemu) runs a whole host in a VM.
@@ -24,33 +24,51 @@ A name berth does not know starts a new profile, saved as `~/.config/berth/hosts
 </Step>
 <Step>
 
-### Choose what to install
+### Choose how to install
 
-The profile opens on **Features**, with the coding agents, T3 Code, tool categories, browsers and plugin features. Space on a group heading switches the whole group.
+The profile opens on **Install** (key `1`). Choose **Existing host over SSH** under **How To Install**, then enter the address in **SSH host**: an IP, a hostname or a `Host` alias from your SSH configuration. The Tailscale settings are on this tab too.
 
-<Screen name="features" alt="The Features tab: Coding Agents, Agent Orchestrator, Development Tools, Browsers, Desktop and System groups with switches" />
+The set-up has four tabs. Each one depends only on the tabs before it.
+
+| Tab | Key | What it holds |
+| --- | --- | --- |
+| Install | `1` | How to install, and what that needs: the address, the hostname, Tailscale |
+| Features | `2` | What gets installed |
+| Settings | `3` | Everything with a default, such as accounts, registries and secrets |
+| Run | `4` | Every open problem, and the button that installs |
+
+Tab and Shift+Tab switch tabs too. Ctrl+S saves the profile at any point.
 
 </Step>
 <Step>
 
-### Set up the accounts
+### Choose what to install
 
-**Accounts** (key `2`) sets up the *operator*, your account on the host, and the *agent* account the coding agents use. SSH keys found in `~/.ssh` and in ssh-agent are offered as suggestions (Right or F2). Each account can take several, and the operator also takes [the key of berth itself](/docs/reference/profile#the-key-of-berth-itself). `c` on that field copies it.
+**Features** (key `2`) lists the coding agents, T3 Code, tool categories, browsers, Cockpit, Docker and plugin features. Space on a group heading switches the whole group.
+
+<Screen name="features" alt="The Features tab: Coding Agents, Agent Orchestrator, Development Tools, Browsers, Desktop, Host Services and System groups with switches" />
+
+</Step>
+<Step>
+
+### Check the settings
+
+**Settings** (key `3`) holds what has a default. That covers the *operator*, your account on the host, and the *agent* account the coding agents use. SSH keys found in `~/.ssh` and in ssh-agent are offered as suggestions (Right or F2). Each account can take several, and the operator also takes [the key of berth itself](/docs/reference/profile#the-key-of-berth-itself). `c` on that field copies it.
 
 On a password hash field, F4 generates a password and stores its hash, and F5 hashes one you type. Generated passwords are written next to the profile as `studio.credentials.json`.
 
-<Screen name="accounts" alt="The Accounts tab with operator and agent settings" />
+<Screen name="accounts" alt="The Settings tab with the operator and agent accounts, SSH hardening, registries and secrets" />
 
 </Step>
 <Step>
 
 ### Install
 
-On **Install** (key `4`), choose **Existing host over SSH** and enter the address, an IP, a hostname or a `Host` alias from your SSH configuration. Problems that stop the install are listed above **Run**. Fix them and press Enter on Run.
+**Run** (key `4`) lists every problem that stops the install, under the name of the tab it belongs to. Each tab also lists its own problems at the bottom. Fix them, and press Enter on **Run**.
 
-<Screen name="install-cloud" alt="The Install tab listing install methods, the settings of the chosen method, and the problems still open above Run" />
+<Screen name="install-cloud" alt="The Run tab listing the open problems by tab, a warning, and the Run and Save buttons" />
 
-The other methods are on [Deploying](/docs/deploy). Ctrl+S saves the profile at any point.
+The other methods are on [Deploying](/docs/deploy).
 
 </Step>
 <Step>
