@@ -1250,12 +1250,13 @@ async fn the_server_is_set_up_through_the_api() {
         Value::Null,
     )
     .await;
-    assert_eq!(status, 400);
+    // The host does not answer, which is said before what it would be sent.
+    assert_eq!(status, 501, "{said}");
     assert!(
         said["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("github")
+            .contains("does not answer")
     );
 
     // Some settings are a caller's to change, who gets in is not.
@@ -1328,13 +1329,9 @@ async fn the_server_is_set_up_through_the_api() {
         Value::Null,
     )
     .await;
-    assert_eq!(status, 400);
-    assert!(
-        said["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("never sent to a host")
-    );
+    // Its controller does not answer; what it would be sent is checked by
+    // the store's own test.
+    assert_eq!(status, 501, "{said}");
 
     assert_eq!(
         send(client, "DELETE", "/v1/hosts/studio", Value::Null)
@@ -3453,4 +3450,78 @@ async fn said_profile(client: &mut Client, name: &str) -> Value {
     )
     .await
     .1
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_whose_controller_does_not_answer_says_why_and_keeps_berths_own_actions() {
+    let served = served().await;
+    // A link that fails as ssh does for a host it cannot reach.
+    let said = "ssh: connect to host 192.0.2.11 port 22: Network is unreachable";
+    let profile = json!({"level": "controller", "access": {"address": "192.0.2.11",
+        "link": ["sh", "-c", format!("echo '{said}' >&2; exit 255")]}});
+    berth_core::profiles::Place::own("dock")
+        .unwrap()
+        .save(&served.state.paths, &profile)
+        .unwrap();
+    served.state.refresh(false);
+    let mut client = served.client().await;
+    let client = &mut client;
+
+    // What the host's own API is asked for says what the link command said,
+    // even when several are asked at once.
+    let asks = (0..4).map(|_| {
+        let socket = served.socket.clone();
+        async move {
+            let mut client = Client::unix(&socket).await.unwrap();
+            send(&mut client, "GET", "/v1/hosts/dock/version", Value::Null).await
+        }
+    });
+    for (status, answer) in futures_util::future::join_all(asks).await {
+        assert_eq!(status, 502, "{answer}");
+        assert!(
+            answer["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Network is unreachable"),
+            "{answer}"
+        );
+    }
+
+    // berth's own actions are listed; what goes through the controller is not
+    // available, with the reason.
+    let (status, actions) = send(client, "GET", "/v1/hosts/dock/actions", Value::Null).await;
+    assert_eq!(status, 200, "{actions}");
+    let find = |name: &str| {
+        actions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|action| action["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {name} in {actions}"))
+    };
+    let secrets = find("secrets");
+    assert_eq!(secrets["available"], false, "{secrets}");
+    assert!(
+        secrets["why"]
+            .as_str()
+            .unwrap()
+            .contains("Network is unreachable"),
+        "{secrets}"
+    );
+    for name in ["install-controller", "trust-key", "host-key"] {
+        assert_eq!(find(name)["available"], true, "{name}");
+    }
+    let (status, said) = send(
+        client,
+        "POST",
+        "/v1/hosts/dock/actions/secrets",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        (status, &said["error"]["code"]),
+        (501, &json!("not_available")),
+        "{said}"
+    );
 }

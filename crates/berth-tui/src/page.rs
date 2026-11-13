@@ -143,6 +143,8 @@ pub struct Arguments {
     pub choices: Vec<String>,
     /// The choice last put into the input, for stepping through them.
     pub chosen: Option<usize>,
+    /// What is typed is a secret: it is neither shown nor copied.
+    pub secret: bool,
 }
 
 impl Arguments {
@@ -159,6 +161,7 @@ impl Arguments {
             input: Input::new(argument.default.clone()),
             choices: vec![],
             chosen: None,
+            secret: argument.secret,
         }
     }
 

@@ -649,13 +649,22 @@ pub fn groups(host: &HostView, terminal_user: &str) -> Vec<(String, Vec<(String,
 /// The line the overview shows of the host's level, with what the host
 /// itself was seen to be when that is different.
 pub fn level_line(name: &str, host: &HostView) -> String {
-    let mut line = format!("Level · {}: {}", host.level, host.level.describe());
+    let mut line = format!("Level · {} ({})", host.level, host.level.describe());
     if let Some(said) = api::level_mismatch(name, host.level, host.seen) {
         line += &format!(". {said}");
     } else if let Some(seen) = host.seen.filter(|seen| *seen != host.level) {
         line += &format!(". The host itself is {seen} now");
     }
     line
+}
+
+/// How wide the overview's lines about the host are wrapped, so they fit
+/// the page beside the information box.
+pub const NOTE_WIDTH: usize = 64;
+
+/// [`level_line`], wrapped to the overview's width.
+pub fn level_lines(name: &str, host: &HostView) -> Vec<String> {
+    crate::screen::wrap(&level_line(name, host), NOTE_WIDTH)
 }
 
 /// What the overview says of a host whose configuration is behind.
@@ -693,8 +702,21 @@ pub fn exited(frame: &Value) -> Option<Option<i32>> {
 /// What the information box says of an action of the host.
 pub fn task_help(host: &HostView, index: usize) -> String {
     match host.actions().get(index) {
-        Some(action) => page::help(action, &format!("berth run HOST {}", action.name)),
+        Some(action) => page::help(action, &command_of(&action.name)),
         None => String::new(),
+    }
+}
+
+/// The command that runs an action of a host: berth's own have commands
+/// of their own, the others are run by name.
+pub fn command_of(action: &str) -> String {
+    match action {
+        "install-controller" => "berth host install HOST".into(),
+        "trust-key" => "berth key trust HOST".into(),
+        "host-key" => "berth key host HOST [--accept]".into(),
+        "apply" => "berth apply HOST".into(),
+        "seed" => "berth seed HOST".into(),
+        name => format!("berth run HOST {name}"),
     }
 }
 
@@ -763,8 +785,9 @@ mod tests {
             level: api::HostLevel::Reachable,
             ..HostView::default()
         };
-        assert!(
-            level_line("studio", &host).starts_with("Level · reachable: berth logs in over SSH")
+        assert_eq!(
+            level_line("studio", &host),
+            "Level · reachable (SSH only, nothing of berth installed)"
         );
         host.seen = Some(api::HostLevel::Reachable);
         assert!(!level_line("studio", &host).contains("now"));
@@ -779,5 +802,14 @@ mod tests {
         host.level = api::HostLevel::Workstation;
         host.seen = Some(api::HostLevel::Controller);
         assert!(level_line("studio", &host).ends_with("The host itself is controller now"));
+        // Wrapped, every line fits the overview beside the information box.
+        host.level = api::HostLevel::Reachable;
+        host.seen = Some(api::HostLevel::Workstation);
+        let lines = level_lines("studio", &host);
+        assert!(lines.len() > 1);
+        assert!(
+            lines.iter().all(|line| line.chars().count() <= NOTE_WIDTH),
+            "{lines:?}"
+        );
     }
 }

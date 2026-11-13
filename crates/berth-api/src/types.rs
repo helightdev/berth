@@ -99,14 +99,13 @@ impl HostLevel {
             .find(|level| level.name() == text.trim())
     }
 
-    /// What a host of this level has, in a few words.
+    /// What a host of this level has, in a few words that fit a line
+    /// beside the level on a narrow page.
     pub fn describe(self) -> &'static str {
         match self {
-            HostLevel::Reachable => "berth logs in over SSH; nothing of berth is installed",
-            HostLevel::Controller => {
-                "berth's controller runs there: sessions, tasks and files, no desktop"
-            }
-            HostLevel::Workstation => "the whole profile is applied: desktop, agents and plugins",
+            HostLevel::Reachable => "SSH only, nothing of berth installed",
+            HostLevel::Controller => "berthd alone: sessions, tasks, files",
+            HostLevel::Workstation => "the whole profile",
         }
     }
 }

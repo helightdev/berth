@@ -162,6 +162,33 @@ pub fn rows(provisioners: &[ProvisionerInfo]) -> Vec<Line<'static>> {
 
 /// What the list says of the selected provisioner. `place` is where they
 /// are, such as this machine.
+/// A kind's label, which names one, as more than one: `Compose project`
+/// makes `Compose projects`.
+pub fn plural(label: &str) -> String {
+    let label = label.trim();
+    let consonant_y = label.ends_with('y')
+        && !label
+            .chars()
+            .rev()
+            .nth(1)
+            .is_some_and(|before| "aeiou".contains(before));
+    match label {
+        "" => String::new(),
+        _ if label.ends_with('s')
+            || label.ends_with('x')
+            || label.ends_with("sh")
+            || label.ends_with("ch") =>
+        {
+            match label.ends_with('s') {
+                true => label.to_owned(),
+                false => format!("{label}es"),
+            }
+        }
+        _ if consonant_y => format!("{}ies", &label[..label.len() - 1]),
+        _ => format!("{label}s"),
+    }
+}
+
 pub fn help(provisioner: Option<&ProvisionerInfo>, place: &str) -> String {
     let Some(provisioner) = provisioner else {
         return format!(
@@ -172,12 +199,12 @@ pub fn help(provisioner: Option<&ProvisionerInfo>, place: &str) -> String {
     if !provisioner.problem.is_empty() {
         text += &format!("It cannot be used here: {}\n\n", provisioner.problem);
     }
-    let kinds: Vec<&str> = provisioner
+    let kinds: Vec<String> = provisioner
         .kinds
         .iter()
         .map(|kind| match kind.id.as_str() {
-            "machine" => "machines for hosts",
-            _ => kind.label.as_str(),
+            "machine" => "machines for hosts".to_owned(),
+            _ => plural(&kind.label),
         })
         .collect();
     if !kinds.is_empty() {
@@ -196,7 +223,7 @@ pub fn help(provisioner: Option<&ProvisionerInfo>, place: &str) -> String {
                 None => format!("{name} is not set"),
             })
             .collect();
-        text += &format!("{}.\n\n", set.join(", "));
+        text += &format!("Its settings: {}.\n\n", set.join(", "));
     }
     text + &format!(
         "Enter opens its page, which asks it how it is.\n\nThe provisioners of {place}. From the command line: `berth provisioner {}`",
@@ -279,7 +306,7 @@ impl Page {
             .map(|(key, value)| format!("{key}={value}"))
             .collect();
         row("Arguments", &arguments.join(" "));
-        lines.extend(self.said.iter().map(|line| (line.clone(), Tone::Plain)));
+        lines.extend(self.answer_lines());
         lines
     }
 
@@ -311,10 +338,13 @@ impl Page {
             (format!("{} · {}", info.label, info.id), Tone::Plain),
             (said, tone),
         ];
+        // The settings row is one of them, in the same columns.
+        let settings = (!info.own.is_empty()).then_some("Settings".len());
         let width = state
             .details
             .iter()
             .map(|row| row.label.chars().count())
+            .chain(settings)
             .max()
             .unwrap_or(0);
         lines.extend(state.details.iter().map(|row| {
@@ -332,9 +362,30 @@ impl Page {
                     None => format!("{name} not set"),
                 })
                 .collect();
-            lines.push((format!("  Settings  {}", set.join(" · ")), Tone::Muted));
+            lines.push((
+                format!("  {:<width$}  {}", "Settings", set.join(" · ")),
+                Tone::Muted,
+            ));
         }
-        lines.extend(self.said.iter().map(|line| (line.clone(), Tone::Plain)));
+        lines.extend(self.answer_lines());
+        lines
+    }
+
+    /// What the last action that answered at once said, set apart from
+    /// how the subject is, as its details may be the same kind of rows.
+    fn answer_lines(&self) -> Vec<(String, Tone)> {
+        if self.said.is_empty() {
+            return vec![];
+        }
+        let mut lines = vec![
+            (String::new(), Tone::Plain),
+            ("Answer".to_owned(), Tone::Muted),
+        ];
+        lines.extend(
+            self.said
+                .iter()
+                .map(|line| (format!("  {line}"), Tone::Plain)),
+        );
         lines
     }
 
@@ -648,7 +699,7 @@ impl Tab {
                 rows: rows(list),
                 selected,
                 help: help(list.get(selected), place),
-                keys: "↑↓ select · Enter open · r refresh · Tab settings · Esc hosts · q quit",
+                keys: "↑↓ select · Enter open · r refresh · Esc hosts",
             };
         };
         let items = page.items();
@@ -728,7 +779,7 @@ impl Tab {
             rows,
             selected: self.selected_row(),
             help,
-            keys: "↑↓ select · Enter run · r ask again · Esc back · q quit",
+            keys: "↑↓ select · Enter run · r ask again · Esc back",
         }
     }
 
@@ -852,6 +903,16 @@ impl Tab {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_kinds_label_is_made_plural_where_the_sentence_counts_them() {
+        assert_eq!(plural("Compose project"), "Compose projects");
+        assert_eq!(plural("Proxy"), "Proxies");
+        assert_eq!(plural("Gateway"), "Gateways");
+        assert_eq!(plural("Box"), "Boxes");
+        assert_eq!(plural("Volumes"), "Volumes");
+    }
+
     use super::*;
     use berth_api::{Argument, Detail, ListedResource};
 
@@ -1042,7 +1103,10 @@ mod tests {
         };
         assert_eq!((action.name.as_str(), values.len()), ("images", 0));
         tab.answered("docker/container", vec!["2 images".into()]);
-        assert!(text(&tab.shown(&list, "here")).contains(&"2 images".to_owned()));
+        // What it said is set apart from how the provisioner is.
+        let shown_text = text(&tab.shown(&list, "here"));
+        let at = shown_text.iter().position(|row| row == "Answer").unwrap();
+        assert_eq!(shown_text[at + 1], "  2 images");
         // The next asks first, then offers what its argument takes.
         tab.key(key(Code::Down), &list, &mut Nowhere);
         assert_eq!(

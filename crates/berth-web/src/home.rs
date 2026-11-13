@@ -442,13 +442,11 @@ impl Home {
             help,
             keys: match (&self.editor, extra) {
                 (Some(_), _) => "Enter accept · Esc cancel · Ctrl+O copy",
-                (None, Some(SettingsRow::Key(_))) => {
-                    "↑↓ select · Enter copy the key · Tab registries · Esc hosts"
-                }
+                (None, Some(SettingsRow::Key(_))) => "↑↓ select · Enter copy the key · Esc hosts",
                 (None, Some(SettingsRow::Connect)) => {
-                    "↑↓ select · Enter show the QR code · Tab registries · Esc hosts"
+                    "↑↓ select · Enter show the QR code · Esc hosts"
                 }
-                (None, None) => "↑↓ select · Enter change · Tab registries · Esc hosts",
+                (None, None) => "↑↓ select · Enter change · Esc hosts",
             },
         }
     }
@@ -553,7 +551,7 @@ impl Home {
             help,
             keys: match self.editor {
                 Some(_) => "Enter accept · Esc cancel · Ctrl+O copy",
-                None => "↑↓ select · Enter set · x remove · Tab plugins · Esc hosts",
+                None => "↑↓ select · Enter set · x remove · Esc hosts",
             },
         }
     }
@@ -652,7 +650,7 @@ impl Home {
             help,
             keys: match self.editor {
                 Some(_) => "Enter accept · Esc cancel · Ctrl+O copy",
-                None => "↑↓ select · Enter change · x remove · c check · Tab secrets · Esc hosts",
+                None => "↑↓ select · Enter change · x remove · c check · Esc hosts",
             },
             rows: listed.into_iter().map(|(_, line)| line).collect(),
         }

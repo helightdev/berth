@@ -49,14 +49,7 @@ enum Screen {
 }
 
 /// The tabs of the home screen, for whoever may set the server up.
-const TABS: [&str; 6] = [
-    "Hosts",
-    "Provisioners",
-    "Settings",
-    "Registries",
-    "Secrets",
-    "Plugins",
-];
+const TABS: [&str; 6] = berth_tui::screen::HOME_TABS;
 
 /// What the server last said of its hosts.
 #[derive(Default)]
@@ -553,10 +546,12 @@ impl App {
             self.address,
             browser::shown(&self.server)
         )));
-        rows.push(Row::info(Line::styled(
-            format!("  {}", host::level_line(&self.name, &self.host)),
-            Style::new().fg(theme::MUTED),
-        )));
+        for line in host::level_lines(&self.name, &self.host) {
+            rows.push(Row::info(Line::styled(
+                format!("  {line}"),
+                Style::new().fg(theme::MUTED),
+            )));
+        }
         let workstation = self.host.level == berth_api::HostLevel::Workstation;
         let said = match &self.host.state {
             State::Ready(_) => {
@@ -594,33 +589,13 @@ impl App {
                 vec![note("Asking the host what it can do…".into(), theme::MUTED)]
             }
             // Below a workstation the controller is installed alone, by berth's own action.
-            State::Missing if !workstation => {
-                rows.push(Row::info(""));
-                rows.push(heading("Host"));
-                rows.push(note(
+            State::Missing if !workstation => vec![
+                note(
                     "berth's controller is not on this host. Install it for sessions, tasks and files here.".into(),
                     theme::MUTED,
-                ));
-                rows.push(again());
-                let mut groups: Vec<(String, Vec<Row>)> =
-                    berth_tui::page::groups(&self.host.actions(), Pick::Task)
-                        .into_iter()
-                        .map(|group| {
-                            let picks = group.rows.into_iter().map(|(line, pick)| Row {
-                                line: line.into(),
-                                entry: Some(Entry::Pick(pick)),
-                            });
-                            (group.title, picks.collect())
-                        })
-                        .collect();
-                self.add_setup(&mut groups, false);
-                for (title, group) in groups {
-                    rows.push(Row::info(""));
-                    rows.push(heading(&title));
-                    rows.extend(group);
-                }
-                return rows;
-            }
+                ),
+                again(),
+            ],
             State::Missing => vec![
                 note(
                     "berth's controller is not on this host yet. Applying its configuration, where berth serve runs, installs it.".into(),
@@ -648,29 +623,39 @@ impl App {
         rows.push(Row::info(""));
         rows.push(heading("Host"));
         rows.extend(said);
-        rows.extend(self.setup_rows(
+        // A host that cannot be worked with yet still has berth's own
+        // actions, such as first contact and installing the controller.
+        let actions = self.host.actions();
+        let mut groups: Vec<(String, Vec<Row>)> = berth_tui::page::groups(&actions, Pick::Task)
+            .into_iter()
+            .map(|group| {
+                let picks = group
+                    .rows
+                    .into_iter()
+                    .filter(
+                        |(_, pick)| matches!(pick, Pick::Task(index) if self.host.is_own(*index)),
+                    )
+                    .map(|(line, pick)| Row {
+                        line: line.into(),
+                        entry: Some(Entry::Pick(pick)),
+                    });
+                (group.title, picks.collect::<Vec<_>>())
+            })
+            .filter(|(_, picks)| !picks.is_empty())
+            .collect();
+        self.add_setup(
+            &mut groups,
             workstation
                 && !matches!(
                     self.host.state,
                     State::Idle | State::Connecting | State::Password
                 ),
-        ));
-        rows
-    }
-
-    /// What whoever may set the server up can do with the host from here.
-    fn setup_rows(&self, apply: bool) -> Vec<Row> {
-        if !self.is_admin() {
-            return vec![];
+        );
+        for (title, group) in groups {
+            rows.push(Row::info(""));
+            rows.push(heading(&title));
+            rows.extend(group);
         }
-        let mut rows = vec![
-            Row::info(""),
-            Row::info(Line::styled(
-                "Set-Up",
-                Style::new().fg(theme::ACCENT).bold(),
-            )),
-        ];
-        rows.extend(self.setup_entries(apply));
         rows
     }
 
@@ -798,7 +783,12 @@ impl App {
                 self.host.shell(user, &title);
                 self.status = "Starting a shell…".into();
             }
-            Entry::Again => self.host.disconnect(),
+            Entry::Again => {
+                self.host.disconnect();
+                if let Some(admin) = &self.admin {
+                    admin.actions(&self.name);
+                }
+            }
             Entry::Setup => {
                 if let Some(admin) = &self.admin {
                     self.setup = Some(Setup::open(&self.name, admin));
@@ -1395,7 +1385,7 @@ impl App {
         let keys = match (admin, self.naming.is_some()) {
             (_, true) => "Enter create · Esc cancel · Ctrl+O copy",
             (true, false) => {
-                "↑↓ select · Enter open · n new host · d default · x remove · 2 settings · 3 registries · 4 secrets · 5 plugins · 6 provisioners · r refresh · o sign out"
+                "↑↓ select · Enter open · n new host · d default · x remove · r refresh · o sign out"
             }
             (false, false) => "↑↓ select · Enter open · r refresh · o sign out",
         };

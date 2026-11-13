@@ -182,6 +182,11 @@ pub struct App {
     /// The berth command one of berth's own actions on the host runs, in
     /// the normal terminal, the next time the screen is left.
     pub own_command: Option<Vec<String>>,
+    /// What the host's controller says the host is, asked in the background
+    /// once its address is given on the set-up's Install tab.
+    found_level: Option<mpsc::Receiver<Option<level::Level>>>,
+    /// The level was chosen on the Level row, so what the host says is only told.
+    level_chosen: bool,
 }
 
 /// What the provisioners there are, and the host's machine, came back as.
@@ -293,6 +298,8 @@ impl App {
             machine_job: false,
             own_answers: None,
             own_command: None,
+            found_level: None,
+            level_chosen: false,
         };
         app.saved = app.config.clone();
         app
@@ -603,13 +610,12 @@ impl App {
                     rows.push(Row::info(""));
                 }
                 rows.push(heading("Connection"));
-                rows.push(Row::info(Line::styled(
-                    format!(
-                        "  {}",
-                        berth_tui::host::level_line(&self.name(), &self.host)
-                    ),
-                    Style::new().fg(theme::MUTED),
-                )));
+                for line in berth_tui::host::level_lines(&self.name(), &self.host) {
+                    rows.push(Row::info(Line::styled(
+                        format!("  {line}"),
+                        Style::new().fg(theme::MUTED),
+                    )));
+                }
                 if let Some(server) = self.served() {
                     rows.push(Row::info(format!(
                         "  {} · through the berth server at {server}",
@@ -678,7 +684,13 @@ impl App {
                 .map_or(name, |(_, label, _)| label);
             Row::entry(format!("  ▸ {label}"), Entry::Task(name))
         };
-        let host = |rows| vec![("Host".to_owned(), rows)];
+        // A host that cannot be worked with yet still has berth's own
+        // actions, such as first contact and installing the controller.
+        let host = |rows| {
+            let mut groups = vec![("Host".to_owned(), rows)];
+            groups.extend(self.own_groups());
+            groups
+        };
         match &self.host.state {
             State::Ready(_) => {}
             State::Idle if !self.problems().is_empty() => return vec![],
@@ -701,7 +713,6 @@ impl App {
             State::Missing if self.host.level != level::Level::Workstation => {
                 let rows = vec![
                     note("berth's controller is not on this host. Install it for sessions, tasks and files here; berth reaches the host over SSH meanwhile.".into(), theme::MUTED),
-                    fixed("install-controller"),
                     fixed("ssh"),
                 ];
                 return host(rows);
@@ -717,19 +728,21 @@ impl App {
                     level::Level::Workstation => "apply",
                     _ => "install-controller",
                 };
-                return host(vec![
-                    note(
-                        format!(
-                            "The host's tools ({version}) are older than this berth needs. {} brings them up to date.",
-                            TASKS
-                                .iter()
-                                .find(|(name, ..)| *name == raise)
-                                .map_or(raise, |(_, label, _)| label)
-                        ),
-                        theme::WARN,
+                let mut rows = vec![note(
+                    format!(
+                        "The host's tools ({version}) are older than this berth needs. {} brings them up to date.",
+                        TASKS
+                            .iter()
+                            .find(|(name, ..)| *name == raise)
+                            .map_or(raise, |(_, label, _)| label)
                     ),
-                    fixed(raise),
-                ]);
+                    theme::WARN,
+                )];
+                // berth's own actions list the install already.
+                if !self.host.own.iter().any(|action| action.name == raise) {
+                    rows.push(fixed(raise));
+                }
+                return host(rows);
             }
             State::Unreachable(message) => {
                 // The error whole, as the lines of the list are not wrapped.
@@ -789,6 +802,23 @@ impl App {
                         (title, rows)
                     }),
             )
+            .collect()
+    }
+
+    /// berth's own actions on the host in their groups, without its tasks.
+    fn own_groups(&self) -> Vec<(String, Vec<Row>)> {
+        berth_tui::page::groups(&self.host.actions(), |index| index)
+            .into_iter()
+            .map(|group| {
+                let rows: Vec<Row> = group
+                    .rows
+                    .into_iter()
+                    .filter(|(_, index)| self.host.is_own(*index))
+                    .map(|(line, index)| Row::entry(line, Entry::HostTask(index)))
+                    .collect();
+                (group.title, rows)
+            })
+            .filter(|(_, rows)| !rows.is_empty())
             .collect()
     }
 
@@ -1318,6 +1348,19 @@ impl App {
         if field == Field::SshHost && !value.is_empty() {
             self.fill_from_ssh_config(value);
         }
+        if field == Field::Level {
+            self.level_chosen = true;
+        }
+        // An existing host over SSH is asked what it is, as berth host add does.
+        if matches!(
+            field,
+            Field::SshHost | Field::SshUser | Field::SshPort | Field::Login
+        ) && self.action == Action::Ssh
+            && self.step != Step::Manage
+            && !self.text(Field::SshHost).is_empty()
+        {
+            self.ask_found_level();
+        }
         if field == Field::WifiSsid
             && let Some(password) = self.saved_wifi_password().map(str::to_owned)
         {
@@ -1341,6 +1384,44 @@ impl App {
         {
             self.status = error.to_string();
         }
+    }
+
+    /// Ask the host's controller, in the background, what the host is.
+    fn ask_found_level(&mut self) {
+        let (paths, host) = (self.paths.clone(), self.host_profile());
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(level::observe(&paths, &host, None));
+        });
+        self.found_level = Some(receiver);
+    }
+
+    /// Take in what the host said it is, when it has. Called between events.
+    pub fn watch_found_level(&mut self) {
+        let Some(answer) = &self.found_level else {
+            return;
+        };
+        if let Ok(found) = answer.try_recv() {
+            self.found_level = None;
+            self.offer_level(found);
+        }
+    }
+
+    /// Offer the level the host was found to have: it is taken unless a
+    /// level was chosen on the Level row, which is only told of it.
+    pub fn offer_level(&mut self, found: Option<level::Level>) {
+        let current = level::of(&self.config);
+        let Some(found) = found.filter(|found| *found != current) else {
+            return;
+        };
+        let name = self.name();
+        if self.level_chosen {
+            self.status =
+                format!("{name} answers as a {found} host; its Level here says {current}");
+            return;
+        }
+        berth_api::profile::set_level(&mut self.config, found);
+        self.status = format!("{name} answers as a {found} host, so its Level is {found} now");
     }
 
     /// Record the checksum of the chosen ISO so the build can detect a changed file.

@@ -414,6 +414,7 @@ mod tests {
             input: Default::default(),
             choices: vec![],
             chosen: None,
+            secret: false,
         });
         until(&mut host, "choices", |host| {
             host.arguments.as_ref().unwrap().choices == ["ann", "bob"]

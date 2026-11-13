@@ -51,7 +51,13 @@ pub(super) struct Seen<'a> {
     pub level: Level,
     /// What its controller says it is, when it answered.
     pub observed: Option<Level>,
+    /// Why its controller did not answer, when it was asked and did not.
+    pub unanswered: Option<&'a str>,
 }
+
+/// berth's own actions that run through the host's controller, so the host
+/// is asked before one of them is described.
+const THROUGH_CONTROLLER: &[&str] = &["secrets"];
 
 /// One of berth's own actions.
 pub(super) struct Builtin {
@@ -240,19 +246,25 @@ pub async fn host_actions(
     let remote = remote(&state, &name)?;
     let profile = profile_of(&state, &name);
     // A host that is only reachable has no controller to ask.
-    let tasks = match level::of(&profile) {
+    let asked = match level::of(&profile) {
         Level::Reachable => None,
-        _ => host_tasks(&remote).await.ok(),
+        _ => Some(host_tasks(&remote).await),
+    };
+    let (tasks, unanswered) = match &asked {
+        Some(Ok(tasks)) => (Some(tasks.as_slice()), None),
+        Some(Err(error)) => (None, Some(error.as_str())),
+        None => (None, None),
     };
     let secrets = secret_names(&state);
     let observed = observed(&remote).await;
     Ok(Json(host_list(&Seen {
         name: &name,
         profile: &profile,
-        tasks: tasks.as_deref(),
+        tasks,
         secrets: &secrets,
         level: level::of(&profile),
         observed,
+        unanswered,
     })))
 }
 
@@ -280,9 +292,19 @@ pub async fn host_act(
     let profile = profile_of(&state, &name);
     // berth's own are described without asking the host, which they do themselves.
     let builtin = HOST.iter().find(|builtin| builtin.name == action);
+    let reachable_only = level::of(&profile) == Level::Reachable;
+    let mut unanswered = None;
     let tasks = match builtin {
-        Some(_) => None,
-        None if level::of(&profile) == Level::Reachable => Some(vec![]),
+        Some(_) if reachable_only || !THROUGH_CONTROLLER.contains(&action.as_str()) => None,
+        // One that runs through the controller is described as the host answers.
+        Some(_) => match host_tasks(&remote).await {
+            Ok(tasks) => Some(tasks),
+            Err(error) => {
+                unanswered = Some(error);
+                None
+            }
+        },
+        None if reachable_only => Some(vec![]),
         None => Some(
             host_tasks(&remote)
                 .await
@@ -298,6 +320,7 @@ pub async fn host_act(
         secrets: &secrets,
         level: level::of(&profile),
         observed,
+        unanswered: unanswered.as_deref(),
     });
     let found = actions
         .iter()
@@ -325,6 +348,7 @@ fn installation_list() -> Vec<Action> {
         secrets: &[],
         level: Level::Workstation,
         observed: None,
+        unanswered: None,
     };
     INSTALLATION
         .iter()
@@ -630,9 +654,12 @@ fn secrets_action(seen: &Seen) -> Action {
     if let Err(refusal) = level::check(seen.name, seen.level, Capability::Secrets) {
         return unavailable(action, Some(refusal.why));
     }
-    // A host that did not answer is asked when it runs, which says why not.
-    let why = match (seen.tasks, task) {
-        (Some(_), None) => Some(format!(
+    let why = match (seen.tasks, task, seen.unanswered) {
+        (_, _, Some(error)) => Some(format!(
+            "The controller on {} does not answer, and the secrets go through it: {error}",
+            seen.name
+        )),
+        (Some(_), None, _) => Some(format!(
             "The controller on {} has no secrets task yet: apply its configuration",
             seen.name
         )),

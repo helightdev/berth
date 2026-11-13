@@ -532,9 +532,10 @@ pub fn draw_action_arguments(frame: &mut Frame, actions: &[berth_api::Action], a
         ),
         58,
     );
-    let keys = match asked.choices.is_empty() {
-        true => " Enter accept · Esc cancel · Ctrl+O copy ",
-        false => " ↑↓ choose · Enter accept · Esc cancel · Ctrl+O copy ",
+    let keys = match (asked.choices.is_empty(), argument.secret) {
+        (_, true) => " Enter accept · Esc cancel ",
+        (true, false) => " Enter accept · Esc cancel · Ctrl+O copy ",
+        (false, false) => " ↑↓ choose · Enter accept · Esc cancel · Ctrl+O copy ",
     };
     let rows = lines.len() as u16;
     let area = dialog(frame, &title, keys, lines);
@@ -556,6 +557,18 @@ pub trait Platform {
 /// would be the usual choice, but the input takes it to paste what it cut, and
 /// the other Ctrl letters are line editing, so this one is free.
 pub const COPY_FIELD: &str = "Ctrl+O copy";
+
+/// The tabs of the home screen, in their order, in the terminal and on the
+/// page alike: a digit key is one more than the index. The tab bar shows
+/// them with their digits, so the footers do not list them again.
+pub const HOME_TABS: [&str; 6] = [
+    "Hosts",
+    "Provisioners",
+    "Settings",
+    "Registries",
+    "Secrets",
+    "Plugins",
+];
 
 /// Whether the key copies the text of the field being edited.
 pub fn is_copy_field(key: &Key) -> bool {
@@ -708,6 +721,9 @@ pub fn action_arguments_event(
         return false;
     };
     match event {
+        Event::Key(key) if is_copy_field(key) && asked.secret => {
+            *said = Some("A secret is not copied".into())
+        }
         Event::Key(key) if is_copy_field(key) => *said = Some(copy_field(platform, &asked.input)),
         Event::Key(key) => match key.code {
             Code::Esc => *dialog = None,

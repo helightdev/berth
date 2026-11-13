@@ -1001,6 +1001,27 @@ mod tests {
     }
 
     #[test]
+    fn a_host_is_not_sent_a_secret_without_a_value_nor_the_tailnets_api_key() {
+        let (_home, opened) = opened();
+        let store = Store::own(opened);
+        let wanting = json!({"secrets": [{"name": "github", "env": "GH_TOKEN"}]});
+        let said = store.host_payload(&wanting).unwrap_err().to_string();
+        assert!(said.contains("github"), "{said}");
+        store.set_secret("github", Some("t0ken")).unwrap();
+        assert_eq!(
+            store.host_payload(&wanting).unwrap()["env"]["GH_TOKEN"],
+            "t0ken"
+        );
+        store
+            .set_secret(berth_api::profile::TAILNET_API_KEY, Some("hskey"))
+            .unwrap();
+        let giving =
+            json!({"secrets": [{"name": berth_api::profile::TAILNET_API_KEY, "env": "KEY"}]});
+        let said = store.host_payload(&giving).unwrap_err().to_string();
+        assert!(said.contains("never sent to a host"), "{said}");
+    }
+
+    #[test]
     fn a_renamed_registry_keeps_its_login() {
         let (_home, opened) = opened();
         let store = Store::own(opened);

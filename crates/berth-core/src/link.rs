@@ -131,16 +131,18 @@ impl Link {
         let mut input = child.stdin.take().expect("piped");
         let output = child.stdout.take().expect("piped");
         let mut errors = child.stderr.take().expect("piped");
+        // Each command's words are its own, so requests made at once do not
+        // clear each other's; the link keeps the last command's that said any.
         let complaints = self.complaints.clone();
-        complaints.lock().unwrap().clear();
         tokio::spawn(async move {
             let mut buffer = [0; 1024];
+            let mut said = String::new();
             while let Ok(count) = errors.read(&mut buffer).await
                 && count > 0
             {
-                let mut text = complaints.lock().unwrap();
-                if text.len() < 4096 {
-                    text.push_str(&String::from_utf8_lossy(&buffer[..count]));
+                if said.len() < 4096 {
+                    said.push_str(&String::from_utf8_lossy(&buffer[..count]));
+                    *complaints.lock().unwrap() = said.clone();
                 }
             }
         });
@@ -155,11 +157,19 @@ impl Link {
         })
     }
 
-    /// Why a connection failed, in the link command's own words when it said any.
-    fn explain(&self, error: Error) -> Error {
+    /// Why a connection failed, in the link command's own words when it said
+    /// any. The command is given a moment to say them, as it may still be
+    /// writing when the connection is seen to be closed.
+    async fn explain(&self, error: Error) -> Error {
         let Error::Transport(message) = error else {
             return error;
         };
+        for _ in 0..4 {
+            if !self.complaints.lock().unwrap().trim().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
         let said = self.complaints.lock().unwrap().trim().to_owned();
         Error::Transport(if said.is_empty() {
             message
@@ -173,7 +183,10 @@ impl Link {
     }
 
     async fn fresh(&self) -> client::Result<Client> {
-        Client::over(self.connect().await?).await
+        match Client::over(self.connect().await?).await {
+            Ok(client) => Ok(client),
+            Err(error) => Err(self.explain(error).await),
+        }
     }
 
     /// One request. An idle connection is used when there is one; if it turns
@@ -200,6 +213,8 @@ impl Link {
                 .await
             {
                 Ok(response) => {
+                    // What a command said before it worked is no reason for a later failure.
+                    self.complaints.lock().unwrap().clear();
                     let mut idle = self.idle.lock().unwrap();
                     if client.usable() && idle.len() < IDLE {
                         idle.push(client);
@@ -210,11 +225,7 @@ impl Link {
                     attempt = false;
                     client = self.fresh().await?;
                 }
-                Err(error) => {
-                    // Give the command a moment to say why it gave up.
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                    return Err(self.explain(error));
-                }
+                Err(error) => return Err(self.explain(error).await),
             }
         }
     }
@@ -278,10 +289,7 @@ impl Link {
         let conn = self.connect().await?;
         match client::websocket(conn, path, "").await {
             Ok(stream) => Ok(Box::pin(stream)),
-            Err(error) => {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                Err(self.explain(error))
-            }
+            Err(error) => Err(self.explain(error).await),
         }
     }
 

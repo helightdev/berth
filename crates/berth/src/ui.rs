@@ -1751,14 +1751,7 @@ pub(crate) mod tabs {
     pub const REGISTRIES: usize = 3;
     pub const SECRETS: usize = 4;
     pub const PLUGINS: usize = 5;
-    pub const NAMES: [&str; 6] = [
-        "Hosts",
-        "Provisioners",
-        "Settings",
-        "Registries",
-        "Secrets",
-        "Plugins",
-    ];
+    pub const NAMES: [&str; 6] = berth_tui::screen::HOME_TABS;
 }
 
 /// The keys that leave a tab for another, the same on every tab: a digit,
@@ -2868,15 +2861,15 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                             ),
                         }
                     ),
-                    "↑↓ select · Enter change · Tab registries · q quit",
+                    "↑↓ select · Enter change · q quit",
                 ),
                 (None, Some(SettingsRow::Key(index)), _) => (
                     berth_tui::berth_key::help(&keys[*index].0, &keys[*index].1, server.as_deref()),
-                    "↑↓ select · Enter copy the key · Tab registries · q quit",
+                    "↑↓ select · Enter copy the key · q quit",
                 ),
                 (None, Some(SettingsRow::Connect), Some((url, _))) => (
                     berth_tui::qr::connect_help(url, true),
-                    "↑↓ select · Enter show the QR code · Tab registries · q quit",
+                    "↑↓ select · Enter show the QR code · q quit",
                 ),
                 _ => (String::new(), ""),
             };
@@ -2923,7 +2916,7 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                 if view.editor.is_some() {
                     "Enter accept · Esc cancel · Ctrl+O copy"
                 } else {
-                    "↑↓ select · Enter change · c check · x remove · Tab secrets · q quit"
+                    "↑↓ select · Enter change · c check · x remove · q quit"
                 },
             )
         }
@@ -2975,7 +2968,7 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                 if view.editor.is_some() {
                     "Enter accept · Esc cancel · Ctrl+O copy"
                 } else {
-                    "↑↓ select · Enter set value · x remove · Tab plugins · q quit"
+                    "↑↓ select · Enter set value · x remove · q quit"
                 },
             )
         }
@@ -3014,7 +3007,7 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                 if view.editor.is_some() {
                     "Enter install · Esc cancel · Ctrl+O copy"
                 } else {
-                    "↑↓ select · Enter add · c check · U update · A all · x remove · Tab provisioners · q quit"
+                    "↑↓ select · Enter add · c check · U update · A all · x remove · q quit"
                 },
             )
         }
@@ -3065,7 +3058,7 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                 if naming.is_some() {
                     "Enter create · Esc cancel · Ctrl+O copy"
                 } else {
-                    "↑↓ select · Enter open · n new host · d default · r refresh · 2 provisioners · 3 settings · 4 registries · 5 secrets · 6 plugins · q quit"
+                    "↑↓ select · Enter open · n new host · d default · r refresh · q quit"
                 },
             )
         }
@@ -3148,6 +3141,7 @@ pub fn run(
         app.update_suggestions();
         app.watch_host();
         app.watch_machine();
+        app.watch_found_level();
         // One of berth's own actions on the host runs in the normal terminal.
         if app.own_command.is_some() {
             return Ok(true);
@@ -4075,6 +4069,38 @@ mod tests {
     }
 
     #[test]
+    fn the_footers_leave_the_tabs_to_the_tab_bar() {
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, mut home) = settings_home(directory.path());
+        for mode in [
+            HomeMode::Hosts,
+            HomeMode::Settings(0, None),
+            HomeMode::Registries(RegistryView::default()),
+            HomeMode::Secrets(SecretView::default()),
+            HomeMode::Plugins(PluginView::default()),
+        ] {
+            home.mode = mode;
+            let rows = home_screen(&paths, &home);
+            let footer = rows
+                .iter()
+                .rev()
+                .find(|row| !row.trim().is_empty())
+                .unwrap();
+            for tab in &berth_tui::screen::HOME_TABS[1..] {
+                assert!(
+                    !footer.to_lowercase().contains(&tab.to_lowercase()),
+                    "{footer}"
+                );
+            }
+        }
+        // The tab bar has them all, with the digit that opens each.
+        let rows = home_screen(&paths, &home).join("\n");
+        for tab in berth_tui::screen::HOME_TABS {
+            assert!(rows.contains(tab), "{tab}");
+        }
+    }
+
+    #[test]
     fn the_text_of_a_field_is_copied_with_its_hint_or_its_key() {
         let directory = tempfile::tempdir().unwrap();
         let (paths, mut home) = settings_home(directory.path());
@@ -4704,20 +4730,39 @@ mod tests {
         app.host.level = berth_api::HostLevel::Reachable;
         app.host.state = State::Missing;
         app.host.seen = Some(berth_api::HostLevel::Reachable);
+        app.host.own =
+            berth_core::level::local_actions("devbox", berth_api::HostLevel::Reachable, None);
         let text = screen_text(&mut app);
         assert!(text.contains("Level · reachable"), "{text}");
         assert!(text.contains("▸ Install the controller") && text.contains("▸ Terminal over SSH"));
         assert!(!app.entries().contains(&Entry::Task("apply")));
-        // Choosing it runs berth host install in the normal terminal.
+        // Choosing it, and saying yes, runs berth host install in the normal terminal.
         let at = app
             .entries()
             .iter()
-            .position(|entry| *entry == Entry::Task("install-controller"))
+            .position(|entry| *entry == Entry::HostTask(0))
             .unwrap();
         app.list.select(Some(at));
         press(&mut app, &[KeyCode::Enter]);
+        question_event(
+            &mut app,
+            &Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+        );
         let words = app.own_command.clone().unwrap();
         assert_eq!(words[..2], ["host".to_owned(), "install".to_owned()]);
+        app.own_command = None;
+
+        // A host that cannot be reached still lists berth's own actions.
+        app.host.state = State::Unreachable(
+            "ssh: connect to host 192.0.2.4 port 22: Network is unreachable".into(),
+        );
+        let rows: Vec<String> = app.rows().iter().map(|row| row.line.to_string()).collect();
+        let text = rows.join("\n");
+        assert!(
+            text.contains("Network is unreachable") && text.contains("▸ Install the controller"),
+            "{text}"
+        );
+        assert!(app.entries().contains(&Entry::HostTask(0)));
 
         // A controller host lists berth's own beside its tasks; one it cannot
         // run is marked, and its reason is in the information box.
@@ -4762,6 +4807,27 @@ mod tests {
         app.begin_task(index, false);
         assert!(app.status.contains("cannot run now: devbox has no profile"));
         assert!(app.own_command.is_none());
+    }
+
+    #[test]
+    fn an_existing_host_is_offered_the_level_it_says_it_has() {
+        let mut app = unsaved_app(br#"{"access": {"address": "192.0.2.4"}}"#);
+        app.offer_level(Some(berth_api::HostLevel::Controller));
+        assert_eq!(app.config["level"], "controller");
+        assert!(app.status.contains("answers as a controller host"));
+        // Nothing found, or what it is already, changes nothing.
+        app.offer_level(None);
+        app.offer_level(Some(berth_api::HostLevel::Controller));
+        assert_eq!(app.config["level"], "controller");
+        // A level chosen on its row stays; the host's answer is only told.
+        app.commit(Field::Level, "reachable");
+        app.offer_level(Some(berth_api::HostLevel::Workstation));
+        assert_eq!(app.config["level"], "reachable");
+        assert!(
+            app.status.contains("its Level here says reachable"),
+            "{}",
+            app.status
+        );
     }
 
     #[test]
