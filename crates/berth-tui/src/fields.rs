@@ -215,9 +215,7 @@ pub enum Field {
     WifiPassword,
     OperatorUser,
     OperatorKey,
-    BerthKey,
     OperatorHash,
-    OperatorSudo,
     AgentUser,
     AgentKey,
     AgentHash,
@@ -385,23 +383,11 @@ impl Field {
                 Text,
                 "An OpenSSH public key the operator account takes. Enter changes it, x removes it. The account can have several: one for each person or machine that logs in.",
             ),
-            BerthKey => (
-                "This berth's SSH key",
-                "/berth_ssh_key",
-                Toggle,
-                "The operator also takes the SSH key of the berth that sets the host up, the key berth of its key ring, so berth reaches the host without a key of yours. While that key is being replaced, the operator takes the new one too. For a host set up from a berth server it is the server's key. c copies it, to add it at a cloud provider or on a host yourself.",
-            ),
             OperatorHash => (
                 "Operator password hash",
                 "/operator_password_hash",
                 Secret,
                 "SHA-512 crypt or yescrypt hash of the operator password. F4 generates a password and hash, and berth credentials HOST shows the password later. F5 hashes a password you enter.",
-            ),
-            OperatorSudo => (
-                "Operator passwordless sudo",
-                "/operator_passwordless_sudo",
-                Toggle,
-                "Allow the operator to use sudo without a password. On unless turned off, so berth needs no sudo password to look after the host. Off, the operator types its password for sudo.",
             ),
             AgentUser => (
                 "Agent username",
@@ -533,7 +519,7 @@ impl Field {
                 "Ask for sudo password",
                 "/access/sudo",
                 Toggle,
-                "Ask for the SSH user's sudo password on the host. Until it is switched, it follows the operator: on when the operator has no passwordless sudo, off when it has. The password is asked for when it is needed and kept until berth is closed, or kept as the secret sudo/HOST if you store it there.",
+                "Ask for the SSH user's sudo password, for a first apply as an account of the machine's own whose sudo asks for one. The operator never needs it: once the host is applied as its operator, berth stops asking. The password is asked for when it is needed and kept until berth is closed, or kept as the secret sudo/HOST if you store it there.",
             ),
             SshHost => (
                 "SSH address",
@@ -584,9 +570,7 @@ impl Field {
     pub fn group(self) -> Option<Group> {
         use Field::*;
         Some(match self {
-            OperatorUser | OperatorKey | BerthKey | OperatorHash | OperatorSudo => {
-                Group::Heading("Operator Account")
-            }
+            OperatorUser | OperatorKey | OperatorHash => Group::Heading("Operator Account"),
             AgentUser | AgentKey | AgentHash | AgentSudo | AgentPrivileges => {
                 Group::Heading("Agent Account")
             }

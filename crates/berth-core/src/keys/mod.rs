@@ -201,6 +201,15 @@ impl Login {
         Ok(login)
     }
 
+    /// The same login with a key file offered first, for this once: as a
+    /// berth that adopts a host may be given the key of the one before.
+    pub fn offering(&self, file: PathBuf) -> Login {
+        let mut login = self.clone();
+        login.identities.insert(0, file);
+        login.guard = None;
+        login
+    }
+
     /// The same host logged in to with only these key files.
     pub fn with_keys(&self, files: Vec<PathBuf>) -> Login {
         let mut login = self.clone();
@@ -386,8 +395,8 @@ impl Login {
         }
         args.extend(["-T".into(), self.target()]);
         // The line sent first is read by the shell, never by berthd, and handed to
-        // sudo only when sudo asks: applying the role lets the SSH user off the
-        // password, and the profile still says to ask for it.
+        // sudo only when sudo asks: an SSH user that is the operator needs none
+        // once the role is applied, while the profile may still say to ask.
         args.push(match password {
             Some(_) => PASSWORD_LINK.into(),
             None => "sudo -n berthd connect".into(),
@@ -465,19 +474,37 @@ pub fn users(store: &Store, key: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-/// The public halves a workstation's operator takes for this berth: the key
-/// `berth`, and its successor while one is pending, so an apply during a
-/// rotation keeps both.
-pub fn operator_keys(paths: &Paths) -> Vec<String> {
-    let Ok(store) = crate::store::shared(paths) else {
-        return vec![];
-    };
-    let Ok(key) = ring::public(paths, &store, BERTH_KEY) else {
-        return vec![];
-    };
-    let mut keys = vec![key.public];
-    keys.extend(key.pending.map(|next| next.public));
-    keys
+/// The public halves a workstation's operator always takes for this berth,
+/// whatever its profile lists: the key `berth`, and the key of the ring the
+/// profile logs in with when it is another, each with its successor while a
+/// rotation runs. The role keeps them in a block of their own, so that a
+/// later apply never takes away the key berth logs in with. Without the key
+/// `berth` berth could be locked out of the host, so there is no answer then.
+pub fn operator_keys(paths: &Paths, config: &Value) -> Result<Vec<String>> {
+    let missing = || "berth has no SSH key of its own to give the host's operator: check that ssh-keygen works";
+    let store = crate::store::shared(paths).map_err(|_| missing())?;
+    let mut keys = vec![];
+    let mut names = vec![BERTH_KEY.to_owned()];
+    if let Auth::Key(name) = Access::of(config).auth
+        && name != BERTH_KEY
+    {
+        names.push(name);
+    }
+    for name in names {
+        let key = match ring::public(paths, &store, &name) {
+            Ok(key) => key,
+            Err(_) if name == BERTH_KEY => return Err(missing().into()),
+            // A key the profile names and the ring lacks is reported where it is used.
+            Err(_) => continue,
+        };
+        keys.push(key.public);
+        keys.extend(key.pending.map(|next| next.public));
+    }
+    keys.retain(|key| !key.trim().is_empty());
+    if keys.is_empty() {
+        return Err(missing().into());
+    }
+    Ok(keys)
 }
 
 #[cfg(test)]

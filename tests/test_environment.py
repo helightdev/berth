@@ -13,6 +13,11 @@ try:
     import yaml
 except ImportError:
     jinja2 = yaml = None
+try:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+except ImportError:
+    serialization = None
 
 ROLE = Path(__file__).resolve().parents[1] / 'provision/ansible/roles/devbox'
 
@@ -205,6 +210,118 @@ class TaskFiles(unittest.TestCase):
         for path in sorted(ROLE.parents[1].rglob('*.yml')):
             with self.subTest(path=path.name):
                 self.assertIsNotNone(yaml.safe_load(path.read_text()))
+
+
+def tasks(name):
+    """The tasks of a task file, with those inside blocks."""
+    found = []
+    for task in yaml.safe_load((ROLE / 'tasks' / name).read_text()):
+        found.append(task)
+        found.extend(tasks_in(task))
+    return found
+
+
+def tasks_in(task):
+    inner = []
+    for key in ('block', 'rescue', 'always'):
+        for child in task.get(key, []):
+            inner.append(child)
+            inner.extend(tasks_in(child))
+    return inner
+
+
+def named(name, task_file):
+    return next(task for task in tasks(task_file) if task['name'] == name)
+
+
+@unittest.skipUnless(yaml, 'Run with the Ansible venv Python for YAML checks')
+class Operator(unittest.TestCase):
+    """The operator always has sudo without a password, keys only for SSH, and
+    the key of the berth that applies the role."""
+
+    def test_the_sudoers_file_is_always_written_and_never_removed(self):
+        task = named('Configure operator passwordless administration', 'accounts.yml')
+        self.assertEqual(task['ansible.builtin.copy']['content'],
+                         '{{ devbox_operator_user }} ALL=(ALL:ALL) NOPASSWD: ALL\n')
+        # The container has no operator; nothing else keeps the file away.
+        self.assertEqual(task['when'], "devbox_profile != 'container'")
+        for task in tasks('accounts.yml'):
+            module = task.get('ansible.builtin.file', {})
+            self.assertFalse(module.get('state') == 'absent' and 'sudoers.d/99-devbox-operator' in module.get('path', ''))
+        self.assertNotIn('devbox_operator_passwordless_sudo', (ROLE / 'defaults/main.yml').read_text())
+
+    def test_a_password_locked_with_a_bang_becomes_a_star(self):
+        task = named("Lock the operator's password so its keys still log in", 'accounts.yml')
+        self.assertEqual(task['ansible.builtin.user']['password'], '*')
+        pattern = re.search(r"is match\('([^']*)'\)", task['when']).group(1)
+        for field, replaced in [('!', True), ('!!', True), ('!*', True), ('!$6$salt$hash', True), ('', True),
+                                ('*', False), ('$6$salt$hash', False), ('$y$j9T$salt$hash', False)]:
+            with self.subTest(field=field):
+                self.assertEqual(re.match(pattern, field) is not None, replaced)
+        # A password from the profile is left to the task that sets it.
+        self.assertIn('not devbox_operator_password_hash', task['when'])
+
+    def test_the_operator_logs_in_with_keys_only_whatever_the_hardening(self):
+        task = named('Let the operator log in over SSH with keys only', 'host.yml')
+        self.assertNotIn('when', task)
+        content = task['ansible.builtin.copy']['content']
+        self.assertTrue(content.startswith('Match User {{ devbox_operator_user }}\n'))
+        for line in ('AuthenticationMethods publickey', 'PasswordAuthentication no', 'KbdInteractiveAuthentication no'):
+            self.assertIn(line, content)
+        # Nothing the role writes for sshd lets only some accounts in.
+        for name in ('host.yml', 'accounts.yml', 'laptop.yml'):
+            text = (ROLE / 'tasks' / name).read_text()
+            for keyword in ('AllowUsers', 'AllowGroups', 'DenyUsers', 'DenyGroups'):
+                self.assertNotIn(keyword, text, name)
+        restart = named('Apply SSH server settings', 'host.yml')
+        self.assertIn('devbox_sshd_operator.changed', restart['when'])
+
+    @unittest.skipUnless((shutil.which('sshd') or Path('/usr/sbin/sshd').exists()) and serialization,
+                         'needs sshd and cryptography')
+    def test_sshd_reads_the_operator_block_as_its_own(self):
+        sshd = shutil.which('sshd') or '/usr/sbin/sshd'
+        task = named('Let the operator log in over SSH with keys only', 'host.yml')
+        block = task['ansible.builtin.copy']['content'].replace('{{ devbox_operator_user }}', 'ops')
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # Made here rather than with ssh-keygen, which needs an account in the password database.
+            (root / 'host').write_bytes(Ed25519PrivateKey.generate().private_bytes(
+                serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption()))
+            (root / 'host').chmod(0o600)
+            (root / 'operator.conf').write_text(block)
+            # The hardening switched off, and an SSH server that allows passwords.
+            (root / 'sshd_config').write_text(
+                f'Include {root}/operator.conf\nPasswordAuthentication yes\nUsePAM no\nHostKey {root}/host\n')
+
+            def settings(user):
+                shown = subprocess.run([sshd, '-T', '-f', root / 'sshd_config', '-C', f'user={user},host=studio,addr=192.0.2.5'],
+                                       capture_output=True, text=True, check=True).stdout
+                return dict(line.lower().split(' ', 1) for line in shown.splitlines() if ' ' in line)
+            ops, agent = settings('ops'), settings('agent')
+        self.assertEqual((ops['passwordauthentication'], ops['kbdinteractiveauthentication'],
+                          ops['authenticationmethods']), ('no', 'no', 'publickey'))
+        # The block ends with its file, so other accounts keep the server's settings.
+        self.assertEqual(agent['passwordauthentication'], 'yes')
+
+    def test_the_keys_of_berth_have_a_block_no_apply_removes(self):
+        task = named('Give the operator the keys of the berth that applies this', 'accounts.yml')
+        module = task['ansible.builtin.blockinfile']
+        self.assertEqual(module['block'], '{{ devbox_berth_ssh_public_key }}')
+        self.assertIn('BERTH', module['marker'])
+        self.assertIn('hash', module['marker'])
+        self.assertNotIn('state', module)
+        # It is in place before the profile's keys are, and checked after.
+        names = [task['name'] for task in tasks('accounts.yml')]
+        self.assertLess(names.index(task['name']), names.index('Configure account authorized public keys'))
+        check = named('Check that the operator takes the keys of the berth that applies this', 'accounts.yml')
+        self.assertLess(names.index('Configure account authorized public keys'), names.index(check['name']))
+        # Each of them, one to a line: berth's own, the one replacing it, and the one the profile logs in with.
+        self.assertEqual(check['ansible.builtin.command']['argv'][:4], ['grep', '-qxF', '--', '{{ item }}'])
+        self.assertEqual(check['loop'], '{{ devbox_berth_ssh_public_key.splitlines() }}')
+        self.assertNotIn('failed_when', check)
+        # Both come before any change to the SSH server.
+        main = (ROLE / 'tasks/main.yml').read_text()
+        self.assertLess(main.index('accounts.yml'), main.index('host.yml'))
 
 
 if __name__ == '__main__':

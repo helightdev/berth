@@ -111,7 +111,8 @@ These settings stay in `config.json`, as they belong to this machine or are need
 | `store`, `store_key`, `store_ca` | Where the store is and how it is opened |
 | `server`, `server_token` | The berth server this machine uses |
 | `source`, `iso_dir` | Folders on this machine |
-| `oauth_client_id`, `oauth_client_secret`, `oauth_scope` | This machine's OAuth client |
+
+A key berth does not know stays in `config.json` as it is, such as the OAuth client settings of berth 0.4, which berth has no use for any more.
 
 An older berth kept secrets in `secrets.json`, and registries and all settings in `config.json`. It kept each host's profile in `~/.config/berth/hosts/NAME.json`, with `NAME.credentials.json` and `NAME.instance.json` beside it. The first run of this berth moves all of them into the store. It keeps the old files in `~/.config/berth/migrated/`, and removes the copies of a berth server's profiles in `~/.local/share/berth/served/`. Delete the old files once the store has what you need. It also puts berth's own SSH key, the token of `berth serve` and your own plugins into the store, and leaves their files where they are. The setup key, which was in `serve.setup-key`, is in the store alone from then on.
 

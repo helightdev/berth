@@ -67,7 +67,7 @@ berth's key. So:
 | --- | --- |
 | Start, stop | Start or stop the container. |
 | Change | New CPU and memory limits for a container that runs on. |
-| Logs | The container's log. |
+| Logs | The latest lines of the container's console, or of its journal when the console is empty. berth shows them while it waits for SSH. |
 | Destroy | Removes the container, and the volume unless `keep_volume` is `yes`. A volume that berth did not create is always kept. |
 | List | The containers on the engine with the `berth-host` label. |
 

@@ -393,7 +393,9 @@ Each verb adds to it and answers like this:
 
 `spec` is the specification as the person gave it, as text. `environment` maps variables to the values of the berth secrets the resource is given, such as `{"DB_PASSWORD": "…"}`. It is empty for a resource without secrets. Pass these values on only through the environment of the program that needs them, and berth masks them in your output as it does secrets.
 
-For `logs`, `tail` is how many of the last lines to give, and `follow` whether to go on with what comes after them.
+For `logs`, `tail` is how many of the last lines to give, and `follow` whether to go on with what comes after them. Give a machine's console, or its boot output when the console has none. An empty log is no failure.
+
+While berth waits for a new machine, it asks `logs` of the machine kind with each `status`, until SSH answers, with `tail` at 100 and `follow` false. It shows the lines it has not shown before. berth removes escape sequences and control characters, shortens long lines and shows at most six lines at a time. It hides the provisioner's secrets and those of the seed. A kind without `logs` is waited for without them.
 
 `details` is a list of rows, each `{"label": …, "value": …}`, which berth shows as they are, such as a pool and how full it is. `values` names, by argument, the values an argument takes here, such as `{"pool": ["default", "fast"]}`. berth offers those in place of what the manifest says.
 

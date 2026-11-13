@@ -71,7 +71,6 @@ impl Host {
         Some(configured.unwrap_or(Server {
             url: url.to_owned(),
             token: std::env::var("BERTH_TOKEN").ok(),
-            paths: Some(paths.clone()),
         }))
     }
 

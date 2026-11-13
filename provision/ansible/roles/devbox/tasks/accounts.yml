@@ -9,9 +9,24 @@
     password: "{{ devbox_operator_password_hash if devbox_operator_password_hash else omit }}"
   no_log: true
   when: devbox_profile != 'container'
-# Membership of sudo already grants password-based sudo. A rule of our own that
-# demands a password would also override an existing NOPASSWD grant, such as the
-# one cloud-init gives the account this play may be running as.
+- name: Read the operator's password field
+  ansible.builtin.getent:
+    database: shadow
+    key: "{{ devbox_operator_user }}"
+  no_log: true
+  when: devbox_profile != 'container' and not devbox_operator_password_hash
+# Without PAM, sshd refuses key logins to an account whose password field starts
+# with `!`, which is how useradd and cloud-init lock one. `*` allows no password
+# either, and sshd takes keys for it with and without PAM.
+- name: Lock the operator's password so its keys still log in
+  ansible.builtin.user:
+    name: "{{ devbox_operator_user }}"
+    password: '*'
+  no_log: true
+  when: >-
+    devbox_profile != 'container' and not devbox_operator_password_hash
+    and (ansible_facts.getent_shadow[devbox_operator_user][0] | default('')) is match('^(!|$)')
+# berth looks after the host as the operator, so sudo never asks it for a password.
 - name: Configure operator passwordless administration
   ansible.builtin.copy:
     dest: /etc/sudoers.d/99-devbox-operator
@@ -20,12 +35,7 @@
     group: root
     mode: '0440'
     validate: /usr/sbin/visudo -cf %s
-  when: devbox_profile != 'container' and devbox_operator_passwordless_sudo
-- name: Remove operator passwordless administration
-  ansible.builtin.file:
-    path: /etc/sudoers.d/99-devbox-operator
-    state: absent
-  when: devbox_profile != 'container' and not devbox_operator_passwordless_sudo
+  when: devbox_profile != 'container'
 - name: Create the agent account
   ansible.builtin.user:
     name: "{{ devbox_user }}"
@@ -111,9 +121,10 @@
 - name: Manage account SSH access
   vars:
     devbox_ssh_accounts: >-
-      {{ [{'user': devbox_user, 'key': devbox_agent_ssh_public_key}]
+      {{ [{'user': devbox_user, 'key': devbox_agent_ssh_public_key, 'berth': ''}]
          + ([] if devbox_profile == 'container' else
-            [{'user': devbox_operator_user, 'key': devbox_operator_ssh_public_key}]) }}
+            [{'user': devbox_operator_user, 'key': devbox_operator_ssh_public_key,
+              'berth': devbox_berth_ssh_public_key}]) }}
   block:
     - name: Create account SSH directories
       ansible.builtin.file:
@@ -125,7 +136,7 @@
       loop: "{{ devbox_ssh_accounts }}"
       loop_control:
         label: "{{ item.user }}"
-      when: item.key | length > 0
+      when: (item.key ~ item.berth) | length > 0
     - name: Check existing authorized keys
       ansible.builtin.stat:
         path: "/home/{{ item.user }}/.ssh/authorized_keys"
@@ -133,6 +144,19 @@
       loop_control:
         label: "{{ item.user }}"
       register: devbox_authorized_keys
+    # Each berth that applies this keeps its keys in a block of its own, named
+    # after its own key, which no later apply removes, so a change to the
+    # profile's keys never locks it out.
+    - name: Give the operator the keys of the berth that applies this
+      ansible.builtin.blockinfile:
+        path: "/home/{{ devbox_operator_user }}/.ssh/authorized_keys"
+        create: true
+        owner: "{{ devbox_operator_user }}"
+        group: "{{ devbox_operator_user }}"
+        mode: '0600'
+        marker: "# {mark} BERTH {{ devbox_berth_ssh_public_key.split()[1] | hash('sha1') }}"
+        block: "{{ devbox_berth_ssh_public_key }}"
+      when: devbox_profile != 'container' and devbox_berth_ssh_public_key | length > 0
     - name: Configure account authorized public keys
       ansible.builtin.blockinfile:
         path: "/home/{{ item.item.user }}/.ssh/authorized_keys"
@@ -147,3 +171,9 @@
       loop_control:
         label: "{{ item.item.user }}"
       when: item.item.key | length > 0 or item.stat.exists
+    - name: Check that the operator takes the keys of the berth that applies this
+      ansible.builtin.command:
+        argv: [grep, -qxF, --, "{{ item }}", "/home/{{ devbox_operator_user }}/.ssh/authorized_keys"]
+      loop: "{{ devbox_berth_ssh_public_key.splitlines() }}"
+      changed_when: false
+      when: devbox_profile != 'container'

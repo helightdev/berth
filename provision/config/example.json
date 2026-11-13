@@ -4,7 +4,6 @@
   "operator_username": "ops",
   "operator_ssh_public_keys": [],
   "operator_password_hash": "",
-  "operator_passwordless_sudo": true,
   "agent_username": "agent",
   "agent_ssh_public_keys": [],
   "agent_password_hash": "",

@@ -237,6 +237,38 @@ class Provision(Harness):
                              rules=[{'prefix': ['container', 'inspect'], 'results': [inspect(OURS)]}])
         self.assertEqual(json.loads(done.stdout), {'state': 'running', 'address': '192.0.2.5'})
 
+    def test_logs_without_follow_are_the_latest_console_lines(self):
+        console = ''.join(f'[  OK  ] Started unit-{n}.service.\n' for n in range(100))
+        rules = [{'prefix': ['container', 'inspect'], 'results': [inspect(OURS)]},
+                 {'prefix': ['logs'], 'results': [[0, console, '']]}]
+        done = self.run_verb('logs', {'id': 'berth-studio'}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout, console)
+        self.assertEqual(self.argv('logs'), [['logs', '--tail', '100', 'berth-studio']])
+
+    def test_logs_read_the_journal_when_the_console_is_empty(self):
+        rules = [{'prefix': ['container', 'inspect'], 'results': [inspect(OURS)]},
+                 {'prefix': ['logs'], 'results': [[0, '', '']]},
+                 {'prefix': ['exec', 'berth-studio', 'journalctl'],
+                  'results': [[0, 'Started ssh.service - OpenBSD Secure Shell server.\n', '']]}]
+        done = self.run_verb('logs', {'id': 'berth-studio', 'tail': 40}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout, 'Started ssh.service - OpenBSD Secure Shell server.\n')
+        [journal] = self.argv('exec', 'berth-studio', 'journalctl')
+        self.assertEqual(journal[journal.index('--lines') + 1], '40')
+        # A container without a journal has no lines, which is no failure.
+        rules[2]['results'] = [[1, '', 'OCI runtime exec failed']]
+        (self.state / 'seen-2').unlink(missing_ok=True)
+        done = self.run_verb('logs', {'id': 'berth-studio'}, rules=rules)
+        self.assertEqual((done.returncode, done.stdout), (0, ''))
+
+    def test_logs_of_a_container_that_is_gone_say_so(self):
+        done = self.run_verb('logs', {'id': 'berth-studio'},
+                             rules=[{'prefix': ['container', 'inspect'], 'results': [MISSING]}])
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('does not exist', done.stderr)
+        self.assertEqual(self.argv('logs'), [])
+
     def test_start_and_stop(self):
         rules = [{'prefix': ['container', 'inspect'], 'results': [inspect(OURS)]}]
         for verb in ('start', 'stop'):
@@ -363,7 +395,8 @@ class Provision(Harness):
         done = self.run_verb('logs', {'id': 'berth-studio', 'tail': 20, 'follow': True}, rules=rules)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(done.stdout, 'booted\nready\n')
-        self.assertEqual(self.argv('logs'), [['logs', '--tail', '20', '--follow', 'berth-studio']])
+        self.assertEqual(self.argv('logs'), [['logs', '--tail', '20', 'berth-studio'],
+                                             ['logs', '--tail', '20', '--follow', 'berth-studio']])
 
     def test_actions_answer_with_a_message_and_rows(self):
         images = [{'Repository': 'berth-docker-host', 'Tag': '0.2.0', 'Size': '900MB', 'ID': 'a1'},

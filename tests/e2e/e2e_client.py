@@ -1,7 +1,6 @@
 """berth on another machine, with its hosts those of a berth serve: the
 commands go through the server, which reaches the host. ClientApply looks at
 the apply of the shared state of berth serve (harness.served_extended())."""
-import json
 import unittest
 
 from harness import AGENT, HOST, Workstation, needs_e2e, served, served_extended
@@ -86,33 +85,24 @@ class ClientApply(unittest.TestCase):
 
 
 @needs_e2e
-class Login(unittest.TestCase):
-    """berth as a client of the issuer the server trusts, with a secret of its own."""
+class AccessToken(unittest.TestCase):
+    """berth given an access token of the issuer the server trusts, as BERTH_TOKEN."""
 
     @classmethod
     def setUpClass(cls):
         cls.serve = served()
         cls.station = Workstation('service', ssh_key=False)
-        for key, value in (('server', cls.serve.url), ('oauth_client_id', 'berth-client'),
-                           ('oauth_client_secret', 'client-secret')):
-            cls.station.berth('config', key, value)
+        cls.station.berth('config', 'server', cls.serve.url)
 
-    def test_berth_logs_in_and_gets_the_role_its_client_has(self):
-        done = self.station.berth('login')
-        self.assertIn(f'Logged in to {self.serve.url} with the role operate', done.stdout)
-        kept = json.loads((self.station.data / 'berth/oauth.json').read_text())
-        self.assertTrue(kept)
-        self.assertEqual((self.station.data / 'berth/oauth.json').stat().st_mode & 0o077, 0)
-        self.assertEqual(self.station.berth('exec', HOST, '--', 'id', '-un').stdout.strip(), AGENT)
+    def test_the_token_gives_the_role_it_names(self):
+        env = {'BERTH_TOKEN': self.serve.issuer.token('berth:operate', subject='berth-client')}
+        self.assertEqual(self.station.berth('exec', HOST, '--', 'id', '-un', env=env).stdout.strip(), AGENT)
         # The role is not enough to set the server up.
-        refused = self.station.berth('apply', HOST, check=False)
+        refused = self.station.berth('apply', HOST, env=env, check=False)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn('admin', refused.stderr)
-        self.station.berth('logout')
-        kept = json.loads((self.station.data / 'berth/oauth.json').read_text())
-        self.assertNotIn(self.serve.url, kept)
 
-    def test_a_wrong_secret_gets_no_token(self):
-        refused = self.station.berth('login', env={'BERTH_OAUTH_CLIENT_SECRET': 'wrong'}, check=False)
+    def test_a_token_of_another_issuer_is_refused(self):
+        env = {'BERTH_TOKEN': self.serve.issuer.token('berth:admin', issuer='http://192.0.2.1')}
+        refused = self.station.berth('list', env=env, check=False)
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn('invalid_client', refused.stderr)

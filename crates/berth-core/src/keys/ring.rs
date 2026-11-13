@@ -89,6 +89,19 @@ fn write(store: &Store, name: &str, pending: bool, halves: &Halves) -> Result<()
     )?)
 }
 
+/// Put a key that is not a real one under `name`, so that a test makes no
+/// key with ssh-keygen, which needs an account in the password database.
+#[cfg(test)]
+pub fn give_test_key(store: &Store, name: &str) {
+    let halves = Halves {
+        private: "not a real private key\n".into(),
+        public: format!(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f {name}@studio"
+        ),
+    };
+    write(store, name, false, &halves).unwrap();
+}
+
 /// The names of the keys, without the pending ones. Nothing is unsealed.
 pub fn names(store: &Store) -> Result<Vec<String>> {
     Ok(store

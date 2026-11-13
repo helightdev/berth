@@ -28,8 +28,9 @@ pub fn plugin_dirs(plugins: &[plugins::Plugin]) -> Value {
 }
 
 /// Variables for a direct Ansible run, matching what the seed builder embeds.
-/// `own` are the public keys of the berth that applies them: its key, and
-/// the key replacing it while a rotation runs.
+/// `own` are the public keys of the berth that applies them, as
+/// [`crate::keys::operator_keys`] gives them. The role keeps those apart from
+/// the profile's, so that no later apply takes them away.
 pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: &[String]) -> Value {
     let mut config = config.clone();
     berth_api::profile::retire_qemu(&mut config);
@@ -45,10 +46,6 @@ pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: &[String]) -> Valu
         ("agent_privileges", "devbox_agent_privileges"),
         ("operator_username", "devbox_operator_user"),
         ("operator_password_hash", "devbox_operator_password_hash"),
-        (
-            "operator_passwordless_sudo",
-            "devbox_operator_passwordless_sudo",
-        ),
     ] {
         if let Some(value) = config.get(source) {
             vars[dest] = value.clone();
@@ -58,7 +55,13 @@ pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: &[String]) -> Valu
     vars["devbox_agent_ssh_public_key"] =
         json!(berth_api::profile::account_keys(config, "agent").join("\n"));
     vars["devbox_operator_ssh_public_key"] =
-        json!(berth_api::profile::operator_keys(config, own).join("\n"));
+        json!(berth_api::profile::account_keys(config, "operator").join("\n"));
+    let own: Vec<&str> = own
+        .iter()
+        .map(|key| key.trim())
+        .filter(|key| !key.is_empty())
+        .collect();
+    vars["devbox_berth_ssh_public_key"] = json!(own.join("\n"));
     vars["devbox_profile"] = config["profile"].clone();
     vars["devbox_plugin_dirs"] = plugin_dirs.clone();
     if let Some(key) = config["tailscale_auth_key"]
@@ -114,7 +117,9 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
     let source = paths.source()?;
     let plugins = plugins::load(&[source.join("plugins"), paths.config_dir.join("plugins")]);
     let dirs = plugin_dirs(&plugins);
-    let own = crate::keys::operator_keys(paths);
+    // Without its own key in the operator's authorized_keys, berth could be
+    // locked out of the host it sets up, so it does not go on without one.
+    let own = crate::keys::operator_keys(paths, &host.config)?;
     let mut vars = ansible_vars(&host.config, &dirs, &own);
     add_tailnet(&mut vars, paths, &host.config, &host.place)?;
     // The role keeps this on the host, for the plugins the host has, so
@@ -123,11 +128,11 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
         "berth": berth_api::VERSION,
         "plugins": plugins::records(&plugins),
     });
+    // The role keeps the profile on the host too, for a berth that lacks it.
+    vars["devbox_berth_profile"] = crate::kept_profile::for_host(paths, host);
     let mut prepared = run(paths, host, layout::PLAYBOOK, vars, become_password)?;
     prepared.command.env("BERTH_PLUGINS", dirs.to_string());
-    if !own.is_empty() {
-        prepared.command.env("BERTH_SSH_PUBLIC_KEY", own.join("\n"));
-    }
+    prepared.command.env("BERTH_SSH_PUBLIC_KEY", own.join("\n"));
     Ok(prepared)
 }
 
@@ -211,6 +216,37 @@ fn run(
         command,
         files: vec![extra, inventory],
     })
+}
+
+/// After a successful apply of a workstation that berth reaches as its
+/// operator: the role gave the operator sudo without a password, SSH with
+/// keys only and berth's keys, so the saved profile says so now. A password
+/// kept for the first apply is not needed again and is removed. A host of
+/// a berth server is settled by the server, which applies it.
+pub fn settle(paths: &Paths, host: &Host) -> Result<()> {
+    if host.served(paths).is_some() {
+        return Ok(());
+    }
+    let Some(mut profile) = host.place.load(paths)? else {
+        return Ok(());
+    };
+    let before = berth_api::profile::Access::of(&profile);
+    if !berth_api::profile::settle_after_apply(&mut profile) {
+        return Ok(());
+    }
+    host.place.save(paths, &profile)?;
+    let store = crate::store::shared(paths)?;
+    let secrets = crate::registry::Store::own(store.clone());
+    secrets.set_secret(&crate::keys::sudo_secret(&host.place), None)?;
+    if before.auth == berth_api::profile::Auth::Password {
+        secrets.set_secret(&crate::keys::password_secret(&host.place), None)?;
+    }
+    // The role checked that the operator takes the key: a refusal of it
+    // remembered from before the apply no longer holds.
+    if let Ok(login) = crate::keys::login(paths, &store, &host.place, &profile) {
+        login.noted(None);
+    }
+    Ok(())
 }
 
 /// How long a controller just installed has to answer.
@@ -338,10 +374,16 @@ mod tests {
             &json!({"demo": "/p/demo"}),
             &["ssh-ed25519 OWN".to_owned(), "ssh-ed25519 NEXT".to_owned()],
         );
+        assert_eq!(vars["devbox_operator_ssh_public_key"], "ssh-ed25519 ME");
         assert_eq!(
-            vars["devbox_operator_ssh_public_key"],
-            "ssh-ed25519 ME\nssh-ed25519 OWN\nssh-ed25519 NEXT"
+            vars["devbox_berth_ssh_public_key"],
+            "ssh-ed25519 OWN\nssh-ed25519 NEXT"
         );
+        // A profile from before the settings went away cannot turn either off.
+        let old = json!({"berth_ssh_key": false, "operator_passwordless_sudo": false});
+        let vars_old = ansible_vars(&old, &json!({}), &["ssh-ed25519 OWN".to_owned()]);
+        assert_eq!(vars_old["devbox_berth_ssh_public_key"], "ssh-ed25519 OWN");
+        assert!(vars_old.get("devbox_operator_passwordless_sudo").is_none());
         assert_eq!(vars["devbox_agent_ssh_public_key"], "");
         assert_eq!(vars["devbox_user"], "bot");
         assert_eq!(vars["devbox_agent_privileges"], "limited");
@@ -378,6 +420,7 @@ mod tests {
             data_dir: home.path().join("data"),
         };
         paths.prepare().unwrap();
+        paths.give_own_key();
         paths.set("source", source.to_str().unwrap()).unwrap();
         let host = Host {
             name: "box".into(),
@@ -419,6 +462,68 @@ mod tests {
                 .command
                 .get_args()
                 .any(|arg| arg == "--ask-become-pass")
+        );
+        // The key of this berth goes to the operator, apart from the profile's,
+        // and the host keeps its profile without how this berth reaches it.
+        assert_eq!(
+            extra["devbox_berth_ssh_public_key"],
+            paths.own_public_key().unwrap()
+        );
+        assert_eq!(extra["devbox_berth_profile"]["host"], "box");
+        assert_eq!(extra["devbox_berth_profile"]["profile"]["profile"], "cloud");
+        assert!(
+            extra["devbox_berth_profile"]["profile"]
+                .get("access")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn an_apply_as_the_operator_settles_the_profile_and_forgets_the_passwords() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: home.path().join("config"),
+            data_dir: home.path().join("data"),
+        };
+        paths.prepare().unwrap();
+        paths.give_own_key();
+        let place = Place::own("studio").unwrap();
+        let host = |config: Value| {
+            place.save(&paths, &config).unwrap();
+            Host {
+                name: "studio".into(),
+                place: place.clone(),
+                config,
+            }
+        };
+        let saved = || place.load(&paths).unwrap().unwrap();
+        let secrets = crate::registry::Store::own(crate::store::shared(&paths).unwrap());
+        secrets.set_secret("sudo/studio", Some("hunter2")).unwrap();
+        secrets.set_secret("ssh/studio", Some("hunter2")).unwrap();
+        let first = json!({"operator_username": "ops", "builder": {},
+            "access": {"address": "192.0.2.10", "user": "ops", "auth": "password", "sudo": "password"}});
+        settle(&paths, &host(first)).unwrap();
+        let access = berth_api::profile::Access::of(&saved());
+        assert_eq!(access.auth, berth_api::profile::Auth::Berth);
+        assert_eq!(access.sudo, Some(false));
+        assert_eq!(access.address, "192.0.2.10");
+        assert_eq!(secrets.secret("sudo/studio").unwrap(), None);
+        assert_eq!(secrets.secret("ssh/studio").unwrap(), None);
+        // A key of the ring the role installed stays how berth logs in.
+        let keyed = json!({"builder": {}, "access": {"address": "192.0.2.10", "user": "ops", "auth": "key:admin"}});
+        settle(&paths, &host(keyed)).unwrap();
+        assert_eq!(
+            berth_api::profile::Access::of(&saved()).auth,
+            berth_api::profile::Auth::Key("admin".into())
+        );
+        // An account of the machine's own keeps a sudo that asks, and its password.
+        secrets.set_secret("sudo/studio", Some("hunter2")).unwrap();
+        let own = json!({"builder": {}, "access": {"address": "192.0.2.10", "user": "admin", "auth": "password", "sudo": "password"}});
+        settle(&paths, &host(own.clone())).unwrap();
+        assert_eq!(saved(), own);
+        assert_eq!(
+            secrets.secret("sudo/studio").unwrap().as_deref(),
+            Some("hunter2")
         );
     }
 }

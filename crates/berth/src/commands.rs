@@ -799,6 +799,17 @@ fn offer_found_level(paths: &Paths, name: &str, intended: level::Level) -> Resul
         return Ok(());
     };
     println!("! {said}");
+    // A workstation keeps its profile, which says more than a level would.
+    if found == level::Level::Workstation {
+        if std::io::stdin().is_terminal()
+            && !ask(&format!("Adopt {name} from the profile it keeps? [Y/n]"))?
+                .eq_ignore_ascii_case("n")
+        {
+            return adopt(paths, name, &[]);
+        }
+        println!("Adopt it with: berth adopt {name}");
+        return Ok(());
+    }
     if std::io::stdin().is_terminal()
         && !ask(&format!("Save {name} as a {found} host? [Y/n]"))?.eq_ignore_ascii_case("n")
     {
@@ -1032,6 +1043,9 @@ pub fn apply(paths: &Paths, name: &str) -> Result<()> {
         }));
         let request = runner::Request::new(runner::Subject::Host(name.to_owned()), "apply");
         let code = runner::here(paths, request, work, &mut std::io::stdout())?;
+        if code == Some(0) {
+            berth_core::apply::settle(paths, &host)?;
+        }
         std::process::exit(code.unwrap_or(1));
     };
     // The server has no terminal to ask on: a password it needs is asked for here.
@@ -1407,6 +1421,199 @@ fn write_credentials(paths: &Paths, name: &str, shown: bool, out: &mut dyn Write
     Ok(())
 }
 
+// ── Adopting a host ─────────────────────────────────────────────────────────
+
+/// What `berth adopt` is given after the name: `[USER@]ADDRESS`, and
+/// `--port PORT`, `--key FILE` and `--force` in any order. Without an
+/// address the host is a saved one, reached as its profile says.
+#[derive(Debug, Default, PartialEq)]
+pub struct Adopt {
+    pub address: String,
+    pub port: String,
+    pub key: Option<String>,
+    pub force: bool,
+}
+
+pub fn parse_adopt(args: &[&str]) -> Result<Adopt> {
+    let mut adopt = Adopt::default();
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        match *word {
+            "--force" => adopt.force = true,
+            "--port" | "-p" => adopt.port = words.next().ok_or("--port needs a port")?.to_string(),
+            "--key" | "-i" => {
+                adopt.key = Some(words.next().ok_or("--key needs a file")?.to_string())
+            }
+            word if word.starts_with('-') => {
+                return Err(format!("berth adopt has no option {word}").into());
+            }
+            word if adopt.address.is_empty() => adopt.address = word.to_owned(),
+            word => return Err(format!("berth adopt takes one address, not also {word}").into()),
+        }
+    }
+    if adopt.address.is_empty() && !adopt.port.is_empty() {
+        return Err(
+            "Usage: berth adopt NAME [[USER@]ADDRESS] [--port PORT] [--key FILE] [--force]".into(),
+        );
+    }
+    Ok(adopt)
+}
+
+/// `berth adopt NAME [[USER@]ADDRESS]`: take a host over from the profile it
+/// keeps, read over SSH with sudo so that it works while berthd is down.
+/// Without an address it is the saved host NAME, as when berth host add
+/// found that a host saved below a workstation is one.
+pub fn adopt(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
+    use berth_core::kept_profile as kept;
+    let asked = parse_adopt(args)?;
+    if !berth_core::profiles::valid_name(name) {
+        return Err(
+            format!("{name} cannot be a host's name: letters, digits, -, _ and . only").into(),
+        );
+    }
+    let server = berth_core::server::Server::configured(paths);
+    let place = Place::resolve(paths, name)?;
+    // Refused before anything is read, so the host is not asked for nothing.
+    let saved = place.load(paths)?;
+    let reach = match (&saved, asked.address.as_str()) {
+        (None, "") => {
+            return Err(format!(
+                "There is no host {name} to adopt by its own address. Say where it is: berth adopt {name} [USER@]ADDRESS"
+            )
+            .into());
+        }
+        // A host saved below a workstation says less than the host keeps;
+        // adopting it by its own address is what replacing it means.
+        (Some(profile), "") => {
+            if level::of(profile) == level::Level::Workstation && !asked.force {
+                return Err(format!(
+                    "{name} is saved as a workstation already. Replace its profile with the one it keeps with --force"
+                )
+                .into());
+            }
+            let access = api::profile::Access::of(profile);
+            if access.link.is_some() || access.address.is_empty() {
+                return Err(format!(
+                    "{name} has no SSH address to read its profile at: berth adopt {name} [USER@]ADDRESS"
+                )
+                .into());
+            }
+            let given = kept::Reach::parse(&access.address, &access.port, asked.key.as_deref())?;
+            kept::Reach {
+                key: given.key,
+                ..kept::Reach::of(&access)
+            }
+        }
+        (Some(_), _) if !asked.force => {
+            return Err(format!(
+                "There is a host {name} already. Choose another name, or replace it with --force"
+            )
+            .into());
+        }
+        (_, address) => kept::Reach::parse(address, &asked.port, asked.key.as_deref())?,
+    };
+    let target = reach.target();
+    let password = || -> berth_core::Result<String> {
+        if let Ok(password) = std::env::var("BERTH_SUDO_PASSWORD") {
+            return Ok(password);
+        }
+        if !std::io::stdin().is_terminal() {
+            return Err(format!(
+                "sudo asks for a password on {target}: run on a terminal, or set BERTH_SUDO_PASSWORD"
+            )
+            .into());
+        }
+        registry::read_secret(&format!("Your sudo password on {target}"))
+    };
+    // The login is this machine's, also for a host the berth server keeps.
+    let read = kept::read(paths, &place, &reach, &password)?;
+    let access = api::profile::Access {
+        address: reach.address.clone(),
+        user: reach.user.clone(),
+        port: reach.port.clone(),
+        auth: read.auth.clone(),
+        // The operator's sudo takes none; another account's may.
+        sudo: read.sudo_asked.then_some(true),
+        ..api::profile::Access::default()
+    };
+    let adopted = kept::adopted(paths, &place.title(), &read.kept, &access)?;
+    let mut left = vec![];
+    match &server {
+        Some(server) => {
+            server.save_host(name, &adopted.profile)?;
+            server.mirror(paths)?;
+            if let Some(record) = &adopted.machine {
+                left.push(format!(
+                    "the record of its machine, {} of {}: the berth server takes no record, so berth resource does not know the machine",
+                    record.external_id, record.provisioner
+                ));
+            }
+        }
+        None => kept::save(paths, &place, &adopted)?,
+    }
+    let written = match (adopted.berth.as_str(), adopted.written.as_str()) {
+        ("", _) => String::new(),
+        (berth, "") => format!(" by berth {berth}"),
+        (berth, when) => format!(" by berth {berth} at {when}"),
+    };
+    let was = match adopted.host.as_str() {
+        "" => String::new(),
+        old if old == name => String::new(),
+        old => format!(", where it was {old}"),
+    };
+    println!("Adopted {name} from {target}: its profile was written{written}{was}.");
+    let store = registry::Store::new(paths)?;
+    let known = store.secret_names();
+    for secret in adopted.secrets() {
+        if !known.contains(&secret) {
+            left.push(format!(
+                "the value of secret {secret}: berth secret set {secret}"
+            ));
+        }
+    }
+    let registries = store.registries().unwrap_or_default();
+    for registry in adopted.registries() {
+        if !registries.contains_key(&registry) {
+            left.push(format!(
+                "registry {registry}, with its login: berth registry add {registry} …"
+            ));
+        }
+    }
+    if berth_api::profile::joins_automatically(&adopted.profile)
+        && !known
+            .iter()
+            .any(|known| known == berth_api::profile::TAILNET_API_KEY)
+    {
+        left.push(format!(
+            "secret {}, which a host that has left the tailnet needs to join again",
+            berth_api::profile::TAILNET_API_KEY
+        ));
+    }
+    if !left.is_empty() {
+        println!("What did not come with it, and this berth has not got:");
+        for line in &left {
+            println!("  {line}");
+        }
+    }
+    let way = match read.auth {
+        api::profile::Auth::Berth => "with this berth's key".to_owned(),
+        _ => "with your SSH configuration and agent, until an apply has given the operator this berth's key".to_owned(),
+    };
+    println!("berth logs in to it {way}.");
+    println!(
+        "Next: berth apply {name}. It gives this berth's own key a block of its own in the operator's authorized_keys."
+    );
+    println!(
+        "The berth that set the host up still has access: its key keeps its BERTH block until you delete that block by hand."
+    );
+    if asked.key.is_some() && read.auth != api::profile::Auth::Berth {
+        println!(
+            "The key given with --key is not saved. If only it lets you in, give the host this berth's key with it first: berth key trust {name} --key FILE"
+        );
+    }
+    Ok(())
+}
+
 // ── Provisioners ────────────────────────────────────────────────────────────
 
 /// Provisioners run where the hosts are kept: with a berth server that is
@@ -1445,69 +1652,6 @@ pub fn provisioners(paths: &Paths) -> Result<()> {
             println!("  · {note}");
         }
     }
-    Ok(())
-}
-
-/// `berth login`: get an access token for the berth server from its issuer.
-/// A person approves in a browser on any device; a client with a secret
-/// needs nobody.
-pub fn login(paths: &Paths) -> Result<()> {
-    use berth_core::{oauth, server::Server};
-    let server =
-        Server::configured(paths).ok_or("Set the berth server first: berth config server URL")?;
-    if server.token.is_some() {
-        eprintln!(
-            "server_token is set and is used before a login. Clear it: berth config server_token"
-        );
-    }
-    let role = link::runtime()?.block_on(async {
-        let client = oauth::Client::configured(paths, &server.url)
-            .await?
-            .ok_or("Say which client berth is at the issuer: berth config oauth_client_id ID")?;
-        let tokens = match client.secret {
-            Some(_) => client.credentials().await?,
-            None => {
-                client
-                    .device(|asked| {
-                        let text = |name: &str| asked[name].as_str().unwrap_or("").to_owned();
-                        match text("verification_uri_complete").as_str() {
-                            "" => println!(
-                                "Open {} and enter {}",
-                                text("verification_uri"),
-                                text("user_code")
-                            ),
-                            link => println!(
-                                "Open {link}\nThe code there should be {}",
-                                text("user_code")
-                            ),
-                        }
-                        println!("Waiting for you to approve…");
-                    })
-                    .await?
-            }
-        };
-        oauth::save(paths, &server.url, Some(&tokens))?;
-        let own = Server {
-            url: server.url.clone(),
-            token: None,
-            paths: Some(paths.clone()),
-        };
-        let access = own
-            .portal()
-            .await?
-            .call("access", None, Value::Null, None)
-            .await?;
-        Ok::<String, Box<dyn std::error::Error>>(access["role"].as_str().unwrap_or("?").to_owned())
-    })?;
-    println!("Logged in to {} with the role {role}", server.url);
-    Ok(())
-}
-
-/// `berth logout`: forget the login at the berth server.
-pub fn logout(paths: &Paths) -> Result<()> {
-    let server = berth_core::server::Server::configured(paths).ok_or("No berth server is set")?;
-    berth_core::oauth::save(paths, &server.url, None)?;
-    println!("Forgot the login at {}", server.url);
     Ok(())
 }
 
@@ -1551,7 +1695,6 @@ pub fn connect_with(paths: &Paths, url: &str, key: &str) -> Result<()> {
         Server {
             url: url.clone(),
             token: Some(claimed.token.clone()),
-            paths: None,
         }
         .portal()
         .await?
@@ -1589,6 +1732,28 @@ fn answer_error(status: u16, body: &[u8]) -> Box<dyn std::error::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adopt_takes_an_address_and_its_options_in_any_order() {
+        let adopt = parse_adopt(&["--force", "ops@192.0.2.10", "--port", "2222"]).unwrap();
+        assert_eq!(
+            adopt,
+            Adopt {
+                address: "ops@192.0.2.10".into(),
+                port: "2222".into(),
+                key: None,
+                force: true
+            }
+        );
+        let keyed = parse_adopt(&["192.0.2.10", "--key", "~/.ssh/old"]).unwrap();
+        assert_eq!(keyed.key.as_deref(), Some("~/.ssh/old"));
+        // Without an address it is a saved host, reached as its profile says.
+        assert_eq!(parse_adopt(&[]).unwrap(), Adopt::default());
+        assert!(parse_adopt(&["--port", "2222"]).is_err());
+        assert!(parse_adopt(&["192.0.2.10", "192.0.2.11"]).is_err());
+        assert!(parse_adopt(&["192.0.2.10", "--port"]).is_err());
+        assert!(parse_adopt(&["192.0.2.10", "--user"]).is_err());
+    }
 
     #[test]
     fn exec_takes_its_flags_before_the_command() {

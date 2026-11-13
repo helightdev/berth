@@ -52,8 +52,6 @@ Usage:
                              that need it unless sessions run (--force: even then)
   berth connect URL          use the berth server at URL: give it the setup key made
                              there with berth setup-key, on standard input
-  berth login                log in to a berth server that takes access tokens of an
-                             OAuth 2.0 issuer; berth logout forgets the login
   berth remove HOST          forget a host; the machine is left as it is
   berth profile HOST         the host's profile, as JSON on standard output
   berth profile HOST --set FILE
@@ -62,6 +60,10 @@ Usage:
   berth credentials HOST [--show]
                              the passwords berth generated for the host's accounts;
                              only to a terminal, unless --show
+  berth adopt HOST [[USER@]ADDRESS] [--port PORT] [--key FILE] [--force]
+                             save a host from the profile it keeps, read over SSH
+                             with sudo; without an address, a saved host by its own;
+                             --force replaces a host of that name
   berth provisioners         what can create machines, and what each asks for
   berth provisioner          the provisioners, and whether each can be used here
   berth provisioner PLUGIN/ID [NAME=VALUE…]
@@ -558,8 +560,6 @@ fn run() -> Result<()> {
         "asyncapi",
         "operations",
         "update",
-        "login",
-        "logout",
         "key",
         "askpass",
         "tailnet-key",
@@ -735,12 +735,11 @@ fn run() -> Result<()> {
         }
         ["iso", host] => return build_installer(&paths, host, None),
         ["iso", host, "--write", device] => return build_installer(&paths, host, Some(device)),
-        ["login"] => return commands::login(&paths),
-        ["logout"] => return commands::logout(&paths),
         ["key", ref rest @ ..] => return key_command::command(&paths, rest),
         ["apply", "--behind" | "--all", ..] => return commands::apply_hosts(&paths, &args[1..]),
         ["apply", host] => return commands::apply(&paths, host),
         ["remove", host] => return commands::remove(&paths, host),
+        ["adopt", host, ref rest @ ..] => return commands::adopt(&paths, host, rest),
         ["provisioners"] => return commands::provisioners(&paths),
         ["provisioner", ref rest @ ..] => return provisioner_command::command(&paths, rest),
         ["provision", host, provisioner, ref rest @ ..] => {
@@ -1042,8 +1041,14 @@ mod tests {
         let config = parse_config(br#"{}"#).unwrap();
         assert_eq!(config["target_disk_mode"], "auto");
         assert_eq!(config["wifi_enabled"], false);
-        assert_eq!(config["operator_passwordless_sudo"], true);
+        assert!(config.get("operator_passwordless_sudo").is_none());
         assert!(config["access"]["sudo"].is_null());
+        // The switches of a profile from before are dropped, whatever they said.
+        let old = parse_config(br#"{"operator_passwordless_sudo": false, "berth_ssh_key": false}"#)
+            .unwrap();
+        assert!(
+            old.get("operator_passwordless_sudo").is_none() && old.get("berth_ssh_key").is_none()
+        );
         let legacy = parse_config(
             br#"{"target_disk_serial":"OLD_SSD","wifi":{"ssid":"saved"},
                 "release_url":"https://REPLACE.example/x"}"#,
@@ -1064,7 +1069,7 @@ mod tests {
     }
 
     #[test]
-    fn asking_for_the_sudo_password_follows_the_operator_until_chosen() {
+    fn asking_for_the_sudo_password_is_off_until_chosen() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("studio.json");
         let profile = r#"{"access":{"address":"192.0.2.10","user":"ops"}}"#;
@@ -1077,7 +1082,7 @@ mod tests {
             berth_core::profiles::Place::File(path.clone()),
             parse_config(profile.as_bytes()).unwrap(),
         );
-        // An edit elsewhere leaves the choice to the operator's sudo.
+        // An edit elsewhere leaves it unset.
         app.commit(Field::Hostname, "studio");
         app.save().unwrap();
         let host = |path: &std::path::Path| berth_core::host::Host {
@@ -1087,8 +1092,9 @@ mod tests {
         };
         assert!(!app.enabled(Field::AskBecomePass));
         assert!(!host(&path).asks_password());
-        // An operator that types its password for sudo is asked for it.
-        app.activate(Field::OperatorSudo);
+        assert!(app.config["builder"]["ask_become_pass"].is_null());
+        // A first apply as an account whose sudo asks for a password.
+        app.activate(Field::AskBecomePass);
         app.save().unwrap();
         assert!(app.enabled(Field::AskBecomePass) && host(&path).asks_password());
         // Once chosen, the choice stays.
@@ -1134,16 +1140,12 @@ mod tests {
         assert!(problems.contains("Hostname"));
         assert!(problems.contains("Operator needs an SSH key"));
         assert!(problems.contains("Operator password is required"));
-        // The key of this berth is one, unless the profile turns it down.
+        // The key of this berth is one, which an older profile cannot turn down.
         app.own_public = "ssh-ed25519 AAAA berth@here".into();
         assert!(!app.problems().join("\n").contains("SSH key"));
         app.config["berth_ssh_key"] = json!(false);
-        assert!(
-            app.problems()
-                .join("\n")
-                .contains("Operator needs an SSH key")
-        );
-        app.config["berth_ssh_key"] = json!(true);
+        assert!(!app.problems().join("\n").contains("SSH key"));
+        app.config.as_object_mut().unwrap().remove("berth_ssh_key");
         app.own_public.clear();
 
         app.config["hostname"] = json!("devbox-1");
@@ -1164,6 +1166,14 @@ mod tests {
         app.commit(Field::AgentUser, "operator");
         assert_eq!(app.problems().len(), 1);
         app.commit(Field::AgentUser, "agent");
+
+        // Only the USB installer insists on an operator password.
+        let hash = app.config["operator_password_hash"].take();
+        assert_eq!(app.problems(), ["Operator password is required (F4 or F5)"]);
+        app.action = Action::CloudSeed;
+        assert!(!app.problems().join("\n").contains("password"));
+        app.action = Action::UsbSeed;
+        app.config["operator_password_hash"] = hash;
 
         // A cloud seed needs somewhere to get the release from, but no SSH network.
         app.action = Action::CloudSeed;

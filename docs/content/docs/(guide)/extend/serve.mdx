@@ -159,7 +159,17 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" https://berth.example.ts.net/v1/ac
 
 An access token is used like the server's token. It works as a bearer and as the WebSocket protocol. berth takes it as `--token` or `server_token`, and the page for a browser takes it too.
 
-The server says which issuer it trusts at `/.well-known/oauth-protected-resource`, without a token. berth uses that to [log in](/docs/use/server#with-a-login-in-place-of-the-token) with the device grant or with client credentials.
+The server says which issuer it trusts at `/.well-known/oauth-protected-resource`, without a token.
+
+berth has no login of its own. Get an access token from the issuer by your own means, and give it to berth as `BERTH_TOKEN`. A wrapper script does that, and the token stays out of argv:
+
+```bash
+BERTH_TOKEN=$(curl -s -d grant_type=client_credentials -d client_id=berth-ci \
+  --data-urlencode client_secret@/etc/berth-ci.secret \
+  https://id.example.com/token | jq -r .access_token)
+export BERTH_TOKEN
+exec berth "$@"
+```
 
 Each of these settings can also come from the environment, as `BERTH_` and the name in capitals. That suits a container, or berth running inside another program:
 

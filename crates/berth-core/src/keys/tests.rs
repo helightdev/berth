@@ -187,7 +187,11 @@ fn a_pending_key_is_offered_beside_the_current_one() {
     ring::begin_rotation(&paths, &store, BERTH_KEY).unwrap();
     let login = login_for(&paths, &store, json!({"address": "192.0.2.10"}));
     assert_eq!(option(&login.options(), "IdentityFile").len(), 2);
-    assert_eq!(operator_keys(&paths).len(), 2);
+    assert_eq!(operator_keys(&paths, &json!({})).unwrap().len(), 2);
+    // The key a profile logs in with comes too, with the key `berth`.
+    ring::add(&paths, &store, "admin", None).unwrap();
+    let admin = json!({"access": {"auth": "key:admin"}});
+    assert_eq!(operator_keys(&paths, &admin).unwrap().len(), 3);
 }
 
 #[test]

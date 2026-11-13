@@ -1059,7 +1059,6 @@ mod tests {
         let server = Server {
             url: "unix:/nonexistent/serve.sock".into(),
             token: None,
-            paths: None,
         };
         let served = Store::of(opened.clone(), Some(server.clone()));
         assert!(served.set_secret("deploy", Some("value")).is_err());

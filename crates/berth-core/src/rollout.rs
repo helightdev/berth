@@ -362,7 +362,7 @@ impl Target for Live<'_> {
         let status = child.wait().map_err(|error| error.to_string())?;
         drop(prepared.files);
         match status.success() {
-            true => Ok(()),
+            true => apply::settle(self.paths, &self.host).map_err(|error| error.to_string()),
             false => Err(format!(
                 "applying failed (ansible-playbook ended with {})",
                 status.code().unwrap_or(-1)

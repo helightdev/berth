@@ -126,7 +126,7 @@ pub fn level_mismatch(
     let observed = observed.filter(|observed| *observed > intended)?;
     Some(match observed {
         HostLevel::Workstation => format!(
-            "{name} is a workstation; its profile here says {intended}. To adopt it, save its profile as a workstation and apply it: berth host level {name} workstation, then berth apply {name}"
+            "{name} is a workstation; its profile here says {intended}. To adopt it from the profile it keeps: berth adopt {name}"
         ),
         _ => format!(
             "{name} has berth's controller; its profile here says {intended}. To adopt it: berth host level {name} controller"
@@ -1013,7 +1013,7 @@ pub struct ProvisionerInfo {
     /// `apply`: berth applies the profile over SSH once the machine answers.
     pub setup: String,
     /// What it can do besides `create`, `status` and `destroy`: `start`,
-    /// `stop`, `list`.
+    /// `stop`, `list`, `log`.
     #[serde(default)]
     pub verbs: Vec<String>,
     /// The berth secrets it is given.
@@ -1257,6 +1257,33 @@ pub struct Applied {
     pub berth: String,
     #[serde(default)]
     pub plugins: Vec<AppliedPlugin>,
+}
+
+/// The profile a host keeps of itself, at `/etc/berth/profile.json`: the
+/// profile as berth holds it, without the enrollment key and without its
+/// `access`, how the berth that wrote it reaches the host. A berth that does
+/// not have the host can take it over from this.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct KeptProfile {
+    /// The format of this document: 2, or 1 for one berth 0.4.1 wrote, whose
+    /// profile has the layout before `access`.
+    pub format: u64,
+    /// The version of the berth that wrote it.
+    pub berth: String,
+    /// When it was written, in RFC 3339.
+    #[serde(default)]
+    pub written: String,
+    /// The name the host has in the berth that wrote it.
+    pub host: String,
+    /// The profile.
+    pub profile: Value,
+    /// The record of the machine berth created for the host, as a resource,
+    /// when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<Value>,
+    /// The same in a document of format 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<Value>,
 }
 
 /// Something that changed since a host was applied: berth itself or a plugin.

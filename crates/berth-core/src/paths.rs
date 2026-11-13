@@ -100,18 +100,6 @@ pub const SETTINGS: &[(&str, &str)] = &[
         "the aud an access token needs for berth serve to take it",
     ),
     (
-        "oauth_client_id",
-        "the client berth is at the issuer, for getting access tokens of its own: berth login, or with oauth_client_secret",
-    ),
-    (
-        "oauth_client_secret",
-        "the client's secret: with it berth gets access tokens by itself, as a service does",
-    ),
-    (
-        "oauth_scope",
-        "the scope berth asks the issuer for, such as: openid offline_access berth:operate",
-    ),
-    (
         "oauth_claim",
         "the claim with the roles berth:view, berth:operate and berth:admin (default: scope; dots go into objects, as in realm_access.roles)",
     ),
@@ -145,7 +133,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
 /// whole. `serve_token` is a switch that holds `off`, not a secret.
 pub fn is_secret(key: &str) -> bool {
     // A PostgreSQL URL in `store` can hold a password.
-    matches!(key, "server_token" | "oauth_client_secret" | "store")
+    matches!(key, "server_token" | "store")
 }
 
 /// Whether a setting is kept in `config.json` rather than in the store: it
@@ -154,16 +142,7 @@ pub fn is_secret(key: &str) -> bool {
 pub fn is_local(key: &str) -> bool {
     matches!(
         key,
-        "store"
-            | "store_key"
-            | "store_ca"
-            | "server"
-            | "server_token"
-            | "source"
-            | "iso_dir"
-            | "oauth_client_id"
-            | "oauth_client_secret"
-            | "oauth_scope"
+        "store" | "store_key" | "store_ca" | "server" | "server_token" | "source" | "iso_dir"
     )
 }
 
@@ -265,6 +244,15 @@ impl Paths {
         let store = crate::store::shared(self)?;
         crate::keys::ring::file(self, &store, berth_api::profile::BERTH_KEY, false)?
             .ok_or_else(|| "berth's own key is missing".into())
+    }
+
+    /// Give a test's berth an own key of its own, so that nothing runs
+    /// ssh-keygen, which needs an account in the password database.
+    #[cfg(test)]
+    pub fn give_own_key(&self) {
+        self.prepare().unwrap();
+        let store = crate::store::shared(self).unwrap();
+        crate::keys::ring::give_test_key(&store, berth_api::profile::BERTH_KEY);
     }
 
     /// The public half of this berth's own SSH key.
@@ -494,6 +482,25 @@ fn older_source(dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_of_earlier_versions_are_left_alone() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: home.path().join("config"),
+            data_dir: home.path().join("data"),
+        };
+        paths.prepare().unwrap();
+        fs::write(
+            paths.settings_file(),
+            r#"{"oauth_client_id":"berth-cli","oauth_scope":"openid","server":"http://192.0.2.1:7777"}"#,
+        )
+        .unwrap();
+        fs::write(paths.data_dir.join("oauth.json"), "{}").unwrap();
+        assert_eq!(paths.settings().unwrap()["server"], "http://192.0.2.1:7777");
+        paths.set("default_host", "studio").unwrap();
+        assert_eq!(paths.settings().unwrap()["oauth_client_id"], "berth-cli");
+    }
 
     #[test]
     fn hosts_are_listed_from_the_store_and_settings_checked() {

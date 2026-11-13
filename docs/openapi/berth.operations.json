@@ -77,11 +77,11 @@
           "job": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/JobInfo",
                 "description": "The job that runs it, for an action of berth that changes something."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -91,11 +91,11 @@
           "session": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Session",
                 "description": "The session on the host, for an action the host runs."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -574,11 +574,11 @@
           "behind": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Behind",
                 "description": "What changed since then, when the server would apply something else now."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -606,11 +606,11 @@
           "seen": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/HostLevel",
                 "description": "The level it was seen to have: what its controller's record says,\n`reachable` when berth logged in and found no controller. Absent\nwhen it could not be asked."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -720,11 +720,11 @@
           "report": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/RolloutReport",
                 "description": "How a roll-out went, host by host, once it has ended."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -770,11 +770,11 @@
           "pending": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/KeyInfo",
                 "description": "The key replacing it while a rotation runs."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -1393,7 +1393,7 @@
             "type": "string"
           },
           "verbs": {
-            "description": "What it can do besides `create`, `status` and `destroy`: `start`,\n`stop`, `list`.",
+            "description": "What it can do besides `create`, `status` and `destroy`: `start`,\n`stop`, `list`, `log`.",
             "items": {
               "type": "string"
             },
@@ -1991,22 +1991,22 @@
           "applied": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Applied",
                 "description": "What the host's configuration was last applied from, when berth\nrecorded it. An older berthd does not say."
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "level": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/HostLevel",
                 "description": "What was installed on the host, by that record: `controller` when\nonly the controller was, `workstation` for a whole profile. Absent\nwhen the host keeps no record."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -2380,10 +2380,10 @@
         "schema": {
           "oneOf": [
             {
-              "type": "null"
+              "$ref": "#/components/schemas/Act"
             },
             {
-              "$ref": "#/components/schemas/Act"
+              "type": "null"
             }
           ]
         }
@@ -2465,10 +2465,10 @@
         "schema": {
           "oneOf": [
             {
-              "type": "null"
+              "$ref": "#/components/schemas/Act"
             },
             {
-              "$ref": "#/components/schemas/Act"
+              "type": "null"
             }
           ]
         }
@@ -3029,10 +3029,10 @@
         "schema": {
           "oneOf": [
             {
-              "type": "null"
+              "$ref": "#/components/schemas/PluginUpdateSpec"
             },
             {
-              "$ref": "#/components/schemas/PluginUpdateSpec"
+              "type": "null"
             }
           ]
         }
@@ -3242,10 +3242,10 @@
         "schema": {
           "oneOf": [
             {
-              "type": "null"
+              "$ref": "#/components/schemas/Act"
             },
             {
-              "$ref": "#/components/schemas/Act"
+              "type": "null"
             }
           ]
         }
@@ -3541,10 +3541,10 @@
         "schema": {
           "oneOf": [
             {
-              "type": "null"
+              "$ref": "#/components/schemas/Act"
             },
             {
-              "$ref": "#/components/schemas/Act"
+              "type": "null"
             }
           ]
         }
@@ -4328,5 +4328,5 @@
     "path": "/v1/portal"
   },
   "title": "berth serve",
-  "version": "0.4.0"
+  "version": "0.4.1"
 }

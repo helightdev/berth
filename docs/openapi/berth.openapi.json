@@ -77,11 +77,11 @@
           "job": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/JobInfo",
                 "description": "The job that runs it, for an action of berth that changes something."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -91,11 +91,11 @@
           "session": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Session",
                 "description": "The session on the host, for an action the host runs."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -763,11 +763,11 @@
           "behind": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Behind",
                 "description": "What changed since then, when the server would apply something else now."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -795,11 +795,11 @@
           "seen": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/HostLevel",
                 "description": "The level it was seen to have: what its controller's record says,\n`reachable` when berth logged in and found no controller. Absent\nwhen it could not be asked."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -953,11 +953,11 @@
           "report": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/RolloutReport",
                 "description": "How a roll-out went, host by host, once it has ended."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -983,6 +983,45 @@
         ],
         "type": "string"
       },
+      "KeptProfile": {
+        "description": "The profile a host keeps of itself, at `/etc/berth/profile.json`: the\nprofile as berth holds it, without the enrollment key and without its\n`access`, how the berth that wrote it reaches the host. A berth that does\nnot have the host can take it over from this.",
+        "properties": {
+          "berth": {
+            "description": "The version of the berth that wrote it.",
+            "type": "string"
+          },
+          "format": {
+            "description": "The format of this document: 2, or 1 for one berth 0.4.1 wrote, whose\nprofile has the layout before `access`.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "host": {
+            "description": "The name the host has in the berth that wrote it.",
+            "type": "string"
+          },
+          "instance": {
+            "description": "The same in a document of format 1."
+          },
+          "machine": {
+            "description": "The record of the machine berth created for the host, as a resource,\nwhen it did."
+          },
+          "profile": {
+            "description": "The profile."
+          },
+          "written": {
+            "description": "When it was written, in RFC 3339.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "format",
+          "berth",
+          "host",
+          "profile"
+        ],
+        "type": "object"
+      },
       "KeyInfo": {
         "description": "A key of the ring, by its public half.",
         "properties": {
@@ -1003,11 +1042,11 @@
           "pending": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/KeyInfo",
                 "description": "The key replacing it while a rotation runs."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -1776,7 +1815,7 @@
             "type": "string"
           },
           "verbs": {
-            "description": "What it can do besides `create`, `status` and `destroy`: `start`,\n`stop`, `list`.",
+            "description": "What it can do besides `create`, `status` and `destroy`: `start`,\n`stop`, `list`, `log`.",
             "items": {
               "type": "string"
             },
@@ -1886,10 +1925,10 @@
           "keep": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Keep"
               },
               {
-                "$ref": "#/components/schemas/Keep"
+                "type": "null"
               }
             ]
           }
@@ -1903,10 +1942,10 @@
           "keep": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Keep"
               },
               {
-                "$ref": "#/components/schemas/Keep"
+                "type": "null"
               }
             ]
           },
@@ -1941,10 +1980,10 @@
           "error": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ErrorDetail"
               },
               {
-                "$ref": "#/components/schemas/ErrorDetail"
+                "type": "null"
               }
             ]
           },
@@ -2885,10 +2924,10 @@
           "keep": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Keep"
               },
               {
-                "$ref": "#/components/schemas/Keep"
+                "type": "null"
               }
             ]
           },
@@ -2961,22 +3000,22 @@
           "applied": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Applied",
                 "description": "What the host's configuration was last applied from, when berth\nrecorded it. An older berthd does not say."
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "level": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/HostLevel",
                 "description": "What was installed on the host, by that record: `controller` when\nonly the controller was, `workstation` for a whole profile. Absent\nwhen the host keeps no record."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -2999,7 +3038,7 @@
   "info": {
     "description": "One API over all hosts, with the inbox and a key-value store. Everything under /v1/hosts/{name}/ that is not named here is that host's own API, passed through unchanged; only the `secrets` task is refused, which the host's `secrets` action stands in for. What can be done to a host or to the installation is listed at /v1/hosts/{name}/actions and /v1/actions, and run by POST to an action's name there. Over TCP every request carries the server's token or an OAuth 2.0 access token as a bearer, and needs the role its operation names. The routes of the setup key take that key as the bearer instead.",
     "title": "berth serve",
-    "version": "0.4.0"
+    "version": "0.4.1"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -3068,10 +3107,10 @@
               "schema": {
                 "oneOf": [
                   {
-                    "type": "null"
+                    "$ref": "#/components/schemas/Act"
                   },
                   {
-                    "$ref": "#/components/schemas/Act"
+                    "type": "null"
                   }
                 ]
               }
@@ -3342,10 +3381,10 @@
               "schema": {
                 "oneOf": [
                   {
-                    "type": "null"
+                    "$ref": "#/components/schemas/Act"
                   },
                   {
-                    "$ref": "#/components/schemas/Act"
+                    "type": "null"
                   }
                 ]
               }
@@ -3438,6 +3477,49 @@
         "summary": "Run one of a host's actions. One of berth's that changes something is a job; a task of the host is a session there, which a job follows unless it needs a terminal.",
         "tags": [
           "hosts"
+        ]
+      }
+    },
+    "/v1/hosts/{name}/applied/profile": {
+      "get": {
+        "description": "Host level only.",
+        "operationId": "host_get_v1_applied_profile",
+        "parameters": [
+          {
+            "description": "A saved host",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeptProfile"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "The profile the host keeps of itself, as the last apply or the first boot wrote it.",
+        "tags": [
+          "host: applied"
         ]
       }
     },
@@ -6256,10 +6338,10 @@
               "schema": {
                 "oneOf": [
                   {
-                    "type": "null"
+                    "$ref": "#/components/schemas/PluginUpdateSpec"
                   },
                   {
-                    "$ref": "#/components/schemas/PluginUpdateSpec"
+                    "type": "null"
                   }
                 ]
               }
@@ -6572,10 +6654,10 @@
               "schema": {
                 "oneOf": [
                   {
-                    "type": "null"
+                    "$ref": "#/components/schemas/Act"
                   },
                   {
-                    "$ref": "#/components/schemas/Act"
+                    "type": "null"
                   }
                 ]
               }
@@ -7204,10 +7286,10 @@
               "schema": {
                 "oneOf": [
                   {
-                    "type": "null"
+                    "$ref": "#/components/schemas/Act"
                   },
                   {
-                    "$ref": "#/components/schemas/Act"
+                    "type": "null"
                   }
                 ]
               }

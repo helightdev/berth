@@ -117,7 +117,7 @@ class OnAWorkstation(unittest.TestCase):
         try:
             # berth sees what the host is, and says how to adopt it.
             self.assertIn('adopted is a workstation; its profile here says reachable', added.stdout)
-            self.assertIn('berth host level adopted workstation', added.stdout)
+            self.assertIn('berth adopt adopted', added.stdout)
             listed = station.berth('tasks', 'adopted').stdout
             self.assertIn('adopted is a workstation; its profile here says reachable', listed)
             self.assertRegex(listed, r'(?m)^  install-controller\s+.*take its controller apart')
@@ -126,5 +126,15 @@ class OnAWorkstation(unittest.TestCase):
             self.assertIn('would take its controller apart', refused.stdout + refused.stderr)
             self.assertEqual(station.root_on_host(files).stdout, before)
             self.assertEqual(station.read_profile('adopted')['level'], 'reachable')
+            # Adopted from the profile the host keeps, by the address it was added at.
+            adopted = station.berth('adopt', 'adopted')
+            self.assertIn('Adopted adopted', adopted.stdout)
+            profile = station.read_profile('adopted')
+            self.assertNotIn('level', profile)
+            saved = station.read_profile()
+            for key in ('hostname', 'operator_ssh_public_keys', 'agent_ssh_public_keys', 'ansible_vars'):
+                self.assertEqual(profile[key], saved[key], key)
+            self.assertEqual(profile['access'], {'address': HOST, 'user': OPERATOR, 'auth': 'berth'})
+            self.assertEqual(station.root_on_host(files).stdout, before)
         finally:
             station.remove_host('adopted', check=False)

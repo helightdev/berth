@@ -17,6 +17,10 @@ The machine is named `berth-HOST`, such as `berth-studio`. The plugin marks
 it with `user.berth-host` and `user.berth-instance`. It lists and deletes only
 machines with these marks.
 
+While berth waits for a new machine to answer on SSH, it shows the latest lines
+of the machine's console log. When the console has none, the plugin reads
+cloud-init's output in the machine instead.
+
 ## Let the server trust berth
 
 Incus accepts a client whose certificate is in its trust store. Make a key and
@@ -69,7 +73,7 @@ its settings, which every machine and action uses unless the call gives a value:
 
 Besides creating, starting, stopping and deleting, the plugin changes a
 machine's CPU and memory limits and grows its root disk. Its log is the
-console log Incus keeps.
+console log Incus keeps, or cloud-init's output when the console has none.
 
 ## Actions
 

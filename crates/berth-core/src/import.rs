@@ -1069,6 +1069,76 @@ mod tests {
     }
 
     #[test]
+    fn an_installation_of_berth_041_comes_in_whole() {
+        let (_dir, paths) = scratch();
+        // What berth 0.4.1 leaves: the settings of its OAuth client from
+        // before it lost it, its own key and token, and a host whose first
+        // apply was as an account of the machine's own, with its machine.
+        fs::write(
+            paths.settings_file(),
+            r#"{"default_host": "studio", "oauth_client_id": "berth-cli", "oauth_scope": "openid offline_access",
+                "tailnet_login_server": "https://hs.example.org"}"#,
+        )
+        .unwrap();
+        let data = &paths.data_dir;
+        fs::create_dir_all(data).unwrap();
+        fs::write(data.join("oauth.json"), r#"{"http://192.0.2.7:7777": {}}"#).unwrap();
+        fs::write(data.join("id_ed25519"), "private").unwrap();
+        fs::write(data.join("id_ed25519.pub"), "ssh-ed25519 AAAA berth@laptop").unwrap();
+        let hosts = paths.config_dir.join("hosts");
+        fs::create_dir_all(&hosts).unwrap();
+        fs::write(
+            hosts.join("studio.json"),
+            r#"{"hostname": "studio", "profile": "cloud", "operator_username": "ops",
+                "builder": {"ssh_host": "192.0.2.10", "ssh_user": "admin", "ssh_key": "",
+                            "ask_become_pass": true, "ask_pass": false}}"#,
+        )
+        .unwrap();
+        fs::write(hosts.join("studio.instance.json"), RECORD).unwrap();
+        let store = open(&paths);
+        // The settings that are not berth's any more stay in the file, with
+        // the tokens berth 0.4.1 kept, and nothing of them goes into the store.
+        let left = read_map(&paths.settings_file()).unwrap().unwrap();
+        assert_eq!(left["oauth_client_id"], "berth-cli");
+        assert_eq!(left["oauth_scope"], "openid offline_access");
+        assert!(!left.contains_key("default_host"));
+        assert!(
+            store
+                .names(kind::SETTING, OWN)
+                .unwrap()
+                .iter()
+                .all(|name| !name.starts_with("oauth"))
+        );
+        assert_eq!(
+            read(&store, kind::SETTING, "default_host").unwrap(),
+            "studio"
+        );
+        assert_eq!(
+            read(&store, kind::SETTING, "tailnet_login_server").unwrap(),
+            "https://hs.example.org"
+        );
+        assert!(data.join("oauth.json").is_file());
+        assert!(
+            read(&store, kind::KEY, "berth")
+                .unwrap()
+                .contains("berth@laptop")
+        );
+        // The host is in the access layout, its sudo still asked for until
+        // an apply as the operator settles it.
+        let studio = json_row(&store, kind::PROFILE, "studio").unwrap();
+        assert_eq!(
+            studio["access"],
+            json!({"address": "192.0.2.10", "user": "admin", "auth": "ssh", "sudo": "password"})
+        );
+        assert!(berth_api::profile::asks_become_pass(&studio));
+        assert_eq!(machine_of(&store, "studio").unwrap().external_id, "vm-1");
+        let mut applied = studio.clone();
+        applied["access"]["user"] = json!("ops");
+        assert!(berth_api::profile::settle_after_apply(&mut applied));
+        assert!(!berth_api::profile::asks_become_pass(&applied));
+    }
+
+    #[test]
     fn an_import_stopped_after_its_change_is_finished() {
         let (_dir, paths) = scratch();
         old_files(&paths);

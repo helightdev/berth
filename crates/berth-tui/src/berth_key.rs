@@ -1,8 +1,6 @@
 //! The SSH keys of berth's key ring: a row each on the Settings tab, what
-//! the Information box says of one, and copying a public half from there or
-//! berth's own from the field of a host's Accounts tab.
+//! the Information box says of one, and copying a public half from there.
 
-use crate::fields::Field;
 use crate::screen::Platform;
 use crate::setup::short_key;
 use crate::{Code, Key, theme};
@@ -21,11 +19,7 @@ fn label(name: &str) -> String {
     }
 }
 
-/// What the footer says on the field of a host's Accounts tab.
-pub const HINT: &str = "c copy the key";
-
-/// The key that copies it on the Accounts tab, where Space and Enter switch
-/// the field.
+/// A key that copies it, besides Enter.
 pub fn is_copy(key: &Key) -> bool {
     key.code == Code::Char('c') && !key.ctrl && !key.alt
 }
@@ -55,21 +49,13 @@ pub fn help(name: &str, public: &str, server: Option<&str>) -> String {
     };
     let more = match name {
         "berth" => {
-            " The operator of a host set up from here takes it too, unless its Accounts tab says otherwise."
+            " The operator of every host set up from here takes it too, always, so berth can always reach the hosts it set up."
         }
         _ => "",
     };
     format!(
         "{whose}\n\nAdd it as an authorized key at your cloud provider, or to `~/.ssh/authorized_keys` on a host, and berth gets in without a key of yours; `berth key trust HOST` does that with a password used once.{more} The private half stays with berth: `berth key` lists the keys.\n\nEnter copies it.\n\n`{public}`"
     )
-}
-
-/// The Information box of the field on a host's Accounts tab.
-pub fn field_help(public: &str) -> String {
-    match public {
-        "" => Field::BerthKey.spec().help.to_owned(),
-        public => format!("{}\n\n`{public}`", Field::BerthKey.spec().help),
-    }
 }
 
 /// Put the key on the clipboard. Returns what to say.
@@ -139,7 +125,6 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(other.starts_with("SSH key deploy"));
-        assert!(field_help(PUBLIC).ends_with(&format!("`{PUBLIC}`")));
     }
 
     #[test]

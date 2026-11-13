@@ -350,7 +350,7 @@ mod tests {
                 "{}",
                 action.why
             );
-            assert!(action.why.contains("berth host level dock workstation"));
+            assert!(action.why.contains("berth adopt dock"));
         }
         assert_eq!(
             mismatch("dock", Level::Reachable, Some(Level::Controller)).unwrap(),

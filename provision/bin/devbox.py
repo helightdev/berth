@@ -109,18 +109,24 @@ def check_public_key(value, account):
         raise ValueError(f'{account} SSH public key is too short')
 
 
-def account_keys(config, account):
+def berth_keys():
+    """The public keys of the berth that builds this, one to a line, which the operator
+    always takes: berth's own, the one replacing it while it rotates, and a key of
+    berth's that the profile logs in with."""
+    return [key.strip() for key in os.environ.get('BERTH_SSH_PUBLIC_KEY', '').splitlines() if key.strip()]
+
+
+def account_keys(config, account, berth=True):
     """The public keys an account takes: the profile's list, the single key of
     an older profile, and for the operator the key of the berth that builds
-    this, unless the profile turns that off."""
+    this. An older profile's `berth_ssh_key` no longer leaves that key out."""
     listed = config.get(f'{account}_ssh_public_keys') or []
     if not isinstance(listed, list) or not all(isinstance(key, str) for key in listed):
         raise ValueError(f'{account}_ssh_public_keys must be a list of keys')
     keys = [key.strip() for key in listed]
     keys += [key.strip() for key in text(config, f'{account}_ssh_public_key').splitlines()]
-    if account == 'operator' and flag(config, 'berth_ssh_key', True):
-        # One key to a line: berth's own, and the one replacing it while it rotates.
-        keys += [key.strip() for key in os.environ.get('BERTH_SSH_PUBLIC_KEY', '').splitlines()]
+    if account == 'operator' and berth:
+        keys += berth_keys()
     unique = []
     for key in keys:
         if key and key not in unique:
@@ -177,9 +183,10 @@ def checked_config(path, kind):
     for account in ('operator', 'agent'):
         for key in account_keys(c, account):
             check_public_key(key, account)
-    # A cloud machine is reached with the key. It needs a password only for sudo.
+    # The operator logs in over SSH with keys and uses sudo without a password, so its
+    # password is for the console. The USB installer's identity section needs one.
     password = text(c, 'operator_password_hash')
-    if password or kind != 'cloud' or not flag(c, 'operator_passwordless_sudo', True):
+    if password or kind == 'usb':
         check_password_hash(password, 'operator')
     if text(c, 'agent_password_hash'):
         check_password_hash(c['agent_password_hash'], 'agent')
@@ -282,8 +289,8 @@ def account_vars(c):
         'devbox_agent_privileges': c.get('agent_privileges', ''),
         'devbox_operator_user': c.get('operator_username', DEFAULT_OPERATOR),
         'devbox_operator_password_hash': c.get('operator_password_hash', ''),
-        'devbox_operator_ssh_public_key': '\n'.join(account_keys(c, 'operator')),
-        'devbox_operator_passwordless_sudo': c.get('operator_passwordless_sudo', True),
+        'devbox_operator_ssh_public_key': '\n'.join(account_keys(c, 'operator', berth=False)),
+        'devbox_berth_ssh_public_key': '\n'.join(berth_keys()),
     }
 
 
@@ -295,6 +302,9 @@ def deployment(c, sha):
         variables['devbox_tailscale_auth_key'] = c['tailscale_auth_key']
     if c.get('tailscale_login_server'):
         variables['devbox_tailscale_login_server'] = c['tailscale_login_server']
+    # berth hands over the profile as the host keeps it, and the role writes it.
+    if isinstance(c.get('berth_profile'), dict):
+        variables['devbox_berth_profile'] = c['berth_profile']
     return {'profile': c['profile'], 'release_sha256': sha,
             'release_url': '' if release_delivered() else c.get('release_url', ''), 'ansible_vars': variables}
 
@@ -351,15 +361,13 @@ def autoinstall(c):
 
 def cloud_config(c, sha):
     boot = (ROOT / 'provision/bootstrap/bootstrap.sh').read_bytes()
-    sudo = 'NOPASSWD:ALL' if c.get('operator_passwordless_sudo', True) else 'ALL'
+    # Without a password the field is `*` rather than the `!` cloud-init locks with:
+    # an sshd without PAM refuses key logins to an account locked with `!`.
     operator = {
         'name': c.get('operator_username', DEFAULT_OPERATOR), 'shell': '/bin/bash', 'groups': ['sudo'],
-        'sudo': [f'ALL=(ALL) {sudo}'], 'ssh_authorized_keys': account_keys(c, 'operator'),
+        'sudo': ['ALL=(ALL) NOPASSWD:ALL'], 'ssh_authorized_keys': account_keys(c, 'operator'),
+        'lock_passwd': False, 'passwd': c.get('operator_password_hash') or '*',
     }
-    if c.get('operator_password_hash'):
-        operator.update({'lock_passwd': False, 'passwd': c['operator_password_hash']})
-    else:
-        operator['lock_passwd'] = True
     files = [
         {'path': '/opt/devbox-bootstrap/bootstrap.sh', 'encoding': 'b64',
          'content': base64.b64encode(boot).decode(), 'permissions': '0700'},

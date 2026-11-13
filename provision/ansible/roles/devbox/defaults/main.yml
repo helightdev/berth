@@ -11,7 +11,10 @@ devbox_agent_privileges: ""
 devbox_operator_user: ops
 devbox_operator_password_hash: ""
 devbox_operator_ssh_public_key: ""
-devbox_operator_passwordless_sudo: true
+# The public keys of the berth that applies this, one to a line: its own key, the
+# one replacing it while it rotates, and a key of its that the profile logs in
+# with. The operator always takes them.
+devbox_berth_ssh_public_key: ""
 # Ubuntu's own account and group names. useradd refuses a user named like an existing group.
 devbox_reserved_names: [root, daemon, bin, sys, adm, tty, disk, lp, mail, news, uucp, man, proxy, kmem, dialout, fax, voice, cdrom, floppy, tape, sudo, audio, dip, www-data, backup, operator, list, irc, src, shadow, utmp, video, sasl, plugdev, staff, games, users, nogroup, admin, docker]
 devbox_home: "/home/{{ devbox_user }}"

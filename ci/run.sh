@@ -7,6 +7,8 @@
 #   ci/run.sh e2e [TEST…]       build berth, start a test host and run the
 #                               end-to-end tests against it (names as in
 #                               unittest: e2e_serve, e2e_serve.Roles)
+#   ci/run.sh e2e --shard HOST  the same for the tests of one test host, as a
+#                               CI job runs them (see tests/e2e/run.py)
 #   ci/run.sh all               check, then e2e
 #   ci/run.sh boot [cloud|iso]  boot real installs in QEMU and test them; needs
 #                               KVM and takes a while (see ci/boot.sh)
@@ -20,11 +22,13 @@
 #                    instead of volumes, for a CI cache to keep
 # BERTH_CI_DOCKER    1 or 0: a Docker engine (docker:dind, privileged) on the test
 #                    network for the Docker plugin's tests. Default: on with
-#                    Docker when no TEST is named or one is e2e_provisioners;
-#                    off with Podman, where the case is skipped
+#                    Docker when no TEST is named, one is e2e_provisioners, or
+#                    the shard holds it; off with Podman, where the case is skipped
 # BERTH_CI_DIND_IMAGES  images of this machine's engine to load into that
 #                    engine, separated by spaces (it has no way out to pull)
 # BERTH_CI_NO_BUILD  1: use the images as they are
+# BERTH_CI_PREBUILT  1: test the berth in the target directory as it is, with
+#                    the berthd and box it put into the role's files
 # BERTH_CI_PROJECT   the compose project (default: berth-ci)
 # BERTH_CI_INCREMENTAL  1 or 0: cargo's incremental builds (default: 1, and 0 in CI)
 set -euo pipefail
@@ -120,6 +124,12 @@ want_docker() {
   esac
   [[ $engine == docker ]] || return 1
   (($# == 0)) && return 0
+  # A shard is the tests of one test host; it wants the engine when they include the Docker case.
+  if [[ ${1:-} == --shard ]]; then
+    python3 tests/e2e/run.py --tests-of "${2:-}" | grep -q '^e2e_provisioners' || return 1
+    shift 2
+    (($# == 0)) && return 0
+  fi
   [[ " $* " == *" e2e_provisioners"* ]]
 }
 docker_up() {
@@ -133,7 +143,9 @@ docker_up() {
 
 e2e() {
   # The test host and the runner have no way out, so berth is built first.
-  dev cargo build --locked -p berth --features web
+  if [[ ${BERTH_CI_PREBUILT:-} != 1 ]]; then
+    dev cargo build --locked -p berth --features web
+  fi
   e2e_down
   trap e2e_down EXIT
   compose --profile e2e up -d studio dock
@@ -176,5 +188,5 @@ case $command in
     "$engine" volume rm -f berth-ci-target berth-ci-cargo >/dev/null
     "$engine" image rm -f berth-ci-dev berth-ci-host berth-ci-boot >/dev/null
     ;;
-  *) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

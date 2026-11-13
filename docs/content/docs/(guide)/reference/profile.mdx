@@ -56,9 +56,7 @@ Settings of the Ansible role go under `ansible_vars`, and how berth reaches and 
   type={{
     operator_username: { type: 'string', default: '"ops"', description: 'Your account on the host.' },
     operator_ssh_public_keys: { type: 'string[]', description: 'OpenSSH public keys that log in as the operator.' },
-    berth_ssh_key: { type: 'boolean', default: 'true', description: 'Whether the operator also takes the key of the berth that installs or applies the host.' },
-    operator_password_hash: { type: 'string', description: 'SHA-512 crypt or yescrypt hash. Needed for Cockpit and the console. The USB installer requires it. A cloud seed or a created machine requires it only when the operator has no passwordless sudo.' },
-    operator_passwordless_sudo: { type: 'boolean', default: 'true', description: 'sudo without a password for the operator, so berth needs no sudo password to look after the host.' },
+    operator_password_hash: { type: 'string', description: 'SHA-512 crypt or yescrypt hash, for the console, the graphical login and Cockpit. The USB installer requires it; everything else works without one.' },
     agent_username: { type: 'string', default: '"agent"', description: 'The agents\' account; home is /home/USERNAME.' },
     agent_ssh_public_keys: { type: 'string[]', description: 'Optional keys for SSH to the agent account.' },
     agent_password_hash: { type: 'string', description: 'Optional; empty locks password login.' },
@@ -67,17 +65,19 @@ Settings of the Ansible role go under `ansible_vars`, and how berth reaches and 
   }}
 />
 
+The operator always has sudo without a password and logs in over SSH with keys only. See [Accounts and sudo](/docs/use/accounts#the-operator). Older profiles may have `operator_passwordless_sudo` and `berth_ssh_key`. berth ignores both.
+
 A profile written before the lists has one key in `operator_ssh_public_key` or `agent_ssh_public_key`. berth still reads it, and moves it into the list when the keys are next changed.
 
 ### The key of berth itself
 
-Each berth makes an ed25519 key of its own the first time it needs one: the key `berth` of its [key ring](/docs/use/accounts#keys). It keeps the key in its [store](/docs/use/store). An installation restored from the store gets the same key back. The operator of a host takes it along with the keys in the profile, so the berth that set a host up can log in to it without a key of yours. That matters most for a [berth server](/docs/use/server), which has no keys until you give it some. During a [rotation](/docs/use/accounts#rekeying) the operator takes the new key as well.
+Each berth makes an ed25519 key of its own the first time it needs one: the key `berth` of its [key ring](/docs/use/accounts#keys). It keeps the key in its [store](/docs/use/store). An installation restored from the store gets the same key back. The operator of a host always takes it along with the keys in the profile, so the berth that set a host up can always log in to it without a key of yours. That matters most for a [berth server](/docs/use/server), which has no keys until you give it some. A host that logs in with another key of the ring, `key:NAME`, takes that key too. During a [rotation](/docs/use/accounts#rekeying) the operator takes the new key as well.
 
-`berth key show` prints the public half. To copy it, choose **This berth's SSH key** on the Settings tab of the home screen, or press `c` on the field of the same name on a host's Settings tab. With a berth server set, both copy the server's key.
+`berth key show` prints the public half. To copy it, choose **This berth's SSH key** on the Settings tab of the home screen. With a berth server set, it copies the server's key.
 
 Add the key as an SSH key at your cloud provider, and every machine you create there takes it. berth then logs in to a new machine without a key of yours. On a host set up some other way, add it to the operator's `~/.ssh/authorized_keys`.
 
-Turn **This berth's SSH key** off in Accounts, or set `berth_ssh_key` to `false`, for a host that should only take the listed keys.
+Each berth that installs or applies a host leaves its key there in a block of its own in the operator's `~/.ssh/authorized_keys`. A later apply, from this berth or another, does not remove it. To take a berth's key away, delete its `BERTH` block by hand.
 
 ## USB installer
 
@@ -139,10 +139,12 @@ Where the host is and how berth logs in to it. Every host has it. See [Logging i
     user: { type: 'string', description: 'The SSH user. Blank uses your SSH configuration.' },
     port: { type: 'string', description: 'The SSH port. Blank uses your SSH configuration.' },
     auth: { type: '"berth" | "key:NAME" | "password" | "ssh"', default: '"berth"', description: 'How berth logs in: its own key, another key of its key ring, a password kept as the secret ssh/HOST, or your own SSH configuration and agent with berth\'s key offered after them.' },
-    sudo: { type: '"none" | "password"', description: 'Whether the SSH user\'s sudo asks for a password. Left out, berth asks only when operator_passwordless_sudo is off and the user is not root.' },
+    sudo: { type: '"none" | "password"', description: 'Whether the SSH user\'s sudo asks for a password, as for a first apply as an account of the machine\'s own. Left out, it does not.' },
     link: { type: 'string[]', description: 'A command that connects to berthd instead of SSH, such as docker exec -i NAME berthd connect. A host with one needs no address.' },
   }}
 />
+
+After an apply as the operator, berth writes what the role made true: `sudo` becomes `none`, and a host that logged in with `password` logs in with `berth`, as the operator takes keys only. `key:NAME` and `ssh` stay. A password kept for the first apply, as the secret `ssh/HOST` or `sudo/HOST`, is deleted.
 
 A profile of berth 0.4 kept these under `builder`:
 

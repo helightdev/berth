@@ -253,7 +253,7 @@ fn first_contact_host_keys_and_rekeying_against_sshd() {
     assert!(!authorized.contains(&ring::blob(&berth.public)));
     assert!(authorized.contains(admin_public.trim()));
     contact::works(&keys::login_of(&paths, &studio).unwrap()).unwrap();
-    assert_eq!(keys::operator_keys(&paths).len(), 2);
+    assert_eq!(keys::operator_keys(&paths, &json!({})).unwrap().len(), 2);
 
     // Run again once the host answers, it goes on from there and ends.
     host(&paths, "attic", server.port);

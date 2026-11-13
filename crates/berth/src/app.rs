@@ -865,10 +865,6 @@ impl App {
     pub fn help(&self) -> String {
         match self.selected_entry() {
             Some(Entry::Feature(index)) => self.catalogue[index].help.clone(),
-            // The key itself, to give to a host that was not set up from here.
-            Some(Entry::Field(Field::BerthKey)) => {
-                berth_tui::berth_key::field_help(&self.own_public)
-            }
             Some(Entry::HostTask(index)) => berth_tui::host::task_help(&self.host, index),
             Some(Entry::HostSession(index)) => berth_tui::host::session_help(&self.host, index),
             Some(Entry::Machine(pick)) => self.machine.help(pick),
@@ -1673,7 +1669,7 @@ impl App {
                 .into_iter()
                 .filter(|key| !key.is_empty())
                 .collect(),
-            None => berth_core::keys::operator_keys(&self.paths),
+            None => berth_core::keys::operator_keys(&self.paths, &self.config).unwrap_or_default(),
         }
     }
 
@@ -1952,7 +1948,8 @@ impl App {
                     .load(&self.paths)?
                     .ok_or("The profile is not saved")?;
                 let config = berth_core::tailnet::seed_profile(&self.paths, &saved, &self.name())?;
-                let config = berth_core::seed::named(config, &self.name());
+                let mut config = berth_core::seed::named(config, &self.name());
+                berth_core::kept_profile::for_seed(&mut config, &self.name(), &saved);
                 Some(berth_core::tailnet::profile_file(&config)?)
             }
             _ => None,
@@ -2021,6 +2018,8 @@ impl App {
                 command = apply::playbook(&std::env::current_dir()?);
                 let mut vars =
                     apply::ansible_vars(&self.config, &self.plugin_dirs(), &self.own_keys());
+                vars["devbox_berth_profile"] =
+                    berth_core::kept_profile::document(&self.name(), &self.config, None);
                 apply::add_tailnet(&mut vars, &self.paths, &self.config, &self.place)?;
                 serde_json::to_writer(&mut extra, &vars)?;
                 extra.flush()?;
@@ -2173,6 +2172,12 @@ impl App {
         }
         let (command, files) = self.command()?;
         self.run_command(command, files)?;
+        // A successful apply settles how the host is logged in to in the saved profile.
+        if self.action == Action::Ssh
+            && let Ok(Some(saved)) = self.place.load(&self.paths)
+        {
+            self.config["access"] = saved["access"].clone();
+        }
         println!("{}", self.next_hint());
         Ok(())
     }
@@ -2197,7 +2202,7 @@ impl App {
             }));
             let code = runner::here(&self.paths, request, work, &mut std::io::stdout())?;
             return match code {
-                Some(0) => Ok(()),
+                Some(0) => apply::settle(&self.paths, &self.host_profile()),
                 Some(code) => Err(failed(format!("exit status: {code}")).into()),
                 None => Err(failed("ended by a signal".into()).into()),
             };
@@ -2574,7 +2579,6 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
         ("keyboard", json!("de")),
         ("operator_username", json!("ops")),
         ("agent_username", json!("agent")),
-        ("operator_passwordless_sudo", json!(true)),
         ("agent_passwordless_sudo", json!(true)),
         ("target_disk_ssd", json!("any")),
     ] {
@@ -2666,6 +2670,12 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
     // Device names change between sessions, so the drive to write is chosen each time.
     if let Some(builder) = config["builder"].as_object_mut() {
         builder.remove("usb_device");
+    }
+    // The operator always has sudo without a password and always takes the key
+    // of berth; profiles once had switches for both.
+    if let Some(profile) = config.as_object_mut() {
+        profile.remove("operator_passwordless_sudo");
+        profile.remove("berth_ssh_key");
     }
     let problems = berth_api::profile::Access::problems(&config);
     if !problems.is_empty() {

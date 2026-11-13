@@ -48,7 +48,7 @@ class FakeIncus(ThreadingHTTPServer):
 
 
 def public(instance):
-    return {k: v for k, v in instance.items() if k not in ('files', 'request')}
+    return {k: v for k, v in instance.items() if k not in ('files', 'request', 'console')}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -70,6 +70,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if self.command != 'HEAD':
             self.wfile.write(raw)
+
+    def raw(self, data):
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/octet-stream')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def route(self):
         server = self.server
@@ -124,14 +131,6 @@ class Handler(BaseHTTPRequestHandler):
             instance['config'].update(data.get('config') or {})
             instance['devices'] = data.get('devices') or instance.get('devices')
             return self.answer(200, {})
-        if rest == ['console'] and self.command == 'GET':
-            raw = ''.join(f'line {n}\n' for n in range(1, 6)).encode()
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/octet-stream')
-            self.send_header('Content-Length', str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
-            return None
         if rest == [] and self.command == 'DELETE':
             server.events.append(('delete', instance['name'], instance['status']))
             del server.instances[instance['name']]
@@ -139,6 +138,8 @@ class Handler(BaseHTTPRequestHandler):
         if rest == ['state'] and self.command == 'GET':
             running = instance['status'] == 'Running'
             network = {'lo': {'addresses': [{'family': 'inet', 'address': '127.0.0.1', 'scope': 'local'}]},
+                       # A guest that runs Docker has its bridge too, which sorts first.
+                       'docker0': {'addresses': [{'family': 'inet', 'address': '172.17.0.1', 'scope': 'global'}]},
                        'eth0': {'addresses': [{'family': 'inet6', 'address': 'fe80::1', 'scope': 'link'},
                                               {'family': 'inet', 'address': '192.0.2.50', 'scope': 'global'}]}}
             return self.answer(200, {'status': instance['status'], 'network': network if running else None})
@@ -147,10 +148,16 @@ class Handler(BaseHTTPRequestHandler):
             server.events.append((action['action'], instance['name'], action.get('force', False)))
             instance['status'] = {'start': 'Running', 'stop': 'Stopped'}[action['action']]
             return self.answer(202, server.operation(), 'async')
+        if rest == ['console'] and self.command == 'GET':
+            server.events.append(('console', query.get('type')))
+            return self.raw(instance.get('console', b''))
         if rest == ['files']:
             if instance['type'] == 'virtual-machine' and instance['status'] != 'Running':
                 return self.answer(500, "VM agent isn't currently running", 'error')
             path = query['path']
+            if self.command == 'GET':
+                known = instance['files'].get(path)
+                return self.raw(known) if isinstance(known, bytes) else self.answer(404, 'not found', 'error')
             if self.command == 'HEAD':
                 known = path == '/' or path in instance['files']
                 return self.answer(200 if known else 404, {} if known else 'not found', 'sync' if known else 'error')
@@ -181,6 +188,7 @@ class IncusPluginTests(unittest.TestCase):
         cls.archive.write_bytes(b'release archive ' * 1000)
         cls.sha = hashlib.sha256(cls.archive.read_bytes()).hexdigest()
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(directory / 'server.crt', directory / 'server.key')
         # Incus asks every client for a certificate and decides trust afterwards.
         context.verify_mode = ssl.CERT_OPTIONAL
@@ -290,6 +298,42 @@ class IncusPluginTests(unittest.TestCase):
         self.assertEqual(self.run_verb('status', id='berth-studio-2')[1]['state'], 'running')
         self.assertEqual(self.run_verb('status', id='berth-gone')[1], {'state': 'gone'})
 
+    def logs(self, **fields):
+        """What logs writes, which is not JSON."""
+        request = {'version': 2, 'verb': 'logs', 'provisioner': 'container',
+                   'arguments': {'server': self.address, 'project': 'default'},
+                   'secrets': {'incus_client_cert': self.client_cert, 'incus_client_key': self.client_key,
+                               'incus_server_cert': self.server_cert}, **fields}
+        result = subprocess.run([str(PLUGIN / 'bin/provision'), 'logs'], cwd=PLUGIN, capture_output=True, text=True,
+                                timeout=60, input=json.dumps(request))
+        return result.returncode, result.stdout, result.stderr
+
+    def test_logs_are_the_latest_console_lines(self):
+        self.create()
+        console = ''.join(f'[  OK  ] Started unit-{n}.service.\r\n' for n in range(150))
+        self.server.instances['berth-studio-2']['console'] = console.encode()
+        code, out, err = self.logs(id='berth-studio-2')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(out.splitlines()), 100)
+        self.assertEqual(out.splitlines()[-1], '[  OK  ] Started unit-149.service.')
+        self.assertIn(('console', 'log'), self.server.events)
+
+    def test_logs_read_cloud_init_output_when_the_console_is_empty(self):
+        self.create()
+        self.server.instances['berth-studio-2']['files']['/var/log/cloud-init-output.log'] = \
+            b'Cloud-init v. 25.1 running modules:config\nCloud-init v. 25.1 finished\n'
+        code, out, err = self.logs(id='berth-studio-2')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out, 'Cloud-init v. 25.1 running modules:config\nCloud-init v. 25.1 finished\n')
+
+    def test_logs_of_a_vm_without_its_agent_are_empty_and_of_one_gone_fail(self):
+        self.create('vm')
+        self.server.instances['berth-studio-2']['status'] = 'Stopped'
+        self.assertEqual(self.logs(id='berth-studio-2')[:2], (0, ''))
+        code, _, err = self.logs(id='berth-gone')
+        self.assertEqual(code, 1)
+        self.assertIn('no longer', err)
+
     def test_destroy_stops_and_deletes_and_is_fine_when_gone(self):
         self.create()
         self.server.events.clear()
@@ -359,15 +403,10 @@ class IncusPluginTests(unittest.TestCase):
 
     def test_logs_are_the_last_lines_of_the_console(self):
         self.create()
-        result = subprocess.run([str(PLUGIN / 'bin/provision'), 'logs'], cwd=PLUGIN, capture_output=True, text=True,
-                                timeout=60, input=json.dumps({
-                                    'version': 2, 'verb': 'logs', 'provisioner': 'container', 'id': 'berth-studio-2',
-                                    'tail': 2, 'arguments': {'server': self.address, 'project': 'default'},
-                                    'secrets': {'incus_client_cert': self.client_cert,
-                                                'incus_client_key': self.client_key,
-                                                'incus_server_cert': self.server_cert}}))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, 'line 4\nline 5\n')
+        self.server.instances['berth-studio-2']['console'] = ''.join(f'line {n}\n' for n in range(1, 6)).encode()
+        code, out, err = self.logs(id='berth-studio-2', tail=2)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out, 'line 4\nline 5\n')
 
     def test_another_version_of_the_protocol_is_refused(self):
         result = subprocess.run([str(PLUGIN / 'bin/provision'), 'status'], cwd=PLUGIN, capture_output=True,

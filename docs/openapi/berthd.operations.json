@@ -398,6 +398,45 @@
         ],
         "type": "string"
       },
+      "KeptProfile": {
+        "description": "The profile a host keeps of itself, at `/etc/berth/profile.json`: the\nprofile as berth holds it, without the enrollment key and without its\n`access`, how the berth that wrote it reaches the host. A berth that does\nnot have the host can take it over from this.",
+        "properties": {
+          "berth": {
+            "description": "The version of the berth that wrote it.",
+            "type": "string"
+          },
+          "format": {
+            "description": "The format of this document: 2, or 1 for one berth 0.4.1 wrote, whose\nprofile has the layout before `access`.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "host": {
+            "description": "The name the host has in the berth that wrote it.",
+            "type": "string"
+          },
+          "instance": {
+            "description": "The same in a document of format 1."
+          },
+          "machine": {
+            "description": "The record of the machine berth created for the host, as a resource,\nwhen it did."
+          },
+          "profile": {
+            "description": "The profile."
+          },
+          "written": {
+            "description": "When it was written, in RFC 3339.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "format",
+          "berth",
+          "host",
+          "profile"
+        ],
+        "type": "object"
+      },
       "Level": {
         "enum": [
           "host",
@@ -646,10 +685,10 @@
           "keep": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Keep"
               },
               {
-                "$ref": "#/components/schemas/Keep"
+                "type": "null"
               }
             ]
           }
@@ -663,10 +702,10 @@
           "keep": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Keep"
               },
               {
-                "$ref": "#/components/schemas/Keep"
+                "type": "null"
               }
             ]
           },
@@ -685,10 +724,10 @@
           "error": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ErrorDetail"
               },
               {
-                "$ref": "#/components/schemas/ErrorDetail"
+                "type": "null"
               }
             ]
           },
@@ -1290,10 +1329,10 @@
           "keep": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Keep"
               },
               {
-                "$ref": "#/components/schemas/Keep"
+                "type": "null"
               }
             ]
           },
@@ -1366,22 +1405,22 @@
           "applied": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Applied",
                 "description": "What the host's configuration was last applied from, when berth\nrecorded it. An older berthd does not say."
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "level": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/HostLevel",
                 "description": "What was installed on the host, by that record: `controller` when\nonly the controller was, `workstation` for a whole profile. Absent\nwhen the host keeps no record."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -1440,6 +1479,25 @@
       },
       "role": "operate",
       "summary": "Read the configuration files again. Sessions go on."
+    },
+    {
+      "args": [],
+      "group": "applied",
+      "http": {
+        "method": "GET",
+        "path": "/v1/applied/profile"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "applied.profile",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/KeptProfile"
+        }
+      },
+      "role": "admin",
+      "summary": "The profile the host keeps of itself, as the last apply or the first boot wrote it."
     },
     {
       "args": [
@@ -2599,5 +2657,5 @@
     "path": "/v1/portal"
   },
   "title": "berthd",
-  "version": "0.4.0"
+  "version": "0.4.1"
 }

@@ -338,7 +338,11 @@ pub fn draw_panel(
         Some(false) => theme::BAD,
     };
     // A panel with a web address in it offers its QR code.
-    let keys = match crate::qr::any_link(screen_lines(screen).iter().map(String::as_str)) {
+    let keys = match crate::qr::any_link(
+        crate::links::screen_lines(screen)
+            .iter()
+            .map(String::as_str),
+    ) {
         true => format!(" {} · {} ", keys.trim(), crate::qr::HINT),
         false => keys.to_owned(),
     };
@@ -369,13 +373,10 @@ pub fn draw_panel(
         vt100::Color::Rgb(r, g, b) => Some(Color::Rgb(r, g, b)),
     };
     let (mut links, mut copyable): (Spots, Spots) = (vec![], vec![]);
-    // A long address runs over several rows, so rows that were wrapped are read
-    // as one line, with the place on screen of each character kept.
-    let mut line = String::new();
-    let mut places: Vec<(u16, u16)> = vec![];
-    for row in 0..rows.min(inner.height) {
+    let (shown_rows, shown_cols) = (rows.min(inner.height), cols.min(inner.width));
+    for row in 0..shown_rows {
         let mut text = String::new();
-        for col in 0..cols.min(inner.width) {
+        for col in 0..shown_cols {
             let Some(cell) = screen.cell(row, col) else {
                 continue;
             };
@@ -405,28 +406,26 @@ pub fn draw_panel(
                     style = style.add_modifier(modifier);
                 }
             }
-            let position = (inner.x + col, inner.y + row);
-            if let Some(shown) = frame.buffer_mut().cell_mut(position) {
+            if let Some(shown) = frame.buffer_mut().cell_mut((inner.x + col, inner.y + row)) {
                 shown.set_symbol(symbol).set_style(style);
             }
             text.push_str(symbol);
-            for ch in symbol.chars() {
-                line.push(ch);
-                places.push(position);
-            }
         }
         for (column, word) in words(&text) {
             let width = Span::raw(word.as_str()).width() as u16;
             copyable.push((Rect::new(inner.x + column, inner.y + row, width, 1), word));
         }
-        if screen.row_wrapped(row) && row + 1 < rows.min(inner.height) {
-            continue;
-        }
+    }
+    // A long address runs over several rows, so the rows of one line are read
+    // together, with the place on screen of each character kept.
+    let (grid, wrapped) = crate::links::grid(screen, shown_rows, shown_cols);
+    for line in crate::links::lines(&grid, &wrapped, cols) {
         let mut at = 0;
-        for (part, link) in with_links(&line) {
+        for (part, link) in with_links(&line.text) {
             let count = part.chars().count();
             if link {
-                for &(x, y) in &places[at..at + count] {
+                for &(col, row) in &line.places[at..at + count] {
+                    let (x, y) = (inner.x + col, inner.y + row);
                     if let Some(shown) = frame.buffer_mut().cell_mut((x, y)) {
                         shown.set_style(Style::new().fg(theme::ACCENT).underlined());
                     }
@@ -435,8 +434,6 @@ pub fn draw_panel(
             }
             at += count;
         }
-        line.clear();
-        places.clear();
     }
     if outcome.is_none() && !screen.hide_cursor() {
         let (row, col) = screen.cursor_position();
@@ -445,30 +442,6 @@ pub fn draw_panel(
         }
     }
     (links, copyable)
-}
-
-/// The text of a screen, with rows that were wrapped joined into one line.
-fn screen_lines(screen: &vt100::Screen) -> Vec<String> {
-    let (rows, cols) = screen.size();
-    let mut lines = vec![String::new()];
-    for row in 0..rows {
-        let line = lines.last_mut().expect("one line");
-        for col in 0..cols {
-            if let Some(cell) = screen.cell(row, col)
-                && !cell.is_wide_continuation()
-            {
-                line.push_str(if cell.has_contents() {
-                    cell.contents()
-                } else {
-                    " "
-                });
-            }
-        }
-        if !screen.row_wrapped(row) {
-            lines.push(String::new());
-        }
-    }
-    lines
 }
 
 /// What the status bar says after a paste. Not the text: it may be a secret.
@@ -608,7 +581,8 @@ pub fn short_secret(value: &str) -> String {
     }
 }
 
-/// A click on a web address opens it; a right-click on a word copies it.
+/// A click on a web address opens it; a right-click copies it, or the word
+/// it is on when it is on no address.
 /// Returns what to say when the click was one of these.
 pub fn spot_event(
     links: &Spots,
@@ -626,10 +600,13 @@ pub fn spot_event(
             .map(|(_, text)| text.clone())
     };
     match mouse.click {
-        Click::Right => at(words).map(|word| match platform.copy(&word) {
-            true => format!("Copied {}", ellipsize(&word, 40)),
-            false => "Could not reach the clipboard".into(),
-        }),
+        // A link is copied whole, though its rows hold a word each.
+        Click::Right => at(links)
+            .or_else(|| at(words))
+            .map(|word| match platform.copy(&word) {
+                true => format!("Copied {}", ellipsize(&word, 40)),
+                false => "Could not reach the clipboard".into(),
+            }),
         Click::Left => at(links).map(|link| match platform.open(&link) {
             Ok(()) => String::new(),
             Err(error) => format!("Could not open the link: {error}"),

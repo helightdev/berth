@@ -3,18 +3,23 @@
 profile, and the others use the host it set up.
 
     ci/run.sh e2e                          all of them
+    ci/run.sh e2e --shard dock             the tests of one test host, as a CI job runs them
     ci/run.sh e2e e2e_serve                one module
     ci/run.sh e2e e2e_serve.Roles          one test case
 
 The tests of each test host run in a process of their own, at the same
 time: the output of the first host comes as it happens, that of the others
-when they are done. At the end each prints how long each test and each test
+when they are done. A shard is the tests of one test host: CI runs each in
+a job of its own, so the hosts run on machines apart and no state is made
+twice. At the end each prints how long each test and each test
 case took, slowest first, how many playbook runs there were and which tests
 made them.
 
 Only meant for the runner container of ci/compose.yml.
 """
+import argparse
 import glob
+import json
 import os
 import subprocess
 import sys
@@ -43,6 +48,8 @@ HOSTS = {
         'e2e_secrets',
         'e2e_local',
         'e2e_controller.OnAWorkstation',
+        # Another berth adopts the host, applies the profile it kept and goes again.
+        'e2e_adopt.Adopt',
         # extended(): three plugins and the tailnet, applied twice.
         'e2e_apply.Again',
         'e2e_plugins.Plugin',
@@ -60,7 +67,7 @@ HOSTS = {
         'e2e_serve.ClosedSetUp',
         'e2e_serve.Page',
         'e2e_client.Client',
-        'e2e_client.Login',
+        'e2e_client.AccessToken',
         # served_extended(): applied by the server, with a plugin and the tailnet.
         'e2e_tailnet.ThroughTheServer',
         'e2e_serve.ApplyJob',
@@ -207,19 +214,37 @@ def run_here(names, everything):
 
 
 def main():
+    if os.environ.get('BERTH_E2E_CHILD'):
+        if os.environ.get('BERTH_E2E') != '1':
+            sys.exit('The end-to-end tests run in their containers: ci/run.sh e2e')
+        sys.exit(0 if run_here(sys.argv[1:], os.environ.get('BERTH_E2E_CHILD') == 'all') else 1)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--shard', choices=HOSTS, help='run the tests of this test host only')
+    parser.add_argument('--shards', action='store_true', help='print the names of the shards as JSON')
+    parser.add_argument('--tests-of', choices=HOSTS, help='print the tests of this shard, one to a line')
+    parser.add_argument('names', nargs='*', help='modules or test cases, as unittest names them')
+    args = parser.parse_args()
+    if args.shards:
+        print(json.dumps(list(HOSTS)))
+        return
+    if args.tests_of:
+        print('\n'.join(HOSTS[args.tests_of]))
+        return
     if os.environ.get('BERTH_E2E') != '1':
         sys.exit('The end-to-end tests run in their containers: ci/run.sh e2e')
-    if os.environ.get('BERTH_E2E_CHILD'):
-        sys.exit(0 if run_here(sys.argv[1:], os.environ.get('BERTH_E2E_CHILD') == 'all') else 1)
-    names = sys.argv[1:]
+    names = args.names
     groups = {}
     for name in names:
         groups.setdefault(host_of(name), []).append(name)
     if not names:
         groups = {host: list(listed) for host, listed in HOSTS.items()}
+    if args.shard:
+        groups = {args.shard: groups.get(args.shard, [])} if names else {args.shard: list(HOSTS[args.shard])}
     started = time.monotonic()
     running = []
     for host, listed in groups.items():
+        if not listed:
+            continue
         env = {**os.environ, 'BERTH_E2E_HOST': host, 'BERTH_E2E_CHILD': 'some' if names else 'all'}
         # The other hosts take the operator's keys from a folder of their own (ci/compose.yml).
         if host != next(iter(HOSTS)):

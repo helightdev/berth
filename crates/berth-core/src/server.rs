@@ -19,9 +19,6 @@ use tokio::net::{TcpStream, UnixStream};
 pub struct Server {
     pub url: String,
     pub token: Option<String>,
-    /// The installation whose login at the server's OAuth 2.0 issuer is
-    /// shown when there is no token; none shows no login.
-    pub paths: Option<Paths>,
 }
 
 fn transport(error: impl std::fmt::Display) -> Error {
@@ -147,20 +144,12 @@ impl Server {
         Some(Server {
             url: url.trim_end_matches('/').to_owned(),
             token: variable("BERTH_TOKEN").or_else(|| setting("server_token")),
-            paths: Some(paths.clone()),
         })
     }
 
-    /// Open the server's portal. Without a token of the server's, berth
-    /// shows an access token of its own when it has or can get one.
+    /// Open the server's portal, with the configured token if there is one.
     pub async fn portal(&self) -> client::Result<Portal> {
-        let own = match (&self.token, &self.paths, self.url.starts_with("unix:")) {
-            (None, Some(paths), false) => crate::oauth::token(paths, &self.url)
-                .await
-                .map_err(|error| Error::Transport(error.to_string()))?,
-            _ => None,
-        };
-        let token = own.as_deref().or(self.token.as_deref()).unwrap_or("");
+        let token = self.token.as_deref().unwrap_or("");
         if let Some(path) = self.url.strip_prefix("unix:") {
             let stream = UnixStream::connect(path)
                 .await
@@ -529,7 +518,6 @@ mod tests {
         let server = Server {
             url: "http://192.0.2.7:7777".into(),
             token: None,
-            paths: None,
         };
         (directory, paths, server)
     }

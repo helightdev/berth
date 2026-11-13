@@ -36,29 +36,48 @@ pub fn set_account_keys(config: &mut Value, account: &str, keys: &[String]) {
     }
 }
 
-/// Whether the operator also takes the key of the berth that sets the host
-/// up, which is so unless the profile says otherwise.
-pub fn takes_own_key(config: &Value) -> bool {
-    config["berth_ssh_key"].as_bool().unwrap_or(true)
-}
-
-/// Whether the operator uses sudo without a password, which is so unless the
-/// profile says otherwise.
-pub fn operator_passwordless_sudo(config: &Value) -> bool {
-    config["operator_passwordless_sudo"]
-        .as_bool()
-        .unwrap_or(true)
-}
-
 /// Whether the SSH user's sudo asks for a password, so berth asks for it
-/// first. A profile that does not say follows the operator's sudo, as the
-/// SSH user is the operator once the host is set up; root needs no sudo.
+/// first. The operator's sudo never asks, so only a profile that says so
+/// does: one applied for the first time as an account of the machine's own.
 pub fn asks_become_pass(config: &Value) -> bool {
-    let access = Access::of(config);
-    match access.sudo {
-        Some(asks) => asks,
-        None => access.user != "root" && !operator_passwordless_sudo(config),
+    Access::of(config).sudo.unwrap_or(false)
+}
+
+/// The operator's name, `ops` unless the profile names another.
+pub fn operator(config: &Value) -> &str {
+    match config["operator_username"].as_str() {
+        None | Some("") => "ops",
+        Some(name) => name,
     }
+}
+
+/// What a successful apply makes true of a workstation that berth reaches
+/// as its operator, written into its profile: sudo takes no password, and a
+/// login with a password, which the operator's SSH no longer takes, becomes
+/// one with berth's key, which the role installed. `key:NAME` stays, as the
+/// role installs that key too, and so does `ssh`. An account of the
+/// machine's own, a container and a host reached through its own command
+/// keep what they say. Says whether it changed the profile.
+pub fn settle_after_apply(config: &mut Value) -> bool {
+    let mut access = Access::of(config);
+    if config["profile"] == "container"
+        || level(config) != crate::HostLevel::Workstation
+        || access.link.is_some()
+        || access.user.is_empty()
+        || access.user != operator(config)
+    {
+        return false;
+    }
+    let before = access.clone();
+    access.sudo = Some(false);
+    if access.auth == Auth::Password {
+        access.auth = Auth::Berth;
+    }
+    if access == before && config["access"]["sudo"] == "none" {
+        return false;
+    }
+    access.write(config);
+    true
 }
 
 /// How berth logs in to a host over SSH: `access.auth` of its profile.
@@ -392,25 +411,6 @@ pub fn take_builder_access(config: &mut Value) -> Option<OldAccess> {
     Some(old)
 }
 
-/// The keys the operator account gets: the profile's, and `own`, the keys of
-/// the berth that sets the host up.
-pub fn operator_keys(config: &Value, own: &[String]) -> Vec<String> {
-    let mut keys = account_keys(config, "operator");
-    if !takes_own_key(config) {
-        return keys;
-    }
-    for own in own
-        .iter()
-        .map(|own| own.trim())
-        .filter(|own| !own.is_empty())
-    {
-        if !keys.iter().any(|known| known == own) {
-            keys.push(own.to_owned());
-        }
-    }
-    keys
-}
-
 /// The secret that holds the API key of the tailnet's control server. berth
 /// uses it itself, to create enrollment keys, and never gives it to a host.
 pub const TAILNET_API_KEY: &str = "tailnet_api_key";
@@ -490,30 +490,45 @@ mod tests {
     }
 
     #[test]
-    fn the_operator_takes_the_key_of_its_berth_unless_told_not_to() {
-        let own = ["ssh-ed25519 OWN berth".to_owned()];
-        let config = json!({"operator_ssh_public_keys": ["ssh-ed25519 AAAA one"]});
-        assert_eq!(operator_keys(&config, &own).len(), 2);
-        assert_eq!(operator_keys(&config, &[]).len(), 1);
-        let config = json!({"berth_ssh_key": false});
-        assert!(operator_keys(&config, &own).is_empty());
+    fn sudo_asks_for_a_password_only_when_the_profile_says_so() {
+        assert!(!asks_become_pass(&json!({})));
+        assert!(!asks_become_pass(&json!({"access": {"user": "ops"}})));
+        // A profile from when the operator's sudo could ask is not taken to.
+        let old = json!({"operator_passwordless_sudo": false, "access": {"user": "ops"}});
+        assert!(!asks_become_pass(&old));
+        assert!(asks_become_pass(&json!({"access": {"sudo": "password"}})));
+        assert!(!asks_become_pass(&json!({"access": {"sudo": "none"}})));
     }
 
     #[test]
-    fn sudo_asks_for_a_password_only_when_the_operator_needs_one() {
-        assert!(operator_passwordless_sudo(&json!({})));
-        assert!(!asks_become_pass(&json!({})));
-        assert!(!asks_become_pass(&json!({"access": {"user": "ops"}})));
-        let typed = json!({"operator_passwordless_sudo": false, "access": {"user": "ops"}});
-        assert!(asks_become_pass(&typed));
-        let root = json!({"operator_passwordless_sudo": false, "access": {"user": "root"}});
-        assert!(!asks_become_pass(&root));
-        // What the profile says wins.
-        assert!(asks_become_pass(&json!({"access": {"sudo": "password"}})));
-        assert!(!asks_become_pass(&json!({
-            "operator_passwordless_sudo": false,
-            "access": {"sudo": "none"}
-        })));
+    fn an_apply_as_the_operator_settles_its_login() {
+        let mut first = json!({"builder": {}, "access": {"address": "192.0.2.10", "user": "ops", "auth": "password", "sudo": "password"}});
+        assert!(settle_after_apply(&mut first));
+        assert!(!asks_become_pass(&first));
+        assert_eq!(
+            first["access"],
+            json!({"address": "192.0.2.10", "user": "ops", "auth": "berth", "sudo": "none"})
+        );
+        assert!(!settle_after_apply(&mut first));
+        // A key of the ring and the user's SSH configuration stay as they are.
+        for auth in ["key:admin", "ssh"] {
+            let mut kept = json!({"builder": {}, "access": {"user": "ops", "auth": auth}});
+            assert!(settle_after_apply(&mut kept));
+            assert_eq!(kept["access"]["auth"], auth);
+        }
+        // An account of the machine's own keeps a sudo that asks.
+        let mut own = json!({"operator_username": "ops", "builder": {}, "access": {"user": "admin", "sudo": "password"}});
+        assert!(!settle_after_apply(&mut own));
+        assert!(asks_become_pass(&own));
+        let mut named = json!({"operator_username": "admin", "builder": {}, "access": {"user": "admin", "sudo": "password"}});
+        assert!(settle_after_apply(&mut named));
+        assert!(!asks_become_pass(&named));
+        // A container has no operator, and a host below a workstation was not set up by berth.
+        let mut container =
+            json!({"profile": "container", "access": {"user": "ops", "sudo": "password"}});
+        assert!(!settle_after_apply(&mut container));
+        let mut controller = json!({"level": "controller", "access": {"address": "192.0.2.4", "user": "ops", "sudo": "password"}});
+        assert!(!settle_after_apply(&mut controller));
     }
 
     #[test]

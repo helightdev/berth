@@ -41,6 +41,7 @@ const WAIT: (&str, &str) = (
 #[rustfmt::skip]
 pub const ROUTES: &[Route] = &[
     Route { method: "GET", path: "/v1/version", summary: "The version of berthd and of its API.", level: "both", query: &[], body: "", reply: "Version", stream: "", handler: || get(version) },
+    Route { method: "GET", path: "/v1/applied/profile", summary: "The profile the host keeps of itself, as the last apply or the first boot wrote it.", level: "host", query: &[], body: "", reply: "KeptProfile", stream: "", handler: || get(kept_profile) },
     Route { method: "POST", path: "/v1/reload", summary: "Read the configuration files again. Sessions go on.", level: "host", query: &[], body: "", reply: "Done", stream: "", handler: || post(reload) },
 
     Route { method: "POST", path: "/v1/sessions", summary: "Start a session.", level: "host", query: &[WAIT], body: "StartSession", reply: "Started", stream: "", handler: || post(sessions::start) },
@@ -92,11 +93,16 @@ async fn version(AppState(state): AppState<Arc<State>>) -> Json<api::Version> {
     let applied = record
         .clone()
         .and_then(|record| serde_json::from_value(record).ok());
-    // A record without a level is of a whole profile, as before levels.
-    let level = record.map(|record| match record["level"].as_str() {
-        Some(level) => api::HostLevel::parse(level).unwrap_or_default(),
-        None => api::HostLevel::Workstation,
-    });
+    // A record without a level is of a whole profile, as before levels, and
+    // only a workstation's apply or first boot leaves the profile it keeps.
+    let kept = state.config_dir.join("profile.json").exists();
+    let level = match kept {
+        true => Some(api::HostLevel::Workstation),
+        false => record.map(|record| match record["level"].as_str() {
+            Some(level) => api::HostLevel::parse(level).unwrap_or_default(),
+            None => api::HostLevel::Workstation,
+        }),
+    };
     Json(api::Version {
         version: api::VERSION.into(),
         api: api::API,
@@ -104,6 +110,22 @@ async fn version(AppState(state): AppState<Arc<State>>) -> Json<api::Version> {
         applied,
         level,
     })
+}
+
+/// What the role keeps at the end of an apply, read each time like the
+/// version's record.
+async fn kept_profile(AppState(state): AppState<Arc<State>>) -> Result<Json<Value>, E> {
+    let path = state.config_dir.join("profile.json");
+    let data = match std::fs::read(&path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(E::missing(
+                "kept profile: no berth that keeps one has applied the host",
+            ));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    Ok(Json(serde_json::from_slice(&data).map_err(E::internal)?))
 }
 
 async fn reload(AppState(state): AppState<Arc<State>>) -> Result<Json<api::Done>, E> {
@@ -283,6 +305,7 @@ pub fn paths(prefix: &str) -> serde_json::Map<String, Value> {
     api::ErrorBody,
     api::ErrorDetail,
     api::Version,
+    api::KeptProfile,
     api::Level,
     api::From,
     api::SessionKind,

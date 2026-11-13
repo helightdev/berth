@@ -57,8 +57,11 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
         .place
         .load(paths)?
         .ok_or_else(|| format!("No host {name}"))?;
-    let config = named(tailnet::seed_profile(paths, &saved, name)?, name);
+    let mut config = named(tailnet::seed_profile(paths, &saved, name)?, name);
+    crate::kept_profile::for_seed(&mut config, &host.place.title(), &saved);
     let seeded = tailnet::profile_file(&config)?;
+    // The machine's operator takes these keys, so that berth can always reach it.
+    let own = crate::keys::operator_keys(paths, &saved)?;
     let build = paths.build_dir();
     let mut command = Command::new("python3");
     command
@@ -67,10 +70,7 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
         .arg(seeded.path())
         .env("DEVBOX_BUILD_DIR", &build)
         .env("BERTH_PLUGINS", dirs.to_string())
-        .env(
-            "BERTH_SSH_PUBLIC_KEY",
-            crate::keys::operator_keys(paths).join("\n"),
-        )
+        .env("BERTH_SSH_PUBLIC_KEY", own.join("\n"))
         .stdin(std::process::Stdio::null());
     if delivered {
         command.env("BERTH_RELEASE_DELIVERED", "1");
@@ -131,8 +131,17 @@ fn archive(build: &std::path::Path, name: &str) -> Result<Archive> {
 
 pub fn sha256(path: &std::path::Path) -> Result<String> {
     use sha2::{Digest, Sha256};
+    use std::io::Read;
     let mut hash = Sha256::new();
-    std::io::copy(&mut fs::File::open(path)?, &mut hash)?;
+    let mut file = fs::File::open(path)?;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buf[..n]);
+    }
     Ok(hash
         .finalize()
         .iter()

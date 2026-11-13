@@ -24,6 +24,9 @@ IMAGES = 'https://images.linuxcontainers.org'
 BOOTSTRAP = '/opt/devbox-bootstrap'
 ARCHIVE = f'{BOOTSTRAP}/release.tar.gz'
 TYPES = {'vm': 'virtual-machine', 'container': 'container'}
+CLOUD_INIT_LOG = '/var/log/cloud-init-output.log'
+# How many of the latest lines `logs` gives when the request does not say.
+LOG_LINES = 100
 # Incus names are host names: letters, digits and hyphens, at most 63 characters.
 NAME_LIMIT = 63
 PROTOCOL = 2
@@ -70,6 +73,8 @@ class Incus:
             with os.fdopen(fd, 'w') as stream:
                 stream.write(value)
         self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        # The client key authenticates berth, so no older protocol is accepted for it.
+        self.context.minimum_version = ssl.TLSVersion.TLSv1_2
         try:
             self.context.load_cert_chain(cert_path, key_path)
         except ssl.SSLError:
@@ -113,7 +118,8 @@ class Incus:
                        'Add incus_client_cert to its trust store: on the server, run '
                        '`incus config trust add-certificate FILE` with the certificate in FILE.')
 
-    def request(self, method, path, body=None, query=None, headers=None, timeout=20):
+    def exchange(self, method, path, body=None, query=None, headers=None, timeout=20):
+        """The status and the raw body of the answer."""
         query = dict(query or {})
         query.setdefault('project', self.project)
         target = urllib.parse.quote(path) + '?' + urllib.parse.urlencode(query)
@@ -130,15 +136,24 @@ class Incus:
             raise Failure(f'Lost the connection to {self.server}: {exc}') from None
         finally:
             connection.close()
+        if response.status == 403:
+            raise self.untrusted()
+        return response.status, raw
+
+    def text(self, path, query=None):
+        """A file the API serves as it is, such as a console log, or '' when it has none."""
+        status, raw = self.exchange('GET', path, query=query)
+        return raw.decode('utf-8', 'replace') if status == 200 else ''
+
+    def request(self, method, path, body=None, query=None, headers=None, timeout=20):
+        status, raw = self.exchange(method, path, body, query, headers, timeout)
         try:
             data = json.loads(raw) if raw else {}
         except ValueError:
             data = {}
         if not isinstance(data, dict):
             data = {}
-        if response.status == 403:
-            raise self.untrusted()
-        return response.status, data
+        return status, data
 
     def call(self, method, path, body=None, missing=False, wait=900, **options):
         """The metadata of a sync answer, or of the finished operation of an async one.
@@ -175,25 +190,6 @@ class Incus:
             raise self.untrusted()
         self.about = data.get('metadata') or {}
 
-    def raw(self, path, query=None, timeout=20):
-        """The body of an answer that is not JSON, such as a console log."""
-        query = dict(query or {})
-        query.setdefault('project', self.project)
-        connection = self.connect(timeout)
-        try:
-            connection.request('GET', urllib.parse.quote(path) + '?' + urllib.parse.urlencode(query))
-            response = connection.getresponse()
-            body = response.read()
-        except (OSError, http.client.HTTPException) as exc:
-            raise Failure(f'Lost the connection to {self.server}: {exc}') from None
-        finally:
-            connection.close()
-        if response.status == 403:
-            raise self.untrusted()
-        if response.status >= 400:
-            raise IncusError(response.status, f'HTTP {response.status}')
-        return body
-
     # Instances.
 
     def instances(self):
@@ -209,7 +205,8 @@ class Incus:
     def address(self, name):
         state = self.call('GET', f'/1.0/instances/{name}/state', missing=True) or {}
         for interface, details in sorted((state.get('network') or {}).items()):
-            if interface == 'lo':
+            # Bridges the guest makes itself, such as Docker's, are not how it is reached.
+            if interface == 'lo' or interface.startswith(('docker', 'br-', 'veth', 'tailscale', 'incusbr', 'lxcbr')):
                 continue
             for entry in (details or {}).get('addresses') or []:
                 if entry.get('family') == 'inet' and entry.get('scope') == 'global' and entry.get('address'):
@@ -461,12 +458,16 @@ def change(incus, request, arguments):
 
 
 def logs(incus, request, arguments):
-    """The instance's console log, its last lines. Incus keeps it; following it is not offered."""
+    """The instance's console log, its last lines, or cloud-init's output when the console has none.
+    Incus keeps the console log as a whole; following it is not offered."""
     name = request['id']
     if not incus.instance(name):
         raise Failure(f'{name} is no longer on {incus.server}.')
-    text = incus.raw(f'/1.0/instances/{name}/console', query={'type': 'log'}).decode(errors='replace')
-    tail = int(request.get('tail') or 100)
+    text = incus.text(f'/1.0/instances/{name}/console', {'type': 'log'})
+    if not text.strip():
+        # A VM's files are out of reach until its agent runs, which answers as no file.
+        text = incus.text(f'/1.0/instances/{name}/files', {'path': CLOUD_INIT_LOG})
+    tail = int(request.get('tail') or LOG_LINES)
     lines = text.splitlines()[-tail:] if tail > 0 else text.splitlines()
     sys.stdout.write(''.join(line + '\n' for line in lines))
     if request.get('follow'):

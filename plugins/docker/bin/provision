@@ -23,6 +23,8 @@ SYSBOX = 'sysbox-runc'
 RUNTIMES = ('privileged', 'sysbox')
 # Rows of a listing an action answers with, at most.
 ROWS = 60
+# How many of the latest lines `logs` gives when the request does not say.
+LOG_LINES = 100
 
 # Runs inside the container with the public keys on stdin. It does not depend on
 # the image, so a custom one needs only sh, useradd, sudo and sshd.
@@ -99,10 +101,10 @@ class Docker:
         if endpoint:
             self.env['DOCKER_HOST'] = endpoint
 
-    def run(self, *args, input=None, check=True):
+    def run(self, *args, input=None, check=True, merge=False):
         try:
-            done = subprocess.run(['docker', *args], env=self.env, input=input, text=True,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            done = subprocess.run(['docker', *args], env=self.env, input=input, text=True, errors='replace',
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT if merge else subprocess.PIPE)
         except FileNotFoundError:
             raise Failure('docker is not installed or not on the PATH')
         if check and done.returncode != 0:
@@ -491,15 +493,30 @@ def change(request):
 
 
 def logs(request):
-    """The container's log on standard output, until it ends or berth stops it."""
+    """The container's console output on standard output, until it ends or berth stops it,
+    or its journal when the console has nothing."""
     cfg = settings(request)
+    docker = cfg['docker']
     name = identify(request)
-    if ours(cfg['docker'], name) is None:
+    if ours(docker, name) is None:
         raise Failure(f'{name} does not exist')
-    args = ['docker', 'logs', '--tail', str(int(request.get('tail') or 100))]
-    if request.get('follow'):
-        args.append('--follow')
-    stream([*args, name], cfg['docker'].env, 'docker logs')
+    lines = str(int(request.get('tail') or LOG_LINES))
+    done = docker.run('logs', '--tail', lines, name, check=False, merge=True)
+    if done.returncode != 0:
+        raise Failure(f'docker logs failed: {tail(done.stdout or "")}')
+    if (done.stdout or '').strip():
+        if not request.get('follow'):
+            sys.stdout.write(done.stdout)
+            return None
+        stream(['docker', 'logs', '--tail', lines, '--follow', name], docker.env, 'docker logs')
+        return None
+    # Without a terminal systemd has no console to print to, but its journal has the same.
+    journal = ['journalctl', '--quiet', '--boot', '--lines', lines, '--output', 'cat', '--no-pager']
+    if not request.get('follow'):
+        done = docker.run('exec', name, *journal, check=False)
+        sys.stdout.write(done.stdout if done.returncode == 0 else '')
+        return None
+    stream(['docker', 'exec', name, *journal, '--follow'], docker.env, 'journalctl')
     return None
 
 

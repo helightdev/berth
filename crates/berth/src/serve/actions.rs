@@ -590,13 +590,26 @@ fn apply(state: Arc<Serve>, name: String, act: Act) -> Run {
             ));
         }
         let prepared = apply::prepare(&state.paths, &host, password.as_deref()).map_err(bad)?;
-        let mut request = Request::new(Subject::Host(name), "apply");
+        let mut request = Request::new(Subject::Host(name.clone()), "apply");
         request.token = act.token;
         request.secrets = password.into_iter().collect();
-        let work = Work::Program(Box::new(berth_core::runner::Program {
+        let program = berth_core::runner::Program {
             command: prepared.command,
             input: None,
             files: prepared.files,
+        };
+        let paths = state.paths.clone();
+        let work = Work::Function(Box::new(move |out| {
+            if berth_core::runner::run_program(program, out) != Some(0) {
+                return false;
+            }
+            if let Err(error) = apply::settle(&paths, &host) {
+                let _ = writeln!(
+                    out,
+                    "! {name} is applied, but its profile was not updated: {error}"
+                );
+            }
+            true
         }));
         let job = state.runner.start(request, work).map_err(refused)?;
         Ok(Acted {
