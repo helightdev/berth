@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: echo "BERTH_CI_CACHE=$RUNNER_TEMP/berth-ci-cache" >> "$GITHUB_ENV"
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build the dev image
         uses: docker/build-push-action@v6
         with:
@@ -57,7 +57,7 @@ jobs:
       - run: echo "BERTH_CI_CACHE=$RUNNER_TEMP/berth-ci-cache" >> "$GITHUB_ENV"
       - id: shards
         run: echo "shards=$(python3 tests/e2e/run.py --shards)" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build the dev image
         uses: docker/build-push-action@v6
         with:
@@ -110,7 +110,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: echo "BERTH_CI_CACHE=$RUNNER_TEMP/berth-ci-cache" >> "$GITHUB_ENV"
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build the dev image
         uses: docker/build-push-action@v6
         with:

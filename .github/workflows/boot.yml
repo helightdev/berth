@@ -79,7 +79,7 @@ jobs:
           sudo docker image prune --all --force >/dev/null
           df -h /
       - run: echo "BERTH_CI_CACHE=$RUNNER_TEMP/berth-ci-cache" >> "$GITHUB_ENV"
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build the dev image
         uses: docker/build-push-action@v6
         with:
