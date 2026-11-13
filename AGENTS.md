@@ -16,10 +16,29 @@ berth sets up and looks after agent workstations. These are Ubuntu machines with
 | `crates/vendor/` | The vendored `tui-input` crate |
 | `provision/` | The installer side of the provisioning source: the role in `ansible/`, first-boot provisioning in `bootstrap/`, the builder of seeds and releases in `bin/devbox.py` and the example profile in `config/`. berth names these paths in `layout` in `crates/berth-core/src/paths.rs` |
 | `plugins/` | The plugins that come with berth, each an npm-format package with a `guide.md`. With `provision/` they make the provisioning source, which berth carries and unpacks with the same layout |
+| `recipes/` | Set-ups that go with berth but are not installed by it. Each is a folder with a guide and a script. `recipes/README.md` lists them |
+| `.agents/skills/` | Skills for coding agents that work with berth, such as installing it. `.claude/skills` links here |
 | `container/` | The desktop image and berth's own image |
 | `ci/` | The images and scripts that run the checks and the end-to-end tests in containers |
 | `docs/` | The documentation site (Fumadocs). `docs/AGENTS.md` has notes for its Next.js version |
 | `tests/` | Python tests of the provisioning source |
+
+## Skills
+
+Skills for agents are in `.agents/skills/`, each a folder with a `SKILL.md`. `.claude/skills` is a link to the same folder.
+
+| Skill | Use it when |
+| --- | --- |
+| `install-berth` | Someone asks you to install or set up berth, on their own machine or on a server |
+
+A new skill gets its own folder and a row here and in `.agents/skills/README.md`. Its text has to be true to the docs and the recipes' guides, and it has to pass vale.
+
+## Installing berth for someone
+
+- Follow the `install-berth` skill. It says which recipe in `recipes/` fits and gives its command.
+- A recipe that erases disks needs the user's word first, for that server and those disks.
+- Do not write an enrollment key or a password into a file in the repository.
+- When a berth server is installed, give the user its address and a setup key from `berth setup-key`. Do not read or print the token in `serve.token`.
 
 ## Build and check
 
