@@ -203,7 +203,7 @@ The documentation site does not show the guides of these plugins. Each is a `gui
 
 `docker/container` makes an Ubuntu 26.04 container with systemd and an SSH server on the local Docker or on the engine named by `host`. berth applies the profile to it over SSH. The container is named `berth-HOST` and has the labels `berth-host` and `berth-instance`. It offers `start`, `stop` and `list`, and takes no secrets.
 
-The container runs privileged. Read the limits in `plugins/docker/guide.md` before you use an engine that others share.
+The container runs privileged. Read the limits in `plugins/docker/guide.md` before you use an engine that others share. In the container Chromium uses its setuid sandbox helper, as the [self-test](/docs/reference/on-the-host#the-self-test) describes.
 
 ```bash
 berth provision studio-2 docker/container
@@ -211,7 +211,7 @@ berth provision studio-2 docker/container
 
 ### Incus
 
-`incus/vm` makes a virtual machine and `incus/container` a system container on an Incus server. Both are set up from the cloud seed, and the plugin puts the release archive into the machine. The profile does without a `release_url`. They offer `start`, `stop` and `list`.
+`incus/vm` makes a virtual machine and `incus/container` a system container on an Incus server. Both are set up from the cloud seed, and the plugin puts the release archive into the machine. The profile does without a `release_url`. They offer `start`, `stop` and `list`. In a container Chromium uses its setuid sandbox helper, and in a virtual machine a user namespace, as the [self-test](/docs/reference/on-the-host#the-self-test) describes.
 
 berth talks to the Incus API over HTTPS. `server` is required. Incus must trust a certificate of berth, which you store as the secrets `incus_client_cert` and `incus_client_key`. The secret `incus_server_cert` is optional and pins the server's own certificate. `plugins/incus/guide.md` shows how to make and trust the certificate.
 

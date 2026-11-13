@@ -1,6 +1,7 @@
 """Run with the Ansible venv's Python for template integration checks."""
 import json
 import re
+import shlex
 import shutil
 import tempfile
 from pathlib import Path
@@ -197,6 +198,113 @@ class EnvironmentTests(unittest.TestCase):
             values, item={'name': 'demo/manager', 'user': 'root'})
         self.assertNotIn('User=', as_root)
         self.assertIn('After=berthd.service', as_root)
+
+def apparmor_glob(pattern):
+    """A regular expression for an AppArmor attachment with * and {a,b}."""
+    out = ''
+    for part in re.split(r'(\*\*|\*|\{[^}]*\})', pattern):
+        if part == '**':
+            out += '.*'
+        elif part == '*':
+            out += '[^/]*'
+        elif part.startswith('{'):
+            out += '(' + '|'.join(re.escape(choice) for choice in part[1:-1].split(',')) + ')'
+        else:
+            out += re.escape(part)
+    return re.compile(out + '$')
+
+
+@unittest.skipUnless(jinja2 and yaml, 'Run with the Ansible venv Python for template checks')
+class ChromiumSandboxTests(unittest.TestCase):
+    CACHE = '.cache/ms-playwright'
+    BROWSER = 'chromium-1254/chrome-linux64'
+    HEADLESS = 'chromium_headless_shell-1254/chrome-headless-shell-linux64'
+
+    def task(self, file, name):
+        tasks = yaml.safe_load((ROLE / 'tasks' / file).read_text())
+        return next(task for task in tasks if task['name'] == name)
+
+    def test_the_apparmor_profile_covers_both_playwright_browsers(self):
+        content = self.task('host.yml', "Allow Playwright's Chromium to sandbox itself")['ansible.builtin.copy']['content']
+        content = jinja2.Template(content).render(devbox_home='/home/agent')
+        attach = re.search(r'^profile \S+ (\S+) flags', content, re.M).group(1)
+        matches = apparmor_glob(attach).match
+        for binary in [f'{self.BROWSER}/chrome', f'{self.HEADLESS}/chrome-headless-shell',
+                       'chromium_headless_shell-1148/chrome-linux/headless_shell']:
+            self.assertTrue(matches(f'/home/agent/{self.CACHE}/{binary}'), binary)
+        for other in [f'{self.BROWSER}/chrome_crashpad_handler', f'{self.BROWSER}/chrome-sandbox',
+                      'firefox-1490/firefox/firefox']:
+            self.assertFalse(matches(f'/home/agent/{self.CACHE}/{other}'), other)
+
+    def test_the_profile_is_loaded_only_through_the_machines_own_apparmor(self):
+        load = self.task('host.yml', 'Load the Chromium AppArmor profile')
+        self.assertIn('devbox_apparmor_interface.stat.exists', load['when'])
+        check = self.task('host.yml', "Check for an AppArmor interface of this machine's own")
+        self.assertEqual(check['ansible.builtin.stat']['path'], '/sys/kernel/security/apparmor')
+
+    def helper_script(self, home):
+        task = self.task('applications.yml', "Give Playwright's Chromium its sandbox helper in a container")
+        self.assertIn('devbox_container_kind.rc == 0', task['when'])
+        templates = jinja2.Environment(undefined=jinja2.StrictUndefined)
+        templates.filters['quote'] = shlex.quote
+        return templates.from_string(task['ansible.builtin.shell']).render(devbox_home=str(home))
+
+    def test_containers_get_the_setuid_helper_beside_both_browsers_once(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            home, shims = temp / 'home', temp / 'bin'
+            cache = home / self.CACHE
+            for path, text in [(f'{self.BROWSER}/chrome', 'browser'), (f'{self.BROWSER}/chrome_sandbox', 'helper'),
+                               (f'{self.HEADLESS}/chrome-headless-shell', 'shell'),
+                               ('chromium_headless_shell-1200/chrome-headless-shell-linux64/chrome-headless-shell', 'old')]:
+                (cache / path).parent.mkdir(parents=True, exist_ok=True)
+                (cache / path).write_text(text)
+            shims.mkdir()
+            # Owner and mode are recorded beside the file, since the test does not run as root.
+            (shims / 'install').write_text('#!/bin/bash\n[[ "${*:1:6}" == "-o root -g root -m 4755" ]] || exit 9\n'
+                                           'cp "$7" "$8" && echo 0:0:4755 > "$8.owner"\n')
+            (shims / 'stat').write_text('#!/bin/bash\ncat "$3.owner"\n')
+            for shim in shims.iterdir():
+                shim.chmod(0o755)
+            script = self.helper_script(home)
+
+            def run():
+                return subprocess.run(['/bin/bash', '-c', script], env={'PATH': f'{shims}:/usr/bin:/bin'},
+                                      capture_output=True, text=True, check=True).stdout.split()
+
+            placed = [str(cache / self.BROWSER / 'chrome-sandbox'), str(cache / self.HEADLESS / 'chrome-sandbox')]
+            self.assertEqual(run(), placed)
+            for path in placed:
+                self.assertEqual(Path(path).read_text(), 'helper')
+            self.assertFalse((cache / 'chromium_headless_shell-1200/chrome-headless-shell-linux64/chrome-sandbox').exists())
+            self.assertEqual(run(), [])
+            Path(placed[1] + '.owner').write_text('1000:1000:755\n')
+            self.assertEqual(run(), placed[1:])
+
+    def test_a_sandbox_that_cannot_start_is_reported_in_plain_words(self):
+        smoke = (ROLE / 'files/smoke.sh').read_text()
+        functions = ''.join(re.search(rf'^{name}\(\) {{\n.*?^}}\n', smoke, re.M | re.S).group(0)
+                            for name in ['machine_kind', 'browser_failed'])
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            (temp / 'systemd-detect-virt').write_text('#!/bin/bash\n[[ $1 == --container ]] && echo lxc\n')
+            (temp / 'systemd-detect-virt').chmod(0o755)
+            log = temp / 'browser-error.txt'
+
+            def report(text):
+                log.write_text(text)
+                return subprocess.run(['/bin/bash', '-c', functions + f'browser_failed {log}'],
+                                      env={'PATH': f'{temp}:/usr/bin:/bin'}, capture_output=True, text=True)
+
+            failed = report('Traceback (most recent call last):\n  [FATAL:zygote_host_impl_linux.cc:144] No usable sandbox! If\n')
+            self.assertEqual(failed.returncode, 1)
+            self.assertEqual(failed.stderr.splitlines(), [
+                'Chromium could not start its sandbox on this machine, a container (lxc).',
+                f"The browser check failed. Chromium's output is in {log}"])
+            other = report('AssertionError: the page lost its input\n')
+            self.assertEqual(other.returncode, 1)
+            self.assertEqual(other.stderr, 'AssertionError: the page lost its input\n')
+
 
 @unittest.skipUnless(yaml, 'Run with the Ansible venv Python for YAML checks')
 class TaskFiles(unittest.TestCase):

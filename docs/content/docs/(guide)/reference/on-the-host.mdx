@@ -105,3 +105,12 @@ GUI programs, T3 Code and the commands it starts share the desktop's `DISPLAY`, 
 ```bash
 berth run studio smoke
 ```
+
+The browser check starts Playwright's Chromium with its sandbox on. How Chromium sandboxes itself depends on the machine:
+
+| Machine | Sandbox |
+| --- | --- |
+| Laptop, server or virtual machine | A user namespace, which an AppArmor profile of the role allows |
+| Container, such as one from Incus or Docker | Chromium's setuid helper, which the role puts beside the Chromium it installs |
+
+A container can't use the user namespace, because Ubuntu's AppArmor on the machine that runs the container takes away the rights Chromium needs in it. A Chromium that the agent installs itself in a container has no helper, so it can't start sandboxed. When the sandbox can't start, the check says so, names the kind of machine and fails. Chromium's own output is in `browser-error.txt` in the artifact directory. The [container image](/docs/deploy/container) runs under Docker's default seccomp profile, where neither way works, and there the check is listed as skipped.

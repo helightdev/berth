@@ -66,10 +66,27 @@ with sync_playwright() as p:
     browser.close()
 PY
 }
+machine_kind() {
+  local kind
+  if kind=$(systemd-detect-virt --container 2>/dev/null); then printf 'a container (%s)' "$kind"
+  elif kind=$(systemd-detect-virt --vm 2>/dev/null); then printf 'a virtual machine (%s)' "$kind"
+  else printf 'a machine of its own'
+  fi
+}
+# A sandbox that cannot start is a fact about the machine, which a traceback hides.
+browser_failed() {
+  if grep -q 'No usable sandbox\|sandbox/linux/' "$1"; then
+    printf 'Chromium could not start its sandbox on this machine, %s.\n' "$(machine_kind)" >&2
+    printf 'The browser check failed. Chromium'\''s output is in %s\n' "$1" >&2
+  else
+    cat "$1" >&2
+  fi
+  return 1
+}
 skipped=()
 if /opt/devbox-tools/venv/bin/python -c 'import playwright' 2>/dev/null; then
   if [[ $DEVBOX_PROFILE != container ]]; then
-    browser_check
+    browser_check 2>"$out/browser-error.txt" || browser_failed "$out/browser-error.txt"
   elif ! browser_check 2>"$out/browser-error.txt"; then
     # Docker's default seccomp profile blocks the user namespaces Chromium's
     # sandbox needs. The sandbox stays on; the check is reported, not hidden.

@@ -61,4 +61,8 @@ A container is not a full host.
   the firewall needs to change network rules. Docker allows both only to a
   privileged container. Root in the container has the rights of root on the
   machine that runs Docker, so use an engine you trust the host's users with.
+- Chromium can't sandbox itself in a user namespace when the machine that
+  runs Docker is Ubuntu. berth gives the Chromium that comes with Playwright
+  its setuid sandbox helper instead. A Chromium that the agent installs itself
+  has none, so it can't start sandboxed.
 - Files outside `/srv/agent` go with the container when it is destroyed.
