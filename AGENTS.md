@@ -6,9 +6,9 @@ berth sets up and looks after agent workstations. These are Ubuntu machines with
 
 | Path | What it is |
 | --- | --- |
-| `crates/berth/` | The `berth` program: terminal UI, commands and `berth serve` (`crates/berth/src/serve/`) |
+| `crates/berth/` | The `berth` program: terminal UI, commands and `berth serve` (`crates/berth/src/serve/`). In `serve/`, `actions.rs` has the actions of hosts and of the installation, `keys.rs` the key ring's routes, `provisioners.rs` and `resources.rs` those of provisioners and resources |
 | `crates/berth-api/` | Types and the operations table shared by every program (`ops.rs` names each operation, its HTTP route and its role) |
-| `crates/berth-core/` | Hosts, profiles, links to hosts, registries and secrets, and plugins. The store is in `store/`. `kept.rs` and `plugin_state.rs` write files from it, and `import.rs` takes in the files of older versions |
+| `crates/berth-core/` | Hosts, profiles, links to hosts, registries and secrets, and plugins. The store is in `store/`. `kept.rs` and `plugin_state.rs` write files from it, and `import.rs` takes in the files of older versions. `runner.rs` runs every action as a job. `keys/` is the key ring and how berth logs in to hosts. `level.rs` says what a host can do at each level. `provisioner.rs` and `resource.rs` are the provisioners of plugins and what they made |
 | `crates/berth-tui/` | The parts of the UI that run in a terminal and in a browser |
 | `crates/berth-pty/` | Terminals for sessions |
 | `crates/berthd/`, `crates/box/` | The controller on each host and the agent's own tool there |
@@ -68,7 +68,19 @@ ci/run.sh shell            # a shell in the dev container
 ci/run.sh boot cloud|iso   # real installs in QEMU, with KVM; slow
 ```
 
-The end-to-end tests in `tests/e2e/` apply a profile to a throw-away Ubuntu container over SSH and then use it with berth, berthd and `berth serve`. They run on a network with nothing else on it, in scratch directories. There are two test hosts, `studio` and `dock`, and the tests of each run at the same time. `tests/e2e/run.py` says which test cases run on which host and in what order. Test cases that look at the same state of a host follow each other, so the state is applied once (see the shared states in `tests/e2e/harness.py`). A run ends with the time of each test and test case and the number of playbook runs. The test hosts' logs from a failed run are in `build/ci/logs/`.
+The end-to-end tests in `tests/e2e/` use throw-away containers over SSH, with berth, berthd and `berth serve`. They run on a network with nothing else on it, in scratch directories. There are two test hosts, `studio` and `dock`, and the two run in parallel. The modules need different amounts of that setup:
+
+| Tests | Need |
+| --- | --- |
+| `e2e_access` | A bare host with only SSH, which they leave as they found it |
+| `e2e_controller.Controller` | The same host and berth's controller alone, with one playbook run |
+| `e2e_provisioners` | A provisioner of a made-up plugin, and no test host. With Docker, `ci/run.sh` starts an engine on the test network for the Docker plugin's cases |
+| `e2e_restore` | The host `studio` as it is, and a server of its own with an encrypted store. It leaves the host as it is |
+| The rest | A full apply of the profile |
+
+That engine starts with Docker when the run is complete or names `e2e_provisioners`. `BERTH_CI_DOCKER` (`1` or `0`) forces it on or off, and `BERTH_CI_DIND_IMAGES` lists images of your own engine to load into it, as it cannot pull. The header of `ci/run.sh` has the rest.
+
+`tests/e2e/run.py` says which test cases run on which host and in what order. Test cases that look at the same state of a host follow each other, so the state is applied once (see the shared states in `tests/e2e/harness.py`). A run ends with the time of each test and test case and the number of playbook runs. The test hosts' logs from a failed run are in `build/ci/logs/`.
 
 `ci/run.sh boot` boots berth's cloud seed and its USB installer in QEMU, lets the first boot set the host up, and then runs `tests/e2e/boot_*.py` and part of the container suite against it. Each takes 10 to 15 minutes on a machine with KVM, so run it when a change touches provisioning, the role or first boot. Logs, timings and disk use are in `build/boot/`.
 
@@ -77,6 +89,19 @@ The end-to-end tests in `tests/e2e/` apply a profile to a throw-away Ubuntu cont
 - Add the operation to `crates/berth-api/src/ops.rs` with the role it needs. A test fails when a route has no operation or the other way round.
 - The API documents in `docs/openapi/` are committed. Regenerate them with `BERTH_UPDATE_DOCS=1 cargo test -p berth -p berthd`.
 - The pages under `docs/content/docs/api/host` and `api/serve` are generated from those documents. Do not edit them by hand.
+
+### Actions
+
+Give a new thing a host, the installation, a provisioner or a resource can do an action in the matching registry. It does not get a route of its own. The routes `hosts.act`, `actions.act`, `provisioners.act` and `resources.act` run it, and each action says whether it can run now and what role it needs.
+
+| Subject | Where its actions are |
+| --- | --- |
+| A host | `HOST` in `crates/berth/src/serve/actions.rs`, besides the tasks its controller lists |
+| The installation | `INSTALLATION` in the same file |
+| A provisioner | `provisioner::actions` in `crates/berth-core/src/provisioner.rs`: its plugin's actions and berth's own |
+| A resource | `resource::actions` in `crates/berth-core/src/resource.rs`: those of its kind and its plugin's |
+
+An action that changes something runs as a job through `runner.rs`.
 
 ## Versions and releases
 

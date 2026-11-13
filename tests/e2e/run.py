@@ -66,6 +66,8 @@ HOSTS = {
         'e2e_serve.ApplyJob',
         'e2e_client.ClientApply',
         'e2e_update.UpdateServed',
+        # Its own berth serve on the same host, restored from its store: applies nothing.
+        'e2e_restore',
     ],
     # The bare host first: the ways berth logs in, and berth's controller
     # alone, which leave it as they found it. Then a host that only ever
