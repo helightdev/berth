@@ -703,6 +703,9 @@ pub fn apply(paths: &Paths, name: &str) -> Result<()> {
         let password = host.sudo_password()?;
         let mut prepared = berth_core::apply::prepare(paths, &host, password.as_deref())?;
         let status = prepared.command.status()?;
+        if status.success() {
+            berth_core::apply::settle(&host)?;
+        }
         std::process::exit(status.code().unwrap_or(1));
     };
     // The server has no terminal to ask on: a password it needs is asked for here.

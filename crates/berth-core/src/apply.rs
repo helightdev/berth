@@ -43,10 +43,6 @@ pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: Option<&str>) -> V
         ("agent_privileges", "devbox_agent_privileges"),
         ("operator_username", "devbox_operator_user"),
         ("operator_password_hash", "devbox_operator_password_hash"),
-        (
-            "operator_passwordless_sudo",
-            "devbox_operator_passwordless_sudo",
-        ),
     ] {
         if let Some(value) = config.get(source) {
             vars[dest] = value.clone();
@@ -56,7 +52,10 @@ pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: Option<&str>) -> V
     vars["devbox_agent_ssh_public_key"] =
         json!(berth_api::profile::account_keys(config, "agent").join("\n"));
     vars["devbox_operator_ssh_public_key"] =
-        json!(berth_api::profile::operator_keys(config, own).join("\n"));
+        json!(berth_api::profile::account_keys(config, "operator").join("\n"));
+    // The role keeps this key apart from the profile's, so that no later
+    // apply takes it away.
+    vars["devbox_berth_ssh_public_key"] = json!(own.map(str::trim).unwrap_or(""));
     vars["devbox_profile"] = config["profile"].clone();
     vars["devbox_plugin_dirs"] = plugin_dirs.clone();
     if let Some(key) = config["tailscale_auth_key"]
@@ -114,8 +113,12 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
     let source = paths.source()?;
     let plugins = plugins::load(&[source.join("plugins"), paths.config_dir.join("plugins")]);
     let dirs = plugin_dirs(&plugins);
-    let own = paths.own_public_key();
-    let mut vars = ansible_vars(&host.config, &dirs, own.as_deref());
+    // Without its own key in the operator's authorized_keys, berth could be
+    // locked out of the host it sets up, so it does not go on without one.
+    let own = paths.own_public_key().ok_or(
+        "berth has no SSH key of its own to give the host's operator: check that ssh-keygen works",
+    )?;
+    let mut vars = ansible_vars(&host.config, &dirs, Some(&own));
     add_tailnet(&mut vars, paths, &host.config, &host.path)?;
     // The role keeps this on the host, for the plugins the host has, so
     // berth can tell later whether the host is behind.
@@ -151,13 +154,24 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
     }
     command.env("DEVBOX_BUILD_DIR", paths.build_dir());
     command.env("BERTH_PLUGINS", dirs.to_string());
-    if let Some(own) = own {
-        command.env("BERTH_SSH_PUBLIC_KEY", own);
-    }
+    command.env("BERTH_SSH_PUBLIC_KEY", &own);
     Ok(Prepared {
         command,
         files: vec![extra, inventory],
     })
+}
+
+/// After a successful apply: a host that berth reaches as its operator no
+/// longer asks for a sudo password, so its saved profile stops saying so.
+pub fn settle(host: &Host) -> Result<()> {
+    let Ok(saved) = std::fs::read(&host.path) else {
+        return Ok(());
+    };
+    let mut profile: Value = serde_json::from_slice(&saved)?;
+    if berth_api::profile::settle_after_apply(&mut profile) {
+        crate::seed::save_profile(&host.path, &profile)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -176,9 +190,17 @@ mod tests {
             &json!({"demo": "/p/demo"}),
             Some("ssh-ed25519 OWN"),
         );
-        assert_eq!(
-            vars["devbox_operator_ssh_public_key"],
-            "ssh-ed25519 ME\nssh-ed25519 OWN"
+        assert_eq!(vars["devbox_operator_ssh_public_key"], "ssh-ed25519 ME");
+        assert_eq!(vars["devbox_berth_ssh_public_key"], "ssh-ed25519 OWN");
+        // A profile from before the setting went away cannot turn either off.
+        let old = json!({"berth_ssh_key": false, "operator_passwordless_sudo": false});
+        let vars = ansible_vars(&old, &json!({}), Some("ssh-ed25519 OWN"));
+        assert_eq!(vars["devbox_berth_ssh_public_key"], "ssh-ed25519 OWN");
+        assert!(vars.get("devbox_operator_passwordless_sudo").is_none());
+        let vars = ansible_vars(
+            &config,
+            &json!({"demo": "/p/demo"}),
+            Some("ssh-ed25519 OWN"),
         );
         assert_eq!(vars["devbox_agent_ssh_public_key"], "");
         assert_eq!(vars["devbox_user"], "bot");
@@ -259,5 +281,35 @@ mod tests {
                 .get_args()
                 .any(|arg| arg == "--ask-become-pass")
         );
+        // The key of this berth goes to the operator, apart from the profile's.
+        assert_eq!(
+            extra["devbox_berth_ssh_public_key"],
+            paths.own_public_key().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_first_apply_as_the_operator_stops_the_asking() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("studio.json");
+        let host = |config: Value| {
+            std::fs::write(&path, config.to_string()).unwrap();
+            Host {
+                name: "studio".into(),
+                path: path.clone(),
+                key: None,
+                config,
+            }
+        };
+        let saved = || -> Value { serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap() };
+        let first = json!({"operator_passwordless_sudo": false,
+                           "builder": {"ssh_host": "192.0.2.10", "ssh_user": "ops", "ask_become_pass": true}});
+        settle(&host(first)).unwrap();
+        assert!(!berth_api::profile::asks_become_pass(&saved()));
+        assert_eq!(saved()["builder"]["ssh_host"], "192.0.2.10");
+        // An account of the machine's own still asks.
+        let own = json!({"builder": {"ssh_host": "192.0.2.10", "ssh_user": "admin", "ask_become_pass": true}});
+        settle(&host(own.clone())).unwrap();
+        assert_eq!(saved(), own);
     }
 }

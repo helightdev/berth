@@ -577,6 +577,9 @@ async fn apply_host(
         let exit_code = child.wait().await.ok().and_then(|status| status.code());
         // The private files the run read live until here.
         drop(files);
+        if exit_code == Some(0) {
+            let _ = apply::settle(&host);
+        }
         let mut store = watcher.store.lock().unwrap();
         let _ = store.end_job(&id, exit_code);
         if let Ok(Some(job)) = store.job(&id) {

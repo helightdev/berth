@@ -75,9 +75,6 @@ fn buttons(app: &App) -> Vec<(&'static str, KeyCode)> {
         if field.uses_saved_wifi() && !app.privileged {
             buttons.push(("[Unlock saved passwords F5]", KeyCode::F(5)));
         }
-        if field == Field::BerthKey && !app.own_public.is_empty() {
-            buttons.push(("[Copy the key c]", KeyCode::Char('c')));
-        }
     }
     buttons
 }
@@ -294,11 +291,6 @@ fn draw(frame: &mut Frame, app: &mut App, rows: &[Row], display: &mut ListState,
 
     let keys = if editing {
         "Enter accept · ↑↓ field · Tab next tab · Esc cancel".to_owned()
-    } else if app.selected_field() == Some(Field::BerthKey) {
-        format!(
-            "↑↓ select · Space switch · {} · 1-4 tab · Ctrl+S save · Esc overview",
-            berth_tui::berth_key::HINT
-        )
     } else {
         match app.step {
             Step::Manage => "↑↓ select · Enter choose · x unset · Ctrl+S save · q hosts",
@@ -1067,12 +1059,7 @@ fn session_size() -> (u16, u16) {
     )
 }
 
-fn key_event(
-    app: &mut App,
-    key: KeyEvent,
-    quit_armed: &mut bool,
-    platform: &mut dyn Platform,
-) -> Flow {
+fn key_event(app: &mut App, key: KeyEvent, quit_armed: &mut bool) -> Flow {
     let armed = std::mem::take(quit_armed);
     let control = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
@@ -1149,11 +1136,6 @@ fn key_event(
         KeyCode::Up => app.move_selection(true),
         KeyCode::Down => app.move_selection(false),
         KeyCode::Right if !app.suggestions.is_empty() => app.suggestion_focus = true,
-        _ if app.selected_field() == Some(Field::BerthKey)
-            && crate::keys::key(&key).is_some_and(|key| berth_tui::berth_key::is_copy(&key)) =>
-        {
-            app.status = berth_tui::berth_key::copy(platform, &app.own_public);
-        }
         KeyCode::Char(digit @ '1'..='9') => {
             if app.step != Step::Manage
                 && let Some(&step) = Step::SETUP.get(digit as usize - '1' as usize)
@@ -2905,7 +2887,7 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
             }
             _ => continue,
         };
-        match key_event(app, key, &mut quit_armed, &mut Desktop) {
+        match key_event(app, key, &mut quit_armed) {
             Flow::Continue => {}
             Flow::Quit => return Ok(false),
             Flow::Run => return Ok(true),
@@ -3301,10 +3283,7 @@ mod tests {
         for &code in codes {
             app.update_suggestions();
             let key = KeyEvent::new(code, KeyModifiers::NONE);
-            if matches!(
-                key_event(app, key, &mut armed, &mut Clipboard::default()),
-                Flow::Run
-            ) {
+            if matches!(key_event(app, key, &mut armed), Flow::Run) {
                 return true;
             }
         }
@@ -3579,23 +3558,14 @@ mod tests {
         let mut armed = false;
         let q = KeyEvent::new(Char('q'), KeyModifiers::NONE);
         // The first q only leaves the set-up pages for the host's overview.
-        assert!(matches!(
-            key_event(&mut app, q, &mut armed, &mut Clipboard::default()),
-            Flow::Continue
-        ));
+        assert!(matches!(key_event(&mut app, q, &mut armed), Flow::Continue));
         assert!(!armed && app.step == Step::Manage);
-        assert!(matches!(
-            key_event(&mut app, q, &mut armed, &mut Clipboard::default()),
-            Flow::Continue
-        ));
+        assert!(matches!(key_event(&mut app, q, &mut armed), Flow::Continue));
         assert!(armed);
         let save = KeyEvent::new(Char('s'), KeyModifiers::CONTROL);
-        key_event(&mut app, save, &mut armed, &mut Clipboard::default());
+        key_event(&mut app, save, &mut armed);
         assert!(app.path.is_file() && !app.unsaved());
-        assert!(matches!(
-            key_event(&mut app, q, &mut armed, &mut Clipboard::default()),
-            Flow::Quit
-        ));
+        assert!(matches!(key_event(&mut app, q, &mut armed), Flow::Quit));
     }
 
     #[test]
@@ -3935,36 +3905,6 @@ mod tests {
             &mut clipboard,
         );
         assert!(home.qr.is_some());
-    }
-
-    #[test]
-    fn the_field_of_berths_key_copies_it() {
-        let mut app = App::new("x.json".into(), parse_config(b"{}").unwrap());
-        app.own_public = BERTH_KEY.into();
-        app.set_step(Step::Settings);
-        let at = app
-            .entries()
-            .iter()
-            .position(|entry| *entry == Entry::Field(Field::BerthKey));
-        app.list.select(at);
-        let mut clipboard = Clipboard::default();
-        let mut armed = false;
-        let c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
-        key_event(&mut app, c, &mut armed, &mut clipboard);
-        assert_eq!(clipboard.0.as_deref(), Some(BERTH_KEY));
-        assert_eq!(app.status, "Copied this berth's SSH public key");
-        assert!(app.enabled(Field::BerthKey));
-        let screen = screen_text(&mut app);
-        assert!(screen.contains("[Copy the key c]") && screen.contains("c copy the key"));
-        assert!(app.help().contains(BERTH_KEY));
-        // Space still switches it.
-        press(&mut app, &[KeyCode::Char(' ')]);
-        assert!(!app.enabled(Field::BerthKey));
-        // Elsewhere c is nothing of the kind.
-        clipboard.0 = None;
-        press(&mut app, &[KeyCode::Up]);
-        key_event(&mut app, c, &mut armed, &mut clipboard);
-        assert!(clipboard.0.is_none());
     }
 
     fn lab(id: &str, label: &str, resources: &[&str]) -> berth_api::ProvisionerInfo {

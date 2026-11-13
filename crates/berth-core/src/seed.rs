@@ -54,6 +54,10 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
     let saved: Value = serde_json::from_slice(&fs::read(&host.path)?)?;
     let config = named(tailnet::seed_profile(paths, &saved, name)?, name);
     let seeded = tailnet::profile_file(&config)?;
+    // The machine's operator takes this key, so that berth can always reach it.
+    let own = paths
+        .own_public_key()
+        .ok_or("berth has no SSH key of its own to give the machine's operator: check that ssh-keygen works")?;
     let build = paths.build_dir();
     let mut command = Command::new("python3");
     command
@@ -62,10 +66,7 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
         .arg(seeded.path())
         .env("DEVBOX_BUILD_DIR", &build)
         .env("BERTH_PLUGINS", dirs.to_string())
-        .env(
-            "BERTH_SSH_PUBLIC_KEY",
-            paths.own_public_key().unwrap_or_default(),
-        )
+        .env("BERTH_SSH_PUBLIC_KEY", own)
         .stdin(std::process::Stdio::null());
     if delivered {
         command.env("BERTH_RELEASE_DELIVERED", "1");

@@ -1,8 +1,9 @@
 """A host that takes nothing but the key of berth, as when that key is added
 at a cloud provider: no key of the user's in the profile or in ~/.ssh, no
-ssh-agent, and the operator's sudo as it is by default. Once straight from a
-workstation, and once from a berth serve that has only its own key, with a
-terminal client using it.
+ssh-agent, and a profile from before the operator always had sudo without a
+password and the key of berth. Once straight from a workstation, and once from
+a berth serve that has only its own key, with a terminal client using it. And
+a first apply as an account of the machine's own whose sudo asks for a password.
 
 The host is the one the other modules set up, so this module comes last: it
 leaves the operator with other keys than theirs."""
@@ -12,8 +13,9 @@ import pwd
 import unittest
 from pathlib import Path
 
-from harness import (AGENT, HOST, OPERATOR, SRC, BerthdLink, Serve, Workstation, _provisioned, ansible_recap,
-                     changed_tasks, hand_over_operator_key, light_vars, needs_e2e, random_text, shell_quote, wait_for)
+from harness import (AGENT, HOST, OPERATOR, SEED, SRC, BerthdLink, Serve, Workstation, _provisioned,
+                     ansible_recap, changed_tasks, hand_over_operator_key, light_vars, needs_e2e, random_text,
+                     shell_quote, wait_for)
 
 
 def bare_profile(template):
@@ -61,12 +63,18 @@ class OwnKeyOnly:
         runner = Path(pwd.getpwuid(os.getuid()).pw_dir) / '.ssh'
         self.assertEqual(list(runner.glob('id_*')), [])
 
-    def test_the_operator_takes_only_berths_key_and_sudo_needs_no_password(self):
+    def test_the_operator_takes_berths_key_apart_and_sudo_needs_no_password(self):
         own = self.keyed.own_key.with_suffix('.pub').read_text().strip()
-        block = self.root_on_host(f"sed -n '/BEGIN DEVBOX/,/END DEVBOX/p' /home/{OPERATOR}/.ssh/authorized_keys")
-        self.assertEqual([line for line in block.splitlines() if not line.startswith('#')], [own])
+        keys = f'/home/{OPERATOR}/.ssh/authorized_keys'
+        # The profile lists no key; berth's has a block of its own that no apply removes.
+        profiles = self.root_on_host(f"sed -n '/BEGIN DEVBOX/,/END DEVBOX/p' {keys}")
+        self.assertEqual([line for line in profiles.splitlines() if not line.startswith('#')], [])
+        berths = self.root_on_host(f"sed -n '/BEGIN BERTH/,/END BERTH/p' {keys}")
+        self.assertIn(own, berths.splitlines())
         sudoers = self.root_on_host('cat /etc/sudoers.d/99-devbox-operator')
         self.assertIn(f'{OPERATOR} ALL=(ALL:ALL) NOPASSWD: ALL', sudoers)
+        # A password field sshd takes keys for, with PAM or without.
+        self.assertFalse(self.root_on_host(f'getent shadow {OPERATOR}').split(':')[1].startswith('!'))
 
     def test_applying_asks_for_nothing_and_again_changes_nothing(self):
         recap = ansible_recap(self.first_apply.stdout)
@@ -128,8 +136,9 @@ class Direct(OwnKeyOnly, unittest.TestCase):
         wait_for('the operator taking the key of berth', lambda: cls.station.ssh(
             OPERATOR, 'true', key=cls.station.own_key, check=False).returncode == 0)
         template = json.loads((SRC / 'provision/config/example.json').read_text())
-        # Left out, as a profile written by hand would: its default applies.
-        del template['operator_passwordless_sudo']
+        # Switches a profile could have once. Both are ignored now: the operator gets
+        # sudo without a password and the key of berth, its only way in.
+        template.update(operator_passwordless_sudo=False, berth_ssh_key=False)
         cls.station.write_profile(bare_profile(template))
         cls.first_apply = cls.station.berth('apply', HOST, input='', timeout=900)
         cls.second_apply = cls.station.berth('apply', HOST, input='', timeout=900)
@@ -170,10 +179,10 @@ class Served(OwnKeyOnly, unittest.TestCase):
     def tearDownClass(cls):
         cls.serve.stop()
 
-    def test_the_server_hands_out_its_key_and_passwordless_sudo(self):
+    def test_the_server_hands_out_its_key_and_no_sudo_switch(self):
         catalogue = self.serve.call('GET', '/v1/setup')
         self.assertEqual(catalogue['key'], self.keyed.own_key.with_suffix('.pub').read_text().strip())
-        self.assertIs(catalogue['template']['operator_passwordless_sudo'], True)
+        self.assertNotIn('operator_passwordless_sudo', catalogue['template'])
         self.assertEqual(catalogue['template']['operator_ssh_public_keys'], [])
 
     def test_the_agents_files_through_the_server(self):
@@ -184,3 +193,58 @@ class Served(OwnKeyOnly, unittest.TestCase):
         self.assertEqual(status, 200)
         status, read, _ = self.serve.request('GET', path, raw=True)
         self.assertEqual((status, read), (200, content))
+
+
+@needs_e2e
+class FirstApplyWithSudoPassword(unittest.TestCase):
+    """An existing machine reached first as an account of its own whose sudo
+    asks for a password, then as the operator the apply set up."""
+
+    OWNER = 'owner'
+
+    @classmethod
+    def setUpClass(cls):
+        cls.station = Workstation('sudo-password')
+        cls.station.berth('key')
+        hand_over(cls.station.key)
+        wait_for('the operator taking the key', lambda: cls.station.ssh(OPERATOR, 'true', check=False).returncode == 0)
+        cls.password = random_text('sudo')
+        owner = cls.OWNER
+        cls.station.root_on_host(
+            f'id {owner} >/dev/null 2>&1 || useradd --create-home --shell /bin/bash --groups sudo {owner}')
+        # The password goes on standard input, never into argv.
+        cls.station.ssh(OPERATOR, 'sudo -n chpasswd', input=f'{owner}:{cls.password}\n')
+        (SEED / f'{owner}.pub').write_text(cls.station.public + '\n')
+        wait_for('the account taking the key', lambda: cls.station.ssh(owner, 'true', check=False).returncode == 0)
+        template = json.loads((SRC / 'provision/config/example.json').read_text())
+        profile = bare_profile(template)
+        profile['builder'].update(ssh_user=owner, ask_become_pass=True)
+        cls.station.write_profile(profile)
+        typed = {'BERTH_SUDO_PASSWORD': cls.password}
+        cls.as_owner = cls.station.berth('apply', HOST, input='', env=typed, timeout=900, check=False)
+        cls.owner_profile = cls.station.read_profile()
+        profile['builder']['ssh_user'] = OPERATOR
+        cls.station.write_profile(profile)
+        cls.as_operator = cls.station.berth('apply', HOST, input='', env=typed, timeout=900, check=False)
+        cls.operator_profile = cls.station.read_profile()
+
+    @classmethod
+    def tearDownClass(cls):
+        (SEED / f'{cls.OWNER}.pub').unlink(missing_ok=True)
+        cls.station.root_on_host(
+            f'userdel --remove {cls.OWNER}; rm -f /etc/ssh/provided-keys/{cls.OWNER}', check=False)
+
+    def test_the_first_apply_becomes_root_with_the_password(self):
+        output = self.as_owner.stdout + self.as_owner.stderr
+        self.assertEqual(self.as_owner.returncode, 0, output[-4000:])
+        self.assertNotIn(self.password, output)
+        # The account of the machine's own keeps a sudo that asks, and so does its profile.
+        self.assertNotEqual(self.station.ssh(self.OWNER, 'sudo -n true', check=False).returncode, 0)
+        self.assertIs(self.owner_profile['builder']['ask_become_pass'], True)
+
+    def test_an_apply_as_the_operator_stops_the_asking(self):
+        self.assertEqual(self.as_operator.returncode, 0, self.as_operator.stdout[-4000:])
+        self.assertNotIn('ask_become_pass', self.operator_profile['builder'])
+        # berth reaches the host now without a password.
+        done = self.station.berth('exec', HOST, '--', 'id', '-un', input='')
+        self.assertEqual(done.stdout.strip(), AGENT)
