@@ -52,7 +52,8 @@ class Adopt(unittest.TestCase):
         self.assertNotIn('tailscale_auth_key', kept)
         for key, value in saved.items():
             if key not in ('access', 'builder', 'tailscale_auth_key'):
-                self.assertEqual(kept[key], value, key)
+                # An empty list a test saved since the last apply is not on the host yet.
+                self.assertEqual(kept.get(key, []), value, key)
 
     def test_berthd_serves_it(self):
         # With the user's key, which the profile lists, whichever berth applied last.
