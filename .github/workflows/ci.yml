@@ -44,9 +44,63 @@ jobs:
         if: always()
         run: rm -rf "$BERTH_CI_CACHE/target/debug/incremental" "$BERTH_CI_CACHE/target/tmp"
 
-  e2e:
+  # berth is built once, here, and each shard of the end-to-end tests runs it
+  # against a test host of its own. Only this job saves the cargo cache and the
+  # test host's image layers, so the shards do not race to save the same keys.
+  e2e-build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      shards: ${{ steps.shards.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "BERTH_CI_CACHE=$RUNNER_TEMP/berth-ci-cache" >> "$GITHUB_ENV"
+      - id: shards
+        run: echo "shards=$(python3 tests/e2e/run.py --shards)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the dev image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ci/dev.Dockerfile
+          tags: berth-ci-dev
+          load: true
+          cache-from: type=gha,scope=berth-ci-dev
+      - name: Build the test host's image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ci/host.Dockerfile
+          tags: berth-ci-host
+          cache-from: type=gha,scope=berth-ci-host
+          cache-to: type=gha,scope=berth-ci-host,mode=max
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.BERTH_CI_CACHE }}
+          key: e2e-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-${{ github.sha }}
+          restore-keys: e2e-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-
+      - name: Build berth
+        run: ci/run.sh run cargo build --locked -p berth --features web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: e2e-berth
+          path: ${{ env.BERTH_CI_CACHE }}/target/debug/berth
+          retention-days: 1
+          if-no-files-found: error
+      - name: Keep the cache small
+        if: always()
+        run: rm -rf "$BERTH_CI_CACHE/target/debug/incremental" "$BERTH_CI_CACHE/target/tmp"
+
+  e2e-shard:
+    needs: e2e-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.e2e-build.outputs.shards) }}
+    env:
+      BERTH_CI_PREBUILT: '1'
     steps:
       - uses: actions/checkout@v4
       - run: echo "BERTH_CI_CACHE=$RUNNER_TEMP/berth-ci-cache" >> "$GITHUB_ENV"
@@ -67,24 +121,37 @@ jobs:
           tags: berth-ci-host
           load: true
           cache-from: type=gha,scope=berth-ci-host
-          cache-to: type=gha,scope=berth-ci-host,mode=max
-      - uses: actions/cache@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: ${{ env.BERTH_CI_CACHE }}
-          key: e2e-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-${{ github.sha }}
-          restore-keys: e2e-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-
+          name: e2e-berth
+          path: ${{ env.BERTH_CI_CACHE }}/target/debug
+      # An artifact does not keep the file's mode.
+      - run: chmod +x "$BERTH_CI_CACHE/target/debug/berth"
       - name: End-to-end tests
-        run: ci/run.sh e2e
+        run: ci/run.sh e2e --shard "${{ matrix.shard }}"
       - name: Upload the test host's logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-logs
+          name: e2e-logs-${{ matrix.shard }}
           path: build/ci/logs
           if-no-files-found: ignore
-      - name: Keep the cache small
-        if: always()
-        run: rm -rf "$BERTH_CI_CACHE/target/debug/incremental" "$BERTH_CI_CACHE/target/tmp"
+
+  # The check that branch protection requires. A job that was skipped would
+  # count as passed, so this one runs always and looks at every result.
+  e2e:
+    needs: [e2e-build, e2e-shard]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Results: $RESULTS"
+          for result in $RESULTS; do
+            [[ $result == success ]] || exit 1
+          done
 
   prose:
     runs-on: ubuntu-latest
