@@ -81,7 +81,7 @@ The end-to-end tests in `tests/e2e/` apply a profile to a throw-away Ubuntu cont
 ## Versions and releases
 
 - Every program says `berth_api::VERSION`. Do not read `CARGO_PKG_VERSION` anywhere else. A test checks.
-- A release is a pushed tag `vX.Y.Z`. The Build workflow builds with `BERTH_BUILD_VERSION` set from it, publishes the release and the image, then commits the version to `main` (`Cargo.toml`, `Cargo.lock`, `docs/openapi/`). Do not change the version by hand.
+- A release is a pushed tag `vX.Y.Z`. The Build workflow builds with `BERTH_BUILD_VERSION` set from it, publishes the release and the image, then opens a pull request that sets the version on `main` (`Cargo.toml`, `Cargo.lock`, `docs/openapi/`). Merge it when its checks have passed. Do not change the version by hand.
 - A tag with a suffix, such as `v0.4.0-rc.1`, makes a pre-release and leaves `main` alone.
 
 ## Conventions
