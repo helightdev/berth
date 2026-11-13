@@ -16,10 +16,29 @@ berth sets up and looks after agent workstations. These are Ubuntu machines with
 | `crates/vendor/` | The vendored `tui-input` crate |
 | `provision/` | The installer side of the provisioning source: the role in `ansible/`, first-boot provisioning in `bootstrap/`, the builder of seeds and releases in `bin/devbox.py` and the example profile in `config/`. berth names these paths in `layout` in `crates/berth-core/src/paths.rs` |
 | `plugins/` | The plugins that come with berth, each an npm-format package with a `guide.md`. With `provision/` they make the provisioning source, which berth carries and unpacks with the same layout |
+| `recipes/` | Set-ups that go with berth but are not installed by it. Each is a folder with a guide and a script. `recipes/README.md` lists them |
+| `.agents/skills/` | Skills for coding agents that work with berth, such as installing it. `.claude/skills` links here |
 | `container/` | The desktop image and berth's own image |
 | `ci/` | The images and scripts that run the checks and the end-to-end tests in containers |
 | `docs/` | The documentation site (Fumadocs). `docs/AGENTS.md` has notes for its Next.js version |
 | `tests/` | Python tests of the provisioning source |
+
+## Skills
+
+Skills for agents are in `.agents/skills/`, each a folder with a `SKILL.md`. `.claude/skills` is a link to the same folder.
+
+| Skill | Use it when |
+| --- | --- |
+| `install-berth` | Someone asks you to install or set up berth, on their own machine or on a server |
+
+A new skill gets its own folder and a row here and in `.agents/skills/README.md`. Its text has to be true to the docs and the recipes' guides, and it has to pass vale.
+
+## Installing berth for someone
+
+- Follow the `install-berth` skill. It says which recipe in `recipes/` fits and gives its command.
+- A recipe that erases disks needs the user's word first, for that server and those disks.
+- Do not write an enrollment key or a password into a file in the repository.
+- When a berth server is installed, give the user its address and a setup key from `berth setup-key`. Do not read or print the token in `serve.token`.
 
 ## Build and check
 
@@ -45,10 +64,16 @@ With only Docker or Podman, `ci/run.sh` runs the same checks in an image that ha
 ```bash
 ci/run.sh check [CHECK…]   # fmt, shell-syntax, ansible-syntax, vale, python-tests, rust-tests, clippy
 ci/run.sh e2e [TEST…]      # the end-to-end tests, such as e2e_serve.Roles
+ci/run.sh e2e --shard NAME # one shard of them, as a CI job runs it
 ci/run.sh shell            # a shell in the dev container
+ci/run.sh boot cloud|iso   # real installs in QEMU, with KVM; slow
 ```
 
 The end-to-end tests in `tests/e2e/` apply a profile to a throw-away Ubuntu container over SSH and then use it with berth, berthd and `berth serve`. They run on a network with nothing else on it, in scratch directories. The order of the modules is in `tests/e2e/run.py`. The test host's logs from a failed run are in `build/ci/logs/`.
+
+CI builds berth once and runs the shards in `SHARDS` of `tests/e2e/run.py` at the same time, each on a fresh host. A shard's first test that needs the host applies the profile itself. A new module goes into a shard too, or the run refuses to start.
+
+`ci/run.sh boot` boots berth's cloud seed and its USB installer in QEMU, lets the first boot set the host up, and then runs `tests/e2e/boot_*.py` and part of the container suite against it. Each takes 10 to 15 minutes on a machine with KVM, so run it when a change touches provisioning, the role or first boot. Logs, timings and disk use are in `build/boot/`.
 
 ## API changes
 
@@ -59,7 +84,7 @@ The end-to-end tests in `tests/e2e/` apply a profile to a throw-away Ubuntu cont
 ## Versions and releases
 
 - Every program says `berth_api::VERSION`. Do not read `CARGO_PKG_VERSION` anywhere else. A test checks.
-- A release is a pushed tag `vX.Y.Z`. The Build workflow builds with `BERTH_BUILD_VERSION` set from it, publishes the release and the image, then commits the version to `main` (`Cargo.toml`, `Cargo.lock`, `docs/openapi/`). Do not change the version by hand.
+- A release is a pushed tag `vX.Y.Z`. The Build workflow builds with `BERTH_BUILD_VERSION` set from it, publishes the release and the image, then opens a pull request that sets the version on `main` (`Cargo.toml`, `Cargo.lock`, `docs/openapi/`). Merge it when its checks have passed. Do not change the version by hand.
 - A tag with a suffix, such as `v0.4.0-rc.1`, makes a pre-release and leaves `main` alone.
 
 ## Conventions

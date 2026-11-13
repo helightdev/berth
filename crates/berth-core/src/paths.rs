@@ -1,7 +1,8 @@
 //! Where berth keeps things on this machine, and its own settings.
 //!
 //! - `~/.config/berth/config.json`: the tool's settings
-//! - `~/.config/berth/hosts/NAME.json`: one profile per host, private
+//! - `~/.config/berth/hosts/NAME.json`: one profile per host, private, with
+//!   `NAME.credentials.json` and `NAME.instance.json` beside it
 //! - `~/.local/share/berth/source/`: the provisioning source, unpacked from the
 //!   program itself whenever a new version runs. It is laid out as a checkout
 //!   is, with the paths in [`layout`]
@@ -97,6 +98,18 @@ pub const SETTINGS: &[(&str, &str)] = &[
     (
         "oauth_claim",
         "the claim with the roles berth:view, berth:operate and berth:admin (default: scope; dots go into objects, as in realm_access.roles)",
+    ),
+    (
+        "tailnet_login_server",
+        "address of the Headscale server hosts join, such as https://hs.example.org (empty: Tailscale's own service)",
+    ),
+    (
+        "tailnet_user",
+        "the Headscale user that new hosts belong to, by name or number",
+    ),
+    (
+        "tailnet_tags",
+        "tags new hosts get, comma separated, such as tag:berth (for Tailscale also DEVBOX_TAILSCALE_TAGS)",
     ),
 ];
 
@@ -232,6 +245,10 @@ impl Paths {
         let mut settings = self.settings()?;
         if value.is_empty() {
             settings.remove(key);
+        } else if key == "tailnet_login_server"
+            && !(value.starts_with("https://") || value.starts_with("http://"))
+        {
+            return Err("tailnet_login_server is an address such as https://hs.example.org".into());
         } else if key == "source" {
             let source = fs::canonicalize(crate::discovery::expand_path(value))?;
             older_source(&source)?;
@@ -336,7 +353,7 @@ impl Paths {
             .filter_map(|entry| {
                 let name = entry.file_name().into_string().ok()?;
                 let name = name.strip_suffix(".json")?;
-                if name.ends_with(".credentials") {
+                if name.ends_with(".credentials") || name.ends_with(".instance") {
                     return None;
                 }
                 let profile: Value = serde_json::from_slice(&fs::read(entry.path()).ok()?).ok()?;
@@ -391,10 +408,12 @@ mod tests {
         )
         .unwrap();
         fs::write(paths.hosts_dir().join("laptop.credentials.json"), "{}").unwrap();
+        fs::write(paths.hosts_dir().join("laptop.instance.json"), "{}").unwrap();
         assert_eq!(paths.hosts(), [("laptop".into(), "100.64.0.1".into())]);
 
         assert!(paths.set("colour", "blue").is_err());
         paths.set("default_host", "laptop").unwrap();
+        assert!(paths.set("tailnet_login_server", "hs.example.org").is_err());
         assert_eq!(paths.settings().unwrap()["default_host"], "laptop");
         assert!(paths.set("source", home.path().to_str().unwrap()).is_err());
 

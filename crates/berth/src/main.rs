@@ -35,9 +35,20 @@ Usage:
                              at the first that fails; --all takes current ones too,
                              --update runs their update task, --reboot reboots those
                              that need it unless sessions run (--force: even then)
+  berth connect URL          use the berth server at URL: give it the setup key made
+                             there with berth setup-key, on standard input
   berth login                log in to a berth server that takes access tokens of an
                              OAuth 2.0 issuer; berth logout forgets the login
   berth remove HOST          forget a host; the machine is left as it is
+  berth provisioners         what can create machines, and what each asks for
+  berth provisioners PLUGIN/ID [NAME=VALUE…]
+                             the machines it has that berth created
+  berth provision HOST PLUGIN/ID [NAME=VALUE…] [--yes]
+                             create the machine for a saved host and set it up
+  berth instance HOST        the machine berth created for the host, and its state
+  berth instance HOST start|stop
+  berth instance HOST destroy [--yes]
+                             delete the machine; the profile stays
   berth key                  this berth's own SSH public key, which the operator of a
                              host it sets up takes
   berth tasks HOST           what the host can do: its tasks and those of its plugins
@@ -67,7 +78,11 @@ Usage:
                              whether a registry answers and accepts its login
   berth registry remove NAME
   berth secret [set NAME | remove NAME]
-                             secret values kept on this machine
+                             secret values kept on this machine; tailnet_api_key is
+                             the control server's API key, for enrollment keys
+  berth tailnet-key HOST     create a one-use enrollment key for HOST, valid for an
+                             hour, at the control server of the tailnet_ settings
+                             (HOST may also be the path of its profile)
   berth host HOST            what a host is given
   berth host HOST secret NAME env VARIABLE | file PATH [MODE] | off
   berth host HOST registry NAME on|off
@@ -97,6 +112,9 @@ Usage:
                              an API over all hosts on a socket of this user; with
                              --listen also over HTTP behind a token, on this machine
                              only unless --expose allows another address
+  berth setup-key [--remove] make a key, valid for a day, that lets the first user
+                             collect the token of the berth serve on this machine;
+                             --remove ends it
   berth inbox [HOST] [--topic PREFIX] [--all]
                              messages taken in from the hosts' channels
   berth kv get|set|rm|ls NAMESPACE [KEY] [JSON]
@@ -123,6 +141,23 @@ fn show_config(paths: &Paths) -> Result<()> {
         println!("{key} = {}\n    {help}", value.unwrap_or("(not set)"));
     }
     Ok(())
+}
+
+/// `berth config KEY VALUE`: the tailnet settings of a berth server this
+/// berth uses are the server's, and change there.
+fn change_setting(paths: &Paths, key: &str, value: &str) -> Result<()> {
+    match berth_core::server::Server::configured(paths) {
+        Some(server) if berth_core::tailnet::SETTINGS.contains(&key) => {
+            server.call(
+                "settings.set",
+                json!({"key": key}),
+                Some(json!({"value": value})),
+            )?;
+            println!("Changed {key} on the berth server at {}", server.url);
+            Ok(())
+        }
+        _ => paths.set(key, value),
+    }
 }
 
 fn enter() -> Result<ratatui::DefaultTerminal> {
@@ -368,6 +403,9 @@ fn run() -> Result<()> {
         "login",
         "logout",
         "key",
+        "tailnet-key",
+        "connect",
+        "setup-key",
     ];
     if let Some(server) = berth_core::server::Server::configured(&paths)
         && !args.first().is_some_and(|verb| local.contains(verb))
@@ -437,6 +475,8 @@ fn run() -> Result<()> {
         }
         ["update", ref rest @ ..] => return update::command(rest),
         ["serve", ref rest @ ..] => return serve::command(&paths, rest),
+        ["setup-key", ref rest @ ..] => return serve::setup_key::command(&paths, rest),
+        ["connect", url] => return commands::connect(&paths, url),
         ["inbox", ref rest @ ..] => return serve::inbox_command(&paths, rest),
         ["kv", ref rest @ ..] => return serve::kv_command(&paths, rest),
         ["openapi"] => {
@@ -490,8 +530,22 @@ fn run() -> Result<()> {
             return Ok(());
         }
         ["config"] => return show_config(&paths),
-        ["config", key] => return paths.set(key, ""),
-        ["config", key, value] => return paths.set(key, value),
+        ["config", key] => return change_setting(&paths, key, ""),
+        ["config", key, value] => return change_setting(&paths, key, value),
+        ["tailnet-key", host] => {
+            // An apply runs this on the machine that runs berth, for a host
+            // not on the tailnet yet; the key goes to the role on stdout.
+            let host = berth_core::host::Host::load(&paths, host)?;
+            let name = host.path.file_stem().unwrap_or_default().to_string_lossy();
+            let key = berth_core::tailnet::create_key(
+                &paths,
+                &host.config,
+                &name,
+                berth_core::tailnet::APPLY_LIFETIME,
+            )?;
+            println!("{key}");
+            return Ok(());
+        }
         ["iso", host] => return build_installer(&paths, host, None),
         ["iso", host, "--write", device] => return build_installer(&paths, host, Some(device)),
         ["login"] => return commands::login(&paths),
@@ -506,6 +560,14 @@ fn run() -> Result<()> {
         ["apply", "--behind" | "--all", ..] => return commands::apply_hosts(&paths, &args[1..]),
         ["apply", host] => return commands::apply(&paths, host),
         ["remove", host] => return commands::remove(&paths, host),
+        ["provisioners"] => return commands::provisioners(&paths),
+        ["provisioners", name, ref rest @ ..] => {
+            return commands::provisioner_instances(&paths, name, rest);
+        }
+        ["provision", host, provisioner, ref rest @ ..] => {
+            return commands::provision(&paths, host, provisioner, rest);
+        }
+        ["instance", host, ref rest @ ..] => return commands::instance(&paths, host, rest),
         ["seed", host] if berth_core::server::Server::configured(&paths).is_some() => {
             return commands::seed(&paths, host);
         }
@@ -560,6 +622,7 @@ fn run() -> Result<()> {
                 },
             };
             let mut app = open(&paths, &name)?;
+            app.start();
             // Terminal actions (Ansible) suspend the UI and come back to it.
             while ui::run(&mut terminal, &mut app)? {
                 leave();
@@ -635,6 +698,7 @@ mod tests {
                 feature("one", "development tools", "hello"),
                 feature("two", "Games", "other"),
             ],
+            provisioners: vec![],
         }
     }
 
@@ -737,7 +801,8 @@ mod tests {
             json!([])
         );
 
-        app.step = Step::Accounts;
+        // The accounts on the Settings tab start with a heading.
+        app.step = Step::Settings;
         assert_eq!(selectable(&app)[0], 1);
         app.action = Action::Docker;
         assert_eq!(app.fields(), [Field::AgentUser]);
@@ -749,7 +814,10 @@ mod tests {
         app.step = Step::Install;
         app.action = Action::Docker;
         assert!(app.fields().is_empty());
+        // What an installer picks the disk and network with has defaults.
         app.action = Action::UsbSeed;
+        assert!(!app.fields().contains(&Field::DiskMode));
+        app.step = Step::Settings;
         assert!(app.fields().contains(&Field::DiskType));
         assert!(!app.fields().contains(&Field::DiskSerial));
         assert!(!app.fields().contains(&Field::WifiSsid));
@@ -758,6 +826,7 @@ mod tests {
         let fields = app.fields();
         assert!(fields.contains(&Field::DiskSerial) && !fields.contains(&Field::DiskType));
         assert!(fields.contains(&Field::WifiSsid));
+        app.step = Step::Install;
         app.action = Action::Ssh;
         assert!(app.fields().contains(&Field::SshHost));
         assert!(!app.fields().contains(&Field::Hostname));
@@ -779,6 +848,15 @@ mod tests {
         assert_eq!(legacy["wifi_enabled"], true);
         assert_eq!(legacy["release_url"], "");
         assert_eq!(legacy["builder"]["ask_pass"], true);
+        // A profile of the qemu kind there once was shows as cloud, reached from the QEMU host.
+        let qemu = parse_config(br#"{"profile": "qemu"}"#).unwrap();
+        assert_eq!(qemu["profile"], "cloud");
+        assert_eq!(
+            qemu["ansible_vars"]["devbox_bootstrap_ssh_cidr"],
+            "10.0.2.2/32"
+        );
+        let app = app(r#"{"profile": "qemu"}"#);
+        assert_eq!(app.text(Field::RecoveryCidr), "10.0.2.2/32");
     }
 
     #[test]
@@ -879,7 +957,7 @@ mod tests {
         // A cloud seed needs somewhere to get the release from, but no SSH network.
         app.action = Action::CloudSeed;
         assert_eq!(app.problems().len(), 1);
-        let step = std::mem::replace(&mut app.step, Step::Install);
+        let step = std::mem::replace(&mut app.step, Step::Settings);
         assert!(app.fields().contains(&Field::ReleaseUrl));
         app.config["release_store"] = json!("nexus/releases");
         assert!(app.problems().is_empty());

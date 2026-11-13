@@ -16,10 +16,9 @@ use berth_api::{
     Session, b64, code,
 };
 use berth_core::{
-    apply,
     host::Host,
-    paths::{SETTINGS, layout},
-    plugins,
+    paths::{Paths, SETTINGS, layout},
+    plugins, provision,
     registry::{self, Store},
     server::safe,
 };
@@ -44,8 +43,12 @@ fn store(state: &Serve) -> Store {
 
 /// Where the profile of a host of this name is. A name is a file name here,
 /// and never a path.
-fn profile_path(state: &Serve, name: &str) -> Answer<std::path::PathBuf> {
-    if !safe(name) || name.ends_with(".json") || name.ends_with(".credentials") {
+pub(super) fn profile_path(state: &Serve, name: &str) -> Answer<std::path::PathBuf> {
+    if !safe(name)
+        || name.ends_with(".json")
+        || name.ends_with(".credentials")
+        || name.ends_with(".instance")
+    {
         return Err(bad(format!("Not a host name: {name}")));
     }
     state.paths.profile(name).map_err(bad)
@@ -106,11 +109,36 @@ pub async fn save_profile(
 #[utoipa::path(delete, path = "/v1/hosts/{name}", summary = "Remove a host's profile. The host itself is left as it is.", tag = "set-up",
     params(("name" = String, Path, description = "A saved host")),
     responses((status = 200, description = "Removed", body = Done),
-              (status = 404, description = "No such host", body = ErrorBody)))]
+              (status = 404, description = "No such host", body = ErrorBody),
+              (status = 409, description = "It has a machine berth created, which is deleted first, or one is being created", body = ErrorBody)))]
 pub async fn remove_host(State(state): App, Path(name): Path<String>) -> Answer<Json<Done>> {
     let path = profile_path(&state, &name)?;
+    if !path.is_file() {
+        return Err(missing(format!("No host {name}")));
+    }
+    // Without its record nobody could delete the machine any more.
+    if let Some(record) = provision::Record::load(&state.paths, &name)
+        .map_err(internal)?
+        .filter(|record| !record.id.is_empty())
+    {
+        return Err(Fail::new(
+            code::CONFLICT,
+            format!(
+                "{name} has a machine berth created, {} of {}. Delete it first: berth instance {name} destroy",
+                record.id, record.provisioner
+            ),
+        ));
+    }
+    if provision::busy(&state.paths, &name) {
+        return Err(Fail::new(
+            code::CONFLICT,
+            format!("A machine is being created for {name}. Remove it when that has ended"),
+        ));
+    }
     std::fs::remove_file(&path).map_err(|_| missing(format!("No host {name}")))?;
-    let _ = std::fs::remove_file(path.with_extension("credentials.json"));
+    for beside in ["credentials.json", "instance.json", "instance.lock"] {
+        let _ = std::fs::remove_file(path.with_extension(beside));
+    }
     state.forget(&name);
     Ok(Json(Done { ok: true }))
 }
@@ -130,76 +158,24 @@ pub struct Seed {
               (status = 400, description = "The profile cannot be installed this way; the message says why", body = ErrorBody),
               (status = 404, description = "No such host", body = ErrorBody)))]
 pub async fn seed(State(state): App, Path(name): Path<String>) -> Answer<Json<Seed>> {
-    let path = profile_path(&state, &name)?;
-    let host = Host::load(&state.paths, &name).map_err(|_| missing(format!("No host {name}")))?;
-    let source = state.paths.source().map_err(internal)?;
-    let dirs = apply::plugin_dirs(&plugins::load(&[
-        source.join("plugins"),
-        state.paths.config_dir.join("plugins"),
-    ]));
-    // With a store named for it, the release goes there first and the seed
-    // points at what was just published.
-    let release = host.config["release_store"]
-        .as_str()
-        .unwrap_or("")
-        .to_owned();
-    if !release.is_empty() {
-        let (registries, build, plugins) = (store(&state), state.paths.build_dir(), dirs.clone());
-        let destination = release.clone();
-        let url = tokio::task::spawn_blocking(move || {
-            registry::publish_from(&registries, &build, &plugins, &destination)
-                .map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(internal)?
-        .map_err(|error| bad(format!("Publishing to {release} failed: {error}")))?;
-        let mut profile = host.config.clone();
-        profile["release_url"] = json!(url);
-        std::fs::write(
-            &path,
-            serde_json::to_string_pretty(&profile).map_err(internal)? + "\n",
-        )
-        .map_err(internal)?;
-    }
-    let mut command = tokio::process::Command::new("python3");
-    command
-        .current_dir(&source)
-        .args([layout::BUILDER, "render", "--kind", "cloud", "--config"])
-        .arg(&path)
-        .env("DEVBOX_BUILD_DIR", state.paths.build_dir())
-        .env("BERTH_PLUGINS", dirs.to_string())
-        .env(
-            "BERTH_SSH_PUBLIC_KEY",
-            state.paths.own_public_key().unwrap_or_default(),
-        )
-        .stdin(std::process::Stdio::null());
-    // A release that is not public: the seed carries the login of the registry it is in.
-    let private = host.config["release_private"].as_bool().unwrap_or(false);
-    let login = match host.config["release_login"].as_str() {
-        Some(name) => Some(name),
-        None if private && !release.is_empty() => release.split('/').next(),
-        None => None,
+    profile_path(&state, &name)?;
+    Host::load(&state.paths, &name).map_err(|_| missing(format!("No host {name}")))?;
+    let paths = Paths {
+        config_dir: state.paths.config_dir.clone(),
+        data_dir: state.paths.data_dir.clone(),
     };
-    if let Some(registry) = login {
-        let login = store(&state)
-            .curl_login(registry)
-            .map_err(bad)?
-            .ok_or_else(|| {
-                bad(format!(
-                    "Registry {registry} has no stored login for downloading the release"
-                ))
-            })?;
-        command.env("BERTH_RELEASE_LOGIN", login);
-    }
-    let output = command.output().await.map_err(internal)?;
-    if !output.status.success() {
-        return Err(bad(String::from_utf8_lossy(&output.stderr).trim()));
-    }
-    let said = String::from_utf8_lossy(&output.stdout);
-    let out = said.lines().last().unwrap_or("").trim();
-    let user_data =
-        std::fs::read_to_string(std::path::Path::new(out).join("user-data")).map_err(internal)?;
-    Ok(Json(Seed { user_data }))
+    let registries = store(&state);
+    // It may publish the release and runs the seed builder, and waits for both.
+    let seed = tokio::task::spawn_blocking(move || {
+        berth_core::seed::cloud(&paths, &registries, &name, false)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(internal)?
+    .map_err(bad)?;
+    Ok(Json(Seed {
+        user_data: seed.user_data,
+    }))
 }
 
 #[utoipa::path(post, path = "/v1/hosts/{name}/secrets", summary = "Send the host the secrets and registry logins its profile names.", tag = "set-up",
@@ -370,7 +346,13 @@ pub async fn check_registry(State(state): App, Path(name): Path<String>) -> Answ
 
 /// The settings a caller may change. The others say who gets in and where the
 /// server's files are, which is set on the server itself.
-const OPEN_SETTINGS: &[&str] = &["default_host", "retention_days"];
+const OPEN_SETTINGS: &[&str] = &[
+    "default_host",
+    "retention_days",
+    "tailnet_login_server",
+    "tailnet_user",
+    "tailnet_tags",
+];
 
 #[derive(Serialize, ToSchema)]
 pub struct Setting {
@@ -652,7 +634,7 @@ pub struct Generated {
     pub password: Option<String>,
 }
 
-#[utoipa::path(post, path = "/v1/setup/generate", summary = "Make up a host name, hash or make up a password, or create a Tailscale key.", tag = "set-up",
+#[utoipa::path(post, path = "/v1/setup/generate", summary = "Make up a host name, hash or make up a password, or create a one-use enrollment key at the tailnet's control server.", tag = "set-up",
     request_body(content = Generate, description = "What to make"),
     responses((status = 200, description = "What was made", body = Generated),
               (status = 400, description = "It could not be made; the message says why", body = ErrorBody)))]
@@ -663,6 +645,10 @@ pub async fn generate(State(state): App, Json(asked): Json<Generate>) -> Answer<
             Some(profile_path(&state, host)?.with_extension("credentials.json"))
         }
         _ => None,
+    };
+    let paths = Paths {
+        config_dir: state.paths.config_dir.clone(),
+        data_dir: state.paths.data_dir.clone(),
     };
     let made = tokio::task::spawn_blocking(move || -> Result<Generated, String> {
         let fail = |error: Box<dyn std::error::Error>| error.to_string();
@@ -698,13 +684,15 @@ pub async fn generate(State(state): App, Json(asked): Json<Generate>) -> Answer<
                 }
             },
             "tailscale_key" => {
-                let description = match asked.host.as_deref().unwrap_or("") {
-                    "" => "devbox".to_owned(),
-                    host => format!("devbox {host}"),
-                };
+                let host = asked.host.unwrap_or_default();
+                let config = Host::load(&paths, &host)
+                    .map(|host| host.config)
+                    .unwrap_or_default();
+                let (value, note) =
+                    berth_core::tailnet::generate(&paths, &config, &host).map_err(fail)?;
                 Ok(Generated {
-                    value: credentials::tailscale_auth_key(&description).map_err(fail)?,
-                    note: "One-use Tailscale key created · valid for 24 hours".into(),
+                    value,
+                    note,
                     password: None,
                 })
             }

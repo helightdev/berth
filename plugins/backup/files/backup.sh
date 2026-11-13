@@ -19,7 +19,11 @@ case ${1:-} in
   snapshot)
     ready
     restic cat config >/dev/null 2>&1 || restic init
-    restic backup --tag berth --host "$host" --exclude-caches --exclude-file /etc/berth-backup.exclude "${PATHS[@]}"
+    excludes=(--exclude-file /etc/berth-backup.exclude)
+    for file in /etc/berth-backup.exclude.d/*; do
+      [[ -f $file ]] && excludes+=(--exclude-file "$file")
+    done
+    restic backup --tag berth --host "$host" --exclude-caches "${excludes[@]}" "${PATHS[@]}"
     restic forget --tag berth --host "$host" --prune \
       --keep-daily "$KEEP_DAILY" --keep-weekly "$KEEP_WEEKLY" --keep-monthly "$KEEP_MONTHLY"
     mkdir -p "$state"

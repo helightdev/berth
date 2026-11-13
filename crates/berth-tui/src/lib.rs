@@ -6,6 +6,8 @@ pub mod berth_key;
 pub mod event;
 pub mod fields;
 pub mod host;
+pub mod links;
+pub mod machine;
 pub mod markdown;
 pub mod plugins;
 pub mod qr;

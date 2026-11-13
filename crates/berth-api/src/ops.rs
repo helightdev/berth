@@ -96,6 +96,9 @@ pub struct Op {
     pub http_only: &'static str,
     /// The least role that may call it on `berth serve`.
     pub role: Role,
+    /// What the caller shows instead of a token with a role, for an
+    /// operation that checks a key of its own; empty for the others.
+    pub key: &'static str,
 }
 
 const fn call(name: &'static str, method: &'static str, path: &'static str) -> Op {
@@ -112,6 +115,7 @@ const fn call(name: &'static str, method: &'static str, path: &'static str) -> O
             b"GET" => Role::View,
             _ => Role::Operate,
         },
+        key: "",
     }
 }
 
@@ -125,6 +129,7 @@ const fn stream(name: &'static str, path: &'static str) -> Op {
         headers: &[],
         http_only: "",
         role: Role::Operate,
+        key: "",
     }
 }
 
@@ -139,6 +144,14 @@ const fn admin(op: Op) -> Op {
 
 const fn bytes(mut op: Op) -> Op {
     op.body = Body::Bytes;
+    op
+}
+
+/// An operation that takes `key` as its bearer and no role. It is for a
+/// caller that has no token yet, so the portal, which needs one, does not carry it.
+const fn keyed(mut op: Op, key: &'static str) -> Op {
+    op.key = key;
+    op.http_only = "it is for a caller that has no token yet";
     op
 }
 
@@ -195,10 +208,16 @@ pub static HOST: &[Op] = &[
 
 const IF_MATCH: (&str, &str) = ("if_match", "if-match");
 
+/// What the operations of a setup key take as their bearer.
+pub const SETUP_KEY: &str = "the setup key";
+
 /// The operations of `berth serve` itself. A host's are reached with `host`.
 pub static SERVE: &[Op] = &[
     call("version", "GET", "/v1/version"),
     call("access", "GET", "/v1/access"),
+    keyed(call("setup_key.check", "GET", "/v1/setup-key"), SETUP_KEY),
+    keyed(call("setup_key.claim", "POST", "/v1/setup-key"), SETUP_KEY),
+    keyed(call("setup_key.done", "DELETE", "/v1/setup-key"), SETUP_KEY),
     call("hosts.list", "GET", "/v1/hosts"),
     call("hosts.get", "GET", "/v1/hosts/{name}"),
     admin(call("hosts.remove", "DELETE", "/v1/hosts/{name}")),
@@ -229,6 +248,28 @@ pub static SERVE: &[Op] = &[
     admin(call("plugins.update", "POST", "/v1/plugins/update")),
     admin(call("setup.catalogue", "GET", "/v1/setup")),
     admin(call("setup.generate", "POST", "/v1/setup/generate")),
+    admin(call("provisioners.list", "GET", "/v1/provisioners")),
+    admin(call(
+        "provisioners.instances",
+        "GET",
+        "/v1/provisioners/{plugin}/{id}/instances",
+    )),
+    admin(call(
+        "instances.create",
+        "POST",
+        "/v1/hosts/{name}/instance",
+    )),
+    admin(call("instances.get", "GET", "/v1/hosts/{name}/instance")),
+    admin(call(
+        "instances.power",
+        "POST",
+        "/v1/hosts/{name}/instance/{verb}",
+    )),
+    admin(call(
+        "instances.destroy",
+        "DELETE",
+        "/v1/hosts/{name}/instance",
+    )),
     call("jobs.list", "GET", "/v1/jobs"),
     call("jobs.get", "GET", "/v1/jobs/{id}"),
     role(stream("jobs.follow", "/v1/jobs/{id}"), Role::View),
@@ -357,6 +398,15 @@ mod tests {
         assert_eq!(role(SERVE, "kv.set"), Role::Operate);
         assert!(Role::View < Role::Operate && Role::Operate < Role::Admin);
         assert_eq!(Role::named("operate"), Some(Role::Operate));
+        // A setup key is its own way in, for a caller without a token.
+        let claim = find(SERVE, "setup_key.claim").unwrap();
+        assert!(claim.key == SETUP_KEY && !claim.http_only.is_empty());
+        assert!(
+            SERVE
+                .iter()
+                .filter(|op| !op.key.is_empty())
+                .all(|op| op.name.starts_with("setup_key."))
+        );
         assert_eq!(
             names("/v1/channel/{*topic}").collect::<Vec<_>>(),
             vec![("topic", true)]

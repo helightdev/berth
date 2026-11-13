@@ -1,0 +1,53 @@
+---
+# Join the tailnet once. A host that is on it already is left alone, so
+# applying again needs no key. The key is pasted into the profile, or, with
+# devbox_tailscale_key_command, created by berth on the machine that runs
+# this play, only when the host is about to use it.
+- name: Inspect Tailscale enrollment
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_status
+  changed_when: false
+  failed_when: false
+- name: Tell whether the host is on the tailnet
+  ansible.builtin.set_fact:
+    devbox_tailnet_enrolled: "{{ (tailscale_status.stdout | default('{}', true) | from_json).get('BackendState', '') == 'Running' }}"
+- name: Create a one-use enrollment key with berth
+  ansible.builtin.command:
+    argv: "{{ devbox_tailscale_key_command }}"
+  delegate_to: localhost
+  become: false
+  register: devbox_tailscale_made_key
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when:
+    - not devbox_tailnet_enrolled | bool
+    - devbox_tailscale_auth_key | length == 0
+    - devbox_tailscale_key_command | length > 0
+# Kept out of the task above, which hides its output for the key's sake.
+- name: Explain why berth made no enrollment key
+  ansible.builtin.fail:
+    msg: "berth could not create an enrollment key: {{ devbox_tailscale_made_key.stderr | default('') | trim }}"
+  when: devbox_tailscale_made_key.rc | default(0) != 0
+- name: Choose the enrollment key
+  ansible.builtin.set_fact:
+    devbox_tailnet_key: "{{ devbox_tailscale_auth_key if devbox_tailscale_auth_key | length > 0 else (devbox_tailscale_made_key.stdout | default('') | trim) }}"
+  no_log: true
+- name: Enroll Tailscale only when not already enrolled
+  when: not devbox_tailnet_enrolled | bool and devbox_tailnet_key | length > 0
+  block:
+    - name: Store one-time enrollment credential
+      ansible.builtin.copy:
+        dest: /run/devbox-tailscale-key
+        content: "{{ devbox_tailnet_key }}"
+        mode: '0600'
+      no_log: true
+    - name: Consume enrollment key
+      ansible.builtin.command:
+        argv: "{{ ['tailscale', 'up', '--timeout=3m', '--auth-key=file:/run/devbox-tailscale-key'] + (['--login-server=' ~ devbox_tailscale_login_server] if devbox_tailscale_login_server | length > 0 else []) }}"
+      changed_when: true
+  always:
+    - name: Remove temporary enrollment credential
+      ansible.builtin.file:
+        path: /run/devbox-tailscale-key
+        state: absent

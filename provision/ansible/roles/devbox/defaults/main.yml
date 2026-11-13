@@ -1,5 +1,5 @@
 ---
-devbox_profile: qemu
+devbox_profile: cloud
 devbox_user: agent
 devbox_agent_password_hash: ""
 devbox_agent_ssh_public_key: ""
@@ -111,6 +111,12 @@ devbox_install_cockpit: true
 devbox_cockpit_packages: [cockpit, cockpit-storaged, cockpit-packagekit, cockpit-files]
 devbox_start_services: true
 devbox_tailscale_auth_key: ""
+# The Headscale server the host joins, such as https://hs.example.org; empty
+# for Tailscale's own service.
+devbox_tailscale_login_server: ""
+# Set by berth for a host that joins automatically: the command, run where
+# berth runs, that prints a new one-use key.
+devbox_tailscale_key_command: []
 # Publish the desktop and T3 on the tailnet over HTTPS once the host is enrolled.
 devbox_tailscale_serve: true
 # An agent laptop keeps running with the lid closed. Set to suspend on battery instead.

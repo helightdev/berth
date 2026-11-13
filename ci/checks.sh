@@ -16,12 +16,17 @@ python-tests() { python3 -m unittest discover -s tests -v; }
 shell-syntax() {
   local script bad=0
   for script in install.sh provision/bin/*.sh provision/bootstrap/*.sh container/*.sh ci/*.sh \
-    provision/ansible/roles/devbox/files/*.sh provision/ansible/roles/devbox/files/tasks/*.sh plugins/*/files/*.sh; do
+    provision/ansible/roles/devbox/files/*.sh provision/ansible/roles/devbox/files/tasks/*.sh plugins/*/files/*.sh \
+    recipes/*/*.sh; do
     bash -n "$script" || bad=1
   done
   return "$bad"
 }
-ansible-syntax() { (cd provision && ansible-playbook -i localhost, ansible/site.yml --syntax-check); }
+ansible-syntax() {
+  (cd provision && ansible-playbook -i localhost, ansible/site.yml --syntax-check) &&
+    (cd recipes/incus-host && ansible-playbook -i localhost, site.yml --syntax-check) &&
+    (cd recipes/berth-server && ansible-playbook -i localhost, site.yml --syntax-check)
+}
 fmt() { cargo fmt --check "${crates[@]}"; }
 clippy() {
   cargo clippy --locked --all-targets -- -D warnings &&

@@ -1,0 +1,69 @@
+# A small machine that runs berth's server: Docker with the server in a
+# container, a firewall, and the tailnet with TLS in front of it.
+#
+#   ./install.sh                                  on the machine itself
+#   ansible-playbook -i SERVER, -u root site.yml  from another machine
+- name: Set up a berth server
+  hosts: all
+  become: true
+  vars_files:
+    - vars.yml
+  tasks:
+    - name: Check that this is an Ubuntu the recipe knows
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Ubuntu'
+          - ansible_facts['distribution_version'] is version('24.04', '>=')
+        fail_msg: The recipe is written for Ubuntu 24.04 and later, and was run on 26.04.
+
+    - name: Install Docker and what the server needs
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - ufw
+          - curl
+          - ca-certificates
+          - unattended-upgrades
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Start Docker now and at boot
+      ansible.builtin.systemd_service:
+        name: docker.service
+        enabled: true
+        state: started
+
+    - name: Join the tailnet
+      ansible.builtin.include_tasks: ../shared/tailscale.yml
+      when: tailscale_auth_key | length > 0
+
+    # SSH is allowed before the firewall is switched on, so the run does not lock itself out.
+    - name: Allow what the server is for
+      ansible.builtin.command: "ufw {{ item }}"
+      loop: "{{ rules | select | list }}"
+      register: firewall_rule
+      changed_when: "'Skipping' not in firewall_rule.stdout"
+      vars:
+        rules:
+          - "{{ 'allow 22/tcp' if ssh_from == 'any' else 'allow from ' ~ ssh_from ~ ' to any port 22 proto tcp' }}"
+          - "{{ 'allow in on tailscale0 to any port 22 proto tcp' if tailscale_auth_key else '' }}"
+          - "{{ 'allow 41641/udp' if tailscale_auth_key else '' }}"
+          - "{{ 'allow in on tailscale0 to any port 443 proto tcp' if berth_server_tailscale_serve | bool else '' }}"
+
+    - name: See whether the firewall is on
+      ansible.builtin.command: ufw status
+      register: firewall_state
+      changed_when: false
+
+    - name: Switch the firewall on
+      ansible.builtin.command: ufw --force enable
+      when: "'Status: active' not in firewall_state.stdout"
+      changed_when: true
+
+    - name: Run the berth server
+      ansible.builtin.include_tasks: ../shared/berth-server.yml
+
+    - name: Say how to use the berth server
+      ansible.builtin.debug:
+        msg: "{{ berth_server_handover }}"

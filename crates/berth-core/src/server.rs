@@ -79,6 +79,17 @@ pub async fn http(
     content_type: Option<&str>,
     body: Vec<u8>,
 ) -> client::Result<(u16, Vec<u8>)> {
+    http_as(method, url, None, content_type, body).await
+}
+
+/// [`http`] with a bearer in the `Authorization` header.
+pub async fn http_as(
+    method: &str,
+    url: &str,
+    bearer: Option<&str>,
+    content_type: Option<&str>,
+    body: Vec<u8>,
+) -> client::Result<(u16, Vec<u8>)> {
     let (host, port, secure) = parts(url)?;
     let name = host.trim_matches(['[', ']']).to_owned();
     let scheme = if secure { "https://" } else { "http://" };
@@ -93,6 +104,10 @@ pub async fn http(
     let mut headers = vec![("host", authority.as_str()), ("accept", "application/json")];
     if let Some(kind) = content_type {
         headers.push(("content-type", kind));
+    }
+    let authorization = bearer.map(|bearer| format!("Bearer {bearer}"));
+    if let Some(value) = &authorization {
+        headers.push(("authorization", value));
     }
     let answer = match secure {
         true => {

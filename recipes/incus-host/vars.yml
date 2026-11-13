@@ -1,0 +1,62 @@
+# What the recipe sets up. Change it here, or pass your own file:
+#   ./install.sh -e @my-vars.yml
+
+# ── Incus ─────────────────────────────────────────────────────────────────
+
+# Also install QEMU, for virtual machines. The server needs KVM for them.
+incus_virtual_machines: true
+
+# The storage pool for the guests' disks. With no source it is a btrfs file
+# of this size on the root file system, which every server can do.
+incus_pool: default
+incus_pool_size: 120GiB
+# A whole empty disk or partition instead, such as /dev/nvme1n1. Its
+# contents are lost.
+incus_pool_source: ""
+
+# The bridge the guests are on, with the address the server has on it. They
+# reach the internet through the server and nothing reaches them from outside.
+incus_bridge: incusbr0
+incus_bridge_address: 10.77.0.1/24
+
+# Where the Incus API listens. The firewall opens its port on one interface
+# only: the tailnet's, so nobody else reaches it. Empty opens it nowhere.
+incus_api_address: "[::]:8444"
+incus_api_interface: tailscale0
+
+# Clients that may use the API, such as a berth that creates machines here:
+# a name and the path of its certificate on the machine that runs the recipe.
+#   - name: berth
+#     certificate: ~/berth.crt
+incus_trusted_clients: []
+
+# ── A berth server ────────────────────────────────────────────────────────
+
+# Also run a berth server on this machine, in a Docker container. It is
+# given a certificate that this Incus trusts, so it can create machines here.
+berth_server: false
+berth_server_image: ghcr.io/helightdev/berth
+# Where it keeps its settings, profiles and data.
+berth_server_dir: /srv/berth
+# The port on this machine only. Nothing outside reaches it.
+berth_server_port: 7777
+# Put the server on the tailnet with TLS, at https://THIS-MACHINE.YOUR-TAILNET.ts.net.
+# It needs the tailnet's HTTPS certificates switched on, and does nothing
+# on a machine that is on no tailnet.
+berth_server_tailscale_serve: true
+
+# ── The tailnet ───────────────────────────────────────────────────────────
+
+# An enrollment key joins the server to your tailnet. Without one Tailscale
+# is not installed: pass it on the command line rather than saving it here.
+#   ./install.sh -e tailscale_auth_key=tskey-auth-…
+tailscale_auth_key: ""
+tailscale_hostname: "{{ ansible_facts['hostname'] }}"
+# The address of a Headscale server; empty for Tailscale's own service.
+tailscale_login_server: ""
+
+# ── The firewall ──────────────────────────────────────────────────────────
+
+# Who may reach SSH from outside the tailnet: any, or one address or network
+# such as 198.51.100.7. The provider's console is the way in if this is wrong.
+ssh_from: any

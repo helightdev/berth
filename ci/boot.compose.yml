@@ -1,0 +1,49 @@
+# The boot tests, run by ci/run.sh boot. One container runs QEMU, the package
+# cache and the release server the guest reaches through QEMU's user network,
+# and drives the tests over SSH to the guest, which it forwards to its own
+# port 22. Downloads, caches, logs and the guest's disks are under build/boot.
+name: ${BERTH_CI_PROJECT:-berth-ci}-boot
+
+services:
+  vm:
+    image: ${BERTH_CI_BOOT_IMAGE:-berth-ci-boot}
+    build:
+      context: ..
+      dockerfile: ci/boot.Dockerfile
+    working_dir: /src
+    # Root, for the ports below 1024 and /dev/kvm; what it writes to build/boot
+    # is handed back to the user at the end.
+    user: "0:0"
+    security_opt: [label=disable]
+    # /dev/null stands in when the guest runs without KVM.
+    devices: ["${BERTH_CI_KVM:-/dev/kvm}:/dev/kvm"]
+    # The guest is the test host, at the port QEMU forwards to its SSH.
+    extra_hosts: ["studio:127.0.0.1"]
+    # With --keep, the guest's SSH on this machine's loopback.
+    ports: ["127.0.0.1:${BERTH_CI_BOOT_SSH_PORT:-22722}:22"]
+    volumes:
+      - ..:/src:ro
+      - ${BERTH_CI_TARGET:-target}:/src/target:ro
+      - ../build/boot:/work
+      # An installer ISO already on this machine, used as it is.
+      - ${BERTH_CI_BOOT_ISO:-/dev/null}:/images/source.iso:ro
+    environment:
+      BERTH_E2E: "1"
+      BERTH_E2E_HOST: studio
+      BERTH_BOOT_ISO_NAME: ${BERTH_BOOT_ISO_NAME:-}
+      BERTH_BOOT_ISO_SHA256: ${BERTH_CI_BOOT_ISO_SHA256:-}
+      BERTH_BOOT_MEMORY: ${BERTH_CI_BOOT_MEMORY:-}
+      BERTH_BOOT_CPUS: ${BERTH_CI_BOOT_CPUS:-}
+      BERTH_BOOT_TCG: ${BERTH_CI_BOOT_TCG:-}
+      BERTH_BOOT_OWNER: ${BERTH_CI_USER:-}
+      BERTH_BOOT_SSH_PORT: ${BERTH_CI_BOOT_SSH_PORT:-22722}
+      BERTH_BOOT_CONTROL_URL: ${BERTH_CI_BOOT_CONTROL_URL:-}
+      BERTH_BOOT_CONTROL_KEY: ${BERTH_CI_BOOT_CONTROL_KEY:-}
+      CI: ${CI:-}
+      GITHUB_ACTIONS: ${GITHUB_ACTIONS:-}
+      TMPDIR: /work/tmp
+
+# The same target directory as ci/compose.yml.
+volumes:
+  target:
+    name: berth-ci-target

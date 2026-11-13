@@ -44,6 +44,26 @@
       provisioning account has none, so turning off passwords and root login
       would lock this host. Set an operator SSH public key and apply again.
   when: devbox_harden_ssh and not devbox_ssh_hardened
+# cloud-init writes its password setting into a new sshd_config on an image
+# without an SSH server. The package then keeps that file, which reads no
+# drop-ins and has no PAM, so sshd refuses an operator whose password is locked.
+- name: See whether sshd_config is only what cloud-init left
+  ansible.builtin.command: >-
+    awk 'NF && $1 !~ /^#/ {lines++} tolower($1) == "include" {includes = 1}
+    END {exit !(lines < 3 && !includes)}' /etc/ssh/sshd_config
+  register: devbox_sshd_stub
+  changed_when: false
+  failed_when: false
+- name: Put the packaged sshd_config in its place
+  ansible.builtin.copy:
+    remote_src: true
+    src: /usr/share/openssh/sshd_config
+    dest: /etc/ssh/sshd_config
+    mode: '0644'
+    backup: true
+    validate: /usr/sbin/sshd -t -f %s
+  register: devbox_sshd_restored
+  when: devbox_sshd_stub.rc == 0
 - name: Require SSH keys and refuse root logins
   ansible.builtin.copy:
     # sshd uses the first value it reads, so this has to sort before other drop-ins.
@@ -66,7 +86,7 @@
   ansible.builtin.systemd_service:
     name: ssh
     state: restarted
-  when: devbox_start_services and (devbox_sshd_hardening.changed or devbox_sshd_relaxed.changed)
+  when: devbox_start_services and (devbox_sshd_restored.changed or devbox_sshd_hardening.changed or devbox_sshd_relaxed.changed)
 - name: Install host management packages
   ansible.builtin.apt:
     name: [unattended-upgrades, python3-psutil]
@@ -294,38 +314,21 @@
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ devbox_uid }}/bus"
   loop: "{{ ['devbox-desktop.service', 'devbox-novnc.service'] + (['t3code.service'] if devbox_install_t3 | bool else []) }}"
   when: devbox_start_services
-- name: Inspect Tailscale enrollment
-  ansible.builtin.command: tailscale status --json
-  register: tailscale_status
-  changed_when: false
-  failed_when: false
+- name: Join the tailnet
+  ansible.builtin.include_tasks: tailnet.yml
   when: devbox_install_tailscale and devbox_start_services
-- name: Store one-time enrollment credential
-  ansible.builtin.copy:
-    dest: /run/devbox-tailscale-key
-    content: "{{ devbox_tailscale_auth_key }}"
-    mode: '0600'
-  no_log: true
-  when: devbox_install_tailscale and devbox_start_services and devbox_tailscale_auth_key | length > 0
-- name: Enroll Tailscale only when not already enrolled
-  block:
-    - name: Consume enrollment key
-      ansible.builtin.command: tailscale up --auth-key=file:/run/devbox-tailscale-key
-      no_log: true
-      when: (tailscale_status.stdout | default('{}', true) | from_json).get('BackendState', '') != 'Running'
-  always:
-    - name: Remove temporary enrollment credential
-      ansible.builtin.file:
-        path: /run/devbox-tailscale-key
-        state: absent
-  when: devbox_install_tailscale and devbox_start_services and devbox_tailscale_auth_key | length > 0
 # Publishing needs an enrolled host and HTTPS certificates enabled for the
 # tailnet. Neither is certain here, so a failure is reported, not fatal.
+# Headscale offers neither tailscale serve nor certificates.
 - name: Publish the desktop and T3 on the tailnet
   ansible.builtin.shell: |
     tailscale status >/dev/null 2>&1 || { echo 'not enrolled in a tailnet yet'; exit 3; }
+    control=$(tailscale debug prefs 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ControlURL", ""))' 2>/dev/null || true)
+    if [[ -n $control && ! $control =~ ^https://[a-z0-9.-]*tailscale\.com/?$ ]]; then echo "the control server $control does not offer tailscale serve"; exit 5; fi
     timeout 60 tailscale serve --bg --https=443 http://127.0.0.1:6080 2>&1 || exit 4
     timeout 60 tailscale serve --bg --https=8443 http://127.0.0.1:3773 2>&1 || exit 4
+  args:
+    executable: /bin/bash
   register: devbox_serve
   changed_when: false
   failed_when: false
@@ -333,10 +336,12 @@
 - name: Explain unpublished tailnet endpoints
   ansible.builtin.debug:
     msg: >-
-      The desktop and T3 were not published on the tailnet
-      ({{ devbox_serve.stdout | default('') | trim }}). Enroll the host and enable
-      HTTPS certificates for the tailnet, then run the publish task from the UI's
-      Manage action or apply again.
+      {% if devbox_serve.rc == 5 %}The desktop and T3 are not published on the tailnet
+      ({{ devbox_serve.stdout | trim }}). Reach them through an SSH tunnel, as the
+      access task of the UI's Manage action shows.{% else %}The desktop and T3 were
+      not published on the tailnet ({{ devbox_serve.stdout | default('') | trim }}).
+      Enroll the host and enable HTTPS certificates for the tailnet, then run the
+      publish task from the UI's Manage action or apply again.{% endif %}
   when: devbox_serve is not skipped and devbox_serve.rc | default(0) != 0
 # The timer first fires five minutes after a boot, which has long passed during
 # an install; without this the self-signed certificate stays until a reboot.
@@ -354,6 +359,12 @@
   changed_when: false
   failed_when: false
   when: devbox_start_services
+# Cockpit brings NetworkManager; without it there is none to configure.
+- name: Check whether NetworkManager is installed
+  ansible.builtin.stat:
+    path: /usr/sbin/NetworkManager
+  register: devbox_network_manager
+  when: devbox_start_services
 # Where networkd owns the network, NetworkManager would still try DHCP on every
 # unused port and NetworkManager-wait-online would fail at each boot.
 - name: Keep NetworkManager off ports that systemd-networkd does not use
@@ -366,7 +377,7 @@
       [main]
       no-auto-default=*
   register: devbox_nm_no_auto_default
-  when: devbox_start_services and devbox_networkd_state.stdout | default('') == 'active'
+  when: devbox_start_services and devbox_network_manager.stat.exists and devbox_networkd_state.stdout | default('') == 'active'
 - name: Drop the connections NetworkManager created on its own
   ansible.builtin.shell: |
     set -e
@@ -387,7 +398,7 @@
   ansible.builtin.command: nmcli -t -f NAME connection show
   register: devbox_nm_connections
   changed_when: false
-  when: devbox_start_services
+  when: devbox_start_services and devbox_network_manager.stat.exists
 - name: Mark the host as online for NetworkManager
   ansible.builtin.shell: |
     set -e
@@ -398,4 +409,4 @@
     systemctl restart NetworkManager
   args:
     executable: /bin/bash
-  when: devbox_start_services and 'devbox-online' not in devbox_nm_connections.stdout_lines
+  when: devbox_start_services and devbox_network_manager.stat.exists and 'devbox-online' not in devbox_nm_connections.stdout_lines
