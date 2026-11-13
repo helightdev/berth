@@ -1524,6 +1524,7 @@ print(out)
                 data_dir: home.path().join("data"),
             };
             paths.prepare().unwrap();
+            paths.give_own_key();
             let source = home.path().join("source");
             fs::create_dir_all(source.join("provision/bin")).unwrap();
             fs::write(source.join(crate::paths::layout::BUILDER), BUILDER).unwrap();

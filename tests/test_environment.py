@@ -13,6 +13,11 @@ try:
     import yaml
 except ImportError:
     jinja2 = yaml = None
+try:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+except ImportError:
+    serialization = None
 
 ROLE = Path(__file__).resolve().parents[1] / 'provision/ansible/roles/devbox'
 
@@ -271,14 +276,18 @@ class Operator(unittest.TestCase):
         restart = named('Apply SSH server settings', 'host.yml')
         self.assertIn('devbox_sshd_operator.changed', restart['when'])
 
-    @unittest.skipUnless(shutil.which('sshd') or Path('/usr/sbin/sshd').exists(), 'needs sshd')
+    @unittest.skipUnless((shutil.which('sshd') or Path('/usr/sbin/sshd').exists()) and serialization,
+                         'needs sshd and cryptography')
     def test_sshd_reads_the_operator_block_as_its_own(self):
         sshd = shutil.which('sshd') or '/usr/sbin/sshd'
         task = named('Let the operator log in over SSH with keys only', 'host.yml')
         block = task['ansible.builtin.copy']['content'].replace('{{ devbox_operator_user }}', 'ops')
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', root / 'host'], check=True)
+            # Made here rather than with ssh-keygen, which needs an account in the password database.
+            (root / 'host').write_bytes(Ed25519PrivateKey.generate().private_bytes(
+                serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption()))
+            (root / 'host').chmod(0o600)
             (root / 'operator.conf').write_text(block)
             # The hardening switched off, and an SSH server that allows passwords.
             (root / 'sshd_config').write_text(

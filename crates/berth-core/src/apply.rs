@@ -238,6 +238,7 @@ mod tests {
             data_dir: home.path().join("data"),
         };
         paths.prepare().unwrap();
+        paths.give_own_key();
         paths.set("source", source.to_str().unwrap()).unwrap();
         let host = Host {
             name: "box".into(),
