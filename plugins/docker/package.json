@@ -1,0 +1,37 @@
+{
+  "name": "berth-plugin-docker",
+  "version": "0.1.0",
+  "displayName": "Docker",
+  "description": "Creates a long-running Ubuntu container with systemd and SSH, to be set up like any other machine.",
+  "license": "MIT OR Apache-2.0",
+  "keywords": [
+    "berth-plugin"
+  ],
+  "files": [
+    "bin",
+    "Dockerfile",
+    "guide.md"
+  ],
+  "berth": {
+    "provisioners": [
+      {
+        "id": "container",
+        "label": "Docker container",
+        "description": "An Ubuntu 26.04 container with systemd and an SSH server, on the local Docker or on the engine named by host. berth applies its role to it over SSH.",
+        "command": "bin/provision",
+        "setup": "apply",
+        "verbs": ["start", "stop", "list"],
+        "arguments": [
+          {"name": "host", "label": "Docker endpoint (empty: the local default)", "default": ""},
+          {"name": "image", "label": "Image (empty: build the bundled one)", "default": ""},
+          {"name": "ssh_port", "label": "Published SSH port (empty: none)", "default": ""},
+          {"name": "publish_address", "label": "Address to reach the published port", "default": "127.0.0.1"},
+          {"name": "volume", "label": "Volume for /srv/agent (empty: berth-HOST-data)", "default": ""},
+          {"name": "cpus", "label": "CPUs", "default": ""},
+          {"name": "memory", "label": "Memory", "default": ""},
+          {"name": "keep_volume", "label": "Keep the volume on destroy (yes or no)", "default": "no"}
+        ]
+      }
+    ]
+  }
+}

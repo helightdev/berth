@@ -129,6 +129,12 @@ def wifi_enabled(config):
     return flag(config, 'wifi_enabled', bool(config.get('wifi')))
 
 
+def release_delivered():
+    """Whether whatever creates the machine copies the release into it, so that
+    first boot waits for the archive instead of downloading it."""
+    return os.environ.get('BERTH_RELEASE_DELIVERED') == '1'
+
+
 def checked_config(path, kind):
     """Load a host profile and reject anything that could not produce a working seed."""
     c = json.loads(Path(path).read_text())
@@ -153,8 +159,10 @@ def checked_config(path, kind):
     for account in ('operator', 'agent'):
         for key in account_keys(c, account):
             check_public_key(key, account)
-    check_password_hash(text(c, 'operator_password_hash'), 'operator')
-    flag(c, 'operator_passwordless_sudo', True)
+    # A cloud machine is reached with the key. It needs a password only for sudo.
+    password = text(c, 'operator_password_hash')
+    if password or kind != 'cloud' or not flag(c, 'operator_passwordless_sudo', True):
+        check_password_hash(password, 'operator')
     if text(c, 'agent_password_hash'):
         check_password_hash(c['agent_password_hash'], 'agent')
     privileges = text(c, 'agent_privileges')
@@ -187,7 +195,7 @@ def checked_config(path, kind):
                 raise ValueError('wifi interface must be a string')
     if kind == 'cloud':
         url = text(c, 'release_url')
-        if not url.startswith('https://') or 'REPLACE' in url:
+        if not release_delivered() and (not url.startswith('https://') or 'REPLACE' in url):
             raise ValueError('Cloud seed needs an HTTPS release_url for the generated tarball')
         # The firewall keeps this route open until the tailnet has been enrolled.
         cidr = variables.get('devbox_bootstrap_ssh_cidr')
@@ -237,7 +245,9 @@ def release():
             info = archive.gettarinfo(str(p), arcname=name)
             info.uid = info.gid = info.mtime = 0
             info.uname = info.gname = ''
-            info.mode = 0o755 if p.suffix == '.sh' else 0o644
+            # berth runs a plugin's provisioner command directly, so plugins keep their executables.
+            executable = p.suffix == '.sh' or (name.startswith('plugins/') and p.stat().st_mode & 0o111)
+            info.mode = 0o755 if executable else 0o644
             with p.open('rb') as src:
                 archive.addfile(info, src)
     private_write(BUILD / 'release.sha256', digest(target) + '\n')
@@ -268,7 +278,7 @@ def deployment(c, sha):
     if c.get('tailscale_login_server'):
         variables['devbox_tailscale_login_server'] = c['tailscale_login_server']
     return {'profile': c['profile'], 'release_sha256': sha,
-            'release_url': c.get('release_url', ''), 'ansible_vars': variables}
+            'release_url': '' if release_delivered() else c.get('release_url', ''), 'ansible_vars': variables}
 
 
 def autoinstall(c):
@@ -326,9 +336,12 @@ def cloud_config(c, sha):
     sudo = 'NOPASSWD:ALL' if c.get('operator_passwordless_sudo', True) else 'ALL'
     operator = {
         'name': c.get('operator_username', DEFAULT_OPERATOR), 'shell': '/bin/bash', 'groups': ['sudo'],
-        'sudo': [f'ALL=(ALL) {sudo}'], 'lock_passwd': False, 'passwd': c['operator_password_hash'],
-        'ssh_authorized_keys': account_keys(c, 'operator'),
+        'sudo': [f'ALL=(ALL) {sudo}'], 'ssh_authorized_keys': account_keys(c, 'operator'),
     }
+    if c.get('operator_password_hash'):
+        operator.update({'lock_passwd': False, 'passwd': c['operator_password_hash']})
+    else:
+        operator['lock_passwd'] = True
     files = [
         {'path': '/opt/devbox-bootstrap/bootstrap.sh', 'encoding': 'b64',
          'content': base64.b64encode(boot).decode(), 'permissions': '0700'},

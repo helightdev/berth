@@ -75,6 +75,7 @@ pub enum Action {
     UsbSeed,
     Iso,
     CloudSeed,
+    Machine,
     Apply,
     Docker,
     Ssh,
@@ -83,7 +84,8 @@ pub enum Action {
 
 impl Action {
     /// The ways to install a host, offered on the Install tab.
-    pub const METHODS: [Action; 5] = [
+    pub const METHODS: [Action; 6] = [
+        Action::Machine,
         Action::Iso,
         Action::CloudSeed,
         Action::Ssh,
@@ -98,6 +100,7 @@ impl Action {
             Action::UsbSeed => "Render USB seed",
             Action::Iso => "USB installer",
             Action::CloudSeed => "Cloud-init seed",
+            Action::Machine => "Create a machine",
             Action::Apply => "This machine or an inventory",
             Action::Docker => "Container image",
             Action::Ssh => "Existing host over SSH",
@@ -118,6 +121,9 @@ impl Action {
             Action::CloudSeed => {
                 "Generate cloud-init user data. Upload the generated release archive to the configured URL."
             }
+            Action::Machine => {
+                "Have a provisioner create the machine, such as a container or a virtual machine on a server, and set it up as this host. Choose the provisioner below; plugins bring them."
+            }
             Action::Apply => {
                 "Provision a dedicated Ubuntu host using Ansible. Blank inventory applies to this machine."
             }
@@ -137,23 +143,12 @@ impl Action {
     pub fn installer(self) -> bool {
         matches!(self, Action::UsbSeed | Action::Iso)
     }
-}
 
-/// Rows of the Inputs step: label and help.
-pub const SOURCES: &[(&str, &str)] = &[
-    (
-        "Detect local inputs",
-        "Fill blank values from SSH public keys, ssh-agent and DEVBOX_* environment variables.",
-    ),
-    (
-        "Import a devbox JSON profile",
-        "Load settings from an existing devbox JSON file. The save path stays the same.",
-    ),
-    (
-        "Import an SSH public key file",
-        "Enter the path to an OpenSSH public key file for the operator account.",
-    ),
-];
+    /// Actions that make a machine nobody has logged in to, from the profile alone.
+    pub fn seeds(self) -> bool {
+        matches!(self, Action::CloudSeed | Action::Machine)
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {

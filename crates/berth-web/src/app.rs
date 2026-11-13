@@ -3,6 +3,7 @@
 use crate::admin::{Admin, Arrived, Data};
 use crate::browser::{self, Browser};
 use crate::home::Home;
+use crate::installed::{Installed, Outcome};
 use crate::portal::{Link, Portal};
 use crate::remote::Remote;
 use crate::setup::{Flow, Setup, draw_editor, masked_line};
@@ -40,6 +41,8 @@ const LEAVE: &str = "Alt+Q";
 #[derive(PartialEq)]
 enum Screen {
     Token,
+    /// What a setup key in the link opens.
+    Installed,
     Hosts,
     Host,
     Setup,
@@ -141,12 +144,15 @@ pub struct App {
     over_links: Spots,
     /// A link as a QR code, over everything else.
     qr: Option<qr::Overlay>,
+    /// The token collected with a setup key, until Done.
+    installed: Option<Installed>,
 }
 
 impl App {
     pub fn new() -> App {
         let embedded = browser::embedded();
-        let (linked_server, linked_token) = browser::linked();
+        let linked = browser::linked();
+        let (linked_server, linked_token) = (linked.server, linked.token);
         let kept = browser::stored(browser::SERVER).unwrap_or_default();
         let server = match embedded {
             true => browser::origin(),
@@ -207,7 +213,14 @@ impl App {
             made: None,
             over_links: vec![],
             qr: None,
+            installed: None,
         };
+        // A setup key signs in with the token it collects, whatever was kept.
+        if let (Some(key), false) = (linked.setup_key, app.server.is_empty()) {
+            app.installed = Some(Installed::claim(&app.server, key));
+            app.screen = Screen::Installed;
+            return app;
+        }
         if !app.token.is_empty() && !app.server.is_empty() {
             app.connect();
         }
@@ -251,6 +264,7 @@ impl App {
         self.admin = None;
         *self.data.borrow_mut() = Data::default();
         self.setup = None;
+        self.installed = None;
         self.tab = 0;
         self.proven = false;
         self.retry = None;
@@ -284,6 +298,28 @@ impl App {
 
     /// Keep in step with the server between frames.
     pub fn tick(&mut self) {
+        if let Some(installed) = &mut self.installed {
+            match installed.tick() {
+                Outcome::SignIn(token) => {
+                    self.token = token;
+                    browser::store(browser::TOKEN, &self.token);
+                    self.connect();
+                }
+                // A token this browser kept still signs it in.
+                Outcome::Refused(why) => {
+                    self.installed = None;
+                    self.screen = Screen::Token;
+                    match self.token.is_empty() {
+                        true => self.refused = why,
+                        false => {
+                            self.status = why;
+                            self.connect();
+                        }
+                    }
+                }
+                Outcome::Stay | Outcome::Done => {}
+            }
+        }
         if self.status != self.said.0 {
             self.said = (self.status.clone(), Instant::now());
         } else if !self.status.is_empty() && self.said.1.elapsed() >= SAID_FOR {
@@ -425,6 +461,16 @@ impl App {
                 Arrived::Password => {
                     self.status.clear();
                     self.password = Some(Input::default());
+                }
+                Arrived::Provisioners(listed) => {
+                    if let Some(setup) = &mut self.setup {
+                        setup.machine.listed(listed);
+                    }
+                }
+                Arrived::Instance(found) => {
+                    if let Some(setup) = &mut self.setup {
+                        setup.machine.found(found);
+                    }
                 }
                 Arrived::Session(session) => {
                     if self.screen == Screen::Host
@@ -1390,7 +1436,24 @@ impl App {
         }
     }
 
-    fn draw_token(&mut self, frame: &mut Frame, area: Rect) {
+    fn installed_event(&mut self, event: Event) {
+        let Some(installed) = &mut self.installed else {
+            self.screen = Screen::Token;
+            return;
+        };
+        if let Outcome::Done = installed.event(event, &mut self.status) {
+            let data = self.data.clone();
+            installed.done(move |problem| data.borrow_mut().said = problem);
+            self.installed = None;
+            self.screen = match self.portal {
+                Some(_) => Screen::Hosts,
+                None => Screen::Token,
+            };
+        }
+    }
+
+    /// The header, the logo and the water, behind a dialog.
+    fn draw_backdrop(&mut self, frame: &mut Frame, area: Rect) {
         let [header, _, logo, _, water] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
@@ -1408,6 +1471,10 @@ impl App {
             )),
             water,
         );
+    }
+
+    fn draw_token(&mut self, frame: &mut Frame, area: Rect) {
+        self.draw_backdrop(frame, area);
         let masked = ellipsize(&"•".repeat(self.typing.value().chars().count()), 44);
         let named = ellipsize(self.typing_server.value(), 44);
         let mut lines = match self.embedded {
@@ -1485,6 +1552,7 @@ impl App {
         }
         match self.screen {
             Screen::Token => self.token_event(event),
+            Screen::Installed => self.installed_event(event),
             Screen::Hosts => self.home_event(event),
             Screen::Host => self.host_event(event),
             Screen::Setup => {
@@ -1520,6 +1588,12 @@ impl App {
         });
         match self.screen {
             Screen::Token => self.draw_token(frame, area),
+            Screen::Installed => {
+                self.draw_backdrop(frame, area);
+                if let Some(installed) = &self.installed {
+                    installed.draw(frame);
+                }
+            }
             Screen::Hosts => self.draw_home(frame, area),
             Screen::Host => self.draw_host(frame, area),
             Screen::Setup => match &mut self.setup {

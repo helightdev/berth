@@ -2,7 +2,7 @@
 //! shows of it, and what changing a row does to it. Nothing here reads a file
 //! or runs a command, so berth and its page in a browser share it.
 
-use crate::fields::{Action, Field, Group, Kind, SOURCES, Step};
+use crate::fields::{Action, Field, Group, Kind, Step};
 use crate::theme;
 use ratatui::{
     style::Style,
@@ -24,7 +24,6 @@ pub struct Feature {
 /// What a selectable row of a set-up page does when activated.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Entry {
-    Source(usize),
     Action(Action),
     Field(Field),
     /// The heading of a group on the Features page.
@@ -38,6 +37,8 @@ pub enum Entry {
     /// One of an account's SSH keys by its place among them, or the row that
     /// adds one.
     Key(Account, Option<usize>),
+    /// A row of the machine berth creates for the host.
+    Machine(crate::machine::Pick),
     Run,
 }
 
@@ -151,6 +152,22 @@ impl Row {
 pub fn host_secrets(mut names: Vec<String>) -> Vec<String> {
     names.retain(|name| name != berth_api::profile::TAILNET_API_KEY);
     names
+}
+
+/// Let a host that is not set up yet join the tailnet with keys berth makes,
+/// when berth has the control server's API key to make them with.
+pub fn default_enrollment(config: &mut Value, names: &[String]) {
+    let unset = |key: &str| config[key].as_str().unwrap_or("").is_empty();
+    if names
+        .iter()
+        .any(|name| name == berth_api::profile::TAILNET_API_KEY)
+        && config.is_object()
+        && config.get("tailscale_auto_key").is_none()
+        && unset("hostname")
+        && unset("tailscale_auth_key")
+    {
+        config["tailscale_auto_key"] = json!(true);
+    }
 }
 
 /// What the Secrets tab says of a secret berth uses itself, if it is one.
@@ -443,6 +460,9 @@ pub struct Profile<'a> {
     /// The public SSH key of the berth that sets the host up; empty when it
     /// is not known.
     pub own_key: &'a str,
+    /// Whether the host's name can be the machine's: a profile without a
+    /// hostname takes it.
+    pub named: bool,
 }
 
 impl<'a> Profile<'a> {
@@ -568,11 +588,6 @@ impl<'a> Profile<'a> {
                 )));
             }
         }
-        rows.push(Row::info(""));
-        rows.push(Row::info(Line::styled(
-            "They reach a running host with \"Install secrets and registry logins\" on its overview.",
-            muted,
-        )));
         rows
     }
 
@@ -731,7 +746,7 @@ impl<'a> Profile<'a> {
             return vec![SshHost, SshUser, SshPort, SshKey, AskBecomePass];
         }
         let mut fields = vec![Profile];
-        if action.installer() || action == Action::CloudSeed {
+        if action.installer() || action.seeds() {
             fields.push(Hostname);
         }
         if action.installer() {
@@ -763,7 +778,10 @@ impl<'a> Profile<'a> {
                 ReleasePrivate
             });
         }
-        fields.push(RecoveryCidr);
+        // A machine a provisioner creates is behind its server, not on a public address.
+        if action != Action::Machine {
+            fields.push(RecoveryCidr);
+        }
         match action {
             Action::Iso => fields.extend([Iso, IsoSha]),
             Action::Apply => fields.extend([Inventory, AskBecomePass]),
@@ -852,15 +870,6 @@ impl<'a> Profile<'a> {
         rows
     }
 
-    /// The rows of the Accounts page that fill it in from this machine.
-    pub fn source_rows() -> Vec<Row> {
-        let mut rows = vec![Row::info(""), Row::heading("Fill In From This Machine")];
-        for (index, (label, _)) in SOURCES.iter().enumerate() {
-            rows.push(Row::entry(format!("  {label}"), Entry::Source(index)));
-        }
-        rows
-    }
-
     /// The ways to install on the Install page, with the chosen one marked.
     pub fn method_rows(&self, methods: &[Action]) -> Vec<Row> {
         let mut rows = vec![Row::heading("How To Install")];
@@ -876,6 +885,9 @@ impl<'a> Profile<'a> {
 
     /// What the Install page warns of when SSH is open to every address.
     pub fn open_ssh_warning(&self) -> Option<&'static str> {
+        if self.action == Action::Machine {
+            return None;
+        }
         let cloud = self.action == Action::CloudSeed || self.text(Field::Profile) == "cloud";
         (cloud && self.text(Field::RecoveryCidr).is_empty()).then(|| {
             if self.enabled(Field::HardenSsh) {
@@ -946,10 +958,11 @@ impl<'a> Profile<'a> {
                 }),
             "Desktop size must look like 1600x900",
         );
-        if action.installer() || action == Action::CloudSeed {
+        if action.installer() || action.seeds() {
             // Seeds are the only way into the new machine, so the operator must be able to log in.
+            let hostname = self.text(Hostname);
             check(
-                valid_hostname(self.text(Hostname)),
+                valid_hostname(hostname) || hostname.is_empty() && self.named,
                 "Hostname is missing or invalid (F4 generates)",
             );
             check(
@@ -957,8 +970,10 @@ impl<'a> Profile<'a> {
                     || self.enabled(BerthKey) && !self.own_key.is_empty(),
                 "Operator needs an SSH key: add one, or let it take this berth's",
             );
+            // An installer's machine is logged in to at its own screen. One made
+            // from a seed is reached with the key, and needs a password only for sudo.
             check(
-                !self.text(OperatorHash).is_empty(),
+                !self.text(OperatorHash).is_empty() || action.seeds() && self.enabled(OperatorSudo),
                 "Operator password is required (F4 or F5)",
             );
         }
@@ -1035,6 +1050,7 @@ mod tests {
             registries: &[],
             secrets: &[],
             own_key: "",
+            named: false,
         };
         let groups = profile.feature_groups();
         assert_eq!(groups[0].title, "Coding Agents");
@@ -1055,6 +1071,7 @@ mod tests {
                 registries: &[],
                 secrets: &[],
                 own_key: "",
+                named: false,
             }
             .fields()
         };
@@ -1096,6 +1113,7 @@ mod tests {
             registries: &[],
             secrets: &[],
             own_key: "",
+            named: false,
         };
         let problems = profile.problems();
         assert!(problems.iter().any(|problem| problem.contains("Hostname")));
@@ -1125,5 +1143,27 @@ mod tests {
             config,
             json!({"operator_ssh_public_keys": ["ssh-ed25519 BBBB two"]})
         );
+    }
+
+    #[test]
+    fn a_new_host_enrolls_itself_when_berth_has_the_api_key() {
+        let names = vec!["tailnet_api_key".to_owned()];
+        let mut new = json!({});
+        default_enrollment(&mut new, &names);
+        assert_eq!(new["tailscale_auto_key"], true);
+        // Without the key there is nothing to make enrollment keys with.
+        let mut new = json!({});
+        default_enrollment(&mut new, &["github".to_owned()]);
+        assert!(new.get("tailscale_auto_key").is_none());
+        // A host that was set up, or has a key of its own, keeps its choice.
+        for kept in [
+            json!({"hostname": "studio"}),
+            json!({"tailscale_auth_key": "tskey-auth-example"}),
+            json!({"tailscale_auto_key": false}),
+        ] {
+            let mut profile = kept.clone();
+            default_enrollment(&mut profile, &names);
+            assert_eq!(profile, kept);
+        }
     }
 }

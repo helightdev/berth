@@ -3,7 +3,7 @@
 use crate::{
     Result, credentials,
     discovery::{self, Choices, expand_path},
-    fields::{Action, Field, Kind, SOURCES, Step, TASKS},
+    fields::{Action, Field, Kind, Step, TASKS},
     job::{Job, Stage},
     picker::Picker,
     plugins::{self, Plugin},
@@ -12,6 +12,7 @@ use crate::{
 };
 use berth_core::{apply, host::Host, paths::layout};
 use berth_tui::host::Pick;
+use berth_tui::machine::{self, Machine, Next};
 use berth_tui::setup::{self, set_pointer};
 pub use berth_tui::setup::{FeatureGroup, Item, value_line};
 use ratatui::{style::Style, text::Line, widgets::ListState};
@@ -21,13 +22,13 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Command,
+    sync::mpsc,
 };
 use tui_input::Input;
 
 /// What a selectable row does when activated.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Entry {
-    Source(usize),
     Action(Action),
     Field(Field),
     /// Something the overview of a host offers, by name.
@@ -46,6 +47,8 @@ pub enum Entry {
     HostSecret(usize),
     /// One of an account's SSH keys, or the row that adds one.
     Key(setup::Account, Option<usize>),
+    /// A row of the machine berth creates for the host.
+    Machine(machine::Pick),
     /// Open the set-up flow.
     Setup,
     Run,
@@ -156,6 +159,48 @@ pub struct App {
     pub usb_drives: Choices,
     /// A link of the panel as a QR code, over everything else.
     pub qr: Option<berth_tui::qr::Overlay>,
+    /// The machine berth creates for the host, on the Install tab.
+    pub machine: Machine,
+    /// What is being asked of it and of the provisioners, until it answers.
+    machine_answers: Option<mpsc::Receiver<Answers>>,
+    /// The running job is one of the machine's.
+    pub machine_job: bool,
+}
+
+/// What the provisioners there are, and the host's machine, came back as.
+type Answers = (
+    std::result::Result<Vec<berth_api::ProvisionerInfo>, String>,
+    std::result::Result<Option<berth_api::Instance>, String>,
+);
+
+/// Ask where provisioners run, as `berth provision` does: the berth server
+/// when one is set, otherwise here.
+fn machine_answers(name: &str) -> Answers {
+    let text = |error: &dyn std::fmt::Display| error.to_string();
+    let paths = match crate::paths::Paths::locate() {
+        Ok(paths) => paths,
+        Err(error) => return (Err(text(&error)), Err(text(&error))),
+    };
+    let Some(server) = berth_core::server::Server::configured(&paths) else {
+        let store = crate::registry::Store::new(&paths);
+        let options = berth_core::provision::Options::default();
+        return (
+            Ok(berth_core::provision::list(&paths, &store)),
+            berth_core::provision::status(&paths, &store, name, &options).map_err(|e| text(&e)),
+        );
+    };
+    let listed = server
+        .call("provisioners.list", Value::Null, None)
+        .map_err(|error| text(&error))
+        .and_then(|found| serde_json::from_value(found).map_err(|error| text(&error)));
+    let found = match server.call("instances.get", json!({"name": name}), None) {
+        Ok(found) => serde_json::from_value(found)
+            .map(Some)
+            .map_err(|error| text(&error)),
+        Err(error) if machine::absent(&error.to_string()) => Ok(None),
+        Err(error) => Err(text(&error)),
+    };
+    (listed, found)
 }
 
 /// The rows of a set-up page, as rows of this screen.
@@ -164,7 +209,6 @@ fn lift(rows: Vec<setup::Row>) -> Vec<Row> {
         .map(|row| Row {
             line: row.line,
             entry: row.entry.map(|entry| match entry {
-                setup::Entry::Source(index) => Entry::Source(index),
                 setup::Entry::Action(action) => Entry::Action(action),
                 setup::Entry::Field(field) => Entry::Field(field),
                 setup::Entry::Group(index) => Entry::Group(index),
@@ -172,6 +216,7 @@ fn lift(rows: Vec<setup::Row>) -> Vec<Row> {
                 setup::Entry::Registry(index) => Entry::HostRegistry(index),
                 setup::Entry::Secret(index) => Entry::HostSecret(index),
                 setup::Entry::Key(account, index) => Entry::Key(account, index),
+                setup::Entry::Machine(pick) => Entry::Machine(pick),
                 setup::Entry::Run => Entry::Run,
             }),
         })
@@ -229,6 +274,9 @@ impl App {
             job: None,
             usb_drives: vec![],
             qr: None,
+            machine: Machine::default(),
+            machine_answers: None,
+            machine_job: false,
         };
         app.saved = app.config.clone();
         app
@@ -244,6 +292,7 @@ impl App {
             registries: &self.registry_names,
             secrets: &self.secret_names,
             own_key: &self.own_public,
+            named: setup::valid_hostname(&self.name()),
         }
     }
 
@@ -265,7 +314,9 @@ impl App {
             .keys()
             .cloned()
             .collect();
-        self.secret_names = berth_tui::setup::host_secrets(store.secret_names());
+        let names = store.secret_names();
+        setup::default_enrollment(&mut self.config, &names);
+        self.secret_names = berth_tui::setup::host_secrets(names);
     }
 
     pub fn toggle_host_registry(&mut self, index: usize) {
@@ -430,6 +481,10 @@ impl App {
                 Style::new().fg(theme::GOOD),
             )));
         }
+        // A machine is created from the provisioner's own rows.
+        if self.action == Action::Machine {
+            return rows;
+        }
         rows.push(Row::info(""));
         if self.action == Action::Iso {
             let device = self.text(Field::UsbDevice);
@@ -459,16 +514,22 @@ impl App {
         match self.step {
             Step::Features => rows = self.feature_rows(),
             Step::Secrets => rows = self.access_rows(),
-            Step::Accounts => {
-                rows = self.field_rows();
-                rows.extend(lift(setup::Profile::source_rows()));
-            }
+            Step::Accounts => rows = self.field_rows(),
             Step::Install => {
                 rows = lift(self.view().method_rows(self.methods()));
                 rows.push(Row::info(""));
                 rows.extend(self.field_rows());
                 rows.push(Row::info(""));
                 rows.extend(self.review_rows());
+                let machine = if self.action == Action::Machine || self.machine.exists() {
+                    lift(self.machine.rows())
+                } else {
+                    vec![]
+                };
+                if !machine.is_empty() {
+                    rows.push(Row::info(""));
+                    rows.extend(machine);
+                }
             }
             Step::Manage => {
                 if let Some(line) = self.host.stats_line() {
@@ -671,13 +732,13 @@ impl App {
             }
             Some(Entry::HostTask(index)) => berth_tui::host::task_help(&self.host, index),
             Some(Entry::HostSession(index)) => berth_tui::host::session_help(&self.host, index),
+            Some(Entry::Machine(pick)) => self.machine.help(pick),
             _ => self.entry_help().to_owned(),
         }
     }
 
     fn entry_help(&self) -> &'static str {
         match self.selected_entry() {
-            Some(Entry::Source(index)) => SOURCES[index].1,
             Some(Entry::Action(action)) => action.help(),
             Some(Entry::Field(field)) => field.spec().help,
             Some(Entry::Task(name)) => TASKS
@@ -686,7 +747,7 @@ impl App {
                 .map_or("", |(.., help)| help),
             Some(Entry::Group(_)) => setup::GROUP_HELP,
             Some(Entry::Feature(_)) => "",
-            Some(Entry::HostTask(_) | Entry::HostSession(_)) => "",
+            Some(Entry::HostTask(_) | Entry::HostSession(_) | Entry::Machine(_)) => "",
             Some(Entry::HostRegistry(_)) => {
                 "Give this host the login of this registry. Its npm repositories become the agent's npm registry with the login in ~/.npmrc, and its Docker addresses get the login in ~/.docker/config.json. Registries are set up on the Registries tab of the home screen."
             }
@@ -708,7 +769,6 @@ impl App {
     /// The selected row takes a file path, so Browse applies.
     pub fn path_selected(&self) -> bool {
         match self.selected_entry() {
-            Some(Entry::Source(index)) => index > 0,
             Some(Entry::Field(field)) => field.spec().kind == Kind::Path,
             _ => false,
         }
@@ -740,7 +800,7 @@ impl App {
     /// does itself.
     pub fn methods(&self) -> &'static [Action] {
         match self.served() {
-            Some(_) => &[Action::CloudSeed, Action::Ssh],
+            Some(_) => &[Action::Machine, Action::CloudSeed, Action::Ssh],
             None => &Action::METHODS,
         }
     }
@@ -756,6 +816,16 @@ impl App {
             return;
         }
         self.step = step;
+        // A berth server offers fewer ways to install than the one a new host starts with.
+        if step == Step::Install
+            && self.action != Action::Manage
+            && !self.methods().contains(&self.action)
+        {
+            self.action = self.methods()[0];
+            if self.text(Field::Profile) == "laptop" {
+                self.config["profile"] = json!("cloud");
+            }
+        }
         // The Manage tab acts on the running host; the others on the install method.
         if step == Step::Manage {
             if self.action != Action::Manage {
@@ -773,6 +843,9 @@ impl App {
         };
         if step == Step::Secrets {
             self.load_access();
+        }
+        if step == Step::Install {
+            self.load_machine();
         }
         self.list = ListState::default().with_selected(Some(first.unwrap_or(0)));
         self.status.clear();
@@ -801,7 +874,7 @@ impl App {
             }
         }
         let value = self.editing.as_ref().map_or("", |input| input.value());
-        let wants_key = matches!(entry, Some(Entry::Source(2) | Entry::Field(Field::SshKey)));
+        let wants_key = matches!(entry, Some(Entry::Field(Field::SshKey)));
         let start = if !value.is_empty() {
             value.to_owned()
         } else if wants_key && let Some(home) = std::env::var_os("HOME") {
@@ -907,13 +980,6 @@ impl App {
                 .collect()
         };
         let choices = match self.selected_entry() {
-            // Importing a key file wants paths, which ssh-agent keys do not have.
-            Some(Entry::Source(2)) => self
-                .public_keys
-                .iter()
-                .filter(|(label, _)| !label.starts_with("ssh-agent"))
-                .map(|(label, _)| (label.clone(), label.clone()))
-                .collect(),
             Some(Entry::Key(..)) => self.public_keys.clone(),
             Some(Entry::Field(field)) => match (field, field.spec().kind) {
                 (_, Kind::Choice(values)) => own(values),
@@ -968,12 +1034,12 @@ impl App {
                 Err(error) => self.status = error.to_string(),
             },
             Some(Entry::Field(field)) => self.commit(field, input.value()),
-            Some(Entry::Source(index)) => {
-                if let Err(error) = self.import(index, input.value()) {
-                    self.status = format!("Import failed · {error}");
-                }
-            }
             Some(Entry::HostSecret(index)) => self.set_host_secret(index, input.value()),
+            Some(Entry::Machine(pick)) => {
+                let name = self.name();
+                let next = self.machine.typed(pick, input.value(), &name);
+                self.follow(next);
+            }
             Some(Entry::Key(account, index)) => {
                 // Nothing typed changes nothing: x is what removes a key.
                 if !input.value().trim().is_empty()
@@ -1247,22 +1313,6 @@ impl App {
         };
     }
 
-    fn import(&mut self, source: usize, path: &str) -> Result<()> {
-        if source == 1 {
-            self.config = parse_config(&fs::read(expand_path(path))?)?;
-            self.status = "Profile imported. Save to keep it at the current output path.".into();
-        } else {
-            let key = fs::read_to_string(expand_path(path))?;
-            let key = key.trim();
-            if !discovery::is_public_key(key) {
-                return Err("Expected a supported OpenSSH public key".into());
-            }
-            setup::set_key(&mut self.config, setup::Account::Operator, None, key)?;
-            self.status = "SSH public key imported".into();
-        }
-        Ok(())
-    }
-
     /// Reasons the chosen action would fail, checked before leaving the UI.
     pub fn problems(&self) -> Vec<String> {
         use Field::*;
@@ -1517,6 +1567,7 @@ impl App {
                 let saved: Value = serde_json::from_slice(&fs::read(&self.path)?)?;
                 let paths = crate::paths::Paths::locate()?;
                 let config = berth_core::tailnet::seed_profile(&paths, &saved, &self.name())?;
+                let config = berth_core::seed::named(config, &self.name());
                 Some(berth_core::tailnet::profile_file(&config)?)
             }
             _ => None,
@@ -1524,7 +1575,9 @@ impl App {
         let profile = seeded.as_ref().map(|file| file.path().to_owned());
         let mut command;
         match action {
-            Action::Save | Action::Manage => return Err("Nothing to run".into()),
+            Action::Save | Action::Manage | Action::Machine => {
+                return Err("Nothing to run".into());
+            }
             Action::Release => {
                 command = Command::new("python3");
                 command.args([layout::BUILDER, "release"]);
@@ -1760,6 +1813,10 @@ impl App {
             return;
         };
         let succeeded = job.outcome == Some(Ok(()));
+        // The machine is another one now, or none.
+        if std::mem::take(&mut self.machine_job) {
+            self.load_machine();
+        }
         if std::mem::take(&mut self.fetching_iso) {
             if let (true, Some(path)) = (succeeded, job.lines.last()) {
                 self.commit(Field::Iso, path);
@@ -1872,6 +1929,133 @@ impl App {
         self.set(Field::UsbDevice, json!(device));
         self.write_only = true;
         self.run(false);
+    }
+
+    /// Ask for the provisioners and the host's machine again, without
+    /// waiting for the answer.
+    pub fn load_machine(&mut self) {
+        // Without berth's own folders, as in tests, there is nobody to ask.
+        if self.config_dir.as_os_str().is_empty() {
+            return;
+        }
+        self.machine.asking();
+        let name = self.name();
+        let (send, answers) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = send.send(machine_answers(&name));
+        });
+        self.machine_answers = Some(answers);
+    }
+
+    /// Whether the machine's answers are still awaited.
+    pub fn machine_awaited(&self) -> bool {
+        self.machine_answers.is_some()
+    }
+
+    /// Take in the machine's answers once they are there. Called between events.
+    pub fn watch_machine(&mut self) {
+        let Some(answers) = &self.machine_answers else {
+            return;
+        };
+        let (listed, found) = match answers.try_recv() {
+            Ok(answers) => answers,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => (
+                Err("Nothing answered".into()),
+                Err("Nothing answered".into()),
+            ),
+        };
+        self.machine_answers = None;
+        self.machine.listed(listed);
+        self.machine.found(found);
+    }
+
+    /// Enter on a row of the machine.
+    pub fn machine_enter(&mut self, pick: machine::Pick) {
+        // The machine is made from the profile, which has to be whole first.
+        if pick == machine::Pick::Create && !self.problems().is_empty() {
+            self.status = "Fix the listed problems first".into();
+            return;
+        }
+        let name = self.name();
+        let next = self.machine.enter(pick, &name);
+        self.follow(next);
+    }
+
+    /// The answer to the question before creating the machine.
+    pub fn machine_answer(&mut self, yes: bool) {
+        let next = self.machine.answer(yes);
+        self.follow(next);
+    }
+
+    /// Do what a row of the machine led to. Its jobs are berth's own
+    /// commands, which go to the berth server when one is set.
+    fn follow(&mut self, next: Next) {
+        let name = self.name();
+        let (title, args, after) = match next {
+            Next::Nothing | Next::Confirm => return,
+            Next::Say(text) => {
+                self.status = text;
+                return;
+            }
+            Next::Edit(value) => {
+                self.editing = Some(Input::new(value));
+                return;
+            }
+            Next::Create(asked) => {
+                let mut args = vec!["provision".to_owned(), name, asked.provisioner];
+                args.extend(
+                    asked
+                        .arguments
+                        .iter()
+                        .map(|(key, value)| format!("{key}={value}")),
+                );
+                args.push("--yes".into());
+                (
+                    "Create machine",
+                    args,
+                    "The machine is this host now: its overview reaches it.",
+                )
+            }
+            Next::Power(verb) => (
+                if verb == "start" {
+                    "Start machine"
+                } else {
+                    "Stop machine"
+                },
+                vec!["instance".to_owned(), name, verb.to_owned()],
+                "",
+            ),
+            Next::Destroy => (
+                "Delete machine",
+                vec![
+                    "instance".to_owned(),
+                    name,
+                    "destroy".to_owned(),
+                    "--yes".to_owned(),
+                ],
+                "",
+            ),
+        };
+        if let Err(error) = self.machine_job(title, &args, after) {
+            self.status = error.to_string();
+        }
+    }
+
+    fn machine_job(&mut self, title: &str, args: &[String], next: &str) -> Result<()> {
+        // The provisioner works from the profile as it is kept.
+        self.save()?;
+        let mut command = Command::new(std::env::current_exe()?);
+        command.args(args);
+        let stage = Stage {
+            title: title.into(),
+            command,
+            source: None,
+            input: None,
+        };
+        self.job = Some(Job::start(vec![stage], next, vec![])?);
+        self.machine_job = true;
+        Ok(())
     }
 
     fn start_job(&mut self, usb: &str) -> Result<()> {

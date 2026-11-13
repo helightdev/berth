@@ -35,9 +35,20 @@ Usage:
                              at the first that fails; --all takes current ones too,
                              --update runs their update task, --reboot reboots those
                              that need it unless sessions run (--force: even then)
+  berth connect URL          use the berth server at URL: give it the setup key made
+                             there with berth setup-key, on standard input
   berth login                log in to a berth server that takes access tokens of an
                              OAuth 2.0 issuer; berth logout forgets the login
   berth remove HOST          forget a host; the machine is left as it is
+  berth provisioners         what can create machines, and what each asks for
+  berth provisioners PLUGIN/ID [NAME=VALUE…]
+                             the machines it has that berth created
+  berth provision HOST PLUGIN/ID [NAME=VALUE…] [--yes]
+                             create the machine for a saved host and set it up
+  berth instance HOST        the machine berth created for the host, and its state
+  berth instance HOST start|stop
+  berth instance HOST destroy [--yes]
+                             delete the machine; the profile stays
   berth key                  this berth's own SSH public key, which the operator of a
                              host it sets up takes
   berth tasks HOST           what the host can do: its tasks and those of its plugins
@@ -101,6 +112,9 @@ Usage:
                              an API over all hosts on a socket of this user; with
                              --listen also over HTTP behind a token, on this machine
                              only unless --expose allows another address
+  berth setup-key [--remove] make a key, valid for a day, that lets the first user
+                             collect the token of the berth serve on this machine;
+                             --remove ends it
   berth inbox [HOST] [--topic PREFIX] [--all]
                              messages taken in from the hosts' channels
   berth kv get|set|rm|ls NAMESPACE [KEY] [JSON]
@@ -390,6 +404,8 @@ fn run() -> Result<()> {
         "logout",
         "key",
         "tailnet-key",
+        "connect",
+        "setup-key",
     ];
     if let Some(server) = berth_core::server::Server::configured(&paths)
         && !args.first().is_some_and(|verb| local.contains(verb))
@@ -459,6 +475,8 @@ fn run() -> Result<()> {
         }
         ["update", ref rest @ ..] => return update::command(rest),
         ["serve", ref rest @ ..] => return serve::command(&paths, rest),
+        ["setup-key", ref rest @ ..] => return serve::setup_key::command(&paths, rest),
+        ["connect", url] => return commands::connect(&paths, url),
         ["inbox", ref rest @ ..] => return serve::inbox_command(&paths, rest),
         ["kv", ref rest @ ..] => return serve::kv_command(&paths, rest),
         ["openapi"] => {
@@ -542,6 +560,14 @@ fn run() -> Result<()> {
         ["apply", "--behind" | "--all", ..] => return commands::apply_hosts(&paths, &args[1..]),
         ["apply", host] => return commands::apply(&paths, host),
         ["remove", host] => return commands::remove(&paths, host),
+        ["provisioners"] => return commands::provisioners(&paths),
+        ["provisioners", name, ref rest @ ..] => {
+            return commands::provisioner_instances(&paths, name, rest);
+        }
+        ["provision", host, provisioner, ref rest @ ..] => {
+            return commands::provision(&paths, host, provisioner, rest);
+        }
+        ["instance", host, ref rest @ ..] => return commands::instance(&paths, host, rest),
         ["seed", host] if berth_core::server::Server::configured(&paths).is_some() => {
             return commands::seed(&paths, host);
         }
@@ -671,6 +697,7 @@ mod tests {
                 feature("one", "development tools", "hello"),
                 feature("two", "Games", "other"),
             ],
+            provisioners: vec![],
         }
     }
 

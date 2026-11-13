@@ -44,8 +44,17 @@ set_state provisioning
 export DEBIAN_FRONTEND=noninteractive
 apt-get -o DPkg::Lock::Timeout=300 update
 apt-get -o DPkg::Lock::Timeout=300 install -y python3-venv python3-pip curl ca-certificates
-if [[ ! -f "$base/release.tar.gz" ]]; then
-  url=$(python3 -c 'import json; print(json.load(open("/opt/devbox-bootstrap/deployment.json"))["release_url"])')
+url=$(python3 -c 'import json; print(json.load(open("/opt/devbox-bootstrap/deployment.json")).get("release_url", ""))')
+release_ready() { [[ -f "$base/release.tar.gz" ]] && printf '%s  %s\n' "$digest" "$base/release.tar.gz" | sha256sum --check --status; }
+if [[ -z "$url" ]]; then
+  # Without a URL the release is copied in by what made the machine, possibly
+  # only after boot; the digest tells a finished copy from one still being written.
+  release_ready || echo "Waiting up to 15 minutes for $base/release.tar.gz" >&2
+  for _ in $(seq 180); do
+    release_ready && break
+    sleep 5
+  done
+elif [[ ! -f "$base/release.tar.gz" ]]; then
   [[ "$url" == https://* ]] || { echo 'Expected an HTTPS release URL' >&2; exit 1; }
   # A release that is not public comes with a login for curl, used once.
   login=()

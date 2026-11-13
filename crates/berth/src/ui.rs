@@ -245,12 +245,12 @@ fn draw(frame: &mut Frame, app: &mut App, rows: &[Row], display: &mut ListState,
                 input.value().to_owned(),
             )
         };
-        let name = if app.password_entry {
-            " New password "
-        } else {
-            " Edit "
+        let name = match (app.password_entry, app.selected_entry()) {
+            (true, _) => " New password ".to_owned(),
+            (false, Some(Entry::Machine(pick))) => berth_tui::machine::editor_title(pick, &host),
+            _ => " Edit ".to_owned(),
         };
-        let mut title = vec![Span::raw(name)];
+        let mut title = vec![Span::raw(name.clone())];
         let mut x = editor.x + 1 + name.len() as u16;
         for &(label, code) in &buttons {
             title.push(Span::styled(
@@ -312,7 +312,12 @@ fn draw(frame: &mut Frame, app: &mut App, rows: &[Row], display: &mut ListState,
         picker.draw(frame);
     }
     if let Some(job) = &app.job {
-        (app.links, app.words) = draw_job(frame, job, app.action.label(), &app.status, area);
+        // A job of the machine is named by what it does, not by the install method.
+        let action = match app.machine_job {
+            true => job.title.clone(),
+            false => app.action.label().to_owned(),
+        };
+        (app.links, app.words) = draw_job(frame, job, &action, &app.status, area);
     }
     if let Some(session) = &app.session {
         (app.links, app.words) = draw_session(frame, session, &app.status);
@@ -321,6 +326,9 @@ fn draw(frame: &mut Frame, app: &mut App, rows: &[Row], display: &mut ListState,
         (app.links, app.words) = draw_view(frame, view, &app.status, "Ctrl+Q");
     }
     if let Some((question, _)) = &app.host.question {
+        draw_question(frame, question);
+    }
+    if let Some(question) = &app.machine.question {
         draw_question(frame, question);
     }
     draw_arguments(frame, &app.host);
@@ -998,12 +1006,10 @@ fn mouse_event(app: &mut App, mouse: MouseEvent, hits: &Hits) -> Option<KeyEvent
 
 fn choose(app: &mut App, entry: Entry) -> Flow {
     match entry {
-        Entry::Source(0) => app.detect(),
-        Entry::Source(_) => app.editing = Some(Input::default()),
         Entry::Action(action) => {
             app.action = action;
             // A laptop profile would add a display manager and power policy to a server.
-            if action == Action::CloudSeed && app.text(Field::Profile) == "laptop" {
+            if action.seeds() && app.text(Field::Profile) == "laptop" {
                 app.config["profile"] = json!("cloud");
             }
         }
@@ -1031,6 +1037,7 @@ fn choose(app: &mut App, entry: Entry) -> Flow {
         }
         Entry::Task("connect") => app.reconnect_host(),
         Entry::Task("apply") => return apply(app, false),
+        Entry::Machine(pick) => app.machine_enter(pick),
         Entry::Task(_) => {}
         Entry::Run => {
             if !app.problems().is_empty() {
@@ -2755,6 +2762,7 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
         };
         app.update_suggestions();
         app.watch_host();
+        app.watch_machine();
         let (panel_rows, panel_cols) = session_size();
         app.host.resize(panel_rows, panel_cols);
         let rows = app.rows();
@@ -2803,6 +2811,10 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
         {
             continue;
         }
+        // The machine's state is taken in when it comes, too.
+        if app.machine_awaited() && !event::poll(std::time::Duration::from_millis(200))? {
+            continue;
+        }
         if let Some(left) = fading
             && !event::poll(left)?
         {
@@ -2842,6 +2854,16 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
         }
         if app.confirm.is_some() {
             confirm_event(app, &event);
+            continue;
+        }
+        if app.machine.question.is_some() {
+            if let Event::Key(key) = &event {
+                match key.code {
+                    KeyCode::Char('y' | 'Y') => app.machine_answer(true),
+                    KeyCode::Char('n' | 'N') | KeyCode::Esc => app.machine_answer(false),
+                    _ => {}
+                }
+            }
             continue;
         }
         if app.host.question.is_some() {
@@ -3472,7 +3494,10 @@ mod tests {
         );
         use KeyCode::*;
         // Install: the USB installer is the default method; its settings follow.
-        press(&mut app, &[Tab, Tab, Tab, Down, Down, Down, Down, Down]);
+        press(
+            &mut app,
+            &[Tab, Tab, Tab, Down, Down, Down, Down, Down, Down],
+        );
         assert_eq!(app.action, Action::Iso);
         let install = screen(&mut app);
         assert!(install.contains("● USB installer"));
@@ -3885,5 +3910,105 @@ mod tests {
         press(&mut app, &[KeyCode::Up]);
         key_event(&mut app, c, &mut armed, &mut clipboard);
         assert!(clipboard.0.is_none());
+    }
+
+    #[test]
+    fn the_install_tab_creates_and_deletes_the_machine() {
+        use berth_tui::machine::Pick;
+        let profile = format!(
+            r#"{{"hostname": "studio", "operator_password_hash": "$6${}",
+                "operator_ssh_public_keys": ["ssh-ed25519 AAAA studio"]}}"#,
+            "a".repeat(40)
+        );
+        let mut app = App::new(
+            "studio.json".into(),
+            parse_config(profile.as_bytes()).unwrap(),
+        );
+        app.set_step(Step::Install);
+        app.action = Action::Machine;
+        // Nothing was asked without berth's own folders, so nothing shows.
+        assert!(
+            !app.entries()
+                .iter()
+                .any(|entry| matches!(entry, Entry::Machine(_)))
+        );
+        let provisioner = berth_api::ProvisionerInfo {
+            id: "lab/vm".into(),
+            label: "Lab machine".into(),
+            setup: "apply".into(),
+            arguments: vec![berth_api::Argument {
+                name: "server".into(),
+                label: "Lab server".into(),
+                required: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        app.machine.asking();
+        app.machine.listed(Ok(vec![provisioner]));
+        app.machine.found(Ok(None));
+        let select = |app: &mut App, entry: Entry| {
+            let at = app.entries().iter().position(|known| *known == entry);
+            app.list.select(Some(at.unwrap()));
+        };
+        select(&mut app, Entry::Machine(Pick::Provisioner(0)));
+        press(&mut app, &[KeyCode::Enter]);
+        let shown = screen_text(&mut app);
+        assert!(shown.contains("● Lab machine  · berth applies the profile over SSH"));
+        let lines: Vec<String> = app.rows().iter().map(|row| row.line.to_string()).collect();
+        assert!(lines.contains(&"    ✗ Lab server is required".to_owned()));
+        // Creating with a required argument empty is refused before asking.
+        select(&mut app, Entry::Machine(Pick::Create));
+        press(&mut app, &[KeyCode::Enter]);
+        assert!(app.machine.question.is_none() && app.status.contains("required"));
+        select(&mut app, Entry::Machine(Pick::Argument(0)));
+        press(&mut app, &[KeyCode::Enter]);
+        for ch in "192.0.2.10".chars() {
+            press(&mut app, &[KeyCode::Char(ch)]);
+        }
+        press(&mut app, &[KeyCode::Enter]);
+        assert_eq!(app.machine.values["server"], "192.0.2.10");
+        select(&mut app, Entry::Machine(Pick::Create));
+        press(&mut app, &[KeyCode::Enter]);
+        let shown = screen_text(&mut app);
+        assert!(
+            shown.contains("Create a machine for studio with Lab machine?"),
+            "{shown}"
+        );
+        app.machine_answer(false);
+        assert!(app.machine.question.is_none() && app.job.is_none());
+
+        // Another way to install has no provisioner to choose.
+        app.action = Action::Ssh;
+        assert!(
+            !app.entries()
+                .iter()
+                .any(|entry| matches!(entry, Entry::Machine(_)))
+        );
+        // With a machine, its state and what can be done to it, whatever the way.
+        app.machine.found(Ok(Some(berth_api::Instance {
+            provisioner: "lab/vm".into(),
+            id: "studio".into(),
+            state: "stopped".into(),
+            verbs: vec!["start".into()],
+            ..Default::default()
+        })));
+        let machine: Vec<Entry> = app
+            .entries()
+            .into_iter()
+            .filter(|entry| matches!(entry, Entry::Machine(_)))
+            .collect();
+        assert_eq!(
+            machine,
+            [Entry::Machine(Pick::Start), Entry::Machine(Pick::Delete)]
+        );
+        select(&mut app, Entry::Machine(Pick::Delete));
+        press(&mut app, &[KeyCode::Enter]);
+        assert!(screen_text(&mut app).contains("Type studio to delete its machine"));
+        for ch in "studi".chars() {
+            press(&mut app, &[KeyCode::Char(ch)]);
+        }
+        press(&mut app, &[KeyCode::Enter]);
+        assert!(app.status.starts_with("Not deleted") && app.job.is_none());
     }
 }

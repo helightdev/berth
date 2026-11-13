@@ -29,6 +29,9 @@ For each part:
   only its user can read, and are written to the agent's files on the hosts
   that take them. The tailnet's API key, `tailnet_api_key`, is the exception:
   berth uses it to create one-use enrollment keys and never sends it to a host.
+- **Provisioner plugins** run with the rights of the user that runs berth, or
+  the berth server, and are given the provider credentials they name. Install
+  only ones you trust.
 
 A host is an agent's workspace and should be treated as one. Give it
 credentials with the narrowest scope that does the job, and assume that what

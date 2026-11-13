@@ -27,7 +27,7 @@ A profile is a JSON file that describes one host. berth writes it from the set-u
 
 <TypeTable
   type={{
-    hostname: { type: 'string', description: 'Hostname of the installed machine: lower-case letters, digits and hyphens, starting with a letter. F4 generates one.' },
+    hostname: { type: 'string', description: 'Hostname of the installed machine: lower-case letters, digits and hyphens, starting with a letter. F4 generates one. A cloud seed or a created machine without one takes the name of the host.' },
     profile: { type: '"laptop" | "cloud" | "qemu"', default: '"laptop"', description: 'Provisioning defaults. Only laptop adds a physical login and power settings.' },
     keyboard: { type: 'string', description: 'Keyboard layout of the installer, such as de or us.' },
     tailscale_auth_key: { type: 'string', description: 'Optional enrollment key; prefer a short-lived, one-use key.' },
@@ -46,7 +46,7 @@ A profile is a JSON file that describes one host. berth writes it from the set-u
     operator_username: { type: 'string', default: '"ops"', description: 'Your account on the host.' },
     operator_ssh_public_keys: { type: 'string[]', description: 'OpenSSH public keys that log in as the operator.' },
     berth_ssh_key: { type: 'boolean', default: 'true', description: 'Whether the operator also takes the key of the berth that installs or applies the host.' },
-    operator_password_hash: { type: 'string', description: 'SHA-512 crypt or yescrypt hash. Needed for Cockpit and the console.' },
+    operator_password_hash: { type: 'string', description: 'SHA-512 crypt or yescrypt hash. Needed for Cockpit and the console. The USB installer requires it. A cloud seed or a created machine requires it only when the operator has no passwordless sudo.' },
     operator_passwordless_sudo: { type: 'boolean', default: 'true', description: 'sudo without a password for the operator, so berth needs no sudo password to look after the host.' },
     agent_username: { type: 'string', default: '"agent"', description: 'The agents\' account; home is /home/USERNAME.' },
     agent_ssh_public_keys: { type: 'string[]', description: 'Optional keys for SSH to the agent account.' },

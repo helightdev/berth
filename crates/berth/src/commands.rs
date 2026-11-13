@@ -13,7 +13,7 @@ use berth_core::{
     host::Host,
     link::{self, Link},
     paths::Paths,
-    registry,
+    provision, registry,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -709,32 +709,55 @@ pub fn apply(paths: &Paths, name: &str) -> Result<()> {
     let with = host
         .sudo_password()?
         .map(|password| json!({"sudo_password": password}));
-    let code = link::runtime()?.block_on(async {
-        let portal = server.portal().await?;
-        let job = portal
-            .call("hosts.apply", None, json!({"name": name}), with)
-            .await?;
-        let id = job["id"].as_str().unwrap_or("").to_owned();
-        eprintln!("Job {id} on the berth server at {}", server.url);
-        let mut output = portal.open("jobs.follow", None, json!({"id": id})).await?;
-        let mut code = None;
-        while let Some(piece) = output.recv().await {
-            match piece? {
-                api::portal::Piece::Binary(data) => {
-                    let mut out = std::io::stdout();
-                    out.write_all(&data)?;
-                    out.flush()?;
-                }
-                api::portal::Piece::Text(said) => {
-                    if let Some(exited) = said.get("exited") {
-                        code = Some(exited["exit_code"].as_i64().unwrap_or(1) as i32);
-                    }
+    let code = served_job(&server, "hosts.apply", json!({"name": name}), with)?;
+    std::process::exit(code);
+}
+
+/// Start a job of the berth server with an operation, and its id.
+async fn start_job(
+    portal: &api::portal::Portal,
+    op: &str,
+    args: Value,
+    data: Option<Value>,
+) -> Result<String> {
+    let job = portal.call(op, None, args, data).await?;
+    Ok(job["id"].as_str().unwrap_or("").to_owned())
+}
+
+/// A job's output to `out` as it comes, until it ends, and its exit code.
+async fn follow_job(portal: &api::portal::Portal, id: &str, out: &mut dyn Write) -> Result<i32> {
+    let mut output = portal.open("jobs.follow", None, json!({"id": id})).await?;
+    let mut code = None;
+    while let Some(piece) = output.recv().await {
+        match piece? {
+            api::portal::Piece::Binary(data) => {
+                out.write_all(&data)?;
+                out.flush()?;
+            }
+            api::portal::Piece::Text(said) => {
+                if let Some(exited) = said.get("exited") {
+                    code = Some(exited["exit_code"].as_i64().unwrap_or(1) as i32);
                 }
             }
         }
-        Ok::<i32, Box<dyn std::error::Error>>(code.unwrap_or(1))
-    })?;
-    std::process::exit(code);
+    }
+    Ok(code.unwrap_or(1))
+}
+
+/// Run an operation that is a job of the berth server, with its output shown
+/// as it comes, and the job's exit code.
+fn served_job(
+    server: &berth_core::server::Server,
+    op: &str,
+    args: Value,
+    data: Option<Value>,
+) -> Result<i32> {
+    link::runtime()?.block_on(async {
+        let portal = server.portal().await?;
+        let id = start_job(&portal, op, args, data).await?;
+        eprintln!("Job {id} on the berth server at {}", server.url);
+        follow_job(&portal, &id, &mut std::io::stdout()).await
+    })
 }
 
 /// A roll-out, from here or as a job of the berth server berth is set to
@@ -757,23 +780,10 @@ pub fn rollout(
     };
     link::runtime()?.block_on(async {
         let portal = server.portal().await?;
-        let job = portal
-            .call(
-                "hosts.rollout",
-                None,
-                Value::Null,
-                Some(serde_json::to_value(options)?),
-            )
-            .await?;
-        let id = job["id"].as_str().unwrap_or("").to_owned();
+        let options = Some(serde_json::to_value(options)?);
+        let id = start_job(&portal, "hosts.rollout", Value::Null, options).await?;
         let _ = writeln!(out, "Job {id} on the berth server at {}", server.url);
-        let mut output = portal.open("jobs.follow", None, json!({"id": id})).await?;
-        while let Some(piece) = output.recv().await {
-            if let api::portal::Piece::Binary(data) = piece? {
-                out.write_all(&data)?;
-                out.flush()?;
-            }
-        }
+        follow_job(&portal, &id, out).await?;
         let ended = portal
             .call("jobs.get", None, json!({"id": id}), None)
             .await?;
@@ -895,16 +905,223 @@ pub fn seed(paths: &Paths, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// `berth remove HOST`: forget a host. The machine itself is left as it is.
+/// `berth remove HOST`: forget a host. The machine itself is left as it is,
+/// and a host with a machine berth created keeps it until that is deleted.
 pub fn remove(paths: &Paths, name: &str) -> Result<()> {
     let host = Host::load(paths, name).map_err(|_| format!("No host {name}"))?;
+    if let Some(record) = provision::Record::load(paths, name)?
+        && !record.id.is_empty()
+    {
+        return Err(format!(
+            "{name} has a machine berth created, {} of {}. Delete it first: berth instance {name} destroy",
+            record.id, record.provisioner
+        )
+        .into());
+    }
     if let Some(server) = host.served() {
         server.call("hosts.remove", json!({"name": name}), None)?;
     }
     std::fs::remove_file(&host.path)?;
-    let _ = std::fs::remove_file(host.path.with_extension("credentials.json"));
+    for beside in ["credentials.json", "instance.json", "instance.lock"] {
+        let _ = std::fs::remove_file(host.path.with_extension(beside));
+    }
     println!("Removed {name}");
     Ok(())
+}
+
+// ── Provisioners ────────────────────────────────────────────────────────────
+
+/// Provisioners run where the hosts are kept: with a berth server that is
+/// the server, which is asked for each of them.
+fn provisioning_server(paths: &Paths) -> Option<berth_core::server::Server> {
+    berth_core::server::Server::configured(paths)
+}
+
+/// The provisioners there are, here or on the berth server.
+fn known_provisioners(
+    paths: &Paths,
+    server: Option<&berth_core::server::Server>,
+) -> Result<Vec<api::ProvisionerInfo>> {
+    match server {
+        Some(server) => Ok(serde_json::from_value(server.call(
+            "provisioners.list",
+            Value::Null,
+            None,
+        )?)?),
+        None => Ok(provision::list(paths, &registry::Store::new(paths))),
+    }
+}
+
+/// `berth provisioners`: what can create machines, and what each asks for.
+pub fn provisioners(paths: &Paths) -> Result<()> {
+    let found = known_provisioners(paths, provisioning_server(paths).as_ref())?;
+    if found.is_empty() {
+        println!("No plugin brings a provisioner. See: berth plugins");
+    }
+    for provisioner in found {
+        println!("{:<24} {}", provisioner.id, provisioner.label);
+        if !provisioner.description.is_empty() {
+            println!("  {}", provisioner.description);
+        }
+        for note in berth_core::plugins::provisioner_notes(&provisioner) {
+            println!("  · {note}");
+        }
+    }
+    Ok(())
+}
+
+/// `berth provisioners PLUGIN/ID [NAME=VALUE…]`: the machines it has that
+/// berth created.
+pub fn provisioner_instances(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
+    let (values, _) = parse_arguments(args)?;
+    let listed: Vec<api::ListedInstance> = match provisioning_server(paths) {
+        Some(server) => {
+            let (plugin, id) = name
+                .split_once('/')
+                .ok_or_else(|| format!("No provisioner {name}. See: berth provisioners"))?;
+            // The arguments are the query of the request, beside its path.
+            let mut asked = json!(values);
+            (asked["plugin"], asked["id"]) = (json!(plugin), json!(id));
+            serde_json::from_value(server.call("provisioners.instances", asked, None)?)?
+        }
+        None => {
+            let store = registry::Store::new(paths);
+            provision::instances(paths, &store, name, &values, &Default::default())?
+        }
+    };
+    for instance in listed {
+        println!(
+            "{:<24} {:<10} {}",
+            instance.host, instance.state, instance.id
+        );
+    }
+    Ok(())
+}
+
+/// `berth provision HOST PLUGIN/ID [NAME=VALUE…] [--yes]`: create the
+/// machine for a saved host and set it up. On a berth server that is a job of
+/// the server, whose output is shown as it comes.
+pub fn provision(paths: &Paths, name: &str, provisioner: &str, args: &[&str]) -> Result<()> {
+    let (mut values, yes) = parse_arguments(args)?;
+    let server = provisioning_server(paths);
+    let known = known_provisioners(paths, server.as_ref())?;
+    let found = known
+        .iter()
+        .find(|known| known.id == provisioner)
+        .ok_or_else(|| format!("No provisioner {provisioner}. See: berth provisioners"))?;
+    // What is required and has no default is asked for here, as `berth run` does.
+    if std::io::stdin().is_terminal() {
+        for argument in &found.arguments {
+            if argument.required
+                && argument.default.is_empty()
+                && !values.contains_key(&argument.name)
+            {
+                let label = match argument.label.as_str() {
+                    "" => &argument.name,
+                    label => label,
+                };
+                values.insert(argument.name.clone(), ask(&format!("{label}:"))?);
+            }
+        }
+    }
+    if !yes
+        && !ask(&format!(
+            "Create a machine for {name} with {} ({provisioner})? [y/N]",
+            found.label
+        ))?
+        .eq_ignore_ascii_case("y")
+    {
+        return Err("Not created".into());
+    }
+    let asked = api::Provision {
+        provisioner: provisioner.to_owned(),
+        arguments: values,
+    };
+    if let Some(server) = server {
+        let asked = Some(serde_json::to_value(&asked)?);
+        let code = served_job(&server, "instances.create", json!({"name": name}), asked)?;
+        std::process::exit(code);
+    }
+    provision::provision(
+        paths,
+        &registry::Store::new(paths),
+        name,
+        &asked,
+        &Default::default(),
+        &mut std::io::stdout(),
+    )
+}
+
+/// `berth instance HOST [start|stop|destroy [--yes]]`: the machine berth
+/// created for the host, or a change to it.
+pub fn instance(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
+    let server = provisioning_server(paths);
+    let store = registry::Store::new(paths);
+    let options = provision::Options::default();
+    let mut out = std::io::stdout();
+    let named = json!({"name": name});
+    match args {
+        [] => {
+            let instance: api::Instance = match &server {
+                Some(server) => {
+                    serde_json::from_value(server.call("instances.get", named, None)?)?
+                }
+                None => provision::status(paths, &store, name, &options)?
+                    .ok_or_else(|| format!("{name} has no machine that berth created"))?,
+            };
+            print!("{}", describe_instance(name, &instance));
+            Ok(())
+        }
+        [verb @ ("start" | "stop")] => {
+            match &server {
+                Some(server) => {
+                    let asked = json!({"name": name, "verb": verb});
+                    server.call("instances.power", asked, None)?;
+                }
+                None => provision::power(paths, &store, name, verb, &options, &mut out)?,
+            }
+            println!("✓ {name}: {verb} asked of {name}'s machine");
+            Ok(())
+        }
+        ["destroy", rest @ ..] => {
+            let (_, yes) = parse_arguments(rest)?;
+            if !yes && ask(&format!("Delete {name}'s machine? Type {name} to say so:"))? != name {
+                return Err("Not deleted".into());
+            }
+            match &server {
+                Some(server) => {
+                    std::process::exit(served_job(server, "instances.destroy", named, None)?)
+                }
+                None => provision::destroy(paths, &store, name, &options, &mut out),
+            }
+        }
+        _ => Err("Usage: berth instance HOST [start|stop|destroy [--yes]]".into()),
+    }
+}
+
+/// What `berth instance HOST` says of the machine.
+pub fn describe_instance(name: &str, instance: &api::Instance) -> String {
+    let mut text = format!("{name}  {}  {}\n", instance.provisioner, instance.id);
+    text += &format!("State      {}\n", instance.state);
+    if !instance.problem.is_empty() {
+        text += &format!("Problem    {}\n", instance.problem);
+    }
+    if !instance.address.is_empty() {
+        text += &format!("Address    {}\n", instance.address);
+    }
+    text += &format!("Created    {}\n", instance.created);
+    let arguments: Vec<String> = instance
+        .arguments
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect();
+    if !arguments.is_empty() {
+        text += &format!("Arguments  {}\n", arguments.join(" "));
+    }
+    let mut verbs = instance.verbs.clone();
+    verbs.push("destroy".into());
+    text += &format!("Can        berth instance {name} {}\n", verbs.join("|"));
+    text
 }
 
 /// `berth login`: get an access token for the berth server from its issuer.
@@ -969,6 +1186,80 @@ pub fn logout(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
+/// `berth connect URL`: use the berth server at URL, with the token a setup
+/// key collects. The key comes on standard input, so it is in no argv.
+pub fn connect(paths: &Paths, url: &str) -> Result<()> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(format!(
+            "{url} is no address of a berth server: https://HOST or http://HOST:PORT"
+        )
+        .into());
+    }
+    let key = registry::read_secret("Setup key")?;
+    connect_with(paths, url, key.trim())
+}
+
+/// [`connect`] with the key in hand. Nothing is saved unless all of it works.
+pub fn connect_with(paths: &Paths, url: &str, key: &str) -> Result<()> {
+    use berth_core::server::{Server, http_as};
+    let url = url.trim().trim_end_matches('/').to_owned();
+    let key = key.to_owned();
+    let at = format!("{url}/v1/setup-key");
+    let ask = |method: &'static str| {
+        let (at, key) = (at.clone(), key.clone());
+        async move {
+            let (status, body) = http_as(method, &at, Some(&key), None, vec![]).await?;
+            match status {
+                200 => Ok(serde_json::from_slice::<Value>(&body)?),
+                401 => Err(
+                    "The server did not take the setup key: it is wrong, used up or expired. Make a new one where the server runs: berth setup-key".into(),
+                ),
+                404 | 405 => Err("The server knows no setup keys: it is an older berth".into()),
+                _ => Err(answer_error(status, &body)),
+            }
+        }
+    };
+    let (version, token) = link::runtime()?.block_on(async {
+        let checked: api::SetupKey = serde_json::from_value(ask("GET").await?)?;
+        let claimed: api::SetupClaim = serde_json::from_value(ask("POST").await?)?;
+        // Saved only once the token is seen to open the server.
+        Server {
+            url: url.clone(),
+            token: Some(claimed.token.clone()),
+        }
+        .portal()
+        .await?
+        .call("access", None, Value::Null, None)
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>((checked.version, claimed.token))
+    })?;
+    let before = paths.setting("server");
+    paths.set("server", &url)?;
+    if let Err(error) = paths.set("server_token", &token) {
+        paths.set("server", before.as_deref().unwrap_or(""))?;
+        return Err(error);
+    }
+    if let Err(error) = link::runtime()?.block_on(ask("DELETE")) {
+        eprintln!(
+            "The setup key could not be ended ({error}). It stops by itself within a day, or with berth setup-key --remove where the server runs."
+        );
+    }
+    println!("This berth now uses the berth server at {url}, berth {version}");
+    if std::env::var_os("BERTH_SERVER").is_some() {
+        eprintln!("BERTH_SERVER is set in this shell and is used before the setting");
+    }
+    Ok(())
+}
+
+/// What an answer that is not a 200 says.
+fn answer_error(status: u16, body: &[u8]) -> Box<dyn std::error::Error> {
+    let said: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    match said["error"]["message"].as_str() {
+        Some(message) => format!("HTTP {status}: {message}").into(),
+        None => format!("HTTP {status}").into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -993,6 +1284,34 @@ mod tests {
         assert_eq!(values["empty"], "");
         assert!(parse_arguments(&["folder"]).is_err());
         assert!(parse_arguments(&["=x"]).is_err());
+    }
+
+    #[test]
+    fn a_host_with_a_machine_berth_created_stays_until_it_is_deleted() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: home.path().join("config"),
+            data_dir: home.path().join("data"),
+        };
+        paths.prepare().unwrap();
+        let profile = paths.profile("studio").unwrap();
+        std::fs::write(&profile, r#"{"builder": {"ssh_host": "192.0.2.20"}}"#).unwrap();
+        let mut record = provision::Record {
+            provisioner: "cloud/vm".into(),
+            id: "vm-1".into(),
+            token: "t".into(),
+            ..Default::default()
+        };
+        record.save(&paths, "studio").unwrap();
+        let said = remove(&paths, "studio").unwrap_err().to_string();
+        assert!(said.contains("berth instance studio destroy"), "{said}");
+        assert!(profile.is_file());
+        // One whose creation never ended goes with the host.
+        record.id.clear();
+        record.save(&paths, "studio").unwrap();
+        remove(&paths, "studio").unwrap();
+        assert!(!profile.exists());
+        assert!(provision::Record::load(&paths, "studio").unwrap().is_none());
     }
 
     #[test]

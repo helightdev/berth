@@ -26,6 +26,10 @@ pub enum Arrived {
     Password,
     /// A session on the host to look at.
     Session(Value),
+    /// What can create the host's machine.
+    Provisioners(Result<Vec<berth_api::ProvisionerInfo>, String>),
+    /// The machine berth created for the host, if it has one.
+    Instance(Result<Option<berth_api::Instance>, String>),
 }
 
 #[derive(Default)]
@@ -536,10 +540,24 @@ impl Admin {
             None => Value::Null,
         };
         let title = format!("Apply this configuration · {name}");
+        self.job("hosts.apply", name, body, title, size, |_| {});
+    }
+
+    /// Start a job of the server about a host and follow it in a panel;
+    /// `ended` is run when it has ended.
+    fn job(
+        &self,
+        op: &str,
+        name: &str,
+        body: Value,
+        title: String,
+        size: (u16, u16),
+        ended: impl Fn(&Admin) + 'static,
+    ) {
         let admin = self.clone();
         self.say("Starting…");
         self.portal.call(
-            "hosts.apply",
+            op,
             None,
             json!({"name": name}),
             body,
@@ -547,13 +565,13 @@ impl Admin {
                 Ok(job) => {
                     admin.say("");
                     admin.data.borrow_mut().job = Some(View::plain(&title, size.0, size.1));
-                    let data = admin.data.clone();
+                    let follower = admin.clone();
                     admin.portal.stream(
                         "jobs.follow",
                         None,
                         json!({"id": job["id"]}),
                         move |frame| {
-                            let mut data = data.borrow_mut();
+                            let mut data = follower.data.borrow_mut();
                             let Some(view) = &mut data.job else {
                                 return;
                             };
@@ -574,6 +592,8 @@ impl Admin {
                                         view.ended = Some(None);
                                     }
                                     data.hosts_changed = true;
+                                    drop(data);
+                                    ended(&follower);
                                 }
                             }
                         },
@@ -581,6 +601,82 @@ impl Admin {
                 }
                 Err(error) if error.contains("sudo_password") => admin.arrive(Arrived::Password),
                 Err(error) => admin.say(format!("✗ {error}")),
+            },
+        );
+    }
+
+    /// Ask what can create the host's machine, and what its machine is.
+    pub fn machine(&self, name: &str) {
+        let admin = self.clone();
+        self.portal.call(
+            "provisioners.list",
+            None,
+            json!({}),
+            Value::Null,
+            move |result| {
+                let listed = result.and_then(|found| {
+                    serde_json::from_value(found).map_err(|error| error.to_string())
+                });
+                admin.arrive(Arrived::Provisioners(listed));
+            },
+        );
+        let admin = self.clone();
+        self.portal.call(
+            "instances.get",
+            None,
+            json!({"name": name}),
+            Value::Null,
+            move |result| {
+                let found = match result {
+                    Ok(found) => serde_json::from_value(found)
+                        .map(Some)
+                        .map_err(|error| error.to_string()),
+                    Err(error) if berth_tui::machine::absent(&error) => Ok(None),
+                    Err(error) => Err(error),
+                };
+                admin.arrive(Arrived::Instance(found));
+            },
+        );
+    }
+
+    /// Create the host's machine as a job of the server, and follow it.
+    pub fn provision(&self, name: &str, asked: &berth_api::Provision, size: (u16, u16)) {
+        let body = serde_json::to_value(asked).unwrap_or_default();
+        let title = format!("Create machine · {name}");
+        let host = name.to_owned();
+        self.job("instances.create", name, body, title, size, move |admin| {
+            admin.machine(&host)
+        });
+    }
+
+    /// Delete the host's machine as a job of the server, and follow it.
+    pub fn unprovision(&self, name: &str, size: (u16, u16)) {
+        let title = format!("Delete machine · {name}");
+        let host = name.to_owned();
+        self.job(
+            "instances.destroy",
+            name,
+            Value::Null,
+            title,
+            size,
+            move |admin| admin.machine(&host),
+        );
+    }
+
+    /// Start or stop the host's machine.
+    pub fn power(&self, name: &str, verb: &str) {
+        self.say(format!("Asking the machine to {verb}…"));
+        let (host, said) = (
+            name.to_owned(),
+            format!("✓ {verb} asked of {name}'s machine"),
+        );
+        self.call(
+            "instances.power",
+            json!({"name": name, "verb": verb}),
+            Value::Null,
+            move |admin, _| {
+                admin.say(said);
+                admin.machine(&host);
             },
         );
     }

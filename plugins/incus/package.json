@@ -1,0 +1,80 @@
+{
+  "name": "berth-plugin-incus",
+  "version": "0.1.0",
+  "displayName": "Incus",
+  "description": "Virtual machines and containers on an Incus server for berth hosts.",
+  "license": "MIT OR Apache-2.0",
+  "keywords": [
+    "berth-plugin"
+  ],
+  "files": [
+    "bin",
+    "guide.md"
+  ],
+  "berth": {
+    "provisioners": [
+      {
+        "id": "vm",
+        "label": "Incus virtual machine",
+        "description": "A KVM guest on an Incus server, set up from berth's cloud seed. The server needs KVM.",
+        "command": "bin/provision",
+        "setup": "seed",
+        "archive": true,
+        "verbs": [
+          "start",
+          "stop",
+          "list"
+        ],
+        "secrets": [
+          "incus_client_cert",
+          "incus_client_key",
+          {
+            "name": "incus_server_cert",
+            "required": false
+          }
+        ],
+        "arguments": [
+          {"name": "server", "label": "Incus server, such as https://192.0.2.10:8443", "required": true},
+          {"name": "cpus", "label": "vCPUs", "default": "4"},
+          {"name": "memory", "label": "Memory", "default": "8GiB"},
+          {"name": "disk", "label": "Disk size", "default": "60GiB"},
+          {"name": "image", "label": "Image on images.linuxcontainers.org", "default": "ubuntu/26.04/cloud"},
+          {"name": "pool", "label": "Storage pool", "default": "default"},
+          {"name": "network", "label": "Network (empty: the default profile's)", "default": ""},
+          {"name": "project", "label": "Incus project", "default": "default"}
+        ]
+      },
+      {
+        "id": "container",
+        "label": "Incus container",
+        "description": "A system container on an Incus server, set up from berth's cloud seed. Nesting is turned on so that the guest's systemd comes up.",
+        "command": "bin/provision",
+        "setup": "seed",
+        "archive": true,
+        "verbs": [
+          "start",
+          "stop",
+          "list"
+        ],
+        "secrets": [
+          "incus_client_cert",
+          "incus_client_key",
+          {
+            "name": "incus_server_cert",
+            "required": false
+          }
+        ],
+        "arguments": [
+          {"name": "server", "label": "Incus server, such as https://192.0.2.10:8443", "required": true},
+          {"name": "cpus", "label": "CPUs", "default": "4"},
+          {"name": "memory", "label": "Memory", "default": "8GiB"},
+          {"name": "disk", "label": "Disk size", "default": "60GiB"},
+          {"name": "image", "label": "Image on images.linuxcontainers.org", "default": "ubuntu/26.04/cloud"},
+          {"name": "pool", "label": "Storage pool", "default": "default"},
+          {"name": "network", "label": "Network (empty: the default profile's)", "default": ""},
+          {"name": "project", "label": "Incus project", "default": "default"}
+        ]
+      }
+    ]
+  }
+}

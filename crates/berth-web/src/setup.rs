@@ -5,7 +5,8 @@
 use crate::admin::{Admin, Data};
 use crate::browser::Browser;
 use berth_tui::fields::{Action, Field, Kind, Step};
-use berth_tui::screen::{draw_footer, draw_header, inside};
+use berth_tui::machine::{self, Machine, Next};
+use berth_tui::screen::{draw_footer, draw_header, draw_question, inside};
 use berth_tui::setup::{self, Account, Entry, Feature, Item, Profile, Row};
 use berth_tui::{Click, Code, Event, Key, event, markdown, theme};
 use ratzilla::ratatui::{
@@ -19,7 +20,7 @@ use serde_json::{Value, json};
 use tui_input::Input;
 
 /// The ways the server installs a host itself.
-const METHODS: [Action; 2] = [Action::CloudSeed, Action::Ssh];
+const METHODS: [Action; 3] = [Action::Machine, Action::CloudSeed, Action::Ssh];
 
 /// Draw the box something is typed in, under the rows it belongs to.
 pub fn draw_editor(frame: &mut Frame, area: Rect, title: &str, input: &Input, masked: bool) {
@@ -78,6 +79,8 @@ pub struct Setup {
     tabs: Vec<Rect>,
     /// The size a panel for output gets.
     pub panel: (u16, u16),
+    /// The machine the server creates for the host, on the Install tab.
+    pub machine: Machine,
 }
 
 impl Setup {
@@ -121,6 +124,7 @@ impl Setup {
             hits: vec![],
             tabs: vec![],
             panel: (24, 80),
+            machine: Machine::default(),
         }
     }
 
@@ -161,7 +165,11 @@ impl Setup {
     pub fn sync(&mut self, data: &Data) {
         self.features = data.features.clone();
         self.registries = data.registry_names();
-        self.secrets = setup::host_secrets(data.secret_names());
+        let names = data.secret_names();
+        if !self.loading {
+            setup::default_enrollment(&mut self.config, &names);
+        }
+        self.secrets = setup::host_secrets(names);
         self.stores = setup::release_stores(&data.registries);
         self.own_key = data.own_key.clone();
     }
@@ -175,6 +183,7 @@ impl Setup {
             registries: &self.registries,
             secrets: &self.secrets,
             own_key: &self.own_key,
+            named: setup::valid_hostname(&self.name),
         }
     }
 
@@ -225,11 +234,23 @@ impl Setup {
                         Style::new().fg(theme::GOOD),
                     )));
                 }
-                rows.push(Row::info(""));
-                rows.push(Row::entry(
-                    format!("[Run · {}]", self.action.label()),
-                    Entry::Run,
-                ));
+                // A machine is created from the provisioner's own rows.
+                if self.action != Action::Machine {
+                    rows.push(Row::info(""));
+                    rows.push(Row::entry(
+                        format!("[Run · {}]", self.action.label()),
+                        Entry::Run,
+                    ));
+                }
+                let machine = if self.action == Action::Machine || self.machine.exists() {
+                    self.machine.rows()
+                } else {
+                    vec![]
+                };
+                if !machine.is_empty() {
+                    rows.push(Row::info(""));
+                    rows.extend(machine);
+                }
                 rows
             }
         }
@@ -275,13 +296,46 @@ impl Setup {
                 Action::CloudSeed => "Saves the profile on the server and renders the seed. Paste it into the provider's user data field when creating the machine.".into(),
                 _ => "Saves the profile on the server and applies it to the host from there.".into(),
             },
-            Some(Entry::Source(_)) | None => String::new(),
+            Some(Entry::Machine(pick)) => self.machine.help(pick),
+            None => String::new(),
         }
     }
 
-    fn set_step(&mut self, step: Step) {
+    fn set_step(&mut self, step: Step, admin: &Admin) {
         self.step = step;
         self.list = ListState::default().with_selected(Some(0));
+        if step == Step::Install {
+            self.machine.asking();
+            admin.machine(&self.name);
+        }
+    }
+
+    /// Do what a row of the machine led to.
+    fn follow(&mut self, next: Next, admin: &Admin) -> Option<String> {
+        let (name, size) = (self.name.clone(), self.panel);
+        match next {
+            Next::Nothing | Next::Confirm => None,
+            Next::Say(text) => Some(text),
+            Next::Edit(value) => {
+                self.editing = Some(Input::new(value));
+                None
+            }
+            Next::Create(asked) => {
+                // The server's provisioner works from the profile as it keeps it.
+                admin.save(&self.name, &self.config, move |admin| {
+                    admin.provision(&name, &asked, size)
+                });
+                Some("Saving…".into())
+            }
+            Next::Power(verb) => {
+                admin.power(&name, verb);
+                None
+            }
+            Next::Destroy => {
+                admin.unprovision(&name, size);
+                None
+            }
+        }
     }
 
     fn move_selection(&mut self, up: bool) {
@@ -349,6 +403,10 @@ impl Setup {
             Some(Entry::Key(account, index)) if !input.value().trim().is_empty() => {
                 setup::set_key(&mut self.config, account, index, input.value()).err()
             }
+            Some(Entry::Machine(pick)) => {
+                let next = self.machine.typed(pick, input.value(), &self.name);
+                self.follow(next, admin)
+            }
             _ => None,
         }
     }
@@ -396,7 +454,7 @@ impl Setup {
             Entry::Action(action) => {
                 self.action = action;
                 // A laptop profile would add a display manager and power policy to a server.
-                if action == Action::CloudSeed && self.view().text(Field::Profile) == "laptop" {
+                if action.seeds() && self.view().text(Field::Profile) == "laptop" {
                     self.config["profile"] = json!("cloud");
                 }
             }
@@ -412,7 +470,14 @@ impl Setup {
                 setup::set_feature(&mut self.config, &self.features, index, on);
             }
             Entry::Run => return self.run(admin),
-            Entry::Source(_) => {}
+            Entry::Machine(pick) => {
+                // The machine is made from the profile, which has to be whole first.
+                if pick == machine::Pick::Create && !self.problems().is_empty() {
+                    return Some("Fix the listed problems first".into());
+                }
+                let next = self.machine.enter(pick, &self.name);
+                return self.follow(next, admin);
+            }
         }
         None
     }
@@ -444,6 +509,16 @@ impl Setup {
                 _ => Flow::Stay,
             };
         }
+        if self.machine.question.is_some() {
+            let yes = match key.code {
+                Code::Char('y' | 'Y') => true,
+                Code::Char('n' | 'N') | Code::Esc => false,
+                _ => return Flow::Stay,
+            };
+            let next = self.machine.answer(yes);
+            say(self.follow(next, admin));
+            return Flow::Stay;
+        }
         match key.code {
             Code::Char('s') if key.ctrl => {
                 say(self.accept_edit(admin));
@@ -453,7 +528,7 @@ impl Setup {
             Code::Tab | Code::BackTab => {
                 say(self.accept_edit(admin));
                 let step = self.step.offset(if key.code == Code::Tab { 1 } else { -1 });
-                self.set_step(step);
+                self.set_step(step, admin);
                 return Flow::Stay;
             }
             _ => {}
@@ -497,7 +572,7 @@ impl Setup {
                 self.editing = Some(Input::default());
             }
             Code::Char(digit @ '1'..='4') => {
-                self.set_step(Step::SETUP[digit as usize - '1' as usize])
+                self.set_step(Step::SETUP[digit as usize - '1' as usize], admin)
             }
             Code::Char(' ') => match self.selected() {
                 Some(Entry::Group(group)) => say(Some(self.toggle_group(group))),
@@ -550,6 +625,8 @@ impl Setup {
                     event::paste(input, text.trim());
                 }
             }
+            // The question before creating is answered with its keys.
+            Event::Mouse(_) if self.machine.question.is_some() => {}
             Event::Mouse(mouse) => match mouse.click {
                 Click::ScrollUp => self.move_selection(true),
                 Click::ScrollDown => self.move_selection(false),
@@ -677,15 +754,16 @@ impl Setup {
         let field = self.selected_field();
         if let Some(input) = &self.editing {
             let (title, masked) = match (self.password_entry, self.selected()) {
-                (true, _) => (" Password, hashed on the server ", true),
-                (_, Some(Entry::Secret(_))) => (" Variable name or file path ", false),
-                (_, Some(Entry::Key(..))) => (" OpenSSH public key ", false),
+                (true, _) => (" Password, hashed on the server ".to_owned(), true),
+                (_, Some(Entry::Secret(_))) => (" Variable name or file path ".to_owned(), false),
+                (_, Some(Entry::Key(..))) => (" OpenSSH public key ".to_owned(), false),
+                (_, Some(Entry::Machine(pick))) => (machine::editor_title(pick, &self.name), false),
                 _ => (
-                    " Edit ",
+                    " Edit ".to_owned(),
                     field.is_some_and(|field| field.spec().kind == Kind::Secret),
                 ),
             };
-            draw_editor(frame, edit, title, input, masked);
+            draw_editor(frame, edit, &title, input, masked);
         }
         let keys = match (&self.editing, field) {
             (Some(_), _) => "Enter accept · Esc cancel · Ctrl+S save".to_owned(),
@@ -702,6 +780,9 @@ impl Setup {
             _ => "↑↓ select · Enter change · Space switch · x clear · Tab next page · Ctrl+S save · Esc back".to_owned(),
         };
         draw_footer(frame, footer, &keys, status, theme::ACCENT);
+        if let Some(question) = &self.machine.question {
+            draw_question(frame, question);
+        }
     }
 }
 

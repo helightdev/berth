@@ -129,7 +129,7 @@ class EnvironmentTests(unittest.TestCase):
         names = []
         for package in sorted(plugins.glob('*/package.json')):
             data = json.loads(package.read_text())
-            for feature in data['berth']['features']:
+            for feature in data['berth'].get('features', []):
                 adds = self.feature(feature, package.parent.name, data.get('displayName', package.parent.name))
                 self.assertEqual(len(adds['tasks']), len(feature.get('actions', [])), package)
                 names += [task['name'] for task in adds['tasks']]
