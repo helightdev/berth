@@ -167,6 +167,7 @@ class IncusPluginTests(unittest.TestCase):
         cls.archive.write_bytes(b'release archive ' * 1000)
         cls.sha = hashlib.sha256(cls.archive.read_bytes()).hexdigest()
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(directory / 'server.crt', directory / 'server.key')
         # Incus asks every client for a certificate and decides trust afterwards.
         context.verify_mode = ssl.CERT_OPTIONAL

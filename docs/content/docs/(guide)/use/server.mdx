@@ -89,46 +89,6 @@ https://berth.example.ts.net/#setup-key=KEY
 
 The page signs the browser in and shows the token, with the two `berth config` commands for a terminal. The key lasts 24 hours. It ends sooner when you choose **Done** on the page, or when `berth connect` has saved the token. Until then it's as good as the token, so keep it to yourself. A new key replaces the old one, and `berth setup-key --remove` ends it. A server with `serve_token` off has no token to hand out, so it doesn't make a key.
 
-### With a login in place of the token
-
-A server that takes [access tokens of an OAuth 2.0 issuer](/docs/extend/serve#access-tokens-from-an-oauth-20-issuer) lets berth log in there. berth has to be registered at the issuer as a client, and the server tells berth which issuer it is.
-
-<Tabs items={['You, at a terminal', 'A service']}>
-<Tab value="You, at a terminal">
-
-```bash
-berth config server https://berth.example.ts.net
-berth config oauth_client_id berth-cli
-berth config oauth_scope "offline_access berth:operate"
-berth login
-```
-
-`berth login` prints an address and a code. Open the address in a browser on any device and approve. This is the device grant, which works on a machine without a browser. berth renews the token by itself from then on, and `berth logout` forgets the login.
-
-</Tab>
-<Tab value="A service">
-
-With the client's secret, berth gets a token whenever it needs one, and nobody has to approve. This is the client credentials grant:
-
-```bash
-export BERTH_SERVER=https://berth.example.ts.net
-export BERTH_OAUTH_CLIENT_ID=berth-ci
-export BERTH_OAUTH_CLIENT_SECRET=…
-berth run studio status
-```
-
-</Tab>
-</Tabs>
-
-| Setting | Meaning |
-| --- | --- |
-| `oauth_client_id` | The client berth is at the issuer |
-| `oauth_client_secret` | The client's secret, for a service |
-| `oauth_scope` | The scope of the request. It has to give the token its role, and many issuers want `offline_access` for a login that renews |
-| `oauth_issuer`, `oauth_audience` | Only when the server doesn't say them itself |
-
-A `server_token` or `--token` is used before a login. Tokens are kept in `oauth.json` in berth's data directory, readable by your user only.
-
 | Address | Reaches |
 | --- | --- |
 | `https://HOST[:PORT]` | A server behind a TLS proxy |

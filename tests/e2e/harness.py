@@ -306,7 +306,7 @@ def served():
     hand_over_operator_key(station.public, own)
     wait_for('the operator taking the server\'s key', lambda: server.ssh(
         OPERATOR, 'true', key=server.own_key, check=False).returncode == 0)
-    issuer = Issuer(clients={'berth-client': ('client-secret', 'openid berth:operate')})
+    issuer = Issuer()
     serve = Serve(server, web=True, env={'BERTH_OAUTH_ISSUER': issuer.url, 'BERTH_OAUTH_AUDIENCE': 'berth',
                                          **package_registry().env()})
     serve.issuer = issuer
@@ -657,8 +657,7 @@ class Portal:
 
 
 # ---------------------------------------------------------------------------
-# An OAuth 2.0 issuer: metadata, keys and a token endpoint for clients with
-# a secret, signing with an Ed25519 key
+# An OAuth 2.0 issuer: metadata and keys, signing with an Ed25519 key
 
 
 def url64(data):
@@ -666,14 +665,12 @@ def url64(data):
 
 
 class Issuer:
-    def __init__(self, clients=None):
+    def __init__(self):
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: PLC0415
         from cryptography.hazmat.primitives import serialization  # noqa: PLC0415
         self.key = Ed25519PrivateKey.generate()
         public = self.key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
         self.jwks = {'keys': [{'kty': 'OKP', 'crv': 'Ed25519', 'alg': 'EdDSA', 'kid': 'e2e', 'x': url64(public)}]}
-        # client id: (secret, scope it is given)
-        self.clients = clients or {}
         issuer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -690,24 +687,11 @@ class Issuer:
 
             def do_GET(self):  # noqa: N802 (the name http.server calls)
                 if self.path == '/.well-known/openid-configuration':
-                    self.answer(200, {'issuer': issuer.url, 'jwks_uri': f'{issuer.url}/keys',
-                                      'token_endpoint': f'{issuer.url}/token'})
+                    self.answer(200, {'issuer': issuer.url, 'jwks_uri': f'{issuer.url}/keys'})
                 elif self.path == '/keys':
                     self.answer(200, issuer.jwks)
                 else:
                     self.answer(404, {'error': 'not_found'})
-
-            def do_POST(self):  # noqa: N802
-                from urllib.parse import parse_qs  # noqa: PLC0415
-                length = int(self.headers.get('Content-Length') or 0)
-                form = {name: values[0] for name, values in parse_qs(self.rfile.read(length).decode()).items()}
-                client = issuer.clients.get(form.get('client_id'))
-                if self.path != '/token' or form.get('grant_type') != 'client_credentials':
-                    return self.answer(400, {'error': 'unsupported_grant_type'})
-                if not client or client[0] != form.get('client_secret'):
-                    return self.answer(401, {'error': 'invalid_client'})
-                token = issuer.token(client[1], subject=form['client_id'])
-                self.answer(200, {'access_token': token, 'token_type': 'Bearer', 'expires_in': 600})
 
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         self.url = f'http://127.0.0.1:{self.server.server_address[1]}'

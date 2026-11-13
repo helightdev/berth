@@ -378,7 +378,7 @@ fn encoded(value: &str, keep: &str) -> String {
 }
 
 /// An access token of an OAuth issuer is a JWT, of three parts in base64.
-/// It runs out, and belongs to whoever logged in, so it is never handed on.
+/// It runs out, and belongs to whoever it was issued to, so it is never handed on.
 fn issued(token: &str) -> bool {
     token.starts_with("eyJ") && token.matches('.').count() == 2
 }
@@ -386,7 +386,7 @@ fn issued(token: &str) -> bool {
 /// The link that opens the browser page of a berth server, signed in with
 /// `token`: `page` is where the page is. A page that is not the server's own,
 /// as on the documentation site, is told the `server` as well. `None` when
-/// there is no such link: no token, an OAuth login, or no address over the
+/// there is no such link: no token, an access token of an issuer, or no address over the
 /// network.
 pub fn connect_link(page: &str, server: Option<&str>, token: &str) -> Option<String> {
     let token = token.trim();

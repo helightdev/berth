@@ -386,11 +386,11 @@
           "behind": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Behind",
                 "description": "What changed since then, when the server would apply something else now."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -547,11 +547,11 @@
           "report": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/RolloutReport",
                 "description": "How a roll-out went, host by host, once it has ended."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -1478,11 +1478,11 @@
           "applied": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Applied",
                 "description": "What the host's configuration was last applied from, when berth\nrecorded it. An older berthd does not say."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -1785,10 +1785,10 @@
         "schema": {
           "oneOf": [
             {
-              "type": "null"
+              "$ref": "#/components/schemas/ApplyWith"
             },
             {
-              "$ref": "#/components/schemas/ApplyWith"
+              "type": "null"
             }
           ]
         }
@@ -1822,10 +1822,10 @@
         "schema": {
           "oneOf": [
             {
-              "type": "null"
+              "$ref": "#/components/schemas/Rollout"
             },
             {
-              "$ref": "#/components/schemas/Rollout"
+              "type": "null"
             }
           ]
         }
@@ -2326,10 +2326,10 @@
         "schema": {
           "oneOf": [
             {
-              "type": "null"
+              "$ref": "#/components/schemas/PluginUpdateSpec"
             },
             {
-              "$ref": "#/components/schemas/PluginUpdateSpec"
+              "type": "null"
             }
           ]
         }
@@ -3289,5 +3289,5 @@
     "path": "/v1/portal"
   },
   "title": "berth serve",
-  "version": "0.4.0"
+  "version": "0.4.1"
 }

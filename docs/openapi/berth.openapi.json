@@ -575,11 +575,11 @@
           "behind": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Behind",
                 "description": "What changed since then, when the server would apply something else now."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -780,11 +780,11 @@
           "report": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/RolloutReport",
                 "description": "How a roll-out went, host by host, once it has ended."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -1488,10 +1488,10 @@
           "keep": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Keep"
               },
               {
-                "$ref": "#/components/schemas/Keep"
+                "type": "null"
               }
             ]
           }
@@ -1505,10 +1505,10 @@
           "keep": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Keep"
               },
               {
-                "$ref": "#/components/schemas/Keep"
+                "type": "null"
               }
             ]
           },
@@ -1543,10 +1543,10 @@
           "error": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ErrorDetail"
               },
               {
-                "$ref": "#/components/schemas/ErrorDetail"
+                "type": "null"
               }
             ]
           },
@@ -2372,10 +2372,10 @@
           "keep": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Keep"
               },
               {
-                "$ref": "#/components/schemas/Keep"
+                "type": "null"
               }
             ]
           },
@@ -2448,11 +2448,11 @@
           "applied": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Applied",
                 "description": "What the host's configuration was last applied from, when berth\nrecorded it. An older berthd does not say."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -2475,7 +2475,7 @@
   "info": {
     "description": "One API over all hosts, with the inbox and a key-value store. Everything under /v1/hosts/{name}/ that is not named here is that host's own API, passed through unchanged; only the `secrets` task is refused, which `hosts.secrets` stands in for. Over TCP every request carries the server's token or an OAuth 2.0 access token as a bearer, and needs the role its operation names. The routes of the setup key take that key as the bearer instead.",
     "title": "berth serve",
-    "version": "0.4.0"
+    "version": "0.4.1"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -2651,10 +2651,10 @@
               "schema": {
                 "oneOf": [
                   {
-                    "type": "null"
+                    "$ref": "#/components/schemas/ApplyWith"
                   },
                   {
-                    "$ref": "#/components/schemas/ApplyWith"
+                    "type": "null"
                   }
                 ]
               }
@@ -5620,10 +5620,10 @@
               "schema": {
                 "oneOf": [
                   {
-                    "type": "null"
+                    "$ref": "#/components/schemas/PluginUpdateSpec"
                   },
                   {
-                    "$ref": "#/components/schemas/PluginUpdateSpec"
+                    "type": "null"
                   }
                 ]
               }
@@ -6020,10 +6020,10 @@
               "schema": {
                 "oneOf": [
                   {
-                    "type": "null"
+                    "$ref": "#/components/schemas/Rollout"
                   },
                   {
-                    "$ref": "#/components/schemas/Rollout"
+                    "type": "null"
                   }
                 ]
               }
