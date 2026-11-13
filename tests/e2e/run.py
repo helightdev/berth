@@ -30,6 +30,7 @@ MODULES = [
     'e2e_plugins',
     'e2e_serve',
     'e2e_client',
+    'e2e_adopt',
     'e2e_tailnet',
     'e2e_update',
     'e2e_own_key',
@@ -43,7 +44,8 @@ SHARDS = {
     'update-other': ['e2e_update.ShippedChanged', 'e2e_update.UpdateServed'],
     'tailnet': ['e2e_tailnet'],
     'own-key': ['e2e_own_key'],
-    'rest': ['e2e_apply', 'e2e_host', 'e2e_secrets', 'e2e_local', 'e2e_plugins', 'e2e_serve', 'e2e_client'],
+    'rest': ['e2e_apply', 'e2e_host', 'e2e_secrets', 'e2e_local', 'e2e_plugins', 'e2e_serve', 'e2e_client',
+             'e2e_adopt'],
 }
 
 
