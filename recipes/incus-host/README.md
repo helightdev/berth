@@ -37,8 +37,9 @@ often does not, and then only containers work. Set `incus_virtual_machines` to
 On the server itself:
 
 ```bash
-git clone https://github.com/helightdev/berth.git
-cd berth/recipes/incus-host
+curl -fsSL https://github.com/helightdev/berth/archive/refs/heads/main.tar.gz \
+  | tar xz --strip-components=1 --wildcards '*/recipes'
+cd recipes/incus-host
 sudo ./install.sh -e tailscale_auth_key=tskey-auth-EXAMPLE
 ```
 
