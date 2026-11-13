@@ -15,9 +15,10 @@ class Key(unittest.TestCase):
         self.assertRegex(first, r'^ssh-ed25519 \S+ berth@\S+$')
         self.assertEqual(station.berth('key').stdout.strip(), first)
         self.assertEqual(station.own_key.stat().st_mode & 0o777, 0o600)
-        # Half a key is of no use: both halves are made again.
+        # The store keeps both halves, so a lost file comes back as it was.
         station.own_key.with_suffix('.pub').unlink()
-        self.assertNotEqual(station.berth('key').stdout.strip(), first)
+        self.assertEqual(station.berth('key').stdout.strip(), first)
+        self.assertTrue(station.own_key.with_suffix('.pub').exists())
 
 
 @needs_e2e
