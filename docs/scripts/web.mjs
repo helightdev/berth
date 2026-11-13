@@ -32,7 +32,7 @@ mkdirSync(out, { recursive: true });
 if (built()) {
   for (const file of files) cpSync(join(dist, file), join(out, file));
   const build = createHash('sha256').update(readFileSync(join(dist, files[1]))).digest('hex').slice(0, 16);
-  const page = readFileSync(join(root, 'web', 'index.html'), 'utf8');
+  const page = readFileSync(join(root, 'crates', 'berth-web', 'index.html'), 'utf8');
   // No server of its own: the page asks for one, or takes ?server= from its address.
   writeFileSync(join(out, 'index.html'), page.replaceAll('@BUILD@', build).replaceAll('@SERVER@', ''));
 } else {

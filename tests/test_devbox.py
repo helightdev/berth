@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -15,11 +16,11 @@ def load(name,path):
     module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
     return module
 
-builder=load('builder','bin/devbox.py')
-guard=load('guard','bin/check-target-disk.py')
+builder=load('builder','provision/bin/devbox.py')
+guard=load('guard','provision/bin/check-target-disk.py')
 
 def config():
-    return {'hostname':'test-devbox','profile':'qemu',
+    return {'hostname':'test-devbox','profile':'cloud',
         'operator_ssh_public_key':'ssh-ed25519 '+base64.b64encode(b'\0'*64).decode(),
         'operator_password_hash':'$6$salt$'+'a'*86,'target_disk_serial':'DEVBOX_TEST_DISK',
         'release_url':'https://example.com/devbox.tar.gz',
@@ -85,7 +86,7 @@ class DiskGuardTests(unittest.TestCase):
 
 class RenderTests(unittest.TestCase):
     def test_placeholder_example_cannot_produce_installer(self):
-        with self.assertRaises(ValueError): builder.checked_config(ROOT/'config/example.json','usb')
+        with self.assertRaises(ValueError): builder.checked_config(ROOT/'provision/config/example.json','usb')
     def test_cloud_seed_carries_a_release_login_only_when_given(self):
         paths=lambda seed:[entry['path'] for entry in seed['write_files']]
         self.assertNotIn('/opt/devbox-bootstrap/release-login',paths(builder.cloud_config(config(),'a'*64)))
@@ -95,6 +96,17 @@ class RenderTests(unittest.TestCase):
         self.assertEqual((entry['content'],entry['permissions']),('user = "reader:secret"\n','0600'))
         with patch.dict(os.environ,{'BERTH_RELEASE_LOGIN':'url = "https://evil.example"'}):
             self.assertRaises(ValueError,builder.cloud_config,config(),'a'*64)
+    def test_cloud_operator_needs_a_password_only_for_sudo(self):
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/'c.json'; c=config(); c['profile']='cloud'; del c['operator_password_hash']
+            path.write_text(json.dumps(c))
+            operator=builder.cloud_config(builder.checked_config(path,'cloud'),'a'*64)['users'][1]
+            self.assertTrue(operator['lock_passwd']); self.assertNotIn('passwd',operator)
+            # An installer's machine is logged in to at its screen.
+            with self.assertRaises(ValueError): builder.checked_config(path,'usb')
+            c['operator_passwordless_sudo']=False; path.write_text(json.dumps(c))
+            with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
+
     def test_cloud_seed_has_no_disk_actions(self):
         c=config(); result=builder.cloud_config(c,'a'*64)
         self.assertNotIn('autoinstall',result)
@@ -185,6 +197,35 @@ class RenderTests(unittest.TestCase):
             builder.checked_config(path,'cloud')
             c['ansible_vars']={'devbox_bootstrap_ssh_cidr':'not a network'}; path.write_text(json.dumps(c))
             with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
+    def test_a_qemu_profile_is_a_cloud_one_reached_from_the_qemu_host(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'host.json'
+            c=config(); c['profile']='qemu'; c['ansible_vars']={}; path.write_text(json.dumps(c))
+            checked=builder.checked_config(path,'cloud')
+            self.assertEqual(checked['profile'],'cloud')
+            self.assertEqual(checked['ansible_vars']['devbox_bootstrap_ssh_cidr'],'10.0.2.2/32')
+            self.assertEqual(builder.deployment(checked,'a'*64)['profile'],'cloud')
+            # A network it names stays; laptop and cloud are left alone.
+            c['ansible_vars']={'devbox_bootstrap_ssh_cidr':'192.0.2.0/24'}; path.write_text(json.dumps(c))
+            self.assertEqual(builder.checked_config(path,'cloud')['ansible_vars']['devbox_bootstrap_ssh_cidr'],'192.0.2.0/24')
+            for kept in ['laptop','cloud']:
+                self.assertEqual(builder.retire_qemu({'profile':kept}),{'profile':kept})
+            c['profile']='desktop'; path.write_text(json.dumps(c))
+            with self.assertRaisesRegex(ValueError,'laptop or cloud'): builder.checked_config(path,'cloud')
+    def test_bootstrap_hands_a_qemu_seed_to_the_role_as_cloud(self):
+        script=(ROOT/'provision/bootstrap/bootstrap.sh').read_text()
+        start=script.index("python3 - <<'PY'\n")+len("python3 - <<'PY'\n")
+        handover=script[start:script.index('\nPY\n',start)]
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            deployment={'profile':'qemu','ansible_vars':{'devbox_user':'agent'}}
+            code=(handover.replace("/opt/devbox-bootstrap/deployment.json",str(root/'deployment.json'))
+                          .replace("Path('/etc/devbox')","Path(%r)"%str(root/'etc')))
+            (root/'deployment.json').write_text(json.dumps(deployment))
+            subprocess.run([sys.executable,'-c',code],check=True)
+            handed=json.loads((root/'etc/host.json').read_text())
+            self.assertEqual(handed['devbox_profile'],'cloud')
+            self.assertEqual(handed['devbox_bootstrap_ssh_cidr'],'10.0.2.2/32')
     def test_accounts_take_several_keys_and_the_operator_this_berths(self):
         key=lambda byte:'ssh-ed25519 '+base64.b64encode(bytes([byte])*64).decode()
         c={**config(),'operator_ssh_public_keys':[key(1),key(1)],'agent_ssh_public_keys':[key(2),key(3)]}
@@ -229,6 +270,21 @@ class RenderTests(unittest.TestCase):
             deployment=json.loads((result/'agent-bootstrap/deployment.json').read_text())
             self.assertEqual(deployment['release_sha256'],builder.digest(result/'agent-bootstrap/release.tar.gz'))
             self.assertEqual(deployment['release_sha256'],builder.digest(stale))
+    def test_cloud_seed_without_url_when_the_release_is_delivered(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(builder,'BUILD',Path(temp)/'build'):
+            path=Path(temp)/'host.json'
+            path.write_text(json.dumps({k:v for k,v in config().items() if k!='release_url'}))
+            with self.assertRaisesRegex(ValueError,'HTTPS release_url'): builder.render(path,'cloud')
+            with patch.dict(os.environ,{'BERTH_RELEASE_DELIVERED':'1'}):
+                result=builder.render(path,'cloud')
+                # A URL in the profile is not used either: the machine waits for its copy.
+                self.assertEqual(builder.deployment(config(),'0'*64)['release_url'],'')
+            seed=json.loads((result/'user-data').read_text().split('\n',1)[1])
+            files={f['path']:f for f in seed['write_files']}
+            deployment=json.loads(files['/opt/devbox-bootstrap/deployment.json']['content'])
+            self.assertEqual(deployment['release_url'],'')
+            self.assertEqual(deployment['release_sha256'],builder.digest(Path(temp)/'build/devbox-release.tar.gz'))
+            self.assertEqual(result,Path(temp)/'build/test-devbox/cloud')
     def test_installed_bootstrap_copy_is_root_only(self):
         commands=builder.autoinstall(config())['autoinstall']['late-commands']
         self.assertIn('chown -R root:root /target/opt/devbox-bootstrap',commands)
@@ -247,8 +303,49 @@ class RenderTests(unittest.TestCase):
             import tarfile
             with tarfile.open(Path(temp)/'devbox-release.tar.gz') as archive:
                 names=archive.getnames()
-            self.assertIn('bootstrap/bootstrap.sh',names)
+                # berth runs a provisioner's command straight from the unpacked release.
+                self.assertEqual(archive.getmember('plugins/incus/bin/provision').mode,0o755)
+                self.assertEqual(archive.getmember('plugins/incus/package.json').mode,0o644)
+            self.assertIn('provision/bootstrap/bootstrap.sh',names)
+            # What bootstrap.sh and berth look for in an unpacked release.
+            for need in ['provision/bin/devbox.py','provision/requirements.txt','provision/ansible.cfg',
+                         'provision/ansible/site.yml','provision/config/example.json']:
+                self.assertIn(need,names)
             self.assertFalse(any('secrets/' in x or 'config/local.json' in x for x in names))
+    def test_seed_joins_the_login_server_with_the_key_berth_put_in(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'host.json'
+            # A profile as berth renders it for a host that joins automatically.
+            path.write_text(json.dumps({**config(),'tailscale_auto_key':True,
+                                        'tailscale_auth_key':'hskey-auth-new','tailscale_login_server':'http://hs.test:8080'}))
+            variables=builder.deployment(builder.checked_config(path,'cloud'),'0'*64)['ansible_vars']
+            self.assertEqual(variables['devbox_tailscale_auth_key'],'hskey-auth-new')
+            self.assertEqual(variables['devbox_tailscale_login_server'],'http://hs.test:8080')
+            self.assertNotIn('devbox_tailscale_key_command',variables)
+            # Without berth nothing makes the key.
+            path.write_text(json.dumps({**config(),'tailscale_auto_key':True}))
+            with self.assertRaisesRegex(ValueError,'needs berth'): builder.checked_config(path,'cloud')
+            path.write_text(json.dumps({**config(),'tailscale_login_server':'hs.test'}))
+            with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
+            # A pasted key without a login server stays as it was.
+            path.write_text(json.dumps({**config(),'tailscale_auth_key':'tskey-auth-old'}))
+            variables=builder.deployment(builder.checked_config(path,'cloud'),'0'*64)['ansible_vars']
+            self.assertEqual(variables['devbox_tailscale_auth_key'],'tskey-auth-old')
+            self.assertNotIn('devbox_tailscale_login_server',variables)
+    def test_release_carries_plugins_berth_installed(self):
+        # berth plugins add puts a plugin in node_modules of berth's plugins folder.
+        with tempfile.TemporaryDirectory() as temp, patch.object(builder,'BUILD',Path(temp)/'build'):
+            plugin=Path(temp)/'plugins/node_modules/berth-plugin-demo'
+            (plugin/'tasks').mkdir(parents=True); (plugin/'node_modules/dep').mkdir(parents=True)
+            (plugin/'package.json').write_text('{}'); (plugin/'tasks/install.yml').write_text('---\n')
+            (plugin/'node_modules/dep/index.js').write_text('')
+            with patch.dict(os.environ,{'BERTH_PLUGINS':json.dumps({'demo':str(plugin)})}):
+                import tarfile
+                with tarfile.open(builder.release()) as archive:
+                    names=archive.getnames()
+            self.assertIn('plugins/demo/package.json',names)
+            self.assertIn('plugins/demo/tasks/install.yml',names)
+            self.assertFalse(any(name.startswith('plugins/demo/node_modules') for name in names))
     def test_rendered_seeds_roundtrip_and_are_private(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(builder,'BUILD',Path(temp)/'build'):
             path=Path(temp)/'host.json'; path.write_text(json.dumps(config()))
@@ -260,7 +357,7 @@ class RenderTests(unittest.TestCase):
 
 class HostTaskTests(unittest.TestCase):
     """The scripts berthd runs for berth's own tasks."""
-    TASKS=ROOT/'ansible/roles/devbox/files/tasks'
+    TASKS=ROOT/'provision/ansible/roles/devbox/files/tasks'
     def test_task_scripts_parse_and_share_the_helpers(self):
         scripts=sorted(self.TASKS.glob('*.sh'))
         self.assertEqual({p.stem for p in scripts},{'common','status','access','publish','pair','update','reboot'})
@@ -270,17 +367,17 @@ class HostTaskTests(unittest.TestCase):
         for name in ['status','access','publish','pair']:
             self.assertIn('common.sh',(self.TASKS/f'{name}.sh').read_text())
     def test_the_old_ways_are_gone(self):
-        self.assertFalse((ROOT/'bin/manage-host.sh').exists())
-        self.assertFalse((ROOT/'ansible/roles/devbox/files/desktop.py').exists())
+        self.assertFalse((ROOT/'provision/bin/manage-host.sh').exists())
+        self.assertFalse((ROOT/'provision/ansible/roles/devbox/files/desktop.py').exists())
     def test_host_programs_travel_in_the_release_when_built(self):
-        built=ROOT/'ansible/roles/devbox/files/bin/berthd'
+        built=ROOT/'provision/ansible/roles/devbox/files/bin/berthd'
         if not built.exists(): self.skipTest('run `cargo build -p berth` first')
         with tempfile.TemporaryDirectory() as temp, patch.object(builder,'BUILD',Path(temp)):
             import tarfile
             with tarfile.open(builder.release()) as archive: names=archive.getnames()
         for name in ['berthd','box']:
-            self.assertIn(f'ansible/roles/devbox/files/bin/{name}',names)
-        self.assertIn('ansible/roles/devbox/files/tasks/status.sh',names)
+            self.assertIn(f'provision/ansible/roles/devbox/files/bin/{name}',names)
+        self.assertIn('provision/ansible/roles/devbox/files/tasks/status.sh',names)
         self.assertIn('plugins/backup/files/backup.sh',names)
 
 if __name__=='__main__': unittest.main()

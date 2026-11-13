@@ -1,12 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "crates/berth-tui", "cli", "host/berthd", "host/box", "web"]
+members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "crates/berth-tui", "crates/berth", "crates/berthd", "crates/box", "crates/berth-web"]
 # The vendored crate is a member because it lives inside; it is left out of what
 # is built, tested and linted by default.
-default-members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "crates/berth-tui", "cli", "host/berthd", "host/box"]
+default-members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "crates/berth-tui", "crates/berth", "crates/berthd", "crates/box"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
@@ -16,6 +16,7 @@ berth-api = { path = "crates/berth-api" }
 berth-pty = { path = "crates/berth-pty" }
 berth-core = { path = "crates/berth-core" }
 berth-tui = { path = "crates/berth-tui" }
+tui-input = { path = "crates/vendor/tui-input", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"

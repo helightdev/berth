@@ -127,7 +127,7 @@ class Direct(OwnKeyOnly, unittest.TestCase):
         hand_over(cls.station.own_key)
         wait_for('the operator taking the key of berth', lambda: cls.station.ssh(
             OPERATOR, 'true', key=cls.station.own_key, check=False).returncode == 0)
-        template = json.loads((SRC / 'config/example.json').read_text())
+        template = json.loads((SRC / 'provision/config/example.json').read_text())
         # Left out, as a profile written by hand would: its default applies.
         del template['operator_passwordless_sudo']
         cls.station.write_profile(bare_profile(template))

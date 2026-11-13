@@ -2,6 +2,8 @@ version: 2
 updates:
   - package-ecosystem: cargo
     directory: /
+    # Alerts only until the repository is public: every pull request costs a full CI run.
+    open-pull-requests-limit: 0
     schedule:
       interval: weekly
     groups:
@@ -9,16 +11,22 @@ updates:
         patterns: ["*"]
   - package-ecosystem: github-actions
     directory: /
+    # Alerts only until the repository is public: every pull request costs a full CI run.
+    open-pull-requests-limit: 0
     schedule:
       interval: weekly
   - package-ecosystem: npm
     directory: /docs
+    # Alerts only until the repository is public: every pull request costs a full CI run.
+    open-pull-requests-limit: 0
     schedule:
       interval: monthly
     groups:
       docs:
         patterns: ["*"]
   - package-ecosystem: docker
-    directory: /container
+    directories: [/container, /ci]
+    # Alerts only until the repository is public: every pull request costs a full CI run.
+    open-pull-requests-limit: 0
     schedule:
       interval: monthly

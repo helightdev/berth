@@ -1,9 +1,11 @@
 //! Where berth keeps things on this machine, and its own settings.
 //!
 //! - `~/.config/berth/config.json`: the tool's settings
-//! - `~/.config/berth/hosts/NAME.json`: one profile per host, private
+//! - `~/.config/berth/hosts/NAME.json`: one profile per host, private, with
+//!   `NAME.credentials.json` and `NAME.instance.json` beside it
 //! - `~/.local/share/berth/source/`: the provisioning source, unpacked from the
-//!   program itself whenever a new version runs
+//!   program itself whenever a new version runs. It is laid out as a checkout
+//!   is, with the paths in [`layout`]
 //! - `~/.local/share/berth/build/`: release archives, seeds and installer images
 //! - `~/.local/share/berth/iso/`: downloaded Ubuntu installer ISOs
 //!
@@ -20,6 +22,23 @@ use std::{
 /// The provisioning source this program was built with, and its SHA-256.
 const SOURCE_ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/devbox-release.tar.gz"));
 const SOURCE_DIGEST: &str = include_str!(concat!(env!("OUT_DIR"), "/release.sha256"));
+
+/// Where things are in a provisioning source, a checkout or berth's own copy,
+/// relative to its root. The plugins that come with berth are in `plugins/`.
+pub mod layout {
+    /// Builds the release archive, seeds and installer images.
+    pub const BUILDER: &str = "provision/bin/devbox.py";
+    /// Writes an installer image to a USB stick.
+    pub const WRITE_USB: &str = "provision/bin/write-usb.sh";
+    /// The playbook that applies a profile.
+    pub const PLAYBOOK: &str = "provision/ansible/site.yml";
+    /// Ansible's settings for that playbook.
+    pub const ANSIBLE_CONFIG: &str = "provision/ansible.cfg";
+    /// The profile a new host starts from.
+    pub const EXAMPLE: &str = "provision/config/example.json";
+    /// Where a source of berth 0.2 and earlier had its builder.
+    pub(crate) const OLD_BUILDER: &str = "bin/devbox.py";
+}
 
 /// Settings in `config.json` that `berth config KEY VALUE` can change.
 pub const SETTINGS: &[(&str, &str)] = &[
@@ -79,6 +98,18 @@ pub const SETTINGS: &[(&str, &str)] = &[
     (
         "oauth_claim",
         "the claim with the roles berth:view, berth:operate and berth:admin (default: scope; dots go into objects, as in realm_access.roles)",
+    ),
+    (
+        "tailnet_login_server",
+        "address of the Headscale server hosts join, such as https://hs.example.org (empty: Tailscale's own service)",
+    ),
+    (
+        "tailnet_user",
+        "the Headscale user that new hosts belong to, by name or number",
+    ),
+    (
+        "tailnet_tags",
+        "tags new hosts get, comma separated, such as tag:berth (for Tailscale also DEVBOX_TAILSCALE_TAGS)",
     ),
 ];
 
@@ -214,10 +245,15 @@ impl Paths {
         let mut settings = self.settings()?;
         if value.is_empty() {
             settings.remove(key);
+        } else if key == "tailnet_login_server"
+            && !(value.starts_with("https://") || value.starts_with("http://"))
+        {
+            return Err("tailnet_login_server is an address such as https://hs.example.org".into());
         } else if key == "source" {
             let source = fs::canonicalize(crate::discovery::expand_path(value))?;
+            older_source(&source)?;
             if !is_source(&source) {
-                return Err(format!("{} has no bin/devbox.py", source.display()).into());
+                return Err(format!("{} has no {}", source.display(), layout::BUILDER).into());
             }
             settings.insert(key.into(), json!(source));
         } else {
@@ -233,17 +269,26 @@ impl Paths {
     /// The provisioning source: `BERTH_SOURCE`, the `source` setting, the current
     /// directory when berth is run from a checkout, and otherwise berth's own
     /// copy in its data directory.
+    ///
+    /// A source named in the environment or the settings that is laid out as
+    /// an older berth's is an error rather than passed over, so changes made in
+    /// it are not left out without a word.
     pub fn source(&self) -> Result<PathBuf> {
         let configured = self.settings()?;
-        let candidates = [
+        let named = [
             std::env::var_os("BERTH_SOURCE").map(PathBuf::from),
             configured
                 .get("source")
                 .and_then(|dir| dir.as_str())
                 .map(PathBuf::from),
-            std::env::current_dir().ok(),
         ];
-        match candidates.into_iter().flatten().find(|dir| is_source(dir)) {
+        for dir in named.into_iter().flatten() {
+            if is_source(&dir) {
+                return Ok(dir);
+            }
+            older_source(&dir)?;
+        }
+        match std::env::current_dir().ok().filter(|dir| is_source(dir)) {
             Some(dir) => Ok(dir),
             None => self.own_source(),
         }
@@ -308,7 +353,7 @@ impl Paths {
             .filter_map(|entry| {
                 let name = entry.file_name().into_string().ok()?;
                 let name = name.strip_suffix(".json")?;
-                if name.ends_with(".credentials") {
+                if name.ends_with(".credentials") || name.ends_with(".instance") {
                     return None;
                 }
                 let profile: Value = serde_json::from_slice(&fs::read(entry.path()).ok()?).ok()?;
@@ -322,7 +367,21 @@ impl Paths {
 }
 
 fn is_source(dir: &Path) -> bool {
-    dir.join("bin/devbox.py").is_file()
+    dir.join(layout::BUILDER).is_file()
+}
+
+/// An error for a source laid out as before `provision/` held the installer's side.
+fn older_source(dir: &Path) -> Result<()> {
+    if dir.join(layout::OLD_BUILDER).is_file() && !is_source(dir) {
+        return Err(format!(
+            "{} is a provisioning source of an older berth, with {} where this berth looks for {}. Update that checkout, or stop using it with: berth config source \"\" (and unset BERTH_SOURCE)",
+            dir.display(),
+            layout::OLD_BUILDER,
+            layout::BUILDER
+        )
+        .into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -349,11 +408,33 @@ mod tests {
         )
         .unwrap();
         fs::write(paths.hosts_dir().join("laptop.credentials.json"), "{}").unwrap();
+        fs::write(paths.hosts_dir().join("laptop.instance.json"), "{}").unwrap();
         assert_eq!(paths.hosts(), [("laptop".into(), "100.64.0.1".into())]);
 
         assert!(paths.set("colour", "blue").is_err());
         paths.set("default_host", "laptop").unwrap();
+        assert!(paths.set("tailnet_login_server", "hs.example.org").is_err());
         assert_eq!(paths.settings().unwrap()["default_host"], "laptop");
         assert!(paths.set("source", home.path().to_str().unwrap()).is_err());
+
+        // A checkout of an older berth is named as one, not passed over.
+        let old = home.path().join("old");
+        fs::create_dir_all(old.join("bin")).unwrap();
+        fs::write(old.join(layout::OLD_BUILDER), "").unwrap();
+        let said = paths.set("source", old.to_str().unwrap()).unwrap_err();
+        assert!(said.to_string().contains("older berth"), "{said}");
+        let mut settings = paths.settings().unwrap();
+        settings.insert("source".into(), json!(old));
+        fs::write(paths.settings_file(), Value::Object(settings).to_string()).unwrap();
+        assert!(
+            paths
+                .source()
+                .unwrap_err()
+                .to_string()
+                .contains("older berth")
+        );
+        fs::create_dir_all(old.join("provision/bin")).unwrap();
+        fs::write(old.join(layout::BUILDER), "").unwrap();
+        assert_eq!(paths.source().unwrap(), old);
     }
 }

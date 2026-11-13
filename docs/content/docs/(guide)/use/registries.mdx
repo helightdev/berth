@@ -55,11 +55,11 @@ berth host studio registry nexus on
 berth run studio secrets
 ```
 
-Or switch it on the host's **Secrets** set-up tab and run **Secrets and registry logins**. The agent's `~/.npmrc` gets the first npm repository as its registry with the login, in a block berth manages. The rest of the file is kept. `~/.docker/config.json` gets the login of every Docker address.
+Or switch it on under **Registries** on the host's **Settings** tab and run **Secrets and registry logins**. The agent's `~/.npmrc` gets the first npm repository as its registry with the login, in a block berth manages. The rest of the file is kept. `~/.docker/config.json` gets the login of every Docker address.
 
 ## Publishing the release archive
 
-A machine set up from a [cloud seed](/docs/deploy/cloud) downloads the release archive. With **Cloud-init seed** chosen on a host's Install tab, **Publish release to** switches between your file servers and raw repositories. **Download with login** decides whether the machine logs in for the download. Making the seed then uploads the archive and points the seed at it. From the command line:
+A machine set up from a [cloud seed](/docs/deploy/cloud) downloads the release archive. With **Cloud-init seed** chosen on a host's Install tab, **Publish release to** under Release on the Settings tab switches between your file servers and raw repositories. **Download with login** decides whether the machine logs in for the download. Making the seed then uploads the archive and points the seed at it. From the command line:
 
 ```bash
 berth publish nexus/berth-releases cloud-1

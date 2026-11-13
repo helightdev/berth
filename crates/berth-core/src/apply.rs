@@ -1,7 +1,12 @@
 //! Applying a host's configuration: the Ansible run of the installer role
 //! against it over SSH.
 
-use crate::{Result, host::Host, paths::Paths, plugins};
+use crate::{
+    Result,
+    host::Host,
+    paths::{Paths, layout},
+    plugins,
+};
 use serde_json::{Value, json};
 use std::{io::Write, process::Command};
 
@@ -24,6 +29,9 @@ pub fn plugin_dirs(plugins: &[plugins::Plugin]) -> Value {
 /// Variables for a direct Ansible run, matching what the seed builder embeds.
 /// `own` is the public key of the berth that applies them.
 pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: Option<&str>) -> Value {
+    let mut config = config.clone();
+    berth_api::profile::retire_qemu(&mut config);
+    let config = &config;
     let mut vars = config["ansible_vars"].clone();
     if !vars.is_object() {
         vars = json!({});
@@ -57,17 +65,46 @@ pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: Option<&str>) -> V
     {
         vars["devbox_tailscale_auth_key"] = json!(key);
     }
+    if let Some(server) = config["tailscale_login_server"]
+        .as_str()
+        .filter(|server| !server.is_empty())
+    {
+        vars["devbox_tailscale_login_server"] = json!(server);
+    }
     vars
 }
 
-/// `ansible-playbook` of the source's own environment when it has one.
+/// Add what joining the tailnet needs from this machine: berth's login
+/// server, and for a host that joins automatically the way to a key, which
+/// names the host by the path of its `profile`.
+pub fn add_tailnet(
+    vars: &mut Value,
+    paths: &Paths,
+    config: &Value,
+    profile: &std::path::Path,
+) -> Result<()> {
+    let berth = std::env::current_exe()?;
+    let profile = profile.to_string_lossy();
+    if let (Some(vars), Value::Object(more)) = (
+        vars.as_object_mut(),
+        crate::tailnet::apply_vars(paths, config, &profile, &berth),
+    ) {
+        vars.extend(more);
+    }
+    Ok(())
+}
+
+/// `ansible-playbook` of the source's own environment when it has one, with
+/// the source's Ansible settings.
 pub fn playbook(source: &std::path::Path) -> Command {
     let local = source.join(".venv/bin/ansible-playbook");
-    Command::new(if local.is_file() {
+    let mut command = Command::new(if local.is_file() {
         local
     } else {
         "ansible-playbook".into()
-    })
+    });
+    command.env("ANSIBLE_CONFIG", source.join(layout::ANSIBLE_CONFIG));
+    command
 }
 
 /// The Ansible run that applies `host`'s profile to it over SSH. With a
@@ -79,6 +116,7 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
     let dirs = plugin_dirs(&plugins);
     let own = paths.own_public_key();
     let mut vars = ansible_vars(&host.config, &dirs, own.as_deref());
+    add_tailnet(&mut vars, paths, &host.config, &host.path)?;
     // The role keeps this on the host, for the plugins the host has, so
     // berth can tell later whether the host is behind.
     vars["devbox_berth_applied"] = json!({
@@ -98,7 +136,7 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
     let mut command = playbook(&source);
     command
         .current_dir(&source)
-        .args(["ansible/site.yml", "--become", "-e"])
+        .args([layout::PLAYBOOK, "--become", "-e"])
         .arg(format!("@{}", extra.path().display()))
         .arg("-i")
         .arg(inventory.path());
@@ -149,6 +187,17 @@ mod tests {
         assert_eq!(vars["devbox_geometry"], "1x1");
         assert_eq!(vars["devbox_plugin_dirs"]["demo"], "/p/demo");
         assert_eq!(vars["devbox_tailscale_auth_key"], "tskey");
+        // A pasted key without a login server goes to Tailscale, as always.
+        assert!(vars.get("devbox_tailscale_login_server").is_none());
+        // A profile of the qemu kind there once was is applied as cloud, reached from the QEMU host.
+        let qemu = ansible_vars(&json!({"profile": "qemu"}), &json!({}), None);
+        assert_eq!(qemu["devbox_profile"], "cloud");
+        assert_eq!(qemu["devbox_bootstrap_ssh_cidr"], "10.0.2.2/32");
+        let headscale = json!({"tailscale_login_server": "https://hs.example.org"});
+        assert_eq!(
+            ansible_vars(&headscale, &json!({}), None)["devbox_tailscale_login_server"],
+            "https://hs.example.org"
+        );
         assert!(
             ansible_vars(&json!({}), &json!({}), None)
                 .get("devbox_tailscale_auth_key")
@@ -160,8 +209,8 @@ mod tests {
     fn a_password_travels_in_the_private_file() {
         let home = tempfile::tempdir().unwrap();
         let source = home.path().join("source");
-        std::fs::create_dir_all(source.join("bin")).unwrap();
-        std::fs::write(source.join("bin/devbox.py"), "").unwrap();
+        std::fs::create_dir_all(source.join("provision/bin")).unwrap();
+        std::fs::write(source.join(layout::BUILDER), "").unwrap();
         let paths = Paths {
             config_dir: home.path().join("config"),
             data_dir: home.path().join("data"),
@@ -185,7 +234,14 @@ mod tests {
                 .iter()
                 .any(|arg| arg.contains("hunter2") || arg == "--ask-become-pass")
         );
-        assert_eq!(&args[..2], ["ansible/site.yml", "--become"]);
+        assert_eq!(&args[..2], [layout::PLAYBOOK, "--become"]);
+        let config = prepared
+            .command
+            .get_envs()
+            .find(|(name, _)| *name == "ANSIBLE_CONFIG")
+            .and_then(|(_, value)| value);
+        let wanted = paths.source().unwrap().join(layout::ANSIBLE_CONFIG);
+        assert_eq!(config, Some(wanted.as_os_str()));
         let extra: Value =
             serde_json::from_slice(&std::fs::read(prepared.files[0].path()).unwrap()).unwrap();
         assert_eq!(extra["ansible_become_password"], "hunter2");

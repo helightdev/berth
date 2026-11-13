@@ -1,0 +1,220 @@
+---
+title: Machine from a provisioner
+description: Have a plugin create the machine for a saved host on Docker, Incus or another platform, and set it up.
+icon: Boxes
+---
+
+A provisioner is a program that comes with a plugin. It creates the machine a host's profile describes, such as a container or a virtual machine. berth runs it, keeps the machine's id beside the profile, and from then on the machine is an ordinary host.
+
+Each host has at most one machine made this way. See which provisioners you have:
+
+```bash
+berth provisioners
+```
+
+```text
+docker/container         Docker container
+  An Ubuntu 26.04 container with systemd and an SSH server, on the local Docker or on the engine named by host. berth applies its role to it over SSH.
+  · berth applies the profile over SSH
+  · also start, stop, list, log
+  · asks publish_address (default 127.0.0.1)
+  · asks keep_volume (default no)
+incus/vm                 Incus virtual machine
+  A KVM guest on an Incus server, set up from berth's cloud seed. The server needs KVM.
+  · sets itself up from the cloud seed
+  · also start, stop, list, log
+  · asks server
+  · asks cpus (default 4)
+  · secret incus_client_cert, not set
+  · secret incus_client_key, not set
+  · secret incus_server_cert
+```
+
+The listing is shortened here. Each provisioner is named `PLUGIN/ID`. The notes say how it sets the machine up, which verbs it adds, what it asks for and which [secrets](/docs/use/secrets) it is given. A secret marked *not set* is required and has no value yet.
+
+## Seed and apply
+
+A provisioner sets up the new machine in one of two ways. The plugin chooses.
+
+| Kind | The new machine | berth waits for | What the profile needs |
+| --- | --- | --- | --- |
+| `seed` | Boots with berth's [cloud seed](/docs/deploy/cloud) made from the profile and sets itself up | berthd to answer, up to 30 minutes. It then prints the machine's provision state | What `berth seed` needs. A provisioner that puts the release archive into the machine itself does without a `release_url` |
+| `apply` | Starts with SSH and an account for berth | SSH to answer, up to 5 minutes. berth then applies the profile as `berth apply` does | An SSH user, `builder.ssh_user` |
+
+For an `apply` provisioner the account is the profile's SSH user. It takes berth's [own key](/docs/reference/profile#the-key-of-berth-itself) and the keys of the profile's operator. If that user's sudo asks for a password, set `BERTH_SUDO_PASSWORD` for the command, or apply later with `berth apply HOST`.
+
+A provisioner may report the machine's address and SSH port. berth writes them to `builder.ssh_host` and `builder.ssh_port` of the profile, but only where those are empty. A machine just made has a new SSH host key, so berth forgets the key known for that address first.
+
+A seeded machine whose address berth does not know is not waited for. berth says so and ends. The machine sets itself up on its own, and you set `builder.ssh_host` to reach it.
+
+### While berth waits
+
+The first boot of a seeded machine installs everything and can take most of the 30 minutes. berth says what it can find out as it goes, and each thing only once. Lines that come from the machine start with `│`.
+
+| What | When |
+| --- | --- |
+| The machine's state and address | When the provisioner reports a new one |
+| The latest lines of the machine's console | Until SSH answers, from provisioners that offer `log` |
+| `SSH answers` | Once berth can log in |
+| The first boot's state, its steps and the Ansible task it is at | After SSH answers, for a seeded machine |
+| `berthd answers` | When the host is ready |
+| `still waiting` and the time so far | After a minute without any other line |
+
+```text
+▸ studio-2: waiting for berthd to answer (up to 30 minutes)
+▸ studio-2: its machine is running at 192.0.2.31
+  │ [  OK  ] Started ssh.service - OpenBSD Secure Shell server.
+✓ studio-2: SSH answers
+  │ first boot: provisioning
+  │ Installing Ansible
+  │ Applying the role
+  │ Ansible task 87: Install the desktop
+… studio-2: still waiting, 12 minutes so far
+  │ Ansible task 214: Configure the browser
+  │ first boot: configured-needs-enrollment
+✓ studio-2: berthd answers
+```
+
+Reading the first boot's log needs sudo on the machine. berth uses sudo without a password, or `BERTH_SUDO_PASSWORD` when the profile says sudo asks for one. Without either, berth shows the first boot's state only.
+
+When the first boot fails, berth stops waiting at once and shows the last lines of its log. The machine tries again by itself every 10 minutes. berth hides the secrets in the seed, such as password hashes and the enrollment key, in every line it shows.
+
+## Create the machine
+
+<Steps>
+<Step>
+
+### Save the host
+
+Make the profile as for any host. The provisioner works from the saved profile.
+
+</Step>
+<Step>
+
+### Store the secrets
+
+A provisioner that needs provider credentials lists them as secrets. Store them once:
+
+```bash
+berth secret set incus_client_cert < berth.crt
+berth secret set incus_client_key < berth.key
+```
+
+berth refuses to start while a required secret has no value.
+
+</Step>
+<Step>
+
+### Create it
+
+```bash
+berth provision studio-2 incus/vm server=https://192.0.2.10:8443 cpus=8
+```
+
+berth asks `Create a machine for studio-2 with Incus virtual machine (incus/vm)? [y/N]`. `--yes` answers it. Arguments are `NAME=VALUE`. An argument that is required and has no default is asked for in a terminal when you leave it out. The others take their defaults.
+
+The output of the provisioner and of the set-up follows as it runs. berth ends when the host answers, or says what failed.
+
+</Step>
+</Steps>
+
+In the terminal UI, choose **Create a machine** under **How To Install** on the host's Install tab. The arguments of the provisioner are spread over the tabs:
+
+| Tab | Shows |
+| --- | --- |
+| Install | **Provisioner**, a choice like any other. Space or Enter switches to the next one, and → chooses from the suggestions. Under it the required arguments, marked `*` |
+| Settings | Under **Machine**, the resources it has, such as CPUs, memory and disk. Under **Provisioner Options**, its other arguments |
+| Run | **Create machine**, and every problem |
+
+The first provisioner is chosen when the list arrives. There is no **Host profile** row. A created machine is always a `cloud` host. berth writes that into the profile before it creates the machine, on the command line as well. Enter on an argument changes it. A missing secret is a problem of the Install tab, and a bad resource value one of the Settings tab. **Create machine** on the Run tab asks once before it saves the profile and starts, and does not start while a problem is listed. The output is shown as it runs. The page of [`berth serve --web`](/docs/use/server#in-a-browser) has the same tabs.
+
+Only one thing runs at a time for a host. A second command for the same host is refused until the first ends.
+
+## Look after the machine
+
+```bash
+berth instance studio-2
+```
+
+```text
+studio-2  incus/vm  berth-studio-2
+State      running
+Address    192.0.2.31
+Created    2026-11-12T20:14:03Z
+Arguments  cpus=8 disk=60GiB image=ubuntu/26.04/cloud memory=8GiB network= pool=default project=default server=https://192.0.2.10:8443
+Can        berth instance studio-2 start|stop|destroy
+```
+
+The state comes from the provisioner each time you ask.
+
+| State | Means |
+| --- | --- |
+| `running`, `stopped` | What the provisioner reports |
+| `gone` | The platform no longer has the machine |
+| `creating` | A command is creating it now |
+| `unknown` | The provisioner did not answer. A `Problem` line says why |
+
+`berth instance HOST start` and `stop` work only when the provisioner offers them. The list above says which. The Run tab shows the machine's state and a **Start machine** and **Stop machine** row in the same cases, whatever install method is chosen.
+
+`berth provisioners PLUGIN/ID [NAME=VALUE…]` lists the machines that provisioner has and berth made, such as `berth provisioners incus/vm server=https://192.0.2.10:8443`. It works for provisioners that offer `list`.
+
+## When it fails
+
+What happens depends on how far it got.
+
+| It failed | What is left | To go on |
+| --- | --- | --- |
+| Before the provisioner gave an id | A record with a token, and perhaps a machine | `berth provision` again with the same provisioner. The provisioner finds the machine by the token and does not make a second one |
+| After it gave one, such as a boot that did not finish or a failed apply | The machine and its record. The message says so | Fix the cause and wait, or `berth apply HOST` for a failed apply. `berth instance HOST destroy` deletes the machine to start again |
+
+A record without a machine is shown with a problem that says creating it did not end. Asking for a different provisioner while it exists is refused. `berth instance HOST destroy` then forgets the record only. A machine the provisioner made anyway is not deleted.
+
+## Delete the machine
+
+```bash
+berth instance studio-2 destroy
+```
+
+berth asks you to type the host's name. `--yes` skips that. It runs the provisioner's `destroy` with the id it kept, never another, and then removes the record. A machine that is gone already counts as deleted. If deleting fails, the record stays so you can try again.
+
+The profile stays. The host's node on the tailnet is not removed. Remove it in the tailnet's admin console.
+
+Deleting needs the provisioner's plugin and its required secrets. Removing a host with `berth remove` is refused while its machine exists. Delete the machine first.
+
+## With a berth server
+
+With a [berth server](/docs/use/server) set, the server creates the machines. Its commands and the set-up tabs go to the server, and the provisioner runs on the server's machine with the server's plugins and secrets. Creating and deleting are jobs there, named `provision` and `unprovision`, and their output follows as for an apply.
+
+All of it needs the role `admin`. A server with `serve_setup off` does not take these over the network, only on its own socket ([Closing set-up](/docs/extend/serve#closing-set-up)).
+
+## Credentials stay where berth runs
+
+Provider credentials are berth secrets. They are kept in a file that only its user can read, on the machine that runs berth. With a server, that is the server. berth gives a provisioner only the secrets its plugin names, on its standard input. berth does not write the request anywhere. Lines of the provisioner's output that contain one show `[secret]`.
+
+<Callout type="warn" title="A provisioner is a program that runs as you">
+  It runs with the rights of the user berth runs as, and it gets the credentials it names. Install only provisioner plugins you trust.
+</Callout>
+
+## The plugins that come with berth
+
+The documentation site does not show the guides of these plugins. Each is a `guide.md` beside the plugin's `package.json`, under `plugins/` in the berth source, and lists every argument and the limits.
+
+### Docker
+
+`docker/container` makes an Ubuntu 26.04 container with systemd and an SSH server on the local Docker or on the engine named by `host`. berth applies the profile to it over SSH. The container is named `berth-HOST` and has the labels `berth-host` and `berth-instance`. It offers `start`, `stop` and `list`, and takes no secrets.
+
+The container runs privileged. Read the limits in `plugins/docker/guide.md` before you use an engine that others share.
+
+```bash
+berth provision studio-2 docker/container
+```
+
+### Incus
+
+`incus/vm` makes a virtual machine and `incus/container` a system container on an Incus server. Both are set up from the cloud seed, and the plugin puts the release archive into the machine. The profile does without a `release_url`. They offer `start`, `stop` and `list`.
+
+berth talks to the Incus API over HTTPS. `server` is required. Incus must trust a certificate of berth, which you store as the secrets `incus_client_cert` and `incus_client_key`. The secret `incus_server_cert` is optional and pins the server's own certificate. `plugins/incus/guide.md` shows how to make and trust the certificate.
+
+```bash
+berth provision studio-2 incus/vm server=https://192.0.2.10:8443
+```

@@ -19,7 +19,7 @@
         "group": "System",
         "label": "Backups",
         "description": "Nightly encrypted snapshots of the agent's home and workspaces with restic, stored through rclone. Set the repository as `devbox_backup_repository` in the profile's ansible_vars, for example `rclone:b2:my-bucket/laptop`, and send two file secrets to the host: the repository password as `~/.config/berth-backup/password` and the rclone configuration as `~/.config/rclone/rclone.conf`.",
-        "summary": "Nightly snapshots of your home and `/srv/agent` with restic. Caches, `node_modules` and Unity's `Library` are left out.",
+        "summary": "Nightly snapshots of your home and `/srv/agent` with restic. Caches, downloaded dependencies and build output are left out.",
         "packages": [
           "restic",
           "rclone"

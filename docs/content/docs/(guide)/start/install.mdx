@@ -32,7 +32,7 @@ rustup target add x86_64-unknown-linux-musl
 cargo install --locked --git https://github.com/helightdev/berth berth
 ```
 
-From a checkout, `cargo install --locked --path cli` does the same.
+From a checkout, `cargo install --locked --path crates/berth` does the same.
 
 </Tab>
 <Tab value="Container image">
@@ -84,7 +84,7 @@ berth
 The install script lists what is missing. A source checkout with a `.venv` gets its own `ansible-playbook` from there:
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install -r provision/requirements.txt
 ```
 
 ## Where berth keeps things

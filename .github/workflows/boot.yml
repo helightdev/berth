@@ -1,0 +1,136 @@
+name: Boot
+# Real installs in QEMU with KVM: the cloud image with berth's seed, and
+# berth's unattended installer on a blank virtual disk (ci/run.sh boot). They
+# take long, so they only run when started by hand.
+on:
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: What to boot
+        type: choice
+        options: [cloud, iso, both]
+        default: cloud
+permissions:
+  contents: read
+concurrency:
+  group: boot-${{ github.ref }}-${{ inputs.kind }}
+  cancel-in-progress: false
+env:
+  BERTH_CI_NO_BUILD: '1'
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      kinds: ${{ steps.plan.outputs.kinds }}
+    steps:
+      - id: plan
+        env:
+          KIND: ${{ inputs.kind }}
+        run: |
+          case "$KIND" in
+            both) kinds='["cloud","iso"]' ;;
+            iso) kinds='["iso"]' ;;
+            *) kinds='["cloud"]' ;;
+          esac
+          echo "kinds=$kinds" >> "$GITHUB_OUTPUT"
+
+  boot:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: ${{ fromJSON(needs.plan.outputs.kinds) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Let the runner's user open /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+      # The guest's disk, the images and the package cache need more than the
+      # runner has free.
+      - name: Make room on the disk
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost /usr/local/.ghcup
+          sudo docker image prune --all --force >/dev/null
+          df -h /
+      - run: echo "BERTH_CI_CACHE=$RUNNER_TEMP/berth-ci-cache" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the dev image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ci/dev.Dockerfile
+          tags: berth-ci-dev
+          load: true
+          cache-from: type=gha,scope=berth-ci-dev
+      - name: Build the boot image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ci/boot.Dockerfile
+          tags: berth-ci-boot
+          load: true
+          cache-from: type=gha,scope=berth-ci-boot
+          cache-to: type=gha,scope=berth-ci-boot,mode=max
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.BERTH_CI_CACHE }}
+          key: boot-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-${{ github.sha }}
+          restore-keys: |
+            boot-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-
+            e2e-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-
+      # The cloud image is kept until Ubuntu publishes another. The installer
+      # ISO is not kept: at 3 GB it would push the other caches out.
+      - name: Which cloud image is current
+        if: matrix.kind == 'cloud'
+        run: |
+          curl -fsSL https://cloud-images.ubuntu.com/releases/26.04/release/SHA256SUMS \
+            | grep ' \*ubuntu-26.04-server-cloudimg-amd64.img$' > "$RUNNER_TEMP/cloud-image.sha256"
+      - name: Restore the cloud image
+        if: matrix.kind == 'cloud'
+        uses: actions/cache@v4
+        with:
+          path: build/boot/images
+          key: boot-cloud-image-${{ hashFiles(format('{0}/cloud-image.sha256', runner.temp)) }}
+      - name: Restore the package cache
+        uses: actions/cache@v4
+        with:
+          path: build/boot/cache
+          key: boot-apt-${{ matrix.kind }}-${{ github.run_id }}
+          restore-keys: |
+            boot-apt-${{ matrix.kind }}-
+            boot-apt-
+      - name: Boot ${{ matrix.kind }}
+        run: ci/run.sh boot ${{ matrix.kind }}
+      - name: Disk and memory
+        if: always()
+        run: |
+          df -h /
+          cat build/boot/${{ matrix.kind }}/report.json || true
+      - name: Upload the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-${{ matrix.kind }}-logs
+          path: |
+            build/boot/${{ matrix.kind }}/logs
+            build/boot/${{ matrix.kind }}/report.json
+          if-no-files-found: ignore
+      - name: Upload the report
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-${{ matrix.kind }}-report
+          path: build/boot/${{ matrix.kind }}/report.json
+      - name: Keep the caches small
+        if: always()
+        run: |
+          rm -rf "$BERTH_CI_CACHE/target/debug/incremental" "$BERTH_CI_CACHE/target/tmp" build/boot/tmp
+          sudo find build/boot/cache -type f -atime +60 -delete 2>/dev/null || true
