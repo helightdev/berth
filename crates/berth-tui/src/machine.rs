@@ -204,6 +204,12 @@ impl Machine {
         picks
     }
 
+    /// Whether berth created a machine for the host, which the Install tab
+    /// then shows whatever way of installing is chosen.
+    pub fn exists(&self) -> bool {
+        matches!(self.instance, Some(Ok(Some(_))))
+    }
+
     /// The rows of the machine's part of the Install tab; none before
     /// anything was asked.
     pub fn rows(&self) -> Vec<Row> {
@@ -261,7 +267,7 @@ impl Machine {
                 }
             }
             Ok(None) => {
-                rows.push(Row::heading("Create Machine"));
+                rows.push(Row::heading("Provisioner"));
                 match provisioners {
                     Err(error) => rows.push(bad(format!("  ✗ {error}"))),
                     Ok(all) if all.is_empty() => rows.push(Row::info(Line::styled(

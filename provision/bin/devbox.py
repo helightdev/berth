@@ -159,8 +159,10 @@ def checked_config(path, kind):
     for account in ('operator', 'agent'):
         for key in account_keys(c, account):
             check_public_key(key, account)
-    check_password_hash(text(c, 'operator_password_hash'), 'operator')
-    flag(c, 'operator_passwordless_sudo', True)
+    # A cloud machine is reached with the key. It needs a password only for sudo.
+    password = text(c, 'operator_password_hash')
+    if password or kind != 'cloud' or not flag(c, 'operator_passwordless_sudo', True):
+        check_password_hash(password, 'operator')
     if text(c, 'agent_password_hash'):
         check_password_hash(c['agent_password_hash'], 'agent')
     privileges = text(c, 'agent_privileges')
@@ -334,9 +336,12 @@ def cloud_config(c, sha):
     sudo = 'NOPASSWD:ALL' if c.get('operator_passwordless_sudo', True) else 'ALL'
     operator = {
         'name': c.get('operator_username', DEFAULT_OPERATOR), 'shell': '/bin/bash', 'groups': ['sudo'],
-        'sudo': [f'ALL=(ALL) {sudo}'], 'lock_passwd': False, 'passwd': c['operator_password_hash'],
-        'ssh_authorized_keys': account_keys(c, 'operator'),
+        'sudo': [f'ALL=(ALL) {sudo}'], 'ssh_authorized_keys': account_keys(c, 'operator'),
     }
+    if c.get('operator_password_hash'):
+        operator.update({'lock_passwd': False, 'passwd': c['operator_password_hash']})
+    else:
+        operator['lock_passwd'] = True
     files = [
         {'path': '/opt/devbox-bootstrap/bootstrap.sh', 'encoding': 'b64',
          'content': base64.b64encode(boot).decode(), 'permissions': '0700'},

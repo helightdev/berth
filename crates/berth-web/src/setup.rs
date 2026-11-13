@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use tui_input::Input;
 
 /// The ways the server installs a host itself.
-const METHODS: [Action; 2] = [Action::CloudSeed, Action::Ssh];
+const METHODS: [Action; 3] = [Action::Machine, Action::CloudSeed, Action::Ssh];
 
 /// Draw the box something is typed in, under the rows it belongs to.
 pub fn draw_editor(frame: &mut Frame, area: Rect, title: &str, input: &Input, masked: bool) {
@@ -165,7 +165,11 @@ impl Setup {
     pub fn sync(&mut self, data: &Data) {
         self.features = data.features.clone();
         self.registries = data.registry_names();
-        self.secrets = setup::host_secrets(data.secret_names());
+        let names = data.secret_names();
+        if !self.loading {
+            setup::default_enrollment(&mut self.config, &names);
+        }
+        self.secrets = setup::host_secrets(names);
         self.stores = setup::release_stores(&data.registries);
         self.own_key = data.own_key.clone();
     }
@@ -179,6 +183,7 @@ impl Setup {
             registries: &self.registries,
             secrets: &self.secrets,
             own_key: &self.own_key,
+            named: setup::valid_hostname(&self.name),
         }
     }
 
@@ -229,12 +234,19 @@ impl Setup {
                         Style::new().fg(theme::GOOD),
                     )));
                 }
-                rows.push(Row::info(""));
-                rows.push(Row::entry(
-                    format!("[Run · {}]", self.action.label()),
-                    Entry::Run,
-                ));
-                let machine = self.machine.rows();
+                // A machine is created from the provisioner's own rows.
+                if self.action != Action::Machine {
+                    rows.push(Row::info(""));
+                    rows.push(Row::entry(
+                        format!("[Run · {}]", self.action.label()),
+                        Entry::Run,
+                    ));
+                }
+                let machine = if self.action == Action::Machine || self.machine.exists() {
+                    self.machine.rows()
+                } else {
+                    vec![]
+                };
                 if !machine.is_empty() {
                     rows.push(Row::info(""));
                     rows.extend(machine);
@@ -285,7 +297,7 @@ impl Setup {
                 _ => "Saves the profile on the server and applies it to the host from there.".into(),
             },
             Some(Entry::Machine(pick)) => self.machine.help(pick),
-            Some(Entry::Source(_)) | None => String::new(),
+            None => String::new(),
         }
     }
 
@@ -442,7 +454,7 @@ impl Setup {
             Entry::Action(action) => {
                 self.action = action;
                 // A laptop profile would add a display manager and power policy to a server.
-                if action == Action::CloudSeed && self.view().text(Field::Profile) == "laptop" {
+                if action.seeds() && self.view().text(Field::Profile) == "laptop" {
                     self.config["profile"] = json!("cloud");
                 }
             }
@@ -459,10 +471,13 @@ impl Setup {
             }
             Entry::Run => return self.run(admin),
             Entry::Machine(pick) => {
+                // The machine is made from the profile, which has to be whole first.
+                if pick == machine::Pick::Create && !self.problems().is_empty() {
+                    return Some("Fix the listed problems first".into());
+                }
                 let next = self.machine.enter(pick, &self.name);
                 return self.follow(next, admin);
             }
-            Entry::Source(_) => {}
         }
         None
     }

@@ -52,7 +52,7 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
     // The seed is rendered from a private copy of the profile, which holds a
     // new enrollment key for a host that joins the tailnet automatically.
     let saved: Value = serde_json::from_slice(&fs::read(&host.path)?)?;
-    let config = tailnet::seed_profile(paths, &saved, name)?;
+    let config = named(tailnet::seed_profile(paths, &saved, name)?, name);
     let seeded = tailnet::profile_file(&config)?;
     let build = paths.build_dir();
     let mut command = Command::new("python3");
@@ -133,6 +133,15 @@ pub fn sha256(path: &std::path::Path) -> Result<String> {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect())
+}
+
+/// A profile for the seed builder, with the host's name as the machine's
+/// when the profile gives it none.
+pub fn named(mut config: Value, name: &str) -> Value {
+    if config["hostname"].as_str().unwrap_or("").is_empty() {
+        config["hostname"] = json!(name);
+    }
+    config
 }
 
 /// Write a profile in place of the old one, privately.

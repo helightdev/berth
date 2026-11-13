@@ -3,7 +3,7 @@
 use crate::{
     Result, credentials,
     discovery::{self, Choices, expand_path},
-    fields::{Action, Field, Kind, SOURCES, Step, TASKS},
+    fields::{Action, Field, Kind, Step, TASKS},
     job::{Job, Stage},
     picker::Picker,
     plugins::{self, Plugin},
@@ -29,7 +29,6 @@ use tui_input::Input;
 /// What a selectable row does when activated.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Entry {
-    Source(usize),
     Action(Action),
     Field(Field),
     /// Something the overview of a host offers, by name.
@@ -210,7 +209,6 @@ fn lift(rows: Vec<setup::Row>) -> Vec<Row> {
         .map(|row| Row {
             line: row.line,
             entry: row.entry.map(|entry| match entry {
-                setup::Entry::Source(index) => Entry::Source(index),
                 setup::Entry::Action(action) => Entry::Action(action),
                 setup::Entry::Field(field) => Entry::Field(field),
                 setup::Entry::Group(index) => Entry::Group(index),
@@ -294,6 +292,7 @@ impl App {
             registries: &self.registry_names,
             secrets: &self.secret_names,
             own_key: &self.own_public,
+            named: setup::valid_hostname(&self.name()),
         }
     }
 
@@ -315,7 +314,9 @@ impl App {
             .keys()
             .cloned()
             .collect();
-        self.secret_names = berth_tui::setup::host_secrets(store.secret_names());
+        let names = store.secret_names();
+        setup::default_enrollment(&mut self.config, &names);
+        self.secret_names = berth_tui::setup::host_secrets(names);
     }
 
     pub fn toggle_host_registry(&mut self, index: usize) {
@@ -480,6 +481,10 @@ impl App {
                 Style::new().fg(theme::GOOD),
             )));
         }
+        // A machine is created from the provisioner's own rows.
+        if self.action == Action::Machine {
+            return rows;
+        }
         rows.push(Row::info(""));
         if self.action == Action::Iso {
             let device = self.text(Field::UsbDevice);
@@ -509,17 +514,18 @@ impl App {
         match self.step {
             Step::Features => rows = self.feature_rows(),
             Step::Secrets => rows = self.access_rows(),
-            Step::Accounts => {
-                rows = self.field_rows();
-                rows.extend(lift(setup::Profile::source_rows()));
-            }
+            Step::Accounts => rows = self.field_rows(),
             Step::Install => {
                 rows = lift(self.view().method_rows(self.methods()));
                 rows.push(Row::info(""));
                 rows.extend(self.field_rows());
                 rows.push(Row::info(""));
                 rows.extend(self.review_rows());
-                let machine = lift(self.machine.rows());
+                let machine = if self.action == Action::Machine || self.machine.exists() {
+                    lift(self.machine.rows())
+                } else {
+                    vec![]
+                };
                 if !machine.is_empty() {
                     rows.push(Row::info(""));
                     rows.extend(machine);
@@ -733,7 +739,6 @@ impl App {
 
     fn entry_help(&self) -> &'static str {
         match self.selected_entry() {
-            Some(Entry::Source(index)) => SOURCES[index].1,
             Some(Entry::Action(action)) => action.help(),
             Some(Entry::Field(field)) => field.spec().help,
             Some(Entry::Task(name)) => TASKS
@@ -764,7 +769,6 @@ impl App {
     /// The selected row takes a file path, so Browse applies.
     pub fn path_selected(&self) -> bool {
         match self.selected_entry() {
-            Some(Entry::Source(index)) => index > 0,
             Some(Entry::Field(field)) => field.spec().kind == Kind::Path,
             _ => false,
         }
@@ -796,7 +800,7 @@ impl App {
     /// does itself.
     pub fn methods(&self) -> &'static [Action] {
         match self.served() {
-            Some(_) => &[Action::CloudSeed, Action::Ssh],
+            Some(_) => &[Action::Machine, Action::CloudSeed, Action::Ssh],
             None => &Action::METHODS,
         }
     }
@@ -812,6 +816,16 @@ impl App {
             return;
         }
         self.step = step;
+        // A berth server offers fewer ways to install than the one a new host starts with.
+        if step == Step::Install
+            && self.action != Action::Manage
+            && !self.methods().contains(&self.action)
+        {
+            self.action = self.methods()[0];
+            if self.text(Field::Profile) == "laptop" {
+                self.config["profile"] = json!("cloud");
+            }
+        }
         // The Manage tab acts on the running host; the others on the install method.
         if step == Step::Manage {
             if self.action != Action::Manage {
@@ -860,7 +874,7 @@ impl App {
             }
         }
         let value = self.editing.as_ref().map_or("", |input| input.value());
-        let wants_key = matches!(entry, Some(Entry::Source(2) | Entry::Field(Field::SshKey)));
+        let wants_key = matches!(entry, Some(Entry::Field(Field::SshKey)));
         let start = if !value.is_empty() {
             value.to_owned()
         } else if wants_key && let Some(home) = std::env::var_os("HOME") {
@@ -966,13 +980,6 @@ impl App {
                 .collect()
         };
         let choices = match self.selected_entry() {
-            // Importing a key file wants paths, which ssh-agent keys do not have.
-            Some(Entry::Source(2)) => self
-                .public_keys
-                .iter()
-                .filter(|(label, _)| !label.starts_with("ssh-agent"))
-                .map(|(label, _)| (label.clone(), label.clone()))
-                .collect(),
             Some(Entry::Key(..)) => self.public_keys.clone(),
             Some(Entry::Field(field)) => match (field, field.spec().kind) {
                 (_, Kind::Choice(values)) => own(values),
@@ -1027,11 +1034,6 @@ impl App {
                 Err(error) => self.status = error.to_string(),
             },
             Some(Entry::Field(field)) => self.commit(field, input.value()),
-            Some(Entry::Source(index)) => {
-                if let Err(error) = self.import(index, input.value()) {
-                    self.status = format!("Import failed · {error}");
-                }
-            }
             Some(Entry::HostSecret(index)) => self.set_host_secret(index, input.value()),
             Some(Entry::Machine(pick)) => {
                 let name = self.name();
@@ -1311,22 +1313,6 @@ impl App {
         };
     }
 
-    fn import(&mut self, source: usize, path: &str) -> Result<()> {
-        if source == 1 {
-            self.config = parse_config(&fs::read(expand_path(path))?)?;
-            self.status = "Profile imported. Save to keep it at the current output path.".into();
-        } else {
-            let key = fs::read_to_string(expand_path(path))?;
-            let key = key.trim();
-            if !discovery::is_public_key(key) {
-                return Err("Expected a supported OpenSSH public key".into());
-            }
-            setup::set_key(&mut self.config, setup::Account::Operator, None, key)?;
-            self.status = "SSH public key imported".into();
-        }
-        Ok(())
-    }
-
     /// Reasons the chosen action would fail, checked before leaving the UI.
     pub fn problems(&self) -> Vec<String> {
         use Field::*;
@@ -1581,6 +1567,7 @@ impl App {
                 let saved: Value = serde_json::from_slice(&fs::read(&self.path)?)?;
                 let paths = crate::paths::Paths::locate()?;
                 let config = berth_core::tailnet::seed_profile(&paths, &saved, &self.name())?;
+                let config = berth_core::seed::named(config, &self.name());
                 Some(berth_core::tailnet::profile_file(&config)?)
             }
             _ => None,
@@ -1588,7 +1575,9 @@ impl App {
         let profile = seeded.as_ref().map(|file| file.path().to_owned());
         let mut command;
         match action {
-            Action::Save | Action::Manage => return Err("Nothing to run".into()),
+            Action::Save | Action::Manage | Action::Machine => {
+                return Err("Nothing to run".into());
+            }
             Action::Release => {
                 command = Command::new("python3");
                 command.args([layout::BUILDER, "release"]);
@@ -1983,6 +1972,11 @@ impl App {
 
     /// Enter on a row of the machine.
     pub fn machine_enter(&mut self, pick: machine::Pick) {
+        // The machine is made from the profile, which has to be whole first.
+        if pick == machine::Pick::Create && !self.problems().is_empty() {
+            self.status = "Fix the listed problems first".into();
+            return;
+        }
         let name = self.name();
         let next = self.machine.enter(pick, &name);
         self.follow(next);

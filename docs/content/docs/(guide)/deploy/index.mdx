@@ -12,7 +12,7 @@ The install methods all run the same Ansible role with the settings of the host'
 | --- | --- | --- |
 | USB installer | A blank laptop or PC; erases a disk and installs Ubuntu | `berth iso HOST` |
 | Cloud-init seed | A fresh cloud machine at a provider that takes cloud-init | `berth seed HOST` |
-| Machine from a provisioner | A container or virtual machine that a plugin creates, such as on Docker or Incus | `berth provision HOST PLUGIN/ID` |
+| Create a machine | A container or virtual machine that a plugin creates, such as on Docker or Incus | Install tab, or `berth provision HOST PLUGIN/ID` |
 | Existing host over SSH | An Ubuntu 26.04 machine you can log in to | Install tab |
 | This machine or an inventory | The machine berth runs on, or your own Ansible inventory | Install tab, or `ansible-playbook` |
 | Container image | Trying the desktop on Docker | Install tab, or `docker compose` |

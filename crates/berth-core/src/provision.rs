@@ -769,6 +769,22 @@ fn take_address(path: &Path, answer: &Value, out: &mut dyn Write) -> Result<()> 
             changed = true;
         }
     }
+    // A profile that names no SSH user would be reached as whoever runs berth;
+    // the account that holds berth's key on the new machine is the operator.
+    let operator = profile["operator_username"]
+        .as_str()
+        .unwrap_or("")
+        .to_owned();
+    if changed
+        && profile["builder"]["ssh_user"]
+            .as_str()
+            .unwrap_or("")
+            .is_empty()
+        && usable(&operator)
+        && !operator.is_empty()
+    {
+        profile["builder"]["ssh_user"] = json!(operator);
+    }
     if changed {
         seed::save_profile(path, &profile)?;
         say(out, &format!("✓ The profile reaches it at {address}"));
@@ -833,10 +849,14 @@ fn answers(_paths: &Paths, host: &Host, setup: Setup) -> bool {
                 return false;
             };
             let link = Link::new(spec);
-            let asked = runtime.block_on(tokio::time::timeout(
-                Duration::from_secs(20),
-                link.get::<berth_api::Version>("/v1/version"),
-            ));
+            // The timer is made inside the runtime, which is what it runs on.
+            let asked = runtime.block_on(async {
+                tokio::time::timeout(
+                    Duration::from_secs(20),
+                    link.get::<berth_api::Version>("/v1/version"),
+                )
+                .await
+            });
             runtime.shutdown_background();
             matches!(asked, Ok(Ok(_)))
         }
@@ -1768,5 +1788,27 @@ print(out)
             "a4d451ec23463726f72c43d64c710968f6b602cd653b4de8adee1b556240a829"
         );
         assert!(create.get("access").is_none());
+    }
+
+    #[test]
+    fn the_address_comes_with_the_operator_as_the_ssh_user() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("studio.json");
+        let taken = |profile: Value| {
+            fs::write(&path, profile.to_string()).unwrap();
+            let answer = json!({"address": "192.0.2.40"});
+            take_address(&path, &answer, &mut Vec::new()).unwrap();
+            let profile: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            profile["builder"].clone()
+        };
+        assert_eq!(
+            taken(json!({"operator_username": "ops"})),
+            json!({"ssh_host": "192.0.2.40", "ssh_user": "ops"})
+        );
+        // A user the profile names is kept.
+        assert_eq!(
+            taken(json!({"operator_username": "ops", "builder": {"ssh_user": "admin"}})),
+            json!({"ssh_host": "192.0.2.40", "ssh_user": "admin"})
+        );
     }
 }

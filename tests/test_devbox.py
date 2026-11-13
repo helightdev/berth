@@ -95,6 +95,17 @@ class RenderTests(unittest.TestCase):
         self.assertEqual((entry['content'],entry['permissions']),('user = "reader:secret"\n','0600'))
         with patch.dict(os.environ,{'BERTH_RELEASE_LOGIN':'url = "https://evil.example"'}):
             self.assertRaises(ValueError,builder.cloud_config,config(),'a'*64)
+    def test_cloud_operator_needs_a_password_only_for_sudo(self):
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/'c.json'; c=config(); c['profile']='cloud'; del c['operator_password_hash']
+            path.write_text(json.dumps(c))
+            operator=builder.cloud_config(builder.checked_config(path,'cloud'),'a'*64)['users'][1]
+            self.assertTrue(operator['lock_passwd']); self.assertNotIn('passwd',operator)
+            # An installer's machine is logged in to at its screen.
+            with self.assertRaises(ValueError): builder.checked_config(path,'usb')
+            c['operator_passwordless_sudo']=False; path.write_text(json.dumps(c))
+            with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
+
     def test_cloud_seed_has_no_disk_actions(self):
         c=config(); result=builder.cloud_config(c,'a'*64)
         self.assertNotIn('autoinstall',result)

@@ -1006,12 +1006,10 @@ fn mouse_event(app: &mut App, mouse: MouseEvent, hits: &Hits) -> Option<KeyEvent
 
 fn choose(app: &mut App, entry: Entry) -> Flow {
     match entry {
-        Entry::Source(0) => app.detect(),
-        Entry::Source(_) => app.editing = Some(Input::default()),
         Entry::Action(action) => {
             app.action = action;
             // A laptop profile would add a display manager and power policy to a server.
-            if action == Action::CloudSeed && app.text(Field::Profile) == "laptop" {
+            if action.seeds() && app.text(Field::Profile) == "laptop" {
                 app.config["profile"] = json!("cloud");
             }
         }
@@ -3496,7 +3494,10 @@ mod tests {
         );
         use KeyCode::*;
         // Install: the USB installer is the default method; its settings follow.
-        press(&mut app, &[Tab, Tab, Tab, Down, Down, Down, Down, Down]);
+        press(
+            &mut app,
+            &[Tab, Tab, Tab, Down, Down, Down, Down, Down, Down],
+        );
         assert_eq!(app.action, Action::Iso);
         let install = screen(&mut app);
         assert!(install.contains("● USB installer"));
@@ -3914,8 +3915,17 @@ mod tests {
     #[test]
     fn the_install_tab_creates_and_deletes_the_machine() {
         use berth_tui::machine::Pick;
-        let mut app = App::new("studio.json".into(), parse_config(b"{}").unwrap());
+        let profile = format!(
+            r#"{{"hostname": "studio", "operator_password_hash": "$6${}",
+                "operator_ssh_public_keys": ["ssh-ed25519 AAAA studio"]}}"#,
+            "a".repeat(40)
+        );
+        let mut app = App::new(
+            "studio.json".into(),
+            parse_config(profile.as_bytes()).unwrap(),
+        );
         app.set_step(Step::Install);
+        app.action = Action::Machine;
         // Nothing was asked without berth's own folders, so nothing shows.
         assert!(
             !app.entries()
@@ -3968,7 +3978,14 @@ mod tests {
         app.machine_answer(false);
         assert!(app.machine.question.is_none() && app.job.is_none());
 
-        // With a machine, its state and what can be done to it.
+        // Another way to install has no provisioner to choose.
+        app.action = Action::Ssh;
+        assert!(
+            !app.entries()
+                .iter()
+                .any(|entry| matches!(entry, Entry::Machine(_)))
+        );
+        // With a machine, its state and what can be done to it, whatever the way.
         app.machine.found(Ok(Some(berth_api::Instance {
             provisioner: "lab/vm".into(),
             id: "studio".into(),
