@@ -21,7 +21,8 @@
 # BERTH_CI_CACHE     a directory for cargo's downloads and the target directory
 #                    instead of volumes, for a CI cache to keep
 # BERTH_CI_NO_BUILD  1: use the images as they are
-# BERTH_CI_PREBUILT  1: test the berth in the target directory as it is
+# BERTH_CI_PREBUILT  1: test the berth in the target directory as it is, with
+#                    the berthd and box it put into the role's files
 # BERTH_CI_PROJECT   the compose project (default: berth-ci)
 # BERTH_CI_INCREMENTAL  1 or 0: cargo's incremental builds (default: 1, and 0 in CI)
 set -euo pipefail
@@ -119,5 +120,5 @@ case $command in
     "$engine" volume rm -f berth-ci-target berth-ci-cargo >/dev/null
     "$engine" image rm -f berth-ci-dev berth-ci-host berth-ci-boot >/dev/null
     ;;
-  *) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

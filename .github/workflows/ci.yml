@@ -81,10 +81,16 @@ jobs:
           restore-keys: e2e-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-
       - name: Build berth
         run: ci/run.sh run cargo build --locked -p berth --features web
+      # berth, and the berthd and box it puts into the role's files. A tar
+      # keeps their modes, which an artifact does not.
+      - name: Pack what the shards test
+        run: |
+          tar -cf "$RUNNER_TEMP/e2e-berth.tar" -C "$BERTH_CI_CACHE" target/debug/berth \
+            -C "$GITHUB_WORKSPACE" provision/ansible/roles/devbox/files/bin
       - uses: actions/upload-artifact@v4
         with:
           name: e2e-berth
-          path: ${{ env.BERTH_CI_CACHE }}/target/debug/berth
+          path: ${{ runner.temp }}/e2e-berth.tar
           retention-days: 1
           if-no-files-found: error
       - name: Keep the cache small
@@ -124,9 +130,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: e2e-berth
-          path: ${{ env.BERTH_CI_CACHE }}/target/debug
-      # An artifact does not keep the file's mode.
-      - run: chmod +x "$BERTH_CI_CACHE/target/debug/berth"
+          path: ${{ runner.temp }}
+      - name: Unpack berth
+        run: |
+          mkdir -p "$BERTH_CI_CACHE"
+          tar -xf "$RUNNER_TEMP/e2e-berth.tar" -C "$BERTH_CI_CACHE" target
+          tar -xf "$RUNNER_TEMP/e2e-berth.tar" provision
       - name: End-to-end tests
         run: ci/run.sh e2e --shard "${{ matrix.shard }}"
       - name: Upload the test host's logs
