@@ -18,6 +18,12 @@
 # BERTH_CI_ENGINE    docker or podman (default: whichever is found, Docker first)
 # BERTH_CI_CACHE     a directory for cargo's downloads and the target directory
 #                    instead of volumes, for a CI cache to keep
+# BERTH_CI_DOCKER    1 or 0: a Docker engine (docker:dind, privileged) on the test
+#                    network for the Docker plugin's tests. Default: on with
+#                    Docker when no TEST is named or one is e2e_provisioners;
+#                    off with Podman, where the case is skipped
+# BERTH_CI_DIND_IMAGES  images of this machine's engine to load into that
+#                    engine, separated by spaces (it has no way out to pull)
 # BERTH_CI_NO_BUILD  1: use the images as they are
 # BERTH_CI_PROJECT   the compose project (default: berth-ci)
 # BERTH_CI_INCREMENTAL  1 or 0: cargo's incremental builds (default: 1, and 0 in CI)
@@ -100,8 +106,29 @@ build() {
 
 logs=$root/build/ci/logs
 e2e_down() {
-  compose --profile e2e down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
+  compose --profile e2e --profile docker down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
   "$engine" volume rm -f "${project}_seed" >/dev/null 2>&1 || true
+}
+
+# The engine for the Docker plugin's tests, when the run wants it: Docker
+# only, since a privileged engine inside rootless Podman is not dependable.
+# The test case skips when it is left out.
+want_docker() {
+  case ${BERTH_CI_DOCKER:-} in
+    1) return 0 ;;
+    0) return 1 ;;
+  esac
+  [[ $engine == docker ]] || return 1
+  (($# == 0)) && return 0
+  [[ " $* " == *" e2e_provisioners"* ]]
+}
+docker_up() {
+  compose --profile e2e --profile docker up -d --wait docker >/dev/null || return 1
+  local image
+  for image in ${BERTH_CI_DIND_IMAGES:-}; do
+    "$engine" save "$image" | compose --profile docker exec -T docker docker load >/dev/null || return 1
+  done
+  export BERTH_CI_DOCKER_HOST=tcp://docker:2375
 }
 
 e2e() {
@@ -110,6 +137,9 @@ e2e() {
   e2e_down
   trap e2e_down EXIT
   compose --profile e2e up -d studio dock
+  if want_docker "$@"; then
+    docker_up || { echo "The Docker engine for the tests did not start" >&2; return 1; }
+  fi
   local status=0
   compose --profile e2e run --rm "${tty[@]}" runner python3 tests/e2e/run.py "$@" || status=$?
   rm -rf "$logs"

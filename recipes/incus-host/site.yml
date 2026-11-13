@@ -50,14 +50,27 @@
 
     # ── Sysbox, when asked for ──────────────────────────────────────────────
 
-    # Its package restarts Docker and refuses while containers run, so it comes
-    # before the berth server's container. A host that has it is left as it is.
+    # Its installer restarts Docker when it has to change Docker's network
+    # settings, unless containers exist (then it leaves Docker running and
+    # says so), so it comes before the berth server's container. A host that
+    # has this version is left as it is.
     - name: Install Sysbox beside Docker
       when: sysbox | bool
       vars:
         sysbox_arch: "{{ 'arm64' if ansible_facts['architecture'] == 'aarch64' else 'amd64' }}"
-        sysbox_package: "/root/sysbox-ce_{{ sysbox_version }}_{{ sysbox_arch }}.deb"
+        sysbox_sum: "{{ sysbox_checksum_arm64 if sysbox_arch == 'arm64' else sysbox_checksum_amd64 }}"
+        sysbox_package: "/root/sysbox-ce_{{ sysbox_version }}.linux_{{ sysbox_arch }}.deb"
       block:
+        - name: Require a checksum for the Sysbox package
+          ansible.builtin.assert:
+            that:
+              - ansible_facts['architecture'] in ['x86_64', 'aarch64']
+              - sysbox_sum is match('^[0-9a-f]{64}$')
+            fail_msg: >-
+              Sysbox is installed as root, so its package must be checked. Set
+              sysbox_checksum_{{ sysbox_arch }} to the SHA-256 of version
+              {{ sysbox_version }} from the release page, on an amd64 or arm64 machine.
+
         - name: See which Sysbox is installed
           ansible.builtin.command: dpkg-query -W -f=${Version} sysbox-ce
           register: sysbox_installed
@@ -66,10 +79,10 @@
 
         - name: Download Sysbox
           ansible.builtin.get_url:
-            url: "https://downloads.nestybox.com/sysbox/releases/v{{ sysbox_version }}/sysbox-ce_{{ sysbox_version }}-0.linux_{{ sysbox_arch }}.deb"
+            url: "https://github.com/nestybox/sysbox/releases/download/v{{ sysbox_version }}/sysbox-ce_{{ sysbox_version }}.linux_{{ sysbox_arch }}.deb"
             dest: "{{ sysbox_package }}"
             mode: "0600"
-            checksum: "{{ ('sha256:' ~ sysbox_checksum) if sysbox_checksum else omit }}"
+            checksum: "sha256:{{ sysbox_sum }}"
           when: not sysbox_installed.stdout.startswith(sysbox_version)
 
         - name: Install Sysbox

@@ -71,8 +71,8 @@ there, or keep your own file and pass it with `-e @my-vars.yml`.
 | `incus_api_interface` | `tailscale0` | The one interface the firewall opens the API on. Empty opens it nowhere |
 | `incus_trusted_clients` | none | Clients that may use the API, each with a name and a certificate file |
 | `sysbox` | `false` | Also install Sysbox, for berth's Docker provisioner with `runtime=sysbox` |
-| `sysbox_version` | `0.6.7` | The Sysbox release to install |
-| `sysbox_checksum` | empty | The SHA-256 of its package, to check the download against |
+| `sysbox_version` | `0.7.1` | The Sysbox release to install |
+| `sysbox_checksum_amd64`, `sysbox_checksum_arm64` | those of `0.7.1` | The SHA-256 of the package for each architecture. The download is always checked, and another version needs its own sums |
 | `berth_server` | `false` | Also run a berth server here. See below |
 | `tailscale_auth_key` | empty | An enrollment key. Without one Tailscale is not installed |
 | `tailscale_login_server` | empty | The address of a Headscale server |
@@ -133,10 +133,19 @@ sudo ./install.sh -e sysbox=true
 berth provision studio-2 docker/container host=ssh://root@192.0.2.10 runtime=sysbox
 ```
 
-The Sysbox package restarts Docker, and it does not install while containers
-run. Set it on the first run, before the recipe starts any container. Its
-documentation lists the Ubuntu releases and kernels it supports. Check that
-it lists yours before you turn it on.
+The recipe downloads the package from the Sysbox release page on GitHub and
+checks it against `sysbox_checksum_amd64` or `sysbox_checksum_arm64`. It
+refuses to install without a sum. For another version, take the sums from that
+release's page and pass them with `-e`.
+
+The installer starts `sysbox.service`, which runs `sysbox-mgr.service` and
+`sysbox-fs.service`, and tells Docker about the runtime. It restarts Docker
+when it has to change Docker's network settings, so set `sysbox` on the first
+run, before any container exists. With containers present it leaves Docker
+running and prints how to restart it. The installer needs a kernel that Sysbox
+supports and stops when it finds an older one. Sysbox lists Ubuntu 22.04 and
+24.04. It does not list 26.04 yet. On an unlisted release the installer only
+checks the kernel.
 
 ## Let another berth create machines here
 

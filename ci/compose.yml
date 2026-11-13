@@ -7,6 +7,7 @@
 #         (tests/e2e/run.py says which); its keys come from /seed/dock
 # headscale  a Headscale server the test host can join (see below)
 # postgres   a throw-away PostgreSQL for the store's tests (rust-tests)
+# docker     a Docker engine (docker:dind) for the tests of the Docker plugin
 #
 # The e2e network is internal: nothing on it reaches beyond it.
 name: ${BERTH_CI_PROJECT:-berth-ci}
@@ -68,6 +69,9 @@ services:
       PYTHONDONTWRITEBYTECODE: "1"
       BERTH_E2E: "1"
       BERTH_E2E_HOST: studio
+      # Set by ci/run.sh while the docker service runs; the Docker case skips
+      # without it.
+      BERTH_E2E_DOCKER_HOST: ${BERTH_CI_DOCKER_HOST:-}
 
   studio:
     image: ${BERTH_CI_HOST_IMAGE:-berth-ci-host}
@@ -160,6 +164,26 @@ services:
         mv /www/api-key.new /www/api-key
         echo "headscale: ready"
         wait
+
+  # A Docker engine for the plugin's tests, in its own container (not the
+  # machine's engine). It is on the internal e2e network only and publishes no
+  # port, so TLS is off: only the containers of this network reach it. It has
+  # no way out either, so an image it needs is loaded into it by ci/run.sh
+  # (BERTH_CI_DIND_IMAGES). It is started only when a run asks for it.
+  docker:
+    image: ${BERTH_CI_DIND_IMAGE:-docker:dind}
+    profiles: [docker]
+    hostname: docker
+    privileged: true
+    networks: [e2e]
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    healthcheck:
+      test: ["CMD", "docker", "-H", "tcp://127.0.0.1:2375", "info"]
+      interval: 1s
+      timeout: 5s
+      retries: 60
+    tmpfs: [/var/lib/docker]
 
 networks:
   e2e:
