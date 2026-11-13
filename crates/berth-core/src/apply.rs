@@ -29,6 +29,9 @@ pub fn plugin_dirs(plugins: &[plugins::Plugin]) -> Value {
 /// Variables for a direct Ansible run, matching what the seed builder embeds.
 /// `own` is the public key of the berth that applies them.
 pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: Option<&str>) -> Value {
+    let mut config = config.clone();
+    berth_api::profile::retire_qemu(&mut config);
+    let config = &config;
     let mut vars = config["ansible_vars"].clone();
     if !vars.is_object() {
         vars = json!({});
@@ -186,6 +189,10 @@ mod tests {
         assert_eq!(vars["devbox_tailscale_auth_key"], "tskey");
         // A pasted key without a login server goes to Tailscale, as always.
         assert!(vars.get("devbox_tailscale_login_server").is_none());
+        // A profile of the qemu kind there once was is applied as cloud, reached from the QEMU host.
+        let qemu = ansible_vars(&json!({"profile": "qemu"}), &json!({}), None);
+        assert_eq!(qemu["devbox_profile"], "cloud");
+        assert_eq!(qemu["devbox_bootstrap_ssh_cidr"], "10.0.2.2/32");
         let headscale = json!({"tailscale_login_server": "https://hs.example.org"});
         assert_eq!(
             ansible_vars(&headscale, &json!({}), None)["devbox_tailscale_login_server"],

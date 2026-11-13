@@ -781,9 +781,7 @@ impl App {
             && !self.methods().contains(&self.action)
         {
             self.action = self.methods()[0];
-            if self.text(Field::Profile) == "laptop" {
-                self.config["profile"] = json!("cloud");
-            }
+            setup::fit_profile(&mut self.config, self.action);
         }
         // The Manage tab acts on the running host; the others on the install method.
         if step == Step::Manage {
@@ -793,6 +791,10 @@ impl App {
             self.action = Action::Manage;
         } else if self.action == Action::Manage {
             self.action = self.method;
+        }
+        // A profile saved with another kind opens as the machine's.
+        if step != Step::Manage && self.action == Action::Machine {
+            setup::fit_profile(&mut self.config, self.action);
         }
         // A host with an address opens on its tasks rather than the address.
         let task = |entry: &Entry| matches!(entry, Entry::Task(_) | Entry::HostTask(_));
@@ -951,6 +953,11 @@ impl App {
         };
         let choices = match self.selected_entry() {
             Some(Entry::Key(..)) => self.public_keys.clone(),
+            // The provisioner is a choice like a field's, of what there is.
+            Some(Entry::Machine(machine::Pick::Provisioner)) => self.machine.choices(),
+            Some(Entry::Machine(machine::Pick::Argument(index))) => {
+                self.machine.argument_choices(index)
+            }
             Some(Entry::Field(field)) => match (field, field.spec().kind) {
                 (_, Kind::Choice(values)) => own(values),
                 (Field::SshHost, _) => self
@@ -973,6 +980,30 @@ impl App {
             self.suggestions = choices;
             self.suggestion_list = ListState::default().with_selected(Some(0));
             self.suggestion_focus = false;
+        }
+        // A choice's list starts at what is chosen, and follows it as it changes.
+        if !self.suggestion_focus
+            && let Some(current) = self.current_choice()
+            && let Some(at) = self
+                .suggestions
+                .iter()
+                .position(|(_, value)| *value == current)
+        {
+            self.suggestion_list.select(Some(at));
+        }
+    }
+
+    /// What is chosen on the selected row, when it is a choice.
+    fn current_choice(&self) -> Option<String> {
+        match self.selected_entry()? {
+            Entry::Field(field) if matches!(field.spec().kind, Kind::Choice(_)) => {
+                Some(self.text(field).to_owned())
+            }
+            Entry::Machine(machine::Pick::Provisioner) => self.machine.chosen.clone(),
+            Entry::Machine(machine::Pick::Argument(index)) => {
+                self.machine.value(index).map(str::to_owned)
+            }
+            _ => None,
         }
     }
 
@@ -1955,7 +1986,11 @@ impl App {
 
     /// Enter on a row of the machine.
     pub fn machine_enter(&mut self, pick: machine::Pick) {
-        // The machine is made from the profile, which has to be whole first.
+        // The machine is made from the profile, which has to be whole first,
+        // and of the kind a created machine is.
+        if pick == machine::Pick::Create {
+            setup::fit_profile(&mut self.config, Action::Machine);
+        }
         if pick == machine::Pick::Create && !self.problems().is_empty() {
             self.status = "Fix the listed problems first".into();
             return;
@@ -2087,6 +2122,7 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
     if !config.is_object() {
         return Err("Configuration must be a JSON object".into());
     }
+    berth_api::profile::retire_qemu(&mut config);
     for field in ["wifi", "ansible_vars", "builder"] {
         if !config[field].is_null() && !config[field].is_object() {
             return Err(format!("{field} must be a JSON object or null").into());

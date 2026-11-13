@@ -848,6 +848,15 @@ mod tests {
         assert_eq!(legacy["wifi_enabled"], true);
         assert_eq!(legacy["release_url"], "");
         assert_eq!(legacy["builder"]["ask_pass"], true);
+        // A profile of the qemu kind there once was shows as cloud, reached from the QEMU host.
+        let qemu = parse_config(br#"{"profile": "qemu"}"#).unwrap();
+        assert_eq!(qemu["profile"], "cloud");
+        assert_eq!(
+            qemu["ansible_vars"]["devbox_bootstrap_ssh_cidr"],
+            "10.0.2.2/32"
+        );
+        let app = app(r#"{"profile": "qemu"}"#);
+        assert_eq!(app.text(Field::RecoveryCidr), "10.0.2.2/32");
     }
 
     #[test]

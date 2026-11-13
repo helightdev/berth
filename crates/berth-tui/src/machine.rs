@@ -149,6 +149,11 @@ impl Machine {
     }
 
     pub fn found(&mut self, instance: Result<Option<Instance>, String>) {
+        // A machine there is was made by its provisioner, which is the chosen one then.
+        if let Ok(Some(made)) = &instance {
+            let id = made.provisioner.clone();
+            self.choose_id(&id);
+        }
         self.instance = Some(instance);
     }
 
@@ -188,6 +193,47 @@ impl Machine {
             .collect();
         self.chosen = Some(provisioner.id.clone());
         self.values = values;
+    }
+
+    /// The provisioners to choose from, as (label, `PLUGIN/ID`), the way a
+    /// choice field offers its values.
+    pub fn choices(&self) -> Vec<(String, String)> {
+        self.all()
+            .iter()
+            .map(|known| (known.label.clone(), known.id.clone()))
+            .collect()
+    }
+
+    /// An argument of the chosen provisioner, by its place among them.
+    pub fn argument(&self, index: usize) -> Option<&berth_api::Argument> {
+        self.provisioner()?.arguments.get(index)
+    }
+
+    /// The values an argument that is a choice offers, as (label, value);
+    /// none for one that takes any text.
+    pub fn argument_choices(&self, index: usize) -> Vec<(String, String)> {
+        self.argument(index)
+            .map(|argument| {
+                argument
+                    .values
+                    .iter()
+                    .map(|value| (value.clone(), value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// What an argument is given now.
+    pub fn value(&self, index: usize) -> Option<&str> {
+        let argument = self.argument(index)?;
+        Some(self.values.get(&argument.name).map_or("", String::as_str))
+    }
+
+    /// Choose the provisioner with this `PLUGIN/ID`.
+    pub fn choose_id(&mut self, id: &str) {
+        if let Some(index) = self.all().iter().position(|known| known.id == id) {
+            self.choose(index);
+        }
     }
 
     /// Choose the provisioner after the chosen one, and the first after the last.
@@ -488,14 +534,8 @@ impl Machine {
                         provisioner.missing_secrets.join(", ")
                     );
                 }
-                let others: Vec<&str> = self
-                    .all()
-                    .iter()
-                    .filter(|known| known.id != provisioner.id)
-                    .map(|known| known.label.as_str())
-                    .collect();
-                if !others.is_empty() {
-                    text += &format!("\n\nEnter switches to the next of: {}.", others.join(", "));
+                if self.all().len() > 1 {
+                    text += "\n\nSpace or Enter switches to the next provisioner.";
                 }
                 text + "\n\nWhat it requires is below. The machine's size and its other arguments are on the Settings tab."
             }
@@ -507,6 +547,9 @@ impl Machine {
                     return String::new();
                 };
                 let mut text = format!("{} (`{}`).", label(argument), argument.name);
+                if !argument.help.is_empty() {
+                    text += &format!(" {}", argument.help);
+                }
                 if argument.required {
                     text += " Required.";
                 }
@@ -516,7 +559,10 @@ impl Machine {
                 if !argument.default.is_empty() {
                     text += &format!(" Default: {}.", argument.default);
                 }
-                text + " Enter changes it."
+                match argument.values.is_empty() {
+                    true => text + " Enter changes it.",
+                    false => text + " Space or Enter switches to the next value.",
+                }
             }
             Pick::Create => "Creates the machine and sets it up as this host, with the profile saved first. The output is shown as it runs. When setting it up fails, the machine stays: Delete machine removes it.".into(),
             Pick::Start => "Starts the machine.".into(),
@@ -533,12 +579,21 @@ impl Machine {
                 Next::Nothing
             }
             Pick::Argument(index) => {
-                let value = self
-                    .provisioner()
-                    .and_then(|provisioner| provisioner.arguments.get(index))
-                    .and_then(|argument| self.values.get(&argument.name))
-                    .cloned()
-                    .unwrap_or_default();
+                let Some(argument) = self.argument(index) else {
+                    return Next::Nothing;
+                };
+                let value = self.value(index).unwrap_or("").to_owned();
+                // One of a few values goes on to the next, as a choice field does.
+                if !argument.values.is_empty() {
+                    let all = &argument.values;
+                    let next = all
+                        .iter()
+                        .position(|known| *known == value)
+                        .map_or(0, |at| (at + 1) % all.len());
+                    let (name, next) = (argument.name.clone(), all[next].clone());
+                    self.values.insert(name, next);
+                    return Next::Nothing;
+                }
                 Next::Edit(value)
             }
             Pick::Create => match self.request() {
@@ -566,6 +621,11 @@ impl Machine {
                 if let Some(name) = name {
                     self.values.insert(name, value.trim().to_owned());
                 }
+                Next::Nothing
+            }
+            // A provisioner chosen from the suggestions, by its id.
+            Pick::Provisioner => {
+                self.choose_id(value.trim());
                 Next::Nothing
             }
             Pick::Delete if value.trim() == host => Next::Destroy,
@@ -767,11 +827,22 @@ mod tests {
             machine_rows[..3],
             ["Machine", "  ├─ cpus  1", "  └─ memory  1"]
         );
-        assert!(
-            machine
-                .help(Pick::Provisioner)
-                .contains("Incus virtual machine")
+        // The Suggestions panel lists them; the help says what the keys do.
+        assert_eq!(
+            machine.choices(),
+            [
+                ("Incus virtual machine".to_owned(), "incus/vm".to_owned()),
+                ("Docker container".to_owned(), "docker/container".to_owned())
+            ]
         );
+        let help = machine.help(Pick::Provisioner);
+        assert!(help.contains("Space or Enter switches to the next provisioner"));
+        assert!(!help.contains("Incus virtual machine"));
+        // One chosen from the suggestions comes by its id.
+        machine.typed(Pick::Provisioner, "incus/vm", "studio");
+        assert_eq!(machine.chosen.as_deref(), Some("incus/vm"));
+        machine.choose_next();
+        assert_eq!(machine.chosen.as_deref(), Some("docker/container"));
         machine.choose_next();
         assert_eq!(machine.chosen.as_deref(), Some("incus/vm"));
     }
@@ -920,6 +991,42 @@ mod tests {
         assert!(
             texts(machine.problems())
                 .contains(&(Step::Run, "The berth server did not answer".into()))
+        );
+    }
+
+    #[test]
+    fn an_argument_of_a_few_values_is_a_choice_and_its_help_is_shown() {
+        let mut lab = provisioner(&[]);
+        lab.arguments.push(Argument {
+            name: "keep_volume".into(),
+            label: "Keep volume on destroy".into(),
+            default: "no".into(),
+            values: vec!["no".into(), "yes".into()],
+            help: "Whether deleting the machine keeps its volume.".into(),
+            ..Default::default()
+        });
+        let mut machine = without_machine(vec![lab]);
+        assert_eq!(
+            machine.argument_choices(2),
+            [
+                ("no".to_owned(), "no".to_owned()),
+                ("yes".to_owned(), "yes".to_owned())
+            ]
+        );
+        assert!(machine.argument_choices(1).is_empty());
+        // Enter goes on to the next value and around, as on a choice field.
+        assert_eq!(machine.enter(Pick::Argument(2), "studio"), Next::Nothing);
+        assert_eq!(machine.value(2), Some("yes"));
+        machine.enter(Pick::Argument(2), "studio");
+        assert_eq!(machine.value(2), Some("no"));
+        // The label is a name; what it means is in the help.
+        let help = machine.help(Pick::Argument(2));
+        assert!(help.starts_with("Keep volume on destroy (`keep_volume`). Whether deleting"));
+        assert!(help.contains("Space or Enter switches to the next value"));
+        assert!(
+            machine
+                .help(Pick::Argument(1))
+                .ends_with("Enter changes it.")
         );
     }
 }

@@ -33,7 +33,7 @@ Each tab depends only on the tabs before it. Install holds what you have to choo
 
 | Set-up tab | For |
 | --- | --- |
-| `1` Install | How to install, with the host profile, the provisioner and its required arguments, the SSH address, the hostname and Tailscale |
+| `1` Install | How to install, with the host profile (not for a created machine, which is always `cloud`), the provisioner and its required arguments, the SSH address, the hostname and Tailscale |
 | `2` Features | The coding agents and T3 Code, with tool categories, browsers, graphics, Cockpit, Docker on the host and plugin features |
 | `3` Settings | Everything with a default. See the list below |
 | `4` Run | The last files for the method, every problem grouped by tab, warnings, and the Run, Create machine and Save buttons |
@@ -44,9 +44,10 @@ The Settings tab has these groups, in this order:
 | --- | --- | --- |
 | Machine | The provisioner's CPUs, memory and disk | Create a machine |
 | Provisioner Options | The provisioner's other arguments | Create a machine |
-| Operator Account, Agent Account, SSH hardening | The accounts. Container image has only the agent's username | Every method |
+| Operator Account, Agent Account | The accounts. Container image has only the agent's username | Every method |
+| Access | SSH hardening, and Recovery SSH CIDR | Every method but Container image. No recovery CIDR for Create a machine |
 | Registries, Secrets | The logins and secrets the host gets | Every method |
-| Host | Desktop size, and Recovery SSH CIDR | Every method but Container image. No recovery CIDR for Create a machine |
+| Desktop | Desktop size | Every method but Container image |
 | Installer | Disk selection, keyboard layout and Wi-Fi | USB installer |
 | Release | Where the release is published | Cloud-init seed |
 

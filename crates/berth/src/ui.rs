@@ -1008,10 +1008,7 @@ fn choose(app: &mut App, entry: Entry) -> Flow {
     match entry {
         Entry::Action(action) => {
             app.action = action;
-            // A laptop profile would add a display manager and power policy to a server.
-            if action.seeds() && app.text(Field::Profile) == "laptop" {
-                app.config["profile"] = json!("cloud");
-            }
+            berth_tui::setup::fit_profile(&mut app.config, action);
         }
         Entry::Field(field) => app.activate(field),
         Entry::Setup => app.set_step(Step::Install),
@@ -1168,7 +1165,14 @@ fn key_event(
         KeyCode::Char(' ') => match app.selected_entry() {
             Some(Entry::Group(group)) => app.toggle_group(group),
             Some(Entry::Task("terminal")) => app.as_agent = !app.as_agent,
-            Some(entry @ (Entry::Field(_) | Entry::Feature(..) | Entry::HostRegistry(_))) => {
+            Some(
+                entry @ (Entry::Field(_)
+                | Entry::Feature(..)
+                | Entry::HostRegistry(_)
+                | Entry::Machine(
+                    berth_tui::machine::Pick::Provisioner | berth_tui::machine::Pick::Argument(_),
+                )),
+            ) => {
                 return choose(app, entry);
             }
             _ => {}
@@ -4128,5 +4132,54 @@ mod tests {
         }
         press(&mut app, &[KeyCode::Enter]);
         assert!(app.status.starts_with("Not deleted") && app.job.is_none());
+    }
+
+    #[test]
+    fn the_provisioner_is_a_choice_like_the_others() {
+        use KeyCode::*;
+        use berth_tui::machine::Pick;
+        let mut app = App::new(
+            "studio.json".into(),
+            parse_config(br#"{"profile": "laptop"}"#).unwrap(),
+        );
+        app.machine.asking();
+        app.machine.listed(Ok(vec![
+            lab("lab/vm", "Lab machine", &["cpus"]),
+            lab("lab/box", "Lab box", &[]),
+        ]));
+        app.machine.found(Ok(None));
+        // Choosing the way makes the profile a cloud one, and offers none to choose.
+        select(&mut app, Entry::Action(Action::Machine));
+        press(&mut app, &[Enter]);
+        assert_eq!(app.config["profile"], "cloud");
+        assert!(!lines(&app).iter().any(|row| row.contains("Host profile")));
+        // The row offers the provisioners in the panel, at the chosen one.
+        select(&mut app, Entry::Machine(Pick::Provisioner));
+        let shown = screen(&mut app);
+        assert!(
+            shown.contains("Suggestions") && shown.contains("Lab box"),
+            "{shown}"
+        );
+        assert_eq!(
+            app.suggestions,
+            [
+                ("Lab machine".to_owned(), "lab/vm".to_owned()),
+                ("Lab box".to_owned(), "lab/box".to_owned())
+            ]
+        );
+        assert_eq!(app.suggestion_list.selected(), Some(0));
+        // Space goes on to the next, and the panel follows it.
+        press(&mut app, &[Char(' ')]);
+        assert_eq!(app.machine.chosen.as_deref(), Some("lab/box"));
+        app.update_suggestions();
+        assert_eq!(app.suggestion_list.selected(), Some(1));
+        // → enters the panel, and Enter there chooses.
+        press(&mut app, &[Right, Up, Enter]);
+        assert_eq!(app.machine.chosen.as_deref(), Some("lab/vm"));
+        assert!(!app.suggestion_focus);
+        assert!(
+            app.help()
+                .contains("Space or Enter switches to the next provisioner")
+        );
     }
 }

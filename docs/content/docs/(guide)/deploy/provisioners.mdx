@@ -90,11 +90,11 @@ In the terminal UI, choose **Create a machine** under **How To Install** on the 
 
 | Tab | Shows |
 | --- | --- |
-| Install | **Provisioner**, whose value Enter switches through the installed ones, and under it the required arguments, marked `*` |
+| Install | **Provisioner**, a choice like any other. Space or Enter switches to the next one, and → chooses from the suggestions. Under it the required arguments, marked `*` |
 | Settings | Under **Machine**, the resources it has, such as CPUs, memory and disk. Under **Provisioner Options**, its other arguments |
 | Run | **Create machine**, and every problem |
 
-The first provisioner is chosen when the list arrives. Enter on an argument changes it. A missing secret is a problem of the Install tab, and a bad resource value one of the Settings tab. **Create machine** on the Run tab asks once before it saves the profile and starts, and does not start while a problem is listed. The output is shown as it runs. The page of [`berth serve --web`](/docs/use/server#in-a-browser) has the same tabs.
+The first provisioner is chosen when the list arrives. There is no **Host profile** row. A created machine is always a `cloud` host. berth writes that into the profile before it creates the machine, on the command line as well. Enter on an argument changes it. A missing secret is a problem of the Install tab, and a bad resource value one of the Settings tab. **Create machine** on the Run tab asks once before it saves the profile and starts, and does not start while a problem is listed. The output is shown as it runs. The page of [`berth serve --web`](/docs/use/server#in-a-browser) has the same tabs.
 
 Only one thing runs at a time for a host. A second command for the same host is refused until the first ends.
 

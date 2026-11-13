@@ -156,6 +156,15 @@ pub fn host_secrets(mut names: Vec<String>) -> Vec<String> {
     names
 }
 
+/// Give the profile the host profile the way of installing it takes. A
+/// seed would give a laptop's physical login and power settings to a server,
+/// and a created machine has none, so both make the profile `cloud`.
+pub fn fit_profile(config: &mut Value, action: Action) {
+    if action.seeds() && config["profile"] != "cloud" && config.is_object() {
+        config["profile"] = json!("cloud");
+    }
+}
+
 /// Let a host that is not set up yet join the tailnet with keys berth makes,
 /// when berth has the control server's API key to make them with.
 pub fn default_enrollment(config: &mut Value, names: &[String]) {
@@ -447,6 +456,9 @@ fn branch(index: usize, count: usize) -> &'static str {
     }
 }
 
+/// Groups of fields, each under its heading.
+type Sections = Vec<(&'static str, Vec<Field>)>;
+
 /// A profile as its set-up pages see it.
 #[derive(Clone, Copy)]
 pub struct Profile<'a> {
@@ -732,10 +744,15 @@ impl<'a> Profile<'a> {
                 before.into_iter().chain(after).collect()
             }
             Step::Settings => {
-                let (accounts, sections) = self.settings_fields();
+                let (accounts, before, after) = self.settings_fields();
                 accounts
                     .into_iter()
-                    .chain(sections.into_iter().flat_map(|(_, fields)| fields))
+                    .chain(
+                        before
+                            .into_iter()
+                            .chain(after)
+                            .flat_map(|(_, fields)| fields),
+                    )
                     .collect()
             }
             Step::Run => self.run_fields(),
@@ -767,6 +784,11 @@ impl<'a> Profile<'a> {
         if !self.serves_host() {
             return (vec![], vec![]);
         }
+        // A created machine is always a cloud host, so there is no profile to choose.
+        let before = match action {
+            Action::Machine => vec![],
+            _ => vec![Profile],
+        };
         let mut after = vec![];
         if action == Action::Ssh {
             after.extend([SshHost, SshUser, SshPort, SshKey, AskPass, AskBecomePass]);
@@ -781,18 +803,19 @@ impl<'a> Profile<'a> {
                 after.push(TailscaleKey);
             }
         }
-        (vec![Profile], after)
+        (before, after)
     }
 
-    /// The fields of the Settings tab: the accounts, then the sections that
-    /// follow the registries and secrets, each under its heading.
-    fn settings_fields(&self) -> (Vec<Field>, Vec<(&'static str, Vec<Field>)>) {
+    /// The fields of the Settings tab: the accounts, the sections between
+    /// them and the registries and secrets, and those that follow, each
+    /// section under its heading.
+    fn settings_fields(&self) -> (Vec<Field>, Sections, Sections) {
         use Field::*;
         let action = self.action;
         match action {
-            Action::Save | Action::Release | Action::Manage => return (vec![], vec![]),
+            Action::Save | Action::Release | Action::Manage => return (vec![], vec![], vec![]),
             // The container only has the agent account.
-            Action::Docker => return (vec![AgentUser], vec![]),
+            Action::Docker => return (vec![AgentUser], vec![], vec![]),
             _ => {}
         }
         let accounts = vec![
@@ -806,14 +829,14 @@ impl<'a> Profile<'a> {
             AgentKey,
             AgentPrivileges,
             AgentSudo,
-            HardenSsh,
         ];
-        let mut host = vec![Geometry];
+        // How the accounts may log in, and from where.
+        let mut access = vec![HardenSsh];
         // A machine a provisioner creates is behind its server, not on a public address.
         if action != Action::Machine {
-            host.push(RecoveryCidr);
+            access.push(RecoveryCidr);
         }
-        let mut sections = vec![("Host", host)];
+        let mut sections = vec![("Desktop", vec![Geometry])];
         if action.installer() {
             let mut installer = vec![DiskMode];
             let mode = self.text(DiskMode);
@@ -845,7 +868,7 @@ impl<'a> Profile<'a> {
                 ],
             ));
         }
-        (accounts, sections)
+        (accounts, vec![("Access", access)], sections)
     }
 
     /// The last few fields before running, for the ways that have them.
@@ -990,7 +1013,7 @@ impl<'a> Profile<'a> {
             Step::Install => {
                 rows = self.method_rows(page.methods);
                 let (before, after) = self.install_fields();
-                if !before.is_empty() || self.action == Action::Machine {
+                if !before.is_empty() || !after.is_empty() {
                     rows.push(Row::info(""));
                 }
                 rows.extend(self.rows_of(&before));
@@ -1004,10 +1027,13 @@ impl<'a> Profile<'a> {
                 if self.action == Action::Machine {
                     rows.extend(page.machine.settings_rows());
                 }
-                let (accounts, sections) = self.settings_fields();
+                let (accounts, before, after) = self.settings_fields();
                 rows.extend(self.rows_of(&accounts));
+                for (heading, fields) in before {
+                    rows.extend(self.section_rows(heading, &fields));
+                }
                 rows.extend(self.access_rows());
-                for (heading, fields) in sections {
+                for (heading, fields) in after {
                     rows.extend(self.section_rows(heading, &fields));
                 }
             }
@@ -1517,7 +1543,6 @@ mod tests {
         // What has to be chosen, in order, and none of what has a default.
         let order = [
             "● Create a machine",
-            "Host profile",
             "Provisioner  Incus virtual machine",
             "└─ server *  Not set",
             "Hostname",
@@ -1529,7 +1554,9 @@ mod tests {
                 "{pair:?}"
             );
         }
+        // A created machine is always a cloud host: there is no profile to choose.
         for elsewhere in [
+            "Host profile",
             "cpus",
             "Operator username",
             "Desktop size",
@@ -1553,11 +1580,12 @@ mod tests {
             "└─ image  1",
             "Operator Account",
             "Agent Account",
-            "SSH hardening",
+            "Access",
+            "└─ SSH hardening",
             "Registries",
             "Secrets",
-            "Host",
-            "Desktop size",
+            "Desktop",
+            "└─ Desktop size",
         ];
         for pair in order.windows(2) {
             assert!(
@@ -1600,8 +1628,10 @@ mod tests {
                 .any(|row| row.contains("Provisioner") || row.contains("Publish"))
         );
         let settings = tab(&config, Action::CloudSeed, Step::Settings, &machine);
-        assert!(place(&settings, "Host") < place(&settings, "Recovery SSH CIDR"));
-        assert!(place(&settings, "Recovery SSH CIDR") < place(&settings, "Release"));
+        assert!(place(&settings, "Access") < place(&settings, "├─ SSH hardening"));
+        assert!(place(&settings, "├─ SSH hardening") < place(&settings, "└─ Recovery SSH CIDR"));
+        assert!(place(&settings, "Recovery SSH CIDR") < place(&settings, "Registries"));
+        assert!(place(&settings, "Desktop") < place(&settings, "Release"));
         assert!(place(&settings, "Release") < place(&settings, "└─ Publish release to"));
         assert!(
             !settings
@@ -1703,5 +1733,51 @@ mod tests {
             placed.len()
         );
         assert!(!run.iter().any(|row| row == "Features"));
+    }
+
+    #[test]
+    fn every_row_of_settings_is_under_a_heading_for_every_way() {
+        let config = json!({"operator_username": "ops", "agent_username": "agent",
+            "target_disk_mode": "serial", "wifi_enabled": true, "release_store": "nexus/releases"});
+        let machine = incus();
+        for action in Action::METHODS {
+            let profile = Profile {
+                config: &config,
+                step: Step::Settings,
+                action,
+                features: &[],
+                registries: &["nexus".to_owned()],
+                secrets: &["github".to_owned()],
+                own_key: "",
+                named: true,
+            };
+            let problems = profile.problems_with(&machine);
+            for row in profile.page_rows(Page {
+                methods: &Action::METHODS,
+                machine: &machine,
+                problems: &problems,
+                notes: vec![],
+            }) {
+                // A row that does something is indented under the heading above it.
+                if row.entry.is_some() {
+                    let text = row.line.to_string();
+                    assert!(text.starts_with("  "), "{action:?}: {text:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_seeded_or_created_machine_is_a_cloud_host() {
+        for (action, before, after) in [
+            (Action::Machine, "laptop", "cloud"),
+            (Action::CloudSeed, "laptop", "cloud"),
+            (Action::Iso, "laptop", "laptop"),
+            (Action::Ssh, "laptop", "laptop"),
+        ] {
+            let mut config = json!({"profile": before});
+            fit_profile(&mut config, action);
+            assert_eq!(config["profile"], after, "{action:?}");
+        }
     }
 }

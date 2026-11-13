@@ -28,7 +28,7 @@ A profile is a JSON file that describes one host. berth writes it from the set-u
 <TypeTable
   type={{
     hostname: { type: 'string', description: 'Hostname of the installed machine: lower-case letters, digits and hyphens, starting with a letter. F4 generates one. A cloud seed or a created machine without one takes the name of the host.' },
-    profile: { type: '"laptop" | "cloud" | "qemu"', default: '"laptop"', description: 'Provisioning defaults. Only laptop adds a physical login and power settings.' },
+    profile: { type: '"laptop" | "cloud"', default: '"laptop"', description: 'Provisioning defaults. Only laptop adds a physical login and power settings. A created machine is always cloud. A profile that still says qemu is read as cloud with the recovery SSH CIDR 10.0.2.2/32.' },
     keyboard: { type: 'string', description: 'Keyboard layout of the installer, such as de or us.' },
     tailscale_auth_key: { type: 'string', description: 'Optional enrollment key; prefer a short-lived, one-use key.' },
     tailscale_auto_key: { type: 'boolean', default: 'false', description: 'berth creates a one-use enrollment key whenever the host joins the tailnet. A pasted key wins. See Access.' },
@@ -92,9 +92,9 @@ Any `devbox_` setting of the role. The ones the terminal UI edits:
 | `devbox_tools_*` (one per [category](/docs/reference/tools#tool-categories)) | Features tab | on |
 | `devbox_install_playwright` | Features tab | on |
 | `devbox_software_rendering` | Software graphics, Features tab | on |
-| `devbox_geometry` | Desktop size, Settings tab | `1600x900` |
+| `devbox_geometry` | Desktop size, under Desktop on the Settings tab | `1600x900` |
 | `devbox_bootstrap_ssh_cidr` | Recovery SSH CIDR, Settings tab | none |
-| `devbox_harden_ssh` | SSH hardening, Settings tab | on |
+| `devbox_harden_ssh` | SSH hardening, under Access on the Settings tab | on |
 | `devbox_install_cockpit` | Cockpit web console, Features tab | on |
 | `devbox_install_docker` | Docker on host, Features tab | on |
 | `devbox_install_tailscale` | Tailscale, Install tab | on |

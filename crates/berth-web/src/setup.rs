@@ -96,12 +96,9 @@ impl Setup {
     }
 
     /// The set-up of a new host, from the server's starting profile.
-    pub fn new(name: &str, mut template: Value, admin: &Admin) -> Setup {
-        // A laptop profile would add a display manager and power policy to a server.
-        if template["profile"] == "laptop" {
-            template["profile"] = json!("cloud");
-        }
+    pub fn new(name: &str, template: Value, admin: &Admin) -> Setup {
         let mut setup = Setup::with(name, template, Value::Null);
+        setup::fit_profile(&mut setup.config, setup.action);
         setup.ask_machine(admin);
         setup
     }
@@ -151,13 +148,17 @@ impl Setup {
     pub fn arrived(&mut self, profile: Result<Value, String>) {
         self.loading = false;
         match profile {
-            Ok(profile) => {
+            Ok(mut profile) => {
+                // Shown as the server reads it for use; saving it keeps that.
+                berth_api::profile::retire_qemu(&mut profile);
                 self.config = profile.clone();
                 self.saved = profile;
                 // A host with an address is one to install over SSH.
                 if !self.view().text(Field::SshHost).is_empty() {
                     self.action = Action::Ssh;
                 }
+                // A profile saved with another kind opens as the machine's.
+                setup::fit_profile(&mut self.config, self.action);
             }
             Err(error) => self.failed = Some(error),
         }
@@ -430,10 +431,7 @@ impl Setup {
         match entry {
             Entry::Action(action) => {
                 self.action = action;
-                // A laptop profile would add a display manager and power policy to a server.
-                if action.seeds() && self.view().text(Field::Profile) == "laptop" {
-                    self.config["profile"] = json!("cloud");
-                }
+                setup::fit_profile(&mut self.config, action);
             }
             Entry::Field(field) => return self.activate(field),
             Entry::Registry(index) => {
@@ -449,7 +447,11 @@ impl Setup {
             Entry::Run => return self.run(admin),
             Entry::Save => self.save(admin),
             Entry::Machine(pick) => {
-                // The machine is made from the profile, which has to be whole first.
+                // The machine is made from the profile, which has to be whole
+                // first, and of the kind a created machine is.
+                if pick == machine::Pick::Create {
+                    setup::fit_profile(&mut self.config, Action::Machine);
+                }
                 if pick == machine::Pick::Create && !self.problems().is_empty() {
                     return Some("Fix the listed problems first".into());
                 }
@@ -554,9 +556,14 @@ impl Setup {
             }
             Code::Char(' ') => match self.selected() {
                 Some(Entry::Group(group)) => say(Some(self.toggle_group(group))),
-                Some(entry @ (Entry::Field(_) | Entry::Feature(_) | Entry::Registry(_))) => {
-                    say(self.choose(entry, admin))
-                }
+                Some(
+                    entry @ (Entry::Field(_)
+                    | Entry::Feature(_)
+                    | Entry::Registry(_)
+                    | Entry::Machine(
+                        machine::Pick::Provisioner | machine::Pick::Argument(_),
+                    )),
+                ) => say(self.choose(entry, admin)),
                 _ => {}
             },
             Code::Char('x') | Code::Delete => match self.selected() {

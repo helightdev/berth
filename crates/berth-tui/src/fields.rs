@@ -1,6 +1,6 @@
 //! The settings the UI can edit, and the wizard steps and actions around them.
 
-pub const PROFILES: &[&str] = &["laptop", "cloud", "qemu"];
+pub const PROFILES: &[&str] = &["laptop", "cloud"];
 pub const DISK_MODES: &[&str] = &[
     "auto", "serial", "model", "path", "largest", "smallest", "ssd", "hdd",
 ];
@@ -242,7 +242,7 @@ impl Field {
                 "Host profile",
                 "/profile",
                 Choice(PROFILES),
-                "Choose laptop, cloud or QEMU provisioning defaults. Only laptop adds a physical login and power settings.",
+                "Choose laptop or cloud provisioning defaults. Only laptop adds a physical login and power settings. Cloud leaves SSH open to any address when no recovery SSH CIDR is set; for a QEMU guest, set that to 10.0.2.2/32.",
             ),
             Hostname => (
                 "Hostname",

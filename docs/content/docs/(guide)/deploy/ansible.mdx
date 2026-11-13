@@ -30,7 +30,7 @@ On the target itself:
 
 ```bash
 .venv/bin/ansible-playbook -i localhost, -c local provision/ansible/site.yml \
-  --become --ask-become-pass -e devbox_profile=qemu
+  --become --ask-become-pass -e devbox_profile=cloud
 ```
 
 </Tab>
@@ -64,8 +64,7 @@ Remote runs also leave the current SSH source address open in the firewall when 
 | Profile | For |
 | --- | --- |
 | `laptop` | Physical machines, with the LightDM login and power defaults |
-| `cloud` | Cloud instances. Set a bootstrap SSH CIDR to limit SSH |
-| `qemu` | VMs and tests |
+| `cloud` | Cloud instances, virtual machines and tests. Set a bootstrap SSH CIDR to limit SSH, such as `10.0.2.2/32` for a QEMU guest |
 | `container` | The container image |
 
 Cloud networking and disks are left as they are in every profile. The agent's username and home are configurable, and its UID is discovered rather than assumed.

@@ -261,6 +261,13 @@ pub struct Argument {
     /// its CPUs, memory or disk. Empty for any other argument.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
+    /// What it is for, in a sentence or two, beside its short label.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub help: String,
+    /// The values a provisioner's argument takes, when it is a choice of a
+    /// few. Empty for one that takes any text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<String>,
 }
 
 impl Argument {

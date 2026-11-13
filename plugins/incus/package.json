@@ -34,14 +34,14 @@
           }
         ],
         "arguments": [
-          {"name": "server", "label": "Incus server, such as https://192.0.2.10:8443", "required": true},
-          {"name": "cpus", "label": "vCPUs", "default": "4", "kind": "resource"},
-          {"name": "memory", "label": "Memory", "default": "8GiB", "kind": "resource"},
-          {"name": "disk", "label": "Disk size", "default": "60GiB", "kind": "resource"},
-          {"name": "image", "label": "Image on images.linuxcontainers.org", "default": "ubuntu/26.04/cloud"},
-          {"name": "pool", "label": "Storage pool", "default": "default"},
-          {"name": "network", "label": "Network (empty: the default profile's)", "default": ""},
-          {"name": "project", "label": "Incus project", "default": "default"}
+          {"name": "server", "label": "Incus server", "required": true, "help": "The address of the Incus server's API, such as https://192.0.2.10:8443."},
+          {"name": "cpus", "label": "CPUs", "default": "4", "kind": "resource", "help": "How many CPUs the virtual machine gets."},
+          {"name": "memory", "label": "Memory", "default": "8GiB", "kind": "resource", "help": "How much memory it gets, such as 8GiB."},
+          {"name": "disk", "label": "Disk size", "default": "60GiB", "kind": "resource", "help": "The size of its root disk, such as 60GiB."},
+          {"name": "image", "label": "Image", "default": "ubuntu/26.04/cloud", "help": "The image on images.linuxcontainers.org to start from. It has to have cloud-init."},
+          {"name": "pool", "label": "Storage pool", "default": "default", "help": "The storage pool of the Incus server its disk is in."},
+          {"name": "network", "label": "Network", "default": "", "help": "The network it is attached to. Empty takes the network of the default profile."},
+          {"name": "project", "label": "Project", "default": "default", "help": "The Incus project it is made in."}
         ]
       },
       {
@@ -65,14 +65,14 @@
           }
         ],
         "arguments": [
-          {"name": "server", "label": "Incus server, such as https://192.0.2.10:8443", "required": true},
-          {"name": "cpus", "label": "CPUs", "default": "4", "kind": "resource"},
-          {"name": "memory", "label": "Memory", "default": "8GiB", "kind": "resource"},
-          {"name": "disk", "label": "Disk size", "default": "60GiB", "kind": "resource"},
-          {"name": "image", "label": "Image on images.linuxcontainers.org", "default": "ubuntu/26.04/cloud"},
-          {"name": "pool", "label": "Storage pool", "default": "default"},
-          {"name": "network", "label": "Network (empty: the default profile's)", "default": ""},
-          {"name": "project", "label": "Incus project", "default": "default"}
+          {"name": "server", "label": "Incus server", "required": true, "help": "The address of the Incus server's API, such as https://192.0.2.10:8443."},
+          {"name": "cpus", "label": "CPUs", "default": "4", "kind": "resource", "help": "How many CPUs the container may use."},
+          {"name": "memory", "label": "Memory", "default": "8GiB", "kind": "resource", "help": "How much memory it may use, such as 8GiB."},
+          {"name": "disk", "label": "Disk size", "default": "60GiB", "kind": "resource", "help": "The size of its root disk, such as 60GiB."},
+          {"name": "image", "label": "Image", "default": "ubuntu/26.04/cloud", "help": "The image on images.linuxcontainers.org to start from. It has to have cloud-init."},
+          {"name": "pool", "label": "Storage pool", "default": "default", "help": "The storage pool of the Incus server its disk is in."},
+          {"name": "network", "label": "Network", "default": "", "help": "The network it is attached to. Empty takes the network of the default profile."},
+          {"name": "project", "label": "Project", "default": "default", "help": "The Incus project it is made in."}
         ]
       }
     ]

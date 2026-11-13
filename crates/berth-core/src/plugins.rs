@@ -253,9 +253,11 @@ fn read(dir: &Path) -> Option<Plugin> {
                             serde_json::from_value::<berth_api::Argument>(argument).ok()
                         })
                         .filter(|argument| valid_name(&argument.name))
-                        // Only a provisioner's arguments size a machine.
+                        // Only a provisioner's arguments size a machine or are a
+                        // list of values; a task's offers them with `choices`.
                         .map(|argument| berth_api::Argument {
                             kind: String::new(),
+                            values: vec![],
                             ..argument
                         })
                         .collect(),
@@ -522,11 +524,15 @@ pub fn provisioner_notes(provisioner: &ProvisionerInfo) -> Vec<String> {
         notes.push(format!("also {}", provisioner.verbs.join(", ")));
     }
     for argument in &provisioner.arguments {
-        notes.push(match (argument.required, argument.default.as_str()) {
+        let mut note = match (argument.required, argument.default.as_str()) {
             (true, _) => format!("asks {}", argument.name),
             (false, "") => format!("may ask {}", argument.name),
             (false, default) => format!("asks {} (default {default})", argument.name),
-        });
+        };
+        if !argument.values.is_empty() {
+            note += &format!(": {}", argument.values.join(" or "));
+        }
+        notes.push(note);
     }
     for secret in &provisioner.secrets {
         let missing = provisioner.missing_secrets.contains(secret);
@@ -1152,7 +1158,8 @@ mod tests {
                  "secrets": ["key", {"name": "cert", "required": false}, {"name": "Bad Name"}, "key"],
                  "arguments": [{"name": "server", "label": "Server", "required": true},
                                {"name": "cpus", "default": "4", "choices": "seq 8", "kind": "resource"},
-                               {"name": "image", "kind": "colour"}, {"name": "Bad"}]},
+                               {"name": "image", "kind": "colour", "help": "What it starts from.",
+                                "values": ["a", "b"]}, {"name": "Bad"}]},
                 {"id": "ssh", "command": "./bin/provision", "setup": "apply", "archive": true},
                 {"id": "up", "command": "../outside", "setup": "apply"},
                 {"id": "absolute", "command": "/bin/sh", "setup": "apply"},
@@ -1217,6 +1224,9 @@ mod tests {
         );
         let info = plugins[0].info(base.path());
         assert_eq!(info.provisioners[0].id, "cloud/vm");
+        // A provisioner's argument keeps its help and its values.
+        assert_eq!(vm.arguments[2].help, "What it starts from.");
+        assert_eq!(vm.arguments[2].values, ["a", "b"]);
         // The marker reaches the API and comes back from it.
         let sent = serde_json::to_value(&info.provisioners[0]).unwrap();
         assert_eq!(sent["arguments"][1]["kind"], "resource");
@@ -1226,7 +1236,7 @@ mod tests {
         assert_eq!(info.provisioners[0].secrets, ["key", "cert"]);
         let listing = describe(&[info]);
         assert!(
-            listing.contains("  provisioner  cloud/vm  A VM (sets itself up from the cloud seed; also stop, list; asks server; asks cpus (default 4); may ask image; secret key; secret cert)"),
+            listing.contains("  provisioner  cloud/vm  A VM (sets itself up from the cloud seed; also stop, list; asks server; asks cpus (default 4); may ask image: a or b; secret key; secret cert)"),
             "{listing}"
         );
     }
