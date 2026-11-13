@@ -24,8 +24,9 @@ It was run on Ubuntu 26.04 and needs 24.04 or later.
 On the machine itself:
 
 ```bash
-git clone https://github.com/helightdev/berth.git
-cd berth/recipes/berth-server
+curl -fsSL https://github.com/helightdev/berth/archive/refs/heads/main.tar.gz \
+  | tar xz --strip-components=1 --wildcards '*/recipes'
+cd recipes/berth-server
 sudo ./install.sh -e tailscale_auth_key=tskey-auth-EXAMPLE
 ```
 

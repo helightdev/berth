@@ -27,8 +27,9 @@ Everything on the disks is lost. Copy what you need from the server first.
 3. Fetch the script and run it:
 
 ```bash
-git clone https://github.com/helightdev/berth.git
-cd berth/recipes/rescue-install
+curl -fsSL https://github.com/helightdev/berth/archive/refs/heads/main.tar.gz \
+  | tar xz --strip-components=1 --wildcards '*/recipes'
+cd recipes/rescue-install
 ./install.sh --disks /dev/nvme0n1,/dev/nvme1n1 --key ~/.ssh/authorized_keys --hostname big
 ```
 
