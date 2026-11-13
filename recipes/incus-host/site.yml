@@ -1,0 +1,196 @@
+# A server that only hosts machines: Incus for containers and virtual
+# machines, Docker beside it, and a firewall that lets the guests out and
+# nobody but the tailnet in to the Incus API.
+#
+#   ./install.sh                                  on the server itself
+#   ansible-playbook -i SERVER, -u root site.yml  from another machine
+- name: Set up an Incus and Docker host
+  hosts: all
+  become: true
+  vars_files:
+    - vars.yml
+  tasks:
+    - name: Check that this is an Ubuntu the recipe knows
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Ubuntu'
+          - ansible_facts['distribution_version'] is version('24.04', '>=')
+        fail_msg: The recipe is written for Ubuntu 24.04 and later, and was run on 26.04.
+
+    - name: Install Incus, Docker and what they need
+      ansible.builtin.apt:
+        name: "{{ base_packages + (vm_packages if incus_virtual_machines | bool else []) }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      vars:
+        base_packages:
+          - incus
+          - btrfs-progs
+          - docker.io
+          - docker-buildx
+          - docker-compose-v2
+          - ufw
+          - curl
+          - ca-certificates
+          - unattended-upgrades
+        vm_packages:
+          - qemu-system-x86
+          - ovmf
+
+    - name: Start Incus and Docker now and at boot
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - incus.socket
+        - incus.service
+        - docker.service
+
+    # ── The tailnet ─────────────────────────────────────────────────────────
+
+    - name: Join the tailnet
+      ansible.builtin.include_tasks: ../shared/tailscale.yml
+      when: tailscale_auth_key | length > 0
+
+    # ── Incus ───────────────────────────────────────────────────────────────
+
+    - name: See whether Incus has been set up
+      ansible.builtin.command: incus storage list --format csv
+      register: incus_pools
+      changed_when: false
+
+    # A second run leaves a server that has a storage pool as it is.
+    - name: Set Incus up with a storage pool, the guests' bridge and the default profile
+      ansible.builtin.command: incus admin init --preseed
+      args:
+        stdin: "{{ lookup('ansible.builtin.template', 'preseed.yaml.j2') }}"
+      when: incus_pools.stdout | trim | length == 0
+      changed_when: true
+
+    - name: Read where the Incus API listens
+      ansible.builtin.command: incus config get core.https_address
+      register: incus_listens
+      changed_when: false
+
+    - name: Set where the Incus API listens
+      ansible.builtin.command: "incus config set core.https_address {{ incus_api_address | quote }}"
+      when: incus_listens.stdout | trim != incus_api_address
+      changed_when: true
+
+    - name: Read the clients Incus trusts
+      ansible.builtin.command: incus config trust list --format csv
+      register: incus_trusted
+      changed_when: false
+
+    - name: Copy the certificates of the clients to trust
+      ansible.builtin.copy:
+        src: "{{ item.certificate }}"
+        dest: "/root/incus-trust-{{ item.name }}.crt"
+        mode: "0600"
+      loop: "{{ incus_trusted_clients }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: (item.name ~ ',') not in incus_trusted.stdout
+
+    - name: Trust the clients
+      ansible.builtin.command: "incus config trust add-certificate /root/incus-trust-{{ item.name }}.crt --name {{ item.name | quote }}"
+      loop: "{{ incus_trusted_clients }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: (item.name ~ ',') not in incus_trusted.stdout
+      changed_when: true
+
+    - name: Remove the copies
+      ansible.builtin.file:
+        path: "/root/incus-trust-{{ item.name }}.crt"
+        state: absent
+      loop: "{{ incus_trusted_clients }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # ── The firewall ────────────────────────────────────────────────────────
+
+    # SSH is allowed before the firewall is switched on, so the run does not lock itself out.
+    - name: Allow what the server is for
+      ansible.builtin.command: "ufw {{ item }}"
+      loop: "{{ rules | select | list }}"
+      register: firewall_rule
+      changed_when: "'Skipping' not in firewall_rule.stdout"
+      vars:
+        api_port: "{{ incus_api_address.rsplit(':', 1)[-1] }}"
+        rules:
+          - "{{ 'allow 22/tcp' if ssh_from == 'any' else 'allow from ' ~ ssh_from ~ ' to any port 22 proto tcp' }}"
+          - "{{ 'allow in on tailscale0 to any port 22 proto tcp' if tailscale_auth_key else '' }}"
+          - "{{ 'allow 41641/udp' if tailscale_auth_key else '' }}"
+          # The guests ask the bridge for their address and for names.
+          - "allow in on {{ incus_bridge }}"
+          - "route allow in on {{ incus_bridge }}"
+          - "route allow out on {{ incus_bridge }}"
+          - "{{ 'allow in on ' ~ incus_api_interface ~ ' to any port ' ~ api_port ~ ' proto tcp' if incus_api_interface else '' }}"
+          # The berth server is a container, which reaches the Incus API over Docker's bridge.
+          - "{{ 'allow in on docker0 to any port ' ~ api_port ~ ' proto tcp' if berth_server | bool else '' }}"
+          - "{{ 'allow in on tailscale0 to any port 443 proto tcp' if (berth_server | bool) and (berth_server_tailscale_serve | bool) else '' }}"
+
+    - name: See whether the firewall is on
+      ansible.builtin.command: ufw status
+      register: firewall_state
+      changed_when: false
+
+    - name: Switch the firewall on
+      ansible.builtin.command: ufw --force enable
+      when: "'Status: active' not in firewall_state.stdout"
+      changed_when: true
+
+    # ── A berth server, when asked for ──────────────────────────────────────
+
+    - name: Run a berth server
+      ansible.builtin.include_tasks: ../shared/berth-server.yml
+      when: berth_server | bool
+      vars:
+        # The Incus API is on the machine the container runs on.
+        berth_server_run_options: --add-host incus-host:host-gateway
+
+    - name: Set the berth server up for this Incus
+      when: berth_server | bool
+      vars:
+        api_port: "{{ incus_api_address.rsplit(':', 1)[-1] }}"
+      block:
+        # The key is made in the container and stays there: only the certificate comes out.
+        - name: Let the berth server create machines on this Incus
+          ansible.builtin.shell: |
+            set -e
+            docker exec berth sh -c 'umask 077 && cd /tmp && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:secp384r1 -sha384 -nodes -days 3650 -subj /CN=berth-server -keyout incus.key -out incus.crt 2>/dev/null && berth secret set incus_client_key < incus.key >/dev/null && berth secret set incus_client_cert < incus.crt >/dev/null && rm incus.key'
+            docker cp berth:/tmp/incus.crt /root/incus-trust-berth-server.crt
+            docker exec berth rm /tmp/incus.crt
+            docker exec -i berth berth secret set incus_server_cert < /var/lib/incus/server.crt >/dev/null
+            incus config trust add-certificate /root/incus-trust-berth-server.crt --name berth-server
+            rm /root/incus-trust-berth-server.crt
+          args:
+            executable: /bin/bash
+          when: "'berth-server,' not in incus_trusted.stdout"
+          changed_when: true
+
+        - name: Say how to use the berth server
+          ansible.builtin.debug:
+            msg: "{{ berth_server_handover + ['It creates machines here with the argument server=https://incus-host:' ~ api_port] }}"
+
+    # ── A look at the result ────────────────────────────────────────────────
+
+    - name: Ask Incus and Docker how they are
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - incus info
+        - docker info
+      changed_when: false
+      register: answers
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Say what there is
+      ansible.builtin.debug:
+        msg:
+          - "Incus API: {{ incus_api_address }}{{ ', open on ' ~ incus_api_interface if incus_api_interface else ', closed by the firewall' }}"
+          - "Guests: {{ incus_bridge }} at {{ incus_bridge_address }}, storage pool {{ incus_pool }} ({{ incus_pool_source or incus_pool_size ~ ' in a file' }})"
+          - "Trusted clients: {{ (incus_trusted_clients | map(attribute='name') | list + (['berth-server'] if berth_server | bool else [])) | join(', ') or 'none yet: incus config trust add-certificate FILE' }}"

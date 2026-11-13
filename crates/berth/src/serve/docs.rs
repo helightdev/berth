@@ -20,7 +20,8 @@ pub fn openapi() -> Value {
         "One API over all hosts, with the inbox and a key-value store. Everything under \
          /v1/hosts/{name}/ that is not named here is that host's own API, passed through unchanged; \
          only the `secrets` task is refused, which `hosts.secrets` stands in for. Over TCP every request \
-         carries the server's token or an OAuth 2.0 access token as a bearer, and needs the role its operation names."
+         carries the server's token or an OAuth 2.0 access token as a bearer, and needs the role its operation names. \
+         The routes of the setup key take that key as the bearer instead."
             .into(),
     );
     api.info.license = None;

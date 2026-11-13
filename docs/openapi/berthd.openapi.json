@@ -53,6 +53,14 @@
           "default": {
             "type": "string"
           },
+          "help": {
+            "description": "What it is for, in a sentence or two, beside its short label.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`resource` for an argument of a provisioner that sizes the machine:\nits CPUs, memory or disk. Empty for any other argument.",
+            "type": "string"
+          },
           "label": {
             "type": "string"
           },
@@ -61,6 +69,13 @@
           },
           "required": {
             "type": "boolean"
+          },
+          "values": {
+            "description": "The values a provisioner's argument takes, when it is a choice of a\nfew. Empty for one that takes any text.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -618,10 +633,10 @@
           "keep": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Keep"
               },
               {
-                "$ref": "#/components/schemas/Keep"
+                "type": "null"
               }
             ]
           }
@@ -635,10 +650,10 @@
           "keep": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Keep"
               },
               {
-                "$ref": "#/components/schemas/Keep"
+                "type": "null"
               }
             ]
           },
@@ -657,10 +672,10 @@
           "error": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ErrorDetail"
               },
               {
-                "$ref": "#/components/schemas/ErrorDetail"
+                "type": "null"
               }
             ]
           },
@@ -1262,10 +1277,10 @@
           "keep": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Keep"
               },
               {
-                "$ref": "#/components/schemas/Keep"
+                "type": "null"
               }
             ]
           },
@@ -1338,11 +1353,11 @@
           "applied": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Applied",
                 "description": "What the host's configuration was last applied from, when berth\nrecorded it. An older berthd does not say."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -1368,7 +1383,7 @@
       "name": "MIT"
     },
     "title": "berthd",
-    "version": "0.3.0"
+    "version": "0.4.1"
   },
   "openapi": "3.1.0",
   "paths": {

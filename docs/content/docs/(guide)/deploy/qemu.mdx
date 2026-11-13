@@ -12,7 +12,7 @@ QEMU, OVMF firmware and `cloud-image-utils` on your machine. Optionally Canonica
 
 ## Make a test host
 
-Create a separate host with `profile: qemu`. For the USB installer, use disk mode `auto`, or `serial` with the virtual serial `DEVBOX_TEST_DISK`. Check the virtio disk's udev identifier in the VM installer if it differs.
+Create a separate host with `profile: cloud` and the recovery SSH CIDR `10.0.2.2/32`, QEMU's address for your machine. For the USB installer, use disk mode `auto`, or `serial` with the virtual serial `DEVBOX_TEST_DISK`. Check the virtio disk's udev identifier in the VM installer if it differs.
 
 <Callout type="warn">
   Never put a physical machine's disk serial into a VM seed, or a VM's into a physical one.
@@ -41,7 +41,7 @@ python3 provision/bin/qemu.py boot --directory build/vm-install \
 </Tab>
 <Tab value="Cloud seed">
 
-Publish the release and render a seed for the qemu host with `devbox_bootstrap_ssh_cidr: 10.0.2.2/32`, QEMU's address for your machine. Then:
+Publish the release and render a seed for the test host. Then:
 
 ```bash
 python3 provision/bin/qemu.py cloud --directory build/vm-cloud \
@@ -81,3 +81,5 @@ ssh -p 2222 -L 16080:127.0.0.1:6080 -L 13773:127.0.0.1:3773 ops@127.0.0.1
 - Run `berth run HOST smoke` and check the sandboxed browser, sudo from a command T3 started, and GUI input.
 - Give a wrong disk serial and check that the installer refuses.
 - On a laptop, also test the lid, AC and battery.
+
+From a source checkout, `ci/run.sh boot cloud` and `ci/run.sh boot iso` run the cloud seed and the installer this way unattended and check most of the list above. See [Validation](/docs/reference/validation#boot-tests).

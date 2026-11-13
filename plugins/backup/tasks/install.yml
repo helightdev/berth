@@ -33,10 +33,13 @@
       - "**/.gradle/caches"
       - "{{ devbox_home }}/.local/share/Trash"
       - "{{ devbox_home }}/.local/share/mise/installs"
-      - "{{ devbox_home }}/Unity"
-      - "/srv/agent/workspaces/**/Library"
-      - "/srv/agent/workspaces/**/Temp"
-      - "/srv/agent/workspaces/**/Logs"
+# Other plugins name what of theirs can be made again by putting a file of
+# patterns here.
+- name: Make room for what other plugins leave out
+  ansible.builtin.file:
+    path: /etc/berth-backup.exclude.d
+    state: directory
+    mode: '0755'
 - name: Install the scheduled backup
   ansible.builtin.copy:
     dest: "/etc/systemd/system/{{ item.name }}"

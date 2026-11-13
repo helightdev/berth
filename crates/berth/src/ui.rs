@@ -14,8 +14,7 @@ use berth_tui::screen::{
     draw_question, draw_view, ellipsize, hint_at, inside, note_hints, pasted, with_links, words,
 };
 use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-    MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::{
     DefaultTerminal, Frame,
@@ -245,12 +244,12 @@ fn draw(frame: &mut Frame, app: &mut App, rows: &[Row], display: &mut ListState,
                 input.value().to_owned(),
             )
         };
-        let name = if app.password_entry {
-            " New password "
-        } else {
-            " Edit "
+        let name = match (app.password_entry, app.selected_entry()) {
+            (true, _) => " New password ".to_owned(),
+            (false, Some(Entry::Machine(pick))) => berth_tui::machine::editor_title(pick, &host),
+            _ => " Edit ".to_owned(),
         };
-        let mut title = vec![Span::raw(name)];
+        let mut title = vec![Span::raw(name.clone())];
         let mut x = editor.x + 1 + name.len() as u16;
         for &(label, code) in &buttons {
             title.push(Span::styled(
@@ -312,7 +311,12 @@ fn draw(frame: &mut Frame, app: &mut App, rows: &[Row], display: &mut ListState,
         picker.draw(frame);
     }
     if let Some(job) = &app.job {
-        (app.links, app.words) = draw_job(frame, job, app.action.label(), &app.status, area);
+        // A job of the machine is named by what it does, not by the install method.
+        let action = match app.machine_job {
+            true => job.title.clone(),
+            false => app.action.label().to_owned(),
+        };
+        (app.links, app.words) = draw_job(frame, job, &action, &app.status, area);
     }
     if let Some(session) = &app.session {
         (app.links, app.words) = draw_session(frame, session, &app.status);
@@ -321,6 +325,9 @@ fn draw(frame: &mut Frame, app: &mut App, rows: &[Row], display: &mut ListState,
         (app.links, app.words) = draw_view(frame, view, &app.status, "Ctrl+Q");
     }
     if let Some((question, _)) = &app.host.question {
+        draw_question(frame, question);
+    }
+    if let Some(question) = &app.machine.question {
         draw_question(frame, question);
     }
     draw_arguments(frame, &app.host);
@@ -998,17 +1005,12 @@ fn mouse_event(app: &mut App, mouse: MouseEvent, hits: &Hits) -> Option<KeyEvent
 
 fn choose(app: &mut App, entry: Entry) -> Flow {
     match entry {
-        Entry::Source(0) => app.detect(),
-        Entry::Source(_) => app.editing = Some(Input::default()),
         Entry::Action(action) => {
             app.action = action;
-            // A laptop profile would add a display manager and power policy to a server.
-            if action == Action::CloudSeed && app.text(Field::Profile) == "laptop" {
-                app.config["profile"] = json!("cloud");
-            }
+            berth_tui::setup::fit_profile(&mut app.config, action);
         }
         Entry::Field(field) => app.activate(field),
-        Entry::Setup => app.set_step(Step::Features),
+        Entry::Setup => app.set_step(Step::Install),
         Entry::HostRegistry(index) => app.toggle_host_registry(index),
         Entry::HostSecret(index) => app.editing = Some(Input::new(app.host_secret(index))),
         // A key is pasted whole, not changed letter by letter.
@@ -1031,6 +1033,8 @@ fn choose(app: &mut App, entry: Entry) -> Flow {
         }
         Entry::Task("connect") => app.reconnect_host(),
         Entry::Task("apply") => return apply(app, false),
+        Entry::Machine(pick) => app.machine_enter(pick),
+        Entry::Save => save(app),
         Entry::Task(_) => {}
         Entry::Run => {
             if !app.problems().is_empty() {
@@ -1044,6 +1048,14 @@ fn choose(app: &mut App, entry: Entry) -> Flow {
         }
     }
     Flow::Continue
+}
+
+/// Save the profile and say how that went.
+fn save(app: &mut App) {
+    app.status = match app.save() {
+        Ok(()) => format!("Saved {}", app.path.display()),
+        Err(error) => format!("Save failed · {error}"),
+    };
 }
 
 /// The size of the terminal panel for the window as it is now.
@@ -1066,10 +1078,7 @@ fn key_event(
     match key.code {
         KeyCode::Char('s') if control => {
             app.accept_edit();
-            app.status = match app.save() {
-                Ok(()) => format!("Saved {}", app.path.display()),
-                Err(error) => format!("Save failed · {error}"),
-            };
+            save(app);
             return Flow::Continue;
         }
         KeyCode::F(3) => {
@@ -1155,7 +1164,14 @@ fn key_event(
         KeyCode::Char(' ') => match app.selected_entry() {
             Some(Entry::Group(group)) => app.toggle_group(group),
             Some(Entry::Task("terminal")) => app.as_agent = !app.as_agent,
-            Some(entry @ (Entry::Field(_) | Entry::Feature(..) | Entry::HostRegistry(_))) => {
+            Some(
+                entry @ (Entry::Field(_)
+                | Entry::Feature(..)
+                | Entry::HostRegistry(_)
+                | Entry::Machine(
+                    berth_tui::machine::Pick::Provisioner | berth_tui::machine::Pick::Argument(_),
+                )),
+            ) => {
                 return choose(app, entry);
             }
             _ => {}
@@ -1978,6 +1994,9 @@ struct Home {
     /// The SSH key of this berth, or of the berth server it uses, and that
     /// server. Asked for when Settings is first shown; empty when unknown.
     berth_key: Option<(String, Option<String>)>,
+    /// The tailnet settings of the berth server this berth uses, which are
+    /// the server's to keep. Asked for with the key.
+    served: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// The rows of the Settings tab after berth's own settings.
@@ -2017,6 +2036,44 @@ fn berth_key(paths: &Paths) -> (String, Option<String>) {
     }
 }
 
+/// The tailnet settings of the berth server this berth uses, by key.
+fn served_settings(paths: &Paths) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let server = berth_core::server::Server::configured(paths)?;
+    let listed = server.call("settings.list", json!({}), None).ok()?;
+    Some(
+        listed
+            .as_array()?
+            .iter()
+            .filter_map(|setting| {
+                let key = setting["key"].as_str()?;
+                berth_core::tailnet::SETTINGS
+                    .contains(&key)
+                    .then(|| (key.to_owned(), setting["value"].clone()))
+            })
+            .collect(),
+    )
+}
+
+/// Change a setting: on the berth server this berth uses for one that is
+/// the server's, here otherwise.
+fn change_setting(home: &mut Home, paths: &Paths, key: &str, value: &str) -> crate::Result<()> {
+    match (
+        berth_core::server::Server::configured(paths),
+        &mut home.served,
+    ) {
+        (Some(server), Some(served)) if berth_core::tailnet::SETTINGS.contains(&key) => {
+            server.call(
+                "settings.set",
+                json!({"key": key}),
+                Some(json!({"value": value})),
+            )?;
+            served.insert(key.into(), json!(value));
+            Ok(())
+        }
+        _ => paths.set(key, value),
+    }
+}
+
 /// What a setting is called on screen.
 fn setting_label(key: &str) -> &str {
     match key {
@@ -2027,9 +2084,17 @@ fn setting_label(key: &str) -> &str {
     }
 }
 
-/// A setting's stored value, and what applies when it is not set.
-fn setting(paths: &Paths, key: &str) -> (String, String) {
-    let stored = paths.settings().unwrap_or_default();
+/// A setting's stored value, and what applies when it is not set. `served`
+/// has the settings a berth server keeps.
+fn setting(
+    paths: &Paths,
+    served: Option<&serde_json::Map<String, serde_json::Value>>,
+    key: &str,
+) -> (String, String) {
+    let stored = match served {
+        Some(served) if berth_core::tailnet::SETTINGS.contains(&key) => served.clone(),
+        _ => paths.settings().unwrap_or_default(),
+    };
     let stored = stored.get(key).and_then(|value| value.as_str());
     let fallback = match key {
         "source" => paths
@@ -2093,7 +2158,7 @@ pub fn home(terminal: &mut DefaultTerminal, paths: &Paths) -> Result<Option<Stri
 
 fn home_loop(terminal: &mut DefaultTerminal, paths: &Paths) -> Result<Option<String>> {
     let hosts = paths.hosts();
-    let preferred = setting(paths, "default_host").0;
+    let preferred = setting(paths, None, "default_host").0;
     let mut home = Home {
         selected: hosts
             .iter()
@@ -2105,6 +2170,7 @@ fn home_loop(terminal: &mut DefaultTerminal, paths: &Paths) -> Result<Option<Str
         started: std::time::Instant::now(),
         qr: None,
         berth_key: None,
+        served: None,
     };
     let mut hits = vec![];
     let mut fade = Fade::default();
@@ -2112,6 +2178,7 @@ fn home_loop(terminal: &mut DefaultTerminal, paths: &Paths) -> Result<Option<Str
         fade.check(&mut home.status);
         if matches!(home.mode, HomeMode::Settings(..)) && home.berth_key.is_none() {
             home.berth_key = Some(berth_key(paths));
+            home.served = served_settings(paths);
         }
         if let HomeMode::Plugins(view) = &mut home.mode {
             view.load(paths);
@@ -2129,10 +2196,10 @@ fn home_loop(terminal: &mut DefaultTerminal, paths: &Paths) -> Result<Option<Str
             crossterm::terminal::EndSynchronizedUpdate
         )?;
         drawn?;
-        if !event::poll(std::time::Duration::from_millis(50))? {
+        if !crate::keys::poll(std::time::Duration::from_millis(50))? {
             continue;
         }
-        let event = hint_click(event::read()?);
+        let event = hint_click(crate::keys::read()?);
         if home.qr.is_some() {
             if let Some(event) = crate::keys::event(&event) {
                 berth_tui::qr::take(&mut home.qr, &vec![], &event, &mut None);
@@ -2283,7 +2350,7 @@ fn home_key(
             KeyCode::Enter => {
                 let (name, _) = crate::paths::SETTINGS[*selected];
                 let value = editor.take().unwrap_or_default();
-                home.status = match paths.set(name, value.value().trim()) {
+                home.status = match change_setting(home, paths, name, value.value().trim()) {
                     Ok(()) => format!("Saved {}", setting_label(name)),
                     Err(error) => error.to_string(),
                 };
@@ -2304,7 +2371,7 @@ fn home_key(
             }
             KeyCode::Enter if *selected < crate::paths::SETTINGS.len() => {
                 let (name, _) = crate::paths::SETTINGS[*selected];
-                *editor = Some(Input::new(setting(paths, name).0));
+                *editor = Some(Input::new(setting(paths, home.served.as_ref(), name).0));
             }
             KeyCode::Enter | KeyCode::Char('c')
                 if extra(*selected) == Some(SettingsRow::BerthKey) =>
@@ -2424,7 +2491,7 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
             let mut rows: Vec<Line> = crate::paths::SETTINGS
                 .iter()
                 .map(|(name, _)| {
-                    let (stored, fallback) = setting(paths, name);
+                    let (stored, fallback) = setting(paths, home.served.as_ref(), name);
                     if stored.is_empty() {
                         Line::from(vec![
                             Span::styled(
@@ -2454,8 +2521,14 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
             let (help, keys) = match (crate::paths::SETTINGS.get(selected), extra, &connect) {
                 (Some((name, help)), ..) => (
                     format!(
-                        "The {help}.\n\nLeave it empty to use the default. Also: berth config {name} VALUE\n\nKept in {}",
-                        paths.settings_file().display()
+                        "The {help}.\n\nLeave it empty to use the default. Also: berth config {name} VALUE\n\nKept {}",
+                        match (&home.served, berth_core::tailnet::SETTINGS.contains(name)) {
+                            (Some(_), true) => format!(
+                                "on the berth server at {server}",
+                                server = server.as_deref().unwrap_or("")
+                            ),
+                            _ => format!("in {}", paths.settings_file().display()),
+                        }
                     ),
                     "↑↓ select · Enter change · Tab registries · q quit",
                 ),
@@ -2534,11 +2607,12 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                 (None, None) => " Name of the new secret ",
             };
             let about = match names.get(selected) {
+                Some(name) if let Some(help) = berth_tui::setup::own_secret_help(name) => help,
                 Some(_) => {
                     "A token, password or key file kept on this machine. Enter replaces its value, x twice removes it. Values are never shown."
                 }
                 None => {
-                    "Add a secret: first a short name (lower-case letters, digits, - and _), then its value. Paste works."
+                    "Add a secret: first a short name (lower-case letters, digits, - and _), then its value. Paste works. The name tailnet_api_key is for the API key of the tailnet's control server, which berth keeps for itself."
                 }
             };
             let help = format!(
@@ -2593,7 +2667,7 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
             )
         }
         mode => {
-            let preferred = setting(paths, "default_host").0;
+            let preferred = setting(paths, None, "default_host").0;
             let mut rows: Vec<Line> = home
                 .hosts
                 .iter()
@@ -2697,6 +2771,7 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
         };
         app.update_suggestions();
         app.watch_host();
+        app.watch_machine();
         let (panel_rows, panel_cols) = session_size();
         app.host.resize(panel_rows, panel_cols);
         let rows = app.rows();
@@ -2704,7 +2779,7 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
         if let Some(job) = &mut app.job {
             let running = job.running();
             job.tick();
-            if running && !event::poll(std::time::Duration::from_millis(100))? {
+            if running && !crate::keys::poll(std::time::Duration::from_millis(100))? {
                 continue;
             }
         }
@@ -2717,10 +2792,10 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
                 app.session = None;
                 continue;
             }
-            if !event::poll(std::time::Duration::from_millis(40))? {
+            if !crate::keys::poll(std::time::Duration::from_millis(40))? {
                 continue;
             }
-            let event = hint_click(event::read()?);
+            let event = hint_click(crate::keys::read()?);
             session_event(app, &event);
             continue;
         }
@@ -2730,10 +2805,10 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
                 app.host.close(true);
                 continue;
             }
-            if !event::poll(std::time::Duration::from_millis(40))? {
+            if !crate::keys::poll(std::time::Duration::from_millis(40))? {
                 continue;
             }
-            let event = hint_click(event::read()?);
+            let event = hint_click(crate::keys::read()?);
             view_event(app, &event);
             continue;
         }
@@ -2741,16 +2816,20 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
         // without waiting for a key.
         if app.step == Step::Manage
             && app.host.connected()
-            && !event::poll(std::time::Duration::from_millis(200))?
+            && !crate::keys::poll(std::time::Duration::from_millis(200))?
         {
+            continue;
+        }
+        // The machine's state is taken in when it comes, too.
+        if app.machine_awaited() && !crate::keys::poll(std::time::Duration::from_millis(200))? {
             continue;
         }
         if let Some(left) = fading
-            && !event::poll(left)?
+            && !crate::keys::poll(left)?
         {
             continue;
         }
-        let event = hint_click(event::read()?);
+        let event = hint_click(crate::keys::read()?);
         // The overlay can outlast the panel it came from.
         if app.qr.is_some() {
             qr_event(app, &event);
@@ -2784,6 +2863,16 @@ pub fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bool> {
         }
         if app.confirm.is_some() {
             confirm_event(app, &event);
+            continue;
+        }
+        if app.machine.question.is_some() {
+            if let Event::Key(key) = &event {
+                match key.code {
+                    KeyCode::Char('y' | 'Y') => app.machine_answer(true),
+                    KeyCode::Char('n' | 'N') | KeyCode::Esc => app.machine_answer(false),
+                    _ => {}
+                }
+            }
             continue;
         }
         if app.host.question.is_some() {
@@ -2907,6 +2996,7 @@ mod tests {
             started: std::time::Instant::now(),
             qr: None,
             berth_key: None,
+            served: None,
         };
         let keys = |home: &mut Home, codes: &[KeyCode]| {
             for &code in codes {
@@ -2943,11 +3033,21 @@ mod tests {
         store.set_secret("registry/nexus", Some("pw")).unwrap();
         assert_eq!(store.secret_names(), ["github"]);
 
-        // On a host: its Secrets page lists it, and takes how the host gets it.
+        // On a host: its Settings tab lists it, and takes how the host gets it.
         let mut app = App::new("x.json".into(), parse_config(b"{}").unwrap());
         app.config_dir = paths.config_dir.clone();
-        app.set_step(Step::Secrets);
-        assert_eq!(app.entries(), [Entry::HostSecret(0)]);
+        app.set_step(Step::Settings);
+        let secrets: Vec<Entry> = app
+            .entries()
+            .into_iter()
+            .filter(|entry| matches!(entry, Entry::HostSecret(_)))
+            .collect();
+        assert_eq!(secrets, [Entry::HostSecret(0)]);
+        let at = app
+            .entries()
+            .iter()
+            .position(|entry| *entry == Entry::HostSecret(0));
+        app.list.select(at);
         press(&mut app, &[KeyCode::Enter]);
         for code in typed("GH_TOKEN") {
             press(&mut app, &[code]);
@@ -2998,6 +3098,7 @@ mod tests {
             started: std::time::Instant::now(),
             qr: None,
             berth_key: None,
+            served: None,
         };
         let key = |home: &mut Home, code| {
             home_key(
@@ -3110,6 +3211,7 @@ mod tests {
             started: std::time::Instant::now(),
             qr: None,
             berth_key: None,
+            served: None,
         };
         let keys = |home: &mut Home, codes: &[KeyCode]| {
             for &code in codes {
@@ -3224,6 +3326,7 @@ mod tests {
             started: std::time::Instant::now(),
             qr: None,
             berth_key: None,
+            served: None,
         };
         let last = berth_core::paths::SETTINGS.len();
         let down = |home: &mut Home| {
@@ -3313,6 +3416,7 @@ mod tests {
             started: std::time::Instant::now(),
             qr: None,
             berth_key: None,
+            served: None,
         };
         let press = |home: &mut Home, code| {
             home_key(
@@ -3400,39 +3504,76 @@ mod tests {
         );
     }
 
+    /// The text of the rows of the current tab.
+    fn lines(app: &App) -> Vec<String> {
+        app.rows().iter().map(|row| row.line.to_string()).collect()
+    }
+
+    fn select(app: &mut App, entry: Entry) {
+        let at = app.entries().iter().position(|known| *known == entry);
+        app.list
+            .select(Some(at.unwrap_or_else(|| panic!("no {entry:?}"))));
+    }
+
     #[test]
-    fn install_tab_goes_from_method_to_a_blocked_run() {
+    fn the_set_up_tabs_go_from_install_to_a_blocked_run() {
         let directory = tempfile::tempdir().unwrap();
         let mut app = App::new(
             directory.path().join("profile.json"),
             parse_config(b"{}").unwrap(),
         );
         use KeyCode::*;
-        // Install: the USB installer is the default method; its settings follow.
-        press(&mut app, &[Tab, Tab, Tab, Down, Down, Down, Down, Down]);
+        // A new host opens on Install; the tabs say nothing but their names.
+        assert_eq!(app.step, Step::Install);
+        let install = screen(&mut app);
+        let header = install.lines().nth(1).unwrap();
+        let place = |text: &str| header.find(text).unwrap();
+        assert!(place("Install") < place("Features") && place("Features") < place("Settings"));
+        assert!(place("Settings") < place("Run") && !header.contains('✗'));
+        assert!(install.contains("1-4 tab"));
+        // The USB installer is the default method; what it needs chosen follows.
+        press(&mut app, &[Down, Enter, Down, Down, Down, Down, Down]);
         assert_eq!(app.action, Action::Iso);
         let install = screen(&mut app);
         assert!(install.contains("● USB installer"));
-        assert!(install.contains("▌ Host profile  laptop"));
+        assert!(install.contains("▌ Host profile  laptop"), "{install}");
         assert!(install.contains("Suggestions"));
+        assert!(!install.contains("Disk selection") && !install.contains("Source ISO"));
 
-        // Type a hostname, then cycle the disk mode from the suggestions.
+        // Type a hostname here, then cycle the disk mode on Settings from the suggestions.
         press(
             &mut app,
-            &[Down, Enter, Char('b'), Char('o'), Char('x'), Down],
+            &[Down, Enter, Char('b'), Char('o'), Char('x'), Enter],
         );
         assert_eq!(app.text(Field::Hostname), "box");
+        press(&mut app, &[Char('3')]);
+        assert_eq!(app.step, Step::Settings);
+        select(&mut app, Entry::Field(Field::DiskMode));
         press(&mut app, &[Right, Down, Enter]);
         assert_eq!(app.text(Field::DiskMode), "serial");
-        assert!(screen(&mut app).contains("  └─ Target disk serial  Not set"));
+        let settings = lines(&app);
+        assert!(settings.contains(&"  │  └─ Target disk serial  Not set".to_owned()));
+        assert_eq!(
+            settings.last().unwrap(),
+            "✗ Serial disk selection needs the target disk serial"
+        );
 
-        // Run sits below the list of what is missing and refuses to start.
-        app.list.select(Some(app.entries().len() - 1));
+        // Run has the ISO, every problem under its tab, and a button that refuses.
+        press(&mut app, &[Char('4')]);
+        let run = lines(&app);
+        assert!(run[0].starts_with("Source ISO"));
+        let at = |text: &str| run.iter().position(|row| row.contains(text)).unwrap();
+        assert!(at("Settings") < at("  ✗ Serial disk selection needs the target disk serial"));
+        assert!(at("Run") < at("  ✗ Source ISO file does not exist"));
+        select(&mut app, Entry::Run);
         assert!(!press(&mut app, &[Enter]));
-        let review = screen(&mut app);
-        assert!(review.contains("✗ Serial disk selection needs the target disk serial"));
-        assert!(review.contains("[Run · USB installer]"));
+        assert!(screen(&mut app).contains("[Run · USB installer]"));
         assert!(app.status.contains("Fix the listed problems"));
+        // Save does what Ctrl+S does.
+        select(&mut app, Entry::Save);
+        press(&mut app, &[Enter]);
+        assert!(app.path.is_file() && !app.unsaved());
+        app.commit(Field::Keyboard, "us");
 
         // Unsaved changes need a second q; Ctrl+S clears that.
         let mut armed = false;
@@ -3690,10 +3831,12 @@ mod tests {
         press(&mut app, &[KeyCode::Char(' ')]);
         let command = format!("{:?}", app.agent_terminal().unwrap());
         assert!(command.contains("devbox.example") && command.contains("sudo -iu robot "));
-        // The set-up pages are a flow under the overview, with the install method.
+        // The set-up tabs are a flow under the overview, opening on Install.
         select(&mut app, Entry::Setup);
-        press(&mut app, &[KeyCode::Enter, KeyCode::Char('4')]);
+        press(&mut app, &[KeyCode::Enter]);
         assert_eq!((app.step, app.action), (Step::Install, Action::Iso));
+        press(&mut app, &[KeyCode::Char('4')]);
+        assert_eq!(app.step, Step::Run);
         press(&mut app, &[KeyCode::Esc]);
         assert_eq!(app.step, Step::Manage);
         // x removes the value of the selected field, and with the address
@@ -3725,6 +3868,7 @@ mod tests {
             started: std::time::Instant::now(),
             qr: None,
             berth_key: Some((BERTH_KEY.into(), Some("https://192.0.2.7:8443".into()))),
+            served: None,
         };
         let mut clipboard = Clipboard::default();
         let settings = berth_core::paths::SETTINGS.len();
@@ -3797,7 +3941,7 @@ mod tests {
     fn the_field_of_berths_key_copies_it() {
         let mut app = App::new("x.json".into(), parse_config(b"{}").unwrap());
         app.own_public = BERTH_KEY.into();
-        app.set_step(Step::Accounts);
+        app.set_step(Step::Settings);
         let at = app
             .entries()
             .iter()
@@ -3821,5 +3965,220 @@ mod tests {
         press(&mut app, &[KeyCode::Up]);
         key_event(&mut app, c, &mut armed, &mut clipboard);
         assert!(clipboard.0.is_none());
+    }
+
+    fn lab(id: &str, label: &str, resources: &[&str]) -> berth_api::ProvisionerInfo {
+        let mut arguments = vec![berth_api::Argument {
+            name: "server".into(),
+            label: "Lab server".into(),
+            required: true,
+            ..Default::default()
+        }];
+        arguments.extend(resources.iter().map(|name| berth_api::Argument {
+            name: (*name).into(),
+            label: format!("Lab {name}"),
+            default: "4".into(),
+            kind: berth_api::Argument::RESOURCE.into(),
+            ..Default::default()
+        }));
+        berth_api::ProvisionerInfo {
+            id: id.into(),
+            label: label.into(),
+            setup: "apply".into(),
+            arguments,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_tabs_create_and_delete_the_machine() {
+        use berth_tui::machine::Pick;
+        let profile = format!(
+            r#"{{"hostname": "studio", "operator_password_hash": "$6${}",
+                "operator_ssh_public_keys": ["ssh-ed25519 AAAA studio"]}}"#,
+            "a".repeat(40)
+        );
+        let mut app = App::new(
+            "studio.json".into(),
+            parse_config(profile.as_bytes()).unwrap(),
+        );
+        app.set_step(Step::Install);
+        app.action = Action::Machine;
+        let machine_rows = |app: &App| -> Vec<Entry> {
+            app.entries()
+                .into_iter()
+                .filter(|entry| matches!(entry, Entry::Machine(_)))
+                .collect()
+        };
+        // Nothing was asked without berth's own folders, so nothing shows.
+        assert!(machine_rows(&app).is_empty());
+        app.machine.asking();
+        app.machine.listed(Ok(vec![
+            lab("lab/vm", "Lab machine", &["cpus", "memory"]),
+            lab("lab/box", "Lab box", &["cpus"]),
+        ]));
+        app.machine.found(Ok(None));
+        // The provisioner is one row, and what it requires is under it.
+        assert!(lines(&app).contains(
+            &"Provisioner  Lab machine  · berth applies the profile over SSH".to_owned()
+        ));
+        assert_eq!(
+            machine_rows(&app),
+            [
+                Entry::Machine(Pick::Provisioner),
+                Entry::Machine(Pick::Argument(0))
+            ]
+        );
+        let install = lines(&app);
+        assert!(install.contains(&"  └─ Lab server *  Not set".to_owned()));
+        assert_eq!(install.last().unwrap(), "✗ Lab server is required");
+        // Its size is under Machine on Settings, and goes with the provisioner.
+        press(&mut app, &[KeyCode::Char('3')]);
+        let settings = lines(&app);
+        assert_eq!(
+            settings[..3],
+            ["Machine", "  ├─ Lab cpus  4", "  └─ Lab memory  4"]
+        );
+        press(&mut app, &[KeyCode::Char('1')]);
+        select(&mut app, Entry::Machine(Pick::Provisioner));
+        press(&mut app, &[KeyCode::Enter, KeyCode::Char('3')]);
+        assert_eq!(lines(&app)[..2], ["Machine", "  └─ Lab cpus  4"]);
+        press(&mut app, &[KeyCode::Char('1')]);
+        select(&mut app, Entry::Machine(Pick::Provisioner));
+        press(&mut app, &[KeyCode::Enter]);
+        assert!(
+            lines(&app)
+                .iter()
+                .any(|row| row.contains("Provisioner  Lab machine"))
+        );
+
+        // Creating with a required argument empty is refused before asking.
+        press(&mut app, &[KeyCode::Char('4')]);
+        let run = lines(&app);
+        assert!(run.contains(&"  ✗ Lab server is required".to_owned()));
+        select(&mut app, Entry::Machine(Pick::Create));
+        press(&mut app, &[KeyCode::Enter]);
+        assert!(app.machine.question.is_none() && app.status.contains("Fix the listed problems"));
+        press(&mut app, &[KeyCode::Char('1')]);
+        select(&mut app, Entry::Machine(Pick::Argument(0)));
+        press(&mut app, &[KeyCode::Enter]);
+        for ch in "192.0.2.10".chars() {
+            press(&mut app, &[KeyCode::Char(ch)]);
+        }
+        press(&mut app, &[KeyCode::Enter]);
+        assert_eq!(app.machine.values["server"], "192.0.2.10");
+        // A size that is no size is a problem of Settings, and blocks Create.
+        press(&mut app, &[KeyCode::Char('3')]);
+        select(&mut app, Entry::Machine(Pick::Argument(2)));
+        press(
+            &mut app,
+            &[KeyCode::Enter, KeyCode::Char('x'), KeyCode::Enter],
+        );
+        let settings = lines(&app);
+        assert_eq!(
+            settings.last().unwrap(),
+            "✗ Lab memory must be a size with its unit, such as 8GiB, 512MiB or 4g"
+        );
+        press(&mut app, &[KeyCode::Char('4')]);
+        assert!(
+            lines(&app)
+                .iter()
+                .any(|row| row.contains("  ✗ Lab memory must be a size"))
+        );
+        select(&mut app, Entry::Machine(Pick::Create));
+        press(&mut app, &[KeyCode::Enter]);
+        assert!(app.machine.question.is_none() && app.status.contains("Fix the listed problems"));
+        press(&mut app, &[KeyCode::Char('3')]);
+        select(&mut app, Entry::Machine(Pick::Argument(2)));
+        press(&mut app, &[KeyCode::Enter, KeyCode::Backspace]);
+        for ch in "8GiB".chars() {
+            press(&mut app, &[KeyCode::Char(ch)]);
+        }
+        press(&mut app, &[KeyCode::Enter, KeyCode::Char('4')]);
+        assert!(lines(&app).contains(&"✓ Ready".to_owned()));
+        select(&mut app, Entry::Machine(Pick::Create));
+        press(&mut app, &[KeyCode::Enter]);
+        let shown = screen_text(&mut app);
+        assert!(
+            shown.contains("Create a machine for studio with Lab machine?"),
+            "{shown}"
+        );
+        app.machine_answer(false);
+        assert!(app.machine.question.is_none() && app.job.is_none());
+
+        // Another way to install has no provisioner to choose.
+        app.action = Action::Ssh;
+        app.set_step(Step::Install);
+        assert!(machine_rows(&app).is_empty());
+        // With a machine, its state and what can be done to it are on Run, whatever the way.
+        app.machine.found(Ok(Some(berth_api::Instance {
+            provisioner: "lab/vm".into(),
+            id: "studio".into(),
+            state: "stopped".into(),
+            verbs: vec!["start".into()],
+            ..Default::default()
+        })));
+        app.set_step(Step::Run);
+        assert_eq!(
+            machine_rows(&app),
+            [Entry::Machine(Pick::Start), Entry::Machine(Pick::Delete)]
+        );
+        select(&mut app, Entry::Machine(Pick::Delete));
+        press(&mut app, &[KeyCode::Enter]);
+        assert!(screen_text(&mut app).contains("Type studio to delete its machine"));
+        for ch in "studi".chars() {
+            press(&mut app, &[KeyCode::Char(ch)]);
+        }
+        press(&mut app, &[KeyCode::Enter]);
+        assert!(app.status.starts_with("Not deleted") && app.job.is_none());
+    }
+
+    #[test]
+    fn the_provisioner_is_a_choice_like_the_others() {
+        use KeyCode::*;
+        use berth_tui::machine::Pick;
+        let mut app = App::new(
+            "studio.json".into(),
+            parse_config(br#"{"profile": "laptop"}"#).unwrap(),
+        );
+        app.machine.asking();
+        app.machine.listed(Ok(vec![
+            lab("lab/vm", "Lab machine", &["cpus"]),
+            lab("lab/box", "Lab box", &[]),
+        ]));
+        app.machine.found(Ok(None));
+        // Choosing the way makes the profile a cloud one, and offers none to choose.
+        select(&mut app, Entry::Action(Action::Machine));
+        press(&mut app, &[Enter]);
+        assert_eq!(app.config["profile"], "cloud");
+        assert!(!lines(&app).iter().any(|row| row.contains("Host profile")));
+        // The row offers the provisioners in the panel, at the chosen one.
+        select(&mut app, Entry::Machine(Pick::Provisioner));
+        let shown = screen(&mut app);
+        assert!(
+            shown.contains("Suggestions") && shown.contains("Lab box"),
+            "{shown}"
+        );
+        assert_eq!(
+            app.suggestions,
+            [
+                ("Lab machine".to_owned(), "lab/vm".to_owned()),
+                ("Lab box".to_owned(), "lab/box".to_owned())
+            ]
+        );
+        assert_eq!(app.suggestion_list.selected(), Some(0));
+        // Space goes on to the next, and the panel follows it.
+        press(&mut app, &[Char(' ')]);
+        assert_eq!(app.machine.chosen.as_deref(), Some("lab/box"));
+        app.update_suggestions();
+        assert_eq!(app.suggestion_list.selected(), Some(1));
+        // → enters the panel, and Enter there chooses.
+        press(&mut app, &[Right, Up, Enter]);
+        assert_eq!(app.machine.chosen.as_deref(), Some("lab/vm"));
+        assert!(!app.suggestion_focus);
+        assert!(
+            app.help()
+                .contains("Space or Enter switches to the next provisioner")
+        );
     }
 }

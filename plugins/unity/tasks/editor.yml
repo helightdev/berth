@@ -19,3 +19,19 @@
     PATH: "{{ devbox_tool_path }}"
     UNITY_NON_INTERACTIVE: '1'
     UNITY_NO_UPDATE_CHECK: '1'
+# Editors and what the editor rebuilds in a project stay out of snapshots.
+# The folder is read by the backup plugin and does nothing on a host without it.
+- name: Make the folder for what backups can leave out
+  ansible.builtin.file:
+    path: /etc/berth-backup.exclude.d
+    state: directory
+    mode: '0755'
+- name: Name what backups can leave out
+  ansible.builtin.copy:
+    dest: /etc/berth-backup.exclude.d/unity
+    mode: '0644'
+    content: |
+      {{ devbox_home }}/Unity
+      /srv/agent/workspaces/**/Library
+      /srv/agent/workspaces/**/Temp
+      /srv/agent/workspaces/**/Logs

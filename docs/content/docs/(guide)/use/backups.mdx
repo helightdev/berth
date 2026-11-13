@@ -78,11 +78,11 @@ A restore writes over files in place. Files that are not in the snapshot stay as
 
 Left out, because they can be made again:
 
-- caches: `.cache`, npm, Cargo and Gradle caches
-- `node_modules`, and Rust `target/debug` and `target/release`
-- installed runtimes and Unity editors
-- every Unity `Library`, `Temp` and `Logs` folder in `/srv/agent/workspaces`
- The full list is `/etc/berth-backup.exclude` on the host.
+- caches, such as `.cache` and the package caches of build tools
+- downloaded dependencies and build output: `node_modules`, `target/debug` and `target/release`
+- installed runtimes
+
+The full list is `/etc/berth-backup.exclude` on the host. A plugin can leave out more of its own by installing a file of patterns in `/etc/berth-backup.exclude.d`.
 
 ## Settings
 

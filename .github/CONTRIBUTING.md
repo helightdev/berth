@@ -82,6 +82,7 @@ Everything runs in containers, so Docker is all you need on your machine:
 ci/run.sh check     # formatting, lints, unit tests, prose
 ci/run.sh e2e       # end-to-end tests against a test host
 ci/run.sh all       # both
+ci/run.sh boot      # first boot of the cloud seed and the installer in QEMU, with KVM
 ```
 
 `ci/run.sh shell` opens a shell in the development container. Building

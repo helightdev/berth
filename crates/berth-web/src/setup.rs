@@ -1,12 +1,13 @@
-//! The set-up pages of one of the server's hosts: what is installed, its
-//! accounts, what it is given, and installing it. The profile is edited here
+//! The set-up tabs of one of the server's hosts: how it is installed, what
+//! is installed, its settings, and running it. The profile is edited here
 //! and kept by the server.
 
 use crate::admin::{Admin, Data};
 use crate::browser::Browser;
 use berth_tui::fields::{Action, Field, Kind, Step};
-use berth_tui::screen::{draw_footer, draw_header, inside};
-use berth_tui::setup::{self, Account, Entry, Feature, Item, Profile, Row};
+use berth_tui::machine::{self, Machine, Next};
+use berth_tui::screen::{draw_footer, draw_header, draw_question, inside};
+use berth_tui::setup::{self, Account, Entry, Feature, Item, Page, Problem, Profile, Row};
 use berth_tui::{Click, Code, Event, Key, event, markdown, theme};
 use ratzilla::ratatui::{
     Frame,
@@ -19,7 +20,7 @@ use serde_json::{Value, json};
 use tui_input::Input;
 
 /// The ways the server installs a host itself.
-const METHODS: [Action; 2] = [Action::CloudSeed, Action::Ssh];
+const METHODS: [Action; 3] = [Action::Machine, Action::CloudSeed, Action::Ssh];
 
 /// Draw the box something is typed in, under the rows it belongs to.
 pub fn draw_editor(frame: &mut Frame, area: Rect, title: &str, input: &Input, masked: bool) {
@@ -78,25 +79,35 @@ pub struct Setup {
     tabs: Vec<Rect>,
     /// The size a panel for output gets.
     pub panel: (u16, u16),
+    /// The machine the server creates for the host, on the set-up tabs.
+    pub machine: Machine,
 }
 
 impl Setup {
     /// The set-up of a host the server has: its profile is on its way.
     pub fn open(name: &str, admin: &Admin) -> Setup {
         admin.profile(name);
-        Setup {
+        let mut setup = Setup {
             loading: true,
             ..Setup::with(name, Value::Null, Value::Null)
-        }
+        };
+        setup.ask_machine(admin);
+        setup
     }
 
     /// The set-up of a new host, from the server's starting profile.
-    pub fn new(name: &str, mut template: Value) -> Setup {
-        // A laptop profile would add a display manager and power policy to a server.
-        if template["profile"] == "laptop" {
-            template["profile"] = json!("cloud");
-        }
-        Setup::with(name, template, Value::Null)
+    pub fn new(name: &str, template: Value, admin: &Admin) -> Setup {
+        let mut setup = Setup::with(name, template, Value::Null);
+        setup::fit_profile(&mut setup.config, setup.action);
+        setup.ask_machine(admin);
+        setup
+    }
+
+    /// Ask for the provisioners and the host's machine, which the Install
+    /// tab it opens on shows.
+    fn ask_machine(&mut self, admin: &Admin) {
+        self.machine.asking();
+        admin.machine(&self.name);
     }
 
     fn with(name: &str, config: Value, saved: Value) -> Setup {
@@ -106,8 +117,8 @@ impl Setup {
             saved,
             loading: false,
             failed: None,
-            step: Step::Features,
-            action: Action::CloudSeed,
+            step: Step::Install,
+            action: Action::Machine,
             features: vec![],
             registries: vec![],
             secrets: vec![],
@@ -121,6 +132,7 @@ impl Setup {
             hits: vec![],
             tabs: vec![],
             panel: (24, 80),
+            machine: Machine::default(),
         }
     }
 
@@ -136,13 +148,17 @@ impl Setup {
     pub fn arrived(&mut self, profile: Result<Value, String>) {
         self.loading = false;
         match profile {
-            Ok(profile) => {
+            Ok(mut profile) => {
+                // Shown as the server reads it for use; saving it keeps that.
+                berth_api::profile::retire_qemu(&mut profile);
                 self.config = profile.clone();
                 self.saved = profile;
                 // A host with an address is one to install over SSH.
                 if !self.view().text(Field::SshHost).is_empty() {
                     self.action = Action::Ssh;
                 }
+                // A profile saved with another kind opens as the machine's.
+                setup::fit_profile(&mut self.config, self.action);
             }
             Err(error) => self.failed = Some(error),
         }
@@ -161,7 +177,11 @@ impl Setup {
     pub fn sync(&mut self, data: &Data) {
         self.features = data.features.clone();
         self.registries = data.registry_names();
-        self.secrets = data.secret_names();
+        let names = data.secret_names();
+        if !self.loading {
+            setup::default_enrollment(&mut self.config, &names);
+        }
+        self.secrets = setup::host_secrets(names);
         self.stores = setup::release_stores(&data.registries);
         self.own_key = data.own_key.clone();
     }
@@ -175,64 +195,43 @@ impl Setup {
             registries: &self.registries,
             secrets: &self.secrets,
             own_key: &self.own_key,
+            named: setup::valid_hostname(&self.name),
         }
     }
 
-    fn problems(&self) -> Vec<String> {
+    /// Every problem, each on the tab of what it is about.
+    fn problems(&self) -> Vec<Problem> {
         let view = self.view();
         // The keys that make these up are other ones here.
-        let mut problems: Vec<String> = view
-            .problems()
+        let mut problems: Vec<Problem> = view
+            .problems_with(&self.machine)
             .into_iter()
-            .map(|problem| {
-                problem
+            .map(|problem| Problem {
+                text: problem
+                    .text
                     .replace("(F4 generates)", "(g generates)")
-                    .replace("(F4 or F5)", "(g or p)")
+                    .replace("(F4 or F5)", "(g or p)"),
+                ..problem
             })
             .collect();
         if self.action == Action::Ssh && view.text(Field::SshHost).is_empty() {
-            problems.push(
-                "The host's address is required: its name, IP address or tailnet name".into(),
-            );
+            problems.push(Problem::new(
+                Step::Install,
+                "The host's address is required: its name, IP address or tailnet name",
+            ));
         }
         problems
     }
 
     fn rows(&self) -> Vec<Row> {
         let view = self.view();
-        match self.step {
-            Step::Features => view.feature_rows(),
-            Step::Secrets => view.access_rows(),
-            Step::Accounts | Step::Manage => view.field_rows(),
-            Step::Install => {
-                let mut rows = view.method_rows(&METHODS);
-                rows.push(Row::info(""));
-                rows.extend(view.field_rows());
-                rows.push(Row::info(""));
-                let problems = self.problems();
-                for problem in &problems {
-                    rows.push(Row::info(Line::styled(
-                        format!("✗ {problem}"),
-                        Style::new().fg(theme::BAD),
-                    )));
-                }
-                if let Some(text) = view.open_ssh_warning() {
-                    rows.push(Row::info(Line::styled(text, Style::new().fg(theme::WARN))));
-                }
-                if problems.is_empty() {
-                    rows.push(Row::info(Line::styled(
-                        "✓ Ready",
-                        Style::new().fg(theme::GOOD),
-                    )));
-                }
-                rows.push(Row::info(""));
-                rows.push(Row::entry(
-                    format!("[Run · {}]", self.action.label()),
-                    Entry::Run,
-                ));
-                rows
-            }
-        }
+        let problems = self.problems();
+        view.page_rows(Page {
+            methods: &METHODS,
+            machine: &self.machine,
+            problems: &problems,
+            notes: vec![],
+        })
     }
 
     fn entries(&self) -> Vec<Entry> {
@@ -275,13 +274,46 @@ impl Setup {
                 Action::CloudSeed => "Saves the profile on the server and renders the seed. Paste it into the provider's user data field when creating the machine.".into(),
                 _ => "Saves the profile on the server and applies it to the host from there.".into(),
             },
-            Some(Entry::Source(_)) | None => String::new(),
+            Some(Entry::Machine(pick)) => self.machine.help(pick),
+            Some(Entry::Save) => "Saves the profile on the server, as Ctrl+S does, without running anything.".into(),
+            None => String::new(),
         }
     }
 
-    fn set_step(&mut self, step: Step) {
+    fn set_step(&mut self, step: Step, admin: &Admin) {
         self.step = step;
         self.list = ListState::default().with_selected(Some(0));
+        if step == Step::Install {
+            self.ask_machine(admin);
+        }
+    }
+
+    /// Do what a row of the machine led to.
+    fn follow(&mut self, next: Next, admin: &Admin) -> Option<String> {
+        let (name, size) = (self.name.clone(), self.panel);
+        match next {
+            Next::Nothing | Next::Confirm => None,
+            Next::Say(text) => Some(text),
+            Next::Edit(value) => {
+                self.editing = Some(Input::new(value));
+                None
+            }
+            Next::Create(asked) => {
+                // The server's provisioner works from the profile as it keeps it.
+                admin.save(&self.name, &self.config, move |admin| {
+                    admin.provision(&name, &asked, size)
+                });
+                Some("Saving…".into())
+            }
+            Next::Power(verb) => {
+                admin.power(&name, verb);
+                None
+            }
+            Next::Destroy => {
+                admin.unprovision(&name, size);
+                None
+            }
+        }
     }
 
     fn move_selection(&mut self, up: bool) {
@@ -349,6 +381,10 @@ impl Setup {
             Some(Entry::Key(account, index)) if !input.value().trim().is_empty() => {
                 setup::set_key(&mut self.config, account, index, input.value()).err()
             }
+            Some(Entry::Machine(pick)) => {
+                let next = self.machine.typed(pick, input.value(), &self.name);
+                self.follow(next, admin)
+            }
             _ => None,
         }
     }
@@ -395,10 +431,7 @@ impl Setup {
         match entry {
             Entry::Action(action) => {
                 self.action = action;
-                // A laptop profile would add a display manager and power policy to a server.
-                if action == Action::CloudSeed && self.view().text(Field::Profile) == "laptop" {
-                    self.config["profile"] = json!("cloud");
-                }
+                setup::fit_profile(&mut self.config, action);
             }
             Entry::Field(field) => return self.activate(field),
             Entry::Registry(index) => {
@@ -412,7 +445,19 @@ impl Setup {
                 setup::set_feature(&mut self.config, &self.features, index, on);
             }
             Entry::Run => return self.run(admin),
-            Entry::Source(_) => {}
+            Entry::Save => self.save(admin),
+            Entry::Machine(pick) => {
+                // The machine is made from the profile, which has to be whole
+                // first, and of the kind a created machine is.
+                if pick == machine::Pick::Create {
+                    setup::fit_profile(&mut self.config, Action::Machine);
+                }
+                if pick == machine::Pick::Create && !self.problems().is_empty() {
+                    return Some("Fix the listed problems first".into());
+                }
+                let next = self.machine.enter(pick, &self.name);
+                return self.follow(next, admin);
+            }
         }
         None
     }
@@ -444,6 +489,16 @@ impl Setup {
                 _ => Flow::Stay,
             };
         }
+        if self.machine.question.is_some() {
+            let yes = match key.code {
+                Code::Char('y' | 'Y') => true,
+                Code::Char('n' | 'N') | Code::Esc => false,
+                _ => return Flow::Stay,
+            };
+            let next = self.machine.answer(yes);
+            say(self.follow(next, admin));
+            return Flow::Stay;
+        }
         match key.code {
             Code::Char('s') if key.ctrl => {
                 say(self.accept_edit(admin));
@@ -453,7 +508,7 @@ impl Setup {
             Code::Tab | Code::BackTab => {
                 say(self.accept_edit(admin));
                 let step = self.step.offset(if key.code == Code::Tab { 1 } else { -1 });
-                self.set_step(step);
+                self.set_step(step, admin);
                 return Flow::Stay;
             }
             _ => {}
@@ -497,13 +552,18 @@ impl Setup {
                 self.editing = Some(Input::default());
             }
             Code::Char(digit @ '1'..='4') => {
-                self.set_step(Step::SETUP[digit as usize - '1' as usize])
+                self.set_step(Step::SETUP[digit as usize - '1' as usize], admin)
             }
             Code::Char(' ') => match self.selected() {
                 Some(Entry::Group(group)) => say(Some(self.toggle_group(group))),
-                Some(entry @ (Entry::Field(_) | Entry::Feature(_) | Entry::Registry(_))) => {
-                    say(self.choose(entry, admin))
-                }
+                Some(
+                    entry @ (Entry::Field(_)
+                    | Entry::Feature(_)
+                    | Entry::Registry(_)
+                    | Entry::Machine(
+                        machine::Pick::Provisioner | machine::Pick::Argument(_),
+                    )),
+                ) => say(self.choose(entry, admin)),
                 _ => {}
             },
             Code::Char('x') | Code::Delete => match self.selected() {
@@ -550,6 +610,8 @@ impl Setup {
                     event::paste(input, text.trim());
                 }
             }
+            // The question before creating is answered with its keys.
+            Event::Mouse(_) if self.machine.question.is_some() => {}
             Event::Mouse(mouse) => match mouse.click {
                 Click::ScrollUp => self.move_selection(true),
                 Click::ScrollDown => self.move_selection(false),
@@ -677,31 +739,35 @@ impl Setup {
         let field = self.selected_field();
         if let Some(input) = &self.editing {
             let (title, masked) = match (self.password_entry, self.selected()) {
-                (true, _) => (" Password, hashed on the server ", true),
-                (_, Some(Entry::Secret(_))) => (" Variable name or file path ", false),
-                (_, Some(Entry::Key(..))) => (" OpenSSH public key ", false),
+                (true, _) => (" Password, hashed on the server ".to_owned(), true),
+                (_, Some(Entry::Secret(_))) => (" Variable name or file path ".to_owned(), false),
+                (_, Some(Entry::Key(..))) => (" OpenSSH public key ".to_owned(), false),
+                (_, Some(Entry::Machine(pick))) => (machine::editor_title(pick, &self.name), false),
                 _ => (
-                    " Edit ",
+                    " Edit ".to_owned(),
                     field.is_some_and(|field| field.spec().kind == Kind::Secret),
                 ),
             };
-            draw_editor(frame, edit, title, input, masked);
+            draw_editor(frame, edit, &title, input, masked);
         }
         let keys = match (&self.editing, field) {
             (Some(_), _) => "Enter accept · Esc cancel · Ctrl+S save".to_owned(),
             (None, Some(field)) if field.is_password_hash() => {
-                "↑↓ select · g generate · p type a password · x clear · Tab next page · Ctrl+S save · Esc back".to_owned()
+                "↑↓ select · g generate · p type a password · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned()
             }
             (None, Some(Field::BerthKey)) => format!(
-                "↑↓ select · Space switch · {} · Tab next page · Ctrl+S save · Esc back",
+                "↑↓ select · Space switch · {} · 1-4 tab · Ctrl+S save · Esc back",
                 berth_tui::berth_key::HINT
             ),
             (None, Some(field)) if field.can_generate() => {
-                "↑↓ select · Enter change · g generate · x clear · Tab next page · Ctrl+S save · Esc back".to_owned()
+                "↑↓ select · Enter change · g generate · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned()
             }
-            _ => "↑↓ select · Enter change · Space switch · x clear · Tab next page · Ctrl+S save · Esc back".to_owned(),
+            _ => "↑↓ select · Enter change · Space switch · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned(),
         };
         draw_footer(frame, footer, &keys, status, theme::ACCENT);
+        if let Some(question) = &self.machine.question {
+            draw_question(frame, question);
+        }
     }
 }
 

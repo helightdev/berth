@@ -1,0 +1,30 @@
+# What the recipe sets up. Change it here, or pass your own file:
+#   ./install.sh -e @my-vars.yml
+
+# ── The berth server ──────────────────────────────────────────────────────
+
+berth_server_image: ghcr.io/helightdev/berth
+# Where it keeps its settings, profiles, data and SSH keys.
+berth_server_dir: /srv/berth
+# The port on this machine only. Nothing outside reaches it.
+berth_server_port: 7777
+# Put the server on the tailnet with TLS, at https://THIS-MACHINE.YOUR-TAILNET.ts.net.
+# It needs the tailnet's HTTPS certificates switched on, and does nothing
+# on a machine that is on no tailnet.
+berth_server_tailscale_serve: true
+
+# ── The tailnet ───────────────────────────────────────────────────────────
+
+# An enrollment key joins the machine to your tailnet. Without one Tailscale
+# is not installed: pass it on the command line rather than saving it here.
+#   ./install.sh -e tailscale_auth_key=tskey-auth-…
+tailscale_auth_key: ""
+tailscale_hostname: "{{ ansible_facts['hostname'] }}"
+# The address of a Headscale server; empty for Tailscale's own service.
+tailscale_login_server: ""
+
+# ── The firewall ──────────────────────────────────────────────────────────
+
+# Who may reach SSH from outside the tailnet: any, or one address or network
+# such as 198.51.100.7. The provider's console is the way in if this is wrong.
+ssh_from: any

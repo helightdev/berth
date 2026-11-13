@@ -81,6 +81,45 @@
         },
         "type": "object"
       },
+      "Argument": {
+        "properties": {
+          "choices": {
+            "description": "A command whose lines are the values to offer.",
+            "type": "string"
+          },
+          "default": {
+            "type": "string"
+          },
+          "help": {
+            "description": "What it is for, in a sentence or two, beside its short label.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`resource` for an argument of a provisioner that sizes the machine:\nits CPUs, memory or disk. Empty for any other argument.",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "values": {
+            "description": "The values a provisioner's argument takes, when it is a choice of a\nfew. Empty for one that takes any text.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
       "Behind": {
         "description": "How a host's configuration differs from what berth would apply now.",
         "properties": {
@@ -347,11 +386,11 @@
           "behind": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Behind",
                 "description": "What changed since then, when the server would apply something else now."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -434,6 +473,56 @@
         ],
         "description": "A stored message: the host's message with where it came from."
       },
+      "Instance": {
+        "description": "The machine berth created for a host.",
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "arguments": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "created": {
+            "description": "When it was asked for, RFC 3339.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The provisioner's id of the machine; empty until `create` said it.",
+            "type": "string"
+          },
+          "problem": {
+            "description": "Why the state is `unknown`.",
+            "type": "string"
+          },
+          "provisioner": {
+            "description": "`PLUGIN/ID`.",
+            "type": "string"
+          },
+          "state": {
+            "description": "`running`, `stopped`, `gone`, `unknown` or `creating`.",
+            "type": "string"
+          },
+          "verbs": {
+            "description": "What can be done to it besides `destroy`: `start`, `stop`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "provisioner",
+          "id",
+          "state"
+        ],
+        "type": "object"
+      },
       "JobInfo": {
         "properties": {
           "ended": {
@@ -458,11 +547,11 @@
           "report": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/RolloutReport",
                 "description": "How a roll-out went, host by host, once it has ended."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -470,7 +559,7 @@
             "type": "string"
           },
           "what": {
-            "description": "What it does: `apply`.",
+            "description": "What it does: `apply`, `rollout`, `provision` or `unprovision`.",
             "type": "string"
           }
         },
@@ -548,6 +637,27 @@
           "agent"
         ],
         "type": "string"
+      },
+      "ListedInstance": {
+        "description": "A machine a provisioner has that berth created.",
+        "properties": {
+          "host": {
+            "description": "The host it was created for, as its labels say.",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "host",
+          "state"
+        ],
+        "type": "object"
       },
       "Message": {
         "properties": {
@@ -706,6 +816,13 @@
           "package": {
             "description": "Its npm name.",
             "type": "string"
+          },
+          "provisioners": {
+            "description": "What it can create machines with.",
+            "items": {
+              "$ref": "#/components/schemas/ProvisionerInfo"
+            },
+            "type": "array"
           },
           "version": {
             "type": "string"
@@ -904,6 +1021,81 @@
         },
         "required": [
           "plugins"
+        ],
+        "type": "object"
+      },
+      "Provision": {
+        "description": "What to create a host's machine with.",
+        "properties": {
+          "arguments": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Values of its arguments; the others take their defaults.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "provisioner": {
+            "description": "`PLUGIN/ID`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provisioner"
+        ],
+        "type": "object"
+      },
+      "ProvisionerInfo": {
+        "description": "Something a plugin creates machines with, for a saved host's profile.",
+        "properties": {
+          "arguments": {
+            "items": {
+              "$ref": "#/components/schemas/Argument"
+            },
+            "type": "array"
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "description": "`PLUGIN/ID`.",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "missing_secrets": {
+            "description": "The required ones that have no value. Not looked at in a plugin's listing.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "secrets": {
+            "description": "The berth secrets it is given.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "setup": {
+            "description": "`seed`: the machine boots with berth's cloud seed and sets itself up.\n`apply`: berth applies the profile over SSH once the machine answers.",
+            "type": "string"
+          },
+          "verbs": {
+            "description": "What it can do besides `create`, `status` and `destroy`: `start`,\n`stop`, `list`, `log`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "setup"
         ],
         "type": "object"
       },
@@ -1203,6 +1395,57 @@
         ],
         "type": "object"
       },
+      "SetupClaim": {
+        "description": "The server's token, collected with a setup key.",
+        "properties": {
+          "api": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expires": {
+            "type": "string"
+          },
+          "token": {
+            "description": "The token of berth serve, as in its serve.token.",
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "version",
+          "api",
+          "expires"
+        ],
+        "type": "object"
+      },
+      "SetupKey": {
+        "description": "What a setup key says of the server it is for.",
+        "properties": {
+          "api": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expires": {
+            "description": "When the key stops working, in RFC 3339.",
+            "type": "string"
+          },
+          "version": {
+            "description": "The version of berth serve.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "api",
+          "expires"
+        ],
+        "type": "object"
+      },
       "Step": {
         "properties": {
           "exit_code": {
@@ -1235,11 +1478,11 @@
           "applied": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Applied",
                 "description": "What the host's configuration was last applied from, when berth\nrecorded it. An older berthd does not say."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -1297,6 +1540,85 @@
       },
       "role": "view",
       "summary": "What the caller may do here."
+    },
+    {
+      "args": [],
+      "errors": [
+        {
+          "description": "The key is wrong, missing or expired",
+          "status": "401"
+        }
+      ],
+      "group": "setup_key",
+      "http": {
+        "method": "GET",
+        "path": "/v1/setup-key"
+      },
+      "http_only": "it is for a caller that has no token yet",
+      "key": "the setup key",
+      "kind": "call",
+      "name": "setup_key.check",
+      "portal": false,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/SetupKey"
+        }
+      },
+      "summary": "Whether a setup key works, and the berth serve it is for."
+    },
+    {
+      "args": [],
+      "errors": [
+        {
+          "description": "The key is wrong, missing or expired",
+          "status": "401"
+        },
+        {
+          "description": "This berth serve takes no token over the network",
+          "status": "501"
+        }
+      ],
+      "group": "setup_key",
+      "http": {
+        "method": "POST",
+        "path": "/v1/setup-key"
+      },
+      "http_only": "it is for a caller that has no token yet",
+      "key": "the setup key",
+      "kind": "call",
+      "name": "setup_key.claim",
+      "portal": false,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/SetupClaim"
+        }
+      },
+      "summary": "Collect the server's token with a setup key. It can be asked again until the key is done."
+    },
+    {
+      "args": [],
+      "errors": [
+        {
+          "description": "The key is wrong, missing or expired",
+          "status": "401"
+        }
+      ],
+      "group": "setup_key",
+      "http": {
+        "method": "DELETE",
+        "path": "/v1/setup-key"
+      },
+      "http_only": "it is for a caller that has no token yet",
+      "key": "the setup key",
+      "kind": "call",
+      "name": "setup_key.done",
+      "portal": false,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "summary": "End the setup key, once its user has the token."
     },
     {
       "args": [],
@@ -1363,6 +1685,10 @@
         {
           "description": "No such host",
           "status": "404"
+        },
+        {
+          "description": "It has a machine berth created, which is deleted first, or one is being created",
+          "status": "409"
         }
       ],
       "group": "hosts",
@@ -1459,10 +1785,10 @@
         "schema": {
           "oneOf": [
             {
-              "type": "null"
+              "$ref": "#/components/schemas/ApplyWith"
             },
             {
-              "$ref": "#/components/schemas/ApplyWith"
+              "type": "null"
             }
           ]
         }
@@ -1496,10 +1822,10 @@
         "schema": {
           "oneOf": [
             {
-              "type": "null"
+              "$ref": "#/components/schemas/Rollout"
             },
             {
-              "$ref": "#/components/schemas/Rollout"
+              "type": "null"
             }
           ]
         }
@@ -2000,10 +2326,10 @@
         "schema": {
           "oneOf": [
             {
-              "type": "null"
+              "$ref": "#/components/schemas/PluginUpdateSpec"
             },
             {
-              "$ref": "#/components/schemas/PluginUpdateSpec"
+              "type": "null"
             }
           ]
         }
@@ -2080,7 +2406,239 @@
         }
       },
       "role": "admin",
-      "summary": "Make up a host name, hash or make up a password, or create a Tailscale key."
+      "summary": "Make up a host name, hash or make up a password, or create a one-use enrollment key at the tailnet's control server."
+    },
+    {
+      "args": [],
+      "group": "provisioners",
+      "http": {
+        "method": "GET",
+        "path": "/v1/provisioners"
+      },
+      "kind": "call",
+      "name": "provisioners.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/ProvisionerInfo"
+          },
+          "type": "array"
+        }
+      },
+      "role": "admin",
+      "summary": "What the plugins can create machines with, and what each asks for."
+    },
+    {
+      "args": [
+        {
+          "description": "The plugin",
+          "in": "path",
+          "name": "plugin",
+          "required": true
+        },
+        {
+          "description": "The provisioner within the plugin",
+          "in": "path",
+          "name": "id",
+          "required": true
+        },
+        {
+          "description": "The provisioner's arguments as `NAME=VALUE`, such as the server to ask; the others take their defaults",
+          "header": null,
+          "in": "query",
+          "name": "arguments",
+          "required": false
+        }
+      ],
+      "errors": [
+        {
+          "description": "It cannot list, an argument or a secret is missing, or it failed; the message says which",
+          "status": "400"
+        },
+        {
+          "description": "No such provisioner",
+          "status": "404"
+        }
+      ],
+      "group": "provisioners",
+      "http": {
+        "method": "GET",
+        "path": "/v1/provisioners/{plugin}/{id}/instances"
+      },
+      "kind": "call",
+      "name": "provisioners.instances",
+      "portal": true,
+      "result": {
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/ListedInstance"
+          },
+          "type": "array"
+        }
+      },
+      "role": "admin",
+      "summary": "The machines a provisioner has that berth created, as it lists them."
+    },
+    {
+      "args": [
+        {
+          "description": "A saved host",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "data": {
+        "description": "The provisioner and its arguments",
+        "schema": {
+          "$ref": "#/components/schemas/Provision"
+        }
+      },
+      "errors": [
+        {
+          "description": "An argument or a secret is missing or unknown, or the profile does not fit; the message says which",
+          "status": "400"
+        },
+        {
+          "description": "No such host or provisioner",
+          "status": "404"
+        },
+        {
+          "description": "The host has a machine already, or something else is being done to it",
+          "status": "409"
+        }
+      ],
+      "group": "instances",
+      "http": {
+        "method": "POST",
+        "path": "/v1/hosts/{name}/instance"
+      },
+      "kind": "call",
+      "name": "instances.create",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/JobInfo"
+        }
+      },
+      "role": "admin",
+      "summary": "Create the machine for a saved host with a provisioner and set it up, as a job."
+    },
+    {
+      "args": [
+        {
+          "description": "A saved host",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such host, or berth created no machine for it",
+          "status": "404"
+        }
+      ],
+      "group": "instances",
+      "http": {
+        "method": "GET",
+        "path": "/v1/hosts/{name}/instance"
+      },
+      "kind": "call",
+      "name": "instances.get",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Instance"
+        }
+      },
+      "role": "admin",
+      "summary": "The machine berth created for a host, and what its provisioner says of it now."
+    },
+    {
+      "args": [
+        {
+          "description": "A saved host",
+          "in": "path",
+          "name": "name",
+          "required": true
+        },
+        {
+          "description": "`start` or `stop`",
+          "in": "path",
+          "name": "verb",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "Not start or stop, its provisioner cannot, or it failed; the message says which",
+          "status": "400"
+        },
+        {
+          "description": "No such host, or berth created no machine for it",
+          "status": "404"
+        },
+        {
+          "description": "Something else is being done to it",
+          "status": "409"
+        }
+      ],
+      "group": "instances",
+      "http": {
+        "method": "POST",
+        "path": "/v1/hosts/{name}/instance/{verb}"
+      },
+      "kind": "call",
+      "name": "instances.power",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "role": "admin",
+      "summary": "Start or stop the machine berth created for a host, when its provisioner can."
+    },
+    {
+      "args": [
+        {
+          "description": "A saved host",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "A secret its provisioner needs has no value",
+          "status": "400"
+        },
+        {
+          "description": "No such host or provisioner, or berth created no machine for it",
+          "status": "404"
+        },
+        {
+          "description": "Something else is being done to it",
+          "status": "409"
+        }
+      ],
+      "group": "instances",
+      "http": {
+        "method": "DELETE",
+        "path": "/v1/hosts/{name}/instance"
+      },
+      "kind": "call",
+      "name": "instances.destroy",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/JobInfo"
+        }
+      },
+      "role": "admin",
+      "summary": "Delete the machine berth created for a host, as a job. The profile stays."
     },
     {
       "args": [
@@ -2731,5 +3289,5 @@
     "path": "/v1/portal"
   },
   "title": "berth serve",
-  "version": "0.3.0"
+  "version": "0.4.1"
 }

@@ -175,3 +175,218 @@ A feature that publishes on the host's channel lists its topics with how long th
 ```
 
 The topic becomes `PLUGIN/TOPIC`. `keep` is the default for messages published there. With `none` only current listeners see a message, `last` stores the newest one, and `log` stores them for reading later. `max` and `days` limit a log. Publish with `box publish PLUGIN/TOPIC '{"percent": 40}'` and read with `box listen PLUGIN/`.
+
+## Writing a provisioner
+
+A provisioner creates the machine for a saved host. Its plugin lists it under `berth.provisioners`, next to `features`, and holds the executable. People use it with `berth provision HOST PLUGIN/ID` ([Machine from a provisioner](/docs/deploy/provisioners)). The plugins `docker` and `incus` in the berth source are examples.
+
+```json title="package.json"
+{
+  "name": "berth-plugin-lab",
+  "version": "1.0.0",
+  "displayName": "Lab",
+  "files": ["bin"],
+  "berth": {
+    "provisioners": [
+      {
+        "id": "vm",
+        "label": "Lab virtual machine",
+        "description": "A guest on the lab server, set up from berth's cloud seed.",
+        "command": "bin/provision",
+        "setup": "seed",
+        "archive": true,
+        "verbs": ["start", "stop", "list"],
+        "secrets": ["lab_token", {"name": "lab_ca", "required": false}],
+        "arguments": [
+          {"name": "server", "label": "Lab server", "required": true},
+          {"name": "cpus", "label": "CPUs", "default": "4", "kind": "resource"},
+          {"name": "image", "label": "Image", "default": "ubuntu-26.04",
+           "help": "The image the machine starts from."}
+        ]
+      }
+    ]
+  }
+}
+```
+
+The provisioner is referred to as `PLUGIN/ID`, here `lab/vm`.
+
+### Manifest fields
+
+<TypeTable
+  type={{
+    id: { type: 'string', required: true, description: 'Lower-case letters, digits, - and _, starting with a letter.' },
+    command: { type: 'string', required: true, description: 'Path of an executable file in the package. It is skipped when the path is absolute, has .. in it, or leads outside the package.' },
+    setup: { type: '"seed" | "apply"', required: true, description: 'seed: the machine sets itself up from berth\'s cloud seed. apply: berth applies the profile over SSH once the machine answers. Any other value skips the provisioner.' },
+    label: { type: 'string', default: 'the id', description: 'Name in berth.' },
+    description: { type: 'string', description: 'Help text in berth.' },
+    archive: { type: 'boolean', default: 'false', description: 'Only for seed. The provisioner puts the release archive into the machine itself, so the profile needs no release_url.' },
+    verbs: { type: 'string[]', description: 'Of start, stop, list and log, the ones it answers. create, status and destroy are always required.' },
+    secrets: { type: '(string | Secret)[]', description: 'Names of berth secrets it is given. A string is required. {"name", "required": false} is given when it has a value. It gets no others.' },
+    arguments: { type: 'Argument[]', description: 'Values asked for: {name, label, required, default, kind, help, values}. All values are strings. choices, the command that lists the values of a task argument, is not used: list them in values.' },
+  }}
+/>
+
+### Arguments
+
+Each entry of `arguments` is one value the provisioner takes. berth shows it on the host's set-up tabs by what it is.
+
+<TypeTable
+  type={{
+    name: { type: 'string', required: true, description: 'Lower-case letters, digits, - and _, starting with a letter. The key in the request.' },
+    label: { type: 'string', default: 'the name', description: 'Name in berth.' },
+    required: { type: 'boolean', default: 'false', description: 'Creating is refused while it is empty.' },
+    default: { type: 'string', default: '""', description: 'The value it starts with.' },
+    kind: { type: '"resource"', description: 'Marks a resource of the machine, such as CPUs, memory or disk. Without it, the argument is an ordinary one.' },
+    help: { type: 'string', description: 'What the argument is for, in one or two short sentences, with an example value where it helps. berth shows it in the Information panel of the row. Keep the label to a name, such as Image.' },
+    values: { type: 'string[]', description: 'The values it takes, for a choice of a few, such as ["no", "yes"]. berth offers them like any other choice, and refuses another value when it creates the machine.' },
+  }}
+/>
+
+| Argument | Where berth shows it |
+| --- | --- |
+| `required` | On the Install tab, under the Provisioner row |
+| `"kind": "resource"`, not required | Under Machine on the Settings tab |
+| Any other | Under Provisioner Options on the Settings tab |
+
+berth checks the value of a resource before it creates the machine. It goes by the name of the argument:
+
+| Name contains | The value has to be |
+| --- | --- |
+| `cpu` | A positive number, such as `4` |
+| `memory`, `mem`, `ram`, `disk`, `size`, `storage` or `swap` | A size with its unit, such as `8GiB`, `512MiB` or `4g` |
+| anything else | Not checked |
+
+An argument that is not required may be left empty. berth lists a bad value as a problem of the tab that shows the argument. The command line does not check resources. The provisioner checks what it is given in any case.
+
+### How it is run
+
+berth runs `COMMAND VERB` directly, with the package directory as its working directory and in a process group of its own. Give the file a shebang and the executable bit.
+
+| Channel | Use |
+| --- | --- |
+| Standard input | One JSON object, the request, which holds the secrets |
+| Standard output | One JSON object, the answer. Empty output is read as `{}` |
+| Standard error | Progress. Each line is shown as it comes |
+| Exit code | 0 is success. Anything else is a failure, and the last five lines of standard error are the reason |
+
+When the command ends, berth ends everything it started in the process group. Do not leave anything running in the background.
+
+| Verb | Time allowed |
+| --- | --- |
+| `status`, `list`, `log` | 30 seconds |
+| `start`, `stop`, `destroy` | 5 minutes |
+| `create` | 15 minutes |
+
+A command that takes longer is killed with its group.
+
+### The request
+
+Every verb gets this:
+
+| Field | Value |
+| --- | --- |
+| `version` | `1` |
+| `verb` | The verb |
+| `provisioner` | The id within the plugin, so one command can serve several provisioners |
+| `arguments` | Every argument the manifest declares, with defaults filled in |
+| `secrets` | The secrets it names that have a value |
+| `host` | The host's name |
+| `labels` | `berth-host`, the host's name, and `berth-instance`, the token |
+
+`list` is about no host and has neither `host` nor `labels`. The other verbs get the `arguments` that `create` was given, with defaults for any argument added since.
+
+Each verb adds to it and answers like this:
+
+| Verb | Request adds | Answer |
+| --- | --- | --- |
+| `create` | `token`, and `seed` or `access` | `id`, and optionally `address` and `port` |
+| `status` | `id` | `state`: `running`, `stopped` or `gone`, and optionally `address` |
+| `destroy` | `id` | `{}` |
+| `start`, `stop` | `id` | `{}` |
+| `list` | | `instances`, a list of `id`, `host` and `state` |
+| `log` | `id` | `lines`, the latest lines of the machine's console or boot output |
+
+`create` must answer with an `id`. berth keeps it, and every later verb uses that id. The `address` and `port` go into the profile's `builder.ssh_host` and `builder.ssh_port` when those are empty. Entries of `list` without an `id` are dropped.
+
+### The log verb
+
+While berth waits for a new machine, it asks `log` with each `status`, until SSH answers. It shows the lines it has not shown before, so `log` answers with the latest lines each time, oldest first. 100 lines is plenty. Answer `{"lines": []}` when the machine is gone or has no output yet.
+
+berth removes escape sequences and control characters, shortens long lines and shows at most six lines at a time. It hides the provisioner's secrets and those of the seed. Leave out `log` when the platform has no console to read. berth then waits without it.
+
+```json title="Answer on standard output"
+{"lines": ["[  OK  ] Started ssh.service - OpenBSD Secure Shell server.", "Cloud-init v. 25.1 finished"]}
+```
+
+A `seed` provisioner also receives the cloud seed:
+
+| Field | Value |
+| --- | --- |
+| `seed.user_data` | The cloud-init user data |
+| `seed.meta_data` | `instance-id` and `local-hostname`, as text |
+| `seed.archive` | With `archive: true`: `path` of the release archive on the machine berth runs on, and its `sha256` |
+
+An archive has to end up as `/opt/devbox-bootstrap/release.tar.gz` in the machine. First boot waits up to 15 minutes for the file to have that digest.
+
+An `apply` provisioner receives `access`: the `user` to create and the `public_keys` that may log in as it. It must make SSH answer for that account.
+
+A `create` request and its answer, with the secrets left out:
+
+```json title="Request on standard input"
+{
+  "version": 1,
+  "verb": "create",
+  "host": "studio-2",
+  "provisioner": "vm",
+  "arguments": {"server": "https://192.0.2.10:8443", "cpus": "8"},
+  "secrets": {"lab_token": "…"},
+  "labels": {"berth-host": "studio-2", "berth-instance": "0b6d4f1c9a7e4e58b3d2a61f8c05e9a7"},
+  "token": "0b6d4f1c9a7e4e58b3d2a61f8c05e9a7",
+  "seed": {
+    "user_data": "#cloud-config\n…",
+    "meta_data": "instance-id: 0b6d4f1c9a7e4e58b3d2a61f8c05e9a7\nlocal-hostname: studio-2\n",
+    "archive": {"path": "/home/ops/.local/share/berth/build/delivered/studio-2/devbox-release.tar.gz", "sha256": "…"}
+  }
+}
+```
+
+```json title="Answer on standard output"
+{"id": "lab-studio-2", "address": "192.0.2.31", "port": 22}
+```
+
+### Rules
+
+A provisioner is run again after a crash or a timeout, and it works on machines that belong to people. Keep these rules:
+
+- **Create once per token.** Called again with the same `token`, `create` answers with the machine it made before and does not make a second one.
+- **Label what you make.** Put `labels` on the machine in whatever way the platform allows.
+- **Destroy a machine that is gone.** `destroy` succeeds when there is nothing left to delete, and deletes only the machine with the `id` it is given.
+- **Leave alone what lacks berth's labels.** `list` shows, and `destroy` removes, only machines that have them.
+- **Write progress to standard error.** Standard output is for the answer.
+- **Take secrets from standard input only.** Never print them, and do not put them on a command line or in a file that stays after the command ends. berth hides secrets in the lines you write, but it cannot hide what you write elsewhere.
+
+### Try it
+
+Install the plugin from its folder and see that berth finds the provisioner:
+
+```bash
+berth plugins add ~/src/berth-plugin-lab
+berth provisioners
+```
+
+Run a verb by hand from the package directory with a request on standard input. Use a scratch machine and made-up values:
+
+```bash
+echo '{"version":1,"verb":"list","provisioner":"vm","arguments":{"server":"https://192.0.2.10:8443"},"secrets":{}}' \
+  | bin/provision list
+```
+
+Then create a machine for a saved host and delete it again:
+
+```bash
+berth provision studio-2 lab/vm server=https://192.0.2.10:8443
+berth instance studio-2 destroy
+```
+
+Run `berth provision` a second time while the first has failed to check that it finds the same machine.

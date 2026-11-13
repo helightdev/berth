@@ -19,4 +19,6 @@ secrets/
 
 *.log
 .env.*
-.claude/
+.claude/*
+# The skills are a link to .agents/skills, which every agent reads.
+!.claude/skills
