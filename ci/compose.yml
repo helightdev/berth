@@ -4,6 +4,7 @@
 # runner  the same image on a network of its own, which drives the tests
 # studio  the test host the tests set up over SSH
 # headscale  a Headscale server the test host can join (see below)
+# postgres   a throw-away PostgreSQL for the store's tests (rust-tests)
 #
 # The e2e network is internal: nothing on it reaches beyond it.
 name: ${BERTH_CI_PROJECT:-berth-ci}
@@ -30,6 +31,24 @@ services:
       - ..:/src
       - ${BERTH_CI_TARGET:-target}:/src/target
       - ${BERTH_CI_CARGO:-cargo}:/cache/cargo
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      CARGO_INCREMENTAL: ${BERTH_CI_INCREMENTAL:-0}
+      CI: ${CI:-}
+      # Set by ci/run.sh while the postgres service runs; the store's tests
+      # skip PostgreSQL without it.
+      BERTH_TEST_POSTGRES: ${BERTH_CI_POSTGRES:-}
+
+  # The database the store's tests use, empty at each start and gone after.
+  # Its password is made up: it is reachable only from the project's network.
+  postgres:
+    image: postgres:17-alpine
+    profiles: [dev]
+    environment:
+      POSTGRES_USER: berth
+      POSTGRES_PASSWORD: berth-ci
+      POSTGRES_DB: berth
+    tmpfs: [/var/lib/postgresql/data]
 
   runner:
     <<: *dev

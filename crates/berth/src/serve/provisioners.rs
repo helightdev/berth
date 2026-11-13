@@ -5,7 +5,7 @@
 use super::{
     Serve,
     api::{Answer, App, Fail, JobInfo, internal, start_job},
-    setup::profile_path,
+    setup::saved_profile,
 };
 use axum::{
     Json,
@@ -34,16 +34,9 @@ fn conflict(what: impl std::fmt::Display) -> Fail {
     Fail::new(code::CONFLICT, what.to_string())
 }
 
-/// The server's registries and secrets.
+/// The server's own registries and secrets.
 fn store(state: &Serve) -> Store {
-    Store::at(state.paths.config_dir.clone())
-}
-
-fn paths(state: &Serve) -> Paths {
-    Paths {
-        config_dir: state.paths.config_dir.clone(),
-        data_dir: state.paths.data_dir.clone(),
-    }
+    Store::own(state.store.clone())
 }
 
 /// Run a provisioner's work off the runtime: it waits for the provisioner.
@@ -57,10 +50,7 @@ async fn blocking<T: Send + 'static>(
 
 /// A saved host, by a name that is never a path.
 fn saved(state: &Serve, name: &str) -> Answer<()> {
-    match profile_path(state, name)?.is_file() {
-        true => Ok(()),
-        false => Err(missing(format!("No host {name}"))),
-    }
+    saved_profile(state, name).map(|_| ())
 }
 
 /// A provisioner by `PLUGIN/ID`.
@@ -90,7 +80,8 @@ fn idle(state: &Serve, name: &str) -> Answer<()> {
 
 /// How a host is reached, to tell whether creating its machine changed it.
 fn reached(paths: &Paths, name: &str) -> Value {
-    Host::load(paths, name)
+    berth_core::profiles::Place::own(name)
+        .and_then(|place| Host::load_at(paths, place))
         .map(|host| host.config["builder"].clone())
         .unwrap_or_default()
 }
@@ -116,7 +107,7 @@ pub async fn instances(
     let name = format!("{plugin}/{id}");
     let registries = store(&state);
     known(&state, &registries, &name)?;
-    let (paths, options) = (paths(&state), (state.provision)());
+    let (paths, options) = (state.paths.clone(), (state.provision)());
     let listed =
         blocking(move || provision::instances(&paths, &registries, &name, &given, &options))
             .await?
@@ -178,7 +169,7 @@ pub async fn create(
               (status = 404, description = "No such host, or berth created no machine for it", body = ErrorBody)))]
 pub async fn get(State(state): App, Path(name): Path<String>) -> Answer<Json<Instance>> {
     saved(&state, &name)?;
-    let (paths, registries, options) = (paths(&state), store(&state), (state.provision)());
+    let (paths, registries, options) = (state.paths.clone(), store(&state), (state.provision)());
     let host = name.clone();
     let instance = blocking(move || provision::status(&paths, &registries, &host, &options))
         .await?
@@ -205,7 +196,7 @@ pub async fn power(
     }
     record(&state, &name)?;
     idle(&state, &name)?;
-    let (paths, registries, options) = (paths(&state), store(&state), (state.provision)());
+    let (paths, registries, options) = (state.paths.clone(), store(&state), (state.provision)());
     blocking(move || {
         provision::power(
             &paths,

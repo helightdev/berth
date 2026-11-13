@@ -15,7 +15,7 @@ Separate accounts keep sessions apart, but they do not isolate data from an agen
 
 ## Passwords
 
-On a password hash field, F4 generates a password and stores its hash, and F5 hashes a password you type. Generated passwords are written next to the profile as `NAME.credentials.json` with mode 0600. The profile itself only stores hashes.
+On a password hash field, F4 generates a password and stores its hash, and F5 hashes a password you type. berth keeps a generated password in its store, beside the profile, and `berth credentials NAME` shows it. For a berth server's host the server generates it and keeps it. The profile itself only stores hashes.
 
 - An empty agent password locks password login for the agent.
 - Turning off the agent's passwordless sudo requires an agent password.

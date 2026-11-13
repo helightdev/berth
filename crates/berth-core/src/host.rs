@@ -1,13 +1,16 @@
 //! A host as its profile describes it: where it is and how it is reached.
 
-use crate::{Result, discovery::expand_path, link::LinkSpec, paths::Paths, server::Server};
+use crate::{
+    Result, discovery::expand_path, link::LinkSpec, paths::Paths, profiles::Place, server::Server,
+};
 use serde_json::{Value, json};
-use std::{fs, path::PathBuf, process::Command};
+use std::{path::PathBuf, process::Command};
 
 pub struct Host {
-    /// The name it is saved under, or the path it was given by.
+    /// The name it is saved under, or the path of its file.
     pub name: String,
-    pub path: PathBuf,
+    /// Where its profile is.
+    pub place: Place,
     pub config: Value,
     /// This berth's own SSH key, offered to the host besides the user's.
     pub key: Option<PathBuf>,
@@ -16,12 +19,17 @@ pub struct Host {
 impl Host {
     /// A saved host by name, or a profile by path.
     pub fn load(paths: &Paths, name: &str) -> Result<Host> {
-        let path = paths.profile(name)?;
-        let data = fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-        let config: Value = serde_json::from_slice(&data)?;
+        Host::load_at(paths, Place::resolve(paths, name)?)
+    }
+
+    /// The host whose profile is at `place`.
+    pub fn load_at(paths: &Paths, place: Place) -> Result<Host> {
+        let config = place
+            .load(paths)?
+            .ok_or_else(|| format!("No host {}", place.argument()))?;
         Ok(Host {
-            name: name.to_owned(),
-            path,
+            name: place.argument(),
+            place,
             config,
             key: paths.own_key().ok(),
         })
@@ -29,10 +37,18 @@ impl Host {
 
     /// The saved hosts that have an SSH address or a link command.
     pub fn all(paths: &Paths) -> Vec<Host> {
-        paths
-            .hosts()
+        let scope = crate::profiles::scope(paths);
+        crate::profiles::list(paths, &scope)
+            .unwrap_or_default()
             .into_iter()
-            .filter_map(|(name, _)| Host::load(paths, &name).ok())
+            .filter_map(|(name, config)| {
+                Some(Host {
+                    place: Place::stored(&scope, &name).ok()?,
+                    name,
+                    config,
+                    key: paths.own_key().ok(),
+                })
+            })
             .filter(|host| {
                 !host.builder("ssh_host").is_empty() || host.config["builder"]["link"].is_array()
             })
@@ -53,17 +69,15 @@ impl Host {
     }
 
     /// The `berth serve` this host is reached through, for a profile written
-    /// from a server's list of hosts.
-    pub fn served(&self) -> Option<Server> {
+    /// from a server's list of hosts. The token is a setting of `paths`, not
+    /// part of a profile.
+    pub fn served(&self, paths: &Paths) -> Option<Server> {
         let url = self.config["builder"]["served"].as_str()?;
-        // The token is a setting, not part of a profile.
-        let configured = Paths::locate()
-            .ok()
-            .and_then(|paths| Server::configured(&paths))
-            .filter(|server| server.url == url);
+        let configured = Server::configured(paths).filter(|server| server.url == url);
         Some(configured.unwrap_or(Server {
             url: url.to_owned(),
             token: std::env::var("BERTH_TOKEN").ok(),
+            paths: Some(paths.clone()),
         }))
     }
 
@@ -157,8 +171,8 @@ impl Host {
 
     /// How to open a connection to the host's berthd. `password` is the SSH
     /// user's sudo password, for a host that asks for one.
-    pub fn link(&self, password: Option<&str>) -> Result<LinkSpec> {
-        if let Some(server) = self.served() {
+    pub fn link(&self, paths: &Paths, password: Option<&str>) -> Result<LinkSpec> {
+        if let Some(server) = self.served(paths) {
             return Ok(LinkSpec {
                 via: Some((server, self.name.clone())),
                 ..LinkSpec::default()
@@ -298,11 +312,15 @@ mod tests {
     fn a_profile_can_name_its_own_link() {
         let host = Host {
             name: "c".into(),
-            path: "c.json".into(),
+            place: Place::File("/c.json".into()),
             key: None,
             config: json!({"builder": {"link": ["docker", "exec", "-i", "c", "berthd", "connect"]}}),
         };
-        let spec = host.link(None).unwrap();
+        let paths = Paths {
+            config_dir: "/nonexistent/config".into(),
+            data_dir: "/nonexistent/data".into(),
+        };
+        let spec = host.link(&paths, None).unwrap();
         assert_eq!((spec.program.as_str(), spec.args.len()), ("docker", 5));
         assert!(inventory("-oProxyCommand=x", "", "", "").is_err());
         assert!(inventory("box", "", "0", "").is_err());

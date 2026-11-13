@@ -246,7 +246,7 @@ pub struct Live<'a> {
 
 impl<'a> Live<'a> {
     pub fn new(paths: &'a Paths, host: Host, password: Option<String>) -> Result<Live<'a>> {
-        let link = Link::new(host.link(password.as_deref())?);
+        let link = Link::new(host.link(paths, password.as_deref())?);
         Ok(Live {
             paths,
             host,
@@ -399,7 +399,7 @@ pub fn survey(paths: &Paths) -> Vec<api::HostBehind> {
     let asked = runtime.block_on(futures_util::future::join_all(hosts.iter().map(
         |host| async move {
             let password = std::env::var("BERTH_SUDO_PASSWORD").ok();
-            let link = Link::new(host.link(password.as_deref()).ok()?);
+            let link = Link::new(host.link(paths, password.as_deref()).ok()?);
             let version = tokio::time::timeout(
                 std::time::Duration::from_secs(20),
                 link.get::<Version>("/v1/version"),

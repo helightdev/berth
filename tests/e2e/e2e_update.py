@@ -96,7 +96,7 @@ class Update(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         for name in ('alpha',):
-            cls.station.profile_path(name).unlink(missing_ok=True)
+            cls.station.remove_host(name, check=False)
         cls.station.root_on_host('rm -f /var/run/reboot-required', check=False)
         cls.station.berth('host', HOST, 'secret', 'up-key', 'off', check=False)
         cls.station.berth('secret', 'remove', 'up-key', check=False)
@@ -154,7 +154,7 @@ class Update(unittest.TestCase):
         self.assertRegex(stopped.stdout, r'(?m)^alpha: failed: applying failed')
         self.assertRegex(stopped.stdout, rf'(?m)^{HOST}: not started$')
         self.assertEqual(self.applied()['plugins'][0]['version'], '1.0.0')
-        station.profile_path('alpha').unlink()
+        station.remove_host('alpha')
 
         # Brought up to date.
         rolled = station.berth('apply', '--behind', timeout=900).stdout

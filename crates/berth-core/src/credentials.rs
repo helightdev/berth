@@ -1,5 +1,10 @@
-use crate::Result;
-use serde_json::{Value, json};
+use crate::{
+    Result,
+    paths::Paths,
+    profiles::Place,
+    store::{self, kind},
+};
+use serde_json::{Map, Value, json};
 use std::{
     fs,
     io::{Read, Write},
@@ -77,24 +82,28 @@ pub fn hash(password: &str) -> Result<String> {
     Ok(hash)
 }
 
-pub fn save(path: &Path, user: &str, password: &str) -> Result<()> {
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    fs::create_dir_all(parent)?;
-    let mut data: Value = match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
-        Err(error) => return Err(error.into()),
-    };
+/// Keep a generated password of a host's account in berth's store, beside
+/// the host's profile, for `berth credentials` to show.
+pub fn save(paths: &Paths, place: &Place, user: &str, password: &str) -> Result<()> {
+    let (scope, name) = place.side();
+    let store = store::shared(paths)?;
+    let mut data = store
+        .read_json(kind::CREDENTIALS, &scope, &name)?
+        .unwrap_or_else(|| json!({}));
     data.as_object_mut()
-        .ok_or("Credential file must contain an object")?
+        .ok_or("The kept passwords of a host are not an object")?
         .insert(user.into(), json!(password));
-    let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    serde_json::to_writer_pretty(&mut file, &data)?;
-    file.persist(path)?;
+    store.write_json(kind::CREDENTIALS, &scope, &name, &data)?;
     Ok(())
+}
+
+/// The generated passwords kept of a host, by account.
+pub fn load(paths: &Paths, place: &Place) -> Result<Map<String, Value>> {
+    let (scope, name) = place.side();
+    let kept = store::shared(paths)?.read_json(kind::CREDENTIALS, &scope, &name)?;
+    Ok(kept
+        .and_then(|kept| kept.as_object().cloned())
+        .unwrap_or_default())
 }
 
 /// SHA-256 of a file, using coreutils so large images do not need a hashing dependency.

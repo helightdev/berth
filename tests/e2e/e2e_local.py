@@ -42,6 +42,54 @@ class Seed(unittest.TestCase):
 
 
 @needs_e2e
+class Profiles(unittest.TestCase):
+    """Profiles live in berth's store, and come in and out as JSON."""
+
+    def test_a_profile_goes_out_and_in_and_is_removed_with_what_is_kept_of_it(self):
+        station = Workstation('profiles', ssh_key=False, trust=False)
+        kept = profile(hostname='yard', builder={'ssh_host': '192.0.2.50', 'ssh_user': OPERATOR})
+        station.write_profile(kept, name='yard')
+        self.assertEqual(station.read_profile('yard'), kept)
+        self.assertRegex(station.berth('list').stdout, r'(?m)^yard\s+192\.0\.2\.50$')
+        self.assertFalse((station.berth_dir / 'hosts').exists())
+        # What is not a profile is refused, and the saved one stays.
+        refused = station.berth('profile', 'yard', '--set', '-', input='[]', check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(station.read_profile('yard'), kept)
+        # Passwords go to a terminal, or to a pipe only when asked to.
+        piped = station.berth('credentials', 'yard', check=False)
+        self.assertNotEqual(piped.returncode, 0)
+        self.assertIn('--show', piped.stderr)
+        self.assertIn('no passwords', station.berth('credentials', 'yard', '--show').stderr)
+        station.remove_host('yard')
+        self.assertNotIn('yard', station.berth('list').stdout)
+        self.assertNotEqual(station.berth('profile', 'yard', check=False).returncode, 0)
+
+    def test_the_hosts_of_an_older_berth_move_into_the_store(self):
+        station = Workstation('older-hosts', ssh_key=False, trust=False)
+        hosts = station.berth_dir / 'hosts'
+        hosts.mkdir(parents=True, mode=0o700)
+        old = profile(hostname='attic', builder={'ssh_host': '192.0.2.60'})
+        (hosts / 'attic.json').write_text(json.dumps(old))
+        (hosts / 'attic.credentials.json').write_text(json.dumps({OPERATOR: 'made-up-password'}))
+        (hosts / 'attic.instance.lock').write_text('')
+        mirrored = station.data / 'berth/served/http---192-0-2-7-7777/hosts'
+        mirrored.mkdir(parents=True)
+        (mirrored / 'yard.json').write_text('{}')
+        listed = station.berth('list')
+        self.assertRegex(listed.stdout, r'(?m)^attic\s+192\.0\.2\.60$')
+        self.assertIn('moved 1 host into berth', listed.stderr)
+        self.assertFalse(hosts.exists())
+        self.assertTrue((station.berth_dir / 'migrated/hosts/attic.json').is_file())
+        self.assertFalse((station.data / 'berth/served').exists())
+        self.assertEqual(station.read_profile('attic'), old)
+        shown = station.berth('credentials', 'attic', '--show').stdout
+        self.assertEqual(shown, f'{OPERATOR} made-up-password\n')
+        # Once is enough.
+        self.assertNotIn('moved', station.berth('list').stderr)
+
+
+@needs_e2e
 class Screens(unittest.TestCase):
     """The terminal UI starts, shows the host and what berthd says of it, and quits."""
 
@@ -84,8 +132,9 @@ class Listings(unittest.TestCase):
 
     def test_the_settings_say_where_things_are(self):
         shown = self.station.berth('config').stdout
-        self.assertIn(str(self.station.berth_dir / 'hosts'), shown)
+        self.assertIn('Hosts      in the store', shown)
         self.assertIn('server = (not set)', shown)
+        self.assertIn(f"Store      SQLite file {self.station.data / 'berth/berth.db'}", shown)
 
     def test_the_api_documents(self):
         operations = json.loads(self.station.berth('operations').stdout)

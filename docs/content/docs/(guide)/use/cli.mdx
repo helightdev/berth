@@ -17,6 +17,9 @@ With a [berth server](/docs/use/server) set, by `--server` or the `server` setti
 | `berth` | The home screen |
 | `berth HOST` | Open a host in the terminal UI; a new name starts a new profile |
 | `berth list` | Saved hosts and their addresses |
+| `berth profile HOST` | The host's profile, as JSON on standard output |
+| `berth profile HOST --set FILE` | Save the profile in FILE as the host's, checked as the terminal UI reads one. `-` reads standard input. With a [berth server](/docs/use/server) set, it is saved on the server |
+| `berth credentials HOST [--show]` | The passwords berth generated for the host's accounts, an account and its password to a line. Only to a terminal unless `--show` is given. For a server's host they come from the server |
 | `berth inventory [HOST…]` | The hosts as an Ansible inventory |
 | `berth config` | Where things are kept, and the settings |
 | `berth config KEY [VALUE]` | Change a setting; no value clears it |
@@ -93,7 +96,7 @@ berth output studio ID --tail 50 --follow
 
 | Command | Does |
 | --- | --- |
-| `berth secret [set NAME \| remove NAME]` | Secret values kept on this machine |
+| `berth secret [set NAME \| remove NAME]` | Secret values, kept in berth's store |
 | `berth host HOST` | The secrets and registries a host gets |
 | `berth host HOST secret NAME env VARIABLE \| file PATH [MODE] \| off` | Give a secret to a host, or stop |
 | `berth host HOST registry NAME on\|off` | Give a registry's login to a host, or stop |
@@ -131,4 +134,7 @@ With a [berth server](/docs/use/server) set, these show and change the server's 
 | `berth setup-key [--remove]` | Make a [setup key](/docs/use/server#with-a-setup-key) for the `berth serve` whose data is on this machine, valid for 24 hours, in place of any earlier one. `--remove` ends it |
 | `berth inbox [HOST] [--topic PREFIX] [--all]` | Messages `berth serve` took in from the hosts' channels |
 | `berth kv get\|set\|rm\|ls NAMESPACE [KEY] [JSON]` | The key-value store of `berth serve` |
+| `berth store` | Where the store is, and whether its state is encrypted ([The store](/docs/use/store)) |
+| `berth store encrypt\|rekey\|decrypt [--yes]` | Seal the store's state with a new key file, change the key, or write it plain again. Stop `berth serve` first |
+| `berth store copy TARGET\|-\|--target-file FILE [--into-existing]` | Copy the store into another SQLite file or PostgreSQL database ([Move to another database](/docs/use/store#move-to-another-database)). `-` reads a URL from standard input, which keeps its password out of the process list |
 | `berth operations`, `berth openapi`, `berth asyncapi` | The API documents of `berth serve` ([API](/docs/api#the-documents)) |

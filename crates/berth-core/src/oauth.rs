@@ -280,15 +280,14 @@ pub fn save(paths: &Paths, server: &str, tokens: Option<&Tokens>) -> Result<()> 
 /// The access token to show a server: the one kept while it lasts, renewed
 /// when it runs out, or a new one for a client with a secret. None when berth
 /// is no client and nobody has logged in.
-pub async fn token(server: &str) -> Result<Option<String>> {
-    let paths = Paths::locate().map_err(said)?;
-    let known = load(&paths, server);
+pub async fn token(paths: &Paths, server: &str) -> Result<Option<String>> {
+    let known = load(paths, server);
     if let Some(tokens) = &known
         && (tokens.expires == 0 || tokens.expires > now() + MARGIN)
     {
         return Ok(Some(tokens.access.clone()));
     }
-    let Some(client) = Client::configured(&paths, server).await? else {
+    let Some(client) = Client::configured(paths, server).await? else {
         return Ok(None);
     };
     let renewed = match known.as_ref().and_then(|tokens| tokens.refresh.as_deref()) {
@@ -308,6 +307,6 @@ pub async fn token(server: &str) -> Result<Option<String>> {
             ));
         }
     };
-    save(&paths, server, Some(&tokens))?;
+    save(paths, server, Some(&tokens))?;
     Ok(Some(tokens.access))
 }

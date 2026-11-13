@@ -190,17 +190,16 @@ class Workstation:
     def root_on_host(self, command, check=True):
         return self.ssh(OPERATOR, f'sudo -n sh -c {shell_quote(command)}', check=check)
 
-    def profile_path(self, name=HOST):
-        return self.berth_dir / 'hosts' / f'{name}.json'
-
     def write_profile(self, profile, name=HOST):
-        path = self.profile_path(name)
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        path.write_text(json.dumps(profile, indent=2) + '\n')
-        path.chmod(0o600)
+        """Save a host's profile in berth's store, as `berth profile --set` does."""
+        self.berth('profile', name, '--set', '-', input=json.dumps(profile, indent=2) + '\n')
 
     def read_profile(self, name=HOST):
-        return json.loads(self.profile_path(name).read_text())
+        return json.loads(self.berth('profile', name).stdout)
+
+    def remove_host(self, name=HOST, check=True):
+        """Forget a host, with what berth keeps of it."""
+        return self.berth('remove', name, check=check)
 
     def link(self):
         return BerthdLink(self)

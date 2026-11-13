@@ -7,6 +7,7 @@ use crate::browser::Browser;
 use berth_tui::berth_key;
 use berth_tui::fields::Kind;
 use berth_tui::plugins::{self, Asked, Place};
+use berth_tui::screen;
 use berth_tui::setup::{valid_name, value_line};
 use berth_tui::{Code, Key, event, theme};
 use ratzilla::ratatui::{
@@ -357,11 +358,12 @@ impl Home {
             &self.connect,
         ) {
             (Some(setting), ..) => {
-                let meaning = setting["meaning"].as_str().unwrap_or("");
+                let meaning =
+                    berth_tui::screen::describe_setting(setting["meaning"].as_str().unwrap_or(""));
                 match setting["open"] == true {
-                    true => format!("The {meaning}.\n\nLeave it empty to use the default."),
+                    true => format!("{meaning}.\n\nLeave it empty to use the default."),
                     false => format!(
-                        "The {meaning}.\n\nIt says who gets in or where the server's files are, so it is set on the server itself: `berth config {} VALUE`. A token is never shown.",
+                        "{meaning}.\n\nIt says who gets in or where the server's files are, so it is set on the server itself: `berth config {} VALUE`. A token is never shown.",
                         setting["key"].as_str().unwrap_or("")
                     ),
                 }
@@ -380,7 +382,7 @@ impl Home {
             editor: self.editor.as_ref().map(|_| (" Edit ", false)),
             help,
             keys: match (&self.editor, extra) {
-                (Some(_), _) => "Enter accept · Esc cancel",
+                (Some(_), _) => "Enter accept · Esc cancel · Ctrl+O copy",
                 (None, Some(SettingsRow::BerthKey)) => {
                     "↑↓ select · Enter copy the key · Tab registries · Esc hosts"
                 }
@@ -412,6 +414,9 @@ impl Home {
                     let typed = input.value().trim().to_owned();
                     self.editor = None;
                     admin.set_setting(&name, &typed, format!("Saved {name}"));
+                }
+                _ if screen::is_copy_field(&key) => {
+                    return Some(screen::copy_field(&mut Browser, input));
                 }
                 _ => event::edit(input, &key),
             }
@@ -487,7 +492,7 @@ impl Home {
                 .map(|_| (title, self.naming.is_some() || !adding)),
             help,
             keys: match self.editor {
-                Some(_) => "Enter accept · Esc cancel",
+                Some(_) => "Enter accept · Esc cancel · Ctrl+O copy",
                 None => "↑↓ select · Enter set · x remove · Tab plugins · Esc hosts",
             },
         }
@@ -524,6 +529,9 @@ impl Home {
                         return Some("Nothing entered, kept as it was".into());
                     }
                     admin.set_secret(&name, &typed, format!("Stored {name}"));
+                }
+                _ if screen::is_copy_field(&key) => {
+                    return Some(screen::copy_field(&mut Browser, input));
                 }
                 _ => event::edit(input, &key),
             }
@@ -583,7 +591,7 @@ impl Home {
                 .map(|_| (title, matches!(row, RegistryRow::Password(_)))),
             help,
             keys: match self.editor {
-                Some(_) => "Enter accept · Esc cancel",
+                Some(_) => "Enter accept · Esc cancel · Ctrl+O copy",
                 None => "↑↓ select · Enter change · x remove · c check · Tab secrets · Esc hosts",
             },
             rows: listed.into_iter().map(|(_, line)| line).collect(),
@@ -737,6 +745,9 @@ impl Home {
                         Err(why) => Some(why),
                     };
                 }
+                _ if screen::is_copy_field(&key) => {
+                    return Some(screen::copy_field(&mut Browser, input));
+                }
                 _ => event::edit(input, &key),
             }
             return None;
@@ -848,7 +859,7 @@ impl Home {
                 .map(|_| (Place::Page.editor_title(), false)),
             help,
             keys: match self.editor {
-                Some(_) => "Enter install · Esc cancel",
+                Some(_) => "Enter install · Esc cancel · Ctrl+O copy",
                 None => {
                     "↑↓ select · Enter add · u send a .tgz · c check · U update · A all · x remove · Esc hosts"
                 }
@@ -863,6 +874,12 @@ impl Home {
             self.plugins.behind = data.behind.clone();
             (data.plugins.clone(), data.report.clone())
         };
+        // The shared tab does not know the clipboard, so the copy is taken here.
+        if let Some(input) = &self.editor
+            && screen::is_copy_field(&key)
+        {
+            return Some(screen::copy_field(&mut Browser, input));
+        }
         let asked = self
             .plugins
             .key(key, &mut self.editor, &listed, &mut report, &Place::Page);

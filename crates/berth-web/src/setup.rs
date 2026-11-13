@@ -6,7 +6,7 @@ use crate::admin::{Admin, Data};
 use crate::browser::Browser;
 use berth_tui::fields::{Action, Field, Kind, Step};
 use berth_tui::machine::{self, Machine, Next};
-use berth_tui::screen::{draw_footer, draw_header, draw_question, inside};
+use berth_tui::screen::{self, draw_footer, draw_header, draw_question, inside};
 use berth_tui::setup::{self, Account, Entry, Feature, Item, Page, Problem, Profile, Row};
 use berth_tui::{Click, Code, Event, Key, event, markdown, theme};
 use ratzilla::ratatui::{
@@ -525,6 +525,9 @@ impl Setup {
                     self.move_selection(key.code == Code::Up);
                 }
                 Code::Char('u') if key.ctrl => input.reset(),
+                _ if screen::is_copy_field(&key) => {
+                    say(Some(screen::copy_field(&mut Browser, input)));
+                }
                 _ => event::edit(input, &key),
             }
             return Flow::Stay;
@@ -751,7 +754,7 @@ impl Setup {
             draw_editor(frame, edit, &title, input, masked);
         }
         let keys = match (&self.editing, field) {
-            (Some(_), _) => "Enter accept · Esc cancel · Ctrl+S save".to_owned(),
+            (Some(_), _) => "Enter accept · Esc cancel · Ctrl+O copy · Ctrl+S save".to_owned(),
             (None, Some(field)) if field.is_password_hash() => {
                 "↑↓ select · g generate · p type a password · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned()
             }

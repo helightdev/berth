@@ -58,7 +58,7 @@ fn latest() -> Result<String> {
 
 /// Numbers compared part by part, so 0.10.0 is newer than 0.9.0. A release is
 /// newer than its pre-releases, such as 0.4.0-rc.1.
-fn newer(candidate: &str, current: &str) -> bool {
+pub(crate) fn newer(candidate: &str, current: &str) -> bool {
     let parts = |version: &str| -> (Vec<u64>, bool) {
         let numbers = version
             .split(['.', '-', '+'])

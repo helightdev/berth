@@ -1,7 +1,7 @@
 //! Creating the machine a saved host's profile describes, with a provisioner
 //! of a plugin. berth runs the provisioner where it runs itself, keeps the
-//! machine's id beside the profile in `NAME.instance.json`, and from then on
-//! the machine is an ordinary host. One machine per profile.
+//! machine's id in its store beside the profile, and from then on the machine
+//! is an ordinary host. One machine per profile.
 //!
 //! A provisioner is run as `COMMAND VERB` in its package directory and in a
 //! process group of its own. It reads one JSON object on standard input and
@@ -15,9 +15,11 @@ use crate::{
     link::{self, Link},
     paths::Paths,
     plugins::{self, Plugin, Provisioner, Setup},
+    profiles::Place,
     registry::Store,
     seed,
     server::KEPT,
+    store::{self, kind},
 };
 use berth_api::{Instance, ListedInstance, Provision, ProvisionerInfo};
 use serde::{Deserialize, Serialize};
@@ -91,8 +93,9 @@ impl Options {
 
 // ── The record beside the profile ───────────────────────────────────────────
 
-/// What berth keeps of the machine it created for a host, in
-/// `NAME.instance.json` beside the profile.
+/// What berth keeps of the machine it created for a host, in its store
+/// beside the profile. It is the only way back to that machine, so it is
+/// written before the machine is asked for and removed only once it is gone.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Record {
     /// `PLUGIN/ID`.
@@ -109,38 +112,35 @@ pub struct Record {
 }
 
 impl Record {
-    pub fn path(paths: &Paths, host: &str) -> Result<PathBuf> {
-        Ok(paths.profile(host)?.with_extension("instance.json"))
+    pub fn load(paths: &Paths, host: &str) -> Result<Option<Record>> {
+        Record::load_at(paths, &Place::resolve(paths, host)?)
     }
 
-    pub fn load(paths: &Paths, host: &str) -> Result<Option<Record>> {
-        let path = Record::path(paths, host)?;
-        match fs::read(&path) {
-            Ok(data) => Ok(Some(
-                serde_json::from_slice(&data)
-                    .map_err(|error| format!("{}: {error}", path.display()))?,
-            )),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(format!("{}: {error}", path.display()).into()),
+    /// The record of the host whose profile is at `place`.
+    pub fn load_at(paths: &Paths, place: &Place) -> Result<Option<Record>> {
+        let (scope, name) = place.side();
+        match store::shared(paths)?.read_json(kind::INSTANCE, &scope, &name)? {
+            Some(record) => Ok(Some(serde_json::from_value(record).map_err(|error| {
+                format!(
+                    "The record of the machine of {} in berth's store: {error}",
+                    place.argument()
+                )
+            })?)),
+            None => Ok(None),
         }
     }
 
     pub fn save(&self, paths: &Paths, host: &str) -> Result<()> {
-        let path = Record::path(paths, host)?;
-        let parent = path.parent().ok_or("A record is in a directory")?;
-        // Temporary files are created private, which the record stays.
-        let mut file = tempfile::NamedTempFile::new_in(parent)?;
-        serde_json::to_writer_pretty(&mut file, self)?;
-        file.write_all(b"\n")?;
-        file.persist(&path)?;
+        let (scope, name) = Place::resolve(paths, host)?.side();
+        let record = serde_json::to_value(self)?;
+        store::shared(paths)?.write_json(kind::INSTANCE, &scope, &name, &record)?;
         Ok(())
     }
 
     pub fn remove(paths: &Paths, host: &str) -> Result<()> {
-        match fs::remove_file(Record::path(paths, host)?) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
-            _ => Ok(()),
-        }
+        let (scope, name) = Place::resolve(paths, host)?.side();
+        store::shared(paths)?.forget(kind::INSTANCE, &scope, &name)?;
+        Ok(())
     }
 }
 
@@ -159,7 +159,14 @@ impl Drop for Lock {
 }
 
 pub fn lock(paths: &Paths, host: &str) -> Result<Lock> {
-    let path = Record::path(paths, host)?.with_extension("lock");
+    let path = Place::resolve(paths, host)?.lock_file(paths);
+    if let Some(dir) = path.parent() {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+    }
     let file = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -180,7 +187,7 @@ pub fn lock(paths: &Paths, host: &str) -> Result<Lock> {
 
 /// Whether something is being done to a host's machine right now.
 pub fn busy(paths: &Paths, host: &str) -> bool {
-    Record::path(paths, host).is_ok_and(|path| path.with_extension("lock").exists())
+    Place::resolve(paths, host).is_ok_and(|place| place.lock_file(paths).exists())
         && lock(paths, host).is_err()
 }
 
@@ -568,11 +575,13 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &Provision) -> R
 /// a created machine has no laptop's physical login or power settings, and
 /// the seed is rendered from, or the role applied with, what is saved.
 fn cloud_profile(paths: &Paths, host: &str) -> Result<()> {
-    let path = paths.profile(host)?;
-    let mut profile: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    let place = Place::resolve(paths, host)?;
+    let mut profile = place
+        .load(paths)?
+        .ok_or_else(|| format!("No host {host}"))?;
     if profile["profile"] != "cloud" && profile.is_object() {
         profile["profile"] = json!("cloud");
-        seed::save_profile(&path, &profile)?;
+        place.save(paths, &profile)?;
     }
     Ok(())
 }
@@ -674,7 +683,7 @@ impl Prepared {
             )
             .into()
         };
-        take_address(&profile.path, &answer, out).map_err(exists)?;
+        take_address(paths, &profile.place, &answer, out).map_err(exists)?;
         self.wait(paths, options, out).map_err(exists)
     }
 
@@ -758,7 +767,7 @@ impl Prepared {
 }
 
 /// Put an address the provisioner gave into the profile, where it has none.
-fn take_address(path: &Path, answer: &Value, out: &mut dyn Write) -> Result<()> {
+fn take_address(paths: &Paths, place: &Place, answer: &Value, out: &mut dyn Write) -> Result<()> {
     let address = answer["address"].as_str().unwrap_or("").trim();
     let port = match &answer["port"] {
         Value::Number(port) => port.to_string(),
@@ -779,7 +788,9 @@ fn take_address(path: &Path, answer: &Value, out: &mut dyn Write) -> Result<()> 
         );
         return Ok(());
     }
-    let mut profile: Value = serde_json::from_slice(&fs::read(path)?)?;
+    let mut profile = place
+        .load(paths)?
+        .ok_or_else(|| format!("No host {}", place.argument()))?;
     if !profile["builder"].is_object() {
         profile["builder"] = json!({});
     }
@@ -808,7 +819,7 @@ fn take_address(path: &Path, answer: &Value, out: &mut dyn Write) -> Result<()> 
         profile["builder"]["ssh_user"] = json!(operator);
     }
     if changed {
-        seed::save_profile(path, &profile)?;
+        place.save(paths, &profile)?;
         say(out, &format!("✓ The profile reaches it at {address}"));
     }
     Ok(())
@@ -859,14 +870,15 @@ fn ssh_answers(host: &Host) -> bool {
     ssh.status().is_ok_and(|status| status.success())
 }
 
-fn answers(_paths: &Paths, host: &Host, setup: Setup) -> bool {
+fn answers(paths: &Paths, host: &Host, setup: Setup) -> bool {
     match setup {
         Setup::Seed => {
             // The link goes over SSH, which has to know the machine's key first.
             if !host.address().is_empty() && !ssh_answers(host) {
                 return false;
             }
-            let (Ok(spec), Ok(runtime)) = (host.link(password(host).as_deref()), link::runtime())
+            let (Ok(spec), Ok(runtime)) =
+                (host.link(paths, password(host).as_deref()), link::runtime())
             else {
                 return false;
             };
@@ -889,7 +901,7 @@ fn answers(_paths: &Paths, host: &Host, setup: Setup) -> bool {
 fn finish(paths: &Paths, host: &Host, setup: Setup, out: &mut dyn Write) -> Result<()> {
     match setup {
         Setup::Seed => {
-            let link = Link::new(host.link(password(host).as_deref())?);
+            let link = Link::new(host.link(paths, password(host).as_deref())?);
             let runtime = link::runtime()?;
             let body = json!({
                 "kind": "process", "user": "root",
@@ -1305,11 +1317,14 @@ print(out)
         }
 
         fn profile(&self, name: &str, profile: Value) {
-            fs::write(self.paths.profile(name).unwrap(), profile.to_string()).unwrap();
+            Place::own(name)
+                .unwrap()
+                .save(&self.paths, &profile)
+                .unwrap();
         }
 
         fn store(&self) -> Store {
-            Store::new(&self.paths)
+            Store::new(&self.paths).unwrap()
         }
 
         fn file(&self, name: &str, text: &str) {
@@ -1399,11 +1414,10 @@ print(out)
         assert!(said.contains("quota exceeded"), "{said}");
         let kept = world.record().unwrap();
         assert!(kept.id.is_empty() && kept.token.len() == 32);
-        let mode = fs::metadata(Record::path(&world.paths, "studio").unwrap())
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600);
+        // The record is in the store beside the profile, and no file is beside anything.
+        let store = store::shared(&world.paths).unwrap();
+        assert_eq!(store.names(kind::INSTANCE, store::OWN).unwrap(), ["studio"]);
+        assert!(!world.paths.config_dir.join("hosts").exists());
         // Another provisioner cannot take over while the first may have made one.
         let said = world
             .provision("fake/seeded", &[])
@@ -1602,7 +1616,7 @@ print(out)
         let said = String::from_utf8(out).unwrap();
         assert!(said.contains("tailnet"), "{said}");
         assert!(world.record().is_none());
-        assert!(world.paths.profile("studio").unwrap().is_file());
+        assert!(Host::load(&world.paths, "studio").is_ok());
         let (verb, request) = world
             .requests()
             .into_iter()
@@ -1827,22 +1841,64 @@ print(out)
     #[test]
     fn the_address_comes_with_the_operator_as_the_ssh_user() {
         let home = tempfile::tempdir().unwrap();
-        let path = home.path().join("studio.json");
-        let taken = |profile: Value| {
-            fs::write(&path, profile.to_string()).unwrap();
-            let answer = json!({"address": "192.0.2.40"});
-            take_address(&path, &answer, &mut Vec::new()).unwrap();
-            let profile: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            profile["builder"].clone()
+        let paths = Paths {
+            config_dir: home.path().join("config"),
+            data_dir: home.path().join("data"),
         };
+        for place in [
+            Place::File(home.path().join("studio.json")),
+            Place::own("studio").unwrap(),
+        ] {
+            let taken = |profile: Value| {
+                place.save(&paths, &profile).unwrap();
+                let answer = json!({"address": "192.0.2.40"});
+                take_address(&paths, &place, &answer, &mut Vec::new()).unwrap();
+                place.load(&paths).unwrap().unwrap()["builder"].clone()
+            };
+            assert_eq!(
+                taken(json!({"operator_username": "ops"})),
+                json!({"ssh_host": "192.0.2.40", "ssh_user": "ops"})
+            );
+            // A user the profile names is kept.
+            assert_eq!(
+                taken(json!({"operator_username": "ops", "builder": {"ssh_user": "admin"}})),
+                json!({"ssh_host": "192.0.2.40", "ssh_user": "admin"})
+            );
+        }
+    }
+
+    #[test]
+    fn two_lockers_of_one_host_and_hosts_apart() {
+        let world = World::new();
+        world.profile("attic", json!({}));
+        let first = lock(&world.paths, "studio").unwrap();
+        assert!(lock(&world.paths, "studio").is_err());
+        assert!(busy(&world.paths, "studio"));
+        // Another host, and a profile in a file, have locks of their own.
+        let other = lock(&world.paths, "attic").unwrap();
+        let file = world.plugin.join("studio.json");
+        let by_path = lock(&world.paths, file.to_str().unwrap()).unwrap();
+        assert!(busy(&world.paths, "attic") && busy(&world.paths, file.to_str().unwrap()));
+        drop(first);
+        assert!(!busy(&world.paths, "studio"));
+        assert!(lock(&world.paths, "studio").is_ok());
+        drop((other, by_path));
+        assert!(!busy(&world.paths, "attic"));
+        // A record of a profile in a file is found by its path.
+        Record {
+            provisioner: "fake/vm".into(),
+            token: "t".into(),
+            ..Default::default()
+        }
+        .save(&world.paths, file.to_str().unwrap())
+        .unwrap();
+        assert!(world.record().is_none());
         assert_eq!(
-            taken(json!({"operator_username": "ops"})),
-            json!({"ssh_host": "192.0.2.40", "ssh_user": "ops"})
-        );
-        // A user the profile names is kept.
-        assert_eq!(
-            taken(json!({"operator_username": "ops", "builder": {"ssh_user": "admin"}})),
-            json!({"ssh_host": "192.0.2.40", "ssh_user": "admin"})
+            Record::load(&world.paths, file.to_str().unwrap())
+                .unwrap()
+                .unwrap()
+                .token,
+            "t"
         );
     }
 

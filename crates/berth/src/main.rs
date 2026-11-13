@@ -2,10 +2,12 @@ mod app;
 mod commands;
 mod fields;
 mod keys;
+mod mirror;
 mod picker;
 mod remote;
 mod serve;
 mod session;
+mod store_command;
 mod ui;
 mod update;
 
@@ -40,6 +42,13 @@ Usage:
   berth login                log in to a berth server that takes access tokens of an
                              OAuth 2.0 issuer; berth logout forgets the login
   berth remove HOST          forget a host; the machine is left as it is
+  berth profile HOST         the host's profile, as JSON on standard output
+  berth profile HOST --set FILE
+                             save the profile in FILE (- for standard input) as the
+                             host's; a host of a berth server keeps it on the server
+  berth credentials HOST [--show]
+                             the passwords berth generated for the host's accounts;
+                             only to a terminal, unless --show
   berth provisioners         what can create machines, and what each asks for
   berth provisioners PLUGIN/ID [NAME=VALUE…]
                              the machines it has that berth created
@@ -78,8 +87,9 @@ Usage:
                              whether a registry answers and accepts its login
   berth registry remove NAME
   berth secret [set NAME | remove NAME]
-                             secret values kept on this machine; tailnet_api_key is
-                             the control server's API key, for enrollment keys
+                             secret values, kept in berth's store (see berth store);
+                             tailnet_api_key is the control server's API key, for
+                             enrollment keys
   berth tailnet-key HOST     create a one-use enrollment key for HOST, valid for an
                              hour, at the control server of the tailnet_ settings
                              (HOST may also be the path of its profile)
@@ -119,13 +129,40 @@ Usage:
                              messages taken in from the hosts' channels
   berth kv get|set|rm|ls NAMESPACE [KEY] [JSON]
                              the key-value store
+  berth store                where berth keeps its state, and whether it is encrypted
+  berth store encrypt | rekey | decrypt [--yes]
+                             seal the store's values with a new key file, change the
+                             key, or write them plain again; berth serve is stopped first
+  berth store copy TARGET | - | --target-file FILE [--into-existing]
+                             copy the store into another SQLite file or PostgreSQL
+                             database, which berth config store then switches to; a
+                             URL as TARGET shows up in the process list, so - reads
+                             it from standard input
   berth openapi | asyncapi | operations
                              the API documents of berth serve";
 
 fn show_config(paths: &Paths) -> Result<()> {
-    let settings = paths.settings()?;
-    println!("Settings   {}", paths.settings_file().display());
-    println!("Hosts      {}", paths.hosts_dir().display());
+    // The settings of the file are shown when the store does not open.
+    let (settings, unopened) = match paths.settings() {
+        Ok(settings) => (settings, None),
+        Err(error) => (paths.local_settings()?, Some(error)),
+    };
+    println!(
+        "Settings   {}, and the store",
+        paths.settings_file().display()
+    );
+    let store = berth_core::store::Installation::of(paths).target.describe();
+    match &unopened {
+        None => println!("Store      {store}: settings, hosts, registries and secrets"),
+        Some(error) => println!("Store      {store}, which does not open: {error}"),
+    }
+    match berth_core::server::Server::configured(paths) {
+        Some(server) => println!(
+            "Hosts      on the berth server at {}, with a copy in the store",
+            server.url
+        ),
+        None => println!("Hosts      in the store, with their passwords and machines"),
+    }
     println!("Builds     {}", paths.build_dir().display());
     match paths.source() {
         Ok(source) => println!("Source     {}", source.display()),
@@ -135,8 +172,12 @@ fn show_config(paths: &Paths) -> Result<()> {
     for (key, help) in paths::SETTINGS {
         // What lets someone in is not for a screen.
         let value = match settings.get(*key).and_then(|value| value.as_str()) {
-            Some(_) if key.ends_with("token") || key.ends_with("secret") => Some("(set)"),
+            Some(_) if paths::is_secret(key) => Some("(set)"),
             value => value,
+        };
+        let value = match (&unopened, paths::is_local(key)) {
+            (Some(_), false) => Some("(in the store, which does not open)"),
+            _ => value,
         };
         println!("{key} = {}\n    {help}", value.unwrap_or("(not set)"));
     }
@@ -182,21 +223,72 @@ fn leave() {
 }
 
 /// Load a host's profile, starting from the example for a new one.
+/// Whether these arguments open the terminal screen: none, or a host's name.
+fn opens_screen(args: &[&str]) -> bool {
+    // The commands that are one word.
+    const ALONE: &[&str] = &[
+        "list",
+        "registry",
+        "secret",
+        "plugins",
+        "provisioners",
+        "inventory",
+        "inbox",
+        "kv",
+        "store",
+        "help",
+    ];
+    match args {
+        [] => true,
+        [one] => !one.starts_with('-') && !ALONE.contains(one),
+        _ => false,
+    }
+}
+
+/// Whether a command reads this machine's own plugins: the screen, and the
+/// commands that apply, build or provision with them or list them.
+fn loads_plugins(args: &[&str]) -> bool {
+    const VERBS: &[&str] = &[
+        "apply",
+        "plugins",
+        "provisioners",
+        "provision",
+        "instance",
+        "seed",
+        "iso",
+        "publish",
+        "host",
+    ];
+    opens_screen(args) || args.first().is_some_and(|verb| VERBS.contains(verb))
+}
+
+/// Put back the plugins berth's store has and this machine's plugin
+/// directory lacks, as on a machine restored from the store, and say so on
+/// standard error.
+pub(crate) fn restore_plugins(paths: &Paths) {
+    match berth_core::plugin_state::restore(paths) {
+        Ok(notices) => notices.iter().for_each(|notice| eprintln!("{notice}")),
+        Err(error) => eprintln!("berth: the plugins in berth's store were not checked: {error}"),
+    }
+}
+
 fn open(paths: &Paths, host: &str) -> Result<App> {
-    let path = paths.profile(host)?;
+    let place = berth_core::profiles::Place::resolve(paths, host)?;
     paths.prepare()?;
     // Actions call the builder scripts and playbook by relative path.
     std::env::set_current_dir(paths.source()?)?;
-    let (data, existing) = match fs::read(&path) {
-        Ok(data) => (data, true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            (fs::read(layout::EXAMPLE)?, false)
-        }
-        Err(error) => return Err(error.into()),
+    let (data, existing) = match place.load(paths)? {
+        Some(profile) => (profile.to_string().into_bytes(), true),
+        None => (fs::read(layout::EXAMPLE)?, false),
     };
-    let mut app = App::new(path, parse_config(&data)?);
+    let served = place.server_url().is_some();
+    let mut app = App::new(paths.clone(), place, parse_config(&data)?);
     // With a server set, a new host is one of the server's.
-    if let (false, Some(server)) = (existing, berth_core::server::Server::configured(paths)) {
+    if let (false, true, Some(server)) = (
+        existing,
+        served,
+        berth_core::server::Server::configured(paths),
+    ) {
         if !server.admin(paths) {
             return Err(format!(
                 "No host {host} on the berth server at {}. Adding one needs the role admin there.",
@@ -209,13 +301,15 @@ fn open(paths: &Paths, host: &str) -> Result<App> {
     app.build_dir = paths.build_dir();
     app.iso_dir = paths.iso_dir();
     app.load_plugins(paths.config_dir.join("plugins"));
-    app.config_dir = paths.store_dir();
+    // A host is reached without the store; what needs it says why it is missing.
+    app.access = registry::Store::new(paths)
+        .map_err(|error| format!("berth's store does not open: {error}"));
     // A server's host is set up from the server, and takes the server's key.
     match app.served() {
         Some(_) => {
             let known = app
                 .host_profile()
-                .served()
+                .served(paths)
                 .and_then(|server| server.call("setup.catalogue", json!({}), None).ok());
             // The server's plugins are what its hosts can have.
             if let Some(features) = known
@@ -355,7 +449,10 @@ fn host_command(paths: &Paths, host: &str, args: &[&str]) -> Result<()> {
             let mut registries = list(&app.config["registries"]);
             registries.retain(|known| known != name);
             if switch == "on" {
-                if !registry::Store::new(paths).registries()?.contains_key(name) {
+                if !registry::Store::new(paths)?
+                    .registries()?
+                    .contains_key(name)
+                {
                     return Err(format!("No registry {name}. See: berth registry").into());
                 }
                 registries.push(json!(name));
@@ -389,6 +486,15 @@ fn run() -> Result<()> {
         args.drain(..2);
     }
     let paths = Paths::locate()?;
+    // The first open of the store takes in the files of an older berth and
+    // says so on standard error, which the screen would hide. A store that
+    // does not open is reported where it is needed.
+    if opens_screen(&args) {
+        let _ = berth_core::store::shared(&paths);
+    }
+    if loads_plugins(&args) && berth_core::server::Server::configured(&paths).is_none() {
+        restore_plugins(&paths);
+    }
     // With a server set, the hosts are the server's: fetch them before anything looks.
     let local = [
         "config",
@@ -404,15 +510,32 @@ fn run() -> Result<()> {
         "logout",
         "key",
         "tailnet-key",
+        "credentials",
         "connect",
         "setup-key",
+        "store",
     ];
+    // The screen opens at once on what the last mirror left; the commands
+    // that print are given current data.
+    let mut mirroring = None;
     if let Some(server) = berth_core::server::Server::configured(&paths)
         && !args.first().is_some_and(|verb| local.contains(verb))
     {
-        server
-            .mirror(&paths)
-            .map_err(|error| format!("the berth server at {}: {error}", server.url))?;
+        if opens_screen(&args) {
+            // A host the last mirror does not have cannot be opened without one.
+            if let [name] = args[..]
+                && !paths.hosts().iter().any(|(known, _)| known == name)
+            {
+                server
+                    .mirror(&paths)
+                    .map_err(|error| format!("the berth server at {}: {error}", server.url))?;
+            }
+            mirroring = Some(mirror::Mirroring::of(&paths, server));
+        } else {
+            server
+                .mirror(&paths)
+                .map_err(|error| format!("the berth server at {}: {error}", server.url))?;
+        }
     }
     let host = match args[..] {
         ["list"] => {
@@ -451,7 +574,7 @@ fn run() -> Result<()> {
                 app.config["release_private"] = json!(login.is_some());
                 match login {
                     Some(name) => {
-                        if registry::Store::new(&paths).curl_login(name)?.is_none() {
+                        if registry::Store::new(&paths)?.curl_login(name)?.is_none() {
                             return Err(format!("Registry {name} has no stored login").into());
                         }
                         app.config["release_login"] = json!(name);
@@ -479,6 +602,7 @@ fn run() -> Result<()> {
         ["connect", url] => return commands::connect(&paths, url),
         ["inbox", ref rest @ ..] => return serve::inbox_command(&paths, rest),
         ["kv", ref rest @ ..] => return serve::kv_command(&paths, rest),
+        ["store", ref rest @ ..] => return store_command::command(&paths, rest),
         ["openapi"] => {
             println!("{}", serde_json::to_string_pretty(&serve::openapi())?);
             return Ok(());
@@ -522,7 +646,11 @@ fn run() -> Result<()> {
                 ])
                 .arg(plugins::own_dir(&paths.config_dir))
                 .arg(name);
-                return succeed(npm);
+                let done = succeed(npm);
+                if let Some(line) = plugins::remembered(&paths) {
+                    eprintln!("{line}");
+                }
+                return done;
             }
             for line in manager.remove(name)? {
                 println!("{line}");
@@ -535,16 +663,14 @@ fn run() -> Result<()> {
         ["tailnet-key", host] => {
             // An apply runs this on the machine that runs berth, for a host
             // not on the tailnet yet; the key goes to the role on stdout.
-            let host = berth_core::host::Host::load(&paths, host)?;
-            let name = host.path.file_stem().unwrap_or_default().to_string_lossy();
-            let key = berth_core::tailnet::create_key(
-                &paths,
-                &host.config,
-                &name,
-                berth_core::tailnet::APPLY_LIFETIME,
-            )?;
-            println!("{key}");
+            println!("{}", berth_core::tailnet::key_for(&paths, host)?);
             return Ok(());
+        }
+        ["profile", host] => return commands::show_profile(&paths, host),
+        ["profile", host, "--set", file] => return commands::set_profile(&paths, host, file),
+        ["credentials", host] => return commands::credentials(&paths, host, false),
+        ["credentials", host, "--show"] | ["credentials", "--show", host] => {
+            return commands::credentials(&paths, host, true);
         }
         ["iso", host] => return build_installer(&paths, host, None),
         ["iso", host, "--write", device] => return build_installer(&paths, host, Some(device)),
@@ -611,12 +737,15 @@ fn run() -> Result<()> {
     };
     // Find the source before the screen is taken over, so the error is readable.
     paths.source()?;
+    if let Some(running) = &mut mirroring {
+        running.start();
+    }
     let mut terminal = enter()?;
     let outcome = (|| -> Result<()> {
         loop {
             let name = match &host {
                 Some(host) => host.clone(),
-                None => match ui::home(&mut terminal, &paths)? {
+                None => match ui::home(&mut terminal, &paths, &mut mirroring)? {
                     Some(name) => name,
                     None => return Ok(()),
                 },
@@ -624,7 +753,7 @@ fn run() -> Result<()> {
             let mut app = open(&paths, &name)?;
             app.start();
             // Terminal actions (Ansible) suspend the UI and come back to it.
-            while ui::run(&mut terminal, &mut app)? {
+            while ui::run(&mut terminal, &mut app, &mut mirroring)? {
                 leave();
                 match app.execute() {
                     Ok(()) => println!("\nDone."),
@@ -645,15 +774,37 @@ fn run() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::opens_screen;
+
+    #[test]
+    fn only_the_screen_opens_before_the_mirror_is_made() {
+        assert!(opens_screen(&[]) && opens_screen(&["studio"]));
+        assert!(!opens_screen(&["list"]) && !opens_screen(&["--version"]));
+        assert!(!opens_screen(&["run", "studio", "task"]));
+    }
+
     use super::*;
     use crate::fields::{Action, Field, Step};
     use berth_core::host::inventory as remote_inventory;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    use std::path::PathBuf;
     use tui_input::{Input, backend::crossterm::EventHandler};
 
+    /// Paths of a folder that is never made, for an app that saves nothing.
+    fn nowhere() -> Paths {
+        Paths {
+            config_dir: "/nonexistent/berth-test/config".into(),
+            data_dir: "/nonexistent/berth-test/data".into(),
+        }
+    }
+
+    /// An app of a new profile that is never saved, in a file whose name is
+    /// no host name, so that the profile needs a hostname of its own.
     fn app(config: &str) -> App {
-        App::new(PathBuf::new(), parse_config(config.as_bytes()).unwrap())
+        App::new(
+            nowhere(),
+            berth_core::profiles::Place::File("/nonexistent/berth-test/new profile.json".into()),
+            parse_config(config.as_bytes()).unwrap(),
+        )
     }
 
     fn selectable(app: &App) -> Vec<usize> {
@@ -864,13 +1015,21 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("studio.json");
         let profile = r#"{"builder":{"ssh_host":"192.0.2.10","ssh_user":"ops"}}"#;
-        let mut app = App::new(path.clone(), parse_config(profile.as_bytes()).unwrap());
+        let paths = Paths {
+            config_dir: directory.path().join("config"),
+            data_dir: directory.path().join("data"),
+        };
+        let mut app = App::new(
+            paths,
+            berth_core::profiles::Place::File(path.clone()),
+            parse_config(profile.as_bytes()).unwrap(),
+        );
         // An edit elsewhere leaves the choice to the operator's sudo.
         app.commit(Field::Hostname, "studio");
         app.save().unwrap();
         let host = |path: &std::path::Path| berth_core::host::Host {
             name: "studio".into(),
-            path: path.to_owned(),
+            place: berth_core::profiles::Place::File(path.to_owned()),
             config: serde_json::from_slice(&fs::read(path).unwrap()).unwrap(),
             key: None,
         };

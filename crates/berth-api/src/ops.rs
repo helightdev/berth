@@ -223,6 +223,11 @@ pub static SERVE: &[Op] = &[
     admin(call("hosts.remove", "DELETE", "/v1/hosts/{name}")),
     admin(call("hosts.profile", "GET", "/v1/hosts/{name}/profile")),
     admin(call("hosts.save", "PUT", "/v1/hosts/{name}/profile")),
+    admin(call(
+        "hosts.credentials",
+        "GET",
+        "/v1/hosts/{name}/credentials",
+    )),
     admin(call("hosts.apply", "POST", "/v1/hosts/{name}/apply")),
     admin(call("hosts.rollout", "POST", "/v1/rollout")),
     admin(call("hosts.seed", "POST", "/v1/hosts/{name}/seed")),

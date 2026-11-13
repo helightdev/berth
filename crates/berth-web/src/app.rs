@@ -793,7 +793,12 @@ impl App {
             return;
         }
         if self.host.arguments.is_some() {
-            if screen::arguments_event(&mut self.host, &event) {
+            let mut said = None;
+            let accepted = screen::arguments_event(&mut self.host, &event, &mut Browser, &mut said);
+            if let Some(said) = said {
+                self.status = said;
+            }
+            if accepted {
                 match self.host.accept_argument() {
                     Ok(Some((index, values))) => self.launch(index, values),
                     Ok(None) => {}
@@ -970,6 +975,9 @@ impl App {
                 Code::Enter => {
                     let name = input.value().trim().to_owned();
                     self.name_host(&name);
+                }
+                _ if screen::is_copy_field(&key) => {
+                    self.status = screen::copy_field(&mut Browser, input);
                 }
                 _ => event::edit(input, &key),
             }
@@ -1251,7 +1259,7 @@ impl App {
             draw_editor(frame, edit, " New host name ", input, false);
         }
         let keys = match (admin, self.naming.is_some()) {
-            (_, true) => "Enter create · Esc cancel",
+            (_, true) => "Enter create · Esc cancel · Ctrl+O copy",
             (true, false) => {
                 "↑↓ select · Enter open · n new host · d default · x remove · 2 settings · 3 registries · 4 secrets · 5 plugins · r refresh · o sign out"
             }
@@ -1275,6 +1283,9 @@ impl App {
                         if !password.is_empty() {
                             self.apply(Some(&password));
                         }
+                    }
+                    _ if screen::is_copy_field(key) => {
+                        self.status = screen::copy_field(&mut Browser, input);
                     }
                     _ => event::edit(input, key),
                 },
@@ -1391,7 +1402,12 @@ impl App {
                 Line::raw(""),
                 masked_line("Password  ", input.value(), true),
             ];
-            dialog(frame, " Password ", " Enter apply · Esc cancel ", lines);
+            dialog(
+                frame,
+                " Password ",
+                " Enter apply · Esc cancel · Ctrl+O copy ",
+                lines,
+            );
         }
     }
 
@@ -1427,6 +1443,14 @@ impl App {
                     self.status.clear();
                     self.connect();
                 }
+            }
+            Event::Key(key) if screen::is_copy_field(&key) => {
+                let input = if self.on_server {
+                    &self.typing_server
+                } else {
+                    &self.typing
+                };
+                self.status = screen::copy_field(&mut Browser, input);
             }
             Event::Key(key) if self.on_server => event::edit(&mut self.typing_server, &key),
             Event::Key(key) => event::edit(&mut self.typing, &key),
@@ -1512,8 +1536,8 @@ impl App {
         lines.push(field("Token   ", &masked, !self.on_server));
         let rows = lines.len() as u16;
         let keys = match self.embedded {
-            true => " Enter connect ",
-            false => " Tab switch · Enter connect ",
+            true => " Enter connect · Ctrl+O copy ",
+            false => " Tab switch · Enter connect · Ctrl+O copy ",
         };
         let area = dialog(frame, " Connect ", keys, lines);
         if area.width > 14 && area.height > rows {

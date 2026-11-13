@@ -70,7 +70,9 @@ impl From<store::Error> for Fail {
         let kind = match error {
             store::Error::Conflict(_) => code::PRECONDITION,
             store::Error::TooLarge => code::TOO_LARGE,
-            store::Error::Database(_) => code::INTERNAL,
+            store::Error::Database(_)
+            | store::Error::Encrypted { .. }
+            | store::Error::Sealing(_) => code::INTERNAL,
         };
         Fail::new(kind, error.to_string())
     }
@@ -167,7 +169,7 @@ pub struct KvWritten {
 }
 
 /// Where a roll-out keeps its report: beside its output.
-fn report_path(output: &str) -> std::path::PathBuf {
+pub(super) fn report_path(output: &str) -> std::path::PathBuf {
     std::path::Path::new(output).with_extension("json")
 }
 
@@ -215,6 +217,7 @@ fn guarded_routes() -> OpenApiRouter<Arc<Serve>> {
         .routes(routes!(hosts))
         .routes(routes!(host, setup::remove_host))
         .routes(routes!(setup::profile, setup::save_profile))
+        .routes(routes!(setup::credentials))
         .routes(routes!(apply_host))
         .routes(routes!(rollout_hosts))
         .routes(routes!(setup::seed))
@@ -528,7 +531,8 @@ async fn apply_host(
         false => serde_json::from_slice(&body)
             .map_err(|error| Fail::new(code::BAD_REQUEST, error.to_string()))?,
     };
-    let host = Host::load(&state.paths, &name).map_err(bad)?;
+    let host = super::setup::own_place(&name)
+        .and_then(|place| Host::load_at(&state.paths, place).map_err(bad))?;
     let password = with.sudo_password.or_else(|| remote.password.clone());
     if host.asks_password() && password.is_none() {
         return Err(Fail::new(
@@ -569,7 +573,7 @@ async fn apply_host(
         exit_code: None,
         output_path: path.to_string_lossy().into_owned(),
     };
-    state.store.lock().unwrap().add_job(&job)?;
+    state.store.add_job(&job)?;
     let _ = state.events.send(Event::Job(job.json()));
     let files = prepared.files;
     let watcher = state.clone();
@@ -577,7 +581,7 @@ async fn apply_host(
         let exit_code = child.wait().await.ok().and_then(|status| status.code());
         // The private files the run read live until here.
         drop(files);
-        let mut store = watcher.store.lock().unwrap();
+        let store = &watcher.store;
         let _ = store.end_job(&id, exit_code);
         if let Ok(Some(job)) = store.job(&id) {
             let _ = watcher.events.send(Event::Job(job.json()));
@@ -614,7 +618,7 @@ async fn rollout_hosts(State(state): App, body: Bytes) -> Answer<Json<JobInfo>> 
         exit_code: None,
         output_path: path.to_string_lossy().into_owned(),
     };
-    state.store.lock().unwrap().add_job(&job)?;
+    state.store.add_job(&job)?;
     let _ = state.events.send(Event::Job(job.json()));
     let passwords: Vec<Option<String>> = names
         .iter()
@@ -627,8 +631,9 @@ async fn rollout_hosts(State(state): App, body: Bytes) -> Answer<Json<JobInfo>> 
         let mut targets: Vec<Box<dyn rollout::Target + '_>> = vec![];
         let mut problem = None;
         for (name, password) in names.iter().zip(passwords) {
-            match Host::load(paths, name).and_then(|host| rollout::Live::new(paths, host, password))
-            {
+            let host = berth_core::profiles::Place::own(name)
+                .and_then(|place| Host::load_at(paths, place));
+            match host.and_then(|host| rollout::Live::new(paths, host, password)) {
                 Ok(target) => targets.push(Box::new(target)),
                 Err(error) => problem = Some(format!("✗ {name}: {error}")),
             }
@@ -648,7 +653,7 @@ async fn rollout_hosts(State(state): App, body: Bytes) -> Answer<Json<JobInfo>> 
             report_path(&path.to_string_lossy()),
             serde_json::to_vec(&report).unwrap_or_default(),
         );
-        let mut store = watcher.store.lock().unwrap();
+        let store = &watcher.store;
         let _ = store.end_job(&id, Some(if report.ok { 0 } else { 1 }));
         if let Ok(Some(job)) = store.job(&id) {
             let _ = watcher.events.send(Event::Job(job.json()));
@@ -679,12 +684,12 @@ pub(super) fn start_job(
         exit_code: None,
         output_path: path.to_string_lossy().into_owned(),
     };
-    state.store.lock().unwrap().add_job(&job)?;
+    state.store.add_job(&job)?;
     let _ = state.events.send(Event::Job(job.json()));
     let watcher = state.clone();
     std::thread::spawn(move || {
         let ok = work(&mut output);
-        let mut store = watcher.store.lock().unwrap();
+        let store = &watcher.store;
         let _ = store.end_job(&id, Some(if ok { 0 } else { 1 }));
         if let Ok(Some(job)) = store.job(&id) {
             let _ = watcher.events.send(Event::Job(job.json()));
@@ -705,16 +710,12 @@ struct Limit {
 #[utoipa::path(get, path = "/v1/jobs", summary = "The jobs, newest first.", tag = "jobs", params(Limit),
     responses((status = 200, description = "Jobs, newest first", body = Vec<JobInfo>)))]
 async fn jobs(State(state): App, Query(query): Query<Limit>) -> Answer<Json<Vec<JobInfo>>> {
-    let jobs = state
-        .store
-        .lock()
-        .unwrap()
-        .jobs(query.limit.unwrap_or(100))?;
+    let jobs = state.store.jobs(query.limit.unwrap_or(100))?;
     Ok(Json(jobs.into_iter().map(job_info).collect()))
 }
 
 fn find_job(state: &Serve, id: &str) -> Answer<store::Job> {
-    let job = state.store.lock().unwrap().job(id)?;
+    let job = state.store.job(id)?;
     job.ok_or_else(|| Fail::new(code::NOT_FOUND, format!("No job {id}")))
 }
 
@@ -746,11 +747,20 @@ async fn job(
 
 /// A job's output from an offset, then what it writes, then how it ended.
 async fn follow_job(state: Arc<Serve>, id: String, mut offset: u64, mut socket: WebSocket) {
+    let mut said_elsewhere = false;
     loop {
         // Whether it has ended is read first, so nothing written before the end is missed.
-        let Ok(Some(job)) = state.store.lock().unwrap().job(&id) else {
+        let Ok(Some(job)) = state.store.job(&id) else {
             return;
         };
+        // Said once, as output, so a follower shows it as it shows the rest.
+        if !said_elsewhere && !std::path::Path::new(&job.output_path).exists() {
+            said_elsewhere = true;
+            let note = format!("{}\n", output_elsewhere(&id));
+            if socket.send(WsMessage::Binary(note.into())).await.is_err() {
+                return;
+            }
+        }
         let data = read_from(&job.output_path, offset);
         if !data.is_empty() {
             offset += data.len() as u64;
@@ -850,15 +860,28 @@ pub fn piece(data: &[u8], query: &OutputQuery, ended: bool) -> Output {
 #[utoipa::path(get, path = "/v1/jobs/{id}/output", summary = "What a job wrote, by bytes or by lines.", tag = "jobs",
     params(("id" = String, Path, description = "A job's id"), OutputQuery),
     responses((status = 200, description = "A piece of the job's output, by bytes or by lines", body = Output),
-              (status = 404, description = "No such job", body = ErrorBody)))]
+              (status = 404, description = "No such job, or its output is not on this machine, as for a job of an installation restored from its store", body = ErrorBody)))]
 async fn job_output(
     State(state): App,
     Path(id): Path<String>,
     Query(query): Query<OutputQuery>,
 ) -> Answer<Json<Output>> {
     let job = find_job(&state, &id)?;
-    let data = std::fs::read(&job.output_path).unwrap_or_default();
+    let data = match std::fs::read(&job.output_path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Fail::new(code::NOT_FOUND, output_elsewhere(&id)));
+        }
+        Err(error) => return Err(internal(error)),
+    };
     Ok(Json(piece(&data, &query, job.ended.is_some())))
+}
+
+/// What is said of a job whose output file is not here. The store has the
+/// job, but its output stays in the data directory of the machine that ran
+/// it, which an installation restored on another machine does not have.
+fn output_elsewhere(id: &str) -> String {
+    format!("The output of job {id} was kept on the machine that ran it, and is not on this one")
 }
 
 // ── Inbox ───────────────────────────────────────────────────────────────────
@@ -915,7 +938,7 @@ async fn inbox(State(state): App, Query(query): Query<InboxQuery>, ws: Ws) -> An
         done: query.done,
         limit: query.limit.unwrap_or(100),
     };
-    let (messages, next) = state.store.lock().unwrap().inbox(&filter)?;
+    let (messages, next) = state.store.inbox(&filter)?;
     Ok(Json(Inbox {
         messages: messages.into_iter().map(inbox_message).collect(),
         next,
@@ -948,7 +971,7 @@ async fn forward(
 }
 
 fn mark(state: &Serve, host: &str, id: u64, done: bool) -> Answer<Json<Done>> {
-    if !state.store.lock().unwrap().set_done(host, id, done)? {
+    if !state.store.set_done(host, id, done)? {
         return Err(Fail::new(
             code::NOT_FOUND,
             format!("No message {id} from {host}"),
@@ -1002,7 +1025,7 @@ async fn kv_list(State(state): App, Path(namespace): Path<String>, ws: Ws) -> An
             })
         }));
     }
-    let entries = state.store.lock().unwrap().list(&namespace)?;
+    let entries = state.store.list(&namespace)?;
     Ok(Json(KvList {
         entries: entries.into_iter().map(kv_entry).collect(),
     })
@@ -1045,7 +1068,7 @@ async fn kv_get(
     State(state): App,
     Path((namespace, key)): Path<(String, String)>,
 ) -> Answer<Response> {
-    let entry = state.store.lock().unwrap().get(&namespace, &key)?;
+    let entry = state.store.get(&namespace, &key)?;
     let entry =
         entry.ok_or_else(|| Fail::new(code::NOT_FOUND, format!("No {key} in {namespace}")))?;
     Ok((etag(entry.revision), Json(kv_entry(entry))).into_response())
@@ -1066,11 +1089,7 @@ async fn kv_put(
     Json(value): Json<Value>,
 ) -> Answer<Response> {
     let when = condition(&headers)?;
-    let revision = state
-        .store
-        .lock()
-        .unwrap()
-        .put(&namespace, &key, &value, when)?;
+    let revision = state.store.put(&namespace, &key, &value, when)?;
     let _ = state.events.send(Event::Kv {
         namespace,
         key: key.clone(),
@@ -1092,7 +1111,7 @@ async fn kv_delete(
     headers: HeaderMap,
 ) -> Answer<Json<Done>> {
     let when = condition(&headers)?;
-    if !state.store.lock().unwrap().remove(&namespace, &key, when)? {
+    if !state.store.remove(&namespace, &key, when)? {
         return Err(Fail::new(
             code::NOT_FOUND,
             format!("No {key} in {namespace}"),

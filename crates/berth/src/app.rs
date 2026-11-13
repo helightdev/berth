@@ -10,20 +10,19 @@ use crate::{
     remote::{HostView, State},
     theme,
 };
-use berth_core::{apply, host::Host, paths::layout};
+use berth_core::{
+    apply,
+    host::Host,
+    paths::{Paths, layout},
+    profiles::Place,
+};
 use berth_tui::host::Pick;
 use berth_tui::machine::{self, Machine, Next};
 use berth_tui::setup::{self, set_pointer};
 pub use berth_tui::setup::{FeatureGroup, Item, value_line};
 use ratatui::{style::Style, text::Line, widgets::ListState};
 use serde_json::{Value, json};
-use std::{
-    fs,
-    io::Write,
-    path::{Path, PathBuf},
-    process::Command,
-    sync::mpsc,
-};
+use std::{io::Write, path::PathBuf, process::Command, sync::mpsc};
 use tui_input::Input;
 
 /// What a selectable row does when activated.
@@ -79,9 +78,12 @@ impl Row {
 
 pub struct App {
     pub config: Value,
-    /// The profile as last written to disk, for detecting unsaved changes.
+    /// The profile as it was last saved, for detecting unsaved changes.
     saved: Value,
-    pub path: PathBuf,
+    /// Where the profile is kept.
+    pub place: Place,
+    /// The installation this berth is.
+    pub paths: Paths,
     pub step: Step,
     /// What Run does: the install method, or `Manage` while on the Manage tab.
     pub action: Action,
@@ -104,8 +106,10 @@ pub struct App {
     pub own_public: String,
     /// What those plugins can install, for the Features page.
     catalogue: Vec<setup::Feature>,
-    /// Where berth keeps its settings, for the registries and secret values.
-    pub config_dir: PathBuf,
+    /// The registries and secrets the host can be given: of this berth, or
+    /// what is known of its server's. Without berth's store, as in tests or
+    /// when it does not open, why there are none; the host is still reached.
+    pub access: std::result::Result<crate::registry::Store, String>,
     /// The registries and secrets that exist, for the Settings tab.
     pub registry_names: Vec<String>,
     pub secret_names: Vec<String>,
@@ -131,6 +135,9 @@ pub struct App {
     /// Wi-Fi networks saved on this machine, as (SSID, password).
     pub wifi_networks: Choices,
     pub status: String,
+    /// The SSH address is being changed to reach a host again: saving it
+    /// connects once more.
+    pub retry_address: bool,
     pub picker: Option<Picker>,
     /// sudo is authorised, so the saved Wi-Fi passwords can be read.
     pub privileged: bool,
@@ -177,18 +184,17 @@ type Answers = (
 
 /// Ask where provisioners run, as `berth provision` does: the berth server
 /// when one is set, otherwise here.
-fn machine_answers(name: &str) -> Answers {
+fn machine_answers(paths: &Paths, name: &str) -> Answers {
     let text = |error: &dyn std::fmt::Display| error.to_string();
-    let paths = match crate::paths::Paths::locate() {
-        Ok(paths) => paths,
-        Err(error) => return (Err(text(&error)), Err(text(&error))),
-    };
-    let Some(server) = berth_core::server::Server::configured(&paths) else {
-        let store = crate::registry::Store::new(&paths);
+    let Some(server) = berth_core::server::Server::configured(paths) else {
+        let store = match crate::registry::Store::new(paths) {
+            Ok(store) => store,
+            Err(error) => return (Err(text(&error)), Err(text(&error))),
+        };
         let options = berth_core::provision::Options::default();
         return (
-            Ok(berth_core::provision::list(&paths, &store)),
-            berth_core::provision::status(&paths, &store, name, &options).map_err(|e| text(&e)),
+            Ok(berth_core::provision::list(paths, &store)),
+            berth_core::provision::status(paths, &store, name, &options).map_err(|e| text(&e)),
         );
     };
     let listed = server
@@ -227,11 +233,12 @@ fn lift(rows: Vec<setup::Row>) -> Vec<Row> {
 }
 
 impl App {
-    pub fn new(path: PathBuf, config: Value) -> Self {
+    pub fn new(paths: Paths, place: Place, config: Value) -> Self {
         let mut app = App {
             saved: Value::Null,
             config,
-            path,
+            place,
+            paths,
             step: Step::Install,
             action: Action::Iso,
             method: Action::Iso,
@@ -257,10 +264,11 @@ impl App {
             own_key: None,
             own_public: String::new(),
             catalogue: vec![],
-            config_dir: PathBuf::new(),
+            access: Err("berth's store is not open, so there are no secrets or registries".into()),
             registry_names: vec![],
             secret_names: vec![],
             status: String::new(),
+            retry_address: false,
             picker: None,
             privileged: false,
             unlock: None,
@@ -310,7 +318,9 @@ impl App {
 
     /// Read which registries and secrets exist. They are kept outside the profile.
     pub fn load_access(&mut self) {
-        let store = crate::registry::Store::at(self.config_dir.clone());
+        let Ok(store) = &self.access else {
+            return;
+        };
         self.registry_names = store
             .registries()
             .unwrap_or_default()
@@ -320,6 +330,11 @@ impl App {
         let names = store.secret_names();
         setup::default_enrollment(&mut self.config, &names);
         self.secret_names = berth_tui::setup::host_secrets(names);
+    }
+
+    /// The registries and secrets, or why there are none.
+    pub fn access(&self) -> Result<&crate::registry::Store> {
+        self.access.as_ref().map_err(|error| error.as_str().into())
     }
 
     pub fn toggle_host_registry(&mut self, index: usize) {
@@ -419,6 +434,79 @@ impl App {
         if matches!(field, SshHost | SshUser | SshPort | SshKey | AskBecomePass) {
             self.reconnect_host();
         }
+    }
+
+    /// The profile as it is kept now, filled in as the screen expects it.
+    fn stored(&self) -> Option<Value> {
+        let profile = self.place.load(&self.paths).ok()??;
+        parse_config(profile.to_string().as_bytes()).ok()
+    }
+
+    /// Take the profile in as it is kept now, when it changed. Without unsaved
+    /// changes it replaces the one on screen, and the host is asked at its
+    /// address again if that changed. Returns whether it was taken in, or
+    /// `None` when nothing changed.
+    fn take_stored(&mut self) -> Option<(bool, Value)> {
+        let profile = self.stored()?;
+        if profile == self.saved {
+            return None;
+        }
+        if self.unsaved() {
+            return Some((false, profile));
+        }
+        let moved = profile["builder"]["ssh_host"] != self.config["builder"]["ssh_host"];
+        self.config = profile.clone();
+        self.saved = profile;
+        if moved {
+            self.reconnect_host();
+        }
+        Some((true, Value::Null))
+    }
+
+    /// Read the profile again, after a mirror rewrote it. Returns what to say
+    /// when something is worth it.
+    pub fn take_in_mirror(&mut self) -> Option<String> {
+        match self.take_stored()? {
+            (true, _) => Some("Took in the berth server's copy of this host".into()),
+            (false, _) => {
+                Some("The berth server's copy of this host changed. Saving sends this one".into())
+            }
+        }
+    }
+
+    /// Read the profile again after one of berth's own commands ran from the
+    /// screen, which may have saved what it found: the machine it created
+    /// gives the host its address. With unsaved changes those fields are
+    /// taken into the changes, which stay unsaved.
+    pub fn take_in_command(&mut self) -> Option<String> {
+        let (taken, profile) = self.take_stored()?;
+        if taken {
+            return Some("Took in what the command saved of this host".into());
+        }
+        let mut changed = false;
+        for pointer in [
+            "/builder/ssh_host",
+            "/builder/ssh_port",
+            "/builder/ssh_user",
+            "/profile",
+        ] {
+            let kept = profile.pointer(pointer).cloned().unwrap_or(Value::Null);
+            if self.config.pointer(pointer) != Some(&kept) && !kept.is_null() {
+                set_pointer(&mut self.config, pointer, kept);
+                changed = true;
+            }
+        }
+        // What is saved now is the command's; the rest of the changes are still to save.
+        self.saved = profile;
+        if changed {
+            self.reconnect_host();
+        }
+        Some(match changed {
+            true => {
+                "Took in the address the command saved; the other changes are not saved yet".into()
+            }
+            false => "The command saved this host too; saving keeps the changes made here".into(),
+        })
     }
 
     pub fn unsaved(&self) -> bool {
@@ -604,12 +692,27 @@ impl App {
                 ]);
             }
             State::Unreachable(message) => {
-                let first = message.lines().next().unwrap_or("").to_owned();
-                return host(vec![
-                    note(format!("✗ {first}"), theme::BAD),
-                    fixed("connect"),
-                    fixed("ssh"),
-                ]);
+                // The error whole, as the lines of the list are not wrapped.
+                let who = match self.served() {
+                    Some(server) => {
+                        format!("The berth server at {server} could not reach the host:")
+                    }
+                    None => "This machine could not reach the host:".to_owned(),
+                };
+                let mut rows = vec![note(who, theme::WARN)];
+                for line in message
+                    .lines()
+                    .flat_map(|line| berth_tui::screen::wrap(line, 70))
+                {
+                    rows.push(note(format!("✗ {line}"), theme::BAD));
+                }
+                rows.push(fixed("connect"));
+                // A host that the server keeps is changed by whoever sets the server up.
+                if !self.locked() {
+                    rows.push(fixed("address"));
+                }
+                rows.push(fixed("ssh"));
+                return host(rows);
             }
         }
         let user = match self.as_agent {
@@ -747,7 +850,7 @@ impl App {
     fn server(&self) -> Option<berth_core::server::Server> {
         self.served()?;
         (!self.locked())
-            .then(|| self.host_profile().served())
+            .then(|| self.host_profile().served(&self.paths))
             .flatten()
     }
 
@@ -887,7 +990,7 @@ impl App {
         } else if field == Field::TailscaleKey {
             let host = self.text(Field::Hostname).to_owned();
             // A server's host gets its key from the server's control server.
-            let (key, note) = match self.host_profile().served() {
+            let (key, note) = match self.host_profile().served(&self.paths) {
                 Some(server) => {
                     let made = server.call(
                         "setup.generate",
@@ -897,28 +1000,47 @@ impl App {
                     let text = |key: &str| made[key].as_str().unwrap_or("").to_owned();
                     (text("value"), text("note"))
                 }
-                None => {
-                    let paths = crate::paths::Paths::locate()?;
-                    berth_core::tailnet::generate(&paths, &self.config, &host)?
-                }
+                None => berth_core::tailnet::generate(&self.paths, &self.config, &host)?,
             };
             self.set(field, json!(key));
             self.status = note;
         } else if field == Field::IsoSha {
             self.hash_iso()?;
         } else if field.is_password_hash() {
-            let password = credentials::password()?;
-            let hash = credentials::hash(&password)?;
             let user = self.text(if field == Field::OperatorHash {
                 Field::OperatorUser
             } else {
                 Field::AgentUser
             });
             let user = if user.is_empty() { "account" } else { user }.to_owned();
-            let path = self.path.with_extension("credentials.json");
-            credentials::save(&path, &user, &password)?;
+            // A server's host has its password made and kept on the server,
+            // which the next mirror would not keep here.
+            if let Some(server) = self.host_profile().served(&self.paths) {
+                let made = server.call(
+                    "setup.generate",
+                    json!({}),
+                    Some(json!({"what": "password", "host": self.name(), "user": user})),
+                )?;
+                let hash = made["value"].as_str().unwrap_or("");
+                if !hash.starts_with("$6$") {
+                    return Err("The berth server made no password".into());
+                }
+                self.set(field, json!(hash));
+                self.status = format!(
+                    "Generated password kept on the berth server at {}; see it with: berth credentials {}",
+                    server.url,
+                    self.name()
+                );
+                return Ok(());
+            }
+            let password = credentials::password()?;
+            let hash = credentials::hash(&password)?;
+            credentials::save(&self.paths, &self.place, &user, &password)?;
             self.set(field, json!(hash));
-            self.status = format!("Generated password saved privately in {}", path.display());
+            self.status = format!(
+                "Generated password kept in berth's store; see it with: berth credentials {}",
+                self.place.argument()
+            );
         }
         Ok(())
     }
@@ -1058,7 +1180,11 @@ impl App {
     pub fn activate(&mut self, field: Field) {
         if field == Field::ReleaseStore {
             // Cycle through entering an address and the configured stores.
-            let stores = crate::registry::Store::at(self.config_dir.clone()).release_stores();
+            let stores = self
+                .access
+                .as_ref()
+                .map(|store| store.release_stores())
+                .unwrap_or_default();
             let next = match stores.iter().position(|store| store == self.text(field)) {
                 None if self.text(field).is_empty() => stores.first(),
                 None => None,
@@ -1389,14 +1515,9 @@ impl App {
 
     /// This host as its profile describes it, for reaching and applying it.
     pub fn host_profile(&self) -> Host {
-        let name = self
-            .path
-            .file_stem()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
         Host {
-            name,
-            path: self.path.clone(),
+            name: self.place.title(),
+            place: self.place.clone(),
             config: self.config.clone(),
             key: self.own_key.clone(),
         }
@@ -1406,7 +1527,8 @@ impl App {
     /// password gets the dialog first, once.
     pub fn connect_host(&mut self) {
         let host = self.host_profile();
-        let own_link = host.config["builder"]["link"].is_array() || host.served().is_some();
+        let own_link =
+            host.config["builder"]["link"].is_array() || host.served(&self.paths).is_some();
         if host.asks_password() && !own_link && self.host.password.is_none() {
             self.host.state = State::Password;
             if !std::mem::replace(&mut self.password_asked, true) {
@@ -1414,9 +1536,9 @@ impl App {
             }
             return;
         }
-        match host.link(self.host.password.as_deref()) {
+        match host.link(&self.paths, self.host.password.as_deref()) {
             Ok(spec) => {
-                crate::remote::connect_with(&mut self.host, spec, compare(&host));
+                crate::remote::connect_with(&mut self.host, spec, compare(&self.paths, &host));
             }
             Err(error) => self.host.state = State::Unreachable(error.to_string()),
         }
@@ -1427,6 +1549,29 @@ impl App {
         self.unlock_failed = failed;
         self.unlock_reason = "Your sudo password on the host, to reach its controller.";
         self.unlock = Some(Input::default());
+    }
+
+    /// Go to the SSH address of the host to change it. Saving it tries to
+    /// reach the host again.
+    pub fn edit_address(&mut self) {
+        let position = |app: &App| {
+            app.entries()
+                .iter()
+                .position(|entry| *entry == Entry::Field(Field::SshHost))
+        };
+        // The overview lists the connection's fields itself; if it does not,
+        // the tab that has them does.
+        if position(self).is_none() {
+            self.set_step(Step::Install);
+        }
+        match position(self) {
+            Some(at) => {
+                self.list.select(Some(at));
+                self.activate(Field::SshHost);
+                self.retry_address = self.editing.is_some();
+            }
+            None => self.status = "This host has no SSH address to change".into(),
+        }
     }
 
     /// Connect again from nothing, asking for the password again if needed.
@@ -1494,8 +1639,9 @@ impl App {
         }
         // Secrets are built here and travel on the task's standard input.
         if task.input.as_deref() == Some("secrets") {
-            let payload =
-                crate::registry::Store::at(self.config_dir.clone()).host_payload(&self.config);
+            let payload = self
+                .access()
+                .and_then(|store| store.host_payload(&self.config));
             match payload {
                 Ok(payload) => {
                     body["input_b64"] = json!(berth_api::b64(format!("{payload}\n").as_bytes()))
@@ -1525,17 +1671,7 @@ impl App {
     }
 
     pub fn save(&mut self) -> Result<()> {
-        let parent = self
-            .path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        fs::create_dir_all(parent)?;
-        // Temporary files are created private, which the profile should stay.
-        let mut file = tempfile::NamedTempFile::new_in(parent)?;
-        serde_json::to_writer_pretty(&mut file, &self.config)?;
-        writeln!(file)?;
-        file.persist(&self.path)?;
+        self.place.save(&self.paths, &self.config)?;
         // A server's host is the server's to keep.
         if let Some(server) = self.server() {
             server
@@ -1544,6 +1680,18 @@ impl App {
         }
         self.saved = self.config.clone();
         Ok(())
+    }
+
+    /// What to say once the profile is saved: the host and where it is kept,
+    /// or the file.
+    pub fn saved_note(&self) -> String {
+        match (&self.place, self.server()) {
+            (Place::Stored { name, .. }, Some(server)) => {
+                format!("Saved {name} on the berth server at {}", server.url)
+            }
+            (Place::Stored { name, .. }, None) => format!("Saved {name} in berth's store"),
+            (Place::File(path), _) => format!("Saved {}", path.display()),
+        }
     }
 
     /// Where each plugin is on this machine, by id.
@@ -1568,7 +1716,7 @@ impl App {
                 }
             };
             let mut command = Command::new(std::env::current_exe()?);
-            command.arg(verb).arg(self.name());
+            command.arg(verb).arg(self.place.argument());
             return Ok((command, vec![]));
         }
         // Secrets go to private files rather than argv. They live until the command ends.
@@ -1578,9 +1726,11 @@ impl App {
         // for a host that joins the tailnet automatically.
         let seeded = match action {
             Action::UsbSeed | Action::CloudSeed | Action::Iso => {
-                let saved: Value = serde_json::from_slice(&fs::read(&self.path)?)?;
-                let paths = crate::paths::Paths::locate()?;
-                let config = berth_core::tailnet::seed_profile(&paths, &saved, &self.name())?;
+                let saved = self
+                    .place
+                    .load(&self.paths)?
+                    .ok_or("The profile is not saved")?;
+                let config = berth_core::tailnet::seed_profile(&self.paths, &saved, &self.name())?;
                 let config = berth_core::seed::named(config, &self.name());
                 Some(berth_core::tailnet::profile_file(&config)?)
             }
@@ -1618,13 +1768,9 @@ impl App {
                     None => None,
                 };
                 if let (Action::CloudSeed, Some(name)) = (action, login) {
-                    let login = crate::registry::Store::at(self.config_dir.clone())
-                        .curl_login(name)?
-                        .ok_or_else(|| {
-                            format!(
-                                "Registry {name} has no stored login for downloading the release"
-                            )
-                        })?;
+                    let login = self.access()?.curl_login(name)?.ok_or_else(|| {
+                        format!("Registry {name} has no stored login for downloading the release")
+                    })?;
                     command.env("BERTH_RELEASE_LOGIN", login);
                 }
             }
@@ -1643,9 +1789,11 @@ impl App {
             // Applying to a host over SSH is berth-core's; the password the
             // overview was given saves Ansible asking for it again.
             Action::Ssh => {
-                let paths = crate::paths::Paths::locate()?;
-                let prepared =
-                    apply::prepare(&paths, &self.host_profile(), self.host.password.as_deref())?;
+                let prepared = apply::prepare(
+                    &self.paths,
+                    &self.host_profile(),
+                    self.host.password.as_deref(),
+                )?;
                 return Ok((prepared.command, prepared.files));
             }
             Action::Apply => {
@@ -1655,13 +1803,7 @@ impl App {
                     &self.plugin_dirs(),
                     Some(self.own_public.as_str()),
                 );
-                let paths = crate::paths::Paths::locate()?;
-                apply::add_tailnet(
-                    &mut vars,
-                    &paths,
-                    &self.config,
-                    &std::path::absolute(&self.path)?,
-                )?;
+                apply::add_tailnet(&mut vars, &self.paths, &self.config, &self.place)?;
                 serde_json::to_writer(&mut extra, &vars)?;
                 extra.flush()?;
                 command
@@ -1755,7 +1897,7 @@ impl App {
             return Ok(());
         }
         let url = crate::registry::publish_from(
-            &crate::registry::Store::at(self.config_dir.clone()),
+            self.access()?,
             &self.build_dir,
             &self.plugin_dirs(),
             &store,
@@ -1768,7 +1910,7 @@ impl App {
     fn execute_action(&mut self) -> Result<()> {
         self.publish_release()?;
         self.save()?;
-        println!("Saved {}", self.path.display());
+        println!("{}", self.saved_note());
         if self.action == Action::Save {
             return Ok(());
         }
@@ -1827,9 +1969,12 @@ impl App {
             return;
         };
         let succeeded = job.outcome == Some(Ok(()));
-        // The machine is another one now, or none.
+        // The machine is another one now, or none, and the command may have
+        // given the profile the machine's address.
+        let mut taken = None;
         if std::mem::take(&mut self.machine_job) {
             self.load_machine();
+            taken = self.take_in_command();
         }
         if std::mem::take(&mut self.fetching_iso) {
             if let (true, Some(path)) = (succeeded, job.lines.last()) {
@@ -1842,6 +1987,9 @@ impl App {
         } else {
             format!("{} failed", job.title)
         };
+        if let Some(said) = taken {
+            self.status = format!("{} · {said}", self.status);
+        }
     }
 
     /// A shell over plain SSH in a terminal inside the UI, as the SSH user: for
@@ -1948,15 +2096,16 @@ impl App {
     /// Ask for the provisioners and the host's machine again, without
     /// waiting for the answer.
     pub fn load_machine(&mut self) {
-        // Without berth's own folders, as in tests, there is nobody to ask.
-        if self.config_dir.as_os_str().is_empty() {
+        // Without berth's store, as in tests, there is nobody to ask.
+        if self.access.is_err() {
             return;
         }
         self.machine.asking();
-        let name = self.name();
+        let name = self.place.argument();
+        let paths = self.paths.clone();
         let (send, answers) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = send.send(machine_answers(&name));
+            let _ = send.send(machine_answers(&paths, &name));
         });
         self.machine_answers = Some(answers);
     }
@@ -2009,7 +2158,7 @@ impl App {
     /// Do what a row of the machine led to. Its jobs are berth's own
     /// commands, which go to the berth server when one is set.
     fn follow(&mut self, next: Next) {
-        let name = self.name();
+        let name = self.place.argument();
         let (title, args, after) = match next {
             Next::Nothing | Next::Confirm => return,
             Next::Say(text) => {
@@ -2243,8 +2392,8 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
 
 /// How the overview tells whether a host is behind: a server's host the way
 /// the server sees it, another with this machine's plugins.
-fn compare(host: &Host) -> Option<crate::remote::Compare> {
-    if let Some(server) = host.served() {
+fn compare(paths: &Paths, host: &Host) -> Option<crate::remote::Compare> {
+    if let Some(server) = host.served(paths) {
         let name = host.name.clone();
         return Some(std::sync::Arc::new(move |_: &berth_api::Version| {
             let found = server
@@ -2253,8 +2402,7 @@ fn compare(host: &Host) -> Option<crate::remote::Compare> {
             serde_json::from_value(found.get("behind")?.clone()).ok()
         }));
     }
-    let paths = crate::paths::Paths::locate().ok()?;
-    let now = berth_core::rollout::comparer(&paths);
+    let now = berth_core::rollout::comparer(paths);
     Some(std::sync::Arc::new(move |version: &berth_api::Version| {
         now(version.applied.as_ref()?)
     }))

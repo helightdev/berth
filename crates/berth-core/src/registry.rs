@@ -1,24 +1,26 @@
 //! Registries and secrets: where packages and images come from and go to, and
 //! the logins and tokens a host is given.
 //!
-//! Registries are settings of the tool (`config.json`), because a server is the
-//! same for every host. A Sonatype Nexus server is one registry with its
-//! repositories under it. Secret values are kept apart from everything else in
-//! `secrets.json`, private to this user.
+//! Registries are settings of the tool, because a server is the same for
+//! every host. A Sonatype Nexus server is one registry with its repositories
+//! under it. Both are kept in berth's store: registries as their JSON,
+//! secrets as their text, sealed when the store is encrypted. What is known
+//! of a berth server's is kept under the server's scope, with its secret
+//! values standing in as [`KEPT`].
 
 use crate::{
     Result,
     paths::Paths,
     plugins::valid_name,
     server::{KEPT, Server},
+    store::{self, kind},
 };
 use serde_json::{Map, Value, json};
 use std::{
     fs,
     io::{IsTerminal, Read, Write},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
-    path::PathBuf,
     process::{Command, Stdio},
+    sync::Arc,
 };
 
 /// A Nexus server has repositories under it; the others are one registry each.
@@ -34,34 +36,16 @@ pub fn type_label(kind: &str) -> &'static str {
 }
 pub const FORMATS: &[&str] = &["npm", "raw", "docker"];
 
+/// The registries and secrets of this installation, or what is known of a
+/// berth server's.
+#[derive(Clone)]
 pub struct Store {
-    dir: PathBuf,
+    store: Arc<store::Store>,
+    /// [`store::OWN`], or the scope of the server.
+    scope: String,
     /// The berth serve these are the registries and secrets of. Changes go
     /// there, and the values of its secrets stay there.
     server: Option<Server>,
-}
-
-fn read(path: PathBuf) -> Result<Map<String, Value>> {
-    match fs::read(path) {
-        Ok(data) => Ok(serde_json::from_slice(&data)?),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn write(path: PathBuf, data: &Map<String, Value>) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&path)?;
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all((serde_json::to_string_pretty(data)? + "\n").as_bytes())?;
-    Ok(())
 }
 
 pub fn base64(data: &[u8]) -> String {
@@ -119,19 +103,28 @@ pub fn repository_url(registry: &Value, name: &str) -> String {
 }
 
 impl Store {
-    pub fn new(paths: &Paths) -> Self {
-        Store {
-            dir: paths.store_dir(),
-            server: Server::configured(paths),
-        }
+    /// Those berth uses: the server's when one is configured, else its own.
+    pub fn new(paths: &Paths) -> Result<Self> {
+        Ok(Store::of(store::shared(paths)?, Server::configured(paths)))
     }
 
-    /// The store in a directory: a server's when it is where berth keeps one.
-    pub fn at(dir: PathBuf) -> Self {
-        let server = Paths::locate().ok().and_then(|paths| {
-            Server::configured(&paths).filter(|server| server.dir(&paths) == dir)
-        });
-        Store { dir, server }
+    /// This installation's own, whatever server its settings name: what
+    /// `berth serve` keeps and sends to its hosts.
+    pub fn own(store: Arc<store::Store>) -> Self {
+        Store::of(store, None)
+    }
+
+    /// What is known of `server`'s, or this installation's own without one.
+    pub fn of(store: Arc<store::Store>, server: Option<Server>) -> Self {
+        let scope = match &server {
+            Some(server) => server.scope(),
+            None => store::OWN.to_owned(),
+        };
+        Store {
+            store,
+            scope,
+            server,
+        }
     }
 
     /// The server whose store this is.
@@ -139,8 +132,13 @@ impl Store {
         self.server.as_ref()
     }
 
+    /// Whether the values are sealed in the store.
+    pub fn encrypted(&self) -> bool {
+        self.store.encrypted()
+    }
+
     /// Fails for a server's store, whose secrets have their values there.
-    fn own(&self, what: &str) -> Result<()> {
+    fn own_values(&self, what: &str) -> Result<()> {
         match &self.server {
             Some(server) => Err(format!(
                 "{what} needs the secrets, which stay on the berth server at {}",
@@ -152,18 +150,36 @@ impl Store {
     }
 
     pub fn registries(&self) -> Result<Map<String, Value>> {
-        let settings = read(self.dir.join("config.json"))?;
-        Ok(settings
-            .get("registries")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default())
+        self.store
+            .entries(kind::REGISTRY, &self.scope)?
+            .into_iter()
+            .map(|(name, value)| {
+                let registry = serde_json::from_slice(&value)
+                    .map_err(|error| format!("Registry {name} in the store: {error}"))?;
+                Ok((name, registry))
+            })
+            .collect()
     }
 
-    pub fn save_registries(&self, registries: Map<String, Value>) -> Result<()> {
+    /// The rows of the registries, for one change of the store.
+    fn registry_rows(registries: &Map<String, Value>) -> Vec<(&str, &str, Vec<u8>)> {
+        registries
+            .iter()
+            .map(|(name, registry)| {
+                (
+                    kind::REGISTRY,
+                    name.as_str(),
+                    registry.to_string().into_bytes(),
+                )
+            })
+            .collect()
+    }
+
+    /// Send the changes of the registries to the server, when there is one.
+    fn send_registries(&self, registries: &Map<String, Value>) -> Result<()> {
         if let Some(server) = &self.server {
             let known = self.registries()?;
-            for (name, registry) in &registries {
+            for (name, registry) in registries {
                 if known.get(name) != Some(registry) {
                     server.call(
                         "registries.save",
@@ -176,41 +192,90 @@ impl Store {
                 server.call("registries.remove", json!({"name": name}), None)?;
             }
         }
-        let mut settings = read(self.dir.join("config.json"))?;
-        settings.insert("registries".into(), Value::Object(registries));
-        write(self.dir.join("config.json"), &settings)
+        Ok(())
+    }
+
+    /// Make these the registries, in one change of the store.
+    pub fn save_registries(&self, registries: Map<String, Value>) -> Result<()> {
+        self.send_registries(&registries)?;
+        let rows = Self::registry_rows(&registries);
+        Ok(self.store.replace(&self.scope, &[kind::REGISTRY], &rows)?)
+    }
+
+    /// Give a registry another name, with its stored login. Here it is one
+    /// change of the store; a server keeps logins by the registry's name and
+    /// drops the old one with it, so for a server's registry the login has
+    /// to be given again. Returns whether the login went with the name.
+    pub fn rename_registry(&self, old: &str, new: &str) -> Result<bool> {
+        let mut registries = self.registries()?;
+        let registry = registries
+            .remove(old)
+            .ok_or_else(|| format!("No registry {old}"))?;
+        if registries.contains_key(new) {
+            return Err(format!("There is a registry {new} already").into());
+        }
+        registries.insert(new.to_owned(), registry.clone());
+        let (old_login, new_login) = (format!("registry/{old}"), format!("registry/{new}"));
+        let login = match &self.server {
+            Some(_) => None,
+            None => self.store.read(kind::SECRET, &self.scope, &old_login)?,
+        };
+        self.send_registries(&registries)?;
+        let mut writes = vec![(
+            kind::REGISTRY,
+            self.scope.as_str(),
+            new,
+            registry.to_string().into_bytes(),
+        )];
+        if let Some(login) = &login {
+            writes.push((kind::SECRET, &self.scope, &new_login, login.clone()));
+        }
+        self.store.change(
+            &writes,
+            &[
+                (kind::REGISTRY, &self.scope, old),
+                (kind::SECRET, &self.scope, &old_login),
+            ],
+        )?;
+        Ok(login.is_some() || self.server.is_none())
     }
 
     fn registry(&self, name: &str) -> Result<Value> {
-        self.registries()?
-            .remove(name)
+        self.store
+            .read_json(kind::REGISTRY, &self.scope, name)?
             .ok_or_else(|| format!("No registry {name}. See: berth registry").into())
     }
 
-    pub fn secrets(&self) -> Result<Map<String, Value>> {
-        read(self.dir.join("secrets.json"))
+    /// The names of every secret, with the logins of registries, in order.
+    /// Nothing is unsealed.
+    pub fn all_secret_names(&self) -> Result<Vec<String>> {
+        Ok(self.store.names(kind::SECRET, &self.scope)?)
     }
 
     /// The secrets the user named, without the passwords of registries.
     pub fn secret_names(&self) -> Vec<String> {
-        self.secrets()
+        self.all_secret_names()
             .unwrap_or_default()
-            .keys()
+            .into_iter()
             .filter(|name| !name.starts_with("registry/"))
-            .cloned()
             .collect()
     }
 
+    /// Whether a secret has a value, here or on the server. Nothing is unsealed.
+    pub fn has_secret(&self, name: &str) -> Result<bool> {
+        Ok(self.all_secret_names()?.iter().any(|known| known == name))
+    }
+
     pub fn secret(&self, name: &str) -> Result<Option<String>> {
-        Ok(self
-            .secrets()?
-            .get(name)
-            .and_then(Value::as_str)
-            .map(str::to_owned))
+        match self.store.read(kind::SECRET, &self.scope, name)? {
+            Some(value) => Ok(Some(
+                String::from_utf8(value).map_err(|_| format!("Secret {name} is not text"))?,
+            )),
+            None => Ok(None),
+        }
     }
 
     pub fn set_secret(&self, name: &str, value: Option<&str>) -> Result<()> {
-        let mut secrets = self.secrets()?;
         let value = match (&self.server, value) {
             (Some(server), Some(value)) => {
                 let data = Some(json!({"value": value}));
@@ -218,7 +283,7 @@ impl Store {
                 Some(KEPT)
             }
             (Some(server), None) => {
-                if secrets.contains_key(name) {
+                if self.has_secret(name)? {
                     server.call("secrets.remove", json!({"name": name}), None)?;
                 }
                 None
@@ -226,10 +291,14 @@ impl Store {
             (None, value) => value,
         };
         match value {
-            Some(value) => secrets.insert(name.into(), json!(value)),
-            None => secrets.remove(name),
-        };
-        write(self.dir.join("secrets.json"), &secrets)
+            Some(value) => self
+                .store
+                .write(kind::SECRET, &self.scope, name, value.as_bytes())?,
+            None => {
+                self.store.forget(kind::SECRET, &self.scope, name)?;
+            }
+        }
+        Ok(())
     }
 
     /// `user:password` of a registry in base64, when its login is known.
@@ -275,7 +344,7 @@ impl Store {
     /// What `devbox-secrets` on a host installs for a profile: the profile's
     /// secrets as environment variables and files, and the logins of its registries.
     pub fn host_payload(&self, profile: &Value) -> Result<Value> {
-        self.own("Sending secrets to a host")?;
+        self.own_values("Sending secrets to a host")?;
         let list = |value: &Value| value.as_array().cloned().unwrap_or_default();
         let mut env = Map::new();
         let mut files = vec![];
@@ -409,7 +478,7 @@ fn http_status(url: &str, login: &Option<String>) -> std::result::Result<u16, St
 impl Store {
     /// A registry's login as a line of curl configuration, when one is stored.
     pub fn curl_login(&self, name: &str) -> Result<Option<String>> {
-        self.own("Logging in to a registry")?;
+        self.own_values("Logging in to a registry")?;
         let registry = self.registry(name)?;
         let quote = |text: &str| text.replace('\\', "\\\\").replace('"', "\\\"");
         Ok(
@@ -560,20 +629,12 @@ impl Store {
 pub fn describe(store: &Store) -> Result<Vec<String>> {
     let mut lines = vec![];
     for (name, registry) in store.registries()? {
-        let login = match (
-            registry["username"].as_str(),
-            store.secret(&format!("registry/{name}"))?,
-        ) {
-            (Some(user), Some(_)) => format!("login {user}"),
-            (Some(user), None) => format!("login {user}, no password yet"),
-            _ => "no login".to_owned(),
-        };
-        let login = match (
-            registry["username"].as_str(),
-            store.token(&name, &registry)?,
-        ) {
-            (None, Some(_)) => "token".to_owned(),
-            _ => login,
+        let stored = store.has_secret(&format!("registry/{name}"))?;
+        let login = match (registry["username"].as_str(), stored) {
+            (Some(user), true) => format!("login {user}"),
+            (Some(user), false) => format!("login {user}, no password yet"),
+            (None, true) => "token".to_owned(),
+            (None, false) => "no login".to_owned(),
         };
         let kind = type_label(registry["type"].as_str().unwrap_or(""));
         lines.push(format!(
@@ -607,7 +668,7 @@ pub fn describe(store: &Store) -> Result<Vec<String>> {
 
 /// `berth registry ...`
 pub fn registry_command(paths: &Paths, args: &[&str]) -> Result<()> {
-    let store = Store::new(paths);
+    let store = Store::new(paths)?;
     let mut registries = store.registries()?;
     match *args {
         [] => {
@@ -693,10 +754,10 @@ pub fn registry_command(paths: &Paths, args: &[&str]) -> Result<()> {
 
 /// `berth secret ...`
 pub fn secret_command(paths: &Paths, args: &[&str]) -> Result<()> {
-    let store = Store::new(paths);
+    let store = Store::new(paths)?;
     match *args {
         [] => {
-            for name in store.secrets()?.keys() {
+            for name in store.all_secret_names()? {
                 println!("{name}");
             }
             Ok(())
@@ -728,7 +789,7 @@ pub fn publish(paths: &Paths, destination: &str) -> Result<String> {
             .map(|plugin| (plugin.id, json!(plugin.dir)))
             .collect();
     publish_from(
-        &Store::new(paths),
+        &Store::new(paths)?,
         &paths.build_dir(),
         &Value::Object(dirs),
         destination,
@@ -799,7 +860,7 @@ pub fn publish_from(
 /// `berth image push REGISTRY[/REPOSITORY] [TAG]`: push the container image
 /// built by the Docker action.
 pub fn push_image(paths: &Paths, destination: &str, tag: &str) -> Result<String> {
-    let store = Store::new(paths);
+    let store = Store::new(paths)?;
     let (name, registry, repository) = target(&store, destination)?;
     let address = Store::docker_addresses(&registry)
         .into_iter()
@@ -846,10 +907,16 @@ mod tests {
         assert_eq!(base64(b"user:pass"), "dXNlcjpwYXNz");
     }
 
+    fn opened() -> (tempfile::TempDir, Arc<store::Store>) {
+        let home = tempfile::tempdir().unwrap();
+        let store = store::Store::open(&home.path().join("berth.db")).unwrap();
+        (home, Arc::new(store))
+    }
+
     #[test]
     fn a_host_gets_its_secrets_and_the_logins_of_its_registries() {
-        let home = tempfile::tempdir().unwrap();
-        let store = Store::at(home.path().to_owned());
+        let (_home, opened) = opened();
+        let store = Store::own(opened.clone());
         let mut registries = Map::new();
         registries.insert(
             "nexus".into(),
@@ -872,11 +939,14 @@ mod tests {
         store.set_secret("registry/verdaccio", Some("tok")).unwrap();
         store.set_secret("github", Some("token")).unwrap();
         store.set_secret("cert", Some("PEM")).unwrap();
-        let mode = fs::metadata(home.path().join("secrets.json"))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(
+            opened
+                .read(kind::SECRET, store::OWN, "registry/nexus")
+                .unwrap()
+                .unwrap(),
+            b"pw"
+        );
+        assert_eq!(store.secret_names(), ["cert", "github"]);
 
         let profile = json!({
             "secrets": [{"name": "github", "env": "GH_TOKEN"}, {"name": "cert", "file": "~/.cert"}],
@@ -915,6 +985,76 @@ mod tests {
             lines
                 .iter()
                 .any(|line| line.contains("└─ docker docker-hosted  nexus.example:8083"))
+        );
+    }
+
+    #[test]
+    fn a_renamed_registry_keeps_its_login() {
+        let (_home, opened) = opened();
+        let store = Store::own(opened);
+        let mut registries = Map::new();
+        registries.insert(
+            "old".into(),
+            json!({"type": "npm", "url": "https://npm.example", "username": "ci"}),
+        );
+        registries.insert("other".into(), json!({"type": "docker", "url": "ghcr.io"}));
+        store.save_registries(registries).unwrap();
+        store.set_secret("registry/old", Some("pw")).unwrap();
+        assert!(store.rename_registry("old", "other").is_err());
+        assert!(store.rename_registry("old", "new").unwrap());
+        let names: Vec<_> = store.registries().unwrap().keys().cloned().collect();
+        assert_eq!(names, ["new", "other"]);
+        assert_eq!(store.secret("registry/new").unwrap().as_deref(), Some("pw"));
+        assert!(!store.has_secret("registry/old").unwrap());
+        // Saving the registries replaces them all, in one change.
+        let mut registries = Map::new();
+        registries.insert(
+            "only".into(),
+            json!({"type": "raw", "url": "https://files.example"}),
+        );
+        store.save_registries(registries).unwrap();
+        let names: Vec<_> = store.registries().unwrap().keys().cloned().collect();
+        assert_eq!(names, ["only"]);
+    }
+
+    #[test]
+    fn a_servers_scope_is_apart_and_holds_no_values() {
+        let (_home, opened) = opened();
+        let own = Store::own(opened.clone());
+        own.set_secret("github", Some("ghp-made-up")).unwrap();
+        // A server that does not answer: nothing is written for it.
+        let server = Server {
+            url: "unix:/nonexistent/serve.sock".into(),
+            token: None,
+            paths: None,
+        };
+        let served = Store::of(opened.clone(), Some(server.clone()));
+        assert!(served.set_secret("deploy", Some("value")).is_err());
+        assert!(served.all_secret_names().unwrap().is_empty());
+        // What a mirror wrote is seen there, and not here.
+        opened
+            .replace(
+                &server.scope(),
+                &[kind::SECRET, kind::REGISTRY],
+                &[
+                    (kind::SECRET, "deploy", KEPT.as_bytes().to_vec()),
+                    (
+                        kind::REGISTRY,
+                        "hub",
+                        br#"{"type":"docker","url":"ghcr.io"}"#.to_vec(),
+                    ),
+                ],
+            )
+            .unwrap();
+        assert_eq!(served.secret_names(), ["deploy"]);
+        assert_eq!(served.secret("deploy").unwrap().as_deref(), Some(KEPT));
+        assert!(served.registries().unwrap().contains_key("hub"));
+        assert!(served.host_payload(&json!({})).is_err());
+        assert_eq!(own.secret_names(), ["github"]);
+        assert!(own.registries().unwrap().is_empty());
+        assert_eq!(
+            own.secret("github").unwrap().as_deref(),
+            Some("ghp-made-up")
         );
     }
 }

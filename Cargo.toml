@@ -32,6 +32,9 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-axum = "0.2"
 rusqlite = { version = "0.40", features = ["bundled"] }
+postgres = "0.19"
+tokio-postgres-rustls = { version = "0.14", default-features = false, features = ["ring"] }
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 
 # Development and test builds: line numbers in backtraces, and no debug
 # information for dependencies, which makes them quicker to build and link.

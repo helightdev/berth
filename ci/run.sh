@@ -65,6 +65,34 @@ tty=()
 [[ -t 0 && -t 1 ]] || tty=(-T)
 dev() { compose --profile dev run --rm "${tty[@]}" dev "$@"; }
 
+# The checks run the store's tests on PostgreSQL too, against the postgres
+# service while it is up.
+postgres_down() { compose --profile dev rm --stop --force postgres >/dev/null 2>&1 || true; }
+postgres_up() {
+  postgres_down
+  trap postgres_down EXIT
+  compose --profile dev up -d postgres >/dev/null
+  local tries=0
+  until compose --profile dev exec -T postgres pg_isready -q -h 127.0.0.1 -U berth -d berth; do
+    if ((++tries > 60)); then
+      echo "PostgreSQL for the tests did not start" >&2
+      return 1
+    fi
+    sleep 1
+  done
+  export BERTH_CI_POSTGRES=postgres://berth:berth-ci@postgres:5432/berth
+}
+# Only rust-tests needs it: all the checks, or a list that names it.
+checks() {
+  if (($# == 0)) || [[ " $* " == *" rust-tests "* ]]; then
+    postgres_up || return 1
+  fi
+  local status=0
+  dev ci/checks.sh "$@" || status=$?
+  postgres_down
+  return "$status"
+}
+
 build() {
   [[ ${BERTH_CI_NO_BUILD:-} == 1 ]] && return
   compose --profile dev --profile e2e build --quiet "$@"
@@ -98,9 +126,9 @@ command=${1:-}
 shift || true
 case $command in
   build) build ;;
-  check) build dev && dev ci/checks.sh "$@" ;;
+  check) build dev && checks "$@" ;;
   e2e) build && e2e "$@" ;;
-  all) build && dev ci/checks.sh && e2e ;;
+  all) build && checks && e2e ;;
   shell) build dev && dev bash ;;
   run) build dev && dev "$@" ;;
   boot)

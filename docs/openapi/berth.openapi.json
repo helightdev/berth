@@ -297,6 +297,23 @@
         },
         "type": "object"
       },
+      "Credentials": {
+        "description": "The passwords berth generated for a host's accounts.",
+        "properties": {
+          "credentials": {
+            "additionalProperties": {},
+            "description": "The password of each account, by the account's name.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "credentials"
+        ],
+        "type": "object"
+      },
       "Done": {
         "properties": {
           "ok": {
@@ -457,7 +474,7 @@
             ]
           },
           "password": {
-            "description": "For `password`: the password to hash. Without it one is made up and\nkept beside the profile of `host`, under `user`.",
+            "description": "For `password`: the password to hash. Without it one is made up and\nkept in the server's store with `host`, under `user`, for\n`hosts.credentials` to give.",
             "type": [
               "string",
               "null"
@@ -2817,6 +2834,48 @@
         "summary": "Publish a message on a topic.",
         "tags": [
           "host: channel"
+        ]
+      }
+    },
+    "/v1/hosts/{name}/credentials": {
+      "get": {
+        "operationId": "credentials",
+        "parameters": [
+          {
+            "description": "A saved host",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Credentials"
+                }
+              }
+            },
+            "description": "The passwords by account; none when none were generated"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such host"
+          }
+        },
+        "summary": "The passwords the server generated for a host's accounts.",
+        "tags": [
+          "set-up"
         ]
       }
     },
@@ -5245,7 +5304,7 @@
                 }
               }
             },
-            "description": "No such job"
+            "description": "No such job, or its output is not on this machine, as for a job of an installation restored from its store"
           }
         },
         "summary": "What a job wrote, by bytes or by lines.",

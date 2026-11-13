@@ -200,6 +200,23 @@
         ],
         "type": "object"
       },
+      "Credentials": {
+        "description": "The passwords berth generated for a host's accounts.",
+        "properties": {
+          "credentials": {
+            "additionalProperties": {},
+            "description": "The password of each account, by the account's name.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "credentials"
+        ],
+        "type": "object"
+      },
       "Done": {
         "properties": {
           "ok": {
@@ -297,7 +314,7 @@
             ]
           },
           "password": {
-            "description": "For `password`: the password to hash. Without it one is made up and\nkept beside the profile of `host`, under `user`.",
+            "description": "For `password`: the password to hash. Without it one is made up and\nkept in the server's store with `host`, under `user`, for\n`hosts.credentials` to give.",
             "type": [
               "string",
               "null"
@@ -1780,6 +1797,37 @@
           "required": true
         }
       ],
+      "errors": [
+        {
+          "description": "No such host",
+          "status": "404"
+        }
+      ],
+      "group": "hosts",
+      "http": {
+        "method": "GET",
+        "path": "/v1/hosts/{name}/credentials"
+      },
+      "kind": "call",
+      "name": "hosts.credentials",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Credentials"
+        }
+      },
+      "role": "admin",
+      "summary": "The passwords the server generated for a host's accounts."
+    },
+    {
+      "args": [
+        {
+          "description": "A saved host",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
       "data": {
         "description": "Nothing, or what the run needs that the server does not have",
         "schema": {
@@ -2792,7 +2840,7 @@
       ],
       "errors": [
         {
-          "description": "No such job",
+          "description": "No such job, or its output is not on this machine, as for a job of an installation restored from its store",
           "status": "404"
         }
       ],

@@ -28,6 +28,8 @@ docker exec berth cat /data/berth/serve.token
 
 Without the image, run `berth serve --listen 0.0.0.0:7777 --expose` where berth is installed. The token is in `~/.local/share/berth/serve.token`. Set the hosts up on the server as usual, with the terminal UI there or `docker run --rm -it --entrypoint berth …` for the container.
 
+The server keeps its state in one store, a SQLite file by default. [The store](/docs/use/store) says how to keep it in PostgreSQL, encrypt it and restore the server on another machine from it.
+
 <Callout type="warn" title="Put TLS in front">
   `berth serve` speaks plain HTTP, and the token gives full control of every host. Serve it behind a TLS proxy, such as Tailscale Serve or Caddy, and use the `https://` address. Without one, keep the port on loopback or a private network such as your tailnet.
 </Callout>
@@ -170,7 +172,7 @@ Some keys differ:
 | A click on a link opens a tab | `xdg-open` |
 | **g** generates and **p** takes a password to hash | `F4` and `F5`, which reloads a page |
 
-A password the server makes up is shown once in the page. The server keeps a copy beside the host's profile.
+A password the server makes up is shown once in the page. The server keeps a copy in its store, and `berth credentials HOST` shows it again to an admin of the server.
 
 What needs your own machine stays in the terminal UI. That is the USB installer and the container image, values read from your local keys, and sending a plugin's folder.
 
@@ -195,6 +197,7 @@ Your browser talks to the server you name, and to nothing else. It keeps the ser
 | The host's overview with its tasks, sessions and terminal panel | Applying to this machine or an inventory, and container images |
 | The host commands such as `berth run`, `exec`, `attach` and `channel` | Publishing a release or an image by hand |
 | The set-up tabs of a host, new hosts, and `berth remove` | |
+| `berth profile` and `berth credentials` | |
 | `berth apply`, `berth seed`, and the **Secrets and registry logins** task | |
 | `berth provisioners`, `berth provision` and `berth instance` | |
 | `berth secret`, `berth registry` and `berth host` | |
@@ -206,7 +209,8 @@ berth keeps the server's hosts apart from its own. Its own hosts are hidden whil
 
 With the role `admin` on the server, which its token has, berth sets the server up as if the hosts were its own. What you change is saved on the server:
 
-- A host's set-up tabs, and a new host from the home screen, save the profile there.
+- A host's set-up tabs, a new host from the home screen, and `berth profile HOST --set FILE` save the profile there.
+- A password generated on the set-up tabs is made and kept by the server. `berth credentials HOST` asks the server for it.
 - **Apply this configuration** and `berth apply HOST` run as a job on the server. Its output is shown as it comes.
 - `berth seed HOST` has the server render the cloud-init seed, and writes it here.
 - `berth provision HOST` and `berth instance HOST` use the server's provisioners and secrets, and create the machine from the server ([Machine from a provisioner](/docs/deploy/provisioners#with-a-berth-server)).

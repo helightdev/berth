@@ -13,6 +13,7 @@ use berth_core::{
     host::Host,
     link::{self, Link},
     paths::Paths,
+    profiles::Place,
     provision, registry,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -52,7 +53,7 @@ impl Drop for Reach {
 fn reach(paths: &Paths, name: &str) -> Result<Reach> {
     let host = Host::load(paths, name)?;
     let password = host.sudo_password()?;
-    let link = Link::new(host.link(password.as_deref())?);
+    let link = Link::new(host.link(paths, password.as_deref())?);
     Ok(Reach {
         host,
         link,
@@ -606,7 +607,7 @@ pub fn run(paths: &Paths, name: &str, task: &str, args: &[&str]) -> Result<()> {
     // Secrets are built here and travel on the task's standard input. A
     // server builds them from its own, and starts the task itself.
     let served = match found.input.as_deref() {
-        Some("secrets") => reach.host.served(),
+        Some("secrets") => reach.host.served(paths),
         _ => None,
     };
     let started = match &served {
@@ -614,7 +615,7 @@ pub fn run(paths: &Paths, name: &str, task: &str, args: &[&str]) -> Result<()> {
         None => None,
     };
     if found.input.as_deref() == Some("secrets") && served.is_none() {
-        let payload = registry::Store::new(paths).host_payload(&reach.host.config)?;
+        let payload = registry::Store::new(paths)?.host_payload(&reach.host.config)?;
         body["input_b64"] = json!(api::b64(format!("{payload}\n").as_bytes()));
     }
     let code = reach.wait(async {
@@ -699,7 +700,7 @@ pub fn call(
 /// is a job of the server, whose output is shown as it comes.
 pub fn apply(paths: &Paths, name: &str) -> Result<()> {
     let host = Host::load(paths, name)?;
-    let Some(server) = host.served() else {
+    let Some(server) = host.served(paths) else {
         let password = host.sudo_password()?;
         let mut prepared = berth_core::apply::prepare(paths, &host, password.as_deref())?;
         let status = prepared.command.status()?;
@@ -880,7 +881,7 @@ pub fn update_plugins(paths: &Paths, args: &[&str]) -> Result<()> {
 /// is written here.
 pub fn seed(paths: &Paths, name: &str) -> Result<()> {
     let host = Host::load(paths, name)?;
-    let server = host.served().ok_or("Not a host of a berth server")?;
+    let server = host.served(paths).ok_or("Not a host of a berth server")?;
     let seed = server.call("hosts.seed", json!({"name": name}), None)?;
     let dir = paths.build_dir().join(name).join("cloud");
     {
@@ -918,14 +919,99 @@ pub fn remove(paths: &Paths, name: &str) -> Result<()> {
         )
         .into());
     }
-    if let Some(server) = host.served() {
+    if provision::busy(paths, name) {
+        return Err(format!(
+            "A machine is being created for {name}. Remove it when that has ended"
+        )
+        .into());
+    }
+    if let Some(server) = host.served(paths) {
         server.call("hosts.remove", json!({"name": name}), None)?;
     }
-    std::fs::remove_file(&host.path)?;
-    for beside in ["credentials.json", "instance.json", "instance.lock"] {
-        let _ = std::fs::remove_file(host.path.with_extension(beside));
+    berth_core::profiles::remove(paths, &host.place)?;
+    println!("Removed {}", host.place.describe());
+    Ok(())
+}
+
+/// `berth profile HOST`: the profile as it is kept, as JSON.
+pub fn show_profile(paths: &Paths, name: &str) -> Result<()> {
+    let place = Place::resolve(paths, name)?;
+    let profile = place
+        .load(paths)?
+        .ok_or_else(|| format!("No host {name}"))?;
+    println!("{}", serde_json::to_string_pretty(&profile)?);
+    Ok(())
+}
+
+/// `berth profile HOST --set FILE`: save a profile as the host's, checked as
+/// the screen reads one. A host of a berth server is saved on the server, and
+/// its copy here marks it as the server's, as a mirror does.
+pub fn set_profile(paths: &Paths, name: &str, file: &str) -> Result<()> {
+    let data = match file {
+        "-" => {
+            let mut data = vec![];
+            std::io::Read::read_to_end(&mut std::io::stdin(), &mut data)?;
+            data
+        }
+        file => std::fs::read(file).map_err(|error| format!("{file}: {error}"))?,
+    };
+    crate::app::parse_config(&data).map_err(|error| format!("Not a profile: {error}"))?;
+    let mut profile: Value = serde_json::from_slice(&data)?;
+    let place = Place::resolve(paths, name)?;
+    if let Some(url) = place.server_url() {
+        let server = berth_core::server::Server::configured(paths)
+            .filter(|server| server.url == url)
+            .ok_or("The berth server of this host is not set any more")?;
+        server.save_host(&place.title(), &profile)?;
+        profile["builder"]["served"] = json!(url);
     }
-    println!("Removed {name}");
+    place.save(paths, &profile)?;
+    println!("Saved {}", place.describe());
+    Ok(())
+}
+
+/// `berth credentials HOST [--show]`: the passwords berth generated for the
+/// host's accounts, an account and its password to a line. They go to a
+/// terminal, or elsewhere only when asked to with `--show`.
+pub fn credentials(paths: &Paths, name: &str, show: bool) -> Result<()> {
+    let shown = show || std::io::stdout().is_terminal();
+    write_credentials(paths, name, shown, &mut std::io::stdout())
+}
+
+/// The passwords of [`credentials`] to `out`, when they may be `shown` there.
+fn write_credentials(paths: &Paths, name: &str, shown: bool, out: &mut dyn Write) -> Result<()> {
+    if !shown {
+        return Err(
+            "Standard output is not a terminal, and the passwords are shown only on one. Add --show to write them there anyway"
+                .into(),
+        );
+    }
+    let place = Place::resolve(paths, name)?;
+    let kept = match place.server_url() {
+        Some(url) => {
+            let server = berth_core::server::Server::configured(paths)
+                .filter(|server| server.url == url)
+                .ok_or("The berth server of this host is not set any more")?;
+            eprintln!("{name}'s passwords are kept on the berth server at {url}");
+            let answer = server.call("hosts.credentials", json!({"name": name}), None)?;
+            answer["credentials"]
+                .as_object()
+                .cloned()
+                .unwrap_or_default()
+        }
+        None => {
+            if place.load(paths)?.is_none() {
+                return Err(format!("No host {name}").into());
+            }
+            berth_core::credentials::load(paths, &place)?
+        }
+    };
+    if kept.is_empty() {
+        eprintln!("berth generated no passwords for {name}");
+    }
+    for (user, password) in kept {
+        writeln!(out, "{user} {}", password.as_str().unwrap_or(""))?;
+    }
     Ok(())
 }
 
@@ -948,7 +1034,7 @@ fn known_provisioners(
             Value::Null,
             None,
         )?)?),
-        None => Ok(provision::list(paths, &registry::Store::new(paths))),
+        None => Ok(provision::list(paths, &registry::Store::new(paths)?)),
     }
 }
 
@@ -985,7 +1071,7 @@ pub fn provisioner_instances(paths: &Paths, name: &str, args: &[&str]) -> Result
             serde_json::from_value(server.call("provisioners.instances", asked, None)?)?
         }
         None => {
-            let store = registry::Store::new(paths);
+            let store = registry::Store::new(paths)?;
             provision::instances(paths, &store, name, &values, &Default::default())?
         }
     };
@@ -1044,7 +1130,7 @@ pub fn provision(paths: &Paths, name: &str, provisioner: &str, args: &[&str]) ->
     }
     provision::provision(
         paths,
-        &registry::Store::new(paths),
+        &registry::Store::new(paths)?,
         name,
         &asked,
         &Default::default(),
@@ -1056,7 +1142,7 @@ pub fn provision(paths: &Paths, name: &str, provisioner: &str, args: &[&str]) ->
 /// created for the host, or a change to it.
 pub fn instance(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
     let server = provisioning_server(paths);
-    let store = registry::Store::new(paths);
+    let store = registry::Store::new(paths)?;
     let options = provision::Options::default();
     let mut out = std::io::stdout();
     let named = json!({"name": name});
@@ -1166,6 +1252,7 @@ pub fn login(paths: &Paths) -> Result<()> {
         let own = Server {
             url: server.url.clone(),
             token: None,
+            paths: Some(paths.clone()),
         };
         let access = own
             .portal()
@@ -1226,6 +1313,7 @@ pub fn connect_with(paths: &Paths, url: &str, key: &str) -> Result<()> {
         Server {
             url: url.clone(),
             token: Some(claimed.token.clone()),
+            paths: None,
         }
         .portal()
         .await?
@@ -1294,8 +1382,11 @@ mod tests {
             data_dir: home.path().join("data"),
         };
         paths.prepare().unwrap();
-        let profile = paths.profile("studio").unwrap();
-        std::fs::write(&profile, r#"{"builder": {"ssh_host": "192.0.2.20"}}"#).unwrap();
+        let place = Place::own("studio").unwrap();
+        place
+            .save(&paths, &json!({"builder": {"ssh_host": "192.0.2.20"}}))
+            .unwrap();
+        berth_core::credentials::save(&paths, &place, "ops", "made-up").unwrap();
         let mut record = provision::Record {
             provisioner: "cloud/vm".into(),
             id: "vm-1".into(),
@@ -1305,13 +1396,52 @@ mod tests {
         record.save(&paths, "studio").unwrap();
         let said = remove(&paths, "studio").unwrap_err().to_string();
         assert!(said.contains("berth instance studio destroy"), "{said}");
-        assert!(profile.is_file());
-        // One whose creation never ended goes with the host.
+        assert!(place.load(&paths).unwrap().is_some());
+        // One whose creation never ended goes with the host, and its passwords with it.
         record.id.clear();
         record.save(&paths, "studio").unwrap();
         remove(&paths, "studio").unwrap();
-        assert!(!profile.exists());
+        assert!(place.load(&paths).unwrap().is_none());
         assert!(provision::Record::load(&paths, "studio").unwrap().is_none());
+        assert!(
+            berth_core::credentials::load(&paths, &place)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_profile_goes_out_and_in_and_passwords_only_to_a_terminal() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: home.path().join("config"),
+            data_dir: home.path().join("data"),
+        };
+        let file = home.path().join("studio.json");
+        std::fs::write(
+            &file,
+            r#"{"hostname": "studio", "builder": {"ssh_host": "192.0.2.20"}}"#,
+        )
+        .unwrap();
+        set_profile(&paths, "studio", file.to_str().unwrap()).unwrap();
+        let place = Place::own("studio").unwrap();
+        let kept = place.load(&paths).unwrap().unwrap();
+        assert_eq!(kept["builder"]["ssh_host"], "192.0.2.20");
+        // What is not a profile is refused, and the one kept stays.
+        std::fs::write(&file, r#"{"builder": []}"#).unwrap();
+        assert!(set_profile(&paths, "studio", file.to_str().unwrap()).is_err());
+        assert_eq!(place.load(&paths).unwrap().unwrap(), kept);
+        assert!(show_profile(&paths, "attic").is_err());
+        show_profile(&paths, "studio").unwrap();
+        berth_core::credentials::save(&paths, &place, "ops", "made-up").unwrap();
+        let mut out = vec![];
+        let said = write_credentials(&paths, "studio", false, &mut out)
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("--show") && out.is_empty(), "{said}");
+        write_credentials(&paths, "studio", true, &mut out).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "ops made-up\n");
+        assert!(write_credentials(&paths, "attic", true, &mut vec![]).is_err());
     }
 
     #[test]

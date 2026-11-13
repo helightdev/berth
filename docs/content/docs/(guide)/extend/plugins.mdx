@@ -24,7 +24,7 @@ A host gets the features listed in `devbox_plugin_features`. Unless that is set,
 
 Features are off until chosen. On a host's **Features** tab they are listed in their groups next to the built-in entries. Space on a group's heading switches everything in it. The choice is stored in the profile:
 
-```json title="~/.config/berth/hosts/studio.json"
+```json title="In studio's profile"
 { "ansible_vars": { "devbox_plugin_features": ["unity/cli", "unity/editor"] } }
 ```
 
@@ -52,6 +52,8 @@ berth plugins remove @acme/berth-plugin-foo
 ```
 
 `add` runs `npm install --ignore-scripts --prefix ~/.config/berth/plugins`, so registries and credentials come from your npm configuration. You can also copy a folder to `~/.config/berth/plugins/NAME/` by hand. Npm is not needed for that.
+
+After each change berth makes there, it writes the folder's `package.json`, npm's lock file, uploaded `.tgz` files and the folders you copied in to its [store](/docs/use/store). A machine restored from the store gets them back, and npm installs the rest. A folder you copy in by hand is in the store after berth's next change of the plugins. Remove a plugin with `berth plugins remove`, as one deleted by hand comes back from the store.
 
 ### Updating a plugin
 

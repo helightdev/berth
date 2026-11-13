@@ -6,6 +6,7 @@ use crate::{
     host::Host,
     paths::{Paths, layout},
     plugins,
+    profiles::Place,
 };
 use serde_json::{Value, json};
 use std::{io::Write, process::Command};
@@ -76,18 +77,14 @@ pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: Option<&str>) -> V
 
 /// Add what joining the tailnet needs from this machine: berth's login
 /// server, and for a host that joins automatically the way to a key, which
-/// names the host by the path of its `profile`.
-pub fn add_tailnet(
-    vars: &mut Value,
-    paths: &Paths,
-    config: &Value,
-    profile: &std::path::Path,
-) -> Result<()> {
+/// names the host as `berth tailnet-key` finds it again: by its name, or by
+/// the path of its file. That command runs as a child of the apply, with its
+/// environment, so it looks in the same store.
+pub fn add_tailnet(vars: &mut Value, paths: &Paths, config: &Value, place: &Place) -> Result<()> {
     let berth = std::env::current_exe()?;
-    let profile = profile.to_string_lossy();
     if let (Some(vars), Value::Object(more)) = (
         vars.as_object_mut(),
-        crate::tailnet::apply_vars(paths, config, &profile, &berth),
+        crate::tailnet::apply_vars(paths, config, &place.argument(), &berth),
     ) {
         vars.extend(more);
     }
@@ -116,7 +113,7 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
     let dirs = plugin_dirs(&plugins);
     let own = paths.own_public_key();
     let mut vars = ansible_vars(&host.config, &dirs, own.as_deref());
-    add_tailnet(&mut vars, paths, &host.config, &host.path)?;
+    add_tailnet(&mut vars, paths, &host.config, &host.place)?;
     // The role keeps this on the host, for the plugins the host has, so
     // berth can tell later whether the host is behind.
     vars["devbox_berth_applied"] = json!({
@@ -219,7 +216,7 @@ mod tests {
         paths.set("source", source.to_str().unwrap()).unwrap();
         let host = Host {
             name: "box".into(),
-            path: "box.json".into(),
+            place: Place::own("box").unwrap(),
             key: None,
             config: json!({"profile": "cloud", "builder": {"ssh_host": "box", "ssh_user": "ops", "ask_become_pass": true}}),
         };

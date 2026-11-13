@@ -8,7 +8,7 @@ berth sets up and looks after agent workstations. These are Ubuntu machines with
 | --- | --- |
 | `crates/berth/` | The `berth` program: terminal UI, commands and `berth serve` (`crates/berth/src/serve/`) |
 | `crates/berth-api/` | Types and the operations table shared by every program (`ops.rs` names each operation, its HTTP route and its role) |
-| `crates/berth-core/` | Hosts, profiles, links to hosts, registries and secrets, the store |
+| `crates/berth-core/` | Hosts, profiles, links to hosts, registries and secrets, and plugins. The store is in `store/`. `kept.rs` and `plugin_state.rs` write files from it, and `import.rs` takes in the files of older versions |
 | `crates/berth-tui/` | The parts of the UI that run in a terminal and in a browser |
 | `crates/berth-pty/` | Terminals for sessions |
 | `crates/berthd/`, `crates/box/` | The controller on each host and the agent's own tool there |
@@ -92,3 +92,4 @@ The end-to-end tests in `tests/e2e/` apply a profile to a throw-away Ubuntu cont
 - Tests, screenshots and examples use made-up hosts such as `studio` and addresses from `192.0.2.0/24`, never a real machine or a real configuration.
 - A test that starts `berth serve` or `berthd` sets `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` to scratch directories, so it cannot touch the user's own.
 - Secrets never go into argv, logs or the repository. They travel in private files or on standard input.
+- An installation's state goes through the store (`berth_core::store`), not through files of its own under the configuration or data directory, so that the database and its key file restore it. A file that has to stay, such as `id_ed25519` or `serve.token`, is written from the store.

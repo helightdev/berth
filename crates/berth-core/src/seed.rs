@@ -47,11 +47,14 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
             .map_err(|error| format!("Publishing to {release} failed: {error}"))?;
         let mut profile = host.config.clone();
         profile["release_url"] = json!(url);
-        save_profile(&host.path, &profile)?;
+        host.place.save(paths, &profile)?;
     }
     // The seed is rendered from a private copy of the profile, which holds a
     // new enrollment key for a host that joins the tailnet automatically.
-    let saved: Value = serde_json::from_slice(&fs::read(&host.path)?)?;
+    let saved: Value = host
+        .place
+        .load(paths)?
+        .ok_or_else(|| format!("No host {name}"))?;
     let config = named(tailnet::seed_profile(paths, &saved, name)?, name);
     let seeded = tailnet::profile_file(&config)?;
     let build = paths.build_dir();
@@ -142,15 +145,4 @@ pub fn named(mut config: Value, name: &str) -> Value {
         config["hostname"] = json!(name);
     }
     config
-}
-
-/// Write a profile in place of the old one, privately.
-pub fn save_profile(path: &std::path::Path, profile: &Value) -> Result<()> {
-    let parent = path.parent().ok_or("A profile is in a directory")?;
-    // Temporary files are created private, which the profile stays.
-    let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    serde_json::to_writer_pretty(&mut file, profile)?;
-    std::io::Write::write_all(&mut file, b"\n")?;
-    file.persist(path)?;
-    Ok(())
 }

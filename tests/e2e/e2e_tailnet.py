@@ -2,6 +2,7 @@
 host needs one, through berth and through berth serve, and with a key pasted
 into the profile. The test host runs the real tailscale client."""
 import json
+import sqlite3
 import time
 import unittest
 
@@ -168,10 +169,16 @@ class ThroughTheServer(Joined, unittest.TestCase):
         self.assertEqual(settings['tailnet_login_server'], headscale().url)
         self.assertEqual(settings['tailnet_user'], headscale().user)
         self.assertIn('tailnet_api_key', self.serve.call('GET', '/v1/secrets')['names'])
-        kept = (self.serve.station.berth_dir / 'secrets.json').read_text()
-        self.assertIn(headscale().api_key, kept)
-        self.assertNotIn(headscale().api_key, ''.join(
-            path.read_text() for path in self.client.home.rglob('*') if path.is_file()))
+        store = sqlite3.connect(self.serve.station.data / 'berth/berth.db')
+        try:
+            kept = store.execute("SELECT value FROM state WHERE kind = 'secret' AND scope = ''"
+                                 " AND name = 'tailnet_api_key'").fetchone()
+        finally:
+            store.close()
+        self.assertEqual(bytes(kept[0]).decode(), headscale().api_key)
+        # The client's store is among these files, so they are read as bytes.
+        self.assertNotIn(headscale().api_key.encode(), b''.join(
+            path.read_bytes() for path in self.client.home.rglob('*') if path.is_file()))
 
     def test_the_host_joins_and_applying_again_makes_no_key(self):
         self.assertIn('failed=0', self.first.stdout)

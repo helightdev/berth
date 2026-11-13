@@ -525,8 +525,8 @@ pub fn draw_arguments(frame: &mut Frame, host: &HostView) {
         58,
     );
     let keys = match asked.choices.is_empty() {
-        true => " Enter accept · Esc cancel ",
-        false => " ↑↓ choose · Enter accept · Esc cancel ",
+        true => " Enter accept · Esc cancel · Ctrl+O copy ",
+        false => " ↑↓ choose · Enter accept · Esc cancel · Ctrl+O copy ",
     };
     let rows = lines.len() as u16;
     let area = dialog(frame, &title, keys, lines);
@@ -542,6 +542,49 @@ pub trait Platform {
     /// What is on the clipboard, where it can be read right away.
     fn paste(&mut self) -> Option<String>;
     fn open(&mut self, link: &str) -> Result<(), String>;
+}
+
+/// The hint of the key that copies the text of the field being edited. Ctrl+Y
+/// would be the usual choice, but the input takes it to paste what it cut, and
+/// the other Ctrl letters are line editing, so this one is free.
+pub const COPY_FIELD: &str = "Ctrl+O copy";
+
+/// Whether the key copies the text of the field being edited.
+pub fn is_copy_field(key: &Key) -> bool {
+    key.is_ctrl('o') && !key.alt
+}
+
+/// Put the text of the field on the clipboard. Returns what to say, which is
+/// not the text: it may be a secret.
+pub fn copy_field(platform: &mut dyn Platform, input: &Input) -> String {
+    if input.value().is_empty() {
+        return "The field is empty".into();
+    }
+    match platform.copy(input.value()) {
+        true => "Copied the text of the field".into(),
+        false => "Could not reach the clipboard".into(),
+    }
+}
+
+/// A setting's description as the start of a sentence. Most begin with a noun
+/// that has no article, so only the first letter changes; a program's name
+/// keeps its case.
+pub fn describe_setting(help: &str) -> String {
+    let mut chars = help.chars();
+    match chars.next() {
+        Some(first) if !help.starts_with("berth ") => first.to_uppercase().chain(chars).collect(),
+        _ => help.to_owned(),
+    }
+}
+
+/// A secret as a list shows it: the end of it, so that one can tell two apart.
+/// A short one is not shown at all.
+pub fn short_secret(value: &str) -> String {
+    let count = value.chars().count();
+    match count > 12 {
+        true => format!("…{}", value.chars().skip(count - 4).collect::<String>()),
+        false => "••••".into(),
+    }
 }
 
 /// A click on a web address opens it; a right-click on a word copies it.
@@ -637,11 +680,17 @@ pub fn view_event(
 
 /// Keys of the dialog that asks for a task's arguments. Returns whether the
 /// value was accepted, for the caller to go on with.
-pub fn arguments_event(host: &mut HostView, event: &Event) -> bool {
+pub fn arguments_event(
+    host: &mut HostView,
+    event: &Event,
+    platform: &mut dyn Platform,
+    said: &mut Option<String>,
+) -> bool {
     let Some(asked) = &mut host.arguments else {
         return false;
     };
     match event {
+        Event::Key(key) if is_copy_field(key) => *said = Some(copy_field(platform, &asked.input)),
         Event::Key(key) => match key.code {
             Code::Esc => host.arguments = None,
             Code::Enter => return true,

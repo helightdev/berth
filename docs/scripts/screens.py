@@ -158,8 +158,6 @@ def make_demo(root: Path) -> dict:
                                 "Host build-vm\n  HostName 192.0.2.40\n  User ops\n")
     key = (ssh / "id_ed25519.pub").read_text().strip()
 
-    hosts = home / ".config/berth/hosts"
-    hosts.mkdir(parents=True)
     # The fake hash stands in for what F5 or `mkpasswd -m sha-512` would store.
     fake_hash = "$6$demo$" + "x" * 86
     features = ["claude/cli", "codex/cli", "t3/server", "github/cli", "backup/restic"]
@@ -182,12 +180,8 @@ def make_demo(root: Path) -> dict:
         builder={"ssh_host": "192.0.2.31", "ssh_user": "ops"},
     )
     for host in (studio, cloud, laptop):
-        (hosts / f"{host['hostname']}.json").write_text(json.dumps(host, indent=2) + "\n")
-    settings = {
-        "default_host": "studio",
-        "registries": {},
-    }
-    (home / ".config/berth/config.json").write_text(json.dumps(settings, indent=2) + "\n")
+        run(env, "profile", host["hostname"], "--set", "-", stdin=json.dumps(host, indent=2) + "\n")
+    run(env, "config", "default_host", "studio")
     # Registries and a secret, through the commands; nothing is contacted.
     run(env, "registry", "add", "nexus", "nexus", "https://nexus.example.com", "ci-user")
     run(env, "registry", "repo", "nexus", "npm", "npm-group")

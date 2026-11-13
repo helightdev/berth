@@ -59,8 +59,13 @@ pub const TASKS: &[(&str, &str, &str)] = &[
     ),
     (
         "connect",
-        "Connect again",
+        "Try again",
         "Ask the host again what it can do. A host whose sudo asks for a password needs that password once; it is kept until berth is closed and stored nowhere.",
+    ),
+    (
+        "address",
+        "Change the SSH address",
+        "Edit the address berth reaches this host at, for a host that has a new one, and try again once it is saved.",
     ),
     (
         "ssh",
@@ -380,7 +385,7 @@ impl Field {
                 "Operator password hash",
                 "/operator_password_hash",
                 Secret,
-                "SHA-512 crypt or yescrypt hash of the operator password. F4 generates a password and hash, F5 hashes a password you enter.",
+                "SHA-512 crypt or yescrypt hash of the operator password. F4 generates a password and hash, and berth credentials HOST shows the password later. F5 hashes a password you enter.",
             ),
             OperatorSudo => (
                 "Operator passwordless sudo",
@@ -404,7 +409,7 @@ impl Field {
                 "Agent password hash",
                 "/agent_password_hash",
                 Secret,
-                "Optional local password for the agent. F4 generates a password and hash, F5 hashes a password you enter. Empty locks password login.",
+                "Optional local password for the agent. F4 generates a password and hash, and berth credentials HOST shows the password later. F5 hashes a password you enter. Empty locks password login.",
             ),
             AgentPrivileges => (
                 "Agent privileges",

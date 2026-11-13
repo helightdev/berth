@@ -5,7 +5,7 @@ use berth_api::{Output, unb64};
 use berth_core::{
     link::LinkSpec,
     paths::Paths,
-    store::{Job, Store},
+    store::{self, Job, Store, kind},
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -28,7 +28,7 @@ fn state_in(dir: &std::path::Path, token: Option<&str>) -> Arc<Serve> {
         config_dir: dir.join("config"),
         data_dir: dir.join("data"),
     };
-    let store = Store::open(&super::store_path(&paths)).unwrap();
+    let store = Store::open(&store::default_file(&paths)).unwrap();
     Serve::new(paths, store, token.map(str::to_owned))
 }
 
@@ -311,7 +311,7 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
         exit_code: None,
         output_path: log.to_string_lossy().into_owned(),
     };
-    served.state.store.lock().unwrap().add_job(&job).unwrap();
+    served.state.store.add_job(&job).unwrap();
     let jobs: Value = client.get("/v1/jobs").await.unwrap();
     assert_eq!(
         (&jobs[0]["id"], &jobs[0]["ended"]),
@@ -334,13 +334,7 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
         panic!("no more output")
     };
     assert_eq!(&bytes[..], b"done\n");
-    served
-        .state
-        .store
-        .lock()
-        .unwrap()
-        .end_job("j1", Some(2))
-        .unwrap();
+    served.state.store.end_job("j1", Some(2)).unwrap();
     assert_eq!(text(&mut stream).await, json!({"exited": {"exit_code": 2}}));
     let ended: Value = client.get("/v1/jobs/j1").await.unwrap();
     assert_eq!(ended["exit_code"], 2);
@@ -352,6 +346,37 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
             .status(),
         404
     );
+
+    // A job whose output stayed on the machine that ran it, as after a restore.
+    let elsewhere = Job {
+        id: "j2".into(),
+        ended: Some(berth_api::now()),
+        exit_code: Some(0),
+        output_path: "/nonexistent/berth/jobs/j2.log".into(),
+        ..job.clone()
+    };
+    served.state.store.add_job(&elsewhere).unwrap();
+    let missing = client
+        .get::<Output>("/v1/jobs/j2/output")
+        .await
+        .unwrap_err();
+    assert_eq!(missing.status(), 404);
+    assert!(
+        missing
+            .to_string()
+            .contains("kept on the machine that ran it"),
+        "{missing}"
+    );
+    let info: Value = client.get("/v1/jobs/j2").await.unwrap();
+    assert_eq!(info["exit_code"], 0);
+    let mut stream = client::websocket_unix(&served.socket, "/v1/jobs/j2")
+        .await
+        .unwrap();
+    let Some(Ok(Frame::Binary(bytes))) = stream.next().await else {
+        panic!("no note")
+    };
+    assert!(String::from_utf8_lossy(&bytes).contains("is not on this one"));
+    assert_eq!(text(&mut stream).await, json!({"exited": {"exit_code": 0}}));
 
     // Messages as the taking-in stores them.
     let mut live = client::websocket_unix(&served.socket, "/v1/inbox?topic=build/")
@@ -1055,6 +1080,22 @@ async fn the_server_is_set_up_through_the_api() {
         (&days["value"], &days["open"]),
         (&json!("30"), &json!(true))
     );
+    // What lets someone in is not given back, whatever the caller may do.
+    served
+        .state
+        .paths
+        .set("oauth_client_secret", "s3cret")
+        .unwrap();
+    served.state.paths.set("server_token", "tok-123").unwrap();
+    let (_, settings) = send(client, "GET", "/v1/settings", Value::Null).await;
+    assert!(!settings.to_string().contains("s3cret") && !settings.to_string().contains("tok-123"));
+    let secret = settings
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|setting| setting["key"] == "oauth_client_secret")
+        .unwrap();
+    assert_eq!(secret["value"], "");
     // The tailnet is set on the server, and its API key stays there.
     let at = value("http://192.0.2.9:8080");
     assert_eq!(
@@ -1283,9 +1324,9 @@ async fn trusting(issuer: &Issuer, setup: bool) -> (tempfile::TempDir, std::net:
         config_dir: dir.path().join("config"),
         data_dir: dir.path().join("data"),
     };
-    let store = Store::open(&super::store_path(&paths)).unwrap();
+    let store = Store::open(&store::default_file(&paths)).unwrap();
     let auth = super::auth::Auth::trusting("s3cret-token", "https://id.example", &jwks, setup);
-    let state = Serve::with(paths, store, auth);
+    let state = Serve::with(paths, Arc::new(store), auth);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let router = api::router(state, true);
@@ -1797,11 +1838,13 @@ async fn machines_are_created_and_deleted_through_the_api() {
     let paths = &served.state.paths;
     paths.prepare().unwrap();
     // How the server reaches it is its own; the address comes from the provisioner.
-    std::fs::write(
-        paths.profile("studio").unwrap(),
-        json!({"builder": {"ssh_user": "ops", "link": ["sh", "-c", "exit 1"]}}).to_string(),
-    )
-    .unwrap();
+    berth_core::profiles::Place::own("studio")
+        .unwrap()
+        .save(
+            paths,
+            &json!({"builder": {"ssh_user": "ops", "link": ["sh", "-c", "exit 1"]}}),
+        )
+        .unwrap();
     let message = |said: &Value| said["error"]["message"].as_str().unwrap_or("").to_owned();
 
     let (status, listed) = send(client, "GET", "/v1/provisioners", Value::Null).await;
@@ -2018,9 +2061,15 @@ async fn machines_are_created_and_deleted_through_the_api() {
             .0,
         200
     );
-    let profile = paths.profile("studio").unwrap();
-    for beside in ["json", "instance.json", "instance.lock"] {
-        assert!(!profile.with_extension(beside).exists(), "{beside}");
+    // The profile went, and with it everything kept of the host.
+    let store = berth_core::store::shared(paths).unwrap();
+    for kind in [
+        berth_core::store::kind::PROFILE,
+        berth_core::store::kind::CREDENTIALS,
+        berth_core::store::kind::INSTANCE,
+    ] {
+        let kept = store.read(kind, berth_core::store::OWN, "studio").unwrap();
+        assert!(kept.is_none(), "{kind}");
     }
 }
 
@@ -2049,13 +2098,12 @@ async fn setup_key(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_setup_key_hands_over_the_token_until_it_is_done() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let state = state_in(dir.path(), Some("s3cret-token"));
-    let paths = super::copy(&state.paths);
+    let paths = state.paths.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let router = api::router(state, true);
+    let router = api::router(state.clone(), true);
     tokio::spawn(async move { axum::serve(listener, router).await });
 
     // Without a key there is nothing to get in with, and every refusal looks the same.
@@ -2063,9 +2111,15 @@ async fn a_setup_key_hands_over_the_token_until_it_is_done() {
     assert_eq!(status, 401);
     let (key, _) = super::setup_key::make(&paths).unwrap();
     assert!(key.len() >= 64);
-    let file = paths.data_dir.join("serve.setup-key");
-    let mode = std::fs::metadata(&file).unwrap().permissions().mode();
-    assert_eq!(mode & 0o777, 0o600);
+    // It is in the store, and nowhere else.
+    let store = &state.store;
+    let row = |store: &Store| {
+        store
+            .read(kind::TOKEN, store::OWN, super::setup_key::NAME)
+            .unwrap()
+    };
+    assert!(row(store).is_some());
+    assert!(!paths.data_dir.join("serve.setup-key").exists());
     for bearer in [None, Some("wrong"), Some("s3cret-token")] {
         let (status, said) = setup_key(address, "GET", bearer).await;
         assert_eq!((status, &said), (401, &nothing), "{bearer:?}");
@@ -2099,23 +2153,31 @@ async fn a_setup_key_hands_over_the_token_until_it_is_done() {
     }
     // Done ends it.
     assert_eq!(setup_key(address, "DELETE", Some(&key)).await.0, 200);
-    assert!(!file.exists());
+    assert!(row(store).is_none());
     for method in ["GET", "POST", "DELETE"] {
         assert_eq!(setup_key(address, method, Some(&key)).await.0, 401);
     }
 
     // A key that has expired is refused and goes.
     let old = "a".repeat(64);
-    std::fs::write(&file, json!({"key": old, "expires": 1}).to_string()).unwrap();
+    let expired = json!({"key": old, "expires": 1}).to_string();
+    store
+        .write(
+            kind::TOKEN,
+            store::OWN,
+            super::setup_key::NAME,
+            expired.as_bytes(),
+        )
+        .unwrap();
     assert_eq!(setup_key(address, "POST", Some(&old)).await.0, 401);
-    assert!(!file.exists());
+    assert!(row(store).is_none());
 
     // A new key takes the place of the one before.
     let (first, _) = super::setup_key::make(&paths).unwrap();
     let (second, _) = super::setup_key::make(&paths).unwrap();
     assert_eq!(setup_key(address, "GET", Some(&first)).await.0, 401);
     assert_eq!(setup_key(address, "GET", Some(&second)).await.0, 200);
-    assert!(super::setup_key::remove(&paths).unwrap());
+    assert!(super::setup_key::remove(store).unwrap());
     assert_eq!(setup_key(address, "GET", Some(&second)).await.0, 401);
 
     // The portal does not carry these: they are for a caller without a token.
@@ -2128,10 +2190,10 @@ async fn a_setup_key_hands_over_the_token_until_it_is_done() {
 async fn berth_connect_saves_the_server_and_its_token() {
     let dir = tempfile::tempdir().unwrap();
     let state = state_in(dir.path(), Some("s3cret-token"));
-    let served = super::copy(&state.paths);
+    let served = state.paths.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    let router = api::router(state, true);
+    let router = api::router(state.clone(), true);
     tokio::spawn(async move { axum::serve(listener, router).await });
     let (key, _) = super::setup_key::make(&served).unwrap();
 
@@ -2141,7 +2203,7 @@ async fn berth_connect_saves_the_server_and_its_token() {
         data_dir: client.path().join("data"),
     };
     let connect = |key: String| {
-        let (paths, url) = (super::copy(&paths), url.clone());
+        let (paths, url) = (paths.clone(), url.clone());
         tokio::task::spawn_blocking(move || {
             crate::commands::connect_with(&paths, &url, &key).map_err(|error| error.to_string())
         })
@@ -2158,7 +2220,10 @@ async fn berth_connect_saves_the_server_and_its_token() {
         Some("s3cret-token")
     );
     // The key was ended once the token was saved.
-    assert!(!served.data_dir.join("serve.setup-key").exists());
+    let row = state
+        .store
+        .read(kind::TOKEN, store::OWN, super::setup_key::NAME);
+    assert!(row.unwrap().is_none());
     assert!(connect(key).await.unwrap().is_err());
 }
 
@@ -2172,6 +2237,158 @@ fn a_setup_key_is_refused_when_the_token_is_off() {
     paths.set("serve_token", "off").unwrap();
     let refused = super::setup_key::make(&paths).unwrap_err().to_string();
     assert!(refused.contains("serve_token is off"), "{refused}");
-    assert!(!paths.data_dir.join("serve.setup-key").exists());
+    let store = store::shared(&paths).unwrap();
+    let row = store.read(kind::TOKEN, store::OWN, super::setup_key::NAME);
+    assert!(row.unwrap().is_none());
     assert!(super::setup_key::command(&paths, &["--nothing"]).is_err());
+}
+
+/// Generate the password of the operator on the screen of `app`, and what
+/// the screen said.
+fn generate_operator_password(app: &mut crate::app::App) -> String {
+    use crate::app::Entry;
+    use crate::fields::{Field, Step};
+    let found = Step::SETUP.into_iter().find_map(|step| {
+        app.step = step;
+        app.entries()
+            .iter()
+            .position(|entry| *entry == Entry::Field(Field::OperatorHash))
+    });
+    app.list.select(found);
+    match app.generate() {
+        Ok(()) => app.status.clone(),
+        Err(error) => error.to_string(),
+    }
+}
+
+// Not on a runtime of the test's: the screen waits for the server on one of its own.
+#[test]
+fn generated_passwords_are_kept_where_the_host_is_and_shown_to_an_admin() {
+    use berth_core::{credentials, profiles::Place};
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let served = runtime.block_on(served());
+    let ask = |method: &str, path: &str, body: Value| {
+        runtime.block_on(async {
+            let mut client = served.client().await;
+            send(&mut client, method, path, body).await
+        })
+    };
+    let profile = json!({"hostname": "studio", "builder": {"ssh_host": "192.0.2.7"}});
+    let (status, _) = ask("PUT", "/v1/hosts/studio/profile", profile.clone());
+    assert_eq!(status, 200);
+
+    // The server's route keeps what it makes up in the server's store.
+    let asked = json!({"what": "password", "host": "studio", "user": "ops"});
+    let (status, made) = ask("POST", "/v1/setup/generate", asked);
+    assert_eq!(status, 200, "{made}");
+    let password = made["password"].as_str().unwrap().to_owned();
+    assert!(made["value"].as_str().unwrap().starts_with("$6$"));
+    assert!(
+        made["note"]
+            .as_str()
+            .unwrap()
+            .contains("berth credentials studio"),
+        "{made}"
+    );
+    let (status, kept) = ask("GET", "/v1/hosts/studio/credentials", Value::Null);
+    assert_eq!(
+        (status, &kept["credentials"]["ops"]),
+        (200, &json!(password))
+    );
+    let own = Place::own("studio").unwrap();
+    assert_eq!(
+        credentials::load(&served.state.paths, &own).unwrap()["ops"],
+        json!(password)
+    );
+    let (status, _) = ask("GET", "/v1/hosts/attic/credentials", Value::Null);
+    assert_eq!(status, 404);
+
+    // The screen of a berth that uses this server has the server make the
+    // password, and keeps none of it itself, where a mirror would erase it.
+    let elsewhere = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        config_dir: elsewhere.path().join("config"),
+        data_dir: elsewhere.path().join("data"),
+    };
+    let url = format!("unix:{}", served.socket.display());
+    paths.set("server", &url).unwrap();
+    let place = Place::resolve(&paths, "studio").unwrap();
+    assert_eq!(place.server_url(), Some(url.as_str()));
+    let mut config = profile.clone();
+    config["builder"]["served"] = json!(url);
+    let mut app = crate::app::App::new(
+        paths.clone(),
+        place.clone(),
+        crate::app::parse_config(config.to_string().as_bytes()).unwrap(),
+    );
+    let said = generate_operator_password(&mut app);
+    assert!(said.contains("kept on the berth server"), "{said}");
+    assert!(
+        app.config["operator_password_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("$6$")
+    );
+    assert!(credentials::load(&paths, &place).unwrap().is_empty());
+    let kept = credentials::load(&served.state.paths, &own).unwrap();
+    assert_ne!(kept["ops"], json!(password), "a new one was made");
+
+    // A host of this berth's own keeps it in this berth's store.
+    let local = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        config_dir: local.path().join("config"),
+        data_dir: local.path().join("data"),
+    };
+    let attic = Place::own("attic").unwrap();
+    let mut app = crate::app::App::new(
+        paths.clone(),
+        attic.clone(),
+        crate::app::parse_config(b"{}").unwrap(),
+    );
+    let said = generate_operator_password(&mut app);
+    assert!(said.contains("berth credentials attic"), "{said}");
+    assert_eq!(credentials::load(&paths, &attic).unwrap().len(), 1);
+    runtime.shutdown_background();
+}
+
+#[test]
+fn a_serve_of_a_berth_that_uses_a_berth_server_does_not_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        config_dir: dir.path().join("config"),
+        data_dir: dir.path().join("data"),
+    };
+    paths.set("server", "http://192.0.2.7:7777").unwrap();
+    let said = super::command(&paths, &[]).unwrap_err().to_string();
+    assert!(said.contains("berth config server \"\""), "{said}");
+    assert!(!paths.data_dir.join("serve.lock").exists());
+}
+
+#[test]
+fn pruning_removes_a_jobs_output_and_its_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state_in(dir.path(), None);
+    std::fs::create_dir_all(&state.jobs_dir).unwrap();
+    let log = state.jobs_dir.join("old.log");
+    std::fs::write(&log, "done\n").unwrap();
+    std::fs::write(log.with_extension("json"), "{}").unwrap();
+    let long_ago = berth_api::rfc3339(berth_api::unix_now() - 200 * 86400);
+    state
+        .store
+        .add_job(&Job {
+            id: "old".into(),
+            host: "studio".into(),
+            what: "rollout".into(),
+            started: long_ago.clone(),
+            ended: Some(long_ago),
+            exit_code: Some(0),
+            output_path: log.to_string_lossy().into_owned(),
+        })
+        .unwrap();
+    state.prune();
+    assert!(state.store.job("old").unwrap().is_none());
+    assert!(!log.exists() && !log.with_extension("json").exists());
 }
