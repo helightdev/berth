@@ -76,43 +76,89 @@ jobs:
           path: |
             dist/berthd
             dist/box
-  # berth-remote for Windows: the page of berth serve in a terminal, to use a
-  # server's hosts from there. berth itself runs on Linux.
+  # berth-remote, the page of berth serve in a terminal, to use a server's
+  # hosts from another machine. Each is built on the system it is for, so
+  # that its version can be run there.
   remote:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: berth-remote-x86_64-windows.zip
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            asset: berth-remote-aarch64-macos.tar.gz
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            asset: berth-remote-x86_64-macos.tar.gz
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            asset: berth-remote-x86_64-linux.tar.gz
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            asset: berth-remote-aarch64-linux.tar.gz
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      # The C runtime goes into the program, so that Windows needs nothing installed.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+      # ring's C is built against musl too, so that the program runs on any Linux.
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CC_aarch64_unknown_linux_musl: musl-gcc
     steps:
       - uses: actions/checkout@v7
       - name: The version
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then
-            echo "BERTH_BUILD_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+            version=${GITHUB_REF_NAME#v}
+            if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+              echo "::error::$GITHUB_REF_NAME is not a version tag such as v1.2.0 or v1.2.0-rc.1"
+              exit 1
+            fi
+            echo "BERTH_BUILD_VERSION=$version" >> "$GITHUB_ENV"
           fi
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-gnu
-      - name: MinGW, the linker and the compiler for ring
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+          targets: ${{ matrix.target }}
+      - name: musl compiler for ring
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
       - uses: Swatinem/rust-cache@v2
-      - name: Build berth-remote for Windows
-        run: cargo build --release --locked --target x86_64-pc-windows-gnu -p berth-remote
+        with:
+          key: ${{ matrix.target }}
+      - name: Build berth-remote
+        run: cargo build --release --locked --target ${{ matrix.target }} -p berth-remote
       - name: Pack
         run: |
           mkdir dist
-          cp target/x86_64-pc-windows-gnu/release/berth-remote.exe LICENSE-MIT LICENSE-APACHE dist/
-          (cd dist && zip -q -X ../berth-remote-x86_64-windows.zip berth-remote.exe LICENSE-MIT LICENSE-APACHE)
-          sha256sum berth-remote-x86_64-windows.zip > berth-remote-x86_64-windows.zip.sha256
+          program=berth-remote
+          [ "$RUNNER_OS" = Windows ] && program=berth-remote.exe
+          cp "target/${{ matrix.target }}/release/$program" LICENSE-MIT LICENSE-APACHE dist/
+          case "${{ matrix.asset }}" in
+            *.zip) (cd dist && 7z a -tzip -bso0 "../${{ matrix.asset }}" "$program" LICENSE-MIT LICENSE-APACHE) ;;
+            *) tar -czf "${{ matrix.asset }}" -C dist "$program" LICENSE-MIT LICENSE-APACHE ;;
+          esac
+          if command -v sha256sum >/dev/null; then
+            sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          fi
       - name: Check the version
-        # Without Windows to run it on, the version is looked for in the program.
         run: |
           want=${BERTH_BUILD_VERSION:-$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)}
-          grep -aqF "$want" dist/berth-remote.exe \
-            || { echo "::error::berth-remote.exe does not carry $want"; exit 1; }
+          said=$(dist/berth-remote --version)
+          echo "berth-remote: $said"
+          [ "$said" = "berth-remote $want" ] || { echo "::error::berth-remote says $said, not $want"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
-          name: berth-remote-x86_64-windows
+          name: berth-remote-${{ matrix.target }}
           path: |
-            berth-remote-x86_64-windows.zip
-            berth-remote-x86_64-windows.zip.sha256
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sha256
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [binary, remote]
@@ -126,20 +172,23 @@ jobs:
           name: berth-x86_64-linux
       - uses: actions/download-artifact@v4
         with:
-          name: berth-remote-x86_64-windows
+          pattern: berth-remote-*
+          merge-multiple: true
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "$GITHUB_REF_NAME" > VERSION
           # A tag such as v0.4.0-rc.1 is a pre-release, which berth update and
-          # install.sh pass over.
+          # the install scripts pass over.
           prerelease=
           case "$GITHUB_REF_NAME" in *-*) prerelease=--prerelease ;; esac
           # A release made on GitHub's page exists already, and only lacks the files.
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
             || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes $prerelease
-          gh release upload "$GITHUB_REF_NAME" --clobber berth-x86_64-linux.tar.gz berth-x86_64-linux.tar.gz.sha256 berth-web-x86_64-linux.tar.gz berth-web-x86_64-linux.tar.gz.sha256 berth-remote-x86_64-windows.zip berth-remote-x86_64-windows.zip.sha256 install.sh install.ps1 VERSION
+          gh release upload "$GITHUB_REF_NAME" --clobber berth-x86_64-linux.tar.gz berth-x86_64-linux.tar.gz.sha256 berth-web-x86_64-linux.tar.gz berth-web-x86_64-linux.tar.gz.sha256 \
+            berth-remote-*.zip berth-remote-*.zip.sha256 berth-remote-*.tar.gz berth-remote-*.tar.gz.sha256 \
+            install.sh install-remote.sh install.ps1 VERSION
   image:
     runs-on: ubuntu-latest
     permissions:
