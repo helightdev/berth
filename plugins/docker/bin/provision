@@ -91,6 +91,25 @@ def valid_name(host):
         raise Failure(f'{host!r} is not a name a container can have')
 
 
+UNITS = {'': 1, 'b': 1, 'k': 1024, 'kb': 1024, 'kib': 1024, 'm': 1024**2, 'mb': 1024**2, 'mib': 1024**2,
+         'g': 1024**3, 'gb': 1024**3, 'gib': 1024**3}
+
+
+def parse_cpus(text):
+    if not re.fullmatch(r'\d+(\.\d+)?', text) or float(text) <= 0:
+        raise Failure(f'cpus must be a positive number such as 2 or 1.5, not {text!r}')
+    return text
+
+
+def parse_memory(text):
+    found = re.fullmatch(r'(\d+(?:\.\d+)?)\s*([A-Za-z]*)', text)
+    unit = found.group(2).lower() if found else None
+    # Docker counts k, m and g in powers of 1024, so GiB and g mean the same size.
+    if unit not in UNITS or int(float(found.group(1)) * UNITS[unit]) <= 0:
+        raise Failure(f'memory must be a size such as 4GiB, 512MiB or 4g, not {text!r}')
+    return str(int(float(found.group(1)) * UNITS[unit]))
+
+
 def settings(request):
     arguments = request.get('arguments') or {}
     host = request.get('host') or ''
@@ -100,6 +119,8 @@ def settings(request):
         'port': (arguments.get('ssh_port') or '').strip(),
         'address': (arguments.get('publish_address') or '').strip() or '127.0.0.1',
         'volume': (arguments.get('volume') or '').strip() or f'berth-{host}-data',
+        'cpus': (arguments.get('cpus') or '').strip(),
+        'memory': (arguments.get('memory') or '').strip(),
         'keep': (arguments.get('keep_volume') or 'no').strip().lower() == 'yes',
     }
 
@@ -189,6 +210,8 @@ def create(request):
     cfg = settings(request)
     docker = cfg['docker']
     name = container_name(request)
+    cpus = parse_cpus(cfg['cpus']) if cfg['cpus'] else ''
+    memory = parse_memory(cfg['memory']) if cfg['memory'] else ''
     labels = request.get('labels') or {}
     token = request.get('token') or labels.get('berth-instance') or ''
     if not token:
@@ -234,6 +257,10 @@ def create(request):
             raise Failure(f'{cfg["port"]!r} is not a port')
         bind = '127.0.0.1' if cfg['address'] in ('127.0.0.1', 'localhost', '::1') else '0.0.0.0'
         args += ['--publish', f'{bind}:{cfg["port"]}:22']
+    if cpus:
+        args += ['--cpus', cpus]
+    if memory:
+        args += ['--memory', memory]
     args += [image, '/sbin/init']
     say(f'Creating {name}.')
     docker.run(*args)

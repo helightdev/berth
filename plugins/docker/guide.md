@@ -28,7 +28,12 @@ created. The same image serves every host.
 | `ssh_port` | empty | The port to publish SSH on. Empty publishes none, and berth uses the container's own address on the Docker network. |
 | `publish_address` | `127.0.0.1` | The address berth uses with `ssh_port`. Loopback binds the port on loopback only. Any other address binds it on all interfaces. |
 | `volume` | `berth-HOST-data` | The volume for `/srv/agent`. |
+| `cpus` | empty | The CPUs the container may use, such as `2` or `1.5`. Empty means no limit. |
+| `memory` | empty | The memory the container may use, such as `4GiB`, `512MiB` or `4g`. Empty means no limit. |
 | `keep_volume` | `no` | `yes` keeps the volume when the container is destroyed. |
+
+`cpus` and `memory` cap the container with Docker's own limits. There is no
+disk limit, because Docker can cap a container's disk only on some storage drivers.
 
 Without `ssh_port`, the container's address is only reachable from the machine
 that runs Docker. Publish a port when berth runs elsewhere.

@@ -104,7 +104,7 @@ class Provision(unittest.TestCase):
         self.assertEqual(entry['verbs'], ['start', 'stop', 'list'])
         self.assertNotIn('secrets', entry)
         self.assertEqual([a['name'] for a in entry['arguments']],
-                         ['host', 'image', 'ssh_port', 'publish_address', 'volume', 'keep_volume'])
+                         ['host', 'image', 'ssh_port', 'publish_address', 'volume', 'cpus', 'memory', 'keep_volume'])
         self.assertTrue(os.access(PLUGIN / 'bin/provision', os.X_OK))
 
     def test_create_runs_systemd_container_with_labels(self):
