@@ -4,9 +4,9 @@ description: Put the berth command on the machine you work from. It is one file.
 icon: Download
 ---
 
-berth runs on Linux. The program contains everything it puts on a host, so installing it means placing one file on your `PATH`.
+berth runs on Linux. The program contains everything it puts on a host, so installing it means placing one file on your `PATH`. On Windows, `berth-remote` uses the hosts of a berth server.
 
-<Tabs items={['Install script', 'Cargo', 'Container image']}>
+<Tabs items={['Install script', 'Cargo', 'Container image', 'Windows']}>
 <Tab value="Install script">
 
 ```bash title="Linux x86_64"
@@ -61,6 +61,18 @@ berth --server http://127.0.0.1:7777 --token "$(docker exec berth cat /data/bert
 ```
 
 See [A berth server](/docs/use/server).
+
+</Tab>
+<Tab value="Windows">
+
+berth itself needs Linux. `berth-remote` is the client for a [berth server](/docs/use/server) on another machine, with the screens of its page in a terminal:
+
+```powershell title="PowerShell"
+irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex
+berth-remote --server https://berth.example.ts.net
+```
+
+The script downloads the latest release, checks it against its SHA-256 and installs it to `%LOCALAPPDATA%\Programs\berth-remote`. See [From Windows](/docs/use/server#from-windows).
 
 </Tab>
 </Tabs>

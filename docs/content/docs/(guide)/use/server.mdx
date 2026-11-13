@@ -149,6 +149,37 @@ The same page is part of this site, at [/web](/web/). It asks which server to us
 
 Your browser talks to the server you name, and to nothing else. It keeps the server and the token. A page loaded over `https` can only reach a server over `https`.
 
+## From Windows
+
+berth runs on Linux. On Windows, `berth-remote` uses the hosts of a server from a terminal. It shows the screens of the page in a terminal, and works with a server that runs without `--web`. Install it in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex
+```
+
+The script downloads the latest release, checks it against its SHA-256 and installs it to `%LOCALAPPDATA%\Programs\berth-remote`. `BERTH_INSTALL_DIR` and `BERTH_VERSION` work as for `install.sh`. To download it by hand, take `berth-remote-x86_64-windows.zip` and its `.sha256` file from the [latest release](https://github.com/helightdev/berth/releases/latest).
+
+Start it in Windows Terminal, or in the console of Windows 10 or later:
+
+```powershell
+berth-remote --server https://berth.example.ts.net
+```
+
+It asks for the token and keeps the server and the token in `%APPDATA%\berth-remote` for the next run. A token never goes on the command line:
+
+| Variable or option | Effect |
+| --- | --- |
+| `BERTH_TOKEN` | The token, so it isn't asked for |
+| `BERTH_SETUP_KEY` | A [setup key](#with-a-setup-key), which collects the token |
+| `BERTH_SERVER` | The server, instead of `--server` |
+| `--forget` | Keep the server and the token for this run only |
+
+The screens and keys are those of the page. **Ctrl+Q** quits, and `u` on **Plugins** opens the file dialog of Windows. berth-remote also builds on Linux and macOS:
+
+```bash
+cargo install --locked --git https://github.com/helightdev/berth berth-remote
+```
+
 ## What works from another machine
 
 | Works through the server | Stays on a machine with the host's profile |

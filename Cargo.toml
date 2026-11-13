@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "crates/berth-tui", "crates/berth", "crates/berthd", "crates/box", "crates/berth-web"]
+members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "crates/berth-tui", "crates/berth", "crates/berthd", "crates/box", "crates/berth-web", "crates/berth-remote"]
 # The vendored crate is a member because it lives inside; it is left out of what
 # is built, tested and linted by default.
-default-members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "crates/berth-tui", "crates/berth", "crates/berthd", "crates/box"]
+default-members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "crates/berth-tui", "crates/berth", "crates/berthd", "crates/box", "crates/berth-remote"]
 
 [workspace.package]
 version = "0.4.1"

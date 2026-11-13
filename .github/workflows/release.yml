@@ -76,9 +76,46 @@ jobs:
           path: |
             dist/berthd
             dist/box
+  # berth-remote for Windows: the page of berth serve in a terminal, to use a
+  # server's hosts from there. berth itself runs on Linux.
+  remote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: The version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "BERTH_BUILD_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - name: MinGW, the linker and the compiler for ring
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+      - uses: Swatinem/rust-cache@v2
+      - name: Build berth-remote for Windows
+        run: cargo build --release --locked --target x86_64-pc-windows-gnu -p berth-remote
+      - name: Pack
+        run: |
+          mkdir dist
+          cp target/x86_64-pc-windows-gnu/release/berth-remote.exe LICENSE-MIT LICENSE-APACHE dist/
+          (cd dist && zip -q -X ../berth-remote-x86_64-windows.zip berth-remote.exe LICENSE-MIT LICENSE-APACHE)
+          sha256sum berth-remote-x86_64-windows.zip > berth-remote-x86_64-windows.zip.sha256
+      - name: Check the version
+        # Without Windows to run it on, the version is looked for in the program.
+        run: |
+          want=${BERTH_BUILD_VERSION:-$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)}
+          grep -aqF "$want" dist/berth-remote.exe \
+            || { echo "::error::berth-remote.exe does not carry $want"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: berth-remote-x86_64-windows
+          path: |
+            berth-remote-x86_64-windows.zip
+            berth-remote-x86_64-windows.zip.sha256
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: binary
+    needs: [binary, remote]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -87,6 +124,9 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: berth-x86_64-linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: berth-remote-x86_64-windows
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -99,7 +139,7 @@ jobs:
           # A release made on GitHub's page exists already, and only lacks the files.
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
             || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes $prerelease
-          gh release upload "$GITHUB_REF_NAME" --clobber berth-x86_64-linux.tar.gz berth-x86_64-linux.tar.gz.sha256 berth-web-x86_64-linux.tar.gz berth-web-x86_64-linux.tar.gz.sha256 install.sh VERSION
+          gh release upload "$GITHUB_REF_NAME" --clobber berth-x86_64-linux.tar.gz berth-x86_64-linux.tar.gz.sha256 berth-web-x86_64-linux.tar.gz berth-web-x86_64-linux.tar.gz.sha256 berth-remote-x86_64-windows.zip berth-remote-x86_64-windows.zip.sha256 install.sh install.ps1 VERSION
   image:
     runs-on: ubuntu-latest
     permissions:

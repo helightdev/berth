@@ -12,12 +12,14 @@ name = "berth-web"
 path = "src/main.rs"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-berth-api = { workspace = true, default-features = false }
+berth-api = { path = "../berth-api", default-features = false }
 berth-tui.workspace = true
 serde_json.workspace = true
 tui-input.workspace = true
 web-time = "1"
 ratzilla = "0.3.1"
+# The same ratatui as ratzilla's, named directly so the screens build for a terminal too.
+ratatui = { version = "=0.30.2", default-features = false }
 wasm-bindgen = "=0.2.129"
 js-sys = "0.3"
 console_error_panic_hook = "0.1"

@@ -295,6 +295,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "berth-remote"
+version = "0.4.1"
+dependencies = [
+ "berth-api",
+ "berth-tui",
+ "crossterm",
+ "futures-util",
+ "ratatui",
+ "rustls",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "tui-input",
+ "web-time",
+ "webpki-roots",
+]
+
+[[package]]
 name = "berth-tui"
 version = "0.4.1"
 dependencies = [
@@ -318,6 +336,7 @@ dependencies = [
  "console_error_panic_hook",
  "critical-section",
  "js-sys",
+ "ratatui",
  "ratzilla",
  "serde_json",
  "tui-input",

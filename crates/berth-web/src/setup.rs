@@ -9,7 +9,7 @@ use berth_tui::machine::{self, Machine, Next};
 use berth_tui::screen::{self, draw_footer, draw_header, draw_question, inside};
 use berth_tui::setup::{self, Account, Entry, Feature, Item, Page, Problem, Profile, Row};
 use berth_tui::{Click, Code, Event, Key, event, markdown, theme};
-use ratzilla::ratatui::{
+use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::Style,

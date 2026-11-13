@@ -13,7 +13,7 @@ use berth_tui::screen::{
     draw_panel, draw_question, draw_view, ellipsize, hint_click, inside,
 };
 use berth_tui::{Click, Code, Event, Key, event, markdown, qr, theme};
-use ratzilla::ratatui::{
+use ratatui::{
     Frame,
     layout::{Constraint, Layout, Margin, Rect},
     style::Style,

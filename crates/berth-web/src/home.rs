@@ -11,7 +11,7 @@ use berth_tui::provisioners;
 use berth_tui::screen;
 use berth_tui::setup::{valid_name, value_line};
 use berth_tui::{Code, Key, event, theme};
-use ratzilla::ratatui::{
+use ratatui::{
     style::Style,
     text::{Line, Span},
 };

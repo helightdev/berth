@@ -7,7 +7,7 @@ license.workspace = true
 description = "The screens of a host with no terminal in them, for berth and for its page in a browser"
 
 [dependencies]
-berth-api = { workspace = true, default-features = false }
+berth-api = { path = "../berth-api", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 vt100.workspace = true
