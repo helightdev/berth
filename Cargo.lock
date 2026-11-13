@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "berth"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "axum",
  "berth-api",
@@ -232,7 +232,7 @@ dependencies = [
 
 [[package]]
 name = "berth-api"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "futures-util",
  "http-body-util",
@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "berth-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "berth-api",
  "futures-util",
@@ -265,14 +265,14 @@ dependencies = [
 
 [[package]]
 name = "berth-pty"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "berth-tui"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "berth-api",
  "pulldown-cmark",
@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "berth-web"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "berth-api",
  "berth-tui",
@@ -304,7 +304,7 @@ dependencies = [
 
 [[package]]
 name = "berthd"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "axum",
  "berth-api",
@@ -383,7 +383,7 @@ dependencies = [
 
 [[package]]
 name = "box"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "berth-api",
  "futures-util",
