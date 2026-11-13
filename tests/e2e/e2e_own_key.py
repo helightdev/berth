@@ -1,11 +1,12 @@
 """A host that takes nothing but the key of berth, as when that key is added
 at a cloud provider: no key of the user's in the profile or in ~/.ssh, no
 ssh-agent, and the operator's sudo as it is by default. Once straight from a
-workstation, and once from a berth serve that has only its own key, with a
-terminal client using it.
+workstation, and once from a berth serve on that workstation, which has only
+the same key, with a terminal client using it.
 
-The host is the one the other modules set up, so this module comes last: it
-leaves the operator with other keys than theirs."""
+It runs on a test host of its own, `dock`, which nothing else sets up: run.py
+runs it there alongside the other modules on `studio`. Direct is the first
+apply that host sees; Served applies the server's profile over it."""
 import json
 import os
 import pwd
@@ -20,7 +21,7 @@ def bare_profile(template):
     """A profile for the test host as a new host starts, with no SSH key in it."""
     profile = json.loads(json.dumps(template))
     profile.update({'hostname': HOST, 'profile': 'cloud', 'keyboard': 'us', 'ansible_vars': light_vars()})
-    profile['builder'] = {'ssh_host': HOST, 'ssh_user': OPERATOR}
+    profile['builder'] = {'ssh_host': HOST, 'ssh_user': OPERATOR, 'shipped_plugins': True}
     return profile
 
 
@@ -29,15 +30,16 @@ def hand_over(*keys):
     hand_over_operator_key(*(key.with_suffix('.pub').read_text().strip() for key in keys))
 
 
-def tearDownModule():
-    # Whoever set the host up earlier in the run gets in again.
-    station = _provisioned.get('workstation')
-    if station:
-        keys = [station.key, station.own_key]
-        serve = _provisioned.get('serve')
-        if serve:
-            keys.append(serve.station.own_key)
-        hand_over(*keys)
+def keyed():
+    """The workstation whose berth key is the only one the host takes, made once."""
+    if 'own-key' not in _provisioned:
+        station = Workstation('own-key', ssh_key=False)
+        station.berth('key')
+        hand_over(station.own_key)
+        wait_for('the operator taking the key of berth', lambda: station.ssh(
+            OPERATOR, 'true', key=station.own_key, check=False).returncode == 0)
+        _provisioned['own-key'] = station
+    return _provisioned['own-key']
 
 
 class OwnKeyOnly:
@@ -122,11 +124,7 @@ class Direct(OwnKeyOnly, unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.station = cls.keyed = Workstation('own-key', ssh_key=False)
-        cls.station.berth('key')
-        hand_over(cls.station.own_key)
-        wait_for('the operator taking the key of berth', lambda: cls.station.ssh(
-            OPERATOR, 'true', key=cls.station.own_key, check=False).returncode == 0)
+        cls.station = cls.keyed = keyed()
         template = json.loads((SRC / 'provision/config/example.json').read_text())
         # Left out, as a profile written by hand would: its default applies.
         del template['operator_passwordless_sudo']
@@ -148,15 +146,12 @@ class Direct(OwnKeyOnly, unittest.TestCase):
 @needs_e2e
 class Served(OwnKeyOnly, unittest.TestCase):
     """A berth serve whose own key is the only way in, and a terminal client
-    with neither key nor profile of its own."""
+    with neither key nor profile of its own. The server runs on the
+    workstation of Direct, whose key it shares."""
 
     @classmethod
     def setUpClass(cls):
-        cls.keyed = Workstation('own-key-server', ssh_key=False)
-        cls.keyed.berth('key')
-        hand_over(cls.keyed.own_key)
-        wait_for('the operator taking the server\'s key', lambda: cls.keyed.ssh(
-            OPERATOR, 'true', key=cls.keyed.own_key, check=False).returncode == 0)
+        cls.keyed = keyed()
         cls.serve = Serve(cls.keyed, web=False)
         catalogue = cls.serve.call('GET', '/v1/setup')
         cls.serve.call('PUT', f'/v1/hosts/{HOST}/profile', bare_profile(catalogue['template']))

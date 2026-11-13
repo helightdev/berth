@@ -109,15 +109,19 @@ e2e() {
   dev cargo build --locked -p berth --features web
   e2e_down
   trap e2e_down EXIT
-  compose --profile e2e up -d studio
+  compose --profile e2e up -d studio dock
   local status=0
   compose --profile e2e run --rm "${tty[@]}" runner python3 tests/e2e/run.py "$@" || status=$?
   rm -rf "$logs"
   mkdir -p "$logs"
-  compose --profile e2e logs --no-color studio >"$logs/studio.log" 2>&1 || true
-  compose --profile e2e cp studio:/var/log/berth-ci/. "$logs/" >/dev/null 2>&1 || true
+  local host
+  for host in studio dock; do
+    mkdir -p "$logs/$host"
+    compose --profile e2e logs --no-color "$host" >"$logs/$host/init.log" 2>&1 || true
+    compose --profile e2e cp "$host:/var/log/berth-ci/." "$logs/$host/" >/dev/null 2>&1 || true
+  done
   if ((status)); then
-    echo "The end-to-end tests failed; the test host's logs are in ${logs#"$root"/}" >&2
+    echo "The end-to-end tests failed; the test hosts' logs are in ${logs#"$root"/}" >&2
   fi
   return "$status"
 }

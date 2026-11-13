@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# The test host's init. It runs sshd, takes the operator's key from /seed as
-# a cloud provider would hand it over, and does for berthd what systemd does
+# The test host's init. It runs sshd, takes the operator's key from /seed (or
+# BERTH_CI_SEED, for a second test host) as a cloud provider would hand it over, and does for berthd what systemd does
 # on a real host: start it once the role has installed it, restart it when its
 # program changes and have it read its files again when they change. It runs
 # tailscaled too, without a tun device, which the container has not.
 set -uo pipefail
 logs=/var/log/berth-ci
+seed=${BERTH_CI_SEED:-/seed}
 ssh-keygen -A >/dev/null
 /usr/sbin/sshd -D -e 2>>"$logs/sshd.log" &
 sshd=$!
@@ -31,7 +32,7 @@ while kill -0 "$sshd" 2>/dev/null; do
       --socket=/run/tailscale/tailscaled.sock >>"$logs/tailscaled.log" 2>&1 &
     tailscaled=$!
   fi
-  for key in /seed/*.pub; do
+  for key in "$seed"/*.pub; do
     [[ -f $key ]] || continue
     user=$(basename "$key" .pub)
     if ! cmp -s "$key" "/etc/ssh/provided-keys/$user"; then

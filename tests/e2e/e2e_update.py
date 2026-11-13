@@ -1,63 +1,25 @@
 """Updating a plugin from a registry, telling that the host is behind, and
 bringing it up to date again without losing what was made on it: from this
 machine, through berth serve with a terminal client, and for a plugin that
-comes with berth and changed with it."""
-import copy
+comes with berth and changed with it.
+
+Update and ShippedChanged use the extended state of the host
+(harness.extended()), which applied `up` 1.0.0 from the registry and the
+shipped `shipit`; Update leaves `up` at 2.0.0 and the host current, which
+ShippedChanged starts from. UpdateServed uses the shared state of berth serve
+(harness.served_extended()), which applied `served` 1.0.0."""
 import json
-import shutil
-import time
 import unittest
 
-from harness import (AGENT, HOST, SCRATCH, SRC, Workstation, light_vars, needs_e2e, package_registry,
-                     provisioned, random_text, served, source_with_plugins, unb64, wait_for)
+from harness import (AGENT, HOST, SCRATCH, Workstation, extended, light_vars, needs_e2e, package_registry,
+                     plugin_version, random_text, served_extended, unb64, wait_for)
 
-FIXTURE = SRC / 'tests/e2e/fixtures/plugin'
 PACKAGE = 'berth-plugin-up'
 
 
-def plugin_version(version, name=PACKAGE):
-    """The fixture plugin as `up` at a version. From 2.0.0 its greeting and
-    service changed, its Ansible task installs another file, the task `old`
-    is gone and `added` is new."""
-    folder = SCRATCH / f'{name}-{version}'
-    if folder.exists():
-        shutil.rmtree(folder)
-    shutil.copytree(FIXTURE, folder)
-    manifest = json.loads((folder / 'package.json').read_text())
-    manifest['name'], manifest['version'] = name, version
-    feature = manifest['berth']['features'][0]
-    feature['id'] = 'main'
-    feature['guide'] = ''
-    newer = version != '1.0.0'
-    feature['actions'] = [
-        {'name': 'hello', 'label': 'Say hello', 'run': f'echo "hello from {version}"'},
-        {'name': 'added' if newer else 'old', 'label': 'Added' if newer else 'Old',
-         'run': f'echo "{"added" if newer else "old"} task"'},
-    ]
-    feature['services'][0]['run'] = f'exec box serve up/echo -- /usr/local/bin/berth-e2e-echo {version}'
-    feature['channels'] = [{'topic': 'notes', 'keep': 'log', 'max': 50}]
-    (folder / 'package.json').write_text(json.dumps(manifest, indent=2))
-    (folder / 'tasks/install.yml').write_text(f'''---
-- name: Create the folder of what the plugin brings
-  ansible.builtin.file:
-    path: /usr/local/lib/berth-up
-    state: directory
-    mode: '0755'
-- name: Install what this version of the plugin brings
-  ansible.builtin.copy:
-    dest: /usr/local/lib/berth-up/{"two" if newer else "one"}
-    content: "{version}\\n"
-    mode: '0644'
-''')
-    return folder
-
-
-def set_features(station, features):
-    profile = station.read_profile()
-    profile['ansible_vars'] = light_vars(features)
-    # Opened by berth, a profile without this gets the agents' features.
-    profile['builder']['shipped_plugins'] = True
-    station.write_profile(profile)
+def version_of(applied, plugin):
+    """The version of a plugin the host says it was applied with."""
+    return next(found['version'] for found in applied['plugins'] if found['id'] == plugin)
 
 
 class KeepsState:
@@ -84,25 +46,16 @@ class Update(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.station = provisioned()
+        cls.station = extended().station
         cls.registry = package_registry()
         cls.npm = cls.registry.env()
-        cls.registry.publish(plugin_version('1.0.0'))
-        cls.station.berth('plugins', 'add', PACKAGE, env=cls.npm)
-        set_features(cls.station, ['up/main'])
-        cls.station.berth('apply', HOST, timeout=900)
         cls.link = cls.station.link()
 
     @classmethod
     def tearDownClass(cls):
-        for name in ('alpha',):
-            cls.station.remove_host(name, check=False)
-        cls.station.root_on_host('rm -f /var/run/reboot-required', check=False)
+        cls.station.remove_host('alpha', check=False)
         cls.station.berth('host', HOST, 'secret', 'up-key', 'off', check=False)
         cls.station.berth('secret', 'remove', 'up-key', check=False)
-        cls.station.berth('plugins', 'remove', PACKAGE, check=False)
-        set_features(cls.station, [])
-        cls.station.berth('apply', HOST, timeout=900)
 
     def run_as_agent(self, command):
         return self.station.berth('exec', HOST, '--', 'bash', '-c', command).stdout
@@ -114,7 +67,7 @@ class Update(unittest.TestCase):
         station = self.station
         # What the host says it was applied from.
         applied = self.applied()
-        self.assertEqual([(plugin['id'], plugin['version']) for plugin in applied['plugins']], [('up', '1.0.0')])
+        self.assertEqual(version_of(applied, 'up'), '1.0.0')
         self.assertEqual(station.berth('run', HOST, 'up:old').stdout.strip(), 'old task')
 
         # What the agent has before the update: files, a topic, a sent secret
@@ -147,20 +100,20 @@ class Update(unittest.TestCase):
         # A roll-out that fails at its first host leaves the next as it was.
         alpha = station.read_profile()
         alpha['ansible_vars'] = light_vars(['up/missing'])
-        alpha['builder']['shipped_plugins'] = True
+        alpha.pop('tailscale_auto_key', None)
         station.write_profile(alpha, name='alpha')
         stopped = station.berth('apply', '--behind', check=False, timeout=900)
         self.assertEqual(stopped.returncode, 1, stopped.stdout)
         self.assertRegex(stopped.stdout, r'(?m)^alpha: failed: applying failed')
         self.assertRegex(stopped.stdout, rf'(?m)^{HOST}: not started$')
-        self.assertEqual(self.applied()['plugins'][0]['version'], '1.0.0')
+        self.assertEqual(version_of(self.applied(), 'up'), '1.0.0')
         station.remove_host('alpha')
 
         # Brought up to date.
         rolled = station.berth('apply', '--behind', timeout=900).stdout
         self.assertIn(f'▸ {HOST}: applying (up 1.0.0 → 2.0.0)', rolled)
         self.assertIn(f'✓ {HOST} is up to date', rolled)
-        self.assertEqual(self.applied()['plugins'][0]['version'], '2.0.0')
+        self.assertEqual(version_of(self.applied(), 'up'), '2.0.0')
         self.assertIn(f'✓ {HOST} is current', station.berth('apply', '--behind').stdout)
 
         # What changed is there, and what went is gone.
@@ -169,7 +122,9 @@ class Update(unittest.TestCase):
         tasks = station.berth('tasks', HOST).stdout
         self.assertNotIn('up:old', tasks)
         services = json.loads(station.root_on_host('cat /etc/berth/services.json').stdout)
-        self.assertIn('2.0.0', services[0]['run'])
+        ours = [service['run'] for service in services if 'box serve up/echo' in service['run']]
+        self.assertEqual(len(ours), 1, services)
+        self.assertIn('2.0.0', ours[0])
         script = station.root_on_host('cat /usr/local/lib/berth/services/up-echo.sh').stdout
         self.assertIn('berth-e2e-echo 2.0.0', script)
         self.assertEqual(station.root_on_host('cat /usr/local/lib/berth-up/two').stdout.strip(), '2.0.0')
@@ -183,42 +138,41 @@ class Update(unittest.TestCase):
         messages = notes['messages'] if isinstance(notes, dict) else notes
         self.assertIn(kept.mark, [message['body'].get('mark') for message in messages])
 
-    def test_a_reboot_waits_for_running_sessions(self):
-        station = self.station
-        station.root_on_host('touch /var/run/reboot-required')
-        sleeper = self.link.post('/v1/sessions', {'kind': 'process', 'title': 'busy', 'command': ['sleep', '600']})
-        try:
-            refused = station.berth('apply', '--all', '--reboot', check=False, timeout=900)
-            self.assertEqual(refused.returncode, 1, refused.stdout)
-            self.assertRegex(refused.stdout, rf'(?m)^{HOST}: failed: needs a reboot, but 1 session is running there')
-        finally:
-            self.link.post(f'/v1/sessions/{sleeper["id"]}/signal', {'signal': 'KILL'})
-            station.root_on_host('rm -f /var/run/reboot-required')
-
 
 @needs_e2e
 class ShippedChanged(unittest.TestCase):
-    """A plugin that comes with berth changes with berth, keeping its version."""
+    """A plugin that comes with berth changes with berth, keeping its version.
+    The roll-out that applies the change is asked to reboot the host too,
+    which says it needs one while a session runs there."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.station = station = extended().station
+        cls.link = station.link()
+        cls.current = station.berth('apply', '--behind').stdout
+        cls.refused = station.berth('plugins', 'update', 'shipit', check=False).stderr
+        # The same version, another task.
+        source = SCRATCH / 'source-shipped/plugins/shipit/package.json'
+        manifest = json.loads(source.read_text())
+        manifest['berth']['features'][0]['actions'][0]['run'] = 'echo "hello from the new berth"'
+        source.write_text(json.dumps(manifest))
+        station.root_on_host('touch /var/run/reboot-required')
+        sleeper = cls.link.post('/v1/sessions', {'kind': 'process', 'title': 'busy', 'command': ['sleep', '600']})
+        try:
+            cls.rolled = station.berth('apply', '--behind', '--reboot', check=False, timeout=900)
+        finally:
+            cls.link.post(f'/v1/sessions/{sleeper["id"]}/signal', {'signal': 'KILL'})
+            station.root_on_host('rm -f /var/run/reboot-required')
 
     def test_the_host_is_behind_until_applied(self):
-        station = provisioned()
-        source = source_with_plugins('source-shipped', {'shipit': plugin_version('1.0.0', 'berth-plugin-shipit')})
-        manifest = json.loads((source / 'plugins/shipit/package.json').read_text())
-        env = {'BERTH_SOURCE': str(source)}
-        before = station.read_profile()
-        try:
-            set_features(station, ['shipit/main'])
-            station.berth('apply', HOST, timeout=900, env=env)
-            self.assertIn(f'✓ {HOST} is current', station.berth('apply', '--behind', env=env).stdout)
-            self.assertIn('comes with berth', station.berth('plugins', 'update', 'shipit', check=False, env=env).stderr)
-            # The same version, another task.
-            manifest['berth']['features'][0]['actions'][0]['run'] = 'echo "hello from the new berth"'
-            (source / 'plugins/shipit/package.json').write_text(json.dumps(manifest))
-            rolled = station.berth('apply', '--behind', env=env, timeout=900).stdout
-            self.assertIn(f'▸ {HOST}: applying (shipit 1.0.0 (changed))', rolled)
-            self.assertEqual(station.berth('run', HOST, 'shipit:hello').stdout.strip(), 'hello from the new berth')
-        finally:
-            station.write_profile(before)
+        self.assertIn(f'✓ {HOST} is current', self.current)
+        self.assertIn('comes with berth', self.refused)
+        self.assertIn(f'▸ {HOST}: applying (shipit 1.0.0 (changed))', self.rolled.stdout)
+        self.assertEqual(self.station.berth('run', HOST, 'shipit:hello').stdout.strip(), 'hello from the new berth')
+
+    def test_a_reboot_waits_for_running_sessions(self):
+        self.assertEqual(self.rolled.returncode, 1, self.rolled.stdout)
+        self.assertRegex(self.rolled.stdout, rf'(?m)^{HOST}: failed: needs a reboot, but 1 session is running there')
 
 
 @needs_e2e
@@ -227,31 +181,16 @@ class UpdateServed(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.serve = served()
+        applied = served_extended()
+        cls.serve = applied.serve
         cls.registry = package_registry()
-        cls.registry.publish(plugin_version('1.0.0', 'berth-plugin-served'))
-        cls.serve.call('POST', '/v1/plugins', {'spec': 'berth-plugin-served'})
-        cls.profile = cls.serve.call('GET', f'/v1/hosts/{HOST}/profile')
-        changed = copy.deepcopy(cls.profile)
-        changed['ansible_vars'] = light_vars(['served/main'])
-        cls.serve.call('PUT', f'/v1/hosts/{HOST}/profile', changed)
-        cls.wait_job(cls.serve.call('POST', f'/v1/hosts/{HOST}/apply')['id'])
+        # The job that applied the plugin ended well.
+        ended = cls.serve.call('GET', f'/v1/jobs/{applied.job["id"]}')
+        assert ended['exit_code'] == 0, unb64(
+            cls.serve.call('GET', f'/v1/jobs/{applied.job["id"]}/output')['data_b64'])[-3000:]
         cls.station = Workstation('update-client', ssh_key=False)
         cls.station.berth('config', 'server', cls.serve.url)
         cls.station.berth('config', 'server_token', cls.serve.token)
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.serve.call('PUT', f'/v1/hosts/{HOST}/profile', cls.profile)
-        cls.serve.call('DELETE', '/v1/plugins/served')
-        cls.wait_job(cls.serve.call('POST', f'/v1/hosts/{HOST}/apply')['id'])
-
-    @classmethod
-    def wait_job(cls, job):
-        ended = wait_for('the job ending', lambda: (lambda got: got if got['ended'] else None)(
-            cls.serve.call('GET', f'/v1/jobs/{job}')), timeout=900, every=1)
-        assert ended['exit_code'] == 0, unb64(cls.serve.call('GET', f'/v1/jobs/{job}/output')['data_b64'])[-3000:]
-        return ended
 
     def host(self):
         return self.serve.call('GET', f'/v1/hosts/{HOST}')
@@ -295,8 +234,8 @@ class UpdateServed(unittest.TestCase):
         rollout = next(job for job in jobs if job['what'] == 'rollout')
         self.assertEqual(rollout['report']['hosts'][0]['state'], 'done')
         self.assertTrue(rollout['report']['ok'])
-        time.sleep(11)  # what the server last heard from the host is kept a few seconds
-        self.assertNotIn('behind', self.host())
+        # What the server last heard from the host is kept a few seconds.
+        wait_for('the server hearing that the host is current', lambda: 'behind' not in self.host(), timeout=30)
         self.assertEqual(station.berth('run', HOST, 'served:hello').stdout.strip(), 'hello from 2.0.0')
         kept.check(self, run)
         self.assertEqual(self.serve.call('GET', '/v1/kv/update/mark')['value'], {'mark': mark})

@@ -1,28 +1,18 @@
 """Joining a tailnet at a Headscale server: with a key berth creates when the
 host needs one, through berth and through berth serve, and with a key pasted
-into the profile. The test host runs the real tailscale client."""
+into the profile. The test host runs the real tailscale client.
+
+Each way of joining is a shared state of the host, which leaves the tailnet
+before the next one joins: AutomaticKey is the extended state
+(harness.extended()), PastedKey the plain one (harness.plain()) and
+ThroughTheServer the one of berth serve (harness.served_extended())."""
 import json
 import sqlite3
 import time
 import unittest
 
-from harness import HOST, Workstation, changed_tasks, headscale, needs_e2e, provisioned, served, wait_for
-
-
-def joining(profile, **values):
-    """A profile whose host gets Tailscale and joins the tailnet."""
-    profile = {**profile, **values}
-    profile['ansible_vars'] = {**profile.get('ansible_vars', {}), 'devbox_install_tailscale': True}
-    return profile
-
-
-def leave_the_tailnet(station):
-    """Start the host's tailscaled afresh, as a machine that never joined, and
-    have Headscale forget it."""
-    station.root_on_host('rm -rf /var/lib/tailscale; pkill -x tailscaled', check=False)
-    wait_for('tailscaled answering again', lambda: station.root_on_host(
-        'tailscale status --json', check=False).stdout.strip())
-    headscale().forget_nodes()
+from harness import (HOST, changed_tasks, extended, headscale, joining, last_key_id, needs_e2e, plain,
+                     served_extended, unb64)
 
 
 def changed(output):
@@ -57,35 +47,15 @@ class Joined:
         return made[0]
 
 
-def last_key_id():
-    return max([int(key['id']) for key in headscale().keys()], default=0)
-
-
 @needs_e2e
 class AutomaticKey(Joined, unittest.TestCase):
     """berth on a workstation, given the server and its API key."""
 
     @classmethod
     def setUpClass(cls):
-        cls.station = provisioned()
-        cls.kept = cls.station.read_profile()
-        leave_the_tailnet(cls.station)
-        cls.station.berth('config', 'tailnet_login_server', headscale().url)
-        cls.station.berth('config', 'tailnet_user', headscale().user)
-        cls.station.berth('secret', 'set', 'tailnet_api_key', input=headscale().api_key + '\n')
-        cls.station.write_profile(joining(cls.kept, tailscale_auto_key=True))
-        cls.before = last_key_id()
-        cls.first = cls.station.berth('apply', HOST, timeout=900)
-        cls.after_first = last_key_id()
-        cls.second = cls.station.berth('apply', HOST, timeout=900)
-
-    @classmethod
-    def tearDownClass(cls):
-        leave_the_tailnet(cls.station)
-        cls.station.write_profile(cls.kept)
-        for key in ('tailnet_login_server', 'tailnet_user'):
-            cls.station.berth('config', key)
-        cls.station.berth('secret', 'remove', 'tailnet_api_key')
+        applied = extended()
+        cls.station, cls.first, cls.second = applied.station, applied.first, applied.second
+        cls.before, cls.after_first = applied.before, applied.after_first
 
     def test_the_host_joins_with_a_key_nobody_typed(self):
         key = self.assert_joined(self.before)
@@ -114,18 +84,8 @@ class PastedKey(Joined, unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.station = provisioned()
-        cls.kept = cls.station.read_profile()
-        leave_the_tailnet(cls.station)
-        cls.before = last_key_id()
-        cls.station.write_profile(joining(cls.kept, tailscale_auth_key=headscale().new_key(),
-                                          tailscale_login_server=headscale().url))
-        cls.first = cls.station.berth('apply', HOST, timeout=900)
-
-    @classmethod
-    def tearDownClass(cls):
-        leave_the_tailnet(cls.station)
-        cls.station.write_profile(cls.kept)
+        applied = plain()
+        cls.station, cls.before = applied.station, applied.before
 
     def test_the_host_joins_with_the_pasted_key(self):
         self.assert_joined(self.before)
@@ -139,30 +99,12 @@ class ThroughTheServer(Joined, unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.serve = served()
-        cls.station = provisioned()
-        leave_the_tailnet(cls.station)
-        cls.client = Workstation('tailnet-client', ssh_key=False)
-        cls.client.berth('config', 'server', cls.serve.url)
-        cls.client.berth('config', 'server_token', cls.serve.token)
-        cls.client.berth('config', 'tailnet_login_server', headscale().url)
-        cls.client.berth('config', 'tailnet_user', headscale().user)
-        cls.client.berth('secret', 'set', 'tailnet_api_key', input=headscale().api_key + '\n')
-        cls.kept = cls.serve.call('GET', f'/v1/hosts/{HOST}/profile')
-        cls.serve.call('PUT', f'/v1/hosts/{HOST}/profile', joining(cls.kept, tailscale_auto_key=True))
-        cls.before = last_key_id()
-        cls.first = cls.client.berth('apply', HOST, timeout=900)
-        cls.after_first = last_key_id()
-        cls.second = cls.client.berth('apply', HOST, timeout=900)
-        cls.after_second = last_key_id()
-
-    @classmethod
-    def tearDownClass(cls):
-        leave_the_tailnet(cls.station)
-        cls.serve.call('PUT', f'/v1/hosts/{HOST}/profile', cls.kept)
-        for key in ('tailnet_login_server', 'tailnet_user'):
-            cls.serve.call('PUT', f'/v1/settings/{key}', {'value': ''})
-        cls.serve.request('DELETE', '/v1/secrets/tailnet_api_key')
+        applied = served_extended()
+        cls.serve, cls.station, cls.client, cls.kept = applied.serve, applied.station, applied.client, applied.kept
+        cls.first = applied.first
+        # Applied again as a job of the server: its output is the job's.
+        cls.second = unb64(cls.serve.call('GET', f'/v1/jobs/{applied.job["id"]}/output')['data_b64'])
+        cls.before, cls.after_first, cls.after_second = applied.before, applied.after_first, applied.after_second
 
     def test_the_settings_and_the_key_are_the_servers(self):
         settings = {setting['key']: setting['value'] for setting in self.serve.call('GET', '/v1/settings')}
@@ -184,7 +126,7 @@ class ThroughTheServer(Joined, unittest.TestCase):
         self.assertIn('failed=0', self.first.stdout)
         self.assert_joined(self.before, self.after_first)
         self.assertEqual(self.after_second, self.after_first)
-        self.assertNotIn('Consume enrollment key', changed(self.second.stdout))
+        self.assertNotIn('Consume enrollment key', changed(self.second))
 
     def test_a_seed_carries_a_key_made_for_it(self):
         draft = {**self.kept, 'hostname': 'cloud-5', 'builder': {}, 'tailscale_auto_key': True,

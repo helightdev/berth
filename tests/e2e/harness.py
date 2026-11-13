@@ -8,6 +8,7 @@ test writes goes into scratch directories; the checkout is read-only.
 """
 import base64
 import contextlib
+import fcntl
 import hashlib
 import http.client
 import json
@@ -37,6 +38,22 @@ OPERATOR, AGENT = 'ops', 'agent'
 
 # Everything scratch lives below this, removed when the run ends.
 SCRATCH = Path(tempfile.mkdtemp(prefix='berth-e2e-'))
+
+# Each Ansible run of a workstation or a berth serve, noted by the callback in
+# fixtures/callbacks, and what the run made: for the summary run.py prints.
+APPLIES = SCRATCH / 'applies.jsonl'
+MADE = {'workstation': 0, 'serve': 0}
+
+
+def counts():
+    """How many playbook runs, their seconds, the tasks that took longest in
+    them, and the workstations and servers made so far."""
+    runs = [json.loads(line) for line in APPLIES.read_text().splitlines()] if APPLIES.exists() else []
+    tasks = {}
+    for run in runs:
+        for seconds, name in run.get('slowest', []):
+            tasks[name] = tasks.get(name, 0) + seconds
+    return {'apply': len(runs), 'apply_seconds': sum(run['seconds'] for run in runs), 'tasks': tasks, **MADE}
 
 
 def runtime_dir():
@@ -138,7 +155,10 @@ class Workstation:
             'npm_config_registry': 'http://127.0.0.1:9/', 'npm_config_offline': 'true',
             'npm_config_cache': str(self.root / 'npm-cache'), 'npm_config_update_notifier': 'false',
             'ANSIBLE_LOCAL_TEMP': str(self.root / 'ansible-tmp'), 'ANSIBLE_FORCE_COLOR': '0',
+            'ANSIBLE_CALLBACK_PLUGINS': str(Path(__file__).resolve().parent / 'fixtures/callbacks'),
+            'ANSIBLE_CALLBACKS_ENABLED': 'e2e_applies', 'BERTH_E2E_APPLIES': str(APPLIES),
         }
+        MADE['workstation'] += 1
         self.key = self.home / '.ssh/id_ed25519'
         self.public = keygen(self.key, f'tester@{name}') if ssh_key else None
         # A host that is not up yet is trusted once it answers.
@@ -161,8 +181,15 @@ class Workstation:
         ).stdout.strip(), timeout=60)
         (self.home / '.ssh/known_hosts').write_text(scanned + '\n')
         # ssh finds ~ in the password database, not in HOME: the runner's
-        # own list of known hosts is the one it reads.
-        Path('/etc/ssh/ssh_known_hosts').write_text(scanned + '\n')
+        # own list of known hosts is the one it reads. The tests of another
+        # host may run at the same time and keep theirs in it.
+        known = Path('/etc/ssh/ssh_known_hosts')
+        with open(f'{known}.lock', 'w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            others = [line for line in (known.read_text().splitlines() if known.exists() else [])
+                      if line.split(' ', 1)[0] != HOST]
+            known.with_suffix('.new').write_text(''.join(line + '\n' for line in [*others, scanned]))
+            known.with_suffix('.new').replace(known)
 
     def berth(self, *args, input=None, check=True, timeout=600, env=None):
         done = subprocess.run([str(BERTH), *args], env={**self.env, **(env or {})}, cwd=self.home,
@@ -227,8 +254,12 @@ def profile(**values):
     base = json.loads((SRC / 'provision/config/example.json').read_text())
     base.update({
         'hostname': HOST, 'profile': 'cloud', 'keyboard': 'us',
-        # The operator's sudo needs no password, as by default, so berth asks for none.
-        'builder': {'ssh_host': HOST, 'ssh_user': OPERATOR},
+        # The operator's sudo needs no password, as by default, so berth asks
+        # for none. shipped_plugins says the features are chosen already, as
+        # in every profile berth saves: without it, the next command that
+        # opens the profile (such as `berth host HOST secret`) takes it for
+        # one from before the agents were plugins and turns them on.
+        'builder': {'ssh_host': HOST, 'ssh_user': OPERATOR, 'shipped_plugins': True},
         'ansible_vars': light_vars(),
     })
     base.update(values)
@@ -257,7 +288,7 @@ def light_vars(features=()):
 
 def hand_over_operator_key(*public):
     """Put keys in place for the operator, as a cloud provider does at the start."""
-    SEED.mkdir(exist_ok=True)
+    SEED.mkdir(parents=True, exist_ok=True)
     (SEED / f'{OPERATOR}.pub').write_text(''.join(key + '\n' for key in public))
 
 
@@ -310,9 +341,13 @@ def served():
                                          **package_registry().env()})
     serve.issuer = issuer
     # The host's profile as the workstation has it, so applying it from the
-    # server keeps the workstation's keys; the server adds its own.
+    # server keeps the workstation's keys; the server adds its own. What the
+    # workstation turned on for its own tests stays there.
     host = station.read_profile()
     host['operator_ssh_public_keys'].append(station.berth('key').stdout.strip())
+    host['ansible_vars'] = light_vars()
+    for key in ('secrets', 'registries', 'tailscale_auto_key', 'tailscale_auth_key', 'tailscale_login_server'):
+        host.pop(key, None)
     serve.call('PUT', f'/v1/hosts/{HOST}/profile', host)
     _provisioned['serve'] = serve
     return serve
@@ -324,6 +359,218 @@ def stop_serving():
         serve.stop()
         serve.issuer.stop()
         hand_over_operator_key(_provisioned['workstation'].public)
+
+
+# ---------------------------------------------------------------------------
+# States of the test host that several test cases share. Each is made with
+# one apply (and one more to show that applying again changes nothing), the
+# first time a test case asks for it, and its tests then only look. The host
+# is in one of them at a time: asking for another first undoes what the
+# current one set up on the workstation, the server and the tailnet, and
+# then applies its own. run.py orders the test cases so each state is made
+# once in a full run; a test case run alone makes the one it needs.
+
+FIXTURE = SRC / 'tests/e2e/fixtures/plugin'
+# The features of the extended state, from three kinds of plugin: a folder
+# added to berth, a package from a registry, and one that comes with berth.
+EXTENDED_FEATURES = ['e2e/hello', 'up/main', 'shipit/main']
+
+_state = {'name': None, 'value': None, 'leave': None}
+
+
+def state(name, enter):
+    """The shared state `name`, made by `enter` unless it is the current one.
+    `enter` returns (value, leave): what the tests get, and what undoes it."""
+    if _state['name'] == name:
+        return _state['value']
+    leave, _state['name'], _state['leave'] = _state['leave'], None, None
+    if leave:
+        leave()
+    value, leave = enter()
+    _state.update(name=name, value=value, leave=leave)
+    return value
+
+
+def plugin_version(version, name='berth-plugin-up'):
+    """The fixture plugin as `name` at a version, its id the name without
+    berth-plugin-. From 2.0.0 its greeting and service changed, its Ansible
+    task installs another file, the task `old` is gone and `added` is new."""
+    plugin = name.removeprefix('berth-plugin-')
+    folder = SCRATCH / f'{name}-{version}'
+    if folder.exists():
+        shutil.rmtree(folder)
+    shutil.copytree(FIXTURE, folder)
+    manifest = json.loads((folder / 'package.json').read_text())
+    manifest['name'], manifest['version'] = name, version
+    feature = manifest['berth']['features'][0]
+    feature['id'] = 'main'
+    feature['guide'] = ''
+    newer = version != '1.0.0'
+    feature['actions'] = [
+        {'name': 'hello', 'label': 'Say hello', 'run': f'echo "hello from {version}"'},
+        {'name': 'added' if newer else 'old', 'label': 'Added' if newer else 'Old',
+         'run': f'echo "{"added" if newer else "old"} task"'},
+    ]
+    feature['services'][0]['run'] = f'exec box serve {plugin}/echo -- /usr/local/bin/berth-e2e-echo {version}'
+    feature['channels'] = [{'topic': 'notes', 'keep': 'log', 'max': 50}]
+    (folder / 'package.json').write_text(json.dumps(manifest, indent=2))
+    (folder / 'tasks/install.yml').write_text(f'''---
+- name: Create the folder of what the plugin brings
+  ansible.builtin.file:
+    path: /usr/local/lib/berth-{plugin}
+    state: directory
+    mode: '0755'
+- name: Install what this version of the plugin brings
+  ansible.builtin.copy:
+    dest: /usr/local/lib/berth-{plugin}/{"two" if newer else "one"}
+    content: "{version}\\n"
+    mode: '0644'
+''')
+    return folder
+
+
+def joining(profile, **values):
+    """A profile whose host gets Tailscale and joins the tailnet."""
+    profile = {**profile, **values}
+    profile['ansible_vars'] = {**profile.get('ansible_vars', {}), 'devbox_install_tailscale': True}
+    return profile
+
+
+def leave_the_tailnet(station):
+    """Start the host's tailscaled afresh, as a machine that never joined, and
+    have Headscale forget it."""
+    station.root_on_host('rm -rf /var/lib/tailscale; pkill -x tailscaled', check=False)
+    wait_for('tailscaled answering again', lambda: station.root_on_host(
+        'tailscale status --json', check=False).stdout.strip())
+    headscale().forget_nodes()
+
+
+def last_key_id():
+    """The newest of Headscale's keys."""
+    return max([int(key['id']) for key in headscale().keys()], default=0)
+
+
+class Applied:
+    """What a shared state was made with: its applies and what was asked before and after."""
+
+    def __init__(self, **values):
+        self.__dict__.update(values)
+
+
+def extended():
+    """The host applied from the workstation with three plugins' features
+    (EXTENDED_FEATURES) and joined to the tailnet with a key berth made, then
+    applied again. `first` and `second` are the two applies; `before` and
+    `after_first` the newest Headscale key before each."""
+    return state('extended', _enter_extended)
+
+
+def _enter_extended():
+    station = provisioned()
+    kept = station.read_profile()
+    registry = package_registry()
+    # berth's source with a plugin that comes with it, for the rest of the run.
+    station.env['BERTH_SOURCE'] = str(SCRATCH / 'source-shipped' if (SCRATCH / 'source-shipped').exists()
+                                      else source_with_plugins('source-shipped', {
+                                          'shipit': plugin_version('1.0.0', 'berth-plugin-shipit')}))
+    station.berth('plugins', 'add', str(FIXTURE))
+    registry.publish(plugin_version('1.0.0'))
+    station.berth('plugins', 'add', 'berth-plugin-up', env=registry.env())
+    leave_the_tailnet(station)
+    station.berth('config', 'tailnet_login_server', headscale().url)
+    station.berth('config', 'tailnet_user', headscale().user)
+    station.berth('secret', 'set', 'tailnet_api_key', input=headscale().api_key + '\n')
+    station.write_profile(joining({**kept, 'ansible_vars': light_vars(EXTENDED_FEATURES)}, tailscale_auto_key=True))
+    before = last_key_id()
+    first = station.berth('apply', HOST, timeout=900)
+    after_first = last_key_id()
+    second = station.berth('apply', HOST, timeout=900)
+
+    def leave():
+        leave_the_tailnet(station)
+        station.write_profile(kept)
+        for key in ('tailnet_login_server', 'tailnet_user'):
+            station.berth('config', key)
+        station.berth('secret', 'remove', 'tailnet_api_key', check=False)
+        for package in ('berth-plugin-e2e', 'berth-plugin-up'):
+            station.berth('plugins', 'remove', package, check=False)
+    return Applied(station=station, kept=kept, first=first, second=second, before=before,
+                   after_first=after_first), leave
+
+
+def plain():
+    """The host applied from the workstation again without the extended
+    state's plugins, joining the tailnet with a key made by hand and pasted
+    into the profile. `first` is the apply, `before` the newest Headscale key
+    before the key was made."""
+    return state('plain', _enter_plain)
+
+
+def _enter_plain():
+    station = provisioned()
+    for package in ('berth-plugin-e2e', 'berth-plugin-up'):
+        if (station.berth_dir / 'plugins/node_modules' / package).exists():
+            station.berth('plugins', 'remove', package)
+    kept = station.read_profile()
+    leave_the_tailnet(station)
+    before = last_key_id()
+    station.write_profile(joining({**kept, 'ansible_vars': light_vars()}, tailscale_auth_key=headscale().new_key(),
+                                  tailscale_login_server=headscale().url))
+    first = station.berth('apply', HOST, timeout=900)
+
+    def leave():
+        leave_the_tailnet(station)
+        station.write_profile(kept)
+    return Applied(station=station, kept=kept, first=first, before=before), leave
+
+
+def served_extended():
+    """The host applied by berth serve with a plugin from the registry and
+    joined to the tailnet with a key the server made: first by a terminal
+    client of the server, then again as a job of the server, followed over
+    the portal. `client` is that client; `first` its apply; `job`, `texts`
+    and `data` the job and what following it gave; `before`, `after_first`
+    and `after_second` the newest Headscale key before and after each."""
+    return state('served-extended', _enter_served_extended)
+
+
+def _enter_served_extended():
+    serve = served()
+    station = provisioned()
+    leave_the_tailnet(station)
+    registry = package_registry()
+    registry.publish(plugin_version('1.0.0', 'berth-plugin-served'))
+    serve.call('POST', '/v1/plugins', {'spec': 'berth-plugin-served'})
+    client = Workstation('served-client', ssh_key=False)
+    client.berth('config', 'server', serve.url)
+    client.berth('config', 'server_token', serve.token)
+    client.berth('config', 'tailnet_login_server', headscale().url)
+    client.berth('config', 'tailnet_user', headscale().user)
+    client.berth('secret', 'set', 'tailnet_api_key', input=headscale().api_key + '\n')
+    kept = serve.call('GET', f'/v1/hosts/{HOST}/profile')
+    serve.call('PUT', f'/v1/hosts/{HOST}/profile',
+               joining({**kept, 'ansible_vars': light_vars(['served/main'])}, tailscale_auto_key=True))
+    before = last_key_id()
+    first = client.berth('apply', HOST, timeout=900)
+    after_first = last_key_id()
+    job = serve.call('POST', f'/v1/hosts/{HOST}/apply')
+    portal = serve.portal()
+    try:
+        texts, data, _ = portal.stream('jobs.follow', {'id': job['id']}, timeout=900,
+                                       until=lambda texts, _: any('exited' in (text or {}) for text in texts))
+    finally:
+        portal.close()
+    after_second = last_key_id()
+
+    def leave():
+        leave_the_tailnet(station)
+        serve.call('PUT', f'/v1/hosts/{HOST}/profile', kept)
+        serve.request('DELETE', '/v1/plugins/served')
+        for key in ('tailnet_login_server', 'tailnet_user'):
+            serve.call('PUT', f'/v1/settings/{key}', {'value': ''})
+        serve.request('DELETE', '/v1/secrets/tailnet_api_key')
+    return Applied(serve=serve, station=station, client=client, kept=kept, first=first, job=job, texts=texts,
+                   data=data, before=before, after_first=after_first, after_second=after_second), leave
 
 
 def ansible_recap(output):
@@ -421,6 +668,7 @@ class Serve:
     """`berth serve --listen` of a workstation, on a port of its own."""
 
     def __init__(self, station, web=True, env=None):
+        MADE['serve'] += 1
         self.station = station
         self.port = free_port()
         args = ['serve', '--listen', f'127.0.0.1:{self.port}'] + (['--web'] if web else [])

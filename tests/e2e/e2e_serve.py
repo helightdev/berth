@@ -1,11 +1,14 @@
 """berth serve over TCP: its routes and the portal, the roles of access
 tokens, setting the server up through the API, applying as a job, and the
-page for a browser."""
+page for a browser.
+
+All but ApplyJob use berth serve as harness.served() starts it. ApplyJob
+looks at the job of the server's own shared state (harness.served_extended())."""
 import json
 import unittest
 
-from harness import (AGENT, HOST, Serve, Workstation, needs_e2e, provisioned, random_text, served, unb64,
-                     wait_for)
+from harness import (AGENT, HOST, Serve, Workstation, needs_e2e, provisioned, random_text, served,
+                     served_extended, unb64, wait_for)
 
 
 def text_of(started):
@@ -248,14 +251,19 @@ class SetUp(unittest.TestCase):
         status, _ = self.serve.request('PUT', '/v1/settings/oauth_issuer', {'value': 'http://192.0.2.1'})
         self.assertEqual(status, 403)
 
+
+@needs_e2e
+class ApplyJob(unittest.TestCase):
+    """Applying as a job of the server, followed over the portal: the second
+    apply of the shared state of berth serve (harness.served_extended())."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.applied = served_extended()
+        cls.serve = cls.applied.serve
+
     def test_applying_is_a_job_of_the_server(self):
-        job = self.serve.call('POST', f'/v1/hosts/{HOST}/apply')
-        portal = self.serve.portal()
-        try:
-            texts, data, _ = portal.stream('jobs.follow', {'id': job['id']}, timeout=600,
-                                           until=lambda texts, _: any('exited' in (text or {}) for text in texts))
-        finally:
-            portal.close()
+        job, texts, data = self.applied.job, self.applied.texts, self.applied.data
         exited = next(text['exited'] for text in texts if 'exited' in (text or {}))
         self.assertEqual(exited['exit_code'], 0, data.decode(errors='replace')[-3000:])
         self.assertIn(b'PLAY RECAP', data)

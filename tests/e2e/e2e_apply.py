@@ -1,9 +1,11 @@
-"""Setting the test host up: a profile applied over SSH with the role, again
-without changes, and the SSH keys each account takes."""
+"""Setting the test host up: a profile applied over SSH with the role, the
+SSH keys each account takes, and applying again without changes. The second
+apply is the one of the extended state (harness.extended()), which has the
+role's plugin and tailnet tasks to repeat as well."""
 import json
 import unittest
 
-from harness import (AGENT, HOST, OPERATOR, ansible_recap, changed_tasks, fresh_runtime_dir, needs_e2e,
+from harness import (AGENT, HOST, OPERATOR, ansible_recap, changed_tasks, extended, fresh_runtime_dir, needs_e2e,
                      provisioned)
 
 
@@ -24,12 +26,6 @@ class Apply(unittest.TestCase):
         tasks = json.loads(self.station.root_on_host('cat /etc/berth/tasks.json').stdout)
         self.assertIn('secrets', [task['name'] for task in tasks])
         print(f'\n  first apply: {self.station.apply_seconds:.0f}s, {recap}', end=' ')
-
-    def test_applying_again_changes_nothing(self):
-        again = self.station.berth('apply', HOST)
-        recap = ansible_recap(again.stdout)
-        self.assertEqual(recap['failed'], 0)
-        self.assertEqual(changed_tasks(again.stdout), [])
 
     def test_the_operator_takes_berths_own_key(self):
         own = self.station.berth('key').stdout.strip()
@@ -57,3 +53,18 @@ class Apply(unittest.TestCase):
         # The agent takes only its own keys.
         refused = self.station.ssh(AGENT, 'true', key=self.station.key, check=False)
         self.assertNotEqual(refused.returncode, 0)
+
+
+@needs_e2e
+class Again(unittest.TestCase):
+    """The second apply of the extended state, with nothing changed in between."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.applied = extended()
+
+    def test_applying_again_changes_nothing(self):
+        again = self.applied.second
+        recap = ansible_recap(again.stdout)
+        self.assertEqual(recap['failed'], 0)
+        self.assertEqual(changed_tasks(again.stdout), [])

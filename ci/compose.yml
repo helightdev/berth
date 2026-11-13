@@ -3,6 +3,8 @@
 # dev     the toolchain, with the checkout at /src, as the user who owns it
 # runner  the same image on a network of its own, which drives the tests
 # studio  the test host the tests set up over SSH
+# dock    a second test host, for the tests that need one to themselves
+#         (tests/e2e/run.py says which); its keys come from /seed/dock
 # headscale  a Headscale server the test host can join (see below)
 # postgres   a throw-away PostgreSQL for the store's tests (rust-tests)
 #
@@ -57,7 +59,7 @@ services:
     # the checkout, which is mounted read-only.
     user: "0:0"
     networks: [e2e]
-    depends_on: [studio, headscale]
+    depends_on: [studio, dock, headscale]
     volumes:
       - ..:/src:ro
       - ${BERTH_CI_TARGET:-target}:/src/target:ro
@@ -75,6 +77,16 @@ services:
     profiles: [e2e]
     hostname: studio
     networks: [e2e]
+    volumes:
+      - seed:/seed:ro
+
+  dock:
+    image: ${BERTH_CI_HOST_IMAGE:-berth-ci-host}
+    profiles: [e2e]
+    hostname: dock
+    networks: [e2e]
+    environment:
+      BERTH_CI_SEED: /seed/dock
     volumes:
       - seed:/seed:ro
 
