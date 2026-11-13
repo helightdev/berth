@@ -190,6 +190,20 @@ impl Paths {
         Ok(key)
     }
 
+    /// Give a test's berth an own key of its own, so that nothing runs
+    /// ssh-keygen, which needs an account in the password database.
+    #[cfg(test)]
+    pub fn give_own_key(&self) {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&self.data_dir)
+            .unwrap();
+        let key = self.data_dir.join("id_ed25519");
+        fs::write(&key, "not a real private key\n").unwrap();
+        fs::write(key.with_extension("pub"), "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f berth@studio\n").unwrap();
+    }
+
     /// The public half of this berth's own SSH key.
     pub fn own_public_key(&self) -> Option<String> {
         let key = self.own_key().ok()?;

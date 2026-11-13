@@ -16,6 +16,7 @@
       - devbox_agent_privileges | length > 0 or devbox_agent_passwordless_sudo or devbox_agent_password_hash | length > 0
       - devbox_agent_password_hash == '' or devbox_agent_password_hash is match('^\$[6y]\$')
       - devbox_operator_password_hash == '' or devbox_operator_password_hash is match('^\$[6y]\$')
+      - devbox_berth_ssh_public_key == '' or devbox_berth_ssh_public_key is match('^(ssh-|ecdsa-|sk-)[^ ]+ [A-Za-z0-9+/=]+( .*)?$')
       - devbox_geometry is match('^[0-9]{3,4}x[0-9]{3,4}$')
     fail_msg: This version supports dedicated Ubuntu 26.04 amd64 hosts with distinct operator and agent accounts whose names Ubuntu does not already use.
 - name: Install common packages

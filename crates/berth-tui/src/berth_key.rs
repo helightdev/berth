@@ -1,8 +1,6 @@
 //! The SSH key of berth itself: its row on the Settings tab, what the
-//! Information box says of it, and copying it from there or from the field
-//! of a host's Accounts tab.
+//! Information box says of it, and copying it from there.
 
-use crate::fields::Field;
 use crate::screen::Platform;
 use crate::setup::short_key;
 use crate::{Code, Key, theme};
@@ -13,11 +11,7 @@ use ratatui::{
 
 pub const LABEL: &str = "This berth's SSH key";
 
-/// What the footer says on the field of a host's Accounts tab.
-pub const HINT: &str = "c copy the key";
-
-/// The key that copies it on the Accounts tab, where Space and Enter switch
-/// the field.
+/// A key that copies it, besides Enter.
 pub fn is_copy(key: &Key) -> bool {
     key.code == Code::Char('c') && !key.ctrl && !key.alt
 }
@@ -40,16 +34,8 @@ pub fn help(public: &str, server: Option<&str>) -> String {
         None => "The SSH key berth made for itself on this machine. It offers it whenever it connects to a host over SSH, besides your own keys.".to_owned(),
     };
     format!(
-        "{whose}\n\nAdd it as an authorized key at your cloud provider, or to `~/.ssh/authorized_keys` on a host, and berth gets in without a key of yours. The operator of a host set up from here takes it too, unless its Accounts tab says otherwise.\n\nEnter copies it.\n\n`{public}`"
+        "{whose}\n\nAdd it as an authorized key at your cloud provider, or to `~/.ssh/authorized_keys` on a host, and berth gets in without a key of yours. The operator of every host set up from here takes it too, always, so berth can always reach the hosts it set up.\n\nEnter copies it.\n\n`{public}`"
     )
-}
-
-/// The Information box of the field on a host's Accounts tab.
-pub fn field_help(public: &str) -> String {
-    match public {
-        "" => Field::BerthKey.spec().help.to_owned(),
-        public => format!("{}\n\n`{public}`", Field::BerthKey.spec().help),
-    }
 }
 
 /// Put the key on the clipboard. Returns what to say.
@@ -112,7 +98,6 @@ mod tests {
         assert!(!shown.contains(PUBLIC));
         assert!(help(PUBLIC, None).contains(PUBLIC));
         assert!(help(PUBLIC, Some("https://192.0.2.7:8443")).contains("192.0.2.7"));
-        assert!(field_help(PUBLIC).ends_with(&format!("`{PUBLIC}`")));
     }
 
     #[test]

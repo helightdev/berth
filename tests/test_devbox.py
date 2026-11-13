@@ -96,16 +96,21 @@ class RenderTests(unittest.TestCase):
         self.assertEqual((entry['content'],entry['permissions']),('user = "reader:secret"\n','0600'))
         with patch.dict(os.environ,{'BERTH_RELEASE_LOGIN':'url = "https://evil.example"'}):
             self.assertRaises(ValueError,builder.cloud_config,config(),'a'*64)
-    def test_cloud_operator_needs_a_password_only_for_sudo(self):
+    def test_only_the_usb_installer_needs_an_operator_password(self):
         with tempfile.TemporaryDirectory() as d:
             path=Path(d)/'c.json'; c=config(); c['profile']='cloud'; del c['operator_password_hash']
             path.write_text(json.dumps(c))
             operator=builder.cloud_config(builder.checked_config(path,'cloud'),'a'*64)['users'][1]
-            self.assertTrue(operator['lock_passwd']); self.assertNotIn('passwd',operator)
-            # An installer's machine is logged in to at its screen.
+            # Locked with `*`, not `!`: sshd without PAM refuses keys for an account locked with `!`.
+            self.assertEqual((operator['lock_passwd'],operator['passwd']),(False,'*'))
+            # The installer's identity section needs one.
             with self.assertRaises(ValueError): builder.checked_config(path,'usb')
-            c['operator_passwordless_sudo']=False; path.write_text(json.dumps(c))
-            with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
+            # A profile from when the operator's sudo could ask still renders, and gets no password.
+            for laptop in ('cloud','laptop'):
+                c['operator_passwordless_sudo']=False; c['profile']=laptop; path.write_text(json.dumps(c))
+                builder.checked_config(path,'cloud')
+        operator=builder.cloud_config(config(),'a'*64)['users'][1]
+        self.assertEqual((operator['lock_passwd'],operator['passwd']),(False,config()['operator_password_hash']))
 
     def test_cloud_seed_has_no_disk_actions(self):
         c=config(); result=builder.cloud_config(c,'a'*64)
@@ -153,13 +158,13 @@ class RenderTests(unittest.TestCase):
         self.assertFalse(deployment['ansible_vars']['devbox_agent_passwordless_sudo'])
         self.assertEqual(deployment['ansible_vars']['devbox_operator_user'],'admin')
 
-    def test_operator_sudo_needs_no_password_unless_turned_off(self):
-        c=config()
-        self.assertEqual(builder.cloud_config(c,'a'*64)['users'][1]['sudo'],['ALL=(ALL) NOPASSWD:ALL'])
-        self.assertTrue(builder.deployment(c,'a'*64)['ansible_vars']['devbox_operator_passwordless_sudo'])
-        c['operator_passwordless_sudo']=False
-        self.assertEqual(builder.cloud_config(c,'a'*64)['users'][1]['sudo'],['ALL=(ALL) ALL'])
-        self.assertFalse(builder.deployment(c,'a'*64)['ansible_vars']['devbox_operator_passwordless_sudo'])
+    def test_operator_sudo_never_needs_a_password(self):
+        for old in (None,True,False):
+            c=config()
+            if old is not None: c['operator_passwordless_sudo']=old
+            with self.subTest(old=old):
+                self.assertEqual(builder.cloud_config(c,'a'*64)['users'][1]['sudo'],['ALL=(ALL) NOPASSWD:ALL'])
+                self.assertNotIn('devbox_operator_passwordless_sudo',builder.deployment(c,'a'*64)['ansible_vars'])
 
     def test_wifi_special_characters_are_encoded_not_executed(self):
         c=config(); c['wifi']={'interface':'wlan0','ssid':'a "quote"','password':'$HOME;`example`'}
@@ -233,14 +238,28 @@ class RenderTests(unittest.TestCase):
         with own:
             self.assertEqual(builder.account_keys(c,'operator'),[key(1),c['operator_ssh_public_key'],key(4)])
             self.assertEqual(builder.account_keys(c,'agent'),[key(2),key(3)])
-            self.assertEqual(builder.account_keys({**c,'berth_ssh_key':False},'operator'),[key(1),c['operator_ssh_public_key']])
+            # An older profile cannot turn the key of berth off.
+            self.assertEqual(builder.account_keys({**c,'berth_ssh_key':False},'operator'),[key(1),c['operator_ssh_public_key'],key(4)])
+            # The seed lets the berth in; the role keeps its key apart from the profile's.
+            self.assertIn(key(4),builder.cloud_config(c,'a'*64)['users'][1]['ssh_authorized_keys'])
+            self.assertIn(key(4),builder.autoinstall(c)['autoinstall']['ssh']['authorized-keys'])
+            variables=builder.deployment({**c,'berth_ssh_key':False},'a'*64)['ansible_vars']
+            self.assertEqual(variables['devbox_berth_ssh_public_key'],key(4))
+            self.assertNotIn(key(4),variables['devbox_operator_ssh_public_key'])
             only={k:v for k,v in config().items() if k!='operator_ssh_public_key'}
             with tempfile.TemporaryDirectory() as temp:
                 path=Path(temp)/'host.json'; path.write_text(json.dumps(only))
                 builder.checked_config(path,'cloud')
                 path.write_text(json.dumps({**only,'berth_ssh_key':False}))
-                with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
+                builder.checked_config(path,'cloud')
                 path.write_text(json.dumps({**c,'agent_ssh_public_keys':[key(2),'not a key']}))
+                with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
+        # Without berth, nothing but the profile's keys.
+        with patch.dict(os.environ,{'BERTH_SSH_PUBLIC_KEY':''}):
+            self.assertEqual(builder.deployment(c,'a'*64)['ansible_vars']['devbox_berth_ssh_public_key'],'')
+            only={k:v for k,v in config().items() if k!='operator_ssh_public_key'}
+            with tempfile.TemporaryDirectory() as temp:
+                path=Path(temp)/'host.json'; path.write_text(json.dumps(only))
                 with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
     def test_malformed_profiles_are_rejected_cleanly(self):
         for change in [{'hostname':None},{'hostname':'trailing-'},{'profile':'container'},

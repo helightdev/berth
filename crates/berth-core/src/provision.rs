@@ -1014,7 +1014,9 @@ fn take_address(path: &Path, answer: &Value, out: &mut dyn Write) -> Result<()> 
 // ── Waiting for the machine ─────────────────────────────────────────────────
 
 /// The sudo password of a host whose SSH user's sudo asks for one, from the
-/// environment: nobody is there to ask.
+/// environment: nobody is there to ask. Only a machine that is applied rather
+/// than seeded can have such a user: the seed gives the operator sudo without
+/// a password before SSH answers.
 fn password(host: &Host) -> Option<String> {
     std::env::var("BERTH_SUDO_PASSWORD")
         .ok()
@@ -1056,10 +1058,10 @@ fn ssh_answers(host: &Host) -> bool {
     ssh.status().is_ok_and(|status| status.success())
 }
 
-/// Whether berthd answers on the host's link. The wait asks only once SSH
+/// Whether berthd answers on a seeded host's link. The wait asks only once SSH
 /// answers, which has made the machine's key known for the link to use.
 fn answers(_paths: &Paths, host: &Host) -> bool {
-    let (Ok(spec), Ok(runtime)) = (host.link(password(host).as_deref()), link::runtime()) else {
+    let (Ok(spec), Ok(runtime)) = (host.link(None), link::runtime()) else {
         return false;
     };
     let link = Link::new(spec);
@@ -1080,8 +1082,8 @@ const FIRST_BOOT_UNIT: &str = "devbox-provision.service";
 
 /// The shell command that prints the provision state and the first boot's
 /// log after `cursor`. The state is readable by anyone and the log by root:
-/// sudo is tried without a password, then with the line berth sends first,
-/// and without either only the state is printed.
+/// the seed gives the operator sudo without a password, and an SSH user
+/// without it is shown only the state.
 fn first_boot_look(cursor: &str) -> String {
     let after = match relay::valid_cursor(cursor) {
         true => format!(" --after-cursor=\"{cursor}\""),
@@ -1093,22 +1095,20 @@ fn first_boot_look(cursor: &str) -> String {
          journalctl -q -u {FIRST_BOOT_UNIT} -o cat --no-pager --show-cursor{after} 2>/dev/null | tail -n 400"
     );
     format!(
-        "IFS= read -r p; q='{look}'; \
+        "q='{look}'; \
          if sudo -n true 2>/dev/null; then sudo -n sh -c \"$q\"; \
-         elif [ -n \"$p\" ]; then printf '%s\\n' \"$p\" | sudo -S -k -p '' sh -c \"$q\" 2>/dev/null || sh -c \"$q\"; \
          else sh -c \"$q\"; fi"
     )
 }
 
 /// What the first boot of a seeded machine has written since `cursor`, read
-/// over SSH. The sudo password, when berth has one, goes on standard input.
+/// over SSH.
 fn first_boot(host: &Host, cursor: &str) -> Result<String> {
     let mut ssh = host.ssh();
     ssh.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"])
         .arg(host.target())
         .arg(first_boot_look(cursor));
-    let first = password(host).unwrap_or_default();
-    output_within(ssh, format!("{first}\n"), Duration::from_secs(40))
+    output_within(ssh, String::new(), Duration::from_secs(40))
 }
 
 /// What `command` prints with `input` on its standard input, when it ends
@@ -1144,7 +1144,7 @@ fn output_within(mut command: Command, input: String, limit: Duration) -> Result
 fn finish(paths: &Paths, host: &Host, setup: Setup, out: &mut dyn Write) -> Result<()> {
     match setup {
         Setup::Seed => {
-            let link = Link::new(host.link(password(host).as_deref())?);
+            let link = Link::new(host.link(None)?);
             let runtime = link::runtime()?;
             let body = json!({
                 "kind": "process", "user": "root",
@@ -1204,7 +1204,7 @@ fn finish(paths: &Paths, host: &Host, setup: Setup, out: &mut dyn Write) -> Resu
             let status = child.wait()?;
             drop(prepared.files);
             match status.success() {
-                true => Ok(()),
+                true => apply::settle(host),
                 false => Err(format!(
                     "applying failed (ansible-playbook ended with {})",
                     status.code().unwrap_or(-1)
@@ -1524,6 +1524,7 @@ print(out)
                 data_dir: home.path().join("data"),
             };
             paths.prepare().unwrap();
+            paths.give_own_key();
             let source = home.path().join("source");
             fs::create_dir_all(source.join("provision/bin")).unwrap();
             fs::write(source.join(crate::paths::layout::BUILDER), BUILDER).unwrap();
@@ -2298,7 +2299,11 @@ print(out)
     fn the_look_at_the_first_boot_carries_no_password_and_a_checked_cursor() {
         let look = first_boot_look("s=ab;i=1");
         assert!(look.contains("--after-cursor=\"s=ab;i=1\""), "{look}");
-        assert!(look.starts_with("IFS= read -r p;"));
+        // There is no password to read, nor a sudo that would take one.
+        assert!(
+            !look.contains("read") && !look.contains("sudo -S"),
+            "{look}"
+        );
         // A cursor that is not one is left out rather than run.
         assert!(!first_boot_look("x\"; reboot; \"").contains("after-cursor"));
         // The look runs in a shell here as it would on the machine, with a
@@ -2318,7 +2323,7 @@ print(out)
         sh.arg("-c")
             .arg(first_boot_look("s=ab;i=1"))
             .env("PATH", bin.path());
-        let printed = output_within(sh, "\n".into(), Duration::from_secs(10)).unwrap();
+        let printed = output_within(sh, String::new(), Duration::from_secs(10)).unwrap();
         assert_eq!(printed, "state none\n");
     }
 

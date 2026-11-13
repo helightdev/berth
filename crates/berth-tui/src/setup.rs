@@ -493,7 +493,7 @@ impl<'a> Profile<'a> {
 
     /// State of a toggle. Unset feature switches are on, like the role defaults,
     /// and tool categories follow the older single `devbox_install_dev_tools` switch.
-    /// Asking for the sudo password follows the operator's sudo.
+    /// Asking for the sudo password is off unless the profile says otherwise.
     pub fn enabled(&self, field: Field) -> bool {
         use berth_api::profile;
         let pointer = field.spec().pointer;
@@ -502,10 +502,7 @@ impl<'a> Profile<'a> {
         }
         let stored = self.config.pointer(pointer).and_then(Value::as_bool);
         stored.unwrap_or_else(|| {
-            if matches!(
-                field,
-                Field::BerthKey | Field::OperatorSudo | Field::AgentSudo
-            ) {
+            if field == Field::AgentSudo {
                 true
             } else if pointer.starts_with("/ansible_vars/devbox_tools_") {
                 self.config["ansible_vars"]["devbox_install_dev_tools"]
@@ -821,9 +818,7 @@ impl<'a> Profile<'a> {
         let accounts = vec![
             OperatorUser,
             OperatorKey,
-            BerthKey,
             OperatorHash,
-            OperatorSudo,
             AgentUser,
             AgentHash,
             AgentKey,
@@ -1215,15 +1210,15 @@ impl<'a> Profile<'a> {
         if action.installer() || action.seeds() {
             // Seeds are the only way into the new machine, so the operator must be able to log in.
             check(
-                !self.keys(Account::Operator).is_empty()
-                    || self.enabled(BerthKey) && !self.own_key.is_empty(),
+                !self.keys(Account::Operator).is_empty() || !self.own_key.is_empty(),
                 settings,
-                "Operator needs an SSH key: add one, or let it take this berth's",
+                "Operator needs an SSH key: add one, or make this berth's own",
             );
-            // An installer's machine is logged in to at its own screen. One made
-            // from a seed is reached with the key, and needs a password only for sudo.
+            // The USB installer asks for a password for the account it makes.
+            // A seeded machine is reached with keys and its operator's sudo
+            // needs no password, so there the password is for the console only.
             check(
-                !self.text(OperatorHash).is_empty() || action.seeds() && self.enabled(OperatorSudo),
+                !self.text(OperatorHash).is_empty() || action.seeds(),
                 settings,
                 "Operator password is required (F4 or F5)",
             );
@@ -1537,7 +1532,7 @@ mod tests {
     #[test]
     fn creating_a_machine_chooses_on_install_and_sizes_on_settings() {
         let config = json!({"operator_username": "ops", "agent_username": "agent",
-            "operator_passwordless_sudo": true, "agent_passwordless_sudo": true});
+            "agent_passwordless_sudo": true});
         let machine = incus();
         let install = tab(&config, Action::Machine, Step::Install, &machine);
         // What has to be chosen, in order, and none of what has a default.
@@ -1618,7 +1613,7 @@ mod tests {
     fn a_cloud_seed_and_a_usb_installer_have_their_settings_and_last_things() {
         let config = json!({"operator_username": "ops", "agent_username": "agent",
             "hostname": "studio", "target_disk_mode": "auto",
-            "operator_passwordless_sudo": true, "agent_passwordless_sudo": true});
+            "agent_passwordless_sudo": true});
         let machine = crate::machine::Machine::default();
         let install = tab(&config, Action::CloudSeed, Step::Install, &machine);
         assert!(place(&install, "Host profile") < place(&install, "Hostname  studio"));
