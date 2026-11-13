@@ -43,7 +43,7 @@ jobs:
       matrix:
         kind: ${{ fromJSON(needs.plan.outputs.kinds) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Let the runner's user open /dev/kvm
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \

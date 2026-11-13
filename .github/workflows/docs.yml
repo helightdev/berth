@@ -16,7 +16,7 @@ jobs:
       contents: read
       pages: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Where Pages serves the site: a folder named after the repository on
       # github.io, the root on a domain of its own.
       - id: pages
