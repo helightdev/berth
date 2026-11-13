@@ -955,8 +955,10 @@ impl App {
             self.name = name.to_owned();
             self.address.clear();
             self.status = format!("{name} is kept on the server once it is saved");
-            self.setup = Some(Setup::new(name, template));
-            self.screen = Screen::Setup;
+            if let Some(admin) = &self.admin {
+                self.setup = Some(Setup::new(name, template, admin));
+                self.screen = Screen::Setup;
+            }
         }
     }
 

@@ -23,7 +23,7 @@ The desktop link printed by the task includes the password after `#` and signs i
 
 ## Joining the tailnet
 
-A host joins the tailnet while it is set up, with an enrollment key. The key fields are under **Tailscale** on the Install tab:
+A host joins the tailnet while it is set up, with an enrollment key. The key fields are under **Tailscale** on the host's Install tab:
 
 | Field | Profile | What it does |
 | --- | --- | --- |
@@ -85,13 +85,13 @@ Hosts then join with `tailscale up --login-server https://hs.example.org`. Heads
 
 The agent's desktop is XFCE on a persistent virtual X display, `:1`, from TigerVNC, which also provides the loopback VNC endpoint. websockify connects the browser to it, and noVNC is the client in the browser. The password is generated on the host by TigerVNC's password utility. The agent can read it at `~/.config/tigervnc/password`.
 
-The desktop keeps running when you close the browser, and agents can drive it with [`box desktop`](/docs/reference/box#desktop). Set its size with **Desktop size** on the Install tab (`devbox_geometry`, such as `1600x900`).
+The desktop keeps running when you close the browser, and agents can drive it with [`box desktop`](/docs/reference/box#desktop). Set its size with **Desktop size** under Host on the Settings tab (`devbox_geometry`, such as `1600x900`).
 
 ## Cockpit
 
-Full hosts get the [Cockpit](https://cockpit-project.org/) web console by default (`devbox_install_cockpit`, or **Cockpit web console** on the Install tab). It shows logs, systemd services, storage and software updates, and has a file browser and a terminal, plus network settings on laptops. It listens on port 9090 and the firewall only admits it from the tailnet.
+Full hosts get the [Cockpit](https://cockpit-project.org/) web console by default (`devbox_install_cockpit`, or **Cockpit web console** under Host Services on the Features tab). It shows logs, systemd services, storage and software updates, and has a file browser and a terminal, plus network settings on laptops. It listens on port 9090 and the firewall only admits it from the tailnet.
 
-Log in as the operator with its password. Cockpit does not accept SSH keys, so give the operator a password in Accounts. The agent has no password unless you set one.
+Log in as the operator with its password. Cockpit does not accept SSH keys, so give the operator a password under Operator Account on the Settings tab. The agent has no password unless you set one.
 
 Without a tailnet, tunnel it and open `https://127.0.0.1:9090`:
 
@@ -103,7 +103,7 @@ Switching the option off on an existing host stops the console and closes the po
 
 ## SSH
 
-`devbox_harden_ssh` (**SSH hardening** on the Install tab, on by default) makes the SSH server accept keys only and refuse root. It writes `PasswordAuthentication no`, `KbdInteractiveAuthentication no` and `PermitRootLogin no` to `/etc/ssh/sshd_config.d/00-devbox.conf`.
+`devbox_harden_ssh` (**SSH hardening** on the Settings tab, on by default) makes the SSH server accept keys only and refuse root. It writes `PasswordAuthentication no`, `KbdInteractiveAuthentication no` and `PermitRootLogin no` to `/etc/ssh/sshd_config.d/00-devbox.conf`.
 
 It is applied only when a key login for a non-root account will exist afterwards. That is the case when the operator has an SSH public key in the profile, or the account used for installing has its own authorized keys. Otherwise the run says so and leaves the server as it was.
 

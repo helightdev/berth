@@ -84,6 +84,10 @@ from pathlib import Path
 d=json.loads(Path('/opt/devbox-bootstrap/deployment.json').read_text())
 p=Path('/etc/devbox'); p.mkdir(parents=True,exist_ok=True)
 v=d['ansible_vars']; v['devbox_profile']=d['profile']
+# A seed of the qemu kind there once was is a cloud host that SSH reaches only from the QEMU host.
+if v['devbox_profile']=='qemu':
+    v['devbox_profile']='cloud'
+    v['devbox_bootstrap_ssh_cidr']=v.get('devbox_bootstrap_ssh_cidr') or '10.0.2.2/32'
 (p/'host.json').write_text(json.dumps(v))
 os.chmod(p/'host.json',0o600)
 PY

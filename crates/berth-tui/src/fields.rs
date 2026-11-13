@@ -1,32 +1,35 @@
 //! The settings the UI can edit, and the wizard steps and actions around them.
 
-pub const PROFILES: &[&str] = &["laptop", "cloud", "qemu"];
+pub const PROFILES: &[&str] = &["laptop", "cloud"];
 pub const DISK_MODES: &[&str] = &[
     "auto", "serial", "model", "path", "largest", "smallest", "ssd", "hdd",
 ];
 pub const DISK_TYPES: &[&str] = &["any", "ssd", "hdd"];
 
-/// The pages of a host: its overview (`Manage`) and the tabs of the set-up flow.
+/// The pages of a host: its overview (`Manage`) and the tabs of the set-up
+/// flow. Each tab depends only on the ones before it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Step {
-    Features,
-    Accounts,
-    /// The registries and secrets the host is given.
-    Secrets,
+    /// How the host is installed and reached: what has to be chosen.
     Install,
+    Features,
+    /// What has a default that follows from the tabs before.
+    Settings,
+    /// The last few things, every problem, and the buttons.
+    Run,
     Manage,
 }
 
 impl Step {
     /// The tabs of the set-up flow.
-    pub const SETUP: [Step; 4] = [Step::Features, Step::Accounts, Step::Secrets, Step::Install];
+    pub const SETUP: [Step; 4] = [Step::Install, Step::Features, Step::Settings, Step::Run];
 
     pub fn label(self) -> &'static str {
         match self {
-            Step::Features => "Features",
-            Step::Accounts => "Accounts",
-            Step::Secrets => "Secrets",
             Step::Install => "Install",
+            Step::Features => "Features",
+            Step::Settings => "Settings",
+            Step::Run => "Run",
             Step::Manage => "Overview",
         }
     }
@@ -122,7 +125,7 @@ impl Action {
                 "Generate cloud-init user data. Upload the generated release archive to the configured URL."
             }
             Action::Machine => {
-                "Have a provisioner create the machine, such as a container or a virtual machine on a server, and set it up as this host. Choose the provisioner below; plugins bring them."
+                "Have a provisioner create the machine, such as a container or a virtual machine on a server, and set it up as this host. Choose the provisioner below; plugins bring them. Its size is on the Settings tab, and Create is on the Run tab."
             }
             Action::Apply => {
                 "Provision a dedicated Ubuntu host using Ansible. Blank inventory applies to this machine."
@@ -131,7 +134,7 @@ impl Action {
                 "Build the desktop image using Docker Compose. Start it afterwards with docker compose."
             }
             Action::Manage => {
-                "Look after a host that is already set up, over SSH: show its status and access links, publish the desktop on the tailnet, run the smoke test, install updates or reboot. Pick the task on Review."
+                "Look after a host that is already set up, over SSH: show its status and access links, publish the desktop on the tailnet, run the smoke test, install updates or reboot. Pick the task on the overview."
             }
             Action::Ssh => {
                 "Install on an existing Ubuntu host over SSH. Enter a hostname, IP address or SSH config alias. Credentials and sudo prompts use the normal terminal."
@@ -239,7 +242,7 @@ impl Field {
                 "Host profile",
                 "/profile",
                 Choice(PROFILES),
-                "Choose laptop, cloud or QEMU provisioning defaults. Only laptop adds a physical login and power settings.",
+                "Choose laptop or cloud provisioning defaults. Only laptop adds a physical login and power settings. Cloud leaves SSH open to any address when no recovery SSH CIDR is set; for a QEMU guest, set that to 10.0.2.2/32.",
             ),
             Hostname => (
                 "Hostname",
@@ -269,7 +272,7 @@ impl Field {
                 "Publish release to",
                 "/release_store",
                 Text,
-                "Where the new machine gets the release archive from. Enter switches between the file servers and raw repositories of the Registries tab; berth uploads the archive there when the seed is made. Or upload it yourself and enter its address below.",
+                "Where the new machine gets the release archive from. Enter switches between the file servers and raw repositories of the Registries tab of the home screen; berth uploads the archive there when the seed is made. Or upload it yourself and enter its address below.",
             ),
             ReleasePrivate => (
                 "Download with login",
@@ -353,7 +356,7 @@ impl Field {
                 "Wi-Fi password",
                 "/wifi/password",
                 Secret,
-                "Wireless network password, saved in the private profile. When this machine knows the network, Review shows whether the password matches.",
+                "Wireless network password, saved in the private profile. When this machine knows the network, the Run tab shows whether the password matches.",
             ),
             OperatorUser => (
                 "Operator username",

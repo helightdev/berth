@@ -32,7 +32,9 @@ RELEASE_SOURCES = [
     'crates/berth/Cargo.toml', 'crates/berth/build.rs', 'crates/berth/src', 'crates/vendor/tui-input',
     'crates/vendor/README.md',
 ]
-PROFILES = {'laptop', 'qemu', 'cloud'}
+PROFILES = {'laptop', 'cloud'}
+# Where a QEMU guest on the user-mode network sees the machine it runs on.
+QEMU_HOST = '10.0.2.2/32'
 DEFAULT_OPERATOR = 'ops'
 # Names Ubuntu already uses for system accounts or groups; useradd refuses them.
 RESERVED_NAMES = set('''
@@ -135,15 +137,30 @@ def release_delivered():
     return os.environ.get('BERTH_RELEASE_DELIVERED') == '1'
 
 
+def retire_qemu(c):
+    """A profile of the qemu kind there once was, as the cloud one it is now.
+    That kind let SSH in only from the QEMU host when no recovery network was
+    named, so it gets that network rather than SSH open to every address."""
+    if c.get('profile') != 'qemu':
+        return c
+    c = dict(c, profile='cloud')
+    variables = dict(c.get('ansible_vars') or {})
+    if not variables.get('devbox_bootstrap_ssh_cidr'):
+        variables['devbox_bootstrap_ssh_cidr'] = QEMU_HOST
+    c['ansible_vars'] = variables
+    return c
+
+
 def checked_config(path, kind):
     """Load a host profile and reject anything that could not produce a working seed."""
     c = json.loads(Path(path).read_text())
     if not isinstance(c, dict):
         raise ValueError('Configuration must be a JSON object')
+    c = retire_qemu(c)
     if not HOSTNAME.fullmatch(text(c, 'hostname')):
         raise ValueError('Invalid hostname: use lowercase letters, digits and hyphens, starting with a letter')
     if text(c, 'profile') not in PROFILES:
-        raise ValueError('profile must be laptop, qemu or cloud')
+        raise ValueError('profile must be laptop or cloud')
 
     operator = text(c, 'operator_username', DEFAULT_OPERATOR)
     agent = text(c, 'agent_username', 'agent')

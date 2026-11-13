@@ -253,6 +253,13 @@ fn read(dir: &Path) -> Option<Plugin> {
                             serde_json::from_value::<berth_api::Argument>(argument).ok()
                         })
                         .filter(|argument| valid_name(&argument.name))
+                        // Only a provisioner's arguments size a machine or are a
+                        // list of values; a task's offers them with `choices`.
+                        .map(|argument| berth_api::Argument {
+                            kind: String::new(),
+                            values: vec![],
+                            ..argument
+                        })
                         .collect(),
                     confirm: action["confirm"]
                         .as_str()
@@ -352,6 +359,11 @@ fn read_provisioner(entry: &Value, dir: &Path) -> Option<Provisioner> {
             .filter(|argument| valid_name(&argument.name))
             .map(|argument| berth_api::Argument {
                 choices: String::new(),
+                // A kind berth does not know makes an ordinary argument.
+                kind: match argument.is_resource() {
+                    true => argument.kind.clone(),
+                    false => String::new(),
+                },
                 ..argument
             })
             .collect(),
@@ -512,11 +524,15 @@ pub fn provisioner_notes(provisioner: &ProvisionerInfo) -> Vec<String> {
         notes.push(format!("also {}", provisioner.verbs.join(", ")));
     }
     for argument in &provisioner.arguments {
-        notes.push(match (argument.required, argument.default.as_str()) {
+        let mut note = match (argument.required, argument.default.as_str()) {
             (true, _) => format!("asks {}", argument.name),
             (false, "") => format!("may ask {}", argument.name),
             (false, default) => format!("asks {} (default {default})", argument.name),
-        });
+        };
+        if !argument.values.is_empty() {
+            note += &format!(": {}", argument.values.join(" or "));
+        }
+        notes.push(note);
     }
     for secret in &provisioner.secrets {
         let missing = provisioner.missing_secrets.contains(secret);
@@ -1141,7 +1157,9 @@ mod tests {
                  "setup": "seed", "archive": true, "verbs": ["stop", "list", "reboot"],
                  "secrets": ["key", {"name": "cert", "required": false}, {"name": "Bad Name"}, "key"],
                  "arguments": [{"name": "server", "label": "Server", "required": true},
-                               {"name": "cpus", "default": "4", "choices": "seq 8"}, {"name": "Bad"}]},
+                               {"name": "cpus", "default": "4", "choices": "seq 8", "kind": "resource"},
+                               {"name": "image", "kind": "colour", "help": "What it starts from.",
+                                "values": ["a", "b"]}, {"name": "Bad"}]},
                 {"id": "ssh", "command": "./bin/provision", "setup": "apply", "archive": true},
                 {"id": "up", "command": "../outside", "setup": "apply"},
                 {"id": "absolute", "command": "/bin/sh", "setup": "apply"},
@@ -1186,10 +1204,18 @@ mod tests {
                     argument.name.as_str(),
                     argument.required,
                     argument.choices.as_str(),
+                    argument.kind.as_str(),
                 )
             })
             .collect();
-        assert_eq!(arguments, [("server", true, ""), ("cpus", false, "")]);
+        assert_eq!(
+            arguments,
+            [
+                ("server", true, "", ""),
+                ("cpus", false, "", "resource"),
+                ("image", false, "", "")
+            ]
+        );
         // Only a seeded machine is given the archive.
         let ssh = &plugins[0].provisioners[1];
         assert_eq!(
@@ -1198,10 +1224,19 @@ mod tests {
         );
         let info = plugins[0].info(base.path());
         assert_eq!(info.provisioners[0].id, "cloud/vm");
+        // A provisioner's argument keeps its help and its values.
+        assert_eq!(vm.arguments[2].help, "What it starts from.");
+        assert_eq!(vm.arguments[2].values, ["a", "b"]);
+        // The marker reaches the API and comes back from it.
+        let sent = serde_json::to_value(&info.provisioners[0]).unwrap();
+        assert_eq!(sent["arguments"][1]["kind"], "resource");
+        assert!(sent["arguments"][0].get("kind").is_none());
+        let back: berth_api::ProvisionerInfo = serde_json::from_value(sent).unwrap();
+        assert!(back.arguments[1].is_resource() && !back.arguments[0].is_resource());
         assert_eq!(info.provisioners[0].secrets, ["key", "cert"]);
         let listing = describe(&[info]);
         assert!(
-            listing.contains("  provisioner  cloud/vm  A VM (sets itself up from the cloud seed; also stop, list; asks server; asks cpus (default 4); secret key; secret cert)"),
+            listing.contains("  provisioner  cloud/vm  A VM (sets itself up from the cloud seed; also stop, list; asks server; asks cpus (default 4); may ask image: a or b; secret key; secret cert)"),
             "{listing}"
         );
     }

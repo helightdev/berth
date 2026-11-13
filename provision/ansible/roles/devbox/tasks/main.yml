@@ -5,7 +5,7 @@
       - ansible_facts.distribution == 'Ubuntu'
       - ansible_facts.distribution_version == '26.04'
       - ansible_facts.architecture == 'x86_64'
-      - devbox_profile in ['laptop', 'cloud', 'qemu', 'container']
+      - devbox_profile in ['laptop', 'cloud', 'container']
       - devbox_user is match('^[a-z_][a-z0-9_-]{0,31}$')
       - devbox_home == '/home/' ~ devbox_user
       - devbox_operator_user is match('^[a-z_][a-z0-9_-]{0,31}$')

@@ -22,14 +22,14 @@
         "setup": "apply",
         "verbs": ["start", "stop", "list"],
         "arguments": [
-          {"name": "host", "label": "Docker endpoint (empty: the local default)", "default": ""},
-          {"name": "image", "label": "Image (empty: build the bundled one)", "default": ""},
-          {"name": "ssh_port", "label": "Published SSH port (empty: none)", "default": ""},
-          {"name": "publish_address", "label": "Address to reach the published port", "default": "127.0.0.1"},
-          {"name": "volume", "label": "Volume for /srv/agent (empty: berth-HOST-data)", "default": ""},
-          {"name": "cpus", "label": "CPUs", "default": ""},
-          {"name": "memory", "label": "Memory", "default": ""},
-          {"name": "keep_volume", "label": "Keep the volume on destroy (yes or no)", "default": "no"}
+          {"name": "host", "label": "Docker endpoint", "default": "", "help": "The Docker engine to run it on, such as ssh://ops@192.0.2.10. Empty uses the local default."},
+          {"name": "image", "label": "Image", "default": "", "help": "The image to start from. Empty builds the one that comes with the plugin."},
+          {"name": "ssh_port", "label": "SSH port", "default": "", "help": "A port of the Docker host to publish the container's SSH on, such as 2222. Empty publishes none."},
+          {"name": "publish_address", "label": "Publish address", "default": "127.0.0.1", "help": "The address berth reaches the published SSH port at. A loopback address such as 127.0.0.1 keeps the port on the Docker host's loopback; any other publishes it on every address of the Docker host."},
+          {"name": "volume", "label": "Volume", "default": "", "help": "The volume for /srv/agent, the agent's work. Empty uses berth-HOST-data."},
+          {"name": "cpus", "label": "CPUs", "default": "", "kind": "resource", "help": "How many CPUs the container may use, such as 4. Empty sets no limit."},
+          {"name": "memory", "label": "Memory", "default": "", "kind": "resource", "help": "How much memory the container may use, such as 8g. Empty sets no limit."},
+          {"name": "keep_volume", "label": "Keep volume on destroy", "default": "no", "values": ["no", "yes"], "help": "Whether deleting the machine keeps its volume, so a new machine can take the agent's work over."}
         ]
       }
     ]
