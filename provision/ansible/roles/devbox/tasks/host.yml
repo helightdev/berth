@@ -44,6 +44,26 @@
       provisioning account has none, so turning off passwords and root login
       would lock this host. Set an operator SSH public key and apply again.
   when: devbox_harden_ssh and not devbox_ssh_hardened
+# cloud-init writes its password setting into a new sshd_config on an image
+# without an SSH server. The package then keeps that file, which reads no
+# drop-ins and has no PAM, so sshd refuses an operator whose password is locked.
+- name: See whether sshd_config is only what cloud-init left
+  ansible.builtin.command: >-
+    awk 'NF && $1 !~ /^#/ {lines++} tolower($1) == "include" {includes = 1}
+    END {exit !(lines < 3 && !includes)}' /etc/ssh/sshd_config
+  register: devbox_sshd_stub
+  changed_when: false
+  failed_when: false
+- name: Put the packaged sshd_config in its place
+  ansible.builtin.copy:
+    remote_src: true
+    src: /usr/share/openssh/sshd_config
+    dest: /etc/ssh/sshd_config
+    mode: '0644'
+    backup: true
+    validate: /usr/sbin/sshd -t -f %s
+  register: devbox_sshd_restored
+  when: devbox_sshd_stub.rc == 0
 - name: Require SSH keys and refuse root logins
   ansible.builtin.copy:
     # sshd uses the first value it reads, so this has to sort before other drop-ins.
@@ -66,7 +86,7 @@
   ansible.builtin.systemd_service:
     name: ssh
     state: restarted
-  when: devbox_start_services and (devbox_sshd_hardening.changed or devbox_sshd_relaxed.changed)
+  when: devbox_start_services and (devbox_sshd_restored.changed or devbox_sshd_hardening.changed or devbox_sshd_relaxed.changed)
 - name: Install host management packages
   ansible.builtin.apt:
     name: [unattended-upgrades, python3-psutil]

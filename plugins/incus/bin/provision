@@ -184,7 +184,8 @@ class Incus:
     def address(self, name):
         state = self.call('GET', f'/1.0/instances/{name}/state', missing=True) or {}
         for interface, details in sorted((state.get('network') or {}).items()):
-            if interface == 'lo':
+            # Bridges the guest makes itself, such as Docker's, are not how it is reached.
+            if interface == 'lo' or interface.startswith(('docker', 'br-', 'veth', 'tailscale', 'incusbr', 'lxcbr')):
                 continue
             for entry in (details or {}).get('addresses') or []:
                 if entry.get('family') == 'inet' and entry.get('scope') == 'global' and entry.get('address'):
