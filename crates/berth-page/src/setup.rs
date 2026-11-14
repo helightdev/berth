@@ -253,7 +253,7 @@ impl Setup {
 
     fn help(&self) -> String {
         match self.selected() {
-            // F5 is the browser's own, so the letters do what berth's F4 and F5 do.
+            // g and p do what berth's F4 and F5 do.
             Some(Entry::Field(field)) => field.spec().help.replace("F4", "g").replace("F5", "p"),
             Some(Entry::Key(Account::Operator, Some(_))) => Field::OperatorKey.spec().help.into(),
             Some(Entry::Key(Account::Agent, Some(_))) => Field::AgentKey.spec().help.into(),
@@ -557,7 +557,7 @@ impl Setup {
         match key.code {
             Code::Up => self.move_selection(true),
             Code::Down => self.move_selection(false),
-            // F5 is the browser's own, so the letters do what berth's F4 and F5 do.
+            // g and p do what berth's F4 and F5 do.
             Code::Char('g') | Code::F(4)
                 if self.selected_field().is_some_and(Field::can_generate) =>
             {

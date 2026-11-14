@@ -29,15 +29,6 @@ jsonwebtoken = { version = "11", default-features = false, features = ["rust_cry
 
 tui-input = { workspace = true, features = ["crossterm"] }
 
-[features]
-# The page for a browser, carried in the program for `berth serve --web`.
-# Building it needs the wasm32-unknown-unknown target.
-web = ["dep:wasm-bindgen-cli-support"]
-
-[build-dependencies]
-# The same version as the wasm-bindgen the page is built with.
-wasm-bindgen-cli-support = { version = "=0.2.129", optional = true }
-
 [dev-dependencies]
 # Signs the access tokens of the tests.
 ring = "0.17"

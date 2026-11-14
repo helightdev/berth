@@ -1,6 +1,6 @@
 //! The screens of a host with no terminal in them: they draw into ratatui
-//! frames and take keys of their own type, which berth turns a terminal's
-//! events into and its page in a browser the browser's.
+//! frames and take keys of their own type, which berth and berth-remote turn
+//! a terminal's events into.
 
 pub mod berth_key;
 pub mod event;

@@ -24,8 +24,8 @@ use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 use tui_input::Input;
-use web_time::{Duration, Instant};
 
 /// How often the list of hosts is asked for again.
 const HOSTS_EVERY: Duration = Duration::from_secs(10);
@@ -35,13 +35,13 @@ const RETRY: Duration = Duration::from_secs(3);
 const SAID_FOR: Duration = Duration::from_secs(5);
 /// What the status line says while the server is away.
 const AWAY: &str = "The berth server does not answer; trying again…";
-/// The key that leaves a running session: a browser keeps Ctrl+Q to itself.
+/// The key that leaves a running session, as Ctrl+Q quits the program.
 const LEAVE: &str = "Alt+Q";
 
 #[derive(PartialEq)]
 enum Screen {
     Token,
-    /// What a setup key in the link opens.
+    /// What a setup key opens.
     Installed,
     Hosts,
     Host,
@@ -91,10 +91,8 @@ pub struct App {
     /// The portal has been open with this token, so it is the right one.
     proven: bool,
     retry: Option<Instant>,
-    /// The server: where the page came from, or the one that was named.
+    /// The server that was named, or the one that was kept.
     server: String,
-    /// `berth serve` gave this page, so the server is not asked for.
-    embedded: bool,
     token: String,
     typing: Input,
     typing_server: Input,
@@ -152,27 +150,21 @@ impl App {
     /// Not a `Default`: making the screens signs in and opens the portal.
     #[allow(clippy::new_without_default)]
     pub fn new() -> App {
-        let embedded = device::embedded();
         let linked = device::linked();
         let (linked_server, linked_token) = (linked.server, linked.token);
         let kept = device::stored(Kept::Server).unwrap_or_default();
-        let server = match embedded {
-            true => device::origin(),
-            false => linked_server
-                .map(|server| device::address(&server))
-                .unwrap_or_else(|| kept.clone()),
-        };
+        let server = linked_server
+            .map(|server| device::address(&server))
+            .unwrap_or_else(|| kept.clone());
         // The token that was kept is the one of the server that was kept.
         let token = linked_token
             .or_else(|| {
-                (embedded || server == kept)
+                (server == kept)
                     .then(|| device::stored(Kept::Token))
                     .flatten()
             })
             .unwrap_or_default();
-        if !embedded {
-            device::store(Kept::Server, &server);
-        }
+        device::store(Kept::Server, &server);
         device::store(Kept::Token, &token);
         let mut app = App {
             screen: Screen::Token,
@@ -182,7 +174,6 @@ impl App {
             on_server: server.is_empty(),
             typing_server: Input::new(server.clone()),
             server,
-            embedded,
             token,
             typing: Input::default(),
             refused: String::new(),
@@ -394,15 +385,6 @@ impl App {
             height.saturating_sub(4).max(4),
             width.saturating_sub(8).max(20),
         )
-    }
-
-    /// The server, and the link that opens this page signed in with its
-    /// token: at this page's own address, which is the server's when the
-    /// server gave it, and told which server otherwise.
-    fn connect_link(&self) -> Option<(String, String)> {
-        let server = (!self.embedded).then_some(self.server.as_str());
-        let link = qr::connect_link(&device::page(), server, &self.token)?;
-        Some((self.server.clone(), link))
     }
 
     fn is_admin(&self) -> bool {
@@ -1240,9 +1222,6 @@ impl App {
                 if let Some(said) = self.home.key(tab - 1, key, &admin) {
                     self.status = said;
                 }
-                if let Some(shown) = self.home.qr.take() {
-                    self.qr = Some(shown);
-                }
                 if std::mem::take(&mut self.home.to_hosts) {
                     self.open_tab(0);
                 }
@@ -1264,7 +1243,6 @@ impl App {
         if !admin {
             self.tab = 0;
         }
-        self.home.connect = self.connect_link();
         self.home.server = device::shown(&self.server).to_owned();
         let tabs: &[&str] = if admin { &TABS } else { &[] };
         self.tab_hits = draw_header(frame, header, tabs, self.tab, device::shown(&self.server));
@@ -1596,27 +1574,21 @@ impl App {
     fn token_event(&mut self, event: Event) {
         match event {
             Event::Key(key)
-                if !self.embedded
-                    && matches!(key.code, Code::Tab | Code::BackTab | Code::Up | Code::Down) =>
+                if matches!(key.code, Code::Tab | Code::BackTab | Code::Up | Code::Down) =>
             {
                 self.on_server = !self.on_server;
             }
             Event::Key(key) if key.code == Code::Enter && self.on_server => self.on_server = false,
             Event::Key(key) if key.code == Code::Enter => {
                 let token = self.typing.value().trim().to_owned();
-                let server = match self.embedded {
-                    true => self.server.clone(),
-                    false => device::address(self.typing_server.value()),
-                };
+                let server = device::address(self.typing_server.value());
                 if server.is_empty() {
                     self.on_server = true;
                 } else if !token.is_empty() {
                     self.token = token;
                     self.server = server;
-                    if !self.embedded {
-                        device::store(Kept::Server, &self.server);
-                        self.typing_server = Input::new(self.server.clone());
-                    }
+                    device::store(Kept::Server, &self.server);
+                    self.typing_server = Input::new(self.server.clone());
                     device::store(Kept::Token, &self.token);
                     self.typing = Input::default();
                     self.refused.clear();
@@ -1683,16 +1655,10 @@ impl App {
         self.draw_backdrop(frame, area);
         let masked = ellipsize(&"•".repeat(self.typing.value().chars().count()), 44);
         let named = ellipsize(self.typing_server.value(), 44);
-        let mut lines = match self.embedded {
-            true => vec![
-                Line::raw("The token of this berth server. It is in serve.token,"),
-                Line::raw("in the data directory of the berth that serves."),
-            ],
-            false => vec![
-                Line::raw("The address of a berth serve, and its token. The token"),
-                Line::raw("is in serve.token, in that berth's data directory."),
-            ],
-        };
+        let mut lines = vec![
+            Line::raw("The address of a berth serve, and its token. The token"),
+            Line::raw("is in serve.token, in that berth's data directory."),
+        ];
         if !self.refused.is_empty() {
             for line in screen::wrap(&self.refused, 56) {
                 lines.push(Line::styled(line, Style::new().fg(theme::WARN)));
@@ -1709,16 +1675,11 @@ impl App {
                 Span::raw(value.to_owned()),
             ])
         };
-        if !self.embedded {
-            lines.push(field("Server  ", &named, self.on_server));
-        }
+        lines.push(field("Server  ", &named, self.on_server));
         let server_row = lines.len() as u16;
         lines.push(field("Token   ", &masked, !self.on_server));
         let rows = lines.len() as u16;
-        let keys = match self.embedded {
-            true => " Enter connect · Ctrl+O copy ",
-            false => " Tab switch · Enter connect · Ctrl+O copy ",
-        };
+        let keys = " Tab switch · Enter connect · Ctrl+O copy ";
         let area = dialog(frame, " Connect ", keys, lines);
         if area.width > 14 && area.height > rows {
             let (typed, row) = match self.on_server {

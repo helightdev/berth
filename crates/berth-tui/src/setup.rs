@@ -1,6 +1,6 @@
 //! The set-up pages of a host: what its profile holds, the rows each page
 //! shows of it, and what changing a row does to it. Nothing here reads a file
-//! or runs a command, so berth and its page in a browser share it.
+//! or runs a command, so berth and berth-remote share it.
 
 use crate::fields::{Action, Field, Group, Kind, Step};
 use crate::theme;

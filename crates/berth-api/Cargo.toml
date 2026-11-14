@@ -20,5 +20,5 @@ futures-util = { workspace = true, optional = true }
 [features]
 default = ["client"]
 # The client over a byte stream; without it only the types and tables remain,
-# which is what a browser build takes.
+# which is all the shared screens take.
 client = ["dep:tokio", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util"]

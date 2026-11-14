@@ -172,8 +172,8 @@ fn request(id: u32, op: &str, host: Option<&str>, args: Value, data: Value) -> V
 }
 
 impl Portal {
-    /// Open the portal at `url`, showing the token the way a browser can: as
-    /// the WebSocket's protocol.
+    /// Open the portal at `url`, showing the token as the WebSocket's
+    /// protocol.
     pub fn open(url: &str, token: &str) -> Result<Portal, String> {
         let inner = Rc::new(Inner {
             socket: RefCell::default(),
@@ -323,17 +323,8 @@ mod tests {
             None
         }
         fn store(&self, _: Kept, _: &str) {}
-        fn embedded(&self) -> bool {
-            false
-        }
         fn linked(&self) -> Linked {
             Linked::default()
-        }
-        fn origin(&self) -> String {
-            String::new()
-        }
-        fn page(&self) -> String {
-            String::new()
         }
         fn request(&self, _: &str, _: &str, _: &str, then: Answer) {
             then(Err("no".into()))

@@ -1,5 +1,5 @@
-//! Keys and the mouse as the screens take them. A terminal's and a browser's
-//! events are both turned into these.
+//! Keys and the mouse as the screens take them. The events of a terminal are
+//! turned into these.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Code {

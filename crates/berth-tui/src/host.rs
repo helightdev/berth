@@ -8,7 +8,7 @@ pub use crate::page::{Arguments, Launch, argument_label};
 use berth_api as api;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use web_time::{Duration, Instant};
+use std::time::{Duration, Instant};
 
 /// The lowest `api` of a host this berth can work with.
 pub const NEEDS_API: u32 = 1;

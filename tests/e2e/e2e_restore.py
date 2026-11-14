@@ -62,7 +62,7 @@ class Restore(unittest.TestCase):
         key = station.own_key_file()
         wait_for('the operator taking the key of the server', lambda: station.ssh(
             OPERATOR, 'true', key=key, check=False).returncode == 0)
-        serve = Serve(station, web=False)
+        serve = Serve(station)
         try:
             cls.fill(serve)
         finally:
@@ -76,7 +76,7 @@ class Restore(unittest.TestCase):
         wipe(station)
         shutil.rmtree(keep)
         station.env.update(BERTH_STORE=str(cls.moved / 'berth.db'), BERTH_STORE_KEY=str(cls.moved / 'store.key'))
-        cls.serve = Serve(station, web=False)
+        cls.serve = Serve(station)
 
     @classmethod
     def give_the_host_the_keys(cls):

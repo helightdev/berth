@@ -1,4 +1,4 @@
-//! The WebSocket under the page's portal: it runs on the runtime, and what it
+//! The WebSocket under the screens' portal: it runs on the runtime, and what it
 //! says is handed to the main thread at [`pump`].
 
 use crate::net;
@@ -42,8 +42,7 @@ impl Socket for NativeSocket {
     }
 }
 
-/// Open a WebSocket to `url`, with `token` as its protocol, the way the page
-/// sends it.
+/// Open a WebSocket to `url`, with `token` as its protocol.
 pub fn open(url: &str, token: &str, to: Box<dyn Fn(Said)>) -> Result<NativeSocket, String> {
     let target = net::target(url)?;
     let (out, outgoing) = unbounded_channel();

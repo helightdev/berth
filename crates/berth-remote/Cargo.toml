@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "The page of berth serve in a terminal: the hosts of a berth serve elsewhere, on Linux, macOS or Windows"
+description = "The screens of a berth serve in a terminal: the hosts of a berth serve elsewhere, on Linux, macOS or Windows"
 
 [[bin]]
 name = "berth-remote"

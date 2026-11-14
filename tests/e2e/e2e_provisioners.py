@@ -142,7 +142,7 @@ class Provisioners(unittest.TestCase):
 
     def test_through_berth_serve_an_action_that_changes_something_is_a_job(self):
         self.berth('provisioner', 'box', 'run', 'settings', 'place=attic', '--yes')
-        serve = Serve(self.station, web=False)
+        serve = Serve(self.station)
         try:
             page = serve.call('GET', '/v1/provisioners/box')
             self.assertEqual((page['state'], page['message']), ('ready', 'The lab at attic answers'))
@@ -223,7 +223,7 @@ class Deployments(unittest.TestCase):
         self.assertEqual(requests(self.folder)[-1]['verb'], 'change')
 
     def test_3_through_berth_serve_with_a_token_asked_twice(self):
-        serve = Serve(self.station, web=False)
+        serve = Serve(self.station)
         try:
             body = {'provisioner': 'box', 'kind': 'deployment', 'name': 'yard', 'spec': 'yard: 1\n',
                     'secrets': [{'name': 'bench_token', 'env': 'TOKEN'}], 'token': 'yard-1'}

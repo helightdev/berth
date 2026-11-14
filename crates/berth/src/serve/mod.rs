@@ -7,8 +7,6 @@ mod api;
 mod auth;
 mod docs;
 pub(crate) mod keys;
-#[cfg(feature = "web")]
-mod page;
 mod provisioners;
 mod resources;
 mod setup;
@@ -403,7 +401,7 @@ fn lock(paths: &Paths) -> Result<std::fs::File> {
     Ok(file)
 }
 
-const USAGE: &str = "Usage: berth serve [--listen ADDRESS:PORT [--expose] [--web]]";
+const USAGE: &str = "Usage: berth serve [--listen ADDRESS:PORT [--expose]]";
 
 /// A berth set to use a berth server keeps that server's hosts, so its
 /// commands, and the ones a serve starts, would take a host's name for one of
@@ -420,30 +418,23 @@ fn refuse_a_server(paths: &Paths) -> Result<()> {
     }
 }
 
-/// `berth serve [--listen ADDRESS:PORT [--expose] [--web]]`
+/// `berth serve [--listen ADDRESS:PORT [--expose]]`
 ///
 /// Over TCP every request shows the token, but the connection is plain HTTP,
 /// so an address other than this machine's own takes `--expose` as well: for a
-/// container whose port is published, or behind a proxy that adds TLS. With
-/// `--web` the address also gives the hosts as a page for a browser.
+/// container whose port is published, or behind a proxy that adds TLS.
 pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
-    let (mut listen, mut expose, mut web) = (None, false, false);
+    let (mut listen, mut expose) = (None, false);
     let mut words = args.iter();
     while let Some(word) = words.next() {
         match *word {
             "--listen" => listen = Some(*words.next().ok_or(USAGE)?),
             "--expose" => expose = true,
-            "--web" => web = true,
             _ => return Err(USAGE.into()),
         }
     }
-    if listen.is_none() && (expose || web) {
+    if listen.is_none() && expose {
         return Err(USAGE.into());
-    }
-    if web && !cfg!(feature = "web") {
-        return Err(
-            "This berth is built without the page for a browser: the berth-web build has it".into(),
-        );
     }
     let listen = match listen {
         None => None,
@@ -512,14 +503,6 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
                     state.paths.data_dir.join("serve.token").display()
                 );
                 let guarded = api::router(state.clone(), true);
-                #[cfg(feature = "web")]
-                let guarded = match web {
-                    true => {
-                        println!("The hosts in a browser: http://{}/", tcp.local_addr()?);
-                        guarded.merge(page::router())
-                    }
-                    false => guarded,
-                };
                 Some(tokio::spawn(async move { axum::serve(tcp, guarded).await }))
             }
             None => None,

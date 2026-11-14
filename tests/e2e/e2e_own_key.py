@@ -200,7 +200,7 @@ class Served(OwnKeyOnly, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.keyed = keyed()
-        cls.serve = Serve(cls.keyed, web=False)
+        cls.serve = Serve(cls.keyed)
         catalogue = cls.serve.call('GET', '/v1/setup')
         cls.serve.call('PUT', f'/v1/hosts/{HOST}/profile', bare_profile(catalogue['template']))
         cls.station = Workstation('own-key-client', ssh_key=False)
