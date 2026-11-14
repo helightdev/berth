@@ -104,6 +104,11 @@ A client that cannot keep up does not slow the others down:
   `GET /v1/sessions/{id}/output?since=OFFSET`, or reconnect with `since=`.
 - On the channel, a listener that falls 1,000 messages behind is closed. Open it
   again with `since` set to the last id it saw.
+- On `events.follow`, `inbox.follow` and `kv.follow` of `berth serve`, a
+  follower that is too slow gets `{"dropped":{"events":12}}` and the stream
+  goes on. The number counts all the server's events it missed, also those it
+  does not follow. Read the current state again with `inbox.list`, `kv.list` or
+  `jobs.list`.
 
 ## Events on your machine
 

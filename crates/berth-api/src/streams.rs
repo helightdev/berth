@@ -212,11 +212,18 @@ pub const SERVE: &[Stream] = &[
             ("topic", "Only topics starting with this."),
         ],
         resumable: false,
-        server: &[text(
-            "message",
-            "A stored message with its host.",
-            r#"{"host":"server","id":4812,"topic":"myplugin/progress","body":{},"keep":"log","from":{"level":"agent","uid":1001},"time":"2026-11-12T10:00:00Z","done":false}"#,
-        )],
+        server: &[
+            text(
+                "message",
+                "A stored message with its host.",
+                r#"{"host":"server","id":4812,"topic":"myplugin/progress","body":{},"keep":"log","from":{"level":"agent","uid":1001},"time":"2026-11-12T10:00:00Z","done":false}"#,
+            ),
+            text(
+                "dropped",
+                "This follower was too slow and missed so many events; read the inbox again.",
+                r#"{"dropped":{"events":12}}"#,
+            ),
+        ],
         client: &[],
     },
     Stream {
@@ -236,6 +243,11 @@ pub const SERVE: &[Stream] = &[
                 "removed",
                 "A key was removed.",
                 r#"{"key":"layout","removed":true}"#,
+            ),
+            text(
+                "dropped",
+                "This follower was too slow and missed so many changes; list the namespace again.",
+                r#"{"dropped":{"events":12}}"#,
             ),
         ],
         client: &[],
@@ -262,6 +274,11 @@ pub const SERVE: &[Stream] = &[
                 "kv",
                 "A key changed.",
                 r#"{"source":"kv","namespace":"ui","key":"layout","value":{},"revision":4}"#,
+            ),
+            text(
+                "dropped",
+                "This follower was too slow and missed so many events, of any kind it follows; read what it shows again.",
+                r#"{"dropped":{"events":12}}"#,
             ),
         ],
         client: &[text(

@@ -227,6 +227,68 @@ async fn the_key_value_store_over_the_api() {
     assert_eq!(refused.status, 413);
 }
 
+fn kv_event(key: &str, value: Value) -> super::Event {
+    super::Event::Kv {
+        namespace: "ui".into(),
+        key: key.into(),
+        value: Some(value),
+        revision: 1,
+    }
+}
+
+/// Wait for a frame that says events were dropped, past the ones before it.
+async fn dropped<S, E>(stream: &mut S) -> u64
+where
+    S: StreamExt<Item = Result<Frame, E>> + Unpin,
+    E: std::fmt::Debug,
+{
+    loop {
+        let frame = text(stream).await;
+        if let Some(missed) = frame["dropped"]["events"].as_u64() {
+            return missed;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_follower_that_falls_behind_is_told_what_it_missed() {
+    let served = served().await;
+    // The events stream listens from the handshake on, before it is told
+    // what to follow, so all of these are waiting when it starts.
+    let mut events = client::websocket_unix(&served.socket, "/v1/events")
+        .await
+        .unwrap();
+    for n in 0..1100 {
+        let _ = served.state.events.send(kv_event("layout", json!(n)));
+    }
+    let follow = json!({"kv": ["ui"]}).to_string();
+    events.send(Frame::Text(follow.into())).await.unwrap();
+    assert_eq!(
+        text(&mut events).await,
+        json!({"dropped": {"events": 76}})
+    );
+    assert_eq!(text(&mut events).await["value"], 76);
+
+    // A follower of a namespace that reads nothing while the server's buffers
+    // fill misses the rest, and goes on after the notice.
+    let mut changes = client::websocket_unix(&served.socket, "/v1/kv/ui")
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let large = "x".repeat(4096);
+    for _ in 0..5000 {
+        let _ = served.state.events.send(kv_event("layout", json!(large)));
+    }
+    let _ = served.state.events.send(kv_event("last", json!(true)));
+    assert!(dropped(&mut changes).await > 0);
+    loop {
+        let frame = text(&mut changes).await;
+        if frame["key"] == "last" {
+            break;
+        }
+    }
+}
+
 fn message(id: u64, topic: &str, keep: &str) -> berth_api::Message {
     serde_json::from_value(json!({
         "id": id, "topic": topic, "body": {"n": id}, "keep": keep,

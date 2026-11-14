@@ -16,6 +16,9 @@
         "events.channel": {
           "$ref": "#/components/messages/events.channel"
         },
+        "events.dropped": {
+          "$ref": "#/components/messages/events.dropped"
+        },
         "events.follow": {
           "$ref": "#/components/messages/events.follow"
         },
@@ -203,6 +206,9 @@
       },
       "description": "Messages as they are taken in from the hosts.",
       "messages": {
+        "inbox.dropped": {
+          "$ref": "#/components/messages/inbox.dropped"
+        },
         "inbox.message": {
           "$ref": "#/components/messages/inbox.message"
         }
@@ -255,6 +261,9 @@
       },
       "description": "Changes to a namespace of the key-value store.",
       "messages": {
+        "kv.dropped": {
+          "$ref": "#/components/messages/kv.dropped"
+        },
         "kv.removed": {
           "$ref": "#/components/messages/kv.removed"
         },
@@ -331,6 +340,23 @@
           "type": "object"
         },
         "summary": "A message from a host's channel."
+      },
+      "events.dropped": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "dropped": {
+                "events": 12
+              }
+            }
+          }
+        ],
+        "name": "dropped",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "This follower was too slow and missed so many events, of any kind it follows; read what it shows again."
       },
       "events.follow": {
         "contentType": "application/json",
@@ -618,6 +644,23 @@
         },
         "summary": "INT, TERM, HUP or KILL to the session's process group."
       },
+      "inbox.dropped": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "dropped": {
+                "events": 12
+              }
+            }
+          }
+        ],
+        "name": "dropped",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "This follower was too slow and missed so many events; read the inbox again."
+      },
       "inbox.message": {
         "contentType": "application/json",
         "examples": [
@@ -668,6 +711,23 @@
           "type": "string"
         },
         "summary": "The job's output."
+      },
+      "kv.dropped": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "dropped": {
+                "events": 12
+              }
+            }
+          }
+        ],
+        "name": "dropped",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "This follower was too slow and missed so many changes; list the namespace again."
       },
       "kv.removed": {
         "contentType": "application/json",
@@ -764,6 +824,9 @@
         },
         {
           "$ref": "#/channels/events/messages/events.kv"
+        },
+        {
+          "$ref": "#/channels/events/messages/events.dropped"
         }
       ]
     },
@@ -870,6 +933,9 @@
       "messages": [
         {
           "$ref": "#/channels/inbox/messages/inbox.message"
+        },
+        {
+          "$ref": "#/channels/inbox/messages/inbox.dropped"
         }
       ]
     },
@@ -898,6 +964,9 @@
         },
         {
           "$ref": "#/channels/kv/messages/kv.removed"
+        },
+        {
+          "$ref": "#/channels/kv/messages/kv.dropped"
         }
       ]
     },

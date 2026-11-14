@@ -800,16 +800,19 @@ async fn forward(
 ) {
     loop {
         tokio::select! {
-            event = events.recv() => match event {
-                Ok(event) => {
-                    if let Some(frame) = pick(event)
-                        && socket.send(WsMessage::Text(frame.to_string().into())).await.is_err()
-                    {
-                        return;
-                    }
+            event = events.recv() => {
+                let frame = match event {
+                    Ok(event) => pick(event),
+                    // A reader that fell behind is told how much it missed,
+                    // so it can read the current state again.
+                    Err(RecvError::Lagged(missed)) => Some(json!({"dropped": {"events": missed}})),
+                    Err(RecvError::Closed) => return,
+                };
+                if let Some(frame) = frame
+                    && socket.send(WsMessage::Text(frame.to_string().into())).await.is_err()
+                {
+                    return;
                 }
-                Err(RecvError::Lagged(_)) => {}
-                Err(RecvError::Closed) => return,
             },
             frame = socket.recv() => if !matches!(frame, Some(Ok(_))) { return },
         }

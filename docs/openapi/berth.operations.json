@@ -4043,6 +4043,16 @@
             "topic": "myplugin/progress"
           },
           "name": "message"
+        },
+        {
+          "binary": false,
+          "description": "This follower was too slow and missed so many events; read the inbox again.",
+          "example": {
+            "dropped": {
+              "events": 12
+            }
+          },
+          "name": "dropped"
         }
       ],
       "resumable": false,
@@ -4187,6 +4197,16 @@
             "removed": true
           },
           "name": "removed"
+        },
+        {
+          "binary": false,
+          "description": "This follower was too slow and missed so many changes; list the namespace again.",
+          "example": {
+            "dropped": {
+              "events": 12
+            }
+          },
+          "name": "dropped"
         }
       ],
       "resumable": false,
@@ -4395,6 +4415,16 @@
             "value": {}
           },
           "name": "kv"
+        },
+        {
+          "binary": false,
+          "description": "This follower was too slow and missed so many events, of any kind it follows; read what it shows again.",
+          "example": {
+            "dropped": {
+              "events": 12
+            }
+          },
+          "name": "dropped"
         }
       ],
       "resumable": false,
