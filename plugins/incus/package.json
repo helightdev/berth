@@ -1,6 +1,6 @@
 {
   "name": "berth-plugin-incus",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "displayName": "Incus",
   "description": "Virtual machines and containers on an Incus server for berth hosts.",
   "license": "MIT OR Apache-2.0",
@@ -18,31 +18,35 @@
         "label": "Incus virtual machine",
         "description": "A KVM guest on an Incus server, set up from berth's cloud seed. The server needs KVM.",
         "command": "bin/provision",
-        "setup": "seed",
-        "archive": true,
-        "verbs": [
-          "start",
-          "stop",
-          "list",
-          "log"
-        ],
-        "secrets": [
-          "incus_client_cert",
-          "incus_client_key",
-          {
-            "name": "incus_server_cert",
-            "required": false
-          }
-        ],
+        "protocol": 2,
+        "verbs": ["list"],
+        "secrets": ["incus_client_cert", "incus_client_key", {"name": "incus_server_cert", "required": false}],
         "arguments": [
           {"name": "server", "label": "Incus server", "required": true, "help": "The address of the Incus server's API, such as https://192.0.2.10:8443."},
-          {"name": "cpus", "label": "CPUs", "default": "4", "kind": "resource", "help": "How many CPUs the virtual machine gets."},
-          {"name": "memory", "label": "Memory", "default": "8GiB", "kind": "resource", "help": "How much memory it gets, such as 8GiB."},
-          {"name": "disk", "label": "Disk size", "default": "60GiB", "kind": "resource", "help": "The size of its root disk, such as 60GiB."},
-          {"name": "image", "label": "Image", "default": "ubuntu/26.04/cloud", "help": "The image on images.linuxcontainers.org to start from. It has to have cloud-init."},
-          {"name": "pool", "label": "Storage pool", "default": "default", "help": "The storage pool of the Incus server its disk is in."},
-          {"name": "network", "label": "Network", "default": "", "help": "The network it is attached to. Empty takes the network of the default profile."},
-          {"name": "project", "label": "Project", "default": "default", "help": "The Incus project it is made in."}
+          {"name": "project", "label": "Project", "default": "default", "help": "The Incus project berth makes its machines in and looks at."}
+        ],
+        "kinds": [
+          {
+            "id": "machine",
+            "label": "Machine",
+            "setup": "seed",
+            "archive": true,
+            "verbs": ["start", "stop", "change", "logs"],
+            "arguments": [
+              {"name": "cpus", "label": "CPUs", "default": "4", "kind": "resource", "help": "How many CPUs the virtual machine gets."},
+              {"name": "memory", "label": "Memory", "default": "8GiB", "kind": "resource", "help": "How much memory it gets, such as 8GiB."},
+              {"name": "disk", "label": "Disk size", "default": "60GiB", "kind": "resource", "help": "The size of its root disk, such as 60GiB."},
+              {"name": "image", "label": "Image", "default": "ubuntu/26.04/cloud", "help": "The image on images.linuxcontainers.org to start from. It has to have cloud-init."},
+              {"name": "pool", "label": "Storage pool", "default": "default", "help": "The storage pool of the Incus server its disk is in."},
+              {"name": "network", "label": "Network", "default": "", "help": "The network it is attached to. Empty takes the network of the default profile."}
+            ]
+          }
+        ],
+        "actions": [
+          {"name": "server", "label": "Check the server", "group": "Server", "changes": false, "help": "Ask the Incus server for its version, its kernel and its storage drivers, and whether it trusts berth's client certificate."},
+          {"name": "pools", "label": "Storage pools", "group": "Storage", "changes": false, "help": "The storage pools of the server, with how much of each is used."},
+          {"name": "images", "label": "Cached images", "group": "Storage", "changes": false, "help": "The images the server keeps in its project, with their sizes. Incus fetches one from images.linuxcontainers.org when a machine first needs it."},
+          {"name": "networks", "label": "Networks", "group": "Server", "changes": false, "help": "The networks of the server a machine can be attached to."}
         ]
       },
       {
@@ -50,31 +54,35 @@
         "label": "Incus container",
         "description": "A system container on an Incus server, set up from berth's cloud seed. Nesting is turned on so that the guest's systemd comes up.",
         "command": "bin/provision",
-        "setup": "seed",
-        "archive": true,
-        "verbs": [
-          "start",
-          "stop",
-          "list",
-          "log"
-        ],
-        "secrets": [
-          "incus_client_cert",
-          "incus_client_key",
-          {
-            "name": "incus_server_cert",
-            "required": false
-          }
-        ],
+        "protocol": 2,
+        "verbs": ["list"],
+        "secrets": ["incus_client_cert", "incus_client_key", {"name": "incus_server_cert", "required": false}],
         "arguments": [
           {"name": "server", "label": "Incus server", "required": true, "help": "The address of the Incus server's API, such as https://192.0.2.10:8443."},
-          {"name": "cpus", "label": "CPUs", "default": "4", "kind": "resource", "help": "How many CPUs the container may use."},
-          {"name": "memory", "label": "Memory", "default": "8GiB", "kind": "resource", "help": "How much memory it may use, such as 8GiB."},
-          {"name": "disk", "label": "Disk size", "default": "60GiB", "kind": "resource", "help": "The size of its root disk, such as 60GiB."},
-          {"name": "image", "label": "Image", "default": "ubuntu/26.04/cloud", "help": "The image on images.linuxcontainers.org to start from. It has to have cloud-init."},
-          {"name": "pool", "label": "Storage pool", "default": "default", "help": "The storage pool of the Incus server its disk is in."},
-          {"name": "network", "label": "Network", "default": "", "help": "The network it is attached to. Empty takes the network of the default profile."},
-          {"name": "project", "label": "Project", "default": "default", "help": "The Incus project it is made in."}
+          {"name": "project", "label": "Project", "default": "default", "help": "The Incus project berth makes its machines in and looks at."}
+        ],
+        "kinds": [
+          {
+            "id": "machine",
+            "label": "Machine",
+            "setup": "seed",
+            "archive": true,
+            "verbs": ["start", "stop", "change", "logs"],
+            "arguments": [
+              {"name": "cpus", "label": "CPUs", "default": "4", "kind": "resource", "help": "How many CPUs the container may use."},
+              {"name": "memory", "label": "Memory", "default": "8GiB", "kind": "resource", "help": "How much memory it may use, such as 8GiB."},
+              {"name": "disk", "label": "Disk size", "default": "60GiB", "kind": "resource", "help": "The size of its root disk, such as 60GiB."},
+              {"name": "image", "label": "Image", "default": "ubuntu/26.04/cloud", "help": "The image on images.linuxcontainers.org to start from. It has to have cloud-init."},
+              {"name": "pool", "label": "Storage pool", "default": "default", "help": "The storage pool of the Incus server its disk is in."},
+              {"name": "network", "label": "Network", "default": "", "help": "The network it is attached to. Empty takes the network of the default profile."}
+            ]
+          }
+        ],
+        "actions": [
+          {"name": "server", "label": "Check the server", "group": "Server", "changes": false, "help": "Ask the Incus server for its version, its kernel and its storage drivers, and whether it trusts berth's client certificate."},
+          {"name": "pools", "label": "Storage pools", "group": "Storage", "changes": false, "help": "The storage pools of the server, with how much of each is used."},
+          {"name": "images", "label": "Cached images", "group": "Storage", "changes": false, "help": "The images the server keeps in its project, with their sizes. Incus fetches one from images.linuxcontainers.org when a machine first needs it."},
+          {"name": "networks", "label": "Networks", "group": "Server", "changes": false, "help": "The networks of the server a machine can be attached to."}
         ]
       }
     ]

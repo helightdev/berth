@@ -11,7 +11,10 @@ devbox_agent_privileges: ""
 devbox_operator_user: ops
 devbox_operator_password_hash: ""
 devbox_operator_ssh_public_key: ""
-devbox_operator_passwordless_sudo: true
+# The public keys of the berth that applies this, one to a line: its own key, the
+# one replacing it while it rotates, and a key of its that the profile logs in
+# with. The operator always takes them.
+devbox_berth_ssh_public_key: ""
 # Ubuntu's own account and group names. useradd refuses a user named like an existing group.
 devbox_reserved_names: [root, daemon, bin, sys, adm, tty, disk, lp, mail, news, uucp, man, proxy, kmem, dialout, fax, voice, cdrom, floppy, tape, sudo, audio, dip, www-data, backup, operator, list, irc, src, shadow, utmp, video, sasl, plugdev, staff, games, users, nogroup, admin, docker]
 devbox_home: "/home/{{ devbox_user }}"
@@ -110,6 +113,20 @@ devbox_install_tailscale: true
 devbox_install_cockpit: true
 devbox_cockpit_packages: [cockpit, cockpit-storaged, cockpit-packagekit, cockpit-files]
 devbox_start_services: true
+# How much of the role runs: workstation for all of it, controller for
+# berthd and box alone (the playbook controller.yml sets it).
+devbox_level: workstation
+# Where berthd's files are, which installing the controller alone reads first.
+devbox_controller_etc: /etc/berth
+# Whether systemd runs berthd and the services of plugins. A container
+# profile has no systemd; the controller alone looks at the host.
+devbox_berthd_systemd: "{{ devbox_profile != 'container' }}"
+# The folders berthd's file calls may touch.
+devbox_berthd_roots: ["{{ devbox_home }}", /srv/agent]
+# The units whose state berthd's stats report.
+devbox_berthd_units: "{{ ['ssh', 'tailscaled', 'berthd', 'cockpit.socket', 'docker', 'lightdm'] + devbox_service_units }}"
+# The account sessions run as on a host with the controller alone: the SSH user.
+devbox_controller_user: "{{ ansible_facts.env.SUDO_USER | default(ansible_facts.user_id) }}"
 devbox_tailscale_auth_key: ""
 # The Headscale server the host joins, such as https://hs.example.org; empty
 # for Tailscale's own service.

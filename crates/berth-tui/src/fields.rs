@@ -5,6 +5,11 @@ pub const DISK_MODES: &[&str] = &[
     "auto", "serial", "model", "path", "largest", "smallest", "ssd", "hdd",
 ];
 pub const DISK_TYPES: &[&str] = &["any", "ssd", "hdd"];
+/// The ways to log in that are not a key of the ring; `key:NAME` is offered
+/// for each of those.
+pub const LOGINS: &[&str] = &["berth", "password", "ssh"];
+/// The levels a host can be meant to have, the whole profile first.
+pub const LEVELS: &[&str] = &["workstation", "controller", "reachable"];
 
 /// The pages of a host: its overview (`Manage`) and the tabs of the set-up
 /// flow. Each tab depends only on the ones before it.
@@ -59,8 +64,18 @@ pub const TASKS: &[(&str, &str, &str)] = &[
     ),
     (
         "connect",
-        "Connect again",
+        "Try again",
         "Ask the host again what it can do. A host whose sudo asks for a password needs that password once; it is kept until berth is closed and stored nowhere.",
+    ),
+    (
+        "address",
+        "Change the SSH address",
+        "Edit the address berth reaches this host at, for a host that has a new one, and try again once it is saved.",
+    ),
+    (
+        "install-controller",
+        "Install the controller",
+        "Put berthd and box on the host and start berth's controller, so that sessions, tasks and files work there, without the rest of a workstation. The host's level becomes controller. Continues in the terminal. From the command line: `berth host install HOST`.",
     ),
     (
         "ssh",
@@ -137,7 +152,7 @@ impl Action {
                 "Look after a host that is already set up, over SSH: show its status and access links, publish the desktop on the tailnet, run the smoke test, install updates or reboot. Pick the task on the overview."
             }
             Action::Ssh => {
-                "Install on an existing Ubuntu host over SSH. Enter a hostname, IP address or SSH config alias. Credentials and sudo prompts use the normal terminal."
+                "Install on an existing Ubuntu host over SSH. Enter a hostname, IP address or SSH config alias, and how berth logs in: its own key by default. A host that does not take that key yet gets it with berth key trust HOST and a password used once. Sudo prompts use the normal terminal."
             }
         }
     }
@@ -200,9 +215,7 @@ pub enum Field {
     WifiPassword,
     OperatorUser,
     OperatorKey,
-    BerthKey,
     OperatorHash,
-    OperatorSudo,
     AgentUser,
     AgentKey,
     AgentHash,
@@ -229,8 +242,8 @@ pub enum Field {
     SshHost,
     SshUser,
     SshPort,
-    SshKey,
-    AskPass,
+    Login,
+    Level,
 }
 
 impl Field {
@@ -370,23 +383,11 @@ impl Field {
                 Text,
                 "An OpenSSH public key the operator account takes. Enter changes it, x removes it. The account can have several: one for each person or machine that logs in.",
             ),
-            BerthKey => (
-                "This berth's SSH key",
-                "/berth_ssh_key",
-                Toggle,
-                "The operator also takes the SSH key of the berth that sets the host up. berth makes that key itself, an ed25519 one, and offers it when it connects, so it reaches the host without a key of yours. For a host set up from a berth server it is the server's key. c copies it, to add it at a cloud provider or on a host yourself.",
-            ),
             OperatorHash => (
                 "Operator password hash",
                 "/operator_password_hash",
                 Secret,
-                "SHA-512 crypt or yescrypt hash of the operator password. F4 generates a password and hash, F5 hashes a password you enter.",
-            ),
-            OperatorSudo => (
-                "Operator passwordless sudo",
-                "/operator_passwordless_sudo",
-                Toggle,
-                "Allow the operator to use sudo without a password. On unless turned off, so berth needs no sudo password to look after the host. Off, the operator types its password for sudo.",
+                "SHA-512 crypt or yescrypt hash of the operator password. F4 generates a password and hash, and berth credentials HOST shows the password later. F5 hashes a password you enter.",
             ),
             AgentUser => (
                 "Agent username",
@@ -404,7 +405,7 @@ impl Field {
                 "Agent password hash",
                 "/agent_password_hash",
                 Secret,
-                "Optional local password for the agent. F4 generates a password and hash, F5 hashes a password you enter. Empty locks password login.",
+                "Optional local password for the agent. F4 generates a password and hash, and berth credentials HOST shows the password later. F5 hashes a password you enter. Empty locks password login.",
             ),
             AgentPrivileges => (
                 "Agent privileges",
@@ -516,45 +517,45 @@ impl Field {
             ),
             AskBecomePass => (
                 "Ask for sudo password",
-                "/builder/ask_become_pass",
+                "/access/sudo",
                 Toggle,
-                "Ask for your sudo password on the target. Until it is switched, it follows the operator: on when the operator has no passwordless sudo, off when it has.",
+                "Ask for the SSH user's sudo password, for a first apply as an account of the machine's own whose sudo asks for one. The operator never needs it: once the host is applied as its operator, berth stops asking. The password is asked for when it is needed and kept until berth is closed, or kept as the secret sudo/HOST if you store it there.",
             ),
             SshHost => (
-                "SSH host",
-                "/builder/ssh_host",
+                "SSH address",
+                "/access/address",
                 Text,
-                "Remote hostname, IP or Host alias from ~/.ssh/config. OpenSSH uses your existing config and agent.",
+                "The host's name or IP address, or a Host alias from ~/.ssh/config.",
             ),
             SshUser => (
                 "SSH user",
-                "/builder/ssh_user",
+                "/access/user",
                 Text,
-                "Remote login user. Leave blank to use your SSH configuration.",
+                "The account berth logs in as. Leave blank to use your SSH configuration.",
             ),
             SshPort => (
                 "SSH port",
-                "/builder/ssh_port",
+                "/access/port",
                 Text,
                 "SSH port. Leave blank for the SSH configuration default.",
             ),
-            SshKey => (
-                "SSH private key",
-                "/builder/ssh_key",
-                Path,
-                "Optional private key path. Leave blank to use ssh-agent or SSH configuration.",
+            Login => (
+                "Log in with",
+                "/access/auth",
+                Choice(LOGINS),
+                "How berth logs in. berth: the installation's own key, which hosts it sets up take. key:NAME: another key of berth's key ring (the Settings tab of the home screen lists them). password: a password, kept as the secret ssh/HOST or asked for. ssh: your own SSH configuration and agent, with berth's key offered after them. A host that does not take its key yet gets it with: berth key trust HOST.",
+            ),
+            Level => (
+                "Level",
+                "/level",
+                Choice(LEVELS),
+                "How much of berth the host gets. workstation: the whole profile, with the desktop, the agents and plugins. controller: berthd and box alone, for sessions, tasks and files on a machine that stays as it is. reachable: nothing is installed; berth logs in over SSH. A lower level can be raised later: install the controller, or set workstation and apply.",
             ),
             UsbDevice => (
                 "Then write to USB drive",
                 "/builder/usb_device",
                 Text,
                 "Enter switches between not writing and each connected USB drive. The chosen drive is erased and gets the finished ISO; that asks for confirmation and your sudo password. You can also press w after the build instead.",
-            ),
-            AskPass => (
-                "Ask for SSH password",
-                "/builder/ask_pass",
-                Toggle,
-                "Prompt for an SSH login password. Encrypted keys can use ssh-agent instead.",
             ),
         };
         Spec {
@@ -569,9 +570,7 @@ impl Field {
     pub fn group(self) -> Option<Group> {
         use Field::*;
         Some(match self {
-            OperatorUser | OperatorKey | BerthKey | OperatorHash | OperatorSudo => {
-                Group::Heading("Operator Account")
-            }
+            OperatorUser | OperatorKey | OperatorHash => Group::Heading("Operator Account"),
             AgentUser | AgentKey | AgentHash | AgentSudo | AgentPrivileges => {
                 Group::Heading("Agent Account")
             }
@@ -582,7 +581,7 @@ impl Field {
             TailscaleKey | TailscaleAuto | TailscaleLoginServer => Group::Under(Tailscale),
             ReleaseUrl | ReleasePrivate => Group::Under(ReleaseStore),
             IsoSha | UsbDevice => Group::Under(Iso),
-            SshUser | SshPort | SshKey | AskPass => Group::Under(SshHost),
+            SshUser | SshPort | Login => Group::Under(SshHost),
             _ => return None,
         })
     }

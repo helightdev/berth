@@ -103,11 +103,13 @@ Switching the option off on an existing host stops the console and closes the po
 
 ## SSH
 
-`devbox_harden_ssh` (**SSH hardening** on the Settings tab, on by default) makes the SSH server accept keys only and refuse root. It writes `PasswordAuthentication no`, `KbdInteractiveAuthentication no` and `PermitRootLogin no` to `/etc/ssh/sshd_config.d/00-devbox.conf`.
+The operator logs in over SSH with keys only, on every host. The role writes a `Match User` block for it to `/etc/ssh/sshd_config.d/00-devbox-operator.conf` with `AuthenticationMethods publickey`, `PasswordAuthentication no` and `KbdInteractiveAuthentication no`. No setting turns it off.
 
-It is applied only when a key login for a non-root account will exist afterwards. That is the case when the operator has an SSH public key in the profile, or the account used for installing has its own authorized keys. Otherwise the run says so and leaves the server as it was.
+`devbox_harden_ssh` (**SSH hardening** on the Settings tab, on by default) does the same for every other account and refuses root. It writes `PasswordAuthentication no`, `KbdInteractiveAuthentication no` and `PermitRootLogin no` to `/etc/ssh/sshd_config.d/00-devbox.conf`. With it off, the agent and other accounts log in as the SSH server's own settings allow, and the operator still uses keys only.
 
-Passwords remain in use for the console, the laptop's graphical login, Cockpit and `sudo`. Root has no password and is not managed by the role.
+Hardening is applied only when a key login for a non-root account will exist afterwards. That is the case when the operator has a key in the profile or the key of berth, or the account used for installing has its own authorized keys. Otherwise the run says so and leaves the server as it was.
+
+Passwords remain in use for the console, the laptop's graphical login and Cockpit. The operator's sudo needs none. Root has no password and is not managed by the role.
 
 For which addresses may reach SSH, see [the firewall](/docs/deploy/ssh#the-firewall).
 

@@ -17,6 +17,7 @@ It was run on Ubuntu 26.04 and needs 24.04 or later.
 | Default profile | Nesting is on. A container's systemd needs it, and so does Docker in a guest |
 | Incus API | Port 8444, open on the tailnet interface only |
 | Docker | `docker.io` with Compose and Buildx, from Ubuntu's packages |
+| Sysbox | On request, the Sysbox runtime beside Docker, for containers that run systemd without `--privileged` |
 | Firewall | `ufw`: incoming traffic is refused except SSH, the tailnet and the guests' bridge |
 | Tailscale | Installed and joined when you pass an enrollment key |
 | berth server | On request, berth's server in a Docker container, set up to create machines on this Incus |
@@ -55,6 +56,19 @@ ansible-playbook -i 192.0.2.10, -u root site.yml -e tailscale_auth_key=tskey-aut
 A second run changes nothing that is already in place. It leaves a server
 alone that has a storage pool, so it never touches existing guests.
 
+## Add the server to berth
+
+The recipes leave a plain Ubuntu server where the account `root` takes the public key the server was installed with, such as the one you gave `rescue-install`. Add it to berth from your own machine. This example uses the made-up name `big` and the address `192.0.2.20`:
+
+```bash
+berth host add big 192.0.2.20 --user root --auth ssh
+berth host install big
+```
+
+`berth host add` saves `big` as a reachable host. `--auth ssh` makes berth log in with your own SSH configuration and agent, so the key that works for `ssh root@192.0.2.20` works for berth. The default, `--auth berth`, uses berth's own key, which berth installs on the first contact with a password or a private key that logs in once. `--auth ssh` works with a local berth only. With a berth server set, the server logs in with its own keys.
+
+`berth host install big` puts the controller alone on the server. berth can then report its status and run commands there, and it can update and reboot the server. Sessions run as the SSH user, here `root`. berth never applies such a server as a workstation: it stays a reachable or controller host, and the machines on it are created with the Incus or Docker provisioner.
+
 ## Settings
 
 The settings are in [`vars.yml`](vars.yml), each with a comment. Change them
@@ -69,6 +83,9 @@ there, or keep your own file and pass it with `-e @my-vars.yml`.
 | `incus_api_address` | `[::]:8444` | Where the Incus API listens |
 | `incus_api_interface` | `tailscale0` | The one interface the firewall opens the API on. Empty opens it nowhere |
 | `incus_trusted_clients` | none | Clients that may use the API, each with a name and a certificate file |
+| `sysbox` | `false` | Also install Sysbox, for berth's Docker provisioner with `runtime=sysbox` |
+| `sysbox_version` | `0.7.1` | The Sysbox release to install |
+| `sysbox_checksum_amd64`, `sysbox_checksum_arm64` | those of `0.7.1` | The SHA-256 of the package for each architecture. The download is always checked, and another version needs its own sums |
 | `berth_server` | `false` | Also run a berth server here. See below |
 | `tailscale_auth_key` | empty | An enrollment key. Without one Tailscale is not installed |
 | `tailscale_login_server` | empty | The address of a Headscale server |
@@ -116,6 +133,32 @@ new machine there before it has joined a tailnet.
 The tailnet address needs HTTPS certificates switched on for your tailnet.
 Set `berth_server_tailscale_serve` to `false` to leave the server on this
 machine only. A private image needs `docker login ghcr.io` before the run.
+
+## Sysbox for Docker machines
+
+berth's Docker provisioner runs its containers privileged, which gives root in
+them the rights of root on the server. With `sysbox` set, the recipe installs
+[Sysbox](https://github.com/nestybox/sysbox) from its release package, and a
+machine made with `runtime=sysbox` runs without `--privileged`:
+
+```bash
+sudo ./install.sh -e sysbox=true
+berth provision studio-2 docker/container host=ssh://root@192.0.2.10 runtime=sysbox
+```
+
+The recipe downloads the package from the Sysbox release page on GitHub and
+checks it against `sysbox_checksum_amd64` or `sysbox_checksum_arm64`. It
+refuses to install without a sum. For another version, take the sums from that
+release's page and pass them with `-e`.
+
+The installer starts `sysbox.service`, which runs `sysbox-mgr.service` and
+`sysbox-fs.service`, and tells Docker about the runtime. It restarts Docker
+when it has to change Docker's network settings, so set `sysbox` on the first
+run, before any container exists. With containers present it leaves Docker
+running and prints how to restart it. The installer needs a kernel that Sysbox
+supports and stops when it finds an older one. Sysbox lists Ubuntu 22.04 and
+24.04. It does not list 26.04 yet. On an unlisted release the installer only
+checks the kernel.
 
 ## Let another berth create machines here
 

@@ -70,6 +70,10 @@
           "required": {
             "type": "boolean"
           },
+          "secret": {
+            "description": "What is given is a secret, such as a password: it is not shown as it\nis typed, nor kept, nor written to a job's output.",
+            "type": "boolean"
+          },
           "values": {
             "description": "The values a provisioner's argument takes, when it is a choice of a\nfew. Empty for one that takes any text.",
             "items": {
@@ -333,6 +337,15 @@
         ],
         "type": "object"
       },
+      "HostLevel": {
+        "description": "How much of berth a host has: what its profile means it to have, or\nwhat it was seen to have. Each level can do what the ones before it can.",
+        "enum": [
+          "reachable",
+          "controller",
+          "workstation"
+        ],
+        "type": "string"
+      },
       "Input": {
         "properties": {
           "data_b64": {
@@ -384,6 +397,45 @@
           "log"
         ],
         "type": "string"
+      },
+      "KeptProfile": {
+        "description": "The profile a host keeps of itself, at `/etc/berth/profile.json`: the\nprofile as berth holds it, without the enrollment key and without its\n`access`, how the berth that wrote it reaches the host. A berth that does\nnot have the host can take it over from this.",
+        "properties": {
+          "berth": {
+            "description": "The version of the berth that wrote it.",
+            "type": "string"
+          },
+          "format": {
+            "description": "The format of this document: 2, or 1 for one berth 0.4.1 wrote, whose\nprofile has the layout before `access`.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "host": {
+            "description": "The name the host has in the berth that wrote it.",
+            "type": "string"
+          },
+          "instance": {
+            "description": "The same in a document of format 1."
+          },
+          "machine": {
+            "description": "The record of the machine berth created for the host, as a resource,\nwhen it did."
+          },
+          "profile": {
+            "description": "The profile."
+          },
+          "written": {
+            "description": "When it was written, in RFC 3339.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "format",
+          "berth",
+          "host",
+          "profile"
+        ],
+        "type": "object"
       },
       "Level": {
         "enum": [
@@ -1361,6 +1413,17 @@
               }
             ]
           },
+          "level": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HostLevel",
+                "description": "What was installed on the host, by that record: `controller` when\nonly the controller was, `workstation` for a whole profile. Absent\nwhen the host keeps no record."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "mode": {
             "description": "`system` or `single`.",
             "type": "string"
@@ -1416,6 +1479,25 @@
       },
       "role": "operate",
       "summary": "Read the configuration files again. Sessions go on."
+    },
+    {
+      "args": [],
+      "group": "applied",
+      "http": {
+        "method": "GET",
+        "path": "/v1/applied/profile"
+      },
+      "kind": "call",
+      "level": "Host level only.",
+      "name": "applied.profile",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/KeptProfile"
+        }
+      },
+      "role": "admin",
+      "summary": "The profile the host keeps of itself, as the last apply or the first boot wrote it."
     },
     {
       "args": [

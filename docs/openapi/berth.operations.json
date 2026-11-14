@@ -25,6 +25,162 @@
         ],
         "type": "object"
       },
+      "Act": {
+        "description": "What running an action is given.",
+        "properties": {
+          "arguments": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "cols": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rows": {
+            "description": "The size of the terminal, for an action that runs in one.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sudo_password": {
+            "description": "The SSH user's sudo password, for an action that logs in to a host\nwhose sudo asks for one. It is neither shown nor kept.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token": {
+            "description": "Any text of the caller's. The same token again for the same subject\nand action answers with the job the first call started.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Acted": {
+        "description": "What running an action answers: one of the three.",
+        "properties": {
+          "job": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/JobInfo",
+                "description": "The job that runs it, for an action of berth that changes something."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result": {
+            "description": "What an action that answers at once and changes nothing said."
+          },
+          "session": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Session",
+                "description": "The session on the host, for an action the host runs."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Action": {
+        "description": "Something that can be done to a subject: a host, the installation, and\nlater a provisioner or a resource. It says enough to build a form from.",
+        "properties": {
+          "arguments": {
+            "items": {
+              "$ref": "#/components/schemas/Argument"
+            },
+            "type": "array"
+          },
+          "available": {
+            "description": "False, with `why`, when the subject's state rules it out now.",
+            "type": "boolean"
+          },
+          "changes": {
+            "description": "False when it only reads, and may be called at any time.",
+            "type": "boolean"
+          },
+          "confirm": {
+            "description": "The question to answer yes to before it runs.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group": {
+            "description": "The group of the page it is listed in; `System` when empty.",
+            "type": "string"
+          },
+          "help": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role",
+            "description": "The least role that may run it."
+          },
+          "runs": {
+            "$ref": "#/components/schemas/Runs"
+          },
+          "steps": {
+            "description": "What plugins add to it, in the order they run.",
+            "items": {
+              "$ref": "#/components/schemas/ActionStep"
+            },
+            "type": "array"
+          },
+          "terminal": {
+            "description": "It needs a terminal session attached; only a host runs these.",
+            "type": "boolean"
+          },
+          "why": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "ActionStep": {
+        "description": "What a plugin adds to an action: a step run after it in the same run.",
+        "properties": {
+          "help": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "type": "object"
+      },
       "Applied": {
         "description": "What berth recorded on a host when it applied the configuration: its own\nversion and the plugins whose features the host has.",
         "properties": {
@@ -68,19 +224,6 @@
         ],
         "type": "object"
       },
-      "ApplyWith": {
-        "description": "What applying may be given.",
-        "properties": {
-          "sudo_password": {
-            "description": "The SSH user's sudo password, for a host that asks for one.",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "type": "object"
-      },
       "Argument": {
         "properties": {
           "choices": {
@@ -105,6 +248,10 @@
             "type": "string"
           },
           "required": {
+            "type": "boolean"
+          },
+          "secret": {
+            "description": "What is given is a secret, such as a password: it is not shown as it\nis typed, nor kept, nor written to a job's output.",
             "type": "boolean"
           },
           "values": {
@@ -144,13 +291,6 @@
               "$ref": "#/components/schemas/FeatureInfo"
             },
             "type": "array"
-          },
-          "key": {
-            "description": "The server's own SSH public key, which the operator of a host it sets\nup takes unless the profile says otherwise.",
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "template": {
             "description": "The profile a new host starts from."
@@ -197,6 +337,54 @@
         },
         "required": [
           "lines"
+        ],
+        "type": "object"
+      },
+      "Created": {
+        "description": "What creating a resource answers: its record and the job that makes it.",
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/JobInfo"
+          },
+          "resource": {
+            "$ref": "#/components/schemas/Resource"
+          }
+        },
+        "required": [
+          "resource",
+          "job"
+        ],
+        "type": "object"
+      },
+      "Credentials": {
+        "description": "The passwords berth generated for a host's accounts.",
+        "properties": {
+          "credentials": {
+            "additionalProperties": {},
+            "description": "The password of each account, by the account's name.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "credentials"
+        ],
+        "type": "object"
+      },
+      "Detail": {
+        "description": "A row of what a provisioner says, shown as it is given.",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
         ],
         "type": "object"
       },
@@ -297,7 +485,7 @@
             ]
           },
           "password": {
-            "description": "For `password`: the password to hash. Without it one is made up and\nkept beside the profile of `host`, under `user`.",
+            "description": "For `password`: the password to hash. Without it one is made up and\nkept in the server's store with `host`, under `user`, for\n`hosts.credentials` to give.",
             "type": [
               "string",
               "null"
@@ -401,11 +589,30 @@
               "null"
             ]
           },
+          "level": {
+            "$ref": "#/components/schemas/HostLevel",
+            "description": "The level its profile means it to have."
+          },
           "name": {
             "type": "string"
           },
           "reachable": {
             "type": "boolean"
+          },
+          "rotating": {
+            "description": "A rotation of a key it logs in with is not done on it yet.",
+            "type": "boolean"
+          },
+          "seen": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HostLevel",
+                "description": "The level it was seen to have: what its controller's record says,\n`reachable` when berth logged in and found no controller. Absent\nwhen it could not be asked."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "version": {
             "description": "The version of its berthd.",
@@ -418,9 +625,19 @@
         "required": [
           "name",
           "address",
-          "reachable"
+          "reachable",
+          "level"
         ],
         "type": "object"
+      },
+      "HostLevel": {
+        "description": "How much of berth a host has: what its profile means it to have, or\nwhat it was seen to have. Each level can do what the ones before it can.",
+        "enum": [
+          "reachable",
+          "controller",
+          "workstation"
+        ],
+        "type": "string"
       },
       "Inbox": {
         "properties": {
@@ -473,58 +690,13 @@
         ],
         "description": "A stored message: the host's message with where it came from."
       },
-      "Instance": {
-        "description": "The machine berth created for a host.",
-        "properties": {
-          "address": {
-            "type": "string"
-          },
-          "arguments": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "propertyNames": {
-              "type": "string"
-            },
-            "type": "object"
-          },
-          "created": {
-            "description": "When it was asked for, RFC 3339.",
-            "type": "string"
-          },
-          "id": {
-            "description": "The provisioner's id of the machine; empty until `create` said it.",
-            "type": "string"
-          },
-          "problem": {
-            "description": "Why the state is `unknown`.",
-            "type": "string"
-          },
-          "provisioner": {
-            "description": "`PLUGIN/ID`.",
-            "type": "string"
-          },
-          "state": {
-            "description": "`running`, `stopped`, `gone`, `unknown` or `creating`.",
-            "type": "string"
-          },
-          "verbs": {
-            "description": "What can be done to it besides `destroy`: `start`, `stop`.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "provisioner",
-          "id",
-          "state"
-        ],
-        "type": "object"
-      },
       "JobInfo": {
+        "description": "A job of berth: one run of an action, with its output kept where it ran.",
         "properties": {
+          "action": {
+            "description": "The action it runs, such as `apply`, `rollout` or `provision`.",
+            "type": "string"
+          },
           "ended": {
             "type": [
               "string",
@@ -539,6 +711,7 @@
             ]
           },
           "host": {
+            "description": "The hosts it is about, for a reader: a name, or several with commas.",
             "type": "string"
           },
           "id": {
@@ -558,15 +731,13 @@
           "started": {
             "type": "string"
           },
-          "what": {
-            "description": "What it does: `apply`, `rollout`, `provision` or `unprovision`.",
+          "subject": {
+            "description": "What it was done to: `host:NAME`, `provisioner:PLUGIN/ID`,\n`resource:ID` or `installation`. Empty for a job from before 0.5.",
             "type": "string"
           }
         },
         "required": [
           "id",
-          "host",
-          "what",
           "started"
         ],
         "type": "object"
@@ -578,6 +749,60 @@
           "log"
         ],
         "type": "string"
+      },
+      "KeyInfo": {
+        "description": "A key of the ring, by its public half.",
+        "properties": {
+          "fingerprint": {
+            "description": "Its SHA256 fingerprint, as `ssh-keygen -l` shows it.",
+            "type": "string"
+          },
+          "hosts": {
+            "description": "The server's hosts that log in with it.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pending": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/KeyInfo",
+                "description": "The key replacing it while a rotation runs."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "public": {
+            "description": "The public half, a line of `authorized_keys`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "public",
+          "fingerprint"
+        ],
+        "type": "object"
+      },
+      "KeyList": {
+        "properties": {
+          "keys": {
+            "items": {
+              "$ref": "#/components/schemas/KeyInfo"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "keys"
+        ],
+        "type": "object"
       },
       "KvEntry": {
         "properties": {
@@ -638,24 +863,36 @@
         ],
         "type": "string"
       },
-      "ListedInstance": {
-        "description": "A machine a provisioner has that berth created.",
+      "ListedResource": {
+        "description": "What a provisioner lists of what it holds, beside berth's records.",
         "properties": {
           "host": {
-            "description": "The host it was created for, as its labels say.",
+            "description": "The host a machine was made for, when it says.",
             "type": "string"
           },
           "id": {
+            "description": "The provisioner's id of it; empty for a record whose `create` did not end.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`machine`, or a kind the plugin names, such as `deployment`.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "resource": {
+            "description": "berth's id of it, when berth has a record of it. One the provisioner\nlists without one is not berth's, or berth lost track of it.",
             "type": "string"
           },
           "state": {
+            "description": "What the provisioner's list says, or empty when it was not asked.",
             "type": "string"
           }
         },
         "required": [
-          "id",
-          "host",
-          "state"
+          "kind",
+          "name"
         ],
         "type": "object"
       },
@@ -687,6 +924,64 @@
           "keep",
           "from",
           "time"
+        ],
+        "type": "object"
+      },
+      "NewResource": {
+        "description": "What to create a resource with.",
+        "properties": {
+          "arguments": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Values of the provisioner's and the kind's arguments; the others\ntake their settings or defaults.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "host": {
+            "description": "The saved host a machine is made for, and set up as.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "description": "`machine` when empty.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The host's name for a host's machine when empty.",
+            "type": "string"
+          },
+          "provisioner": {
+            "description": "`PLUGIN/ID`.",
+            "type": "string"
+          },
+          "secrets": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceSecret"
+            },
+            "type": "array"
+          },
+          "spec": {
+            "description": "The specification, for a kind that has one, as its plugin reads it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token": {
+            "description": "Any text of the caller's. The same token again answers with the\nresource and the job the first call started.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "provisioner"
         ],
         "type": "object"
       },
@@ -1024,33 +1319,18 @@
         ],
         "type": "object"
       },
-      "Provision": {
-        "description": "What to create a host's machine with.",
-        "properties": {
-          "arguments": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "Values of its arguments; the others take their defaults.",
-            "propertyNames": {
-              "type": "string"
-            },
-            "type": "object"
-          },
-          "provisioner": {
-            "description": "`PLUGIN/ID`.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "provisioner"
-        ],
-        "type": "object"
-      },
       "ProvisionerInfo": {
         "description": "Something a plugin creates machines with, for a saved host's profile.",
         "properties": {
+          "actions": {
+            "description": "Its plugin's own actions, such as listing images or pruning.",
+            "items": {
+              "$ref": "#/components/schemas/Action"
+            },
+            "type": "array"
+          },
           "arguments": {
+            "description": "What creating a machine takes: the provisioner's own arguments first,\nthen those of its machines.",
             "items": {
               "$ref": "#/components/schemas/Argument"
             },
@@ -1063,6 +1343,13 @@
             "description": "`PLUGIN/ID`.",
             "type": "string"
           },
+          "kinds": {
+            "description": "What it can make: `machine`, and kinds its plugin names.",
+            "items": {
+              "$ref": "#/components/schemas/ProvisionerKind"
+            },
+            "type": "array"
+          },
           "label": {
             "type": "string"
           },
@@ -1073,12 +1360,33 @@
             },
             "type": "array"
           },
+          "own": {
+            "description": "The names of the provisioner's own arguments, which say where it is,\nsuch as an Incus server. Their values are kept as its settings.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "problem": {
+            "description": "Why it cannot be used here, as a sentence that says what to change.\nEmpty when it can.",
+            "type": "string"
+          },
           "secrets": {
             "description": "The berth secrets it is given.",
             "items": {
               "type": "string"
             },
             "type": "array"
+          },
+          "settings": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The values of its own arguments that are kept, by name.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
           },
           "setup": {
             "description": "`seed`: the machine boots with berth's cloud seed and sets itself up.\n`apply`: berth applies the profile over SSH once the machine answers.",
@@ -1099,6 +1407,96 @@
         ],
         "type": "object"
       },
+      "ProvisionerKind": {
+        "description": "A kind of thing a provisioner makes.",
+        "properties": {
+          "actions": {
+            "description": "What its plugin can do to one, each run with the verb `act` and the\nresource's id.",
+            "items": {
+              "$ref": "#/components/schemas/Action"
+            },
+            "type": "array"
+          },
+          "arguments": {
+            "items": {
+              "$ref": "#/components/schemas/Argument"
+            },
+            "type": "array"
+          },
+          "id": {
+            "description": "`machine`, or a kind the plugin names, such as `deployment`.",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "setup": {
+            "description": "For a machine: `seed` or `apply`, as for the provisioner.",
+            "type": "string"
+          },
+          "spec": {
+            "description": "The specification one is made from, for a kind that has one: its\n`format` and `label`, as the plugin declares them."
+          },
+          "verbs": {
+            "description": "What can be done to one besides `create`, `status` and `destroy`:\n`start`, `stop`, `change`, `logs`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "ProvisionerState": {
+        "description": "A provisioner's page: what it is, what it says of itself now, and what\nit holds.",
+        "properties": {
+          "details": {
+            "items": {
+              "$ref": "#/components/schemas/Detail"
+            },
+            "type": "array"
+          },
+          "message": {
+            "description": "What it said of itself, or why it could not be asked.",
+            "type": "string"
+          },
+          "provisioner": {
+            "$ref": "#/components/schemas/ProvisionerInfo"
+          },
+          "resources": {
+            "description": "berth's records of what it made, with what its own list says.",
+            "items": {
+              "$ref": "#/components/schemas/ListedResource"
+            },
+            "type": "array"
+          },
+          "state": {
+            "description": "`ready`, `unreachable` or `unusable`, or what the provisioner said.",
+            "type": "string"
+          },
+          "values": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "The values an argument takes here, by its name, where the\nprovisioner narrows what it declares, such as the pools there are.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "provisioner",
+          "state"
+        ],
+        "type": "object"
+      },
       "Registries": {
         "properties": {
           "registries": {
@@ -1115,34 +1513,154 @@
         ],
         "type": "object"
       },
-      "Rollout": {
-        "description": "What a roll-out does: apply the hosts that are behind one after another,\nstopping at the first that fails.",
+      "Resource": {
+        "description": "Something a provisioner made for berth: a machine, which may be a\nhost's, or a kind its plugin names, such as a deployment.",
         "properties": {
-          "all": {
-            "description": "Also the hosts that are current.",
-            "type": "boolean"
+          "address": {
+            "type": "string"
           },
-          "force": {
-            "description": "Reboot although sessions run, which ends them.",
-            "type": "boolean"
+          "arguments": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
           },
-          "hosts": {
-            "description": "These hosts, in this order; all saved hosts by name when empty.",
+          "checked": {
+            "description": "When its provisioner was last asked about it.",
+            "type": "string"
+          },
+          "created": {
+            "description": "When it was asked for, RFC 3339.",
+            "type": "string"
+          },
+          "external_id": {
+            "description": "The provisioner's id of it; empty until `create` said it.",
+            "type": "string"
+          },
+          "host": {
+            "description": "The host a machine belongs to, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "berth's id of it, stable for the life of the record.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`machine`, or a kind the plugin declares.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Unique per provisioner and kind.",
+            "type": "string"
+          },
+          "problem": {
+            "description": "Why its state is `unknown`, or what is wrong with it.",
+            "type": "string"
+          },
+          "provisioner": {
+            "description": "`PLUGIN/ID`.",
+            "type": "string"
+          },
+          "secrets": {
+            "description": "The berth secrets it is given, by name; never their values.",
+            "items": {
+              "$ref": "#/components/schemas/ResourceSecret"
+            },
+            "type": "array"
+          },
+          "spec_sha256": {
+            "description": "The SHA-256 of its stored specification, for a kind that has one.",
+            "type": "string"
+          },
+          "state": {
+            "description": "`creating`, `running`, `stopped`, `missing` or `unknown`, as last seen.",
+            "type": "string"
+          },
+          "verbs": {
+            "description": "What can be done to it besides being removed: `start`, `stop`,\n`change`, `logs`, as its kind declares.",
             "items": {
               "type": "string"
             },
             "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "provisioner",
+          "kind",
+          "name",
+          "state"
+        ],
+        "type": "object"
+      },
+      "ResourceChange": {
+        "description": "What to change of a resource: what is given replaces what it had.",
+        "properties": {
+          "arguments": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Values of the kind's arguments, over those it has.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
           },
-          "reboot": {
-            "description": "Reboot a host that says it needs it, and wait for it to come back.",
-            "type": "boolean"
+          "secrets": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceSecret"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           },
-          "update": {
-            "description": "Run each host's `update` task after applying.",
-            "type": "boolean"
+          "spec": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "type": "object"
+      },
+      "ResourceSecret": {
+        "description": "A berth secret a resource is given in its environment, by name. Its\nvalue is resolved when the provisioner is called and never kept with\nthe resource.",
+        "properties": {
+          "env": {
+            "description": "The environment variable it becomes; the secret's name when empty.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The name of the berth secret.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "Role": {
+        "description": "What a caller has to be allowed for an operation. Each role includes the\nones before it.",
+        "enum": [
+          "view",
+          "operate",
+          "admin"
+        ],
+        "type": "string"
       },
       "RolloutHost": {
         "properties": {
@@ -1211,6 +1729,14 @@
         ],
         "type": "string"
       },
+      "Runs": {
+        "description": "Where an action runs.",
+        "enum": [
+          "berth",
+          "host"
+        ],
+        "type": "string"
+      },
       "SecretNames": {
         "description": "The names of the secrets the server keeps. Their values never leave it\nexcept to a host.",
         "properties": {
@@ -1235,19 +1761,6 @@
         },
         "required": [
           "value"
-        ],
-        "type": "object"
-      },
-      "Seed": {
-        "description": "What a new machine is started with to become the host.",
-        "properties": {
-          "user_data": {
-            "description": "cloud-init user data, for the provider's field of that name.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "user_data"
         ],
         "type": "object"
       },
@@ -1486,6 +1999,17 @@
               }
             ]
           },
+          "level": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HostLevel",
+                "description": "What was installed on the host, by that record: `controller` when\nonly the controller was, `workstation` for a whole profile. Absent\nwhen the host keeps no record."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "mode": {
             "description": "`system` or `single`.",
             "type": "string"
@@ -1502,7 +2026,7 @@
       }
     }
   },
-  "description": "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME. Only the `secrets` task is refused; `hosts.secrets` sends the server's own. Each operation names the least role a caller over TCP needs: view, operate or admin.",
+  "description": "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME. Only the `secrets` task is refused; the host's `secrets` action sends the server's own. An action's own role is asked when it runs. Each operation names the least role a caller over TCP needs: view, operate or admin.",
   "hosts": true,
   "operations": [
     {
@@ -1746,7 +2270,7 @@
         }
       ],
       "data": {
-        "description": "The whole profile",
+        "description": "The whole profile. A workstation's has a builder object; a reachable or controller host's needs only level and access",
         "schema": {}
       },
       "errors": [
@@ -1769,7 +2293,7 @@
         }
       },
       "role": "admin",
-      "summary": "Save a host's profile: a new host, or a changed one."
+      "summary": "Save a host's profile: a new host, or a changed one. A host below a workstation needs only its level and access."
     },
     {
       "args": [
@@ -1780,12 +2304,83 @@
           "required": true
         }
       ],
+      "errors": [
+        {
+          "description": "No such host",
+          "status": "404"
+        }
+      ],
+      "group": "hosts",
+      "http": {
+        "method": "GET",
+        "path": "/v1/hosts/{name}/credentials"
+      },
+      "kind": "call",
+      "name": "hosts.credentials",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Credentials"
+        }
+      },
+      "role": "admin",
+      "summary": "The passwords the server generated for a host's accounts."
+    },
+    {
+      "args": [
+        {
+          "description": "A saved host",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such host",
+          "status": "404"
+        }
+      ],
+      "group": "hosts",
+      "http": {
+        "method": "GET",
+        "path": "/v1/hosts/{name}/actions"
+      },
+      "kind": "call",
+      "name": "hosts.actions",
+      "portal": true,
+      "result": {
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/Action"
+          },
+          "type": "array"
+        }
+      },
+      "role": "view",
+      "summary": "What can be done to a host: the tasks its controller lists, and berth's own actions."
+    },
+    {
+      "args": [
+        {
+          "description": "A saved host",
+          "in": "path",
+          "name": "name",
+          "required": true
+        },
+        {
+          "description": "The action, as hosts.actions names it",
+          "in": "path",
+          "name": "action",
+          "required": true
+        }
+      ],
       "data": {
-        "description": "Nothing, or what the run needs that the server does not have",
+        "description": "Its arguments, and a token that makes asking again safe",
         "schema": {
           "oneOf": [
             {
-              "$ref": "#/components/schemas/ApplyWith"
+              "$ref": "#/components/schemas/Act"
             },
             {
               "type": "null"
@@ -1795,34 +2390,82 @@
       },
       "errors": [
         {
-          "description": "No such host",
+          "description": "An argument is missing, or the body is not one",
+          "status": "400"
+        },
+        {
+          "description": "The caller's role is below the action's",
+          "status": "403"
+        },
+        {
+          "description": "No such host or action",
           "status": "404"
+        },
+        {
+          "description": "Something else is being done to the host",
+          "status": "409"
+        },
+        {
+          "description": "It cannot run on this host now; the message says why",
+          "status": "501"
+        },
+        {
+          "description": "The host could not be reached",
+          "status": "502"
         }
       ],
       "group": "hosts",
       "http": {
         "method": "POST",
-        "path": "/v1/hosts/{name}/apply"
+        "path": "/v1/hosts/{name}/actions/{action}"
       },
       "kind": "call",
-      "name": "hosts.apply",
+      "name": "hosts.act",
       "portal": true,
       "result": {
         "schema": {
-          "$ref": "#/components/schemas/JobInfo"
+          "$ref": "#/components/schemas/Acted"
         }
       },
-      "role": "admin",
-      "summary": "Apply the host's profile to it, as a job."
+      "role": "view",
+      "summary": "Run one of a host's actions. One of berth's that changes something is a job; a task of the host is a session there, which a job follows unless it needs a terminal."
     },
     {
       "args": [],
+      "group": "actions",
+      "http": {
+        "method": "GET",
+        "path": "/v1/actions"
+      },
+      "kind": "call",
+      "name": "actions.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/Action"
+          },
+          "type": "array"
+        }
+      },
+      "role": "view",
+      "summary": "What can be done to the installation as a whole, such as a roll-out over its hosts."
+    },
+    {
+      "args": [
+        {
+          "description": "The action, as actions.list names it",
+          "in": "path",
+          "name": "action",
+          "required": true
+        }
+      ],
       "data": {
-        "description": "Which hosts and what to do; by default the saved hosts that are behind, applied only",
+        "description": "Its arguments, and a token that makes asking again safe",
         "schema": {
           "oneOf": [
             {
-              "$ref": "#/components/schemas/Rollout"
+              "$ref": "#/components/schemas/Act"
             },
             {
               "type": "null"
@@ -1832,99 +2475,33 @@
       },
       "errors": [
         {
-          "description": "The body is not a roll-out",
+          "description": "An argument is wrong, or the body is not one",
           "status": "400"
         },
         {
-          "description": "No such host",
-          "status": "404"
-        }
-      ],
-      "group": "hosts",
-      "http": {
-        "method": "POST",
-        "path": "/v1/rollout"
-      },
-      "kind": "call",
-      "name": "hosts.rollout",
-      "portal": true,
-      "result": {
-        "schema": {
-          "$ref": "#/components/schemas/JobInfo"
-        }
-      },
-      "role": "admin",
-      "summary": "Bring hosts up to date one after another, as a job: apply each that is behind, maybe run its update and reboot it, and check it. The first that fails stops the rest."
-    },
-    {
-      "args": [
-        {
-          "description": "A saved host",
-          "in": "path",
-          "name": "name",
-          "required": true
-        }
-      ],
-      "errors": [
-        {
-          "description": "The profile cannot be installed this way; the message says why",
-          "status": "400"
+          "description": "The caller's role is below the action's",
+          "status": "403"
         },
         {
-          "description": "No such host",
+          "description": "No such action, or a host it names",
           "status": "404"
-        }
-      ],
-      "group": "hosts",
-      "http": {
-        "method": "POST",
-        "path": "/v1/hosts/{name}/seed"
-      },
-      "kind": "call",
-      "name": "hosts.seed",
-      "portal": true,
-      "result": {
-        "schema": {
-          "$ref": "#/components/schemas/Seed"
-        }
-      },
-      "role": "admin",
-      "summary": "Render the cloud-init seed that installs the host on a new machine."
-    },
-    {
-      "args": [
-        {
-          "description": "A saved host",
-          "in": "path",
-          "name": "name",
-          "required": true
-        }
-      ],
-      "errors": [
-        {
-          "description": "A secret has no value, or a registry is not known",
-          "status": "400"
         },
         {
-          "description": "No such host",
-          "status": "404"
+          "description": "Another one is running",
+          "status": "409"
         }
       ],
-      "group": "hosts",
+      "group": "actions",
       "http": {
         "method": "POST",
-        "path": "/v1/hosts/{name}/secrets"
+        "path": "/v1/actions/{action}"
       },
       "kind": "call",
-      "name": "hosts.secrets",
+      "name": "actions.act",
       "portal": true,
-      "result": {
-        "schema": {
-          "$ref": "#/components/schemas/Session"
-        }
-      },
-      "role": "admin",
-      "summary": "Send the host the secrets and registry logins its profile names."
+      "result": null,
+      "role": "view",
+      "summary": "Run one of the installation's actions, as a job."
     },
     {
       "args": [],
@@ -2011,6 +2588,132 @@
       },
       "role": "admin",
       "summary": "Remove a secret."
+    },
+    {
+      "args": [],
+      "group": "keys",
+      "http": {
+        "method": "GET",
+        "path": "/v1/keys"
+      },
+      "kind": "call",
+      "name": "keys.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/KeyList"
+        }
+      },
+      "role": "admin",
+      "summary": "The SSH keys of the server's key ring, by their public halves, with the hosts that log in with each and the key that replaces it while it rotates."
+    },
+    {
+      "args": [
+        {
+          "description": "The key's name: letters, digits, - and _",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "data": {
+        "bytes": true
+      },
+      "errors": [
+        {
+          "description": "Not a name, not a private key, or a key with a passphrase",
+          "status": "400"
+        },
+        {
+          "description": "There is a key of that name",
+          "status": "409"
+        }
+      ],
+      "group": "keys",
+      "http": {
+        "method": "PUT",
+        "path": "/v1/keys/{name}"
+      },
+      "kind": "call",
+      "name": "keys.add",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/KeyInfo"
+        }
+      },
+      "role": "admin",
+      "summary": "Add a key to the ring: a new ed25519 key without a body, or the OpenSSH private key in the body, which may have no passphrase. The answer has its public half only."
+    },
+    {
+      "args": [
+        {
+          "description": "The key",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such key",
+          "status": "404"
+        },
+        {
+          "description": "It is berth's, in use or rotating",
+          "status": "409"
+        }
+      ],
+      "group": "keys",
+      "http": {
+        "method": "DELETE",
+        "path": "/v1/keys/{name}"
+      },
+      "kind": "call",
+      "name": "keys.remove",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "role": "admin",
+      "summary": "Remove a key from the ring. Refused for the key berth, while a host logs in with the key, and while it rotates."
+    },
+    {
+      "args": [
+        {
+          "description": "The key",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such key",
+          "status": "404"
+        },
+        {
+          "description": "A rotation runs already",
+          "status": "409"
+        }
+      ],
+      "group": "keys",
+      "http": {
+        "method": "POST",
+        "path": "/v1/keys/{name}/rotate"
+      },
+      "kind": "call",
+      "name": "keys.rotate",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Acted"
+        }
+      },
+      "role": "admin",
+      "summary": "Replace a key on every host that takes it, as a job: a new key beside it, and on each host the new one added, a login with it checked, and the old one removed. A host that does not answer stays pending; running it again goes on from there. When none is pending the old key is deleted."
     },
     {
       "args": [],
@@ -2426,8 +3129,8 @@
           "type": "array"
         }
       },
-      "role": "admin",
-      "summary": "What the plugins can create machines with, and what each asks for."
+      "role": "view",
+      "summary": "What the plugins can create machines and other resources with, what each asks for and can do, and whether it can be used here."
     },
     {
       "args": [
@@ -2444,7 +3147,7 @@
           "required": true
         },
         {
-          "description": "The provisioner's arguments as `NAME=VALUE`, such as the server to ask; the others take their defaults",
+          "description": "Values of the provisioner's own arguments as `NAME=VALUE` for this once, such as another server to ask; the others are its settings",
           "header": null,
           "in": "query",
           "name": "arguments",
@@ -2453,9 +3156,42 @@
       ],
       "errors": [
         {
-          "description": "It cannot list, an argument or a secret is missing, or it failed; the message says which",
-          "status": "400"
+          "description": "No such provisioner",
+          "status": "404"
+        }
+      ],
+      "group": "provisioners",
+      "http": {
+        "method": "GET",
+        "path": "/v1/provisioners/{plugin}/{id}"
+      },
+      "kind": "call",
+      "name": "provisioners.get",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/ProvisionerState"
+        }
+      },
+      "role": "view",
+      "summary": "A provisioner's page: what it says of itself now, such as whether its engine answers, and what it holds: berth's resources, with what its own list says."
+    },
+    {
+      "args": [
+        {
+          "description": "The plugin",
+          "in": "path",
+          "name": "plugin",
+          "required": true
         },
+        {
+          "description": "The provisioner within the plugin",
+          "in": "path",
+          "name": "id",
+          "required": true
+        }
+      ],
+      "errors": [
         {
           "description": "No such provisioner",
           "status": "404"
@@ -2464,40 +3200,152 @@
       "group": "provisioners",
       "http": {
         "method": "GET",
-        "path": "/v1/provisioners/{plugin}/{id}/instances"
+        "path": "/v1/provisioners/{plugin}/{id}/actions"
       },
       "kind": "call",
-      "name": "provisioners.instances",
+      "name": "provisioners.actions",
       "portal": true,
       "result": {
         "schema": {
           "items": {
-            "$ref": "#/components/schemas/ListedInstance"
+            "$ref": "#/components/schemas/Action"
           },
           "type": "array"
         }
       },
-      "role": "admin",
-      "summary": "The machines a provisioner has that berth created, as it lists them."
+      "role": "view",
+      "summary": "What can be done to a provisioner: its plugin's actions, and berth's own settings of it."
     },
     {
       "args": [
         {
-          "description": "A saved host",
+          "description": "The plugin",
           "in": "path",
-          "name": "name",
+          "name": "plugin",
+          "required": true
+        },
+        {
+          "description": "The provisioner within the plugin",
+          "in": "path",
+          "name": "id",
+          "required": true
+        },
+        {
+          "description": "The action, as provisioners.actions names it",
+          "in": "path",
+          "name": "action",
           "required": true
         }
       ],
       "data": {
-        "description": "The provisioner and its arguments",
+        "description": "Its arguments, which may also give the provisioner's own for this once, and a token that makes asking again safe",
         "schema": {
-          "$ref": "#/components/schemas/Provision"
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/Act"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "errors": [
         {
-          "description": "An argument or a secret is missing or unknown, or the profile does not fit; the message says which",
+          "description": "An argument is missing or unknown, or the body is not one",
+          "status": "400"
+        },
+        {
+          "description": "The caller's role is below the action's",
+          "status": "403"
+        },
+        {
+          "description": "No such provisioner or action",
+          "status": "404"
+        },
+        {
+          "description": "Something else is being done to the provisioner",
+          "status": "409"
+        },
+        {
+          "description": "It cannot run here now; the message says why",
+          "status": "501"
+        },
+        {
+          "description": "The provisioner failed, as when its engine does not answer",
+          "status": "502"
+        }
+      ],
+      "group": "provisioners",
+      "http": {
+        "method": "POST",
+        "path": "/v1/provisioners/{plugin}/{id}/actions/{action}"
+      },
+      "kind": "call",
+      "name": "provisioners.act",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Acted"
+        }
+      },
+      "role": "view",
+      "summary": "Run one of a provisioner's actions. One that changes something is a job, which holds the provisioner's lock; one that only reads answers at once."
+    },
+    {
+      "args": [
+        {
+          "description": "Only those of this provisioner, `PLUGIN/ID`.",
+          "header": null,
+          "in": "query",
+          "name": "provisioner",
+          "required": false
+        },
+        {
+          "description": "Only those of this kind, such as `machine` or `deployment`.",
+          "header": null,
+          "in": "query",
+          "name": "kind",
+          "required": false
+        },
+        {
+          "description": "Only the machine of this saved host.",
+          "header": null,
+          "in": "query",
+          "name": "host",
+          "required": false
+        }
+      ],
+      "group": "resources",
+      "http": {
+        "method": "GET",
+        "path": "/v1/resources"
+      },
+      "kind": "call",
+      "name": "resources.list",
+      "portal": true,
+      "result": {
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/Resource"
+          },
+          "type": "array"
+        }
+      },
+      "role": "view",
+      "summary": "What provisioners made for berth, as berth's records have it. Nothing is asked of the provisioners."
+    },
+    {
+      "args": [],
+      "data": {
+        "description": "The provisioner, the kind, its name or host, arguments, the specification and the secrets it is given, and a token that makes asking again safe",
+        "schema": {
+          "$ref": "#/components/schemas/NewResource"
+        }
+      },
+      "errors": [
+        {
+          "description": "An argument, a secret or the specification is missing or does not fit; the message says which",
           "status": "400"
         },
         {
@@ -2505,140 +3353,330 @@
           "status": "404"
         },
         {
-          "description": "The host has a machine already, or something else is being done to it",
+          "description": "One of that name exists already, or something else is being done to it",
           "status": "409"
         }
       ],
-      "group": "instances",
+      "group": "resources",
       "http": {
         "method": "POST",
-        "path": "/v1/hosts/{name}/instance"
+        "path": "/v1/resources"
       },
       "kind": "call",
-      "name": "instances.create",
+      "name": "resources.create",
       "portal": true,
-      "result": {
-        "schema": {
-          "$ref": "#/components/schemas/JobInfo"
-        }
-      },
+      "result": null,
       "role": "admin",
-      "summary": "Create the machine for a saved host with a provisioner and set it up, as a job."
+      "summary": "Create a resource with a provisioner, as a job: a host's machine, which is then set up as the host, or a kind its plugin declares, such as a deployment from a specification."
     },
     {
       "args": [
         {
-          "description": "A saved host",
+          "description": "berth's id of the resource",
           "in": "path",
-          "name": "name",
+          "name": "id",
           "required": true
         }
       ],
       "errors": [
         {
-          "description": "No such host, or berth created no machine for it",
+          "description": "No such resource",
           "status": "404"
         }
       ],
-      "group": "instances",
+      "group": "resources",
       "http": {
         "method": "GET",
-        "path": "/v1/hosts/{name}/instance"
+        "path": "/v1/resources/{id}"
       },
       "kind": "call",
-      "name": "instances.get",
+      "name": "resources.get",
       "portal": true,
       "result": {
         "schema": {
-          "$ref": "#/components/schemas/Instance"
+          "$ref": "#/components/schemas/Resource"
         }
       },
-      "role": "admin",
-      "summary": "The machine berth created for a host, and what its provisioner says of it now."
+      "role": "view",
+      "summary": "One resource, as its provisioner says it is now. One it no longer finds is `missing`, and its record stays."
     },
     {
       "args": [
         {
-          "description": "A saved host",
+          "description": "berth's id of the resource",
           "in": "path",
-          "name": "name",
-          "required": true
-        },
-        {
-          "description": "`start` or `stop`",
-          "in": "path",
-          "name": "verb",
+          "name": "id",
           "required": true
         }
       ],
+      "data": {
+        "description": "What changes, and a token that makes asking again safe",
+        "schema": {
+          "$ref": "#/components/schemas/ResourceChange"
+        }
+      },
       "errors": [
         {
-          "description": "Not start or stop, its provisioner cannot, or it failed; the message says which",
+          "description": "An argument, a secret or the specification does not fit",
           "status": "400"
         },
         {
-          "description": "No such host, or berth created no machine for it",
+          "description": "No such resource",
           "status": "404"
         },
         {
           "description": "Something else is being done to it",
           "status": "409"
+        },
+        {
+          "description": "Its kind cannot be changed, or it is not made yet",
+          "status": "501"
         }
       ],
-      "group": "instances",
+      "group": "resources",
       "http": {
-        "method": "POST",
-        "path": "/v1/hosts/{name}/instance/{verb}"
+        "method": "PUT",
+        "path": "/v1/resources/{id}"
       },
       "kind": "call",
-      "name": "instances.power",
+      "name": "resources.change",
       "portal": true,
-      "result": {
-        "schema": {
-          "$ref": "#/components/schemas/Done"
-        }
-      },
+      "result": null,
       "role": "admin",
-      "summary": "Start or stop the machine berth created for a host, when its provisioner can."
+      "summary": "Change a resource, as a job: other values of its kind's arguments, a new specification, other secrets. What is not given stays."
     },
     {
       "args": [
         {
-          "description": "A saved host",
+          "description": "berth's id of the resource",
           "in": "path",
-          "name": "name",
+          "name": "id",
           "required": true
+        },
+        {
+          "description": "Any text of the caller's; the same again answers with the first job.",
+          "header": null,
+          "in": "query",
+          "name": "token",
+          "required": false
         }
       ],
       "errors": [
         {
-          "description": "A secret its provisioner needs has no value",
-          "status": "400"
-        },
-        {
-          "description": "No such host or provisioner, or berth created no machine for it",
+          "description": "No such resource",
           "status": "404"
         },
         {
           "description": "Something else is being done to it",
           "status": "409"
+        },
+        {
+          "description": "Its provisioner cannot be asked now; the message says why",
+          "status": "501"
         }
       ],
-      "group": "instances",
+      "group": "resources",
       "http": {
         "method": "DELETE",
-        "path": "/v1/hosts/{name}/instance"
+        "path": "/v1/resources/{id}"
       },
       "kind": "call",
-      "name": "instances.destroy",
+      "name": "resources.remove",
+      "portal": true,
+      "result": null,
+      "role": "admin",
+      "summary": "Remove a resource with its provisioner, as a job, and forget it. A host's profile stays."
+    },
+    {
+      "args": [
+        {
+          "description": "berth's id of the resource",
+          "in": "path",
+          "name": "id",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such resource",
+          "status": "404"
+        }
+      ],
+      "group": "resources",
+      "http": {
+        "method": "GET",
+        "path": "/v1/resources/{id}/actions"
+      },
+      "kind": "call",
+      "name": "resources.actions",
       "portal": true,
       "result": {
         "schema": {
-          "$ref": "#/components/schemas/JobInfo"
+          "items": {
+            "$ref": "#/components/schemas/Action"
+          },
+          "type": "array"
         }
       },
-      "role": "admin",
-      "summary": "Delete the machine berth created for a host, as a job. The profile stays."
+      "role": "view",
+      "summary": "What can be done to a resource: start, stop and change as its kind can, its plugin's actions of the kind, and removing it."
+    },
+    {
+      "args": [
+        {
+          "description": "berth's id of the resource",
+          "in": "path",
+          "name": "id",
+          "required": true
+        },
+        {
+          "description": "The action, as resources.actions names it",
+          "in": "path",
+          "name": "action",
+          "required": true
+        }
+      ],
+      "data": {
+        "description": "Its arguments, and a token that makes asking again safe",
+        "schema": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/Act"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "errors": [
+        {
+          "description": "An argument is missing or unknown, or the body is not one",
+          "status": "400"
+        },
+        {
+          "description": "The caller's role is below the action's",
+          "status": "403"
+        },
+        {
+          "description": "No such resource or action",
+          "status": "404"
+        },
+        {
+          "description": "Something else is being done to it",
+          "status": "409"
+        },
+        {
+          "description": "It cannot run now; the message says why",
+          "status": "501"
+        },
+        {
+          "description": "The provisioner failed",
+          "status": "502"
+        }
+      ],
+      "group": "resources",
+      "http": {
+        "method": "POST",
+        "path": "/v1/resources/{id}/actions/{action}"
+      },
+      "kind": "call",
+      "name": "resources.act",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Acted"
+        }
+      },
+      "role": "view",
+      "summary": "Run one of a resource's actions. One that changes something is a job of the resource, which holds its lock; one that only reads answers at once."
+    },
+    {
+      "args": [
+        {
+          "description": "berth's id of the resource",
+          "in": "path",
+          "name": "id",
+          "required": true
+        },
+        {
+          "description": "The last so many lines; all when 0 (default 100).",
+          "header": null,
+          "in": "query",
+          "name": "tail",
+          "required": false
+        }
+      ],
+      "errors": [
+        {
+          "description": "Its kind gives no logs, or it is not made yet",
+          "status": "400"
+        },
+        {
+          "description": "No such resource",
+          "status": "404"
+        }
+      ],
+      "group": "resources",
+      "http": {
+        "method": "GET",
+        "path": "/v1/resources/{id}/logs"
+      },
+      "kind": "call",
+      "name": "resources.logs",
+      "portal": true,
+      "result": {
+        "bytes": true,
+        "content_type": "text/plain"
+      },
+      "role": "operate",
+      "summary": "What a resource wrote, as its provisioner gives it, with secrets masked: the last lines as text, or as a WebSocket those and what follows."
+    },
+    {
+      "args": [
+        {
+          "description": null,
+          "in": "path",
+          "name": "id",
+          "required": true
+        },
+        {
+          "description": "The last so many lines first; all when 0 (default 100).",
+          "in": "query",
+          "name": "tail",
+          "required": false
+        }
+      ],
+      "group": "resources",
+      "http": {
+        "method": "GET",
+        "path": "/v1/resources/{id}/logs"
+      },
+      "kind": "stream",
+      "name": "resources.follow",
+      "portal": true,
+      "receives": [
+        {
+          "binary": true,
+          "description": "Lines of its log.",
+          "example": null,
+          "name": "output"
+        },
+        {
+          "binary": false,
+          "description": "The log ended, or the provisioner stopped giving it. The last frame; with `error` when it failed.",
+          "example": {
+            "exited": {
+              "exit_code": 0
+            }
+          },
+          "name": "exited"
+        }
+      ],
+      "resumable": false,
+      "role": "operate",
+      "sends": [],
+      "summary": "What a resource writes, as its provisioner gives it, with secrets masked: the last lines, then what follows."
     },
     {
       "args": [
@@ -2792,7 +3830,7 @@
       ],
       "errors": [
         {
-          "description": "No such job",
+          "description": "No such job, or its output is not on this machine, as for a job of an installation restored from its store",
           "status": "404"
         }
       ],
@@ -3238,10 +4276,11 @@
           "description": "A job started or ended.",
           "example": {
             "job": {
+              "action": "apply",
               "host": "server",
               "id": "j1",
               "started": "2026-11-12T10:00:00Z",
-              "what": "apply"
+              "subject": "host:server"
             },
             "source": "job"
           },

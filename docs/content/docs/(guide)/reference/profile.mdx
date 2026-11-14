@@ -1,12 +1,23 @@
 ---
 title: Profile
-description: The fields of a host profile, ~/.config/berth/hosts/NAME.json, and where each is set in the terminal UI.
+description: The fields of a host profile, which berth keeps in its store, and where each is set in the terminal UI.
 icon: FileBraces
 ---
 
-A profile is a JSON file that describes one host. berth writes it from the set-up tabs. The fields below can also be edited by hand. Settings of the Ansible role go under `ansible_vars`, and how berth reaches and installs the host under `builder`.
+A profile is a JSON document that describes one host. berth keeps it in its store and writes it from the set-up tabs. The fields below can also be edited by hand: write the profile to a file, change it and save it back.
 
-```json title="~/.config/berth/hosts/studio.json (excerpt)"
+```bash
+berth profile studio > studio.json
+berth profile studio --set studio.json
+```
+
+`--set -` reads the profile from standard input. berth checks it as the terminal UI reads a profile and saves it as it is. The profile of a berth server's host is saved on the server.
+
+A profile can also stay in a file of its own. berth reads a host given as a path, such as `berth ./studio.json`, from that file and saves it there.
+
+Settings of the Ansible role go under `ansible_vars`, and how berth reaches and installs the host under `builder`.
+
+```json title="studio's profile (excerpt)"
 {
   "hostname": "studio",
   "profile": "laptop",
@@ -19,7 +30,7 @@ A profile is a JSON file that describes one host. berth writes it from the set-u
   "ansible_vars": {
     "devbox_plugin_features": ["claude/cli", "codex/cli", "t3/server", "github/cli"]
   },
-  "builder": { "ssh_host": "studio.example.ts.net", "ssh_user": "ops" }
+  "access": { "address": "studio.example.ts.net", "user": "ops", "auth": "berth" }
 }
 ```
 
@@ -45,9 +56,7 @@ A profile is a JSON file that describes one host. berth writes it from the set-u
   type={{
     operator_username: { type: 'string', default: '"ops"', description: 'Your account on the host.' },
     operator_ssh_public_keys: { type: 'string[]', description: 'OpenSSH public keys that log in as the operator.' },
-    berth_ssh_key: { type: 'boolean', default: 'true', description: 'Whether the operator also takes the key of the berth that installs or applies the host.' },
-    operator_password_hash: { type: 'string', description: 'SHA-512 crypt or yescrypt hash. Needed for Cockpit and the console. The USB installer requires it. A cloud seed or a created machine requires it only when the operator has no passwordless sudo.' },
-    operator_passwordless_sudo: { type: 'boolean', default: 'true', description: 'sudo without a password for the operator, so berth needs no sudo password to look after the host.' },
+    operator_password_hash: { type: 'string', description: 'SHA-512 crypt or yescrypt hash, for the console, the graphical login and Cockpit. The USB installer requires it; everything else works without one.' },
     agent_username: { type: 'string', default: '"agent"', description: 'The agents\' account; home is /home/USERNAME.' },
     agent_ssh_public_keys: { type: 'string[]', description: 'Optional keys for SSH to the agent account.' },
     agent_password_hash: { type: 'string', description: 'Optional; empty locks password login.' },
@@ -56,17 +65,19 @@ A profile is a JSON file that describes one host. berth writes it from the set-u
   }}
 />
 
+The operator always has sudo without a password and logs in over SSH with keys only. See [Accounts and sudo](/docs/use/accounts#the-operator). Older profiles may have `operator_passwordless_sudo` and `berth_ssh_key`. berth ignores both.
+
 A profile written before the lists has one key in `operator_ssh_public_key` or `agent_ssh_public_key`. berth still reads it, and moves it into the list when the keys are next changed.
 
 ### The key of berth itself
 
-Each berth makes an ed25519 key of its own the first time it needs one, and keeps it as `id_ed25519` in its data directory. The operator of a host takes it along with the keys in the profile, so the berth that set a host up can log in to it without a key of yours. That matters most for a [berth server](/docs/use/server), which has no keys until you give it some. berth offers the key over SSH unless the profile has a key file set.
+Each berth makes an ed25519 key of its own the first time it needs one: the key `berth` of its [key ring](/docs/use/accounts#keys). It keeps the key in its [store](/docs/use/store). An installation restored from the store gets the same key back. The operator of a host always takes it along with the keys in the profile, so the berth that set a host up can always log in to it without a key of yours. That matters most for a [berth server](/docs/use/server), which has no keys until you give it some. A host that logs in with another key of the ring, `key:NAME`, takes that key too. During a [rotation](/docs/use/accounts#rekeying) the operator takes the new key as well.
 
-`berth key` prints the public half. To copy it, choose **This berth's SSH key** on the Settings tab of the home screen, or press `c` on the field of the same name on a host's Settings tab. With a berth server set, both copy the server's key.
+`berth key show` prints the public half. To copy it, choose **This berth's SSH key** on the Settings tab of the home screen. With a berth server set, it copies the server's key.
 
 Add the key as an SSH key at your cloud provider, and every machine you create there takes it. berth then logs in to a new machine without a key of yours. On a host set up some other way, add it to the operator's `~/.ssh/authorized_keys`.
 
-Turn **This berth's SSH key** off in Accounts, or set `berth_ssh_key` to `false`, for a host that should only take the listed keys.
+Each berth that installs or applies a host leaves its key there in a block of its own in the operator's `~/.ssh/authorized_keys`. A later apply, from this berth or another, does not remove it. To take a berth's key away, delete its `BERTH` block by hand.
 
 ## USB installer
 
@@ -101,19 +112,58 @@ Any `devbox_` setting of the role. The ones the terminal UI edits:
 
 Others, such as `devbox_tailscale_serve`, the agent versions and the backup settings, are described where they are used. All defaults are in [`defaults/main.yml`](https://github.com/helightdev/berth/blob/main/ansible/roles/devbox/defaults/main.yml).
 
-## Install and connection (`builder`)
-
-How berth installs and connects to the host. These settings stay on your machine.
+## Level
 
 <TypeTable
   type={{
-    ssh_host: { type: 'string', description: 'Hostname, IP or Host alias from ~/.ssh/config. A host with one opens on its overview.' },
-    ssh_user: { type: 'string', description: 'Login user; blank uses your SSH configuration.' },
-    ssh_port: { type: 'string', description: 'Blank uses your SSH configuration.' },
-    ssh_key: { type: 'string', description: 'Private key path; blank uses ssh-agent or SSH configuration.' },
-    ask_pass: { type: 'boolean', description: 'Ask for an SSH login password.' },
-    ask_become_pass: { type: 'boolean', description: 'Ask for the SSH user\'s sudo password. Left out, berth asks only when operator_passwordless_sudo is off.' },
-    link: { type: 'string[]', description: 'A command that connects to berthd instead of SSH, such as docker exec -i NAME berthd connect.' },
+    level: { type: '"reachable" | "controller" | "workstation"', default: '"workstation"', description: 'How much of berth the host is meant to have: nothing, berthd and box alone, or the whole profile. Only a workstation is applied.' },
+  }}
+/>
+
+A host below a workstation needs only its level and `access`. The other fields are for a workstation. See [Host levels](/docs/use/levels).
+
+```json title="dock's profile"
+{
+  "level": "reachable",
+  "access": { "address": "192.0.2.4", "user": "ops", "auth": "berth" }
+}
+```
+
+## Access (`access`)
+
+Where the host is and how berth logs in to it. Every host has it. See [Logging in to hosts](/docs/use/accounts#logging-in-to-hosts).
+
+<TypeTable
+  type={{
+    address: { type: 'string', description: 'Hostname, IP address or Host alias from ~/.ssh/config. A host with one opens on its overview.' },
+    user: { type: 'string', description: 'The SSH user. Blank uses your SSH configuration.' },
+    port: { type: 'string', description: 'The SSH port. Blank uses your SSH configuration.' },
+    auth: { type: '"berth" | "key:NAME" | "password" | "ssh"', default: '"berth"', description: 'How berth logs in: its own key, another key of its key ring, a password kept as the secret ssh/HOST, or your own SSH configuration and agent with berth\'s key offered after them.' },
+    sudo: { type: '"none" | "password"', description: 'Whether the SSH user\'s sudo asks for a password, as for a first apply as an account of the machine\'s own. Left out, it does not.' },
+    link: { type: 'string[]', description: 'A command that connects to berthd instead of SSH, such as docker exec -i NAME berthd connect. A host with one needs no address.' },
+  }}
+/>
+
+After an apply as the operator, berth writes what the role made true: `sudo` becomes `none`, and a host that logged in with `password` logs in with `berth`, as the operator takes keys only. `key:NAME` and `ssh` stay. A password kept for the first apply, as the secret `ssh/HOST` or `sudo/HOST`, is deleted.
+
+A profile of berth 0.4 kept these under `builder`:
+
+| berth 0.4 | Now |
+| --- | --- |
+| `ssh_host`, `ssh_user`, `ssh_port` | `address`, `user`, `port` |
+| `ssh_key` | `auth`: `key:NAME` |
+| `ask_pass` | `auth`: `password` |
+| `ask_become_pass` | `sudo` |
+| `link` | `link` |
+
+ berth converts stored profiles once, and reads a profile in a file in the new layout. The file keeps the old layout until you save it. A key file that `ssh_key` named becomes a key of the key ring, and the host logs in with it. If berth cannot read the file, the host logs in with `ssh`, and berth says so. A host without a key file logs in with `ssh`, which is what it did before.
+
+## Install (`builder`)
+
+How berth installs the host. These settings stay on your machine.
+
+<TypeTable
+  type={{
     inventory: { type: 'string', description: 'Ansible inventory for This machine or an inventory; blank is this machine.' },
     iso: { type: 'string', description: 'Ubuntu Server ISO to build the USB installer from.' },
     iso_sha256: { type: 'string', description: 'SHA-256 the ISO must have.' },
@@ -123,8 +173,13 @@ How berth installs and connects to the host. These settings stay on your machine
 
 ## Beside the profile
 
-| File | Holds |
-| --- | --- |
-| `NAME.credentials.json` | Generated passwords, mode 0600 |
+berth keeps more of a host in its store, beside the profile:
 
-Secrets and registries a host gets are listed in the profile by name (`secrets`, `registries`). Their values stay in `~/.config/berth/secrets.json`.
+| What | Holds | How to see it |
+| --- | --- | --- |
+| Generated passwords | The passwords F4 made for the host's accounts | `berth credentials HOST` |
+| The machine's record | The [resource](/docs/deploy/resources) of a machine berth created for the host, with its provisioner and id | `berth instance HOST` |
+
+`berth credentials` prints an account and its password to a line, and only to a terminal unless `--show` is given. For a berth server's host it asks the server, which keeps them. `berth remove HOST` forgets the profile and both of these at once. It refuses while berth knows of a machine it created for the host.
+
+Secrets and registries a host gets are listed in the profile by name (`secrets`, `registries`). Their values stay in berth's store.

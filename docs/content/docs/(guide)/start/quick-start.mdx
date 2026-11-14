@@ -19,14 +19,14 @@ This walks through a first host from berth's terminal UI. The example uses an Ub
 berth studio
 ```
 
-A name berth does not know starts a new profile, saved as `~/.config/berth/hosts/studio.json`. Running `berth` alone opens the home screen, where `n` creates a host.
+A name berth does not know starts a new profile, which berth saves in its store under the name `studio`. Running `berth` alone opens the home screen, where `n` creates a host. `berth profile studio` prints the profile as JSON.
 
 </Step>
 <Step>
 
 ### Choose how to install
 
-The profile opens on **Install** (key `1`). Choose **Existing host over SSH** under **How To Install**, then enter the address in **SSH host**: an IP, a hostname or a `Host` alias from your SSH configuration. The Tailscale settings are on this tab too.
+The profile opens on **Install** (key `1`). Choose **Existing host over SSH** under **How To Install**, then enter the address in **SSH address**: an IP, a hostname or a `Host` alias from your SSH configuration. The Tailscale settings are on this tab too.
 
 The set-up has four tabs. Each one depends only on the tabs before it.
 
@@ -55,7 +55,7 @@ Tab and Shift+Tab switch tabs too. Ctrl+S saves the profile at any point.
 
 **Settings** (key `3`) holds what has a default. That covers the *operator*, your account on the host, and the *agent* account the coding agents use. SSH keys found in `~/.ssh` and in ssh-agent are offered as suggestions (Right or F2). Each account can take several, and the operator also takes [the key of berth itself](/docs/reference/profile#the-key-of-berth-itself). `c` on that field copies it.
 
-On a password hash field, F4 generates a password and stores its hash, and F5 hashes one you type. Generated passwords are written next to the profile as `studio.credentials.json`.
+On a password hash field, F4 generates a password and stores its hash, and F5 hashes one you type. berth keeps a generated password in its store, and `berth credentials studio` shows it.
 
 <Screen name="accounts" alt="The Settings tab with the operator and agent accounts, Access with SSH hardening, registries and secrets" />
 

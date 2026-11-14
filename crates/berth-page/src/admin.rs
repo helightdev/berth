@@ -24,12 +24,26 @@ pub enum Arrived {
     Seed(String),
     /// Applying it needs the SSH user's sudo password.
     Password,
-    /// A session on the host to look at.
-    Session(Value),
     /// What can create the host's machine.
     Provisioners(Result<Vec<berth_api::ProvisionerInfo>, String>),
-    /// The machine berth created for the host, if it has one.
-    Instance(Result<Option<berth_api::Instance>, String>),
+    /// The machine berth created for the host, its resource, if it has one.
+    Instance(Result<Option<berth_api::Resource>, String>),
+    /// A resource's page: how it is, and its actions.
+    ResourcePage(
+        String,
+        Result<berth_api::Resource, String>,
+        Result<Vec<berth_api::Action>, String>,
+    ),
+    /// A provisioner's page: how it is, and its actions.
+    ProvisionerPage(
+        String,
+        Result<berth_api::ProvisionerState, String>,
+        Result<Vec<berth_api::Action>, String>,
+    ),
+    /// What an action of a provisioner that answers at once said.
+    ProvisionerAnswer(String, Result<Vec<String>, String>),
+    /// What the server lists as a host's actions.
+    Actions(String, Vec<berth_api::Action>),
 }
 
 #[derive(Default)]
@@ -43,11 +57,15 @@ pub struct Data {
     pub features: Vec<Feature>,
     /// The server's own SSH public key; empty when it has none to give.
     pub own_key: String,
+    /// The keys of the server's key ring, by name and public half.
+    pub keys: Vec<(String, String)>,
     pub registries: Map<String, Value>,
     /// Every secret's name; a registry's login is `registry/NAME`.
     pub secrets: Vec<String>,
     pub settings: Vec<Value>,
     pub plugins: Vec<PluginInfo>,
+    /// The server's provisioners, as it last listed them.
+    pub provisioners: Vec<berth_api::ProvisionerInfo>,
     /// Where the server keeps its own plugins.
     pub plugin_dir: String,
     /// Something to say on the status line.
@@ -139,7 +157,6 @@ impl Admin {
         self.call("setup.catalogue", json!({}), Value::Null, |admin, found| {
             let mut data = admin.data.borrow_mut();
             data.template = found["template"].clone();
-            data.own_key = found["key"].as_str().unwrap_or("").to_owned();
             data.features = found["features"]
                 .as_array()
                 .into_iter()
@@ -181,6 +198,25 @@ impl Admin {
         self.call("settings.list", json!({}), Value::Null, |admin, found| {
             admin.data.borrow_mut().settings = found.as_array().cloned().unwrap_or_default();
         });
+        self.call("keys.list", json!({}), Value::Null, |admin, found| {
+            let mut data = admin.data.borrow_mut();
+            data.keys = found["keys"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|key| {
+                    let text = |name: &str| key[name].as_str().unwrap_or("").to_owned();
+                    (text("name"), text("public"))
+                })
+                .collect();
+            data.own_key = data
+                .keys
+                .iter()
+                .find(|(name, _)| name == "berth")
+                .map(|(_, public)| public.clone())
+                .unwrap_or_default();
+        });
+        self.provisioners();
         self.call("plugins.list", json!({}), Value::Null, |admin, found| {
             let listing: PluginList = serde_json::from_value(found).unwrap_or_default();
             let mut data = admin.data.borrow_mut();
@@ -306,11 +342,12 @@ impl Admin {
             data.report = vec!["Rolling out…".into()];
         }
         let admin = self.clone();
-        let body = serde_json::to_value(options).unwrap_or_default();
+        let body = json!({"arguments": options.arguments()});
+        let asked = json!({"action": "rollout"});
         self.portal
-            .call("hosts.rollout", None, json!({}), body, move |result| {
+            .call("actions.act", None, asked, body, move |result| {
                 let job = match result {
-                    Ok(job) => job,
+                    Ok(acted) => acted["job"].clone(),
                     Err(error) => {
                         let mut data = admin.data.borrow_mut();
                         data.rolling = None;
@@ -512,24 +549,18 @@ impl Admin {
     pub fn seed(&self, name: &str) {
         self.say("Rendering the seed…");
         self.call(
-            "hosts.seed",
-            json!({"name": name}),
+            "hosts.act",
+            json!({"name": name, "action": "seed"}),
             Value::Null,
-            |admin, seed| {
+            |admin, acted| {
                 admin.say("");
                 admin.arrive(Arrived::Seed(
-                    seed["user_data"].as_str().unwrap_or("").to_owned(),
+                    acted["result"]["user_data"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned(),
                 ));
             },
-        );
-    }
-
-    pub fn send_secrets(&self, name: &str) {
-        self.call(
-            "hosts.secrets",
-            json!({"name": name}),
-            Value::Null,
-            |admin, session| admin.arrive(Arrived::Session(session)),
         );
     }
 
@@ -540,14 +571,54 @@ impl Admin {
             None => Value::Null,
         };
         let title = format!("Apply this configuration · {name}");
-        self.job("hosts.apply", name, body, title, size, |_| {});
+        self.job("apply", name, body, title, size, |_| {});
     }
 
-    /// Start a job of the server about a host and follow it in a panel;
-    /// `ended` is run when it has ended.
+    /// What the server lists as the host's actions: its tasks and berth's own.
+    pub fn actions(&self, name: &str) {
+        let admin = self.clone();
+        let host = name.to_owned();
+        self.portal.call(
+            "hosts.actions",
+            None,
+            json!({"name": name}),
+            Value::Null,
+            move |result| {
+                let listed = result
+                    .ok()
+                    .and_then(|listed| serde_json::from_value(listed).ok())
+                    .unwrap_or_default();
+                admin.arrive(Arrived::Actions(host.clone(), listed));
+            },
+        );
+    }
+
+    /// Run one of berth's own actions on a host, with its arguments: a job
+    /// is followed in a panel, a result shown there.
+    pub fn act(
+        &self,
+        name: &str,
+        action: &berth_api::Action,
+        arguments: &std::collections::BTreeMap<String, String>,
+        size: (u16, u16),
+    ) {
+        let title = format!("{} · {name}", action.title());
+        self.job(
+            &action.name,
+            name,
+            json!({"arguments": arguments}),
+            title,
+            size,
+            |_| {},
+        );
+    }
+
+    /// Run an action of a host that is a job of the server, and follow the
+    /// job in a panel; `ended` is run when it has ended. One that answers at
+    /// once shows what it said.
     fn job(
         &self,
-        op: &str,
+        action: &str,
         name: &str,
         body: Value,
         title: String,
@@ -557,12 +628,22 @@ impl Admin {
         let admin = self.clone();
         self.say("Starting…");
         self.portal.call(
-            op,
+            "hosts.act",
             None,
-            json!({"name": name}),
+            json!({"name": name, "action": action}),
             body,
             move |result| match result {
-                Ok(job) => {
+                Ok(acted) if acted["job"].is_null() => {
+                    admin.say("");
+                    let mut view = View::plain(&title, size.0, size.1);
+                    let said = serde_json::to_string_pretty(&acted["result"]).unwrap_or_default();
+                    view.feed(format!("{said}\n").as_bytes());
+                    view.ended = Some(Some(0));
+                    admin.data.borrow_mut().job = Some(view);
+                    admin.data.borrow_mut().hosts_changed = true;
+                }
+                Ok(acted) => {
+                    let job = &acted["job"];
                     admin.say("");
                     admin.data.borrow_mut().job = Some(View::plain(&title, size.0, size.1));
                     let follower = admin.clone();
@@ -622,62 +703,357 @@ impl Admin {
         );
         let admin = self.clone();
         self.portal.call(
-            "instances.get",
+            "resources.list",
             None,
-            json!({"name": name}),
+            json!({"kind": "machine", "host": name}),
             Value::Null,
             move |result| {
-                let found = match result {
-                    Ok(found) => serde_json::from_value(found)
-                        .map(Some)
-                        .map_err(|error| error.to_string()),
-                    Err(error) if berth_tui::machine::absent(&error) => Ok(None),
-                    Err(error) => Err(error),
+                let listed: Result<Vec<berth_api::Resource>, String> = result.and_then(|found| {
+                    serde_json::from_value(found).map_err(|error| error.to_string())
+                });
+                let id = match listed {
+                    Ok(listed) => match listed.first() {
+                        Some(made) => made.id.clone(),
+                        None => return admin.arrive(Arrived::Instance(Ok(None))),
+                    },
+                    Err(error) => return admin.arrive(Arrived::Instance(Err(error))),
                 };
-                admin.arrive(Arrived::Instance(found));
+                // What its provisioner says of it now.
+                let asker = admin.clone();
+                admin.portal.call(
+                    "resources.get",
+                    None,
+                    json!({"id": id}),
+                    Value::Null,
+                    move |result| {
+                        let found = match result {
+                            Ok(found) => serde_json::from_value(found)
+                                .map(Some)
+                                .map_err(|error| error.to_string()),
+                            Err(error) if berth_tui::machine::absent(&error) => Ok(None),
+                            Err(error) => Err(error),
+                        };
+                        asker.arrive(Arrived::Instance(found));
+                    },
+                );
             },
         );
     }
 
     /// Create the host's machine as a job of the server, and follow it.
-    pub fn provision(&self, name: &str, asked: &berth_api::Provision, size: (u16, u16)) {
-        let body = serde_json::to_value(asked).unwrap_or_default();
+    pub fn provision(&self, name: &str, asked: &berth_api::NewResource, size: (u16, u16)) {
+        let mut asked = asked.clone();
+        asked.host = Some(name.to_owned());
+        asked.kind = "machine".into();
         let title = format!("Create machine · {name}");
-        let host = name.to_owned();
-        self.job("instances.create", name, body, title, size, move |admin| {
-            admin.machine(&host)
-        });
-    }
-
-    /// Delete the host's machine as a job of the server, and follow it.
-    pub fn unprovision(&self, name: &str, size: (u16, u16)) {
-        let title = format!("Delete machine · {name}");
-        let host = name.to_owned();
-        self.job(
-            "instances.destroy",
-            name,
-            Value::Null,
-            title,
-            size,
-            move |admin| admin.machine(&host),
-        );
-    }
-
-    /// Start or stop the host's machine.
-    pub fn power(&self, name: &str, verb: &str) {
-        self.say(format!("Asking the machine to {verb}…"));
-        let (host, said) = (
-            name.to_owned(),
-            format!("✓ {verb} asked of {name}'s machine"),
-        );
-        self.call(
-            "instances.power",
-            json!({"name": name, "verb": verb}),
-            Value::Null,
-            move |admin, _| {
-                admin.say(said);
-                admin.machine(&host);
+        let (admin, host) = (self.clone(), name.to_owned());
+        self.say("Starting…");
+        self.portal.call(
+            "resources.create",
+            None,
+            json!({}),
+            serde_json::to_value(&asked).unwrap_or_default(),
+            move |result| match result {
+                Ok(created) => {
+                    admin.say("");
+                    let again = host.clone();
+                    admin.follow(created["job"]["id"].clone(), &title, size, move |admin| {
+                        admin.machine(&again)
+                    });
+                }
+                Err(error) => admin.say(format!("✗ {error}")),
             },
         );
+    }
+
+    /// Delete the host's machine, the resource `id`, as a job of the server,
+    /// and follow it.
+    pub fn unprovision(&self, name: &str, id: &str, size: (u16, u16)) {
+        let title = format!("Delete machine · {name}");
+        let (admin, host) = (self.clone(), name.to_owned());
+        self.portal.call(
+            "resources.remove",
+            None,
+            json!({"id": id}),
+            Value::Null,
+            move |result| match result {
+                Ok(acted) => {
+                    let again = host.clone();
+                    admin.follow(acted["job"]["id"].clone(), &title, size, move |admin| {
+                        admin.machine(&again)
+                    });
+                }
+                Err(error) => admin.say(format!("✗ {error}")),
+            },
+        );
+    }
+
+    /// Start or stop the host's machine, the resource `id`, as a job of the
+    /// server, and follow it.
+    pub fn power(&self, name: &str, id: &str, verb: &str, size: (u16, u16)) {
+        let title = format!(
+            "{} machine · {name}",
+            if verb == "start" { "Start" } else { "Stop" }
+        );
+        let (admin, host) = (self.clone(), name.to_owned());
+        self.portal.call(
+            "resources.act",
+            None,
+            json!({"id": id, "action": verb}),
+            json!({}),
+            move |result| match result {
+                Ok(acted) if acted["job"].is_null() => admin.machine(&host),
+                Ok(acted) => {
+                    let again = host.clone();
+                    admin.follow(acted["job"]["id"].clone(), &title, size, move |admin| {
+                        admin.machine(&again)
+                    });
+                }
+                Err(error) => admin.say(format!("✗ {error}")),
+            },
+        );
+    }
+
+    // ── Resources ───────────────────────────────────────────────────────────
+
+    /// Ask a resource how it is and what it can do, for its page.
+    pub fn resource(&self, id: &str) {
+        let (admin, id) = (self.clone(), id.to_owned());
+        let args = json!({"id": id});
+        self.portal.call(
+            "resources.get",
+            None,
+            args.clone(),
+            Value::Null,
+            move |seen| {
+                let seen = seen.and_then(|found| {
+                    serde_json::from_value(found).map_err(|error| error.to_string())
+                });
+                let asker = admin.clone();
+                admin.portal.call(
+                    "resources.actions",
+                    None,
+                    args,
+                    Value::Null,
+                    move |actions| {
+                        let actions = actions.and_then(|found| {
+                            serde_json::from_value(found).map_err(|error| error.to_string())
+                        });
+                        asker.arrive(Arrived::ResourcePage(id, seen, actions));
+                    },
+                );
+            },
+        );
+    }
+
+    /// Run an action of a resource: one that answers at once says so on its
+    /// page, a job is followed in a panel and its page asked for again.
+    pub fn resource_act(
+        &self,
+        id: &str,
+        action: &berth_api::Action,
+        values: &std::collections::BTreeMap<String, String>,
+        size: (u16, u16),
+    ) {
+        let (admin, id) = (self.clone(), id.to_owned());
+        let title = format!("{} · {id}", action.title());
+        self.say(match action.changes {
+            true => "Starting…".to_owned(),
+            false => format!("Asking {id}…"),
+        });
+        self.portal.call(
+            "resources.act",
+            None,
+            json!({"id": id, "action": action.name}),
+            json!({"arguments": values}),
+            move |result| match result {
+                Ok(acted) if acted["job"].is_null() => {
+                    let lines = berth_tui::provisioners::answer_lines(&acted["result"]);
+                    admin.say(lines.first().cloned().unwrap_or_default());
+                    admin.arrive(Arrived::ProvisionerAnswer(id, Ok(lines)));
+                }
+                Ok(acted) => {
+                    admin.say("");
+                    let again = id.clone();
+                    admin.follow(acted["job"]["id"].clone(), &title, size, move |admin| {
+                        admin.resource(&again)
+                    });
+                }
+                Err(error) => {
+                    admin.say(format!("✗ {error}"));
+                    admin.arrive(Arrived::ProvisionerAnswer(id, Err(error)));
+                }
+            },
+        );
+    }
+
+    /// A resource's log in a panel: the last lines, then what follows until
+    /// the panel is closed.
+    pub fn resource_logs(&self, id: &str, size: (u16, u16)) {
+        let title = format!("Log · {id}");
+        self.data.borrow_mut().job = Some(View::plain(&title, size.0, size.1));
+        let follower = self.clone();
+        let stream = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let ours = stream.clone();
+        let opened = self.portal.stream(
+            "resources.follow",
+            None,
+            json!({"id": id, "tail": 200}),
+            move |frame| {
+                let mut data = follower.data.borrow_mut();
+                // A closed panel ends the stream, so the server stops reading the log.
+                let Some(view) = data.job.as_mut().filter(|view| view.title == title) else {
+                    follower.portal.end(ours.get());
+                    return;
+                };
+                match frame {
+                    Frame::Bytes(bytes) => {
+                        view.feed(&bytes);
+                    }
+                    Frame::Data(said) => {
+                        if let Some(error) = said["error"].as_str() {
+                            view.feed(format!("\n✗ {error}\n").as_bytes());
+                        }
+                        if let Some(code) = berth_tui::host::exited(&said) {
+                            view.ended = Some(code);
+                        }
+                    }
+                    Frame::End(why) => {
+                        if view.ended.is_none() {
+                            if let Some(why) = why {
+                                view.feed(format!("\n{why}\n").as_bytes());
+                            }
+                            view.ended = Some(None);
+                        }
+                    }
+                }
+            },
+        );
+        stream.set(opened);
+    }
+
+    // ── Provisioners ────────────────────────────────────────────────────────
+
+    /// Ask for the server's provisioners again.
+    pub fn provisioners(&self) {
+        self.call(
+            "provisioners.list",
+            json!({}),
+            Value::Null,
+            |admin, found| {
+                admin.data.borrow_mut().provisioners =
+                    serde_json::from_value(found).unwrap_or_default();
+            },
+        );
+    }
+
+    /// Ask a provisioner how it is and what it can do, for its page.
+    pub fn provisioner(&self, name: &str) {
+        let Some((plugin, id)) = name.split_once('/') else {
+            return;
+        };
+        let (admin, name) = (self.clone(), name.to_owned());
+        let args = json!({"plugin": plugin, "id": id});
+        self.portal.call(
+            "provisioners.get",
+            None,
+            args.clone(),
+            Value::Null,
+            move |state| {
+                let state = state.and_then(|found| {
+                    serde_json::from_value(found).map_err(|error| error.to_string())
+                });
+                let asker = admin.clone();
+                admin.portal.call(
+                    "provisioners.actions",
+                    None,
+                    args,
+                    Value::Null,
+                    move |actions| {
+                        let actions = actions.and_then(|found| {
+                            serde_json::from_value(found).map_err(|error| error.to_string())
+                        });
+                        asker.arrive(Arrived::ProvisionerPage(name, state, actions));
+                    },
+                );
+            },
+        );
+    }
+
+    /// Run an action of a provisioner: one that answers at once says so on
+    /// its page, a job is followed in a panel and its page asked for again.
+    pub fn provisioner_act(
+        &self,
+        name: &str,
+        action: &berth_api::Action,
+        values: &std::collections::BTreeMap<String, String>,
+        size: (u16, u16),
+    ) {
+        let Some((plugin, id)) = name.split_once('/') else {
+            return;
+        };
+        let (admin, name) = (self.clone(), name.to_owned());
+        let title = format!("{} · {name}", action.title());
+        self.say(match action.changes {
+            true => "Starting…".to_owned(),
+            false => format!("Asking {name}…"),
+        });
+        self.portal.call(
+            "provisioners.act",
+            None,
+            json!({"plugin": plugin, "id": id, "action": action.name}),
+            json!({"arguments": values}),
+            move |result| match result {
+                Ok(acted) if acted["job"].is_null() => {
+                    let lines = berth_tui::provisioners::answer_lines(&acted["result"]);
+                    admin.say(lines.first().cloned().unwrap_or_default());
+                    admin.arrive(Arrived::ProvisionerAnswer(name, Ok(lines)));
+                }
+                Ok(acted) => {
+                    admin.say("");
+                    let again = name.clone();
+                    admin.follow(acted["job"]["id"].clone(), &title, size, move |admin| {
+                        admin.provisioner(&again)
+                    });
+                }
+                Err(error) => {
+                    admin.say(format!("✗ {error}"));
+                    admin.arrive(Arrived::ProvisionerAnswer(name, Err(error)));
+                }
+            },
+        );
+    }
+
+    /// Follow a job of the server in a panel; `ended` is run when it has ended.
+    fn follow(&self, id: Value, title: &str, size: (u16, u16), ended: impl Fn(&Admin) + 'static) {
+        self.data.borrow_mut().job = Some(View::plain(title, size.0, size.1));
+        let follower = self.clone();
+        self.portal
+            .stream("jobs.follow", None, json!({"id": id}), move |frame| {
+                let mut data = follower.data.borrow_mut();
+                let Some(view) = &mut data.job else {
+                    return;
+                };
+                match frame {
+                    Frame::Bytes(bytes) => {
+                        view.feed(&bytes);
+                    }
+                    Frame::Data(said) => {
+                        if let Some(code) = berth_tui::host::exited(&said) {
+                            view.ended = Some(code);
+                        }
+                    }
+                    Frame::End(why) => {
+                        if view.ended.is_none() {
+                            if let Some(why) = why {
+                                view.feed(format!("\n{why}\n").as_bytes());
+                            }
+                            view.ended = Some(None);
+                        }
+                        drop(data);
+                        ended(&follower);
+                    }
+                }
+            });
     }
 }

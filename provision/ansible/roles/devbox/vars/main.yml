@@ -61,4 +61,33 @@ devbox_core_tasks:
     agent: true
     help: "The accounts the tools on this host are signed in to for the agent: the coding agents, GitHub and whatever else the plugins of this host know about."
     run: "true"
+# The tasks of a host with the controller alone, which assume nothing of a
+# desktop, its accounts or plugins.
+devbox_controller_tasks:
+  - name: status
+    label: Status
+    group: System
+    user: root
+    help: The host, how long it has been up, the state of SSH and berthd, disk space and failed units.
+    run: "{{ devbox_task_dir }}/status.sh controller"
+  - name: update
+    label: Update
+    group: System
+    user: root
+    help: apt update and dist-upgrade on the host. Says whether a reboot is needed afterwards.
+    run: "{{ devbox_task_dir }}/update.sh"
+  - name: reboot
+    label: Reboot
+    group: System
+    user: root
+    confirm: Restart the host? Everything running on it ends, sessions included.
+    help: Restart the host.
+    run: "{{ devbox_task_dir }}/reboot.sh"
+  - name: secrets
+    label: Secrets and registry logins
+    group: Sync
+    user: agent
+    input: secrets
+    help: "Send this host's secrets and the logins of its registries to the account sessions run as: tokens in ~/.config/devbox/secrets.env or as files, npm and Docker logins. Replaces what was installed before."
+    run: /usr/local/bin/devbox-secrets
 devbox_service_dir: /usr/local/lib/berth/services

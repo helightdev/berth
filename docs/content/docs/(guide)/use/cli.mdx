@@ -17,6 +17,10 @@ With a [berth server](/docs/use/server) set, by `--server` or the `server` setti
 | `berth` | The home screen |
 | `berth HOST` | Open a host in the terminal UI; a new name starts a new profile |
 | `berth list` | Saved hosts and their addresses |
+| `berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH] [--level LEVEL] [--no-contact]` | Save a machine that exists by its address, reachable unless `--level` says otherwise, and install berth's key there ([Host levels](/docs/use/levels#adding-a-machine-that-exists)) |
+| `berth profile HOST` | The host's profile, as JSON on standard output |
+| `berth profile HOST --set FILE` | Save the profile in FILE as the host's, checked as the terminal UI reads one. `-` reads standard input. With a [berth server](/docs/use/server) set, it is saved on the server |
+| `berth credentials HOST [--show]` | The passwords berth generated for the host's accounts, an account and its password to a line. Only to a terminal unless `--show` is given. For a server's host they come from the server |
 | `berth inventory [HOST…]` | The hosts as an Ansible inventory |
 | `berth config` | Where things are kept, and the settings |
 | `berth config KEY [VALUE]` | Change a setting; no value clears it |
@@ -31,29 +35,47 @@ With a [berth server](/docs/use/server) set, by `--server` or the `server` setti
 | --- | --- |
 | `berth iso HOST [--write /dev/sdX]` | Build the USB installer, downloading the ISO if none is set; write it to a drive after asking |
 | `berth seed HOST` | Render the cloud-init seed |
-| `berth apply HOST` | Apply the host's profile to it over SSH. With a [berth server](/docs/use/server) set, as a job there |
+| `berth apply HOST` | Apply the host's profile to it over SSH. With a [berth server](/docs/use/server) set, as a job there. Only a workstation is applied |
+| `berth host install HOST` | Install berth's controller alone on a host below a workstation ([Installing the controller](/docs/use/levels#installing-the-controller)) |
+| `berth host level HOST LEVEL` | Save the level the host's profile says, such as for a host with berth's controller added by its address. A workstation is adopted instead ([Adding a machine that exists](/docs/use/levels#adding-a-machine-that-exists)) |
 | `berth apply --behind [--update] [--reboot [--force]]` | Apply every host that is behind, one at a time ([Updates](/docs/use/updates#bringing-hosts-up-to-date)). `--all` takes the current ones too |
 | `berth remove HOST` | Forget a host. The machine itself is left as it is, and a machine berth created for the host must be deleted first |
-| `berth key` | Print the SSH public key of this berth, which the operator of a host it sets up [takes](/docs/reference/profile#the-key-of-berth-itself) |
+| `berth adopt HOST [[USER@]ADDRESS] [--port PORT] [--key FILE] [--force]` | Save a host from the profile it keeps, read over SSH with sudo. Without an address, a saved host by its own ([Moving a host](/docs/use/moving)) |
+| `berth key` | The SSH keys of berth's [key ring](/docs/use/accounts#keys), with their public halves, the hosts that use each, and what is being replaced. With a berth server set, the server's |
+| `berth key new NAME`, `berth key add NAME FILE\|-` | Make a key, or take in a private key from a file or standard input |
+| `berth key show [NAME]`, `berth key remove NAME` | Print a public half, the key `berth`'s by default. Remove a key, which berth refuses while a host logs in with it |
+| `berth key rotate [NAME]` | Replace a key on the hosts that take it ([Rekeying](/docs/use/accounts#rekeying)) |
+| `berth key trust HOST [--key FILE] [--keep-password]` | Install the host's key with a password or a key used once ([First contact](/docs/use/accounts#first-contact)) |
+| `berth key host HOST [--accept]` | The host's recorded SSH host key; accept a changed one |
 | `berth connect URL` | Use the [berth server](/docs/use/server#with-a-setup-key) at URL, with the token a setup key collects. The key comes on standard input |
-| `berth login`, `berth logout` | Log in to a [berth server](/docs/use/server#with-a-login-in-place-of-the-token) through its OAuth 2.0 issuer, and forget that login |
 | `berth publish REGISTRY[/REPOSITORY] [HOST [--login [REGISTRY]]]` | Upload the release archive and use it as HOST's release address ([Registries](/docs/use/registries#publishing-the-release-archive)) |
 | `berth image push REGISTRY[/REPOSITORY] [TAG]` | Push the container image |
 
 Both build commands refuse to start while the profile has problems, and list them.
 
-## Machines
+## Machines, provisioners and resources
 
 | Command | Does |
 | --- | --- |
+| `berth provisioner` | The provisioners of the plugins, and whether each can be used here |
+| `berth provisioner PLUGIN/ID [NAME=VALUE…]` | How it is now, what it can do, and what berth made with it, by kind. Each `NAME=VALUE` sets one of the provisioner's own arguments for this call alone |
+| `berth provisioner PLUGIN/ID actions` | Its actions, with their arguments |
+| `berth provisioner PLUGIN/ID run ACTION [NAME=VALUE…] [--yes]` | Run one. `settings` keeps the values of its own arguments. One that changes something runs as a job, and berth ends with its exit code |
 | `berth provisioners` | The provisioners of the plugins, and what each asks for |
-| `berth provisioners PLUGIN/ID [NAME=VALUE…]` | The machines that provisioner has and berth created, when it can list them |
+| `berth resource [--provisioner PLUGIN/ID] [--kind KIND] [--host HOST]` | What provisioners made for berth, such as machines and deployments, as berth's records have them ([Resources](/docs/deploy/resources)) |
+| `berth resource ID` | One of them, as its provisioner says it is now, with its actions. A name works while only one resource has it |
+| `berth resource ID actions` | Its actions, with their arguments |
+| `berth resource ID run ACTION [NAME=VALUE…] [--yes]` | Run one, such as `start`, `stop` or an action of its kind |
+| `berth resource ID logs [--tail N] [--follow]` | What it wrote, as its provisioner gives it |
+| `berth resource ID change [--spec FILE\|-] [--secret NAME[:VARIABLE]]… [NAME=VALUE…]` | Give it other values, a new specification or other secrets. The rest stays as it is |
+| `berth resource ID remove [--yes]` | Remove it with its provisioner and forget it. A host's profile stays |
+| `berth deploy NAME --provisioner PLUGIN/ID --spec FILE\|- [--secret NAME[:VARIABLE]]… [--token TEXT] [NAME=VALUE…]` | Make a deployment from a specification, such as a Compose file. With the name of one that exists, change it ([Deployments](/docs/deploy/deployments)) |
 | `berth provision HOST PLUGIN/ID [NAME=VALUE…] [--yes]` | Create the machine for a saved host and set it up |
-| `berth instance HOST` | The machine berth created for the host, and its state |
+| `berth instance HOST` | The machine berth created for the host, as `berth resource ID` shows it |
 | `berth instance HOST start\|stop` | Start or stop it, when the provisioner can |
-| `berth instance HOST destroy [--yes]` | Delete the machine. The profile stays |
+| `berth instance HOST destroy [--yes]` | Delete the machine, after you type the host's name. The profile stays |
 
-With a [berth server](/docs/use/server) set, the server's provisioners and plugins are used and the role `admin` is needed. See [Machine from a provisioner](/docs/deploy/provisioners).
+With a [berth server](/docs/use/server) set, the server's provisioners, plugins and resources are used. Changing a resource needs the role `admin`, reading its log `operate`, and an action of a provisioner or a resource its own role. See [Provisioners](/docs/deploy/provisioners) and [Resources](/docs/deploy/resources#with-a-berth-server).
 
 ## Tasks
 
@@ -65,6 +87,10 @@ berth run studio claude:login            # a sign-in runs in your terminal
 ```
 
 `berth run HOST TASK` runs a task and its plugin steps and leaves with the task's exit code. A task's arguments are given as `NAME=VALUE`, and `--yes` answers its confirmation. `berth manage HOST TASK` is the same command. Tasks that need a terminal, such as sign-ins, run in your terminal over `ssh -t`.
+
+`berth tasks` lists berth's own actions beside the host's tasks, such as `install-controller`, and says why one cannot run now. A host that is only reachable has no tasks yet.
+
+When a [berth server](/docs/use/server) keeps the host, `berth tasks` lists the server's actions for the host: its tasks, and berth's own such as `apply` and `seed`. `berth run` runs any of them through the server, which keeps a job of each run ([Actions](/docs/extend/serve#actions)).
 
 ## Sessions and commands
 
@@ -93,7 +119,7 @@ berth output studio ID --tail 50 --follow
 
 | Command | Does |
 | --- | --- |
-| `berth secret [set NAME \| remove NAME]` | Secret values kept on this machine |
+| `berth secret [set NAME \| remove NAME]` | Secret values, kept in berth's store |
 | `berth host HOST` | The secrets and registries a host gets |
 | `berth host HOST secret NAME env VARIABLE \| file PATH [MODE] \| off` | Give a secret to a host, or stop |
 | `berth host HOST registry NAME on\|off` | Give a registry's login to a host, or stop |
@@ -131,4 +157,7 @@ With a [berth server](/docs/use/server) set, these show and change the server's 
 | `berth setup-key [--remove]` | Make a [setup key](/docs/use/server#with-a-setup-key) for the `berth serve` whose data is on this machine, valid for 24 hours, in place of any earlier one. `--remove` ends it |
 | `berth inbox [HOST] [--topic PREFIX] [--all]` | Messages `berth serve` took in from the hosts' channels |
 | `berth kv get\|set\|rm\|ls NAMESPACE [KEY] [JSON]` | The key-value store of `berth serve` |
+| `berth store` | Where the store is, and whether its state is encrypted ([The store](/docs/use/store)) |
+| `berth store encrypt\|rekey\|decrypt [--yes]` | Seal the store's state with a new key file, change the key, or write it plain again. Stop `berth serve` first |
+| `berth store copy TARGET\|-\|--target-file FILE [--into-existing]` | Copy the store into another SQLite file or PostgreSQL database ([Move to another database](/docs/use/store#move-to-another-database)). `-` reads a URL from standard input, which keeps its password out of the process list |
 | `berth operations`, `berth openapi`, `berth asyncapi` | The API documents of `berth serve` ([API](/docs/api#the-documents)) |

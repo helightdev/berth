@@ -1,6 +1,6 @@
 ---
 title: Accounts and sudo
-description: The operator and agent accounts, their passwords, and how much the agent may do as root.
+description: The operator and agent accounts, their passwords, how much the agent may do as root, and how berth logs in to hosts.
 icon: Users
 ---
 
@@ -13,13 +13,38 @@ Every host has two accounts, set under **Operator Account** and **Agent Account*
 
 Separate accounts keep sessions apart, but they do not isolate data from an agent that can become root.
 
+## The operator
+
+The operator is the account berth manages the host with. On every host it:
+
+- Uses sudo without a password. The role writes `/etc/sudoers.d/99-devbox-operator`.
+- Logs in over SSH with keys only. `/etc/ssh/sshd_config.d/00-devbox-operator.conf` holds a `Match User` block that allows only key logins for it, whatever **SSH hardening** says.
+- Takes the SSH key of [each berth](/docs/reference/profile#the-key-of-berth-itself) that installs or applies the host. Each of these keys has a block of its own in the operator's `~/.ssh/authorized_keys`, and no later apply removes it. An apply stops with an error before it changes SSH if that key is not there.
+
+None of these can be switched off, on laptops either.
+
+The operator's password is optional and only for local logins: the console, the laptop's graphical login and Cockpit. Cockpit checks it through PAM, not through SSH. Without a password the account's password field is `*`. No password logs in then, and SSH keys still do.
+
+| Install | Operator password |
+| --- | --- |
+| USB installer | Required. The Ubuntu installer needs one for the account it creates |
+| Cloud seed or created machine | Optional |
+| Apply over SSH or to this machine | Optional. An empty one leaves the account's password as it is |
+
 ## Passwords
 
-On a password hash field, F4 generates a password and stores its hash, and F5 hashes a password you type. Generated passwords are written next to the profile as `NAME.credentials.json` with mode 0600. The profile itself only stores hashes.
+On a password hash field, F4 generates a password and stores its hash, and F5 hashes a password you type. berth keeps a generated password in its store, beside the profile, and `berth credentials NAME` shows it. For a berth server's host the server generates it and keeps it. The profile itself only stores hashes.
 
 - An empty agent password locks password login for the agent.
 - Turning off the agent's passwordless sudo requires an agent password.
-- The operator uses sudo without a password unless **Operator passwordless sudo** is off. With it off, berth asks for the operator's password when it connects, until **Ask for sudo password** says otherwise.
+
+## The first apply as another account
+
+An existing machine may not have the operator yet. berth then applies as an account of the machine's own, the profile's SSH user. When sudo prompts that account for a password, switch on **Ask for sudo password** on the Run tab, or set `access.sudo` to `password`. berth asks for the password when it applies and when it connects, or takes the secret `sudo/HOST` when you keep it there. `BERTH_SUDO_PASSWORD` gives it where nobody can type it.
+
+When the SSH user is the operator, berth writes what the apply made true once it has worked: `access.sudo` becomes `none`, a login with `password` becomes one with berth's key, and a kept `sudo/HOST` or `ssh/HOST` is deleted. The operator's sudo doesn't prompt from then on, and its SSH takes keys only. Any other SSH user keeps its setting.
+
+A profile from before these rules may still say `"operator_passwordless_sudo": false` or `"berth_ssh_key": false`. berth reads it as usual and ignores both. The next apply gives the operator sudo without a password and the key of berth.
 
 ## Agent privileges
 
@@ -48,3 +73,81 @@ sudo -iu agent
 ```
 
 From your machine, `berth ssh HOST --agent` opens a shell as the agent, and the overview's **Terminal** switches between the two accounts with Space.
+
+## Logging in to hosts
+
+berth reaches a host over SSH, as the SSH user of the host's **Install** tab, `access.user` in the [profile](/docs/reference/profile#access-access). **Log in with** under the address says how, in `access.auth`:
+
+| Method | `auth` | What berth gives ssh | Where |
+| --- | --- | --- | --- |
+| berth's key | `berth` | The key `berth` of its key ring, and no other. The default | Local and server |
+| Another key | `key:NAME` | That key of the key ring, and no other | Local and server |
+| Password | `password` | The password kept as the secret `ssh/HOST`, through berth's own askpass helper | Local and server |
+| Your SSH | `ssh` | Your SSH configuration and agent, with berth's key offered after your keys | Local berth only |
+
+A password never goes into a command line or an environment variable. berth is ssh's askpass helper itself and reads the password from the store when ssh asks. No other program is asked, so no password dialog of the desktop opens. Without a stored password berth's own logins fail and say so, and `berth ssh HOST` asks on the terminal. For an apply, berth writes the password to a private file that Ansible reads, and Ansible gives it to ssh through its own helper.
+
+```bash
+berth secret set ssh/studio          # the SSH password of studio
+berth secret set sudo/studio         # its sudo password, if you want it kept
+```
+
+A host that berth reaches through `access.link`, such as a container, doesn't use a key.
+
+### Keys
+
+berth keeps SSH keys in its store, by name, sealed when the [store is encrypted](/docs/use/store#encrypt-it). The key `berth` always exists. berth writes a private half to `keys/NAME` in its data directory when ssh or Ansible needs it, and `berth inventory` names that file. Private halves never leave through the API or a command.
+
+```bash
+berth key                            # the keys, the hosts that use each, and what is pending
+berth key new deploy                 # make an ed25519 key
+berth key add deploy ~/.ssh/deploy   # take in a private key; - reads standard input
+berth key show deploy                # the public half, for an authorized_keys
+berth key remove deploy              # refused while a host logs in with it
+```
+
+berth takes any private key `ssh-keygen` reads, and refuses one with a passphrase, as nobody would be there to type it. With a berth server set, these commands act on the server's keys. The Settings tab of the home screen lists the keys, and Enter copies a public half.
+
+### First contact
+
+A machine berth did not set up doesn't take berth's key yet. Give it a password or a private key that works once:
+
+```bash
+berth key trust studio               # asks for the password without echo
+berth key trust studio --key ~/.ssh/provider_key
+```
+
+berth tries the host's key first. If the host refuses it, berth logs in once with what you gave and adds the key to the SSH user's `~/.ssh/authorized_keys`. The other lines of that file stay as they are. Then berth checks that a login with the key works, and forgets the one-time credential. A host whose method was `password` logs in with berth's key from then on, unless you add `--keep-password`, which keeps the password as the secret `ssh/HOST`.
+
+### Refused logins
+
+sshd counts failed logins from each address. OpenSSH 10 then turns that address away for a while (`PerSourcePenalties`, on by default), and the wait grows with each failure, up to 10 minutes. A berth that kept trying a key a host refuses would shut itself out of that host, and of every other host behind the same address.
+
+So berth remembers a refused login beside the host. For 30 minutes nothing berth does by itself logs in that way again, such as the berth server's channel to the host or the overview opening. The host shows why instead. Whatever you ask for still tries once, such as **Try again** or `berth key trust`. A changed address, user, port or key is another login and is tried at once, and a login that works forgets the refusal. `berth key trust` asks for the credential straight away while the key's refusal holds. The host then sees one failed login at most.
+
+When sshd closes the connection before the login, berth says the host is turning the address away for a while. Wait a minute and try again. berth itself waits 2 minutes before it tries such a host by itself.
+
+### Host keys
+
+berth records each host's SSH host key in its store and gives ssh a known-hosts file of its own for each host, under `known_hosts/` of the data directory, written from the store. So a restored installation knows its hosts. The first login records the key. A key that changes later is refused:
+
+```text
+The SSH host key of studio is not the one berth recorded: the machine was set up again or replaced, or something is in between. If you know which, accept the new key with: berth key host studio --accept
+```
+
+`berth key host studio` shows the recorded key. When berth itself creates a host's machine again, it forgets the old key and records the new one without asking. When a profile of berth 0.4 is converted, a host keeps the key your `~/.ssh/known_hosts` has for its address.
+
+### Rekeying
+
+`berth key rotate` replaces the key `berth`, and `berth key rotate NAME` another one:
+
+1. berth makes a new key and stores it beside the current one as pending.
+2. On each host that takes the key, it logs in and adds the new key. Once a login with the new key works, it removes the old one.
+3. A host that does not answer stays pending. berth offers it both keys until then, and an apply gives the operator both. The Hosts tab marks it, in the terminal UI and on the browser page.
+4. When no host is pending, the new key replaces the old one, which is deleted.
+
+Running it again goes on where it stopped. With a berth server set, the rotation runs as a job on the server, and its output is shown as it comes.
+
+### Sudo
+
+`access.sudo` says whether the SSH user's sudo asks for a password: `none` or `password`. Left out, berth asks only when the operator has no passwordless sudo and the user is not root. berth asks for the password when it needs it, or takes the secret `sudo/HOST` if you keep it there. It reaches sudo on standard input.

@@ -4,9 +4,9 @@ description: Put the berth command on the machine you work from. It is one file.
 icon: Download
 ---
 
-berth runs on Linux. The program contains everything it puts on a host, so installing it means placing one file on your `PATH`.
+berth runs on Linux. The program contains everything it puts on a host, so installing it means placing one file on your `PATH`. On Windows and macOS, `berth-remote` uses the hosts of a berth server.
 
-<Tabs items={['Install script', 'Cargo', 'Container image']}>
+<Tabs items={['Install script', 'Cargo', 'Container image', 'berth-remote']}>
 <Tab value="Install script">
 
 ```bash title="Linux x86_64"
@@ -63,6 +63,21 @@ berth --server http://127.0.0.1:7777 --token "$(docker exec berth cat /data/bert
 See [A berth server](/docs/use/server).
 
 </Tab>
+<Tab value="berth-remote">
+
+berth itself needs Linux. `berth-remote` is the client for a [berth server](/docs/use/server) on another machine, with the screens of its page in a terminal. It runs on Windows, macOS and Linux:
+
+```powershell title="Windows, in PowerShell"
+irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex
+```
+
+```bash title="macOS and Linux"
+curl -fsSL https://raw.githubusercontent.com/helightdev/berth/main/install-remote.sh | sh
+```
+
+Each script downloads the latest release for this machine, checks it against its SHA-256 and installs it: to `%LOCALAPPDATA%\Programs\berth-remote` on Windows, and to `~/.local/bin/berth-remote` elsewhere. `BERTH_INSTALL_DIR` and `BERTH_VERSION` work as for `install.sh`. Releases have it for Windows x86_64, macOS on Apple silicon and Intel, and Linux x86_64 and arm64. See [With berth-remote](/docs/use/server#with-berth-remote).
+
+</Tab>
 </Tabs>
 
 Check it:
@@ -91,18 +106,33 @@ python3 -m venv .venv && .venv/bin/pip install -r provision/requirements.txt
 
 | What | Where |
 | --- | --- |
-| Settings | `~/.config/berth/config.json` |
-| One private profile per host, with generated passwords beside it | `~/.config/berth/hosts/NAME.json` |
-| Secret values and registry passwords | `~/.config/berth/secrets.json` |
-| Your own plugins | `~/.config/berth/plugins/` |
+| Settings of this machine, listed below | `~/.config/berth/config.json` |
+| The other settings, registries, secret values and registry passwords | berth's store, by default `~/.local/share/berth/berth.db` |
+| One profile per host, its generated passwords and the record of a machine berth created for it | berth's store too. `berth profile HOST` prints a profile and `berth credentials HOST` the passwords |
+| berth's SSH keys, and the token and setup key of `berth serve` | berth's store. A key is written to `~/.local/share/berth/keys/NAME` when ssh needs it, and the token to `serve.token` |
+| The key file of an encrypted store | `~/.config/berth/store.key` (setting `store_key`) |
+| Locks held while berth creates or changes a host's machine | `~/.local/share/berth/locks/` |
+| Your own plugins | `~/.config/berth/plugins/`, and in berth's store what reinstalls them |
 | Provisioning source, unpacked from the program | `~/.local/share/berth/source/` |
 | Build output such as the release archive, seeds and installer images | `~/.local/share/berth/build/` |
 | Downloaded Ubuntu installer ISOs | `~/.local/share/berth/iso/` (setting `iso_dir`) |
 
-`XDG_CONFIG_HOME` and `XDG_DATA_HOME` are honoured. `berth config` prints the paths and settings, and `berth config KEY VALUE` changes one. The Settings tab of the home screen does the same.
+`XDG_CONFIG_HOME` and `XDG_DATA_HOME` are honoured. `berth config` prints the paths and settings, and `berth config KEY VALUE` changes one, in the file or in the store. The Settings tab of the home screen does the same. `berth store` says where the store is and whether it is encrypted. See [The store](/docs/use/store), which also says how to restore an installation from it.
+
+These settings stay in `config.json`, as they belong to this machine or are needed to open the store:
+
+| Settings | What they are for |
+| --- | --- |
+| `store`, `store_key`, `store_ca` | Where the store is and how it is opened |
+| `server`, `server_token` | The berth server this machine uses |
+| `source`, `iso_dir` | Folders on this machine |
+
+A key berth does not know stays in `config.json` as it is, such as the OAuth client settings of berth 0.4, which berth has no use for any more.
+
+An older berth kept secrets in `secrets.json`, and registries and all settings in `config.json`. It kept each host's profile in `~/.config/berth/hosts/NAME.json`, with `NAME.credentials.json` and `NAME.instance.json` beside it. The first run of this berth moves all of them into the store. It keeps the old files in `~/.config/berth/migrated/`, and removes the copies of a berth server's profiles in `~/.local/share/berth/served/`. Delete the old files once the store has what you need. It also puts berth's own SSH key, the token of `berth serve` and your own plugins into the store, and leaves their files where they are. The setup key, which was in `serve.setup-key`, is in the store alone from then on.
 
 <Callout type="warn">
-  Profiles hold Wi-Fi passwords and enrollment keys in clear text. Keep the hosts directory private and out of version control.
+  Profiles hold Wi-Fi passwords and enrollment keys, and the store holds generated passwords. They are in clear text unless the store is encrypted, see [The store](/docs/use/store#encrypt-it). Keep the store and its key file private, and keep files that `berth profile` writes out of version control.
 </Callout>
 
 ## The provisioning source

@@ -1,7 +1,7 @@
 //! The page's screens: the token, the server's hosts, and one host.
 
 use crate::admin::{Admin, Arrived, Data};
-use crate::browser::{self, Browser};
+use crate::device::{self, Here, Kept};
 use crate::home::Home;
 use crate::installed::{Installed, Outcome};
 use crate::portal::{Link, Portal};
@@ -13,7 +13,7 @@ use berth_tui::screen::{
     draw_panel, draw_question, draw_view, ellipsize, hint_click, inside,
 };
 use berth_tui::{Click, Code, Event, Key, event, markdown, qr, theme};
-use ratzilla::ratatui::{
+use ratatui::{
     Frame,
     layout::{Constraint, Layout, Margin, Rect},
     style::Style,
@@ -49,7 +49,7 @@ enum Screen {
 }
 
 /// The tabs of the home screen, for whoever may set the server up.
-const TABS: [&str; 5] = ["Hosts", "Settings", "Registries", "Secrets", "Plugins"];
+const TABS: [&str; 6] = berth_tui::screen::HOME_TABS;
 
 /// What the server last said of its hosts.
 #[derive(Default)]
@@ -149,29 +149,31 @@ pub struct App {
 }
 
 impl App {
+    /// Not a `Default`: making the screens signs in and opens the portal.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> App {
-        let embedded = browser::embedded();
-        let linked = browser::linked();
+        let embedded = device::embedded();
+        let linked = device::linked();
         let (linked_server, linked_token) = (linked.server, linked.token);
-        let kept = browser::stored(browser::SERVER).unwrap_or_default();
+        let kept = device::stored(Kept::Server).unwrap_or_default();
         let server = match embedded {
-            true => browser::origin(),
+            true => device::origin(),
             false => linked_server
-                .map(|server| browser::address(&server))
+                .map(|server| device::address(&server))
                 .unwrap_or_else(|| kept.clone()),
         };
         // The token that was kept is the one of the server that was kept.
         let token = linked_token
             .or_else(|| {
                 (embedded || server == kept)
-                    .then(|| browser::stored(browser::TOKEN))
+                    .then(|| device::stored(Kept::Token))
                     .flatten()
             })
             .unwrap_or_default();
         if !embedded {
-            browser::store(browser::SERVER, &server);
+            device::store(Kept::Server, &server);
         }
-        browser::store(browser::TOKEN, &token);
+        device::store(Kept::Token, &token);
         let mut app = App {
             screen: Screen::Token,
             portal: None,
@@ -232,7 +234,7 @@ impl App {
         self.host.disconnect();
         self.asked = None;
         self.retry = None;
-        match Portal::open(&browser::portal_url(&self.server), &self.token) {
+        match Portal::open(&device::portal_url(&self.server), &self.token) {
             Ok(portal) => {
                 // Who the token is here decides what the page offers.
                 let admin = Admin::new(portal.clone(), self.data.clone());
@@ -243,16 +245,9 @@ impl App {
                     self.screen = Screen::Hosts;
                 }
             }
-            Err(_) => {
+            Err(error) => {
                 self.portal = None;
-                // A browser does not let a page over https open plain ws.
-                self.refused = match self.server.starts_with("http://") {
-                    true => {
-                        "The browser did not open it: from a page over https, use an https address."
-                            .into()
-                    }
-                    false => "The browser did not open that address.".into(),
-                };
+                self.refused = error;
                 self.screen = Screen::Token;
             }
         }
@@ -271,7 +266,7 @@ impl App {
         self.host.disconnect();
         *self.hosts.borrow_mut() = Hosts::default();
         self.token.clear();
-        browser::store(browser::TOKEN, "");
+        device::store(Kept::Token, "");
         self.typing = Input::default();
         self.refused = why.to_owned();
         self.screen = Screen::Token;
@@ -302,10 +297,10 @@ impl App {
             match installed.tick() {
                 Outcome::SignIn(token) => {
                     self.token = token;
-                    browser::store(browser::TOKEN, &self.token);
+                    device::store(Kept::Token, &self.token);
                     self.connect();
                 }
-                // A token this browser kept still signs it in.
+                // A token kept here still signs it in.
                 Outcome::Refused(why) => {
                     self.installed = None;
                     self.screen = Screen::Token;
@@ -406,7 +401,7 @@ impl App {
     /// server gave it, and told which server otherwise.
     fn connect_link(&self) -> Option<(String, String)> {
         let server = (!self.embedded).then_some(self.server.as_str());
-        let link = qr::connect_link(&browser::page(), server, &self.token)?;
+        let link = qr::connect_link(&device::page(), server, &self.token)?;
         Some((self.server.clone(), link))
     }
 
@@ -472,12 +467,37 @@ impl App {
                         setup.machine.found(found);
                     }
                 }
-                Arrived::Session(session) => {
-                    if self.screen == Screen::Host
-                        && let Ok(session) = serde_json::from_value(session)
+                // berth's own actions are beside the host's tasks; applying
+                // and the seed have rows of their own.
+                Arrived::Actions(name, listed) if name == self.name => {
+                    self.host.own = listed
+                        .into_iter()
+                        .filter(|action| action.runs == berth_api::Runs::Berth)
+                        .filter(|action| !["apply", "seed"].contains(&action.name.as_str()))
+                        .collect();
+                }
+                Arrived::Actions(..) => {}
+                Arrived::ProvisionerPage(name, state, actions) => {
+                    self.home.provisioners.opened(&name, state, actions);
+                }
+                Arrived::ResourcePage(id, seen, actions) => {
+                    if seen
+                        .as_ref()
+                        .is_err_and(|error| error.starts_with("No resource "))
                     {
-                        self.host.open(&session);
+                        // One that was removed takes its page back to its provisioner's.
+                        if let (Some(provisioner), Some(admin)) =
+                            (self.home.provisioners.back_from(&id), &self.admin)
+                        {
+                            admin.provisioner(&provisioner);
+                        }
+                    } else {
+                        self.home.provisioners.opened_resource(&id, seen, actions);
                     }
+                }
+                Arrived::ProvisionerAnswer(name, said) => {
+                    let lines = said.unwrap_or_else(|error| vec![format!("✗ {error}")]);
+                    self.home.provisioners.answered(&name, lines);
                 }
             }
         }
@@ -519,35 +539,58 @@ impl App {
         rows.push(Row::info(format!(
             "  {} · through the berth server at {}",
             self.address,
-            browser::shown(&self.server)
+            device::shown(&self.server)
         )));
+        for line in host::level_lines(&self.name, &self.host) {
+            rows.push(Row::info(Line::styled(
+                format!("  {line}"),
+                Style::new().fg(theme::MUTED),
+            )));
+        }
+        let workstation = self.host.level == berth_api::HostLevel::Workstation;
         let said = match &self.host.state {
             State::Ready(_) => {
                 if let Some(text) = host::behind_note(&self.host) {
                     rows.push(Row::info(""));
                     rows.push(heading("Configuration"));
                     rows.push(note(text, theme::WARN));
-                    if self.is_admin() {
+                    if self.is_admin() && workstation {
                         rows.push(Row {
                             line: "  ▸ Apply this configuration".into(),
                             entry: Some(Entry::Apply),
                         });
                     }
                 }
-                for (title, group) in host::groups(&self.host, self.terminal_user()) {
+                let mut groups: Vec<(String, Vec<Row>)> =
+                    host::groups(&self.host, self.terminal_user())
+                        .into_iter()
+                        .map(|(title, group)| {
+                            let group = group.into_iter().map(|(line, pick)| Row {
+                                line: line.into(),
+                                entry: Some(Entry::Pick(pick)),
+                            });
+                            (title, group.collect())
+                        })
+                        .collect();
+                self.add_setup(&mut groups, workstation);
+                for (title, group) in groups {
                     rows.push(Row::info(""));
                     rows.push(heading(&title));
-                    rows.extend(group.into_iter().map(|(line, pick)| Row {
-                        line: line.into(),
-                        entry: Some(Entry::Pick(pick)),
-                    }));
+                    rows.extend(group);
                 }
-                rows.extend(self.setup_rows(true));
                 return rows;
             }
             State::Idle | State::Connecting | State::Password => {
                 vec![note("Asking the host what it can do…".into(), theme::MUTED)]
             }
+            // Below a workstation the controller is installed alone, by berth's own action.
+            State::Missing if !workstation => vec![
+                note(
+                    "berth's controller is not on this host. Install it for sessions, tasks and files here.".into(),
+                    theme::MUTED,
+                ),
+                again(),
+            ],
             State::Missing => vec![
                 note(
                     "berth's controller is not on this host yet. Applying its configuration, where berth serve runs, installs it.".into(),
@@ -575,29 +618,64 @@ impl App {
         rows.push(Row::info(""));
         rows.push(heading("Host"));
         rows.extend(said);
-        rows.extend(self.setup_rows(!matches!(
-            self.host.state,
-            State::Idle | State::Connecting | State::Password
-        )));
+        // A host that cannot be worked with yet still has berth's own
+        // actions, such as first contact and installing the controller.
+        let actions = self.host.actions();
+        let mut groups: Vec<(String, Vec<Row>)> = berth_tui::page::groups(&actions, Pick::Task)
+            .into_iter()
+            .map(|group| {
+                let picks = group
+                    .rows
+                    .into_iter()
+                    .filter(
+                        |(_, pick)| matches!(pick, Pick::Task(index) if self.host.is_own(*index)),
+                    )
+                    .map(|(line, pick)| Row {
+                        line: line.into(),
+                        entry: Some(Entry::Pick(pick)),
+                    });
+                (group.title, picks.collect::<Vec<_>>())
+            })
+            .filter(|(_, picks)| !picks.is_empty())
+            .collect();
+        self.add_setup(
+            &mut groups,
+            workstation
+                && !matches!(
+                    self.host.state,
+                    State::Idle | State::Connecting | State::Password
+                ),
+        );
+        for (title, group) in groups {
+            rows.push(Row::info(""));
+            rows.push(heading(&title));
+            rows.extend(group);
+        }
         rows
     }
 
-    /// What whoever may set the server up can do with the host from here.
-    fn setup_rows(&self, apply: bool) -> Vec<Row> {
+    /// Put the set-up's rows first in the group of berth's own actions of
+    /// set-up, for whoever may set the server up.
+    fn add_setup(&self, groups: &mut Vec<(String, Vec<Row>)>, apply: bool) {
         if !self.is_admin() {
-            return vec![];
+            return;
         }
-        let mut rows = vec![
-            Row::info(""),
-            Row::info(Line::styled(
-                "Set-Up",
-                Style::new().fg(theme::ACCENT).bold(),
-            )),
-            Row {
-                line: "  ▸ Change what is installed, accounts or install method  ›".into(),
-                entry: Some(Entry::Setup),
-            },
-        ];
+        let mut setup = self.setup_entries(apply);
+        match groups.iter_mut().find(|(title, _)| title == "Set-Up") {
+            Some((_, rows)) => {
+                setup.append(rows);
+                *rows = setup;
+            }
+            None => groups.push(("Set-Up".into(), setup)),
+        }
+    }
+
+    /// The rows of the set-up group: changing what is installed, and applying it.
+    fn setup_entries(&self, apply: bool) -> Vec<Row> {
+        let mut rows = vec![Row {
+            line: "  ▸ Change what is installed, accounts or install method  ›".into(),
+            entry: Some(Entry::Setup),
+        }];
         if apply {
             rows.push(Row {
                 line: "  ▸ Apply this configuration".into(),
@@ -638,39 +716,51 @@ impl App {
         self.name = name.to_owned();
         self.address = address.to_owned();
         self.host.disconnect();
+        let listed = self.hosts.borrow();
+        let found = listed.list.iter().find(|host| host["name"] == name);
+        let level = |key: &str| {
+            found
+                .and_then(|host| host[key].as_str())
+                .and_then(berth_api::HostLevel::parse)
+        };
+        self.host.level = level("level").unwrap_or_default();
+        drop(listed);
+        self.host.own.clear();
+        if let Some(admin) = &self.admin {
+            admin.actions(name);
+        }
         self.list.select(Some(0));
         self.display = ListState::default();
         self.status.clear();
         self.screen = Screen::Host;
     }
 
+    /// Run an action of the host. The server runs it as the host's action,
+    /// with its own secrets for one that sends them.
     fn launch(&mut self, index: usize, values: BTreeMap<String, String>) {
-        let Some(task) = self.host.tasks.get(index).cloned() else {
+        let Some(action) = self.host.actions().get(index).cloned() else {
             return;
         };
-        // Secrets are kept by the server, and travel from there.
-        if task.input.as_deref() == Some("secrets") {
-            if let (true, Some(admin)) = (self.is_admin(), &self.admin) {
-                self.status = format!("Starting {}…", host::task_label(&task));
-                admin.send_secrets(&self.name);
-                return;
+        if self.host.is_own(index) {
+            if let Some(admin) = &self.admin {
+                admin.act(&self.name, &action, &values, self.panel_size());
             }
-            self.status = format!(
-                "{} sends secrets, which this page does not hold: berth run {} {}",
-                host::task_label(&task),
-                self.name,
-                task.name
-            );
             return;
         }
-        let body = self.host.task_body(&task, &values);
-        self.status = format!("Starting {}…", host::task_label(&task));
-        self.host.run(&task.name, body);
+        let body = self.host.task_body(&action, &values);
+        self.status = format!("Starting {}…", action.title());
+        self.host.run(&action.name, body);
     }
 
     fn choose(&mut self, entry: Entry) {
         match entry {
             Entry::Pick(Pick::Task(index)) => {
+                if let Some(action) = self.host.actions().get(index)
+                    && !action.available
+                {
+                    self.status = format!("{} cannot run now: {}", action.title(), action.why);
+                    return;
+                }
                 if let Some((index, values)) = self.host.begin_task(index, false) {
                     self.launch(index, values);
                 }
@@ -688,7 +778,12 @@ impl App {
                 self.host.shell(user, &title);
                 self.status = "Starting a shell…".into();
             }
-            Entry::Again => self.host.disconnect(),
+            Entry::Again => {
+                self.host.disconnect();
+                if let Some(admin) = &self.admin {
+                    admin.actions(&self.name);
+                }
+            }
             Entry::Setup => {
                 if let Some(admin) = &self.admin {
                     self.setup = Some(Setup::open(&self.name, admin));
@@ -762,13 +857,9 @@ impl App {
 
     fn host_event(&mut self, event: Event) {
         if self.host.view.is_some() {
-            if let Some(said) = screen::view_event(
-                &mut self.host,
-                &self.links,
-                &self.words,
-                &event,
-                &mut Browser,
-            ) {
+            if let Some(said) =
+                screen::view_event(&mut self.host, &self.links, &self.words, &event, &mut Here)
+            {
                 self.status = said;
             }
             return;
@@ -779,7 +870,7 @@ impl App {
             };
             match key.code {
                 Code::Char('y' | 'Y') => match self.host.question.take() {
-                    Some((_, Pending::Task(index))) => {
+                    Some((_, Pending::Action(index))) => {
                         if let Some((index, values)) = self.host.begin_task(index, true) {
                             self.launch(index, values);
                         }
@@ -793,7 +884,12 @@ impl App {
             return;
         }
         if self.host.arguments.is_some() {
-            if screen::arguments_event(&mut self.host, &event) {
+            let mut said = None;
+            let accepted = screen::arguments_event(&mut self.host, &event, &mut Here, &mut said);
+            if let Some(said) = said {
+                self.status = said;
+            }
+            if accepted {
                 match self.host.accept_argument() {
                     Ok(Some((index, values))) => self.launch(index, values),
                     Ok(None) => {}
@@ -971,6 +1067,9 @@ impl App {
                     let name = input.value().trim().to_owned();
                     self.name_host(&name);
                 }
+                _ if screen::is_copy_field(&key) => {
+                    self.status = screen::copy_field(&mut Here, input);
+                }
                 _ => event::edit(input, &key),
             }
             return;
@@ -1016,7 +1115,9 @@ impl App {
     }
 
     fn home_event(&mut self, event: Event) {
-        let typing = self.naming.is_some() || self.home.editor.is_some();
+        let typing = self.naming.is_some()
+            || self.home.editor.is_some()
+            || (self.tab > 0 && self.home.takes(self.tab - 1, &Key::plain(Code::Enter)));
         if let Event::Mouse(mouse) = &event {
             if mouse.click != Click::Left {
                 return;
@@ -1058,16 +1159,18 @@ impl App {
         if let Event::Paste(text) = &event {
             if let Some(input) = self.naming.as_mut().or(self.home.editor.as_mut()) {
                 event::paste(input, text.trim());
+            } else if self.tab == crate::home::PROVISIONERS + 1 {
+                self.home.provisioners.paste(text.trim());
             }
             return;
         }
         let Event::Key(key) = event else {
             return;
         };
-        if !typing {
+        if !typing && !(self.tab > 0 && self.home.takes(self.tab - 1, &key)) {
             self.status.clear();
             match key.code {
-                Code::Char(digit @ '1'..='5') => {
+                Code::Char(digit @ '1'..='6') => {
                     return self.open_tab(digit as usize - '1' as usize);
                 }
                 Code::Tab if self.is_admin() => return self.open_tab((self.tab + 1) % TABS.len()),
@@ -1106,9 +1209,9 @@ impl App {
             self.tab = 0;
         }
         self.home.connect = self.connect_link();
-        self.home.server = browser::shown(&self.server).to_owned();
+        self.home.server = device::shown(&self.server).to_owned();
         let tabs: &[&str] = if admin { &TABS } else { &[] };
-        self.tab_hits = draw_header(frame, header, tabs, self.tab, browser::shown(&self.server));
+        self.tab_hits = draw_header(frame, header, tabs, self.tab, device::shown(&self.server));
         frame.render_widget(Paragraph::new(theme::logo()), logo);
         frame.render_widget(
             Paragraph::new(theme::swell(
@@ -1161,6 +1264,14 @@ impl App {
             draw_editor(frame, edit, title, input, masked);
         }
         draw_footer(frame, footer, shown.keys, &self.status, theme::ACCENT);
+        if self.tab == crate::home::PROVISIONERS + 1 {
+            if let Some(question) = self.home.provisioners.question() {
+                draw_question(frame, question);
+            }
+            if let Some((actions, asked)) = self.home.provisioners.arguments() {
+                screen::draw_action_arguments(frame, actions, asked);
+            }
+        }
     }
 
     fn draw_hosts(&mut self, frame: &mut Frame, main: Rect, footer: Rect) {
@@ -1208,6 +1319,18 @@ impl App {
             if host["behind"].is_object() {
                 line.push(Span::styled("  behind", Style::new().fg(theme::WARN)));
             }
+            if let Some(level) = host["level"]
+                .as_str()
+                .filter(|level| *level != "workstation")
+            {
+                line.push(Span::styled(format!("  {level}"), muted));
+            }
+            if host["rotating"] == true {
+                line.push(Span::styled(
+                    "  key rotation pending",
+                    Style::new().fg(theme::WARN),
+                ));
+            }
             if !preferred.is_empty() && name == preferred {
                 line.push(Span::styled("  default", Style::new().fg(theme::STEEL)));
             }
@@ -1251,9 +1374,9 @@ impl App {
             draw_editor(frame, edit, " New host name ", input, false);
         }
         let keys = match (admin, self.naming.is_some()) {
-            (_, true) => "Enter create · Esc cancel",
+            (_, true) => "Enter create · Esc cancel · Ctrl+O copy",
             (true, false) => {
-                "↑↓ select · Enter open · n new host · d default · x remove · 2 settings · 3 registries · 4 secrets · 5 plugins · r refresh · o sign out"
+                "↑↓ select · Enter open · n new host · d default · x remove · r refresh · o sign out"
             }
             (false, false) => "↑↓ select · Enter open · r refresh · o sign out",
         };
@@ -1276,6 +1399,9 @@ impl App {
                             self.apply(Some(&password));
                         }
                     }
+                    _ if screen::is_copy_field(key) => {
+                        self.status = screen::copy_field(&mut Here, input);
+                    }
                     _ => event::edit(input, key),
                 },
                 Event::Paste(text) => event::paste(input, text.trim()),
@@ -1287,9 +1413,9 @@ impl App {
             if let Event::Key(key) = event {
                 match key.code {
                     Code::Char('c') => {
-                        self.status = match Browser.copy(password) {
+                        self.status = match Here.copy(password) {
                             true => "Copied the password".into(),
-                            false => "The browser did not let the page copy".into(),
+                            false => "Could not copy to the clipboard".into(),
                         };
                     }
                     Code::Enter | Code::Esc => self.made = None,
@@ -1312,9 +1438,9 @@ impl App {
             if let Event::Key(key) = event {
                 match key.code {
                     Code::Char('c') => {
-                        self.status = match Browser.copy(text) {
+                        self.status = match Here.copy(text) {
                             true => "Copied the user data".into(),
-                            false => "The browser did not let the page copy".into(),
+                            false => "Could not copy to the clipboard".into(),
                         };
                     }
                     Code::Enter | Code::Esc | Code::Char('q') => self.seed = None,
@@ -1391,7 +1517,12 @@ impl App {
                 Line::raw(""),
                 masked_line("Password  ", input.value(), true),
             ];
-            dialog(frame, " Password ", " Enter apply · Esc cancel ", lines);
+            dialog(
+                frame,
+                " Password ",
+                " Enter apply · Esc cancel · Ctrl+O copy ",
+                lines,
+            );
         }
     }
 
@@ -1410,7 +1541,7 @@ impl App {
                 let token = self.typing.value().trim().to_owned();
                 let server = match self.embedded {
                     true => self.server.clone(),
-                    false => browser::address(self.typing_server.value()),
+                    false => device::address(self.typing_server.value()),
                 };
                 if server.is_empty() {
                     self.on_server = true;
@@ -1418,15 +1549,23 @@ impl App {
                     self.token = token;
                     self.server = server;
                     if !self.embedded {
-                        browser::store(browser::SERVER, &self.server);
+                        device::store(Kept::Server, &self.server);
                         self.typing_server = Input::new(self.server.clone());
                     }
-                    browser::store(browser::TOKEN, &self.token);
+                    device::store(Kept::Token, &self.token);
                     self.typing = Input::default();
                     self.refused.clear();
                     self.status.clear();
                     self.connect();
                 }
+            }
+            Event::Key(key) if screen::is_copy_field(&key) => {
+                let input = if self.on_server {
+                    &self.typing_server
+                } else {
+                    &self.typing
+                };
+                self.status = screen::copy_field(&mut Here, input);
             }
             Event::Key(key) if self.on_server => event::edit(&mut self.typing_server, &key),
             Event::Key(key) => event::edit(&mut self.typing, &key),
@@ -1464,7 +1603,7 @@ impl App {
             Constraint::Length(2),
         ])
         .areas(area);
-        draw_header(frame, header, &[], 0, browser::shown(&self.server));
+        draw_header(frame, header, &[], 0, device::shown(&self.server));
         frame.render_widget(Paragraph::new(theme::logo()), logo);
         frame.render_widget(
             Paragraph::new(theme::swell(
@@ -1512,8 +1651,8 @@ impl App {
         lines.push(field("Token   ", &masked, !self.on_server));
         let rows = lines.len() as u16;
         let keys = match self.embedded {
-            true => " Enter connect ",
-            false => " Tab switch · Enter connect ",
+            true => " Enter connect · Ctrl+O copy ",
+            false => " Tab switch · Enter connect · Ctrl+O copy ",
         };
         let area = dialog(frame, " Connect ", keys, lines);
         if area.width > 14 && area.height > rows {

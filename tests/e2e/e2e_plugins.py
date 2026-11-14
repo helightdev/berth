@@ -1,28 +1,22 @@
 """A plugin from a local npm-format package: installed into berth, its
-feature applied to the host, used there, and removed again."""
+feature applied to the host, used there, and removed again.
+
+Plugin uses the extended state of the host (harness.extended()), which adds
+this plugin and applies its feature, and PluginRemoved the plain state
+(harness.plain()), which removes it and applies without it."""
 import json
 import unittest
 
-from harness import AGENT, HOST, SRC, light_vars, needs_e2e, provisioned, random_text, wait_for
+from harness import AGENT, HOST, extended, needs_e2e, plain, random_text, wait_for
 
-FIXTURE = SRC / 'tests/e2e/fixtures/plugin'
 PACKAGE = 'berth-plugin-e2e'
-
-
-def apply_features(station, features):
-    profile = station.read_profile()
-    profile['ansible_vars'] = light_vars(features)
-    station.write_profile(profile)
-    station.berth('apply', HOST)
 
 
 @needs_e2e
 class Plugin(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.station = provisioned()
-        cls.station.berth('plugins', 'add', str(FIXTURE))
-        apply_features(cls.station, ['e2e/hello'])
+        cls.station = extended().station
         cls.link = cls.station.link()
 
     def test_berth_lists_it_with_what_it_brings(self):
@@ -88,10 +82,7 @@ class Plugin(unittest.TestCase):
 class PluginRemoved(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.station = provisioned()
-        if (cls.station.berth_dir / 'plugins/node_modules' / PACKAGE).exists():
-            cls.station.berth('plugins', 'remove', PACKAGE)
-        apply_features(cls.station, [])
+        cls.station = plain().station
 
     def test_its_tasks_are_gone_from_berth_and_the_host(self):
         self.assertNotIn('e2e/hello', self.station.berth('plugins').stdout)

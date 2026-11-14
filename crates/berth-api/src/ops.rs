@@ -56,7 +56,19 @@ pub enum Body {
 
 /// What a caller has to be allowed for an operation. Each role includes the
 /// ones before it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    utoipa::ToSchema,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum Role {
     /// Look: hosts, sessions and their output, logs, the inbox, the store.
     View,
@@ -164,6 +176,8 @@ const fn headers(mut op: Op, headers: &'static [(&'static str, &'static str)]) -
 pub static HOST: &[Op] = &[
     call("version", "GET", "/v1/version"),
     call("reload", "POST", "/v1/reload"),
+    // It holds the accounts' password hashes.
+    admin(call("applied.profile", "GET", "/v1/applied/profile")),
     call("sessions.start", "POST", "/v1/sessions"),
     call("sessions.list", "GET", "/v1/sessions"),
     call("sessions.get", "GET", "/v1/sessions/{id}"),
@@ -223,13 +237,29 @@ pub static SERVE: &[Op] = &[
     admin(call("hosts.remove", "DELETE", "/v1/hosts/{name}")),
     admin(call("hosts.profile", "GET", "/v1/hosts/{name}/profile")),
     admin(call("hosts.save", "PUT", "/v1/hosts/{name}/profile")),
-    admin(call("hosts.apply", "POST", "/v1/hosts/{name}/apply")),
-    admin(call("hosts.rollout", "POST", "/v1/rollout")),
-    admin(call("hosts.seed", "POST", "/v1/hosts/{name}/seed")),
-    admin(call("hosts.secrets", "POST", "/v1/hosts/{name}/secrets")),
+    admin(call(
+        "hosts.credentials",
+        "GET",
+        "/v1/hosts/{name}/credentials",
+    )),
+    call("hosts.actions", "GET", "/v1/hosts/{name}/actions"),
+    // Anyone let in may ask; the action's own role is checked when it is run.
+    role(
+        call("hosts.act", "POST", "/v1/hosts/{name}/actions/{action}"),
+        Role::View,
+    ),
+    call("actions.list", "GET", "/v1/actions"),
+    role(
+        call("actions.act", "POST", "/v1/actions/{action}"),
+        Role::View,
+    ),
     admin(call("secrets.list", "GET", "/v1/secrets")),
     admin(call("secrets.set", "PUT", "/v1/secrets/{name}")),
     admin(call("secrets.remove", "DELETE", "/v1/secrets/{name}")),
+    admin(call("keys.list", "GET", "/v1/keys")),
+    admin(bytes(call("keys.add", "PUT", "/v1/keys/{name}"))),
+    admin(call("keys.remove", "DELETE", "/v1/keys/{name}")),
+    admin(call("keys.rotate", "POST", "/v1/keys/{name}/rotate")),
     admin(call("registries.list", "GET", "/v1/registries")),
     admin(call("registries.save", "PUT", "/v1/registries/{name}")),
     admin(call("registries.remove", "DELETE", "/v1/registries/{name}")),
@@ -248,28 +278,42 @@ pub static SERVE: &[Op] = &[
     admin(call("plugins.update", "POST", "/v1/plugins/update")),
     admin(call("setup.catalogue", "GET", "/v1/setup")),
     admin(call("setup.generate", "POST", "/v1/setup/generate")),
-    admin(call("provisioners.list", "GET", "/v1/provisioners")),
-    admin(call(
-        "provisioners.instances",
+    call("provisioners.list", "GET", "/v1/provisioners"),
+    call("provisioners.get", "GET", "/v1/provisioners/{plugin}/{id}"),
+    call(
+        "provisioners.actions",
         "GET",
-        "/v1/provisioners/{plugin}/{id}/instances",
-    )),
-    admin(call(
-        "instances.create",
-        "POST",
-        "/v1/hosts/{name}/instance",
-    )),
-    admin(call("instances.get", "GET", "/v1/hosts/{name}/instance")),
-    admin(call(
-        "instances.power",
-        "POST",
-        "/v1/hosts/{name}/instance/{verb}",
-    )),
-    admin(call(
-        "instances.destroy",
-        "DELETE",
-        "/v1/hosts/{name}/instance",
-    )),
+        "/v1/provisioners/{plugin}/{id}/actions",
+    ),
+    // Anyone let in may ask; the action's own role is checked when it is run.
+    role(
+        call(
+            "provisioners.act",
+            "POST",
+            "/v1/provisioners/{plugin}/{id}/actions/{action}",
+        ),
+        Role::View,
+    ),
+    call("resources.list", "GET", "/v1/resources"),
+    admin(call("resources.create", "POST", "/v1/resources")),
+    call("resources.get", "GET", "/v1/resources/{id}"),
+    admin(call("resources.change", "PUT", "/v1/resources/{id}")),
+    admin(call("resources.remove", "DELETE", "/v1/resources/{id}")),
+    call("resources.actions", "GET", "/v1/resources/{id}/actions"),
+    // Anyone let in may ask; the action's own role is checked when it is run.
+    role(
+        call(
+            "resources.act",
+            "POST",
+            "/v1/resources/{id}/actions/{action}",
+        ),
+        Role::View,
+    ),
+    role(
+        call("resources.logs", "GET", "/v1/resources/{id}/logs"),
+        Role::Operate,
+    ),
+    stream("resources.follow", "/v1/resources/{id}/logs"),
     call("jobs.list", "GET", "/v1/jobs"),
     call("jobs.get", "GET", "/v1/jobs/{id}"),
     role(stream("jobs.follow", "/v1/jobs/{id}"), Role::View),
@@ -392,8 +436,26 @@ mod tests {
         let role = |table, name| find(table, name).unwrap().role;
         assert_eq!(role(HOST, "sessions.list"), Role::View);
         assert_eq!(role(HOST, "files.read"), Role::Operate);
+        assert_eq!(role(HOST, "applied.profile"), Role::Admin);
         assert_eq!(role(HOST, "sessions.attach"), Role::Operate);
-        assert_eq!(role(SERVE, "hosts.apply"), Role::Admin);
+        assert_eq!(role(SERVE, "hosts.save"), Role::Admin);
+        assert_eq!(role(SERVE, "hosts.act"), Role::View);
+        assert_eq!(role(SERVE, "provisioners.get"), Role::View);
+        assert_eq!(role(SERVE, "provisioners.act"), Role::View);
+        assert_eq!(role(SERVE, "resources.get"), Role::View);
+        assert_eq!(role(SERVE, "resources.create"), Role::Admin);
+        assert_eq!(role(SERVE, "resources.act"), Role::View);
+        assert_eq!(role(SERVE, "resources.logs"), Role::Operate);
+        assert_eq!(role(SERVE, "resources.follow"), Role::Operate);
+        let (op, args) = recognise(
+            SERVE,
+            Kind::Call,
+            "POST",
+            "/v1/provisioners/docker/container/actions/prune",
+        )
+        .unwrap();
+        assert_eq!(op.name, "provisioners.act");
+        assert_eq!(args[2], ("action", "prune".to_owned()));
         assert_eq!(role(SERVE, "plugins.upload"), Role::Admin);
         assert_eq!(role(SERVE, "kv.set"), Role::Operate);
         assert!(Role::View < Role::Operate && Role::Operate < Role::Admin);

@@ -1,0 +1,170 @@
+---
+title: Resources
+description: What provisioners made for berth, such as a host's machine or a deployment, and how to look after each one from the command line, the terminal UI and the API.
+icon: Shapes
+---
+
+A resource is something a [provisioner](/docs/deploy/provisioners) made for berth. A host's machine is one. A plugin can declare other kinds, such as the [deployments](/docs/deploy/deployments) of the Docker plugin. berth keeps a record of each resource in its store and looks after all of them the same way.
+
+```bash
+berth resource
+```
+
+```text
+r-k3q7wz2m   machine     studio-2 (host studio-2)   incus/vm             running
+r-p5x2hd7a   deployment  notes                      docker/container     running
+```
+
+The list comes from berth's records, with each resource as it was last seen. berth doesn't ask the provisioners for it. `--provisioner PLUGIN/ID`, `--kind KIND` and `--host HOST` narrow it.
+
+## Kinds
+
+| Kind | Belongs to | Made with |
+| --- | --- | --- |
+| `machine` | A saved host, at most one machine for each | `berth provision HOST PLUGIN/ID` ([Create the machine](/docs/deploy/provisioners#create-the-machine)) |
+| A kind its plugin declares, such as `deployment` | No host | `berth deploy` for a deployment, or `resources.create` for any kind |
+
+A provisioner's page says which kinds it makes. Each kind lists which of `start`, `stop`, `change` and `logs` its provisioner takes for it, and can bring actions of its own.
+
+## What berth keeps of one
+
+| Field | Holds |
+| --- | --- |
+| `id` | berth's id, such as `r-k3q7wz2m`. It stays the same for the life of the record |
+| `provisioner`, `kind`, `name` | Who made it and what it is. A machine's name is its host's |
+| `external_id` | The provisioner's own id of it, shown as `Made as`. Empty until the provisioner has said it |
+| `host` | The saved host, for a machine |
+| `state`, `checked` | How it was when berth last asked, and when that was (`Asked`) |
+| `address` | Where it is reached, when the provisioner says |
+| `arguments` | The values it was made or last changed with |
+| `secrets` | The names of the berth secrets it is given, and the variable each becomes. Never their values |
+| `spec_sha256` | The SHA-256 of its specification, for a kind made from one |
+| `created` | When berth made it |
+
+## States
+
+| State | Means |
+| --- | --- |
+| `creating` | A job is making it now |
+| `running`, `stopped` | What the provisioner said |
+| `missing` | The provisioner no longer finds it |
+| `unknown` | The provisioner did not answer, or making it did not end. A `Problem` line says which |
+
+A missing resource keeps its record. berth does not forget a resource that was removed outside berth. Remove it through berth, which then forgets it. Removing something that is gone already counts as done.
+
+## Look at one
+
+`berth resource ID` asks the provisioner how the resource is now, and keeps what it says. A name works in place of the id while only one resource has that name.
+
+```bash
+berth resource r-k3q7wz2m
+```
+
+```text
+r-k3q7wz2m  machine studio-2 of incus/vm
+State      running
+Made as    berth-studio-2
+Host       studio-2
+Address    192.0.2.31
+Created    2026-11-12T20:14:03Z
+Asked      2026-11-13T08:02:11Z
+Arguments  cpus=8 disk=60GiB image=ubuntu/26.04/cloud memory=8GiB pool=default project=default server=https://192.0.2.10:8443
+
+Actions (berth resource r-k3q7wz2m run ACTION)
+  start              Start
+  stop               Stop
+  change             Change
+  remove             Delete the machine
+
+Its log: berth resource r-k3q7wz2m logs [--follow]
+```
+
+An action that cannot run now says why beside its name, such as a secret of the provisioner that has no value.
+
+## Its actions
+
+| Action | Listed when | Does |
+| --- | --- | --- |
+| `start`, `stop` | The kind lists that verb | Start or stop it. Stop asks first |
+| `change` | The kind lists `change` | Give it other values of the kind's arguments. A kind made from a specification also takes a new one, and other secrets |
+| The kind's own | Its plugin declares them | What the plugin does, such as `services` of a deployment |
+| `remove` | Always | Remove it with its provisioner and forget the record. For a machine, the host's profile stays |
+
+```bash
+berth resource r-k3q7wz2m actions
+berth resource r-k3q7wz2m run stop
+berth resource r-k3q7wz2m change cpus=4 memory=16GiB
+berth resource r-k3q7wz2m logs --tail 50 --follow
+berth resource r-k3q7wz2m remove
+```
+
+`run` and `remove` put the action's question first, unless `--yes` is given. In a terminal, `run` prompts for a required argument you leave out. An action that only reads answers at once. One that changes something runs as a job and shows its output as it comes. berth then ends with the job's exit code.
+
+`change` takes what is given and keeps the rest. For a kind made from a specification, `--spec FILE` gives a new one and `-` reads it from standard input. `--secret NAME[:VARIABLE]` gives the secrets it gets. Given once, it replaces the whole list.
+
+`logs` prints the last 100 lines, or `--tail N`. `--follow` goes on with what comes after them until the log ends or you stop it. A berth server ends a followed log after an hour. Lines that contain a secret show `[secret]` in its place.
+
+## A host's machine
+
+A host's machine is a resource of the kind `machine`. These short forms go by the host's name:
+
+| Command | Is the same as |
+| --- | --- |
+| `berth provision HOST PLUGIN/ID [NAME=VALUE…]` | Making the machine and setting it up as the host |
+| `berth instance HOST` | `berth resource ID` |
+| `berth instance HOST start\|stop` | `berth resource ID run start\|stop` |
+| `berth instance HOST destroy [--yes]` | `berth resource ID remove`, but it asks you to type the host's name |
+
+`berth remove HOST` is refused while the host has a machine berth made. Its message gives the command that deletes the machine.
+
+## Records, tokens and locks
+
+berth writes a resource's record before it asks the provisioner to make anything. The record has a token, which goes to the provisioner with `create`. When making it fails or berth stops halfway, asking again with the same provisioner and name sends the same token. The provisioner then finds what it made before and does not make a second one. A record whose making did not end shows the state `unknown` with a problem that says so. `remove` then forgets the record only.
+
+A host's machine is kept beside the host's profile, and every other resource in the installation's own part of the store. A specification is kept in a row of its own, so listing resources reads none. Like every value of the store, both are sealed when the [store is encrypted](/docs/use/store).
+
+Each change is a job whose subject is `resource:ID`, and it holds the resource's lock while it runs. A second change to the same resource is refused until the first has ended. A host's machine shares the host's lock, so applying the host and changing its machine exclude each other.
+
+A caller can give a token of its own, such as `berth deploy --token TEXT` or `token` in a request. The same token again answers with the job the first call started, and nothing runs a second time.
+
+### From an older berth
+
+An older berth kept the record of a host's machine beside its profile. The first run of this berth makes each of those a resource of the kind `machine`, with its provisioner's id and token. It says how many it converted, and does it once. `berth resource` lists them afterwards.
+
+## In the terminal UI
+
+The **Provisioners** tab of the home screen (`2`) lists the provisioners. Enter opens a provisioner's page, which lists what it holds, grouped by kind:
+
+```text
+Machines berth made with it
+  studio-2           berth-studio-2  running
+Compose project berth made with it
+  notes              notes  running
+  attic              attic  running · no record of it
+```
+
+An entry the provisioner lists with berth's labels, but that berth has no record of, is marked *no record of it*. berth does not remove it.
+
+Enter on an entry opens the resource's page. It shows the resource's state and fields, and its actions in their groups. **Show its log** is there when its kind gives logs, and follows the log in a panel until you close it. Esc goes back to the provisioner's page. The page of [`berth serve --web`](/docs/use/server#in-a-browser) has the same tab.
+
+A host's machine is also on the host's Run tab, with its state and rows to start, stop and delete it.
+
+## With a berth server
+
+With a [berth server](/docs/use/server) set, `berth resource`, `berth deploy` and the short forms use the server's resources. What changes one runs as a job there, with the server's plugins, secrets and provisioner settings.
+
+| Operation | Route | Role |
+| --- | --- | --- |
+| `resources.list` | `GET /v1/resources`, with `provisioner`, `kind` or `host` to narrow it | `view` |
+| `resources.get` | `GET /v1/resources/{id}` | `view` |
+| `resources.create` | `POST /v1/resources`. Answers `202` with the resource and its job | `admin` |
+| `resources.change` | `PUT /v1/resources/{id}`, as a job | `admin` |
+| `resources.remove` | `DELETE /v1/resources/{id}`, as a job. A token goes in `?token=` | `admin` |
+| `resources.actions` | `GET /v1/resources/{id}/actions` | `view` |
+| `resources.act` | `POST /v1/resources/{id}/actions/{action}` | The action's own |
+| `resources.logs` | `GET /v1/resources/{id}/logs?tail=N`, as plain text | `operate` |
+| `resources.follow` | A WebSocket at the same path. The lines come as binary frames, then `{"exited": …}` | `operate` |
+
+An action of a resource needs `admin` unless its plugin says otherwise, including one that only reads. Requests and answers are in the [API reference](/docs/api/serve/resources).
+
+With `serve_setup off`, a server takes changes to resources only on its own socket, not over the network ([Closing set-up](/docs/extend/serve#closing-set-up)).

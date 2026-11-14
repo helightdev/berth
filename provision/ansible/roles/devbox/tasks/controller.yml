@@ -1,0 +1,45 @@
+---
+# berth's controller alone, for a host that is not a workstation: berthd and
+# box, what they read, and the record of what was installed. Nothing else of
+# the role runs, and no account is made: the SSH user is the account
+# sessions run as, its home the folder the file calls may touch. The full
+# apply runs berth.yml itself, after the accounts.
+- name: Check the target before any changes
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.system == 'Linux'
+      - ansible_facts.architecture == 'x86_64'
+      - devbox_controller_user | length > 0
+    fail_msg: berth's controller runs on Linux on x86_64.
+- name: Refuse a host berth set up as a workstation
+  ansible.builtin.import_tasks: controller_guard.yml
+- name: Find the account sessions run as
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ devbox_controller_user }}"
+- name: Describe the host to berthd without a workstation
+  ansible.builtin.set_fact:
+    devbox_user: "{{ devbox_controller_user }}"
+    devbox_operator_user: "{{ devbox_controller_user }}"
+    devbox_home: "{{ ansible_facts.getent_passwd[devbox_controller_user][4] }}"
+    # Rebooting asks systemd.
+    devbox_tasks: "{{ devbox_controller_tasks if ansible_facts.service_mgr == 'systemd' else devbox_controller_tasks | rejectattr('name', 'equalto', 'reboot') | list }}"
+    devbox_plugin_services: []
+    devbox_plugin_channels: []
+    devbox_service_units: []
+    devbox_berthd_units: [ssh, berthd]
+    devbox_berthd_roots: ["{{ ansible_facts.getent_passwd[devbox_controller_user][4] }}"]
+    devbox_berthd_systemd: "{{ ansible_facts.service_mgr == 'systemd' }}"
+- name: Install the helper that takes in secrets
+  ansible.builtin.copy:
+    src: secrets.py
+    dest: /usr/local/bin/devbox-secrets
+    mode: '0755'
+- name: Install berthd, box and what they read
+  ansible.builtin.import_tasks: berth.yml
+- name: Say who starts berthd on a host without systemd
+  ansible.builtin.debug:
+    msg: This host has no systemd, so nothing here starts berthd by itself. Something on the host has to run /usr/local/bin/berthd, as the init of a container does.
+  when: not devbox_berthd_systemd | bool
+- name: Record what was installed
+  ansible.builtin.import_tasks: applied.yml

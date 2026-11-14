@@ -87,9 +87,24 @@ class Handler(BaseHTTPRequestHandler):
         parts = url.path.strip('/').split('/')
         server.events.append(('client-cert', bool(self.connection.getpeercert())))
         if url.path == '/1.0':
-            return self.answer(200, {'auth': 'trusted' if server.trusted else 'untrusted', 'api_version': '1.0'})
+            return self.answer(200, {'auth': 'trusted' if server.trusted else 'untrusted', 'api_version': '1.0',
+                                     'environment': {'server_version': '6.18', 'server_name': 'dock',
+                                                     'kernel': 'Linux', 'kernel_version': '6.17.0',
+                                                     'storage_supported_drivers': [{'name': 'zfs'}, {'name': 'dir'}]}})
         if not server.trusted:
             return self.answer(403, 'not authorized', 'error')
+        if parts == ['1.0', 'storage-pools']:
+            return self.answer(200, [{'name': 'default', 'driver': 'zfs'}, {'name': 'fast', 'driver': 'dir'}])
+        if parts[:2] == ['1.0', 'storage-pools'] and parts[3:] == ['resources']:
+            if parts[2] == 'fast':
+                return self.answer(500, 'no resources for dir', 'error')
+            return self.answer(200, {'space': {'used': 10 * 1024 ** 3, 'total': 100 * 1024 ** 3}})
+        if parts == ['1.0', 'networks']:
+            return self.answer(200, [{'name': 'incusbr0', 'type': 'bridge', 'managed': True},
+                                     {'name': 'eth0', 'type': 'physical', 'managed': False}])
+        if parts == ['1.0', 'images']:
+            return self.answer(200, [{'fingerprint': 'abcdef1234567890', 'type': 'container', 'size': 2 * 1024 ** 3,
+                                      'cached': True, 'aliases': [], 'properties': {'description': 'Ubuntu 26.04'}}])
         if parts[:2] == ['1.0', 'operations'] and parts[3:] == ['wait']:
             return self.answer(200, server.operations[parts[2]])
         if parts == ['1.0', 'instances'] and self.command == 'GET':
@@ -110,6 +125,12 @@ class Handler(BaseHTTPRequestHandler):
         rest = parts[3:]
         if rest == [] and self.command == 'GET':
             return self.answer(200, public(instance))
+        if rest == [] and self.command == 'PATCH':
+            data = json.loads(body)
+            server.events.append(('patch', instance['name'], data))
+            instance['config'].update(data.get('config') or {})
+            instance['devices'] = data.get('devices') or instance.get('devices')
+            return self.answer(200, {})
         if rest == [] and self.command == 'DELETE':
             server.events.append(('delete', instance['name'], instance['status']))
             del server.instances[instance['name']]
@@ -150,7 +171,7 @@ class Handler(BaseHTTPRequestHandler):
         with self.server.lock:
             self.route()
 
-    do_POST = do_PUT = do_DELETE = do_HEAD = do_GET
+    do_POST = do_PUT = do_DELETE = do_HEAD = do_PATCH = do_GET
 
 
 @unittest.skipUnless(shutil.which('openssl'), 'openssl makes the certificates for the fake server')
@@ -167,6 +188,7 @@ class IncusPluginTests(unittest.TestCase):
         cls.archive.write_bytes(b'release archive ' * 1000)
         cls.sha = hashlib.sha256(cls.archive.read_bytes()).hexdigest()
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(directory / 'server.crt', directory / 'server.key')
         # Incus asks every client for a certificate and decides trust afterwards.
         context.verify_mode = ssl.CERT_OPTIONAL
@@ -187,7 +209,7 @@ class IncusPluginTests(unittest.TestCase):
         self.server.events.clear()
 
     def run_verb(self, verb, provisioner='container', secrets=None, **fields):
-        request = {'version': 1, 'verb': verb, 'provisioner': provisioner,
+        request = {'version': 2, 'verb': verb, 'provisioner': provisioner,
                    'arguments': {'server': self.address, 'cpus': '4', 'memory': '8GiB', 'disk': '60GiB',
                                  'image': 'ubuntu/26.04/cloud', 'pool': 'default', 'network': '',
                                  'project': 'default', **fields.pop('arguments', {})},
@@ -276,29 +298,41 @@ class IncusPluginTests(unittest.TestCase):
         self.assertEqual(self.run_verb('status', id='berth-studio-2')[1]['state'], 'running')
         self.assertEqual(self.run_verb('status', id='berth-gone')[1], {'state': 'gone'})
 
-    def test_log_answers_the_latest_console_lines(self):
+    def logs(self, **fields):
+        """What logs writes, which is not JSON."""
+        request = {'version': 2, 'verb': 'logs', 'provisioner': 'container',
+                   'arguments': {'server': self.address, 'project': 'default'},
+                   'secrets': {'incus_client_cert': self.client_cert, 'incus_client_key': self.client_key,
+                               'incus_server_cert': self.server_cert}, **fields}
+        result = subprocess.run([str(PLUGIN / 'bin/provision'), 'logs'], cwd=PLUGIN, capture_output=True, text=True,
+                                timeout=60, input=json.dumps(request))
+        return result.returncode, result.stdout, result.stderr
+
+    def test_logs_are_the_latest_console_lines(self):
         self.create()
-        console = ''.join(f'[  OK  ] Started unit-{n}.service.\r\n' for n in range(150)) + '\r\n'
+        console = ''.join(f'[  OK  ] Started unit-{n}.service.\r\n' for n in range(150))
         self.server.instances['berth-studio-2']['console'] = console.encode()
-        code, answer, err = self.run_verb('log', id='berth-studio-2')
+        code, out, err = self.logs(id='berth-studio-2')
         self.assertEqual(code, 0, err)
-        self.assertEqual(len(answer['lines']), 100)
-        self.assertEqual(answer['lines'][-1], '[  OK  ] Started unit-149.service.')
+        self.assertEqual(len(out.splitlines()), 100)
+        self.assertEqual(out.splitlines()[-1], '[  OK  ] Started unit-149.service.')
         self.assertIn(('console', 'log'), self.server.events)
 
-    def test_log_reads_cloud_init_output_when_the_console_is_empty(self):
+    def test_logs_read_cloud_init_output_when_the_console_is_empty(self):
         self.create()
         self.server.instances['berth-studio-2']['files']['/var/log/cloud-init-output.log'] = \
-            b'Cloud-init v. 25.1 running modules:config\n\nCloud-init v. 25.1 finished\n'
-        code, answer, err = self.run_verb('log', id='berth-studio-2')
+            b'Cloud-init v. 25.1 running modules:config\nCloud-init v. 25.1 finished\n'
+        code, out, err = self.logs(id='berth-studio-2')
         self.assertEqual(code, 0, err)
-        self.assertEqual(answer, {'lines': ['Cloud-init v. 25.1 running modules:config', 'Cloud-init v. 25.1 finished']})
+        self.assertEqual(out, 'Cloud-init v. 25.1 running modules:config\nCloud-init v. 25.1 finished\n')
 
-    def test_log_of_a_vm_without_its_agent_or_of_one_gone_is_empty(self):
+    def test_logs_of_a_vm_without_its_agent_are_empty_and_of_one_gone_fail(self):
         self.create('vm')
         self.server.instances['berth-studio-2']['status'] = 'Stopped'
-        self.assertEqual(self.run_verb('log', id='berth-studio-2')[:2], (0, {'lines': []}))
-        self.assertEqual(self.run_verb('log', id='berth-gone')[:2], (0, {'lines': []}))
+        self.assertEqual(self.logs(id='berth-studio-2')[:2], (0, ''))
+        code, _, err = self.logs(id='berth-gone')
+        self.assertEqual(code, 1)
+        self.assertIn('no longer', err)
 
     def test_destroy_stops_and_deletes_and_is_fine_when_gone(self):
         self.create()
@@ -322,7 +356,63 @@ class IncusPluginTests(unittest.TestCase):
                                         'config': {}, 'files': {}}
         code, answer, err = self.run_verb('list')
         self.assertEqual(code, 0, err)
-        self.assertEqual(answer, {'instances': [{'id': 'berth-studio-2', 'host': 'studio-2', 'state': 'running'}]})
+        self.assertEqual(answer, {'resources': [{'id': 'berth-studio-2', 'kind': 'machine', 'name': 'studio-2',
+                                                 'host': 'studio-2', 'state': 'running'}]})
+        # A provisioner lists the instances of its own type.
+        self.assertEqual(self.run_verb('list', 'vm')[1], {'resources': []})
+
+    def test_status_without_an_id_is_the_server(self):
+        code, answer, err = self.run_verb('status')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(answer['state'], 'ready')
+        self.assertEqual(answer['message'], f'Incus 6.18 answers at {self.address} and trusts berth')
+        self.assertEqual(answer['values'], {'pool': ['default', 'fast'], 'network': ['eth0', 'incusbr0']})
+        rows = {row['label']: row['value'] for row in answer['details']}
+        self.assertEqual((rows['Name'], rows['Storage'], rows['Kernel']), ('dock', 'zfs, dir', 'Linux 6.17.0'))
+
+    def test_actions_answer_with_rows(self):
+        code, answer, err = self.run_verb('act', action={'name': 'pools', 'arguments': {}})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(answer['details'], [{'label': 'default', 'value': 'zfs · 10.0 GiB of 100.0 GiB used'},
+                                             {'label': 'fast', 'value': 'dir · its use is not known'}])
+        code, answer, err = self.run_verb('act', action={'name': 'images'})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(answer['details'], [{'label': 'Ubuntu 26.04', 'value': 'container · 2.0 GiB · cached'}])
+        code, answer, err = self.run_verb('act', action={'name': 'networks'})
+        self.assertEqual(answer['details'][0], {'label': 'incusbr0', 'value': 'bridge · managed by Incus'})
+        code, answer, err = self.run_verb('act', action={'name': 'server'})
+        self.assertIn('trusts berth', answer['message'])
+        code, _, err = self.run_verb('act', action={'name': 'wipe'})
+        self.assertEqual(code, 1)
+        self.assertIn("no action 'wipe'", err)
+
+    def test_change_sets_new_limits_and_grows_the_disk(self):
+        self.create()
+        code, answer, err = self.run_verb('change', id='berth-studio-2',
+                                          arguments={'cpus': '2', 'memory': '4GiB', 'disk': '80GiB'})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(answer, {'state': 'running'})
+        [patch] = [e for e in self.server.events if e[0] == 'patch']
+        self.assertEqual(patch[2]['config'], {'limits.cpu': '2', 'limits.memory': '4GiB'})
+        self.assertEqual(patch[2]['devices']['root']['size'], '80GiB')
+        self.server.instances['web'] = {'name': 'web', 'type': 'container', 'status': 'Running',
+                                        'config': {}, 'files': {}}
+        code, _, err = self.run_verb('change', id='web', arguments={'cpus': '1'})
+        self.assertEqual(code, 1)
+        self.assertIn('not made by berth', err)
+
+    def test_logs_are_the_last_lines_of_the_console(self):
+        self.create()
+        self.server.instances['berth-studio-2']['console'] = ''.join(f'line {n}\n' for n in range(1, 6)).encode()
+        code, out, err = self.logs(id='berth-studio-2', tail=2)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out, 'line 4\nline 5\n')
+
+    def test_another_version_of_the_protocol_is_refused(self):
+        result = subprocess.run([str(PLUGIN / 'bin/provision'), 'status'], cwd=PLUGIN, capture_output=True,
+                                text=True, timeout=60, input=json.dumps({'version': 1, 'provisioner': 'vm'}))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('version 2', result.stderr)
 
     def test_an_untrusted_client_is_told_what_to_do(self):
         self.server.trusted = False

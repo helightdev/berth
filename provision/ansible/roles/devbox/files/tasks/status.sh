@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
 . "$(dirname "$0")/common.sh"
+# A host with berth's controller alone has no desktop, agents or tailnet of berth's.
+if [[ ${1:-} == controller ]]; then
+  echo "Host        $(hostname), up since $(uptime -s)"
+  echo "Level       controller: berthd and box, nothing of a workstation"
+  for unit in ssh berthd; do
+    systemctl cat "$unit" >/dev/null 2>&1 && printf '%-11s %s\n' "$unit" "$(systemctl is-active "$unit" || true)"
+  done
+  echo "Disk        $(df -h --output=avail,pcent / | tail -1 | xargs) free/used on /"
+  [[ -f /var/run/reboot-required ]] && echo 'Reboot      required by installed updates'
+  { systemctl --failed --no-legend 2>/dev/null || true; } | sed 's/^/Failed      /'
+  exit 0
+fi
 echo "Host        $(hostname), up since $(uptime -s)"
 echo "Provision   $(cat /var/lib/devbox/provision-state 2>/dev/null || echo unknown)"
 echo "Tailscale   ${address:-not enrolled} ${name}"

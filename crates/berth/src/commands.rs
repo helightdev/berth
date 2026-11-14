@@ -11,9 +11,11 @@ use berth_api::{
 };
 use berth_core::{
     host::Host,
+    level,
     link::{self, Link},
     paths::Paths,
-    provision, registry,
+    profiles::Place,
+    provision, registry, runner,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -51,8 +53,8 @@ impl Drop for Reach {
 
 fn reach(paths: &Paths, name: &str) -> Result<Reach> {
     let host = Host::load(paths, name)?;
-    let password = host.sudo_password()?;
-    let link = Link::new(host.link(password.as_deref())?);
+    let password = host.sudo_password(paths)?;
+    let link = Link::new(host.link(paths, password.as_deref())?);
     Ok(Reach {
         host,
         link,
@@ -60,11 +62,19 @@ fn reach(paths: &Paths, name: &str) -> Result<Reach> {
     })
 }
 
+/// The way to a host's controller, for what needs one: a host meant to be
+/// only reachable is refused with the action that installs it.
+fn controlled(paths: &Paths, name: &str) -> Result<Reach> {
+    let reach = reach(paths, name)?;
+    level::guard(&reach.host, level::Capability::Sessions)?;
+    Ok(reach)
+}
+
 /// An error of the link in words that say what to do about it.
 fn explain(error: Error, host: &str) -> Box<dyn std::error::Error> {
     if Link::missing(&error) {
         return format!(
-            "berth's controller is not on {host} yet. Apply its configuration first: berth {host}, then Apply this configuration."
+            "berth's controller is not on {host} yet. Install it alone with: berth host install {host}. For a workstation, apply its configuration: berth apply {host}"
         )
         .into();
     }
@@ -159,7 +169,7 @@ pub fn inventory(paths: &Paths, names: &[&str]) -> Result<()> {
     let mut entries = vec![];
     for host in hosts {
         let inventory = host
-            .inventory()
+            .inventory(paths)
             .map_err(|error| format!("{}: {error}", host.name))?;
         entries.push((host.name, inventory));
     }
@@ -368,7 +378,7 @@ async fn finish(reach: &Reach, id: &str, ended: Ended, forget: bool) -> i32 {
 /// host as a process session and leave with its exit code.
 pub fn exec(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
     let exec = parse_exec(args)?;
-    let reach = reach(paths, name)?;
+    let reach = controlled(paths, name)?;
     let code = reach.wait(async {
         let body = json!({
             "kind": "process", "command": exec.command, "user": exec.user,
@@ -388,7 +398,7 @@ pub fn exec(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
 /// `berth attach HOST [ID]`: this terminal onto a terminal session; without
 /// an id, onto a new shell as the agent.
 pub fn attach(paths: &Paths, name: &str, id: Option<&str>) -> Result<()> {
-    let reach = reach(paths, name)?;
+    let reach = controlled(paths, name)?;
     let code = reach.wait(async {
         let (rows, cols) = terminal_size();
         let session: api::Session = match id {
@@ -414,7 +424,7 @@ pub fn attach(paths: &Paths, name: &str, id: Option<&str>) -> Result<()> {
 
 /// `berth sessions HOST`
 pub fn sessions(paths: &Paths, name: &str) -> Result<()> {
-    let reach = reach(paths, name)?;
+    let reach = controlled(paths, name)?;
     let sessions: Vec<api::Session> = reach
         .wait(reach.link.get::<Value>("/v1/sessions"))
         .map(|value| list(value, "sessions"))
@@ -452,7 +462,7 @@ pub fn output(paths: &Paths, name: &str, id: &str, args: &[&str]) -> Result<()> 
             _ => return Err("Usage: berth output HOST ID [--tail N] [--follow]".into()),
         }
     }
-    let reach = reach(paths, name)?;
+    let reach = controlled(paths, name)?;
     let id = encode(id);
     let code = reach.wait(async {
         let link = &reach.link;
@@ -509,29 +519,80 @@ fn host_tasks(reach: &Reach) -> Result<Vec<api::Task>> {
         .map_err(|error| explain(error, &reach.host.name))
 }
 
+/// What a host can do, with the tasks its controller lists for a host of
+/// this machine. A berth server's host has the server's list of its
+/// actions, which has berth's own beside its tasks.
+fn host_actions(paths: &Paths, reach: &Reach) -> Result<(Vec<api::Action>, Vec<api::Task>)> {
+    match reach.host.served(paths) {
+        Some(server) => {
+            let listed = server.call("hosts.actions", json!({"name": reach.host.name}), None)?;
+            Ok((serde_json::from_value(listed)?, vec![]))
+        }
+        None => {
+            // A host that is only reachable has no controller to ask.
+            let host_level = level::of(&reach.host.config);
+            let tasks = match host_level {
+                level::Level::Reachable => vec![],
+                _ => host_tasks(reach)?,
+            };
+            let mut actions = api::Action::of_tasks(&tasks);
+            let own = level::local_actions(&reach.host.name, host_level, observed(reach));
+            actions.retain(|action| !own.iter().any(|known| known.name == action.name));
+            actions.extend(own);
+            Ok((actions, tasks))
+        }
+    }
+}
+
+/// What the host's controller says the host is, when one answers in time.
+/// Only a host whose profile says less than a workstation is asked.
+fn observed(reach: &Reach) -> Option<level::Level> {
+    if level::of(&reach.host.config) == level::Level::Workstation {
+        return None;
+    }
+    let asked = reach.wait(async {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            reach.link.get::<api::Version>("/v1/version"),
+        )
+        .await
+        {
+            Ok(Ok(version)) => Ok(version),
+            _ => Err(()),
+        }
+    });
+    asked
+        .ok()
+        .as_ref()
+        .and_then(|version| level::seen(Ok(version)))
+}
+
 /// `berth tasks HOST`: what the host can do, by group.
 pub fn tasks(paths: &Paths, name: &str) -> Result<()> {
     let reach = reach(paths, name)?;
-    let tasks = host_tasks(&reach)?;
-    let mut groups: Vec<(&str, Vec<&api::Task>)> = vec![];
-    for task in tasks.iter().filter(|task| task.extends.is_empty()) {
-        let title = if task.group.is_empty() {
+    let (actions, _) = host_actions(paths, &reach)?;
+    if let Some(said) = level::mismatch(name, level::of(&reach.host.config), observed(&reach)) {
+        println!("! {said}\n");
+    }
+    let mut groups: Vec<(&str, Vec<&api::Action>)> = vec![];
+    for action in &actions {
+        let title = if action.group.is_empty() {
             "System"
         } else {
-            task.group.as_str()
+            action.group.as_str()
         };
         match groups
             .iter_mut()
             .find(|(known, _)| known.eq_ignore_ascii_case(title))
         {
-            Some((_, list)) => list.push(task),
-            None => groups.push((title, vec![task])),
+            Some((_, list)) => list.push(action),
+            None => groups.push((title, vec![action])),
         }
     }
     for (title, list) in groups {
         println!("{title}");
-        for task in list {
-            let arguments: Vec<String> = task
+        for action in list {
+            let arguments: Vec<String> = action
                 .arguments
                 .iter()
                 .map(|argument| match argument.required {
@@ -539,16 +600,17 @@ pub fn tasks(paths: &Paths, name: &str) -> Result<()> {
                     false => format!("[{}=…]", argument.name),
                 })
                 .collect();
+            let why = match action.available {
+                true => String::new(),
+                false => format!("  ({})", action.why),
+            };
             println!(
-                "  {:<22} {}  {}",
-                task.name,
-                task.label,
+                "  {:<22} {}  {}{why}",
+                action.name,
+                action.label,
                 arguments.join(" ")
             );
-            for step in tasks
-                .iter()
-                .filter(|step| step.extends.contains(&task.name))
-            {
+            for step in &action.steps {
                 println!("  {:<22}   + {}", "", step.label);
             }
         }
@@ -564,20 +626,23 @@ fn ask(question: &str) -> Result<String> {
     Ok(answer.trim().to_owned())
 }
 
-/// `berth run HOST TASK [NAME=VALUE…] [--yes]`: run one of the host's tasks
-/// and leave with its exit code.
-pub fn run(paths: &Paths, name: &str, task: &str, args: &[&str]) -> Result<()> {
-    let (mut values, yes) = parse_arguments(args)?;
-    let reach = reach(paths, name)?;
-    let tasks = host_tasks(&reach)?;
-    let Some(found) = tasks.iter().find(|known| known.name == task) else {
-        let names: Vec<&str> = tasks
-            .iter()
-            .filter(|task| task.extends.is_empty())
-            .map(|task| task.name.as_str())
-            .collect();
-        return Err(format!("{name} has no task {task}. Tasks: {}", names.join(", ")).into());
+/// The action of that name, with the values of its arguments: those given,
+/// and the required ones asked for on a terminal. Its question is asked
+/// unless `yes`.
+pub(crate) fn ready(
+    subject: &str,
+    actions: &[api::Action],
+    name: &str,
+    mut values: BTreeMap<String, String>,
+    yes: bool,
+) -> Result<(api::Action, BTreeMap<String, String>)> {
+    let Some(found) = actions.iter().find(|known| known.name == name) else {
+        let names: Vec<&str> = actions.iter().map(|known| known.name.as_str()).collect();
+        return Err(format!("{subject} has no task {name}. Tasks: {}", names.join(", ")).into());
     };
+    if !found.available {
+        return Err(format!("{name} cannot run now: {}", found.why).into());
+    }
     for argument in &found.arguments {
         if values.contains_key(&argument.name) {
             continue;
@@ -588,9 +653,13 @@ pub fn run(paths: &Paths, name: &str, task: &str, args: &[&str]) -> Result<()> {
             } else {
                 &argument.label
             };
-            values.insert(argument.name.clone(), ask(&format!("{label}:"))?);
+            let value = match argument.secret {
+                true => registry::read_secret(label)?,
+                false => ask(&format!("{label}:"))?,
+            };
+            values.insert(argument.name.clone(), value);
         } else if argument.required {
-            return Err(format!("{task} needs {}=VALUE", argument.name).into());
+            return Err(format!("{name} needs {}=VALUE", argument.name).into());
         }
     }
     if let (Some(question), false) = (&found.confirm, yes)
@@ -598,38 +667,303 @@ pub fn run(paths: &Paths, name: &str, task: &str, args: &[&str]) -> Result<()> {
     {
         return Err("Not run".into());
     }
-    let mut body = json!({"arguments": values});
-    if found.terminal {
+    Ok((found.clone(), values))
+}
+
+/// `berth run HOST TASK [NAME=VALUE…] [--yes]`: run one of the host's
+/// actions and leave with its exit code.
+pub fn run(paths: &Paths, name: &str, task: &str, args: &[&str]) -> Result<()> {
+    let (values, yes) = parse_arguments(args)?;
+    let reach = reach(paths, name)?;
+    let (actions, tasks) = host_actions(paths, &reach)?;
+    let (action, values) = ready(name, &actions, task, values, yes)?;
+    let mut act = api::Act {
+        arguments: values,
+        ..api::Act::default()
+    };
+    if action.terminal {
         let (rows, cols) = terminal_size();
+        (act.rows, act.cols) = (Some(rows), Some(cols));
+    }
+    let code = match reach.host.served(paths) {
+        Some(server) => {
+            // The server has no terminal to ask on: a password it needs is asked for here.
+            act.sudo_password = reach.host.sudo_password(paths)?;
+            let acted = act_on(&server, Some(name), &action.name, &act)?;
+            follow_acted(&server, Some(&reach), acted, &mut std::io::stdout())?
+        }
+        None if action.runs == api::Runs::Berth => run_own(paths, &reach.host, &action.name)?,
+        None => run_here(paths, &reach, &tasks, &action, act)?,
+    };
+    std::process::exit(code);
+}
+
+/// Run one of berth's own actions on a host of this machine: the exit code.
+fn run_own(paths: &Paths, host: &Host, action: &str) -> Result<i32> {
+    match action {
+        "install-controller" => install_controller_here(paths, host),
+        other => Err(format!("{other} is not an action of berth on {}", host.name).into()),
+    }
+}
+
+/// `berth host install HOST`: put berth's controller alone on the host. On
+/// a berth server that is a job of the server, whose output is shown.
+pub fn install_controller(paths: &Paths, name: &str) -> Result<()> {
+    let host = Host::load(paths, name)?;
+    let Some(server) = host.served(paths) else {
+        let code = install_controller_here(paths, &host)?;
+        std::process::exit(code);
+    };
+    let act = api::Act {
+        sudo_password: host.sudo_password(paths)?,
+        ..api::Act::default()
+    };
+    let acted = act_on(&server, Some(name), "install-controller", &act)?;
+    let code = follow_acted(&server, None, acted, &mut std::io::stdout())?;
+    std::process::exit(code);
+}
+
+/// Install the controller from here, holding the host's lock as an apply
+/// does: the exit code.
+fn install_controller_here(paths: &Paths, host: &Host) -> Result<i32> {
+    level::guard(host, level::Capability::InstallController)?;
+    let password = host.sudo_password(paths)?;
+    let request = runner::Request {
+        secrets: password.iter().cloned().collect(),
+        ..runner::Request::new(
+            runner::Subject::Host(host.name.clone()),
+            "install-controller",
+        )
+    };
+    let (owned, place) = (paths.clone(), host.place.clone());
+    let host = Host {
+        name: host.name.clone(),
+        place,
+        config: host.config.clone(),
+    };
+    let work = runner::Work::Function(Box::new(move |out| {
+        berth_core::apply::install_controller(&owned, &host, password.as_deref(), out)
+    }));
+    let code = runner::here(paths, request, work, &mut std::io::stdout())?;
+    Ok(code.unwrap_or(1))
+}
+
+/// `berth host level HOST LEVEL`: save the level the host's profile says,
+/// such as for a workstation added by its address. Nothing on the host
+/// changes; a workstation's set-up then fills in the rest before an apply.
+pub fn set_level(paths: &Paths, name: &str, given: &str) -> Result<()> {
+    let wanted = level::Level::parse(given)
+        .ok_or_else(|| format!("A level is reachable, controller or workstation, not {given}"))?;
+    let host = Host::load(paths, name)?;
+    let mut profile = host.config.clone();
+    api::profile::set_level(&mut profile, wanted);
+    if wanted == level::Level::Workstation && !profile["builder"].is_object() {
+        profile["builder"] = json!({});
+    }
+    match host.served(paths) {
+        Some(server) => {
+            server.save_host(&host.name, &profile)?;
+            server.mirror(paths)?;
+        }
+        None => host.place.save(paths, &profile)?,
+    }
+    println!("{} is a {wanted} host now in its profile", host.name);
+    if wanted == level::Level::Workstation {
+        println!("Check its set-up, then apply it: berth apply {}", host.name);
+    }
+    Ok(())
+}
+
+/// Offer to save the level a host just added was found to have, when it is
+/// more than its profile says: a workstation added by its address is not
+/// to be treated as a bare machine.
+fn offer_found_level(paths: &Paths, name: &str, intended: level::Level) -> Result<()> {
+    let Ok(reach) = reach(paths, name) else {
+        return Ok(());
+    };
+    let found = {
+        let asked = reach.wait(async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                reach.link.get::<api::Version>("/v1/version"),
+            )
+            .await
+        });
+        match asked {
+            Ok(Ok(version)) => level::seen(Ok(&version)),
+            _ => None,
+        }
+    };
+    drop(reach);
+    let (Some(found), Some(said)) = (found, level::mismatch(name, intended, found)) else {
+        return Ok(());
+    };
+    println!("! {said}");
+    // A workstation keeps its profile, which says more than a level would.
+    if found == level::Level::Workstation {
+        if std::io::stdin().is_terminal()
+            && !ask(&format!("Adopt {name} from the profile it keeps? [Y/n]"))?
+                .eq_ignore_ascii_case("n")
+        {
+            return adopt(paths, name, &[]);
+        }
+        println!("Adopt it with: berth adopt {name}");
+        return Ok(());
+    }
+    if std::io::stdin().is_terminal()
+        && !ask(&format!("Save {name} as a {found} host? [Y/n]"))?.eq_ignore_ascii_case("n")
+    {
+        return set_level(paths, name, found.name());
+    }
+    println!("Save it with: berth host level {name} {found}");
+    Ok(())
+}
+
+/// `berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH]
+/// [--level LEVEL] [--no-contact]`: save a host that exists already, by
+/// where it is and how berth logs in, with nothing of a workstation. Then
+/// first contact, unless told not to: berth's key is tried, and a host that
+/// refuses it is logged in to once with a password or key to install it.
+pub fn add_host(paths: &Paths, name: &str, address: &str, args: &[&str]) -> Result<()> {
+    const USAGE: &str = "Usage: berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth berth|key:NAME|password|ssh] [--level reachable|controller|workstation] [--no-contact]";
+    let mut access = api::profile::Access {
+        address: address.to_owned(),
+        ..api::profile::Access::default()
+    };
+    let (mut host_level, mut contact) = (level::Level::Reachable, true);
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let mut value = || rest.next().copied().ok_or(USAGE);
+        match *arg {
+            "--user" => access.user = value()?.to_owned(),
+            "--port" => access.port = value()?.to_owned(),
+            "--auth" => {
+                let given = value()?;
+                access.auth = api::profile::Auth::parse(given).ok_or_else(|| {
+                    format!("--auth is berth, key:NAME, password or ssh, not {given}")
+                })?;
+            }
+            "--level" => {
+                let given = value()?;
+                host_level = level::Level::parse(given).ok_or_else(|| {
+                    format!("--level is reachable, controller or workstation, not {given}")
+                })?;
+            }
+            "--no-contact" => contact = false,
+            _ => return Err(USAGE.into()),
+        }
+    }
+    if !berth_core::profiles::valid_name(name) {
+        return Err(
+            format!("{name} cannot be a host's name: letters, digits, -, _ and . only").into(),
+        );
+    }
+    let mut profile = api::profile::minimal(host_level, &access);
+    // A workstation keeps what its set-up fills in; it starts empty.
+    if host_level == level::Level::Workstation {
+        profile["builder"] = json!({});
+    }
+    let problems = api::profile::problems(&profile);
+    if !problems.is_empty() {
+        return Err(problems.join("; ").into());
+    }
+    let place = Place::resolve(paths, name)?;
+    if place.load(paths)?.is_some() {
+        return Err(format!(
+            "There is a host {name} already. Change it with: berth profile {name} --set FILE"
+        )
+        .into());
+    }
+    match berth_core::server::Server::configured(paths) {
+        Some(server) => {
+            server.save_host(name, &profile)?;
+            server.mirror(paths)?;
+            println!("Added {name} on the berth server at {}", server.url);
+        }
+        None => {
+            if let Some(key) = access.auth.key() {
+                let store = berth_core::store::shared(paths)?;
+                if key != api::profile::BERTH_KEY
+                    && !berth_core::keys::ring::names(&store)?
+                        .iter()
+                        .any(|known| known == key)
+                {
+                    return Err(format!(
+                        "There is no key {key}. Add it with: berth key add {key} FILE"
+                    )
+                    .into());
+                }
+            }
+            place.save(paths, &profile)?;
+            println!("Added {name} as a {host_level} host: {}", place.describe());
+            seed_host_key(paths, &place, &access)?;
+        }
+    }
+    if !contact {
+        return Ok(());
+    }
+    crate::key_command::trust(paths, name, &[]).map_err(|error| -> Box<dyn std::error::Error> {
+        format!("{name} is saved, but logging in to it did not work yet: {error}. Try again with: berth key trust {name}").into()
+    })?;
+    offer_found_level(paths, name, host_level)
+}
+
+/// Take the host key of a host just added from the user's own
+/// `~/.ssh/known_hosts`, when that knows the address, and say which.
+fn seed_host_key(paths: &Paths, place: &Place, access: &api::profile::Access) -> Result<()> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Ok(());
+    };
+    let known_hosts = std::path::PathBuf::from(home).join(".ssh/known_hosts");
+    let names = match access.port.as_str() {
+        "" | "22" => vec![access.address.clone()],
+        port => vec![format!("[{}]:{port}", access.address)],
+    };
+    let store = berth_core::store::shared(paths)?;
+    if berth_core::keys::known::seed_from(&store, place, &known_hosts, &names)? {
+        let record = berth_core::keys::known::Record::load(&store, place)?;
+        for key in &record.host_keys {
+            println!(
+                "Recorded its host key from {}: {}",
+                known_hosts.display(),
+                berth_core::keys::ring::fingerprint(key)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Run a task of a host of this machine as a session there and follow it.
+fn run_here(
+    paths: &Paths,
+    reach: &Reach,
+    tasks: &[api::Task],
+    action: &api::Action,
+    act: api::Act,
+) -> Result<i32> {
+    let mut body = json!({"arguments": act.arguments});
+    if let (Some(rows), Some(cols)) = (act.rows, act.cols) {
         (body["rows"], body["cols"]) = (json!(rows), json!(cols));
     }
-    // Secrets are built here and travel on the task's standard input. A
-    // server builds them from its own, and starts the task itself.
-    let served = match found.input.as_deref() {
-        Some("secrets") => reach.host.served(),
-        _ => None,
-    };
-    let started = match &served {
-        Some(server) => Some(server.call("hosts.secrets", json!({"name": name}), None)?),
-        None => None,
-    };
-    if found.input.as_deref() == Some("secrets") && served.is_none() {
-        let payload = registry::Store::new(paths).host_payload(&reach.host.config)?;
+    // Secrets are built here and travel on the task's standard input.
+    let task = tasks.iter().find(|task| task.name == action.name);
+    if task.and_then(|task| task.input.as_deref()) == Some("secrets") {
+        let payload = registry::Store::new(paths)?.host_payload(&reach.host.config)?;
         body["input_b64"] = json!(api::b64(format!("{payload}\n").as_bytes()));
     }
-    let code = reach.wait(async {
-        let path = format!("/v1/tasks/{}", encode(task));
-        let session: api::Session = match started {
-            Some(session) => serde_json::from_value(session)?,
-            None => reach.link.post(&path, &body).await?,
-        };
-        let ended = match session.kind {
-            api::SessionKind::Terminal => follow_terminal(&reach.link, &session.id).await?,
-            api::SessionKind::Process => follow_process(&reach.link, &session.id, 0, false).await?,
-        };
-        Ok::<i32, Box<dyn std::error::Error>>(finish(&reach, &session.id, ended, true).await)
-    })?;
-    std::process::exit(code);
+    reach.wait(async {
+        let path = format!("/v1/tasks/{}", encode(&action.name));
+        let session: api::Session = reach.link.post(&path, &body).await?;
+        let ended = follow_session(&reach.link, &session).await?;
+        Ok::<i32, Box<dyn std::error::Error>>(finish(reach, &session.id, ended, true).await)
+    })
+}
+
+async fn follow_session(link: &Link, session: &api::Session) -> Result<Ended> {
+    match session.kind {
+        api::SessionKind::Terminal => follow_terminal(link, &session.id).await,
+        api::SessionKind::Process => follow_process(link, &session.id, 0, false).await,
+    }
 }
 
 /// `berth channel HOST [TOPIC-PREFIX] [--since ID]`: messages as they come,
@@ -650,7 +984,7 @@ pub fn channel(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
             _ => return Err("Usage: berth channel HOST [TOPIC-PREFIX] [--since ID]".into()),
         }
     }
-    let reach = reach(paths, name)?;
+    let reach = controlled(paths, name)?;
     let mut path = format!("/v1/channel?topic={}", encode(prefix));
     if let Some(since) = since {
         path += &format!("&since={since}");
@@ -686,7 +1020,7 @@ pub fn call(
         }
         None => json!({}),
     };
-    let reach = reach(paths, name)?;
+    let reach = controlled(paths, name)?;
     let path = format!("/v1/services/{}/{}", encode_path(service), encode(method));
     let answer: Value = reach
         .wait(reach.link.post(&path, &body))
@@ -699,33 +1033,112 @@ pub fn call(
 /// is a job of the server, whose output is shown as it comes.
 pub fn apply(paths: &Paths, name: &str) -> Result<()> {
     let host = Host::load(paths, name)?;
-    let Some(server) = host.served() else {
-        let password = host.sudo_password()?;
-        let mut prepared = berth_core::apply::prepare(paths, &host, password.as_deref())?;
-        let status = prepared.command.status()?;
-        std::process::exit(status.code().unwrap_or(1));
+    let Some(server) = host.served(paths) else {
+        let password = host.sudo_password(paths)?;
+        let prepared = berth_core::apply::prepare(paths, &host, password.as_deref())?;
+        let work = runner::Work::Program(Box::new(runner::Program {
+            command: prepared.command,
+            input: None,
+            files: prepared.files,
+        }));
+        let request = runner::Request::new(runner::Subject::Host(name.to_owned()), "apply");
+        let code = runner::here(paths, request, work, &mut std::io::stdout())?;
+        if code == Some(0) {
+            berth_core::apply::settle(paths, &host)?;
+        }
+        std::process::exit(code.unwrap_or(1));
     };
     // The server has no terminal to ask on: a password it needs is asked for here.
-    let with = host
-        .sudo_password()?
-        .map(|password| json!({"sudo_password": password}));
-    let code = served_job(&server, "hosts.apply", json!({"name": name}), with)?;
+    let act = api::Act {
+        sudo_password: host.sudo_password(paths)?,
+        ..api::Act::default()
+    };
+    let acted = act_on(&server, Some(name), "apply", &act)?;
+    let code = follow_acted(&server, None, acted, &mut std::io::stdout())?;
     std::process::exit(code);
 }
 
-/// Start a job of the berth server with an operation, and its id.
-async fn start_job(
-    portal: &api::portal::Portal,
-    op: &str,
-    args: Value,
-    data: Option<Value>,
-) -> Result<String> {
-    let job = portal.call(op, None, args, data).await?;
-    Ok(job["id"].as_str().unwrap_or("").to_owned())
+/// Run an action of a berth server's: of the host `host`, or of the
+/// installation without one.
+pub(crate) fn act_on(
+    server: &berth_core::server::Server,
+    host: Option<&str>,
+    action: &str,
+    act: &api::Act,
+) -> Result<api::Acted> {
+    let (op, args) = match host {
+        Some(name) => ("hosts.act", json!({"name": name, "action": action})),
+        None => ("actions.act", json!({"action": action})),
+    };
+    let acted = server.call(op, args, Some(serde_json::to_value(act)?))?;
+    Ok(serde_json::from_value(acted)?)
+}
+
+/// Follow the job of an action a berth server started, such as a key's rotation.
+pub(crate) fn follow_server_job(
+    server: &berth_core::server::Server,
+    acted: api::Acted,
+    out: &mut dyn Write,
+) -> Result<i32> {
+    follow_acted(server, None, acted, out)
+}
+
+/// Follow what running an action answered to its end: a session on the
+/// host through `reach`, or the job, whose output goes to `out`. A result
+/// is written out as it is. The exit code.
+fn follow_acted(
+    server: &berth_core::server::Server,
+    reach: Option<&Reach>,
+    acted: api::Acted,
+    out: &mut dyn Write,
+) -> Result<i32> {
+    if let (Some(session), Some(reach)) = (&acted.session, reach) {
+        return reach.wait(async {
+            let ended = follow_session(&reach.link, session).await?;
+            // The server's job copies the session's output; it is forgotten
+            // on the host once the job has all of it.
+            let copied = match (&ended, &acted.job) {
+                (Ended::Exited(_), Some(job)) => {
+                    let portal = server.portal().await?;
+                    job_ended(&portal, &job.id).await
+                }
+                (Ended::Exited(_), None) => true,
+                _ => false,
+            };
+            Ok::<i32, Box<dyn std::error::Error>>(finish(reach, &session.id, ended, copied).await)
+        });
+    }
+    if let Some(job) = &acted.job {
+        return link::runtime()?.block_on(async {
+            let portal = server.portal().await?;
+            eprintln!("Job {} on the berth server at {}", job.id, server.url);
+            follow_job(&portal, &job.id, out).await
+        });
+    }
+    if let Some(result) = &acted.result {
+        writeln!(out, "{}", serde_json::to_string_pretty(result)?)?;
+    }
+    Ok(0)
+}
+
+/// Wait a little for a job to end: whether it did.
+async fn job_ended(portal: &api::portal::Portal, id: &str) -> bool {
+    for _ in 0..50 {
+        let job = portal.call("jobs.get", None, json!({"id": id}), None).await;
+        if job.is_ok_and(|job| !job["ended"].is_null()) {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    false
 }
 
 /// A job's output to `out` as it comes, until it ends, and its exit code.
-async fn follow_job(portal: &api::portal::Portal, id: &str, out: &mut dyn Write) -> Result<i32> {
+pub(crate) async fn follow_job(
+    portal: &api::portal::Portal,
+    id: &str,
+    out: &mut dyn Write,
+) -> Result<i32> {
     let mut output = portal.open("jobs.follow", None, json!({"id": id})).await?;
     let mut code = None;
     while let Some(piece) = output.recv().await {
@@ -744,22 +1157,6 @@ async fn follow_job(portal: &api::portal::Portal, id: &str, out: &mut dyn Write)
     Ok(code.unwrap_or(1))
 }
 
-/// Run an operation that is a job of the berth server, with its output shown
-/// as it comes, and the job's exit code.
-fn served_job(
-    server: &berth_core::server::Server,
-    op: &str,
-    args: Value,
-    data: Option<Value>,
-) -> Result<i32> {
-    link::runtime()?.block_on(async {
-        let portal = server.portal().await?;
-        let id = start_job(&portal, op, args, data).await?;
-        eprintln!("Job {id} on the berth server at {}", server.url);
-        follow_job(&portal, &id, &mut std::io::stdout()).await
-    })
-}
-
 /// A roll-out, from here or as a job of the berth server berth is set to
 /// use. Its output goes to `out` as it comes. With `ask`, a host whose sudo
 /// asks for a password has it asked for on the terminal.
@@ -771,17 +1168,23 @@ pub fn rollout(
 ) -> Result<api::RolloutReport> {
     let Some(server) = berth_core::server::Server::configured(paths) else {
         let password = |host: &Host| match ask {
-            true => host.sudo_password().ok().flatten(),
+            true => host.sudo_password(paths).ok().flatten(),
             false => std::env::var("BERTH_SUDO_PASSWORD")
                 .ok()
                 .filter(|_| host.asks_password()),
         };
+        // One roll-out at a time, as a job of a server holds the lock too.
+        let _lock = runner::lock(paths, &runner::Subject::Installation, "rollout")?;
         return berth_core::rollout::local(paths, options, &password, out);
     };
+    let act = api::Act {
+        arguments: options.arguments(),
+        ..api::Act::default()
+    };
+    let acted = act_on(&server, None, "rollout", &act)?;
+    let id = acted.job.map(|job| job.id).unwrap_or_default();
     link::runtime()?.block_on(async {
         let portal = server.portal().await?;
-        let options = Some(serde_json::to_value(options)?);
-        let id = start_job(&portal, "hosts.rollout", Value::Null, options).await?;
         let _ = writeln!(out, "Job {id} on the berth server at {}", server.url);
         follow_job(&portal, &id, out).await?;
         let ended = portal
@@ -880,8 +1283,10 @@ pub fn update_plugins(paths: &Paths, args: &[&str]) -> Result<()> {
 /// is written here.
 pub fn seed(paths: &Paths, name: &str) -> Result<()> {
     let host = Host::load(paths, name)?;
-    let server = host.served().ok_or("Not a host of a berth server")?;
-    let seed = server.call("hosts.seed", json!({"name": name}), None)?;
+    let server = host.served(paths).ok_or("Not a host of a berth server")?;
+    let seed = act_on(&server, Some(name), "seed", &api::Act::default())?
+        .result
+        .unwrap_or_default();
     let dir = paths.build_dir().join(name).join("cloud");
     {
         use std::os::unix::fs::DirBuilderExt;
@@ -909,23 +1314,303 @@ pub fn seed(paths: &Paths, name: &str) -> Result<()> {
 /// and a host with a machine berth created keeps it until that is deleted.
 pub fn remove(paths: &Paths, name: &str) -> Result<()> {
     let host = Host::load(paths, name).map_err(|_| format!("No host {name}"))?;
-    if let Some(record) = provision::Record::load(paths, name)?
-        && !record.id.is_empty()
+    if let Some(kept) = berth_core::resource::of_host(paths, name)?
+        && !kept.record.external_id.is_empty()
     {
         return Err(format!(
-            "{name} has a machine berth created, {} of {}. Delete it first: berth instance {name} destroy",
-            record.id, record.provisioner
+            "{name} has a machine berth created, {} of {}. Delete it first: berth resource {} remove",
+            kept.record.external_id, kept.record.provisioner, kept.record.id
         )
         .into());
     }
-    if let Some(server) = host.served() {
+    if provision::busy(paths, name) {
+        return Err(format!(
+            "A machine is being created for {name}. Remove it when that has ended"
+        )
+        .into());
+    }
+    if let Some(server) = host.served(paths) {
         server.call("hosts.remove", json!({"name": name}), None)?;
     }
-    std::fs::remove_file(&host.path)?;
-    for beside in ["credentials.json", "instance.json", "instance.lock"] {
-        let _ = std::fs::remove_file(host.path.with_extension(beside));
+    berth_core::profiles::remove(paths, &host.place)?;
+    println!("Removed {}", host.place.describe());
+    Ok(())
+}
+
+/// `berth profile HOST`: the profile as it is kept, as JSON.
+pub fn show_profile(paths: &Paths, name: &str) -> Result<()> {
+    let place = Place::resolve(paths, name)?;
+    let profile = place
+        .load(paths)?
+        .ok_or_else(|| format!("No host {name}"))?;
+    println!("{}", serde_json::to_string_pretty(&profile)?);
+    Ok(())
+}
+
+/// `berth profile HOST --set FILE`: save a profile as the host's, checked as
+/// the screen reads one. A host of a berth server is saved on the server, and
+/// its copy here marks it as the server's, as a mirror does.
+pub fn set_profile(paths: &Paths, name: &str, file: &str) -> Result<()> {
+    let data = match file {
+        "-" => {
+            let mut data = vec![];
+            std::io::Read::read_to_end(&mut std::io::stdin(), &mut data)?;
+            data
+        }
+        file => std::fs::read(file).map_err(|error| format!("{file}: {error}"))?,
+    };
+    crate::app::parse_config(&data).map_err(|error| format!("Not a profile: {error}"))?;
+    let mut profile: Value = serde_json::from_slice(&data)?;
+    let place = Place::resolve(paths, name)?;
+    // A profile of an older layout is kept in the one of now.
+    berth_core::import::convert_profile(paths, &place.title(), &mut profile);
+    if let Some(url) = place.server_url() {
+        let server = berth_core::server::Server::configured(paths)
+            .filter(|server| server.url == url)
+            .ok_or("The berth server of this host is not set any more")?;
+        server.save_host(&place.title(), &profile)?;
+        profile["builder"]["served"] = json!(url);
     }
-    println!("Removed {name}");
+    place.save(paths, &profile)?;
+    println!("Saved {}", place.describe());
+    Ok(())
+}
+
+/// `berth credentials HOST [--show]`: the passwords berth generated for the
+/// host's accounts, an account and its password to a line. They go to a
+/// terminal, or elsewhere only when asked to with `--show`.
+pub fn credentials(paths: &Paths, name: &str, show: bool) -> Result<()> {
+    let shown = show || std::io::stdout().is_terminal();
+    write_credentials(paths, name, shown, &mut std::io::stdout())
+}
+
+/// The passwords of [`credentials`] to `out`, when they may be `shown` there.
+fn write_credentials(paths: &Paths, name: &str, shown: bool, out: &mut dyn Write) -> Result<()> {
+    if !shown {
+        return Err(
+            "Standard output is not a terminal, and the passwords are shown only on one. Add --show to write them there anyway"
+                .into(),
+        );
+    }
+    let place = Place::resolve(paths, name)?;
+    let kept = match place.server_url() {
+        Some(url) => {
+            let server = berth_core::server::Server::configured(paths)
+                .filter(|server| server.url == url)
+                .ok_or("The berth server of this host is not set any more")?;
+            eprintln!("{name}'s passwords are kept on the berth server at {url}");
+            let answer = server.call("hosts.credentials", json!({"name": name}), None)?;
+            answer["credentials"]
+                .as_object()
+                .cloned()
+                .unwrap_or_default()
+        }
+        None => {
+            if place.load(paths)?.is_none() {
+                return Err(format!("No host {name}").into());
+            }
+            berth_core::credentials::load(paths, &place)?
+        }
+    };
+    if kept.is_empty() {
+        eprintln!("berth generated no passwords for {name}");
+    }
+    for (user, password) in kept {
+        writeln!(out, "{user} {}", password.as_str().unwrap_or(""))?;
+    }
+    Ok(())
+}
+
+// ── Adopting a host ─────────────────────────────────────────────────────────
+
+/// What `berth adopt` is given after the name: `[USER@]ADDRESS`, and
+/// `--port PORT`, `--key FILE` and `--force` in any order. Without an
+/// address the host is a saved one, reached as its profile says.
+#[derive(Debug, Default, PartialEq)]
+pub struct Adopt {
+    pub address: String,
+    pub port: String,
+    pub key: Option<String>,
+    pub force: bool,
+}
+
+pub fn parse_adopt(args: &[&str]) -> Result<Adopt> {
+    let mut adopt = Adopt::default();
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        match *word {
+            "--force" => adopt.force = true,
+            "--port" | "-p" => adopt.port = words.next().ok_or("--port needs a port")?.to_string(),
+            "--key" | "-i" => {
+                adopt.key = Some(words.next().ok_or("--key needs a file")?.to_string())
+            }
+            word if word.starts_with('-') => {
+                return Err(format!("berth adopt has no option {word}").into());
+            }
+            word if adopt.address.is_empty() => adopt.address = word.to_owned(),
+            word => return Err(format!("berth adopt takes one address, not also {word}").into()),
+        }
+    }
+    if adopt.address.is_empty() && !adopt.port.is_empty() {
+        return Err(
+            "Usage: berth adopt NAME [[USER@]ADDRESS] [--port PORT] [--key FILE] [--force]".into(),
+        );
+    }
+    Ok(adopt)
+}
+
+/// `berth adopt NAME [[USER@]ADDRESS]`: take a host over from the profile it
+/// keeps, read over SSH with sudo so that it works while berthd is down.
+/// Without an address it is the saved host NAME, as when berth host add
+/// found that a host saved below a workstation is one.
+pub fn adopt(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
+    use berth_core::kept_profile as kept;
+    let asked = parse_adopt(args)?;
+    if !berth_core::profiles::valid_name(name) {
+        return Err(
+            format!("{name} cannot be a host's name: letters, digits, -, _ and . only").into(),
+        );
+    }
+    let server = berth_core::server::Server::configured(paths);
+    let place = Place::resolve(paths, name)?;
+    // Refused before anything is read, so the host is not asked for nothing.
+    let saved = place.load(paths)?;
+    let reach = match (&saved, asked.address.as_str()) {
+        (None, "") => {
+            return Err(format!(
+                "There is no host {name} to adopt by its own address. Say where it is: berth adopt {name} [USER@]ADDRESS"
+            )
+            .into());
+        }
+        // A host saved below a workstation says less than the host keeps;
+        // adopting it by its own address is what replacing it means.
+        (Some(profile), "") => {
+            if level::of(profile) == level::Level::Workstation && !asked.force {
+                return Err(format!(
+                    "{name} is saved as a workstation already. Replace its profile with the one it keeps with --force"
+                )
+                .into());
+            }
+            let access = api::profile::Access::of(profile);
+            if access.link.is_some() || access.address.is_empty() {
+                return Err(format!(
+                    "{name} has no SSH address to read its profile at: berth adopt {name} [USER@]ADDRESS"
+                )
+                .into());
+            }
+            let given = kept::Reach::parse(&access.address, &access.port, asked.key.as_deref())?;
+            kept::Reach {
+                key: given.key,
+                ..kept::Reach::of(&access)
+            }
+        }
+        (Some(_), _) if !asked.force => {
+            return Err(format!(
+                "There is a host {name} already. Choose another name, or replace it with --force"
+            )
+            .into());
+        }
+        (_, address) => kept::Reach::parse(address, &asked.port, asked.key.as_deref())?,
+    };
+    let target = reach.target();
+    let password = || -> berth_core::Result<String> {
+        if let Ok(password) = std::env::var("BERTH_SUDO_PASSWORD") {
+            return Ok(password);
+        }
+        if !std::io::stdin().is_terminal() {
+            return Err(format!(
+                "sudo asks for a password on {target}: run on a terminal, or set BERTH_SUDO_PASSWORD"
+            )
+            .into());
+        }
+        registry::read_secret(&format!("Your sudo password on {target}"))
+    };
+    // The login is this machine's, also for a host the berth server keeps.
+    let read = kept::read(paths, &place, &reach, &password)?;
+    let access = api::profile::Access {
+        address: reach.address.clone(),
+        user: reach.user.clone(),
+        port: reach.port.clone(),
+        auth: read.auth.clone(),
+        // The operator's sudo takes none; another account's may.
+        sudo: read.sudo_asked.then_some(true),
+        ..api::profile::Access::default()
+    };
+    let adopted = kept::adopted(paths, &place.title(), &read.kept, &access)?;
+    let mut left = vec![];
+    match &server {
+        Some(server) => {
+            server.save_host(name, &adopted.profile)?;
+            server.mirror(paths)?;
+            if let Some(record) = &adopted.machine {
+                left.push(format!(
+                    "the record of its machine, {} of {}: the berth server takes no record, so berth resource does not know the machine",
+                    record.external_id, record.provisioner
+                ));
+            }
+        }
+        None => kept::save(paths, &place, &adopted)?,
+    }
+    let written = match (adopted.berth.as_str(), adopted.written.as_str()) {
+        ("", _) => String::new(),
+        (berth, "") => format!(" by berth {berth}"),
+        (berth, when) => format!(" by berth {berth} at {when}"),
+    };
+    let was = match adopted.host.as_str() {
+        "" => String::new(),
+        old if old == name => String::new(),
+        old => format!(", where it was {old}"),
+    };
+    println!("Adopted {name} from {target}: its profile was written{written}{was}.");
+    let store = registry::Store::new(paths)?;
+    let known = store.secret_names();
+    for secret in adopted.secrets() {
+        if !known.contains(&secret) {
+            left.push(format!(
+                "the value of secret {secret}: berth secret set {secret}"
+            ));
+        }
+    }
+    let registries = store.registries().unwrap_or_default();
+    for registry in adopted.registries() {
+        if !registries.contains_key(&registry) {
+            left.push(format!(
+                "registry {registry}, with its login: berth registry add {registry} …"
+            ));
+        }
+    }
+    if berth_api::profile::joins_automatically(&adopted.profile)
+        && !known
+            .iter()
+            .any(|known| known == berth_api::profile::TAILNET_API_KEY)
+    {
+        left.push(format!(
+            "secret {}, which a host that has left the tailnet needs to join again",
+            berth_api::profile::TAILNET_API_KEY
+        ));
+    }
+    if !left.is_empty() {
+        println!("What did not come with it, and this berth has not got:");
+        for line in &left {
+            println!("  {line}");
+        }
+    }
+    let way = match read.auth {
+        api::profile::Auth::Berth => "with this berth's key".to_owned(),
+        _ => "with your SSH configuration and agent, until an apply has given the operator this berth's key".to_owned(),
+    };
+    println!("berth logs in to it {way}.");
+    println!(
+        "Next: berth apply {name}. It gives this berth's own key a block of its own in the operator's authorized_keys."
+    );
+    println!(
+        "The berth that set the host up still has access: its key keeps its BERTH block until you delete that block by hand."
+    );
+    if asked.key.is_some() && read.auth != api::profile::Auth::Berth {
+        println!(
+            "The key given with --key is not saved. If only it lets you in, give the host this berth's key with it first: berth key trust {name} --key FILE"
+        );
+    }
     Ok(())
 }
 
@@ -948,7 +1633,7 @@ fn known_provisioners(
             Value::Null,
             None,
         )?)?),
-        None => Ok(provision::list(paths, &registry::Store::new(paths))),
+        None => Ok(provision::list(paths, &registry::Store::new(paths)?)),
     }
 }
 
@@ -967,222 +1652,6 @@ pub fn provisioners(paths: &Paths) -> Result<()> {
             println!("  · {note}");
         }
     }
-    Ok(())
-}
-
-/// `berth provisioners PLUGIN/ID [NAME=VALUE…]`: the machines it has that
-/// berth created.
-pub fn provisioner_instances(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
-    let (values, _) = parse_arguments(args)?;
-    let listed: Vec<api::ListedInstance> = match provisioning_server(paths) {
-        Some(server) => {
-            let (plugin, id) = name
-                .split_once('/')
-                .ok_or_else(|| format!("No provisioner {name}. See: berth provisioners"))?;
-            // The arguments are the query of the request, beside its path.
-            let mut asked = json!(values);
-            (asked["plugin"], asked["id"]) = (json!(plugin), json!(id));
-            serde_json::from_value(server.call("provisioners.instances", asked, None)?)?
-        }
-        None => {
-            let store = registry::Store::new(paths);
-            provision::instances(paths, &store, name, &values, &Default::default())?
-        }
-    };
-    for instance in listed {
-        println!(
-            "{:<24} {:<10} {}",
-            instance.host, instance.state, instance.id
-        );
-    }
-    Ok(())
-}
-
-/// `berth provision HOST PLUGIN/ID [NAME=VALUE…] [--yes]`: create the
-/// machine for a saved host and set it up. On a berth server that is a job of
-/// the server, whose output is shown as it comes.
-pub fn provision(paths: &Paths, name: &str, provisioner: &str, args: &[&str]) -> Result<()> {
-    let (mut values, yes) = parse_arguments(args)?;
-    let server = provisioning_server(paths);
-    let known = known_provisioners(paths, server.as_ref())?;
-    let found = known
-        .iter()
-        .find(|known| known.id == provisioner)
-        .ok_or_else(|| format!("No provisioner {provisioner}. See: berth provisioners"))?;
-    // What is required and has no default is asked for here, as `berth run` does.
-    if std::io::stdin().is_terminal() {
-        for argument in &found.arguments {
-            if argument.required
-                && argument.default.is_empty()
-                && !values.contains_key(&argument.name)
-            {
-                let label = match argument.label.as_str() {
-                    "" => &argument.name,
-                    label => label,
-                };
-                values.insert(argument.name.clone(), ask(&format!("{label}:"))?);
-            }
-        }
-    }
-    if !yes
-        && !ask(&format!(
-            "Create a machine for {name} with {} ({provisioner})? [y/N]",
-            found.label
-        ))?
-        .eq_ignore_ascii_case("y")
-    {
-        return Err("Not created".into());
-    }
-    let asked = api::Provision {
-        provisioner: provisioner.to_owned(),
-        arguments: values,
-    };
-    if let Some(server) = server {
-        let asked = Some(serde_json::to_value(&asked)?);
-        let code = served_job(&server, "instances.create", json!({"name": name}), asked)?;
-        std::process::exit(code);
-    }
-    provision::provision(
-        paths,
-        &registry::Store::new(paths),
-        name,
-        &asked,
-        &Default::default(),
-        &mut std::io::stdout(),
-    )
-}
-
-/// `berth instance HOST [start|stop|destroy [--yes]]`: the machine berth
-/// created for the host, or a change to it.
-pub fn instance(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
-    let server = provisioning_server(paths);
-    let store = registry::Store::new(paths);
-    let options = provision::Options::default();
-    let mut out = std::io::stdout();
-    let named = json!({"name": name});
-    match args {
-        [] => {
-            let instance: api::Instance = match &server {
-                Some(server) => {
-                    serde_json::from_value(server.call("instances.get", named, None)?)?
-                }
-                None => provision::status(paths, &store, name, &options)?
-                    .ok_or_else(|| format!("{name} has no machine that berth created"))?,
-            };
-            print!("{}", describe_instance(name, &instance));
-            Ok(())
-        }
-        [verb @ ("start" | "stop")] => {
-            match &server {
-                Some(server) => {
-                    let asked = json!({"name": name, "verb": verb});
-                    server.call("instances.power", asked, None)?;
-                }
-                None => provision::power(paths, &store, name, verb, &options, &mut out)?,
-            }
-            println!("✓ {name}: {verb} asked of {name}'s machine");
-            Ok(())
-        }
-        ["destroy", rest @ ..] => {
-            let (_, yes) = parse_arguments(rest)?;
-            if !yes && ask(&format!("Delete {name}'s machine? Type {name} to say so:"))? != name {
-                return Err("Not deleted".into());
-            }
-            match &server {
-                Some(server) => {
-                    std::process::exit(served_job(server, "instances.destroy", named, None)?)
-                }
-                None => provision::destroy(paths, &store, name, &options, &mut out),
-            }
-        }
-        _ => Err("Usage: berth instance HOST [start|stop|destroy [--yes]]".into()),
-    }
-}
-
-/// What `berth instance HOST` says of the machine.
-pub fn describe_instance(name: &str, instance: &api::Instance) -> String {
-    let mut text = format!("{name}  {}  {}\n", instance.provisioner, instance.id);
-    text += &format!("State      {}\n", instance.state);
-    if !instance.problem.is_empty() {
-        text += &format!("Problem    {}\n", instance.problem);
-    }
-    if !instance.address.is_empty() {
-        text += &format!("Address    {}\n", instance.address);
-    }
-    text += &format!("Created    {}\n", instance.created);
-    let arguments: Vec<String> = instance
-        .arguments
-        .iter()
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect();
-    if !arguments.is_empty() {
-        text += &format!("Arguments  {}\n", arguments.join(" "));
-    }
-    let mut verbs = instance.verbs.clone();
-    verbs.push("destroy".into());
-    text += &format!("Can        berth instance {name} {}\n", verbs.join("|"));
-    text
-}
-
-/// `berth login`: get an access token for the berth server from its issuer.
-/// A person approves in a browser on any device; a client with a secret
-/// needs nobody.
-pub fn login(paths: &Paths) -> Result<()> {
-    use berth_core::{oauth, server::Server};
-    let server =
-        Server::configured(paths).ok_or("Set the berth server first: berth config server URL")?;
-    if server.token.is_some() {
-        eprintln!(
-            "server_token is set and is used before a login. Clear it: berth config server_token"
-        );
-    }
-    let role = link::runtime()?.block_on(async {
-        let client = oauth::Client::configured(paths, &server.url)
-            .await?
-            .ok_or("Say which client berth is at the issuer: berth config oauth_client_id ID")?;
-        let tokens = match client.secret {
-            Some(_) => client.credentials().await?,
-            None => {
-                client
-                    .device(|asked| {
-                        let text = |name: &str| asked[name].as_str().unwrap_or("").to_owned();
-                        match text("verification_uri_complete").as_str() {
-                            "" => println!(
-                                "Open {} and enter {}",
-                                text("verification_uri"),
-                                text("user_code")
-                            ),
-                            link => println!(
-                                "Open {link}\nThe code there should be {}",
-                                text("user_code")
-                            ),
-                        }
-                        println!("Waiting for you to approve…");
-                    })
-                    .await?
-            }
-        };
-        oauth::save(paths, &server.url, Some(&tokens))?;
-        let own = Server {
-            url: server.url.clone(),
-            token: None,
-        };
-        let access = own
-            .portal()
-            .await?
-            .call("access", None, Value::Null, None)
-            .await?;
-        Ok::<String, Box<dyn std::error::Error>>(access["role"].as_str().unwrap_or("?").to_owned())
-    })?;
-    println!("Logged in to {} with the role {role}", server.url);
-    Ok(())
-}
-
-/// `berth logout`: forget the login at the berth server.
-pub fn logout(paths: &Paths) -> Result<()> {
-    let server = berth_core::server::Server::configured(paths).ok_or("No berth server is set")?;
-    berth_core::oauth::save(paths, &server.url, None)?;
-    println!("Forgot the login at {}", server.url);
     Ok(())
 }
 
@@ -1265,6 +1734,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn adopt_takes_an_address_and_its_options_in_any_order() {
+        let adopt = parse_adopt(&["--force", "ops@192.0.2.10", "--port", "2222"]).unwrap();
+        assert_eq!(
+            adopt,
+            Adopt {
+                address: "ops@192.0.2.10".into(),
+                port: "2222".into(),
+                key: None,
+                force: true
+            }
+        );
+        let keyed = parse_adopt(&["192.0.2.10", "--key", "~/.ssh/old"]).unwrap();
+        assert_eq!(keyed.key.as_deref(), Some("~/.ssh/old"));
+        // Without an address it is a saved host, reached as its profile says.
+        assert_eq!(parse_adopt(&[]).unwrap(), Adopt::default());
+        assert!(parse_adopt(&["--port", "2222"]).is_err());
+        assert!(parse_adopt(&["192.0.2.10", "192.0.2.11"]).is_err());
+        assert!(parse_adopt(&["192.0.2.10", "--port"]).is_err());
+        assert!(parse_adopt(&["192.0.2.10", "--user"]).is_err());
+    }
+
+    #[test]
     fn exec_takes_its_flags_before_the_command() {
         let exec = parse_exec(&["--user", "root", "--", "ls", "--keep"]).unwrap();
         assert_eq!((exec.user.as_str(), exec.keep), ("root", false));
@@ -1287,6 +1778,42 @@ mod tests {
     }
 
     #[test]
+    fn a_machine_is_added_by_its_address_with_nothing_of_a_workstation() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: home.path().join("config"),
+            data_dir: home.path().join("data"),
+        };
+        paths.prepare().unwrap();
+        let add = |name: &str, args: &[&str]| add_host(&paths, name, "192.0.2.4", args);
+        add("dock", &["--user", "ops", "--port", "2222", "--no-contact"]).unwrap();
+        let saved = Place::resolve(&paths, "dock")
+            .unwrap()
+            .load(&paths)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            saved,
+            json!({"level": "reachable", "access": {"address": "192.0.2.4", "user": "ops", "port": "2222", "auth": "berth"}})
+        );
+        let said = |result: Result<()>| result.unwrap_err().to_string();
+        assert!(said(add("dock", &["--no-contact"])).contains("already"));
+        assert!(said(add("pier", &["--level", "server", "--no-contact"])).contains("--level"));
+        assert!(said(add("pier", &["--auth", "key:none", "--no-contact"])).contains("no key none"));
+        assert!(said(add("../pier", &["--no-contact"])).contains("name"));
+        // A workstation starts with the part its set-up fills in.
+        add("studio", &["--level", "workstation", "--no-contact"]).unwrap();
+        let studio = Host::load(&paths, "studio").unwrap();
+        assert!(studio.config["builder"].is_object());
+        // Applying is refused below a workstation, before anything runs.
+        let dock = Host::load(&paths, "dock").unwrap();
+        let refused = berth_core::apply::prepare(&paths, &dock, None);
+        assert!(said(refused.map(|_| ())).contains("not a workstation"));
+        let refused = install_controller_here(&paths, &studio);
+        assert!(said(refused.map(|_| ())).contains("berth apply studio"));
+    }
+
+    #[test]
     fn a_host_with_a_machine_berth_created_stays_until_it_is_deleted() {
         let home = tempfile::tempdir().unwrap();
         let paths = Paths {
@@ -1294,30 +1821,131 @@ mod tests {
             data_dir: home.path().join("data"),
         };
         paths.prepare().unwrap();
-        let profile = paths.profile("studio").unwrap();
-        std::fs::write(&profile, r#"{"builder": {"ssh_host": "192.0.2.20"}}"#).unwrap();
-        let mut record = provision::Record {
-            provisioner: "cloud/vm".into(),
-            id: "vm-1".into(),
-            token: "t".into(),
-            ..Default::default()
+        let place = Place::own("studio").unwrap();
+        place
+            .save(&paths, &json!({"access": {"address": "192.0.2.20"}}))
+            .unwrap();
+        berth_core::credentials::save(&paths, &place, "ops", "made-up").unwrap();
+        let mut machine = berth_core::resource::Kept {
+            scope: berth_core::store::OWN.into(),
+            record: berth_core::resource::Record {
+                id: "r-studio".into(),
+                provisioner: "cloud/vm".into(),
+                kind: "machine".into(),
+                name: "studio".into(),
+                external_id: "vm-1".into(),
+                host: "studio".into(),
+                token: "t".into(),
+                ..Default::default()
+            },
         };
-        record.save(&paths, "studio").unwrap();
+        machine.save(&paths).unwrap();
         let said = remove(&paths, "studio").unwrap_err().to_string();
-        assert!(said.contains("berth instance studio destroy"), "{said}");
-        assert!(profile.is_file());
-        // One whose creation never ended goes with the host.
-        record.id.clear();
-        record.save(&paths, "studio").unwrap();
+        assert!(said.contains("berth resource r-studio remove"), "{said}");
+        assert!(place.load(&paths).unwrap().is_some());
+        // One whose creation never ended goes with the host, and its passwords with it.
+        machine.record.external_id.clear();
+        machine.save(&paths).unwrap();
         remove(&paths, "studio").unwrap();
-        assert!(!profile.exists());
-        assert!(provision::Record::load(&paths, "studio").unwrap().is_none());
+        assert!(place.load(&paths).unwrap().is_none());
+        assert!(
+            berth_core::resource::of_host(&paths, "studio")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            berth_core::credentials::load(&paths, &place)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_profile_that_lists_its_features_keeps_them_without_the_marker() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: home.path().join("config"),
+            data_dir: home.path().join("data"),
+        };
+        let file = home.path().join("studio.json");
+        std::fs::write(
+            &file,
+            r#"{"hostname": "studio", "ansible_vars": {"devbox_plugin_features": ["codex/cli"]}}"#,
+        )
+        .unwrap();
+        set_profile(&paths, "studio", file.to_str().unwrap()).unwrap();
+        let place = Place::own("studio").unwrap();
+        let kept = place.load(&paths).unwrap().unwrap();
+        let config = crate::app::parse_config(kept.to_string().as_bytes()).unwrap();
+        let mut app = crate::app::App::new(paths.clone(), place.clone(), config);
+        app.save().unwrap();
+        let saved = place.load(&paths).unwrap().unwrap();
+        assert_eq!(
+            saved["ansible_vars"]["devbox_plugin_features"],
+            json!(["codex/cli"])
+        );
+        // One of the old layout is still converted.
+        let old = crate::app::parse_config(br#"{"ansible_vars": {"devbox_agent_codex": false}}"#)
+            .unwrap();
+        assert!(
+            !old["ansible_vars"]["devbox_plugin_features"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("codex/cli"))
+        );
+    }
+
+    #[test]
+    fn a_profile_goes_out_and_in_and_passwords_only_to_a_terminal() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: home.path().join("config"),
+            data_dir: home.path().join("data"),
+        };
+        let file = home.path().join("studio.json");
+        std::fs::write(
+            &file,
+            r#"{"hostname": "studio", "builder": {}, "access": {"address": "192.0.2.20"}}"#,
+        )
+        .unwrap();
+        set_profile(&paths, "studio", file.to_str().unwrap()).unwrap();
+        let place = Place::own("studio").unwrap();
+        let kept = place.load(&paths).unwrap().unwrap();
+        assert_eq!(kept["access"]["address"], "192.0.2.20");
+        // What is not a profile is refused, and the one kept stays.
+        std::fs::write(&file, r#"{"builder": []}"#).unwrap();
+        assert!(set_profile(&paths, "studio", file.to_str().unwrap()).is_err());
+        assert_eq!(place.load(&paths).unwrap().unwrap(), kept);
+        assert!(show_profile(&paths, "attic").is_err());
+        show_profile(&paths, "studio").unwrap();
+        berth_core::credentials::save(&paths, &place, "ops", "made-up").unwrap();
+        let mut out = vec![];
+        let said = write_credentials(&paths, "studio", false, &mut out)
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("--show") && out.is_empty(), "{said}");
+        write_credentials(&paths, "studio", true, &mut out).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "ops made-up\n");
+        assert!(write_credentials(&paths, "attic", true, &mut vec![]).is_err());
     }
 
     #[test]
     fn hosts_share_one_inventory() {
-        let one = berth_core::host::inventory("10.0.0.1", "ops", "", "").unwrap();
-        let two = berth_core::host::inventory("box", "", "2222", "").unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: home.path().join("config"),
+            data_dir: home.path().join("data"),
+        };
+        let inventory = |name: &str, access: Value| {
+            let host = Host {
+                name: name.into(),
+                place: Place::own(name).unwrap(),
+                config: json!({"access": access}),
+            };
+            host.inventory(&paths).unwrap()
+        };
+        let one = inventory("server", json!({"address": "192.0.2.1", "user": "ops"}));
+        let two = inventory("laptop", json!({"address": "box", "port": "2222"}));
         let merged = merge_inventory(&[("server".into(), one), ("laptop".into(), two)]);
         assert_eq!(merged["all"]["hosts"]["server"]["ansible_user"], "ops");
         assert_eq!(merged["all"]["hosts"]["laptop"]["ansible_port"], 2222);

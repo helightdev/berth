@@ -16,7 +16,7 @@ CI runs these on every push, without network access to hosts:
 | `ansible-playbook --syntax-check` | The role |
 | `cargo fmt`, `cargo clippy` | Formatting and lints |
 | `vale` | The prose of the README, these docs and the plugin guides |
-| `tests/e2e` | berth against a test host in a container. A profile is applied over SSH, and a second time without changes. Then the tests use the host with SSH keys, tasks, terminals, files, secrets and a plugin from a folder. `berth serve` is tested with its roles, its set-up and its page. They use a development build of berth |
+| `tests/e2e` | berth against a test host in a container. A profile is applied over SSH, and a second time without changes. Then the tests use the host with SSH keys, tasks, terminals, files, secrets and a plugin from a folder. `berth serve` is tested with its roles, its set-up and its page, and with a restore of the installation from its database and key file. They use a development build of berth |
 
 See [Building and releasing](/docs/reference/building#in-containers) for running them locally.
 
@@ -59,7 +59,7 @@ The guest runs on QEMU's user network with a package cache and a release server 
 </Accordion>
 <Accordion title="SSH hardening">
 
-After an apply, `sshd -T` reports password, keyboard-interactive and root logins off, and key login still works.
+After an apply, `sshd -T` reports password, keyboard-interactive and root logins off, and only key logins for the operator. Key login still works.
 
 </Accordion>
 </Accordions>

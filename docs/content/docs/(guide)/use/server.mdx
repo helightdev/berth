@@ -28,6 +28,8 @@ docker exec berth cat /data/berth/serve.token
 
 Without the image, run `berth serve --listen 0.0.0.0:7777 --expose` where berth is installed. The token is in `~/.local/share/berth/serve.token`. Set the hosts up on the server as usual, with the terminal UI there or `docker run --rm -it --entrypoint berth …` for the container.
 
+The server keeps its state in one store, a SQLite file by default. [The store](/docs/use/store) says how to keep it in PostgreSQL, encrypt it and restore the server on another machine from it.
+
 <Callout type="warn" title="Put TLS in front">
   `berth serve` speaks plain HTTP, and the token gives full control of every host. Serve it behind a TLS proxy, such as Tailscale Serve or Caddy, and use the `https://` address. Without one, keep the port on loopback or a private network such as your tailnet.
 </Callout>
@@ -89,46 +91,6 @@ https://berth.example.ts.net/#setup-key=KEY
 
 The page signs the browser in and shows the token, with the two `berth config` commands for a terminal. The key lasts 24 hours. It ends sooner when you choose **Done** on the page, or when `berth connect` has saved the token. Until then it's as good as the token, so keep it to yourself. A new key replaces the old one, and `berth setup-key --remove` ends it. A server with `serve_token` off has no token to hand out, so it doesn't make a key.
 
-### With a login in place of the token
-
-A server that takes [access tokens of an OAuth 2.0 issuer](/docs/extend/serve#access-tokens-from-an-oauth-20-issuer) lets berth log in there. berth has to be registered at the issuer as a client, and the server tells berth which issuer it is.
-
-<Tabs items={['You, at a terminal', 'A service']}>
-<Tab value="You, at a terminal">
-
-```bash
-berth config server https://berth.example.ts.net
-berth config oauth_client_id berth-cli
-berth config oauth_scope "offline_access berth:operate"
-berth login
-```
-
-`berth login` prints an address and a code. Open the address in a browser on any device and approve. This is the device grant, which works on a machine without a browser. berth renews the token by itself from then on, and `berth logout` forgets the login.
-
-</Tab>
-<Tab value="A service">
-
-With the client's secret, berth gets a token whenever it needs one, and nobody has to approve. This is the client credentials grant:
-
-```bash
-export BERTH_SERVER=https://berth.example.ts.net
-export BERTH_OAUTH_CLIENT_ID=berth-ci
-export BERTH_OAUTH_CLIENT_SECRET=…
-berth run studio status
-```
-
-</Tab>
-</Tabs>
-
-| Setting | Meaning |
-| --- | --- |
-| `oauth_client_id` | The client berth is at the issuer |
-| `oauth_client_secret` | The client's secret, for a service |
-| `oauth_scope` | The scope of the request. It has to give the token its role, and many issuers want `offline_access` for a login that renews |
-| `oauth_issuer`, `oauth_audience` | Only when the server doesn't say them itself |
-
-A `server_token` or `--token` is used before a login. Tokens are kept in `oauth.json` in berth's data directory, readable by your user only.
-
 | Address | Reaches |
 | --- | --- |
 | `https://HOST[:PORT]` | A server behind a TLS proxy |
@@ -156,7 +118,7 @@ The page is the terminal UI drawn in the browser. It has the host list and the o
 
 With the role `admin` the page also sets the server up, with the same screens as the terminal UI:
 
-- **Settings**, **Registries**, **Secrets** and **Plugins** are tabs of the home screen. On **Plugins**, `u` sends a `.tgz` from the device.
+- **Provisioners**, **Settings**, **Registries**, **Secrets** and **Plugins** are tabs of the home screen. On **Plugins**, `u` sends a `.tgz` from the device. A provisioner's page opens the pages of what berth made with it ([Resources](/docs/deploy/resources#in-the-terminal-ui)).
 - **New host** starts a profile, and a host's overview opens its Install, Features, Settings and Run tabs. A new host opens on Install with **Create a machine** chosen, and offers only Create a machine, Cloud-init seed and Existing host over SSH.
 - **Run** does what the chosen method does on the server. That is creating the machine, a cloud-init seed to copy, or an apply over SSH. The output is shown as it runs.
 - **Install secrets and registry logins** sends a host what its profile names.
@@ -170,7 +132,7 @@ Some keys differ:
 | A click on a link opens a tab | `xdg-open` |
 | **g** generates and **p** takes a password to hash | `F4` and `F5`, which reloads a page |
 
-A password the server makes up is shown once in the page. The server keeps a copy beside the host's profile.
+A password the server makes up is shown once in the page. The server keeps a copy in its store, and `berth credentials HOST` shows it again to an admin of the server.
 
 What needs your own machine stays in the terminal UI. That is the USB installer and the container image, values read from your local keys, and sending a plugin's folder.
 
@@ -187,6 +149,51 @@ The same page is part of this site, at [/web](/web/). It asks which server to us
 
 Your browser talks to the server you name, and to nothing else. It keeps the server and the token. A page loaded over `https` can only reach a server over `https`.
 
+## With berth-remote
+
+berth runs on Linux. `berth-remote` uses the hosts of a server from a terminal on Windows, macOS or Linux. It shows the screens of the page, and works with a server that runs without `--web`. Install it on Windows in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex
+```
+
+On macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/helightdev/berth/main/install-remote.sh | sh
+```
+
+Each script downloads the latest release for this machine, checks it against its SHA-256 and installs it, to `%LOCALAPPDATA%\Programs\berth-remote` on Windows and to `~/.local/bin` elsewhere. `BERTH_INSTALL_DIR` and `BERTH_VERSION` work as for `install.sh`. To download it by hand, take the archive for your system and its `.sha256` file from the [latest release](https://github.com/helightdev/berth/releases/latest).
+
+Then start it with the server's address. On Windows, use Windows Terminal or the console of Windows 10 or later.
+
+```bash
+berth-remote --server https://berth.example.ts.net
+```
+
+It asks for the token and keeps the server and the token for the next run. A token never goes on the command line:
+
+| Variable or option | Effect |
+| --- | --- |
+| `BERTH_TOKEN` | The token, so it isn't asked for |
+| `BERTH_SETUP_KEY` | A [setup key](#with-a-setup-key), which collects the token |
+| `BERTH_SERVER` | The server, instead of `--server` |
+| `--forget` | Remove the kept server and token, and keep nothing from this run |
+| `BERTH_REMOTE_FILE` | The plugin package to send, where there is no file dialog |
+| `--version` | Say the version |
+
+The server and the token are in `settings.json` in a folder of your own:
+
+| System | Folder |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\berth-remote`. Its access list lets in you, SYSTEM and the administrators |
+| macOS | `~/Library/Application Support/berth-remote`, which only you can open |
+| Linux | `~/.config/berth-remote`, or under `$XDG_CONFIG_HOME`, which only you can open |
+
+It talks to a server over `https` only with a certificate that the system or the Mozilla roots trust. It opens only `http` and `https` links, in the system's browser.
+
+The screens and keys are those of the page. **Ctrl+Q** quits, and `u` on **Plugins** opens the system's file dialog: on Linux that of zenity or kdialog.
+
 ## What works from another machine
 
 | Works through the server | Stays on a machine with the host's profile |
@@ -195,8 +202,9 @@ Your browser talks to the server you name, and to nothing else. It keeps the ser
 | The host's overview with its tasks, sessions and terminal panel | Applying to this machine or an inventory, and container images |
 | The host commands such as `berth run`, `exec`, `attach` and `channel` | Publishing a release or an image by hand |
 | The set-up tabs of a host, new hosts, and `berth remove` | |
+| `berth profile` and `berth credentials` | |
 | `berth apply`, `berth seed`, and the **Secrets and registry logins** task | |
-| `berth provisioners`, `berth provision` and `berth instance` | |
+| `berth provisioner`, `berth provision`, `berth instance`, `berth resource` and `berth deploy` | |
 | `berth secret`, `berth registry` and `berth host` | |
 | The Plugins tab and `berth plugins` | |
 
@@ -206,13 +214,16 @@ berth keeps the server's hosts apart from its own. Its own hosts are hidden whil
 
 With the role `admin` on the server, which its token has, berth sets the server up as if the hosts were its own. What you change is saved on the server:
 
-- A host's set-up tabs, and a new host from the home screen, save the profile there.
+- A host's set-up tabs, a new host from the home screen, and `berth profile HOST --set FILE` save the profile there.
+- A password generated on the set-up tabs is made and kept by the server. `berth credentials HOST` asks the server for it.
 - **Apply this configuration** and `berth apply HOST` run as a job on the server. Its output is shown as it comes.
 - `berth seed HOST` has the server render the cloud-init seed, and writes it here.
-- `berth provision HOST` and `berth instance HOST` use the server's provisioners and secrets, and create the machine from the server ([Machine from a provisioner](/docs/deploy/provisioners#with-a-berth-server)).
+- `berth provision HOST` and `berth instance HOST` use the server's provisioners and secrets, and create the machine from the server ([Provisioners](/docs/deploy/provisioners#with-a-berth-server)). `berth provisioner` shows the server's provisioners, and their actions run there.
+- `berth resource` and `berth deploy` use the server's resources. A deployment's specification is sent to the server and kept there, and it gets the server's secrets ([Deployments](/docs/deploy/deployments#with-a-berth-server)).
 - A secret's value is sent to the server and kept only there. Here berth knows its name.
 - The `tailnet_` settings and the secret `tailnet_api_key` are the server's, which creates the [enrollment keys](/docs/use/access#automatic-enrollment-keys) for its hosts. Settings and `berth config` change them there.
 - A plugin is installed on the server, and its features show on the Features tab of the server's hosts. A `.tgz` or folder of yours is sent there first.
-- The server logs in to hosts with [its own SSH key](/docs/reference/profile#the-key-of-berth-itself), which a host it installs takes. For a host that was set up elsewhere, add that key to the operator first. Settings and a host's Settings tab show it, and copy it to the clipboard.
+- The server logs in to hosts with the keys of [its own key ring](/docs/use/accounts#keys), by default its key `berth`, which a host it installs takes. `berth key` and its commands act on the server's ring, and its private halves stay there. For a host that was set up elsewhere, add the key `berth` to the operator first. Settings lists the keys and copies one to the clipboard, and **Log in with** on a host's Install tab chooses among them.
+- `berth key rotate` replaces a key of the server's on the hosts that take it, as a job of the server ([Rekeying](/docs/use/accounts#rekeying)). First contact and accepting a changed host key are done on the server, with `berth key trust HOST` and `berth key host HOST --accept` there.
 
 With a lesser role the set-up tabs say *This host is set up on the berth server at URL*, and the host's overview works as before. The roles, access tokens of an OAuth 2.0 issuer in place of the token, and how to keep set-up on the server itself are in [berth serve](/docs/extend/serve#who-gets-in).

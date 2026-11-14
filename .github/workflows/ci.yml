@@ -21,9 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: echo "BERTH_CI_CACHE=$RUNNER_TEMP/berth-ci-cache" >> "$GITHUB_ENV"
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build the dev image
         uses: docker/build-push-action@v6
         with:
@@ -44,20 +44,21 @@ jobs:
         if: always()
         run: rm -rf "$BERTH_CI_CACHE/target/debug/incremental" "$BERTH_CI_CACHE/target/tmp"
 
-  # berth is built once, here, and each shard of the end-to-end tests runs it
-  # against a test host of its own. Only this job saves the cargo cache and the
-  # test host's image layers, so the shards do not race to save the same keys.
+  # berth is built once, here, and each shard of the end-to-end tests, the
+  # tests of one test host (tests/e2e/run.py), runs it in a job of its own.
+  # Only this job saves the cargo cache and the test host's image layers, so
+  # the shards do not race to save the same keys.
   e2e-build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
       shards: ${{ steps.shards.outputs.shards }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: echo "BERTH_CI_CACHE=$RUNNER_TEMP/berth-ci-cache" >> "$GITHUB_ENV"
       - id: shards
         run: echo "shards=$(python3 tests/e2e/run.py --shards)" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build the dev image
         uses: docker/build-push-action@v6
         with:
@@ -100,17 +101,20 @@ jobs:
   e2e-shard:
     needs: e2e-build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         shard: ${{ fromJSON(needs.e2e-build.outputs.shards) }}
     env:
       BERTH_CI_PREBUILT: '1'
+      # The Docker engine of the tests has no way out; ci/run.sh loads this
+      # image into it when the shard holds the Docker plugin's tests.
+      BERTH_CI_DIND_IMAGES: busybox:1.37
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: echo "BERTH_CI_CACHE=$RUNNER_TEMP/berth-ci-cache" >> "$GITHUB_ENV"
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build the dev image
         uses: docker/build-push-action@v6
         with:
@@ -136,6 +140,8 @@ jobs:
           mkdir -p "$BERTH_CI_CACHE"
           tar -xf "$RUNNER_TEMP/e2e-berth.tar" -C "$BERTH_CI_CACHE" target
           tar -xf "$RUNNER_TEMP/e2e-berth.tar" provision
+      - name: Pull the images the tests' Docker engine is given
+        run: docker pull --quiet "$BERTH_CI_DIND_IMAGES"
       - name: End-to-end tests
         run: ci/run.sh e2e --shard "${{ matrix.shard }}"
       - name: Upload the test host's logs
@@ -168,7 +174,7 @@ jobs:
     env:
       VALE_VERSION: 3.25.1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Vale
         run: |
           curl -fsSL "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz" \

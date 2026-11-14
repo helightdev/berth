@@ -93,7 +93,9 @@ def boot_profile(station, kind, **values):
         'hostname': HOST, 'profile': 'cloud', 'keyboard': 'us',
         # As berth writes a new host: the shipped plugins' features are chosen
         # in the list, not switched on for a profile from before them.
-        'builder': {'ssh_host': HOST, 'ssh_user': OPERATOR, 'shipped_plugins': True},
+        'builder': {'shipped_plugins': True},
+        # The user's key logs in first, as for a host they handed their key to.
+        'access': {'address': HOST, 'user': OPERATOR, 'auth': 'ssh'},
         'operator_ssh_public_keys': [station.public],
         'agent_ssh_public_keys': [keygen(station.root / 'agent_key', 'agent@workstation')],
         'operator_password_hash': password_hash(),
@@ -215,8 +217,8 @@ def install_iso(run, side, station):
     with run.phase('build the installer'):
         station.berth('plugins', 'add', str(FIXTURE))
         station.write_profile(boot_profile(station, 'iso', target_disk_mode='serial', target_disk_serial=TARGET,
-                                           builder={'ssh_host': HOST, 'ssh_user': OPERATOR, 'shipped_plugins': True,
-                                                    'iso': str(iso), 'iso_sha256': sha}))
+                                           builder={'shipped_plugins': True, 'iso': str(iso),
+                                                    'iso_sha256': sha}))
         station.berth('iso', HOST, timeout=1800)
         built = station.data / 'berth/build' / f'{HOST}-autoinstall.iso'
         run.facts['installer_gb'] = round(built.stat().st_size / 2**30, 2)

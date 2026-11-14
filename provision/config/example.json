@@ -4,7 +4,6 @@
   "operator_username": "ops",
   "operator_ssh_public_keys": [],
   "operator_password_hash": "",
-  "operator_passwordless_sudo": true,
   "agent_username": "agent",
   "agent_ssh_public_keys": [],
   "agent_password_hash": "",
@@ -18,5 +17,6 @@
   "tailscale_auth_key": "",
   "wifi_enabled": false,
   "wifi": null,
-  "ansible_vars": {}
+  "ansible_vars": {},
+  "access": {"auth": "berth"}
 }

@@ -7,7 +7,7 @@ FROM rust:1-trixie
 ARG VALE_VERSION=3.25.1
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git jq musl-tools nodejs npm openssh-client openssh-server \
+      ca-certificates curl docker-cli docker-compose git jq musl-tools nodejs npm openssh-client openssh-server \
       procps python3 python3-venv tini xz-utils \
     && rm -rf /var/lib/apt/lists/* \
     && rustup component add clippy rustfmt \

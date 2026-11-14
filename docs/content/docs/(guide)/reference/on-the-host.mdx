@@ -23,6 +23,8 @@ icon: FolderTree
     <File name="tasks.json" />
     <File name="services.json" />
     <File name="channels.json" />
+    <File name="applied.json" />
+    <File name="profile.json" />
   </Folder>
   <Folder name="/var/lib/devbox">
     <File name="provision-state" />
@@ -57,6 +59,8 @@ icon: FolderTree
 | `/etc/devbox/expected-commands` | Commands the self-test requires, including those plugins list |
 | `/etc/devbox/mcp.json` | The desktop MCP server, to merge into an MCP client's configuration |
 | `/etc/berth/*.json` | berthd's settings, tasks, services and channel topics |
+| `/etc/berth/applied.json` | The versions of berth and its plugins at the last apply |
+| `/etc/berth/profile.json` | The host's profile, for root only, which [another berth can adopt](/docs/use/moving) |
 | `/usr/local/lib/berth/tasks/` | The scripts of berth's own tasks |
 | `/var/lib/devbox/provision-state` | The state of the first-boot provisioning |
 | `/var/lib/devbox/ready` | Written when Ansible converged, with the release's digest |
