@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       procps python3 python3-venv tini xz-utils \
     && rm -rf /var/lib/apt/lists/* \
     && rustup component add clippy rustfmt \
-    && rustup target add x86_64-unknown-linux-musl wasm32-unknown-unknown
+    && rustup target add x86_64-unknown-linux-musl
 RUN curl -fsSL "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz" \
       | tar -xz -C /usr/local/bin vale
 COPY provision/requirements.txt /tmp/requirements.txt

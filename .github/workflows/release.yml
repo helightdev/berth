@@ -26,7 +26,7 @@ jobs:
           fi
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-musl, wasm32-unknown-unknown
+          targets: x86_64-unknown-linux-musl
       - name: musl compiler for the bundled SQLite
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
       - uses: Swatinem/rust-cache@v2
@@ -39,21 +39,13 @@ jobs:
           tar -czf berth-x86_64-linux.tar.gz -C dist berth LICENSE-MIT LICENSE-APACHE
           sha256sum berth-x86_64-linux.tar.gz > berth-x86_64-linux.tar.gz.sha256
           cp target/host/x86_64-unknown-linux-musl/release/berthd target/host/x86_64-unknown-linux-musl/release/box dist/
-      - name: Build berth with the page for a browser
-        run: cargo build --release --locked --target x86_64-unknown-linux-musl -p berth --features web
-      - name: Pack it
-        run: |
-          cp target/x86_64-unknown-linux-musl/release/berth dist/berth
-          tar -czf berth-web-x86_64-linux.tar.gz -C dist berth LICENSE-MIT LICENSE-APACHE
-          sha256sum berth-web-x86_64-linux.tar.gz > berth-web-x86_64-linux.tar.gz.sha256
       - name: Check the versions
-        # berth in both archives, and the berthd and box it carries, all say the same.
+        # berth in the archive, and the berthd and box it carries, all say the same.
         run: |
           want=${BERTH_BUILD_VERSION:-$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)}
-          mkdir check check-web
+          mkdir check
           tar -xzf berth-x86_64-linux.tar.gz -C check berth
-          tar -xzf berth-web-x86_64-linux.tar.gz -C check-web berth
-          for program in check/berth check-web/berth dist/berthd dist/box; do
+          for program in check/berth dist/berthd dist/box; do
             said=$("$program" --version)
             echo "$program: $said"
             case "$said" in
@@ -61,22 +53,20 @@ jobs:
               *) echo "::error::$program says $said, not $want"; exit 1 ;;
             esac
           done
-          rm -r check check-web
+          rm -r check
       - uses: actions/upload-artifact@v4
         with:
           name: berth-x86_64-linux
           path: |
             berth-x86_64-linux.tar.gz
             berth-x86_64-linux.tar.gz.sha256
-            berth-web-x86_64-linux.tar.gz
-            berth-web-x86_64-linux.tar.gz.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: host-programs-x86_64-linux
           path: |
             dist/berthd
             dist/box
-  # berth-remote, the page of berth serve in a terminal, to use a server's
+  # berth-remote, the screens of berth serve in a terminal, to use a server's
   # hosts from another machine. Each is built on the system it is for, so
   # that its version can be run there.
   remote:
@@ -186,7 +176,7 @@ jobs:
           # A release made on GitHub's page exists already, and only lacks the files.
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
             || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes $prerelease
-          gh release upload "$GITHUB_REF_NAME" --clobber berth-x86_64-linux.tar.gz berth-x86_64-linux.tar.gz.sha256 berth-web-x86_64-linux.tar.gz berth-web-x86_64-linux.tar.gz.sha256 \
+          gh release upload "$GITHUB_REF_NAME" --clobber berth-x86_64-linux.tar.gz berth-x86_64-linux.tar.gz.sha256 \
             berth-remote-*.zip berth-remote-*.zip.sha256 berth-remote-*.tar.gz berth-remote-*.tar.gz.sha256 \
             install.sh install-remote.sh install.ps1 VERSION
   image:

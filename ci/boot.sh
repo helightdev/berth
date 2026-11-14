@@ -63,7 +63,7 @@ boot() {
     boot_compose build --quiet
   fi
   # The guest gets berth's host programs from the role's files, which this build puts there.
-  dev cargo build --locked -p berth --features web
+  dev cargo build --locked -p berth
 
   local kind status=0 run
   for kind in "${kinds[@]}"; do
