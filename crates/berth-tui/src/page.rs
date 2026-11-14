@@ -145,7 +145,12 @@ pub struct Arguments {
     pub chosen: Option<usize>,
     /// What is typed is a secret: it is neither shown nor copied.
     pub secret: bool,
+    /// What is typed has several lines, shown as [`NEWLINE`] in the input.
+    pub text: bool,
 }
+
+/// How a line break of a value of several lines shows in an input of one.
+pub const NEWLINE: char = '⏎';
 
 impl Arguments {
     fn at(
@@ -162,6 +167,7 @@ impl Arguments {
             choices: vec![],
             chosen: None,
             secret: argument.secret,
+            text: argument.kind == Argument::TEXT,
         }
     }
 
@@ -237,8 +243,11 @@ pub fn accept(actions: &[Action], mut dialog: Arguments) -> Accepted {
     let Some(argument) = action.arguments.get(dialog.index) else {
         return Accepted::Run((dialog.action, dialog.values));
     };
-    let value = dialog.input.value().to_owned();
-    if value.is_empty() && argument.required {
+    let value = match dialog.text {
+        true => dialog.input.value().replace(NEWLINE, "\n"),
+        false => dialog.input.value().to_owned(),
+    };
+    if value.trim().is_empty() && argument.required {
         let said = format!("{} is needed", argument_label(argument));
         return Accepted::Missing(dialog, said);
     }

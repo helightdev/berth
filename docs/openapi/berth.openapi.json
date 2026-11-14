@@ -238,7 +238,7 @@
             "type": "string"
           },
           "kind": {
-            "description": "`resource` for an argument of a provisioner that sizes the machine:\nits CPUs, memory or disk. Empty for any other argument.",
+            "description": "`resource` for an argument of a provisioner that sizes the machine:\nits CPUs, memory or disk. `text` for one whose value has several\nlines. Empty for any other argument.",
             "type": "string"
           },
           "label": {
@@ -965,7 +965,7 @@
             "type": "string"
           },
           "subject": {
-            "description": "What it was done to: `host:NAME`, `provisioner:PLUGIN/ID`,\n`resource:ID` or `installation`. Empty for a job from before 0.5.",
+            "description": "What it was done to: `host:NAME`, `provisioner:NAME`,\n`resource:ID` or `installation`. Empty for a job from before 0.5.",
             "type": "string"
           }
         },
@@ -1338,7 +1338,7 @@
             "type": "string"
           },
           "provisioner": {
-            "description": "`PLUGIN/ID`.",
+            "description": "The provisioner's name.",
             "type": "string"
           },
           "secrets": {
@@ -1762,7 +1762,7 @@
             "type": "string"
           },
           "id": {
-            "description": "`PLUGIN/ID`.",
+            "description": "The name it is registered under, such as `ovh-incus`. In the list of\ntypes, the type itself.",
             "type": "string"
           },
           "kinds": {
@@ -1812,6 +1812,10 @@
           },
           "setup": {
             "description": "`seed`: the machine boots with berth's cloud seed and sets itself up.\n`apply`: berth applies the profile over SSH once the machine answers.",
+            "type": "string"
+          },
+          "type": {
+            "description": "The plugin's provisioner it is, as `PLUGIN/ID`, such as `incus/vm`.",
             "type": "string"
           },
           "verbs": {
@@ -2069,7 +2073,7 @@
             "type": "string"
           },
           "provisioner": {
-            "description": "`PLUGIN/ID`.",
+            "description": "The name of the provisioner that made it.",
             "type": "string"
           },
           "secrets": {
@@ -2277,6 +2281,29 @@
           "host"
         ],
         "type": "string"
+      },
+      "SavedProvisioner": {
+        "description": "A provisioner to register, or the type and settings of one that is.",
+        "properties": {
+          "settings": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Values of its own arguments, such as the server it uses. Empty ones\nare not kept. Left out, the settings it has stay.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "type": {
+            "description": "The plugin's provisioner it is, as `PLUGIN/ID`. A registered one keeps\nits type: this is the same or empty.",
+            "type": "string"
+          }
+        },
+        "type": "object"
       },
       "Screen": {
         "properties": {
@@ -6470,6 +6497,30 @@
         ]
       }
     },
+    "/v1/provisioner-types": {
+      "get": {
+        "operationId": "types",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProvisionerInfo"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Each type as `PLUGIN/ID` in `id` and `type`, with what it asks for and can make"
+          }
+        },
+        "summary": "The types of provisioner the plugins bring, which a provisioner is registered as.",
+        "tags": [
+          "set-up"
+        ]
+      }
+    },
     "/v1/provisioners": {
       "get": {
         "operationId": "list",
@@ -6494,23 +6545,57 @@
         ]
       }
     },
-    "/v1/provisioners/{plugin}/{id}": {
-      "get": {
-        "operationId": "provisioner",
+    "/v1/provisioners/{name}": {
+      "delete": {
+        "operationId": "remove",
         "parameters": [
           {
-            "description": "The plugin",
+            "description": "Its name",
             "in": "path",
-            "name": "plugin",
+            "name": "name",
             "required": true,
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Forgotten"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such provisioner"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "It still holds resources; the message names them"
+          }
+        },
+        "summary": "Forget a registered provisioner, with its settings and the secrets it keeps of its own. It is kept while it holds resources.",
+        "tags": [
+          "set-up"
+        ]
+      },
+      "get": {
+        "operationId": "provisioner",
+        "parameters": [
           {
-            "description": "The provisioner within the plugin",
+            "description": "The provisioner's name",
             "in": "path",
-            "name": "id",
+            "name": "name",
             "required": true,
             "schema": {
               "type": "string"
@@ -6560,25 +6645,66 @@
         "tags": [
           "set-up"
         ]
-      }
-    },
-    "/v1/provisioners/{plugin}/{id}/actions": {
-      "get": {
-        "operationId": "provisioner_actions",
+      },
+      "put": {
+        "operationId": "save",
         "parameters": [
           {
-            "description": "The plugin",
+            "description": "Its name: lowercase letters, digits, - and _, starting with a letter",
             "in": "path",
-            "name": "plugin",
+            "name": "name",
             "required": true,
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavedProvisioner"
+              }
+            }
           },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvisionerInfo"
+                }
+              }
+            },
+            "description": "Registered, as it is listed"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The name, the type or a setting does not fit; the message says which"
+          }
+        },
+        "summary": "Register a provisioner under a name of its own, of a type a plugin brings, or change the settings of one that is registered. A registered one keeps its type.",
+        "tags": [
+          "set-up"
+        ]
+      }
+    },
+    "/v1/provisioners/{name}/actions": {
+      "get": {
+        "operationId": "provisioner_actions",
+        "parameters": [
           {
-            "description": "The provisioner within the plugin",
+            "description": "The provisioner's name",
             "in": "path",
-            "name": "id",
+            "name": "name",
             "required": true,
             "schema": {
               "type": "string"
@@ -6616,23 +6742,14 @@
         ]
       }
     },
-    "/v1/provisioners/{plugin}/{id}/actions/{action}": {
+    "/v1/provisioners/{name}/actions/{action}": {
       "post": {
         "operationId": "provisioner_act",
         "parameters": [
           {
-            "description": "The plugin",
+            "description": "The provisioner's name",
             "in": "path",
-            "name": "plugin",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "The provisioner within the plugin",
-            "in": "path",
-            "name": "id",
+            "name": "name",
             "required": true,
             "schema": {
               "type": "string"
@@ -6912,7 +7029,7 @@
         "operationId": "list",
         "parameters": [
           {
-            "description": "Only those of this provisioner, `PLUGIN/ID`.",
+            "description": "Only those of this provisioner, by its name.",
             "in": "query",
             "name": "provisioner",
             "required": false,

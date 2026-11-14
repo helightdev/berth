@@ -178,7 +178,7 @@ The topic becomes `PLUGIN/TOPIC`. `keep` is the default for messages published t
 
 ## Writing a provisioner
 
-A provisioner is a program of a plugin that makes things on a platform: machines for saved hosts, and other kinds of things its plugin names. It also has actions of its own, such as listing images or freeing space. Its plugin lists it under `berth.provisioners`, next to `features`, and holds the executable. People use it with `berth provision HOST PLUGIN/ID`, `berth provisioner PLUGIN/ID` and `berth resource` ([Provisioners](/docs/deploy/provisioners), [Resources](/docs/deploy/resources)). The plugins `docker` and `incus` in the berth source are examples.
+A provisioner is a program of a plugin that makes things on a platform: machines for saved hosts, and other kinds of things its plugin names. It also has actions of its own, such as listing images or freeing space. Its plugin lists it under `berth.provisioners`, next to `features`, and holds the executable. People register it under a name of their own with `berth provisioner add NAME PLUGIN/ID`, and then use it with `berth provision HOST NAME`, `berth provisioner NAME` and `berth resource` ([Provisioners](/docs/deploy/provisioners), [Resources](/docs/deploy/resources)). The plugins `docker` and `incus` in the berth source are examples.
 
 ```json title="package.json"
 {
@@ -223,7 +223,7 @@ A provisioner is a program of a plugin that makes things on a platform: machines
 }
 ```
 
-The provisioner is referred to as `PLUGIN/ID`, here `lab/vm`.
+Its type is `PLUGIN/ID`, here `lab/vm`. berth runs it as each provisioner registered of that type, with that provisioner's settings and secrets. The program gets its secrets under the names it declares, whichever provisioner it runs as.
 
 ### Manifest fields
 
@@ -384,7 +384,7 @@ Each verb adds to it and answers like this:
 | `status` | `id` | `state`, which is `running`, `stopped` or `gone`, and optionally `address`. berth shows `gone` as `missing` |
 | `status` | nothing | The provisioner itself: `state` (`ready` unless it says otherwise), `message`, `details`, `values` |
 | `destroy`, `start`, `stop` | `id` | `{}` |
-| `change` | `id`, the new values in `arguments`, and `environment`. For a kind with a specification, `spec`: the new one, or the one berth has | `state` |
+| `change` | `id`, the new values in `arguments`, `changed` with the names of the arguments whose value is new, and `environment`. For a kind with a specification, `spec`: the new one, or the one berth has | `state` |
 | `logs` | `id`, `tail` and `follow` | The log on standard output, a line at a time, until it ends |
 | `list` | nothing | `resources`, a list of `id`, `kind`, `name`, `host` and `state`, of every kind |
 | `act` | `action`: its `name` and its `arguments`. For an action of a kind, also `environment`, and `spec` when the kind has one | `message`, and optionally `details` |
@@ -475,9 +475,9 @@ Install the plugin from its folder and see that berth finds the provisioner and 
 
 ```bash
 berth plugins add ~/src/berth-plugin-lab
-berth provisioner
-berth provisioner lab/vm run settings server=https://192.0.2.10:8443
-berth provisioner lab/vm
+berth provisioner types
+berth provisioner add lab lab/vm server=https://192.0.2.10:8443
+berth provisioner lab
 ```
 
 Run a verb by hand from the package directory with a request on standard input. Use a scratch machine and made-up values:

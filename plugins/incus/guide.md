@@ -1,12 +1,17 @@
 # Incus
 
-This plugin creates the machine for a host on an Incus server. It offers two
-provisioners:
+This plugin creates the machine for a host on an Incus server. It brings two
+types of provisioner:
 
-| Provisioner | What it makes |
+| Type | What it makes |
 | --- | --- |
 | `incus/vm` | A virtual machine. The server needs KVM. |
 | `incus/container` | A system container. It starts faster and shares the server's kernel. |
+
+Register a provisioner of a type for each Incus server, under a name of your
+own and with the server as its setting:
+
+    berth provisioner add ovh-incus incus/vm server=https://192.0.2.10:8443
 
 Both start from an Ubuntu cloud image and set themselves up from berth's cloud
 seed. Because the plugin copies the release into the machine itself, the profile
@@ -47,6 +52,13 @@ accepts exactly that certificate and no other:
 
 On the server the certificate is `/var/lib/incus/server.crt`.
 
+Every Incus provisioner shares these three secrets. A provisioner for another
+server may be given its own instead:
+
+    berth secret set provisioner/lab-incus/incus_server_cert < lab-server.crt
+
+The action `secrets` on the provisioner's page sets them too.
+
 ## Arguments
 
 In berth each argument has a short label, and its row's Information panel
@@ -56,7 +68,7 @@ size are under Machine on the Settings tab.
 `server` and `project` are the provisioner's own arguments. berth keeps them as
 its settings, which every machine and action uses unless the call gives a value:
 
-    berth provisioner incus/vm run settings server=https://192.0.2.10:8443
+    berth provisioner ovh-incus run settings server=https://192.0.2.10:8443
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
@@ -75,10 +87,39 @@ Besides creating, starting, stopping and deleting, the plugin changes a
 machine's CPU and memory limits and grows its root disk. Its log is the
 console log Incus keeps, or cloud-init's output when the console has none.
 
+## Instances
+
+An instance is a plain container or virtual machine that doesn't become a berth
+host. It starts from any image on `https://images.linuxcontainers.org`, such as
+`debian/12`, and berth puts nothing of its own in it. Cloud-init user data that
+you paste sets it up on its first boot, if the image has cloud-init.
+
+Make one with **+ New instance** under the hosts, or the action New instance
+on the provisioner's page. Both open a form laid out like a host's set-up, with every field on a row. Or:
+
+    berth provisioner ovh-incus run new-instance name=web image=debian/12
+
+berth keeps it as a resource with a page of its own. There it starts, stops,
+changes and removes it, and shows its console log. The plugin marks it with
+`user.berth-resource` and `user.berth-token`. Only `cpus`, `memory` and `disk`
+change in place: a change to another argument is refused, so make a new
+instance for it.
+
+| Argument | Default | Meaning |
+| --- | --- | --- |
+| `image` | `ubuntu/24.04` | Image to start from. |
+| `user_data` | | Cloud-init user data, several lines. Empty leaves the image as it is. |
+| `cpus` | `2` | CPUs for the instance. |
+| `memory` | `2GiB` | Memory for the instance. |
+| `disk` | `20GiB` | Size of the root disk. |
+| `pool` | `default` | Storage pool for the root disk. |
+| `network` | | Network for the instance. Left empty, it uses the network of the `default` profile. |
+| `nesting` | `yes` | Lets a container run containers of its own, such as Docker's. |
+
 ## Actions
 
-The provisioner's page in berth, and `berth provisioner incus/vm`, list these
-actions. They only read.
+The provisioner's page in berth, and `berth provisioner NAME`, list these
+actions:
 
 | Action | What it does |
 | --- | --- |
@@ -86,6 +127,12 @@ actions. They only read.
 | `pools` | The storage pools, with how much of each is used. |
 | `images` | The images the server keeps in the project, with their sizes. |
 | `networks` | The networks a machine can be attached to. |
+| `volumes` | The custom volumes of every pool, with their sizes and whether an instance uses each. |
+| `create-volume` | Creates a custom volume in a pool, with an optional size. |
+| `remove-volume` | Removes a custom volume. Incus refuses one that an instance uses. |
+| `create-pool` | Creates a storage pool with the driver `dir`, `zfs`, `btrfs` or `lvm`. The last three take a size for their loop file. |
+| `remove-pool` | Removes a storage pool. Incus refuses one that still holds something. |
+| `remove-image` | Removes a cached image, by its alias or the start of its fingerprint. |
 
 The page also offers the server's pools and networks for `pool` and `network`.
 

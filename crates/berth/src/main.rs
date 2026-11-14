@@ -66,23 +66,29 @@ Usage:
                              --force replaces a host of that name
   berth provisioners         what can create machines, and what each asks for
   berth provisioner          the provisioners, and whether each can be used here
-  berth provisioner PLUGIN/ID [NAME=VALUE…]
+  berth provisioner types    the types of provisioner the plugins bring
+  berth provisioner add NAME TYPE [SETTING=VALUE…]
+                             register a provisioner of a type, such as incus/vm,
+                             under a name of its own, with its settings
+  berth provisioner remove NAME
+                             forget a provisioner that holds nothing
+  berth provisioner NAME [SETTING=VALUE…]
                              how it is now, what berth made with it, and its
                              actions; the values are of its own arguments, this once
-  berth provisioner PLUGIN/ID actions
-  berth provisioner PLUGIN/ID run ACTION [NAME=VALUE…] [--yes]
+  berth provisioner NAME actions
+  berth provisioner NAME run ACTION [NAME=VALUE…] [--yes]
                              run one of its actions, such as settings, which keeps
-                             where it is, or the plugin's own
-  berth resource [--provisioner PLUGIN/ID] [--kind KIND] [--host HOST]
+                             where it is, secrets, new-deployment, or the plugin's own
+  berth resource [--provisioner NAME] [--kind KIND] [--host HOST]
                              what provisioners made for berth: machines, deployments
   berth resource ID          one of them as its provisioner says it is now
   berth resource ID actions | run ACTION [NAME=VALUE…] [--yes] | remove [--yes]
   berth resource ID logs [--tail N] [--follow]
   berth resource ID change [--spec FILE|-] [--secret NAME[:VARIABLE]]… [NAME=VALUE…]
-  berth deploy NAME --provisioner PLUGIN/ID --spec FILE|- [--secret NAME[:VARIABLE]]…
+  berth deploy NAME --provisioner PROVISIONER --spec FILE|- [--secret NAME[:VARIABLE]]…
           [NAME=VALUE…]      a deployment from a specification, such as a Compose
                              file; again with the same name gives it the new one
-  berth provision HOST PLUGIN/ID [NAME=VALUE…] [--yes]
+  berth provision HOST PROVISIONER [NAME=VALUE…] [--yes]
                              create the machine for a saved host and set it up
   berth instance HOST        the host's machine, as its resource
   berth instance HOST start|stop

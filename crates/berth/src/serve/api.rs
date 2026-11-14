@@ -242,7 +242,12 @@ fn guarded_routes() -> OpenApiRouter<Arc<Serve>> {
         .routes(routes!(setup::catalogue))
         .routes(routes!(setup::generate))
         .routes(routes!(provisioners::list))
-        .routes(routes!(provisioners::provisioner))
+        .routes(routes!(provisioners::types))
+        .routes(routes!(
+            provisioners::provisioner,
+            provisioners::save,
+            provisioners::remove
+        ))
         .routes(routes!(provisioners::provisioner_actions))
         .routes(routes!(provisioners::provisioner_act))
         .routes(routes!(resources::list, resources::create))

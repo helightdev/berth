@@ -11,18 +11,18 @@ berth resource
 ```
 
 ```text
-r-k3q7wz2m   machine     studio-2 (host studio-2)   incus/vm             running
-r-p5x2hd7a   deployment  notes                      docker/container     running
+r-k3q7wz2m   machine     studio-2 (host studio-2)   ovh-incus            running
+r-p5x2hd7a   deployment  notes                      docker               running
 ```
 
-The list comes from berth's records, with each resource as it was last seen. berth doesn't ask the provisioners for it. `--provisioner PLUGIN/ID`, `--kind KIND` and `--host HOST` narrow it.
+The list comes from berth's records, with each resource as it was last seen. berth doesn't ask the provisioners for it. `--provisioner NAME`, `--kind KIND` and `--host HOST` narrow it.
 
 ## Kinds
 
 | Kind | Belongs to | Made with |
 | --- | --- | --- |
-| `machine` | A saved host, at most one machine for each | `berth provision HOST PLUGIN/ID` ([Create the machine](/docs/deploy/provisioners#create-the-machine)) |
-| A kind its plugin declares, such as `deployment` | No host | `berth deploy` for a deployment, or `resources.create` for any kind |
+| `machine` | A saved host, at most one machine for each | `berth provision HOST PROVISIONER` ([Create the machine](/docs/deploy/provisioners#create-the-machine)) |
+| A kind its plugin declares, such as `deployment` or `instance` | No host | `berth deploy` for a deployment, the provisioner's `new-KIND` action, or `resources.create` for any kind |
 
 A provisioner's page says which kinds it makes. Each kind lists which of `start`, `stop`, `change` and `logs` its provisioner takes for it, and can bring actions of its own.
 
@@ -61,7 +61,7 @@ berth resource r-k3q7wz2m
 ```
 
 ```text
-r-k3q7wz2m  machine studio-2 of incus/vm
+r-k3q7wz2m  machine studio-2 of ovh-incus
 State      running
 Made as    berth-studio-2
 Host       studio-2
@@ -110,7 +110,7 @@ A host's machine is a resource of the kind `machine`. These short forms go by th
 
 | Command | Is the same as |
 | --- | --- |
-| `berth provision HOST PLUGIN/ID [NAME=VALUE…]` | Making the machine and setting it up as the host |
+| `berth provision HOST PROVISIONER [NAME=VALUE…]` | Making the machine and setting it up as the host |
 | `berth instance HOST` | `berth resource ID` |
 | `berth instance HOST start\|stop` | `berth resource ID run start\|stop` |
 | `berth instance HOST destroy [--yes]` | `berth resource ID remove`, but it asks you to type the host's name |

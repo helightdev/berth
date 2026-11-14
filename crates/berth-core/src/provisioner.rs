@@ -7,7 +7,7 @@
 use crate::{
     Result,
     paths::Paths,
-    plugins::Provisioner,
+    plugins::{self, Provisioner},
     provision::{
         self, Options, call, find, found, needs_secrets, request, runnable, secrets, values_of,
     },
@@ -15,6 +15,7 @@ use crate::{
     store::{self, OWN, kind},
 };
 use berth_api::{Action, Argument, Detail, ProvisionerInfo, ProvisionerState, ops::Role};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -27,11 +28,210 @@ use std::{
 
 /// berth's own action that keeps the values of a provisioner's own arguments.
 pub const SETTINGS: &str = "settings";
+/// berth's own action that keeps the secrets of one registered provisioner.
+pub const SECRETS: &str = "secrets";
+/// berth's own action that forgets a registered provisioner.
+pub const REMOVE: &str = "remove";
+/// The start of berth's own action that makes a resource of a kind, such as
+/// `new-deployment`.
+pub const NEW: &str = "new-";
+/// What a secret of a provisioner's is set to, to forget the one it keeps.
+const FORGET: &str = "-";
 
 // ── Settings ────────────────────────────────────────────────────────────────
 
+/// A provisioner berth runs under a name of its own: the `PLUGIN/ID` of the
+/// plugin's provisioner it is, and the values of its own arguments.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Entry {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub settings: BTreeMap<String, String>,
+}
+
+/// The entry registered under a provisioner's name, if there is one.
+pub fn entry(paths: &Paths, name: &str) -> Result<Option<Entry>> {
+    Ok(store::shared(paths)?
+        .read_json(kind::PROVISIONER_ENTRY, OWN, name)?
+        .and_then(|entry| serde_json::from_value(entry).ok()))
+}
+
+/// Register a provisioner under `name`, of the type `entry.kind`.
+pub fn save_entry(paths: &Paths, name: &str, entry: &Entry) -> Result<()> {
+    if !plugins::valid_name(name) {
+        return Err(format!(
+            "{name} is not a name for a provisioner: lowercase letters, digits, - and _, starting with a letter"
+        )
+        .into());
+    }
+    store::shared(paths)?.write_json(kind::PROVISIONER_ENTRY, OWN, name, &json!(entry))?;
+    Ok(())
+}
+
+/// The registered provisioners, by name.
+pub fn entries(paths: &Paths) -> Result<Vec<(String, Entry)>> {
+    let shared = store::shared(paths)?;
+    let mut found = vec![];
+    for name in shared.names(kind::PROVISIONER_ENTRY, OWN)? {
+        if let Some(entry) = entry(paths, &name)? {
+            found.push((name, entry));
+        }
+    }
+    Ok(found)
+}
+
+/// The name a provisioner of the type `kind` is registered under when berth
+/// registers it itself: `incus/vm` is `incus-vm`.
+pub fn default_name(kind: &str) -> String {
+    kind.replace('/', "-")
+}
+
+/// The berth secret a registered provisioner keeps as its own `secret`. One
+/// without it is given the secret of that name that all share.
+pub fn secret_name(name: &str, secret: &str) -> String {
+    format!("provisioner/{name}/{secret}")
+}
+
+/// Whether `name` is the name of a secret a provisioner keeps of its own.
+pub fn is_secret_name(name: &str) -> bool {
+    name.strip_prefix("provisioner/")
+        .and_then(|rest| rest.split_once('/'))
+        .is_some_and(|(provisioner, secret)| {
+            plugins::valid_name(provisioner) && plugins::valid_name(secret)
+        })
+}
+
+/// Register a provisioner under `name`, or change the settings of the one
+/// there is. A registered one keeps its type; settings left out stay.
+pub fn register(paths: &Paths, name: &str, saved: &berth_api::SavedProvisioner) -> Result<Entry> {
+    let existing = entry(paths, name)?;
+    let wanted = saved.kind.trim();
+    let kind = match (&existing, wanted) {
+        (Some(existing), "") => existing.kind.clone(),
+        (Some(existing), wanted) if wanted == existing.kind => existing.kind.clone(),
+        (Some(existing), wanted) => {
+            return Err(format!(
+                "{name} is a {}, and a provisioner keeps its type. Register {wanted} under another name",
+                existing.kind
+            )
+            .into());
+        }
+        (None, "") => {
+            return Err(format!(
+                "Give the type of {name}, such as incus/vm. See: berth provisioner types"
+            )
+            .into());
+        }
+        (None, wanted) => wanted.to_owned(),
+    };
+    let plugins = found(paths);
+    let (_, provisioner) = find(&plugins, &kind)
+        .map_err(|_| format!("No type {kind}. See: berth provisioner types"))?;
+    let settings = match &saved.settings {
+        Some(given) => kept_values(name, provisioner, given)?,
+        None => existing
+            .map(|existing| existing.settings)
+            .unwrap_or_default(),
+    };
+    let entry = Entry { kind, settings };
+    save_entry(paths, name, &entry)?;
+    Ok(entry)
+}
+
+/// The values of its own arguments a provisioner keeps of `given`: names it
+/// does not take and values outside those it takes are refused, and empty
+/// ones are left out.
+fn kept_values(
+    name: &str,
+    provisioner: &Provisioner,
+    given: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>> {
+    let declared: Vec<Argument> = own_arguments(provisioner)
+        .into_iter()
+        .map(|argument| Argument {
+            required: false,
+            ..argument
+        })
+        .collect();
+    values_of(name, &declared, given, &BTreeMap::new())?;
+    Ok(given
+        .iter()
+        .filter(|(_, value)| !value.trim().is_empty())
+        .map(|(key, value)| (key.clone(), value.trim().to_owned()))
+        .collect())
+}
+
+/// The name of this berth's provisioner for a machine another berth made
+/// with its provisioner `name` of the type `kind`: one registered here of
+/// that type, or one registered for it now. Without a type, the name stays.
+pub fn adopted_name(paths: &Paths, name: &str, kind: &str) -> Result<String> {
+    if kind.is_empty() {
+        return Ok(name.to_owned());
+    }
+    let registered = entries(paths)?;
+    if let Some((found, _)) = registered
+        .iter()
+        .find(|(known, entry)| known == name && entry.kind == kind)
+        .or_else(|| registered.iter().find(|(_, entry)| entry.kind == kind))
+    {
+        return Ok(found.clone());
+    }
+    let stem = match plugins::valid_name(name) {
+        true => name.to_owned(),
+        false => default_name(kind),
+    };
+    let mut free = stem.clone();
+    let mut number = 2;
+    while registered.iter().any(|(known, _)| *known == free) {
+        free = format!("{stem}-{number}");
+        number += 1;
+    }
+    save_entry(
+        paths,
+        &free,
+        &Entry {
+            kind: kind.to_owned(),
+            ..Entry::default()
+        },
+    )?;
+    Ok(free)
+}
+
+/// Forget a registered provisioner and the secrets it keeps. One that still
+/// holds resources is kept: they would have no provisioner.
+pub fn remove_entry(paths: &Paths, store: &Store, name: &str) -> Result<()> {
+    if entry(paths, name)?.is_none() {
+        return Err(format!("No provisioner {name}. See: berth provisioner").into());
+    }
+    let held: Vec<String> = crate::resource::list(paths)?
+        .into_iter()
+        .filter(|kept| kept.record.provisioner == name)
+        .map(|kept| kept.record.id)
+        .collect();
+    if !held.is_empty() {
+        return Err(format!(
+            "{name} still holds {}. Remove {} first: berth resource ID remove",
+            held.join(", "),
+            if held.len() == 1 { "it" } else { "them" }
+        )
+        .into());
+    }
+    let prefix = secret_name(name, "");
+    for secret in store.all_secret_names()? {
+        if secret.starts_with(&prefix) {
+            store.set_secret(&secret, None)?;
+        }
+    }
+    store::shared(paths)?.forget(kind::PROVISIONER_ENTRY, OWN, name)?;
+    Ok(())
+}
+
 /// The values of a provisioner's own arguments that berth keeps, by name.
 pub fn settings(paths: &Paths, name: &str) -> Result<BTreeMap<String, String>> {
+    if let Some(entry) = entry(paths, name)? {
+        return Ok(entry.settings);
+    }
     let kept = store::shared(paths)?.read_json(kind::PROVISIONER, OWN, name)?;
     Ok(kept
         .and_then(|kept| serde_json::from_value(kept).ok())
@@ -44,6 +244,13 @@ pub fn save_settings(paths: &Paths, name: &str, values: &BTreeMap<String, String
         .iter()
         .filter(|(_, value)| !value.trim().is_empty())
         .collect();
+    if let Some(mut entry) = entry(paths, name)? {
+        entry.settings = kept
+            .into_iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        return save_entry(paths, name, &entry);
+    }
     let store = store::shared(paths)?;
     match kept.is_empty() {
         true => {
@@ -71,12 +278,14 @@ fn own_arguments(provisioner: &Provisioner) -> Vec<Argument> {
 pub fn describe(
     paths: &Paths,
     store: &Store,
+    name: &str,
     plugin: &str,
     provisioner: &Provisioner,
 ) -> ProvisionerInfo {
-    let missing = secrets(store, provisioner).1;
+    let missing = secrets(store, name, provisioner).1;
     let mut info = provisioner.info(plugin, missing.clone());
-    info.settings = settings(paths, &info.id).unwrap_or_default();
+    info.id = name.to_owned();
+    info.settings = settings(paths, name).unwrap_or_default();
     if info.problem.is_empty() {
         info.problem = problem(&info.id, provisioner, &missing, &info.settings);
     }
@@ -115,17 +324,18 @@ fn problem(
     }
 }
 
-/// A provisioner by `PLUGIN/ID`, with its plugin's folder.
+/// A provisioner by its name, with its plugin's folder and id.
 fn load(paths: &Paths, name: &str) -> Result<(PathBuf, String, Provisioner)> {
     let plugins = found(paths);
-    let (plugin, provisioner) = find(&plugins, name)?;
+    let kind = entry(paths, name)?.map_or_else(|| name.to_owned(), |entry| entry.kind);
+    let (plugin, provisioner) = find(&plugins, &kind)?;
     Ok((plugin.dir.clone(), plugin.id.clone(), provisioner.clone()))
 }
 
 /// What is said of one provisioner, as in the list.
 pub fn info(paths: &Paths, store: &Store, name: &str) -> Result<ProvisionerInfo> {
     let (_, plugin, provisioner) = load(paths, name)?;
-    Ok(describe(paths, store, &plugin, &provisioner))
+    Ok(describe(paths, store, name, &plugin, &provisioner))
 }
 
 /// The values of the provisioner's own arguments for a call: those given,
@@ -168,7 +378,7 @@ pub fn state(
     options: &Options,
 ) -> Result<ProvisionerState> {
     let (dir, plugin, provisioner) = load(paths, name)?;
-    let info = describe(paths, store, &plugin, &provisioner);
+    let info = describe(paths, store, name, &plugin, &provisioner);
     let records = crate::resource::list(paths).unwrap_or_default();
     let mut listed = vec![];
     let mut state = ProvisionerState {
@@ -188,7 +398,7 @@ pub fn state(
             return Ok(state);
         }
     };
-    let (secrets, _) = secrets(store, &provisioner);
+    let (secrets, _) = secrets(store, name, &provisioner);
     let asked = request("status", &provisioner, &own, &secrets);
     match call(
         &dir,
@@ -247,7 +457,7 @@ pub fn state(
 fn settings_action(provisioner: &Provisioner, kept: &BTreeMap<String, String>) -> Action {
     Action {
         name: SETTINGS.into(),
-        label: "Settings".into(),
+        label: "Change settings".into(),
         help: "Where the provisioner is, such as the server or engine to use. berth keeps these values in its store and uses them for every call to it, and for each machine made with it unless it is given others. An empty value is forgotten.".into(),
         group: "Set-Up".into(),
         arguments: own_arguments(provisioner)
@@ -276,20 +486,19 @@ pub fn actions(paths: &Paths, store: &Store, name: &str) -> Result<Vec<Action>> 
         return Ok(vec![]);
     }
     let kept = settings(paths, name)?;
-    let why = needs_secrets(name, &secrets(store, &provisioner).1).err();
+    let why = needs_secrets(name, &secrets(store, name, &provisioner).1).err();
     let unset: Vec<Argument> = own_arguments(&provisioner)
         .into_iter()
         .filter(|argument| argument.required && argument.default.is_empty())
         .filter(|argument| kept.get(&argument.name).is_none_or(String::is_empty))
         .collect();
+    // Creating comes first: it is what a provisioner is most often used for.
     let mut actions: Vec<Action> = provisioner
-        .actions
+        .kinds
         .iter()
-        .cloned()
-        .map(|mut action| {
-            let mut arguments = unset.clone();
-            arguments.append(&mut action.arguments);
-            action.arguments = arguments;
+        .filter(|kind| kind.id != plugins::MACHINE)
+        .map(|kind| {
+            let mut action = new_action(&provisioner, kind, &unset);
             if let Some(why) = &why {
                 action.available = false;
                 action.why = why.to_string();
@@ -297,10 +506,178 @@ pub fn actions(paths: &Paths, store: &Store, name: &str) -> Result<Vec<Action>> 
             action
         })
         .collect();
+    // The settings come next, where they are found and changed in place.
     if !provisioner.own.is_empty() {
         actions.push(settings_action(&provisioner, &kept));
     }
+    actions.extend(provisioner.actions.iter().cloned().map(|mut action| {
+        let mut arguments = unset.clone();
+        arguments.append(&mut action.arguments);
+        action.arguments = arguments;
+        if let Some(why) = &why {
+            action.available = false;
+            action.why = why.to_string();
+        }
+        action
+    }));
+    if entry(paths, name)?.is_some() {
+        if !provisioner.secrets.is_empty() {
+            actions.push(secrets_action(name, &provisioner));
+        }
+        actions.push(remove_action(paths, name));
+    }
     Ok(actions)
+}
+
+/// berth's own action that makes a resource of `kind`, such as a Compose
+/// project: its name, its specification and the secrets it is given, then
+/// the kind's own arguments.
+fn new_action(
+    provisioner: &Provisioner,
+    kind: &berth_api::ProvisionerKind,
+    unset: &[Argument],
+) -> Action {
+    let label = match kind.label.is_empty() {
+        true => kind.id.clone(),
+        false => kind.label.clone(),
+    };
+    let mut arguments = unset.to_vec();
+    arguments.push(Argument {
+        name: "name".into(),
+        label: "Name".into(),
+        required: true,
+        help: format!(
+            "The {label}'s name: lowercase letters, digits, - and _, starting with a letter or digit"
+        ),
+        ..Argument::default()
+    });
+    if let Some(spec) = &kind.spec {
+        let format = spec["format"].as_str().unwrap_or("");
+        arguments.push(Argument {
+            name: "spec".into(),
+            label: spec["label"]
+                .as_str()
+                .filter(|label| !label.is_empty())
+                .unwrap_or("Specification")
+                .to_owned(),
+            required: true,
+            kind: Argument::TEXT.into(),
+            help: format!(
+                "What it is made from{}. berth keeps it with the resource.",
+                match format.is_empty() {
+                    true => String::new(),
+                    false => format!(", as {format}"),
+                }
+            ),
+            ..Argument::default()
+        });
+    }
+    // Secrets are given to what a specification describes, such as a Compose file's ${NAME}.
+    if kind.spec.is_some() {
+        arguments.push(Argument {
+            name: "secrets".into(),
+            label: "Secrets".into(),
+            help: "The berth secrets it is given in its environment, separated by commas. NAME gives the secret as the variable NAME, and NAME:VARIABLE as another.".into(),
+            ..Argument::default()
+        });
+    }
+    arguments.extend(
+        crate::resource::declared(provisioner, &kind.id)
+            .into_iter()
+            .filter(|argument| !provisioner.own.contains(&argument.name)),
+    );
+    Action {
+        name: format!("{NEW}{}", kind.id),
+        label: format!("New {}", label.to_lowercase()),
+        help: format!(
+            "Make a {label} with this provisioner{}. berth keeps it as a resource, with a page of its own and its actions.{}",
+            match kind.spec.is_some() {
+                true => ", from its specification",
+                false => "",
+            },
+            match kind.id == "deployment" {
+                true =>
+                    " From the command line also: berth deploy NAME --provisioner PROVISIONER --spec FILE",
+                false => "",
+            }
+        ),
+        group: "Create".into(),
+        arguments,
+        role: Role::Admin,
+        ..Action::default()
+    }
+}
+
+/// berth's own action that keeps the secrets of one registered provisioner,
+/// in place of those all of its type share.
+fn secrets_action(name: &str, provisioner: &Provisioner) -> Action {
+    Action {
+        name: SECRETS.into(),
+        label: "Secrets".into(),
+        help: format!(
+            "The secrets {name} uses of its own, such as the certificate of its server. Each is kept in berth's store as {}, and one it does not have is taken from the secret of that name that all share. An empty value keeps what it has, and {FORGET} forgets it.",
+            secret_name(name, "NAME")
+        ),
+        group: "Set-Up".into(),
+        arguments: provisioner
+            .secrets
+            .iter()
+            .map(|secret| Argument {
+                name: secret.name.clone(),
+                label: secret.name.clone(),
+                secret: true,
+                ..Argument::default()
+            })
+            .collect(),
+        role: Role::Admin,
+        ..Action::default()
+    }
+}
+
+/// berth's own action that forgets a registered provisioner, which it does
+/// only when it holds nothing.
+fn remove_action(paths: &Paths, name: &str) -> Action {
+    let held = crate::resource::list(paths)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|kept| kept.record.provisioner == name)
+        .count();
+    Action {
+        name: REMOVE.into(),
+        label: "Remove provisioner".into(),
+        help: format!(
+            "Forget {name}, with its settings and the secrets it keeps of its own. What it made is not touched, so berth refuses while it holds anything."
+        ),
+        group: "Set-Up".into(),
+        confirm: Some(format!("Remove the provisioner {name}?")),
+        role: Role::Admin,
+        available: held == 0,
+        why: match held {
+            0 => String::new(),
+            1 => "It holds a resource; remove it first".into(),
+            count => format!("It holds {count} resources; remove them first"),
+        },
+        ..Action::default()
+    }
+}
+
+/// The secrets a resource is given, as `NAME[:VARIABLE]` separated by
+/// commas or spaces.
+fn given_secrets(text: &str) -> Vec<berth_api::ResourceSecret> {
+    text.split([',', ' ', '\n'])
+        .map(str::trim)
+        .filter(|given| !given.is_empty())
+        .map(|given| match given.split_once(':') {
+            Some((name, env)) => berth_api::ResourceSecret {
+                name: name.trim().to_owned(),
+                env: env.trim().to_owned(),
+            },
+            None => berth_api::ResourceSecret {
+                name: given.to_owned(),
+                env: String::new(),
+            },
+        })
+        .collect()
 }
 
 /// An action of a provisioner that has been checked, ready to run.
@@ -313,6 +690,9 @@ pub struct Acting {
 
 enum Doing {
     Settings(BTreeMap<String, String>),
+    Secrets(BTreeMap<String, String>, Store),
+    Remove(Store),
+    Create(Box<crate::resource::Creating>, Store),
     Program {
         dir: PathBuf,
         provisioner: Box<Provisioner>,
@@ -394,8 +774,67 @@ pub fn prepare(
             work: Doing::Settings(values),
         });
     }
+    if action == SECRETS {
+        let values = values_of(name, &found.arguments, given, &BTreeMap::new())?;
+        return Ok(Acting {
+            name: name.to_owned(),
+            hidden: hidden_of(&values, &found.arguments),
+            action: found,
+            work: Doing::Secrets(values, store.clone()),
+        });
+    }
     if !found.available {
         return Err(found.why.clone().into());
+    }
+    if action == REMOVE {
+        values_of(name, &found.arguments, given, &BTreeMap::new())?;
+        return Ok(Acting {
+            name: name.to_owned(),
+            hidden: vec![],
+            action: found,
+            work: Doing::Remove(store.clone()),
+        });
+    }
+    if let Some(kind) = action
+        .strip_prefix(NEW)
+        .filter(|kind| provisioner.kinds.iter().any(|known| known.id == *kind))
+    {
+        let mut values = values_of(
+            &format!("{action} of {name}"),
+            &found.arguments,
+            given,
+            &kept,
+        )?;
+        let take = |values: &mut BTreeMap<String, String>, key: &str| {
+            values.remove(key).unwrap_or_default()
+        };
+        let resource = take(&mut values, "name");
+        let spec = values.remove("spec").filter(|spec| !spec.trim().is_empty());
+        let secrets = given_secrets(&take(&mut values, "secrets"));
+        // Only what was given: the rest are its settings and defaults, as for any resource.
+        values.retain(|key, _| given.contains_key(key));
+        let asked = berth_api::NewResource {
+            provisioner: name.to_owned(),
+            kind: kind.to_owned(),
+            name: resource,
+            host: None,
+            arguments: values,
+            spec,
+            secrets,
+            token: None,
+        };
+        let creating = match crate::resource::prepare(paths, store, &asked)? {
+            crate::resource::Asked::New(creating) => creating,
+            crate::resource::Asked::Again(kept) => {
+                return Err(format!("{} was asked for already", kept.record.id).into());
+            }
+        };
+        return Ok(Acting {
+            name: name.to_owned(),
+            hidden: creating.secrets(),
+            action: found,
+            work: Doing::Create(creating, store.clone()),
+        });
     }
     let (mut theirs, mut own) = (BTreeMap::new(), BTreeMap::new());
     // The provisioner's own come first: an action asks for one its settings lack.
@@ -433,7 +872,7 @@ pub fn prepare(
         &BTreeMap::new(),
     )?;
     let own = own_values(name, &provisioner, &own, &kept)?;
-    let (secrets, missing) = secrets(store, &provisioner);
+    let (secrets, missing) = secrets(store, name, &provisioner);
     needs_secrets(name, &missing)?;
     let mut request = request("act", &provisioner, &own, &secrets);
     request["action"] = json!({"name": action, "arguments": theirs});
@@ -484,6 +923,50 @@ impl Acting {
                         true => format!("{} keeps no settings now", self.name),
                         false => format!("{} uses {}", self.name, shown.join(" ")),
                     },
+                    details: vec![],
+                })
+            }
+            Doing::Secrets(values, store) => {
+                let mut details = vec![];
+                for (secret, value) in values {
+                    let kept = secret_name(&self.name, &secret);
+                    let said = match value.trim() {
+                        "" => continue,
+                        FORGET => {
+                            store.set_secret(&kept, None)?;
+                            "forgotten: the one all share is used"
+                        }
+                        value => {
+                            store.set_secret(&kept, Some(value))?;
+                            "kept"
+                        }
+                    };
+                    details.push(Detail {
+                        label: secret,
+                        value: said.into(),
+                    });
+                }
+                Ok(Answered {
+                    message: match details.is_empty() {
+                        true => format!("{}'s secrets are as they were", self.name),
+                        false => format!("{}'s secrets", self.name),
+                    },
+                    details,
+                })
+            }
+            Doing::Remove(store) => {
+                remove_entry(paths, &store, &self.name)?;
+                Ok(Answered {
+                    message: format!("{} is removed", self.name),
+                    details: vec![],
+                })
+            }
+            Doing::Create(creating, store) => {
+                let id = creating.kept().record.id.clone();
+                let title = creating.kept().title();
+                creating.run(paths, &store, options, out)?;
+                Ok(Answered {
+                    message: format!("{title} is made. Its page: berth resource {id}"),
                     details: vec![],
                 })
             }

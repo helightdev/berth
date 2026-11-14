@@ -5,6 +5,7 @@
 pub mod berth_key;
 pub mod event;
 pub mod fields;
+pub mod form;
 pub mod host;
 pub mod links;
 pub mod machine;
@@ -15,6 +16,7 @@ pub mod provisioners;
 pub mod qr;
 pub mod screen;
 pub mod setup;
+pub mod text;
 pub mod theme;
 
 pub use event::{Click, Code, Event, Key, Mouse};

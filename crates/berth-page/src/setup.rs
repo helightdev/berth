@@ -6,6 +6,7 @@ use crate::admin::{Admin, Data};
 use crate::device::Here;
 use berth_tui::fields::{Action, Field, Kind, Step};
 use berth_tui::machine::{self, Machine, Next};
+pub use berth_tui::screen::draw_editor;
 use berth_tui::screen::{self, draw_footer, draw_header, draw_question, inside};
 use berth_tui::setup::{self, Account, Entry, Feature, Item, Page, Problem, Profile, Row};
 use berth_tui::{Click, Code, Event, Key, event, markdown, theme};
@@ -20,30 +21,12 @@ use serde_json::{Value, json};
 use tui_input::Input;
 
 /// The ways the server installs a host itself.
-const METHODS: [Action; 3] = [Action::Machine, Action::CloudSeed, Action::Ssh];
-
-/// Draw the box something is typed in, under the rows it belongs to.
-pub fn draw_editor(frame: &mut Frame, area: Rect, title: &str, input: &Input, masked: bool) {
-    let width = area.width.saturating_sub(4) as usize;
-    let typed = match masked {
-        true => "•".repeat(input.value().chars().count()),
-        false => input.value().to_owned(),
-    };
-    // The end of what is typed stays in view.
-    let count = typed.chars().count();
-    let scroll = count.saturating_sub(width);
-    let shown: String = typed.chars().skip(scroll).collect();
-    let cursor = match masked {
-        true => count,
-        false => input.visual_cursor(),
-    }
-    .saturating_sub(scroll);
-    frame.render_widget(
-        Paragraph::new(shown).block(theme::panel(title.trim(), true)),
-        area,
-    );
-    frame.set_cursor_position((area.x + 2 + cursor as u16, area.y + 1));
-}
+const METHODS: [Action; 4] = [
+    Action::Machine,
+    Action::CloudSeed,
+    Action::Ssh,
+    Action::Reach,
+];
 
 /// What a key on the set-up pages leads to.
 pub enum Flow {
@@ -282,8 +265,10 @@ impl Setup {
             Some(Entry::Feature(index)) => self.features[index].help.clone(),
             Some(Entry::Registry(_)) => setup::REGISTRY_HELP.into(),
             Some(Entry::Secret(_)) => setup::SECRET_HELP.into(),
-            Some(Entry::Run) => match self.action {
-                Action::CloudSeed => "Saves the profile on the server and renders the seed. Paste it into the provider's user data field when creating the machine.".into(),
+            Some(Entry::Run) => match (self.action, berth_api::profile::level(&self.config)) {
+                (Action::CloudSeed, _) => "Saves the profile on the server and renders the seed. Paste it into the provider's user data field when creating the machine.".into(),
+                (Action::Ssh, berth_api::HostLevel::Reachable) => "Saves the host on the server. Nothing is installed: the server logs in to it over SSH, with a key of its own that the host takes.".into(),
+                (Action::Ssh, berth_api::HostLevel::Controller) => "Saves the profile on the server and installs berth's controller alone on the host from there.".into(),
                 _ => "Saves the profile on the server and applies it to the host from there.".into(),
             },
             Some(Entry::Machine(pick)) => self.machine.help(pick),
@@ -467,8 +452,8 @@ impl Setup {
     fn choose(&mut self, entry: Entry, admin: &Admin) -> Option<String> {
         match entry {
             Entry::Action(action) => {
-                self.action = action;
-                setup::fit_profile(&mut self.config, action);
+                self.action = action.choose(&mut self.config);
+                setup::fit_profile(&mut self.config, self.action);
             }
             Entry::Field(field) => return self.activate(field),
             Entry::Registry(index) => {

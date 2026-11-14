@@ -259,7 +259,7 @@ impl Store {
             .unwrap_or_default()
             .into_iter()
             .filter(|name| {
-                !["registry/", "ssh/", "sudo/"]
+                !["registry/", "ssh/", "sudo/", "provisioner/"]
                     .iter()
                     .any(|kept| name.starts_with(kept))
             })
@@ -770,6 +770,7 @@ pub fn secret_command(paths: &Paths, args: &[&str]) -> Result<()> {
         // A host's SSH or sudo password is kept under the host's name.
         ["set", name]
             if valid_name(name)
+                || crate::provisioner::is_secret_name(name)
                 || name
                     .strip_prefix("ssh/")
                     .or_else(|| name.strip_prefix("sudo/"))
@@ -778,7 +779,7 @@ pub fn secret_command(paths: &Paths, args: &[&str]) -> Result<()> {
             store.set_secret(name, Some(&read_secret(&format!("Value of {name}"))?))
         }
         ["remove", name] => store.set_secret(name, None),
-        _ => Err("Usage: berth secret [set NAME | remove NAME]  (names: lower-case letters, digits, - and _; ssh/HOST and sudo/HOST are a host's SSH and sudo passwords)".into()),
+        _ => Err("Usage: berth secret [set NAME | remove NAME]  (names: lower-case letters, digits, - and _; ssh/HOST and sudo/HOST are a host's SSH and sudo passwords, provisioner/NAME/SECRET a provisioner's own)".into()),
     }
 }
 

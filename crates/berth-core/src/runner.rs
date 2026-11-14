@@ -27,7 +27,7 @@ use std::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subject {
     Host(String),
-    /// `PLUGIN/ID`.
+    /// A provisioner by its name.
     Provisioner(String),
     Resource(String),
     /// The installation itself, as for a roll-out over its hosts.
@@ -35,7 +35,7 @@ pub enum Subject {
 }
 
 impl Subject {
-    /// `host:NAME`, `provisioner:PLUGIN/ID`, `resource:ID` or `installation`.
+    /// `host:NAME`, `provisioner:NAME`, `resource:ID` or `installation`.
     pub fn key(&self) -> String {
         match self {
             Subject::Host(name) => format!("host:{name}"),

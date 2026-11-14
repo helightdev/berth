@@ -41,7 +41,10 @@ pub enum Arrived {
         Result<Vec<berth_api::Action>, String>,
     ),
     /// What an action of a provisioner that answers at once said.
-    ProvisionerAnswer(String, Result<Vec<String>, String>),
+    /// The types of provisioner, to register one.
+    ProvisionerTypes(Result<Vec<berth_api::ProvisionerInfo>, String>),
+    /// The provisioners were read again, to make something of this kind.
+    Making(String),
     /// What the server lists as a host's actions.
     Actions(String, Vec<berth_api::Action>),
 }
@@ -94,7 +97,7 @@ impl Data {
     pub fn secret_names(&self) -> Vec<String> {
         self.secrets
             .iter()
-            .filter(|name| !name.starts_with("registry/"))
+            .filter(|name| !name.starts_with("registry/") && !name.starts_with("provisioner/"))
             .cloned()
             .collect()
     }
@@ -868,9 +871,13 @@ impl Admin {
             json!({"arguments": values}),
             move |result| match result {
                 Ok(acted) if acted["job"].is_null() => {
-                    let lines = berth_tui::provisioners::answer_lines(&acted["result"]);
-                    admin.say(lines.first().cloned().unwrap_or_default());
-                    admin.arrive(Arrived::ProvisionerAnswer(id, Ok(lines)));
+                    admin.say("");
+                    admin.answer_panel(
+                        &title,
+                        &berth_tui::provisioners::answer_lines(&acted["result"]).join("\n"),
+                        size,
+                    );
+                    admin.resource(&id);
                 }
                 Ok(acted) => {
                     admin.say("");
@@ -880,8 +887,8 @@ impl Admin {
                     });
                 }
                 Err(error) => {
-                    admin.say(format!("✗ {error}"));
-                    admin.arrive(Arrived::ProvisionerAnswer(id, Err(error)));
+                    admin.say("");
+                    admin.answer_panel(&title, &format!("✗ {error}"), size);
                 }
             },
         );
@@ -947,13 +954,60 @@ impl Admin {
         );
     }
 
+    /// Read the provisioners again, then make something of `kind`, such as
+    /// an instance, with the one that makes it.
+    pub fn provisioners_for(&self, kind: &str) {
+        let kind = kind.to_owned();
+        self.call(
+            "provisioners.list",
+            json!({}),
+            Value::Null,
+            move |admin, found| {
+                admin.data.borrow_mut().provisioners =
+                    serde_json::from_value(found).unwrap_or_default();
+                admin.arrive(Arrived::Making(kind));
+            },
+        );
+    }
+
+    /// Ask for the types of provisioner the plugins bring, to register one.
+    pub fn provisioner_types(&self) {
+        let admin = self.clone();
+        self.portal.call(
+            "provisioners.types",
+            None,
+            json!({}),
+            Value::Null,
+            move |types| {
+                let types = types.and_then(|found| {
+                    serde_json::from_value(found).map_err(|error| error.to_string())
+                });
+                admin.arrive(Arrived::ProvisionerTypes(types));
+            },
+        );
+    }
+
+    /// Register a provisioner of the type `kind` under `name`.
+    pub fn provisioner_save(&self, name: &str, kind: &str) {
+        let name = name.to_owned();
+        self.say(format!("Registering {name}…"));
+        self.call(
+            "provisioners.save",
+            json!({"name": name}),
+            json!({"type": kind}),
+            move |admin, _| {
+                admin.say(format!(
+                    "Registered {name}. Its page has its settings and secrets"
+                ));
+                admin.provisioners();
+            },
+        );
+    }
+
     /// Ask a provisioner how it is and what it can do, for its page.
     pub fn provisioner(&self, name: &str) {
-        let Some((plugin, id)) = name.split_once('/') else {
-            return;
-        };
         let (admin, name) = (self.clone(), name.to_owned());
-        let args = json!({"plugin": plugin, "id": id});
+        let args = json!({"name": name});
         self.portal.call(
             "provisioners.get",
             None,
@@ -989,9 +1043,6 @@ impl Admin {
         values: &std::collections::BTreeMap<String, String>,
         size: (u16, u16),
     ) {
-        let Some((plugin, id)) = name.split_once('/') else {
-            return;
-        };
         let (admin, name) = (self.clone(), name.to_owned());
         let title = format!("{} · {name}", action.title());
         self.say(match action.changes {
@@ -1001,13 +1052,17 @@ impl Admin {
         self.portal.call(
             "provisioners.act",
             None,
-            json!({"plugin": plugin, "id": id, "action": action.name}),
+            json!({"name": name, "action": action.name}),
             json!({"arguments": values}),
             move |result| match result {
                 Ok(acted) if acted["job"].is_null() => {
-                    let lines = berth_tui::provisioners::answer_lines(&acted["result"]);
-                    admin.say(lines.first().cloned().unwrap_or_default());
-                    admin.arrive(Arrived::ProvisionerAnswer(name, Ok(lines)));
+                    admin.say("");
+                    admin.answer_panel(
+                        &title,
+                        &berth_tui::provisioners::answer_lines(&acted["result"]).join("\n"),
+                        size,
+                    );
+                    admin.provisioner(&name);
                 }
                 Ok(acted) => {
                     admin.say("");
@@ -1017,11 +1072,19 @@ impl Admin {
                     });
                 }
                 Err(error) => {
-                    admin.say(format!("✗ {error}"));
-                    admin.arrive(Arrived::ProvisionerAnswer(name, Err(error)));
+                    admin.say("");
+                    admin.answer_panel(&title, &format!("✗ {error}"), size);
                 }
             },
         );
+    }
+
+    /// Show what an action answered at once in a panel, as a job's output is.
+    fn answer_panel(&self, title: &str, text: &str, size: (u16, u16)) {
+        let mut view = View::plain(title, size.0, size.1);
+        view.feed(format!("{text}\n").as_bytes());
+        view.ended = Some(Some(0));
+        self.data.borrow_mut().job = Some(view);
     }
 
     /// Follow a job of the server in a panel; `ended` is run when it has ended.

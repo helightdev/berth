@@ -57,20 +57,23 @@ Both build commands refuse to start while the profile has problems, and list the
 
 | Command | Does |
 | --- | --- |
-| `berth provisioner` | The provisioners of the plugins, and whether each can be used here |
-| `berth provisioner PLUGIN/ID [NAME=VALUE…]` | How it is now, what it can do, and what berth made with it, by kind. Each `NAME=VALUE` sets one of the provisioner's own arguments for this call alone |
-| `berth provisioner PLUGIN/ID actions` | Its actions, with their arguments |
-| `berth provisioner PLUGIN/ID run ACTION [NAME=VALUE…] [--yes]` | Run one. `settings` keeps the values of its own arguments. One that changes something runs as a job, and berth ends with its exit code |
-| `berth provisioners` | The provisioners of the plugins, and what each asks for |
-| `berth resource [--provisioner PLUGIN/ID] [--kind KIND] [--host HOST]` | What provisioners made for berth, such as machines and deployments, as berth's records have them ([Resources](/docs/deploy/resources)) |
+| `berth provisioner` | The registered provisioners, and whether each can be used here |
+| `berth provisioner types` | The types of provisioner the plugins bring, such as `incus/vm` |
+| `berth provisioner add NAME TYPE [SETTING=VALUE…]` | Register a provisioner of a type under a name of its own, with its settings ([Provisioners](/docs/deploy/provisioners#register-a-provisioner)) |
+| `berth provisioner remove NAME` | Forget a provisioner that doesn't hold anything, with its settings and its own secrets |
+| `berth provisioner NAME [SETTING=VALUE…]` | How it is now, what it can do, and what berth made with it, by kind. Each `NAME=VALUE` sets one of the provisioner's own arguments for this call alone |
+| `berth provisioner NAME actions` | Its actions, with their arguments |
+| `berth provisioner NAME run ACTION [NAME=VALUE…] [--yes]` | Run one. `settings` keeps the values of its own arguments, `secrets` its own secrets, and `new-deployment` makes a deployment. One that changes something runs as a job, and berth ends with its exit code |
+| `berth provisioners` | The registered provisioners, and what each asks for |
+| `berth resource [--provisioner NAME] [--kind KIND] [--host HOST]` | What provisioners made for berth, such as machines and deployments, as berth's records have them ([Resources](/docs/deploy/resources)) |
 | `berth resource ID` | One of them, as its provisioner says it is now, with its actions. A name works while only one resource has it |
 | `berth resource ID actions` | Its actions, with their arguments |
 | `berth resource ID run ACTION [NAME=VALUE…] [--yes]` | Run one, such as `start`, `stop` or an action of its kind |
 | `berth resource ID logs [--tail N] [--follow]` | What it wrote, as its provisioner gives it |
 | `berth resource ID change [--spec FILE\|-] [--secret NAME[:VARIABLE]]… [NAME=VALUE…]` | Give it other values, a new specification or other secrets. The rest stays as it is |
 | `berth resource ID remove [--yes]` | Remove it with its provisioner and forget it. A host's profile stays |
-| `berth deploy NAME --provisioner PLUGIN/ID --spec FILE\|- [--secret NAME[:VARIABLE]]… [--token TEXT] [NAME=VALUE…]` | Make a deployment from a specification, such as a Compose file. With the name of one that exists, change it ([Deployments](/docs/deploy/deployments)) |
-| `berth provision HOST PLUGIN/ID [NAME=VALUE…] [--yes]` | Create the machine for a saved host and set it up |
+| `berth deploy NAME --provisioner PROVISIONER --spec FILE\|- [--secret NAME[:VARIABLE]]… [--token TEXT] [NAME=VALUE…]` | Make a deployment from a specification, such as a Compose file. With the name of one that exists, change it ([Deployments](/docs/deploy/deployments)) |
+| `berth provision HOST PROVISIONER [NAME=VALUE…] [--yes]` | Create the machine for a saved host and set it up |
 | `berth instance HOST` | The machine berth created for the host, as `berth resource ID` shows it |
 | `berth instance HOST start\|stop` | Start or stop it, when the provisioner can |
 | `berth instance HOST destroy [--yes]` | Delete the machine, after you type the host's name. The profile stays |

@@ -73,7 +73,7 @@ fn found(state: &Serve, id: &str) -> Answer<resource::Kept> {
 fn described(state: &Serve, kept: &resource::Kept) -> Resource {
     let plugins = berth_core::provision::list_plugins(&state.paths);
     let busy = kept.record.external_id.is_empty() && kept.busy(&state.paths);
-    resource::info(kept, &plugins, busy)
+    resource::info(&state.paths, kept, &plugins, busy)
 }
 
 /// How a host is reached, to tell whether making its machine changed it.
@@ -87,7 +87,7 @@ fn reached(paths: &Paths, host: &str) -> Value {
 #[derive(Deserialize, IntoParams, Default)]
 #[into_params(parameter_in = Query)]
 pub struct Filter {
-    /// Only those of this provisioner, `PLUGIN/ID`.
+    /// Only those of this provisioner, by its name.
     provisioner: Option<String>,
     /// Only those of this kind, such as `machine` or `deployment`.
     kind: Option<String>,

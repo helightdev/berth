@@ -9,6 +9,7 @@ use crate::{
     registry::Store,
     theme,
 };
+use berth_tui::provisioners::MAKES;
 use berth_tui::screen::{
     Platform, Spots, clear_hints, dialog, draw_arguments, draw_footer, draw_header, draw_panel,
     draw_question, draw_view, ellipsize, hint_at, inside, note_hints, pasted, with_links, words,
@@ -1015,8 +1016,8 @@ fn mouse_event(app: &mut App, mouse: MouseEvent, hits: &Hits) -> Option<KeyEvent
 fn choose(app: &mut App, entry: Entry) -> Flow {
     match entry {
         Entry::Action(action) => {
-            app.action = action;
-            berth_tui::setup::fit_profile(&mut app.config, action);
+            app.action = action.choose(&mut app.config);
+            berth_tui::setup::fit_profile(&mut app.config, app.action);
         }
         Entry::Field(field) => app.activate(field),
         Entry::Setup => app.set_step(Step::Install),
@@ -2479,6 +2480,8 @@ fn home_loop(
                     for ch in text.chars().filter(|ch| !ch.is_control()) {
                         input.handle(InputRequest::InsertChar(ch));
                     }
+                } else if let HomeMode::Provisioners(view) = &mut home.mode {
+                    view.paste(&text);
                 }
                 None
             }
@@ -2516,6 +2519,17 @@ fn home_mouse(
         MouseEventKind::ScrollUp => home_key(home, paths, key(KeyCode::Up), platform),
         MouseEventKind::ScrollDown => home_key(home, paths, key(KeyCode::Down), platform),
         MouseEventKind::Down(MouseButton::Left) => {
+            // A form covers the tab, and takes the click itself.
+            if let HomeMode::Provisioners(view) = &mut home.mode
+                && view.tab.form().is_some()
+            {
+                let at = (mouse.column, mouse.row);
+                let left = view.click(paths, at, &mut home.status, platform);
+                if let crate::provisioner_tab::Left::Tab(tab) = left {
+                    open_tab(home, tab);
+                }
+                return None;
+            }
             let (_, target) = hits
                 .iter()
                 .find(|(rect, _)| inside(*rect, mouse.column, mouse.row))?;
@@ -2693,7 +2707,9 @@ fn home_key(
         },
         HomeMode::Hosts => match key.code {
             KeyCode::Up => home.selected = home.selected.saturating_sub(1),
-            KeyCode::Down => home.selected = (home.selected + 1).min(home.hosts.len()),
+            KeyCode::Down => {
+                home.selected = (home.selected + 1).min(home.hosts.len() + MAKES.len())
+            }
             KeyCode::Char('n') => home.mode = HomeMode::Naming(Input::default()),
             KeyCode::Char('s') => open_tab(home, tabs::SETTINGS),
             KeyCode::Char('r') => home.refresh = true,
@@ -2712,7 +2728,16 @@ fn home_key(
             }
             KeyCode::Enter => match home.hosts.get(home.selected) {
                 Some((name, _)) => return Some(Some(name.clone())),
-                None => home.mode = HomeMode::Naming(Input::default()),
+                None => match home.selected.checked_sub(home.hosts.len() + 1) {
+                    // An instance or a compose project is made on its
+                    // provisioner's page, whose form opens at once.
+                    Some(index) if index < MAKES.len() => {
+                        let mut view = Box::<crate::provisioner_tab::View>::default();
+                        view.create(paths, MAKES[index].0, &mut home.status);
+                        home.mode = HomeMode::Provisioners(view);
+                    }
+                    _ => home.mode = HomeMode::Naming(Input::default()),
+                },
             },
             KeyCode::Char('q') | KeyCode::Esc => return Some(None),
             _ => {}
@@ -3031,6 +3056,12 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                 })
                 .collect();
             rows.push(Line::styled("+ New host", Style::new().fg(theme::ACCENT)));
+            for (_, label) in MAKES {
+                rows.push(Line::styled(
+                    format!("+ New {label}"),
+                    Style::new().fg(theme::ACCENT),
+                ));
+            }
             let help = host_help(home);
             let naming = match mode {
                 HomeMode::Naming(input) => Some((" New host name ", input)),
@@ -3099,7 +3130,7 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
     };
     draw_footer(frame, footer, keys, status, theme::WARN);
     if let HomeMode::Provisioners(view) = &home.mode {
-        view.draw_over(frame);
+        view.draw_over(frame, status);
     }
     if let Some(qr) = &home.qr {
         qr.draw(frame);
@@ -3585,7 +3616,10 @@ mod tests {
             own.join("package.json"),
             r#"{"name": "berth-plugin-aa-lab", "berth": {"provisioners": [
                 {"id": "box", "label": "Lab box", "command": "bin/provision", "protocol": 2,
-                 "kinds": [{"id": "machine", "setup": "apply"}],
+                 "kinds": [{"id": "machine", "setup": "apply"},
+                           {"id": "instance", "label": "Instance", "arguments": [
+                               {"name": "image", "label": "Image", "default": "debian:12"},
+                               {"name": "notes", "label": "Notes", "kind": "text"}]}],
                  "actions": [{"name": "look", "label": "Look around", "changes": false},
                              {"name": "sweep", "label": "Sweep", "confirm": "Sweep the lab?"}]}]}}"#,
         )
@@ -3637,10 +3671,49 @@ mod tests {
                 home_screen(&paths, home).join("\n")
             );
         };
+        // The hosts' list makes instances and compose projects too, with
+        // the provisioner that makes them; here none does yet.
+        let screen = settle(&mut home, &|screen| {
+            screen.contains("+ New compose project")
+        });
+        assert!(screen.contains("+ New instance"), "{screen}");
+        home.selected = home.hosts.len() + 1;
+        key(&mut home, KeyCode::Enter);
+        assert!(matches!(home.mode, HomeMode::Provisioners(_)));
+        settle(&mut home, &|screen| {
+            screen.contains("No provisioner makes instances")
+        });
         key(&mut home, KeyCode::Char('2'));
+        settle(&mut home, &|screen| screen.contains("+ Add provisioner"));
+        // A provisioner is registered under a name of its own, of a type a plugin brings.
+        key(&mut home, KeyCode::Char('a'));
+        settle(&mut home, &|screen| {
+            screen.contains("Add provisioner · 1 of 2")
+        });
+        for ch in "lab".chars() {
+            key(&mut home, KeyCode::Char(ch));
+        }
+        key(&mut home, KeyCode::Enter);
+        // The lab's type sorts first, so it is offered first.
+        let screen = settle(&mut home, &|screen| {
+            screen.contains("Add provisioner · 2 of 2")
+        });
+        assert!(screen.contains("aa-lab/box"), "{screen}");
+        key(&mut home, KeyCode::Enter);
         let screen = settle(&mut home, &|screen| screen.contains("Lab box"));
-        assert!(screen.contains("Provisioners") && screen.contains("aa-lab/box"));
-        // The lab sorts first; its page asks it how it is.
+        // Its type's label names it; the type itself is on its page.
+        assert!(
+            screen.contains("lab") && !screen.contains("(aa-lab/box)"),
+            "{screen}"
+        );
+        assert_eq!(
+            berth_core::provisioner::entry(&paths, "lab")
+                .unwrap()
+                .unwrap()
+                .kind,
+            "aa-lab/box"
+        );
+        // Its page asks it how it is.
         key(&mut home, KeyCode::Enter);
         let screen = settle(&mut home, &|screen| screen.contains("The lab answers"));
         assert!(
@@ -3648,10 +3721,43 @@ mod tests {
             "{screen}"
         );
         assert!(screen.contains("▸ Look around") && screen.contains("▸ Sweep"));
-        // One that only reads answers on the page.
+        // What it makes is asked for in a form over the whole screen, laid
+        // out as a host's set-up is. Esc goes back to the page.
+        assert!(screen.contains("▸ New instance"), "{screen}");
+        key(&mut home, KeyCode::Enter);
+        let screen = home_screen(&paths, &home).join("\n");
+        assert!(screen.contains("lab › new instance"), "{screen}");
+        assert!(
+            screen.contains("Image  debian:12") && screen.contains("Notes  Not set"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("[Run · New instance]") && screen.contains("╭ Information "),
+            "{screen}"
+        );
+        assert!(!screen.contains("1 Hosts"), "{screen}");
+        // A text is edited in the editor, which has the screen to itself.
+        for code in [KeyCode::Down, KeyCode::Down, KeyCode::Enter] {
+            key(&mut home, code);
+        }
+        key(&mut home, KeyCode::Char('1'));
+        let screen = home_screen(&paths, &home).join("\n");
+        assert!(
+            screen.contains("╭ Notes · line 1 of 1, column 2 "),
+            "{screen}"
+        );
+        assert!(!screen.contains("Information"), "{screen}");
+        key(&mut home, KeyCode::Esc);
+        key(&mut home, KeyCode::Esc);
+        let screen = home_screen(&paths, &home).join("\n");
+        assert!(screen.contains("▸ Look around"), "{screen}");
+        // One that only reads answers in a panel too, which Esc closes.
+        key(&mut home, KeyCode::Down);
         key(&mut home, KeyCode::Enter);
         let screen = settle(&mut home, &|screen| screen.contains("All clean"));
         assert!(!screen.contains("sweeping"), "{screen}");
+        key(&mut home, KeyCode::Esc);
+        assert!(matches!(home.mode, HomeMode::Provisioners(_)));
         // One that changes something asks first, and is a job in a panel.
         key(&mut home, KeyCode::Down);
         key(&mut home, KeyCode::Enter);
@@ -3671,6 +3777,17 @@ mod tests {
         assert!(matches!(home.mode, HomeMode::Provisioners(_)));
         key(&mut home, KeyCode::Enter);
         key(&mut home, KeyCode::Esc);
+        key(&mut home, KeyCode::Esc);
+        assert!(matches!(home.mode, HomeMode::Hosts));
+        // The hosts' list opens the same form, which chooses the provisioner
+        // too; Esc there goes back to the hosts.
+        home.selected = home.hosts.len() + 1;
+        key(&mut home, KeyCode::Enter);
+        let screen = settle(&mut home, &|screen| screen.contains("[Run · New instance]"));
+        assert!(
+            screen.contains("Provisioner  Lab box  · lab") && screen.contains("Name *  Not set"),
+            "{screen}"
+        );
         key(&mut home, KeyCode::Esc);
         assert!(matches!(home.mode, HomeMode::Hosts));
     }
@@ -4555,7 +4672,7 @@ mod tests {
         assert!(place("Settings") < place("Run") && !header.contains('✗'));
         assert!(install.contains("1-4 tab"));
         // The USB installer is the default method; what it needs chosen follows.
-        press(&mut app, &[Down, Enter, Down, Down, Down, Down, Down]);
+        press(&mut app, &[Down, Enter, Down, Down, Down, Down, Down, Down]);
         assert_eq!(app.action, Action::Iso);
         let install = screen(&mut app);
         assert!(install.contains("● USB installer"));

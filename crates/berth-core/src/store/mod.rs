@@ -33,6 +33,8 @@ pub mod kind {
     pub const SPEC: &str = "spec";
     /// The values of a provisioner's own arguments, by `PLUGIN/ID`.
     pub const PROVISIONER: &str = "provisioner";
+    /// A provisioner berth runs under a name of its own: its type and settings.
+    pub const PROVISIONER_ENTRY: &str = "provisioner-entry";
     pub const SETTING: &str = "setting";
     pub const REGISTRY: &str = "registry";
     pub const SECRET: &str = "secret";
@@ -159,7 +161,7 @@ pub struct Job {
     pub ended: Option<String>,
     pub exit_code: Option<i32>,
     pub output_path: String,
-    /// `host:NAME`, `provisioner:PLUGIN/ID`, `resource:ID` or `installation`;
+    /// `host:NAME`, `provisioner:NAME`, `resource:ID` or `installation`;
     /// empty in rows from before it was kept.
     pub subject: String,
     pub action: String,

@@ -10,11 +10,11 @@ use berth_api::{Action, NewResource, Resource, ResourceSecret};
 use berth_core::{paths::Paths, resource};
 use std::io::{IsTerminal, Read, Write};
 
-const USAGE: &str = "Usage: berth resource [--provisioner PLUGIN/ID] [--kind KIND] [--host HOST]
+const USAGE: &str = "Usage: berth resource [--provisioner PROVISIONER] [--kind KIND] [--host HOST]
        berth resource ID [actions | run ACTION [NAME=VALUE…] [--yes] | logs [--tail N] [--follow]
                           | change [--spec FILE|-] [--secret NAME[:VARIABLE]]… [NAME=VALUE…] | remove [--yes]]";
 
-const DEPLOY: &str = "Usage: berth deploy NAME --provisioner PLUGIN/ID --spec FILE|- [--secret NAME[:VARIABLE]]… [--token TEXT] [NAME=VALUE…]";
+const DEPLOY: &str = "Usage: berth deploy NAME --provisioner PROVISIONER --spec FILE|- [--secret NAME[:VARIABLE]]… [--token TEXT] [NAME=VALUE…]";
 
 fn ask(question: &str) -> Result<String> {
     print!("{question} ");
@@ -281,7 +281,7 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
     }
 }
 
-/// `berth deploy NAME --provisioner PLUGIN/ID --spec FILE|- …`: make a
+/// `berth deploy NAME --provisioner PROVISIONER --spec FILE|- …`: make a
 /// deployment from a specification, or give the one of that name the new
 /// specification.
 pub fn deploy(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
@@ -326,7 +326,7 @@ pub fn deploy(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
     std::process::exit(code);
 }
 
-/// `berth provision HOST PLUGIN/ID [NAME=VALUE…] [--yes]`: create the
+/// `berth provision HOST PROVISIONER [NAME=VALUE…] [--yes]`: create the
 /// machine for a saved host and set it up.
 pub fn provision(paths: &Paths, name: &str, provisioner: &str, args: &[&str]) -> Result<()> {
     let (mut values, yes) = parse_arguments(args)?;

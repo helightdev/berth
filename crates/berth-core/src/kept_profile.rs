@@ -100,7 +100,15 @@ pub fn for_host(paths: &Paths, host: &crate::host::Host) -> Value {
         .ok()
         .flatten()
         .map(|kept| kept.record);
-    document(&host.place.title(), &host.config, machine.as_ref())
+    let mut document = document(&host.place.title(), &host.config, machine.as_ref());
+    // Another berth knows the provisioner by its type, not by this berth's name for it.
+    if document["machine"].is_object()
+        && let Some(record) = &machine
+        && let Ok(Some(entry)) = crate::provisioner::entry(paths, &record.provisioner)
+    {
+        document["machine"]["type"] = json!(entry.kind);
+    }
+    document
 }
 
 /// Add the document to a profile handed to the seed builder, which puts it
@@ -175,6 +183,9 @@ pub struct Adopted {
     /// The profile to save, reached the way it was adopted.
     pub profile: Value,
     pub machine: Option<resource::Record>,
+    /// The type of the provisioner that made the machine, as `PLUGIN/ID`,
+    /// when the document says it.
+    pub machine_type: String,
     /// The name and berth of the write, and when it was.
     pub host: String,
     pub berth: String,
@@ -262,9 +273,19 @@ pub fn adopted(paths: &Paths, title: &str, kept: &Value, access: &Access) -> Res
         ),
     };
     let text = |key: &str| kept[key].as_str().unwrap_or("").to_owned();
+    let machine_type = match kept["machine"]["type"].as_str() {
+        Some(kind) => kind.to_owned(),
+        // Before provisioners had names of their own, the record named the type.
+        None => machine
+            .as_ref()
+            .map(|record| record.provisioner.clone())
+            .filter(|name| name.contains('/'))
+            .unwrap_or_default(),
+    };
     Ok(Adopted {
         profile,
         machine,
+        machine_type,
         host: text("host"),
         berth: text("berth"),
         written: text("written"),
@@ -394,6 +415,8 @@ pub fn save(paths: &Paths, place: &Place, adopted: &Adopted) -> Result<()> {
         let mut record = record.clone();
         record.host = host;
         record.name = place.title();
+        record.provisioner =
+            crate::provisioner::adopted_name(paths, &record.provisioner, &adopted.machine_type)?;
         // An id this berth has already, or none of its making, is not taken over.
         let taken = resource::list(paths)?
             .iter()

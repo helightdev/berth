@@ -235,20 +235,24 @@
           when: "'berth-server,' not in incus_trusted.stdout"
           changed_when: true
 
-        # A server address somebody chose stays as it is.
-        - name: Point the berth server's Incus provisioners at this Incus
+        # A provisioner registered already stays as it is, with the server somebody chose.
+        - name: Register the berth server's provisioners of this Incus and this Docker engine
           ansible.builtin.shell: |
             set -e
-            for provisioner in incus/vm incus/container; do
-              if ! docker exec berth berth provisioner "$provisioner" | grep -q 'server=https://'; then
-                docker exec berth berth provisioner "$provisioner" run settings server=https://incus-host:{{ api_port }} >/dev/null
-                echo set
+            registered=$(docker exec berth berth provisioner)
+            add() {
+              if ! grep -q "^$1 " <<<"$registered"; then
+                docker exec berth berth provisioner add "$@" >/dev/null
+                echo "added $1"
               fi
-            done
+            }
+            add incus-vm incus/vm server=https://incus-host:{{ api_port }}
+            add incus-container incus/container server=https://incus-host:{{ api_port }}
+            add docker docker/container
           args:
             executable: /bin/bash
-          register: incus_pointed
-          changed_when: "'set' in incus_pointed.stdout"
+          register: provisioners_added
+          changed_when: "'added' in provisioners_added.stdout"
 
         - name: Say how to use the berth server
           ansible.builtin.debug:

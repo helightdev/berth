@@ -15,7 +15,9 @@ use axum::{
     extract::{Extension, Path, Query, State},
     http::StatusCode,
 };
-use berth_api::{Act, Acted, Action, ErrorBody, ProvisionerInfo, ProvisionerState, code};
+use berth_api::{
+    Act, Acted, Action, ErrorBody, ProvisionerInfo, ProvisionerState, SavedProvisioner, code,
+};
 use berth_core::{
     provision, provisioner,
     registry::Store,
@@ -45,7 +47,7 @@ async fn blocking<T: Send + 'static>(
         .map_err(internal)
 }
 
-/// A provisioner by `PLUGIN/ID`.
+/// A registered provisioner by its name.
 fn known(state: &Serve, store: &Store, name: &str) -> Answer<ProvisionerInfo> {
     provision::list(&state.paths, store)
         .into_iter()
@@ -59,18 +61,51 @@ pub async fn list(State(state): App) -> Answer<Json<Vec<ProvisionerInfo>>> {
     Ok(Json(provision::list(&state.paths, &store(&state))))
 }
 
-#[utoipa::path(get, path = "/v1/provisioners/{plugin}/{id}", summary = "A provisioner's page: what it says of itself now, such as whether its engine answers, and what it holds: berth's resources, with what its own list says.", tag = "set-up",
-    params(("plugin" = String, Path, description = "The plugin"),
-           ("id" = String, Path, description = "The provisioner within the plugin"),
+#[utoipa::path(get, path = "/v1/provisioner-types", summary = "The types of provisioner the plugins bring, which a provisioner is registered as.", tag = "set-up",
+    responses((status = 200, description = "Each type as `PLUGIN/ID` in `id` and `type`, with what it asks for and can make", body = Vec<ProvisionerInfo>)))]
+pub async fn types(State(state): App) -> Answer<Json<Vec<ProvisionerInfo>>> {
+    Ok(Json(provision::types(&state.paths)))
+}
+
+#[utoipa::path(put, path = "/v1/provisioners/{name}", summary = "Register a provisioner under a name of its own, of a type a plugin brings, or change the settings of one that is registered. A registered one keeps its type.", tag = "set-up",
+    params(("name" = String, Path, description = "Its name: lowercase letters, digits, - and _, starting with a letter")),
+    request_body = SavedProvisioner,
+    responses((status = 200, description = "Registered, as it is listed", body = ProvisionerInfo),
+              (status = 400, description = "The name, the type or a setting does not fit; the message says which", body = ErrorBody)))]
+pub async fn save(
+    State(state): App,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> Answer<Json<ProvisionerInfo>> {
+    let saved: SavedProvisioner = serde_json::from_slice(&body).map_err(bad)?;
+    provisioner::register(&state.paths, &name, &saved).map_err(bad)?;
+    let registries = store(&state);
+    Ok(Json(known(&state, &registries, &name)?))
+}
+
+#[utoipa::path(delete, path = "/v1/provisioners/{name}", summary = "Forget a registered provisioner, with its settings and the secrets it keeps of its own. It is kept while it holds resources.", tag = "set-up",
+    params(("name" = String, Path, description = "Its name")),
+    responses((status = 204, description = "Forgotten"),
+              (status = 404, description = "No such provisioner", body = ErrorBody),
+              (status = 409, description = "It still holds resources; the message names them", body = ErrorBody)))]
+pub async fn remove(State(state): App, Path(name): Path<String>) -> Answer<StatusCode> {
+    let registries = store(&state);
+    known(&state, &registries, &name)?;
+    provisioner::remove_entry(&state.paths, &registries, &name)
+        .map_err(|error| Fail::new(code::CONFLICT, error.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(get, path = "/v1/provisioners/{name}", summary = "A provisioner's page: what it says of itself now, such as whether its engine answers, and what it holds: berth's resources, with what its own list says.", tag = "set-up",
+    params(("name" = String, Path, description = "The provisioner's name"),
            ("arguments" = Option<BTreeMap<String, String>>, Query, style = Form, explode, description = "Values of the provisioner's own arguments as `NAME=VALUE` for this once, such as another server to ask; the others are its settings")),
     responses((status = 200, description = "What it said. A state of `unreachable` or `unusable` comes with why as its message", body = ProvisionerState),
               (status = 404, description = "No such provisioner", body = ErrorBody)))]
 pub async fn provisioner(
     State(state): App,
-    Path((plugin, id)): Path<(String, String)>,
+    Path(name): Path<String>,
     Query(given): Query<BTreeMap<String, String>>,
 ) -> Answer<Json<ProvisionerState>> {
-    let name = format!("{plugin}/{id}");
     let registries = store(&state);
     known(&state, &registries, &name)?;
     let (paths, options) = (state.paths.clone(), (state.provision)());
@@ -80,16 +115,14 @@ pub async fn provisioner(
     Ok(Json(found))
 }
 
-#[utoipa::path(get, path = "/v1/provisioners/{plugin}/{id}/actions", summary = "What can be done to a provisioner: its plugin's actions, and berth's own settings of it.", tag = "set-up",
-    params(("plugin" = String, Path, description = "The plugin"),
-           ("id" = String, Path, description = "The provisioner within the plugin")),
+#[utoipa::path(get, path = "/v1/provisioners/{name}/actions", summary = "What can be done to a provisioner: its plugin's actions, and berth's own settings of it.", tag = "set-up",
+    params(("name" = String, Path, description = "The provisioner's name")),
     responses((status = 200, description = "The actions, each saying whether it can run here now", body = Vec<Action>),
               (status = 404, description = "No such provisioner", body = ErrorBody)))]
 pub async fn provisioner_actions(
     State(state): App,
-    Path((plugin, id)): Path<(String, String)>,
+    Path(name): Path<String>,
 ) -> Answer<Json<Vec<Action>>> {
-    let name = format!("{plugin}/{id}");
     let registries = store(&state);
     known(&state, &registries, &name)?;
     Ok(Json(
@@ -97,9 +130,8 @@ pub async fn provisioner_actions(
     ))
 }
 
-#[utoipa::path(post, path = "/v1/provisioners/{plugin}/{id}/actions/{action}", summary = "Run one of a provisioner's actions. One that changes something is a job, which holds the provisioner's lock; one that only reads answers at once.", tag = "set-up",
-    params(("plugin" = String, Path, description = "The plugin"),
-           ("id" = String, Path, description = "The provisioner within the plugin"),
+#[utoipa::path(post, path = "/v1/provisioners/{name}/actions/{action}", summary = "Run one of a provisioner's actions. One that changes something is a job, which holds the provisioner's lock; one that only reads answers at once.", tag = "set-up",
+    params(("name" = String, Path, description = "The provisioner's name"),
            ("action" = String, Path, description = "The action, as provisioners.actions names it")),
     request_body(content = Option<Act>, description = "Its arguments, which may also give the provisioner's own for this once, and a token that makes asking again safe"),
     responses((status = 202, description = "Started as a job", body = Acted),
@@ -113,11 +145,10 @@ pub async fn provisioner_actions(
 pub async fn provisioner_act(
     State(state): App,
     access: Option<Extension<Access>>,
-    Path((plugin, id, action)): Path<(String, String, String)>,
+    Path((name, action)): Path<(String, String)>,
     body: Bytes,
 ) -> Answer<(StatusCode, Json<Acted>)> {
     let act = parse(&body)?;
-    let name = format!("{plugin}/{id}");
     let registries = store(&state);
     known(&state, &registries, &name)?;
     let actions = provisioner::actions(&state.paths, &registries, &name).map_err(internal)?;

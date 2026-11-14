@@ -1641,7 +1641,9 @@ fn known_provisioners(
 pub fn provisioners(paths: &Paths) -> Result<()> {
     let found = known_provisioners(paths, provisioning_server(paths).as_ref())?;
     if found.is_empty() {
-        println!("No plugin brings a provisioner. See: berth plugins");
+        println!(
+            "No provisioner is registered. Add one: berth provisioner add NAME TYPE, with a type of: berth provisioner types"
+        );
     }
     for provisioner in found {
         println!("{:<24} {}", provisioner.id, provisioner.label);

@@ -30,7 +30,10 @@ enum Arrived {
         Box<Result<Resource, String>>,
         Result<Vec<Action>, String>,
     ),
-    Answered(String, Result<Vec<String>, String>),
+    /// The types of provisioner, to register one.
+    Types(Result<Vec<ProvisionerInfo>, String>),
+    /// A provisioner was registered under this name, or why not.
+    Saved(Result<String, String>),
     Output(Vec<u8>),
     /// A job ended: the subject's page to ask again, a resource's or a
     /// provisioner's, and how it ended.
@@ -78,6 +81,8 @@ pub struct View {
     pub job: Option<Panel>,
     /// Set when the panel is closed, so a log that is followed stops.
     closed: Arc<AtomicBool>,
+    /// The kind to make once the list has come, as [`View::create`] asks.
+    creating: Option<String>,
 }
 
 impl Default for View {
@@ -91,6 +96,7 @@ impl Default for View {
             arrived,
             job: None,
             closed: Arc::new(AtomicBool::new(false)),
+            creating: None,
         }
     }
 }
@@ -116,6 +122,26 @@ impl View {
         });
     }
 
+    /// Open the form that makes a resource of `kind` that is no host, such
+    /// as an instance, with the provisioner that makes it; once the list has
+    /// come, when it has not.
+    pub fn create(&mut self, paths: &Paths, kind: &str, status: &mut String) {
+        let list = match &self.listing {
+            Some(Ok(list)) => list.clone(),
+            _ => {
+                self.creating = Some(kind.to_owned());
+                self.listing = None;
+                self.load(paths);
+                return;
+            }
+        };
+        match self.tab.create(&list, kind) {
+            Asked::Open(id) => self.open(paths, id),
+            Asked::Nothing(Some(said)) => *status = said,
+            _ => {}
+        }
+    }
+
     fn open(&self, paths: &Paths, id: String) {
         let (paths, sender) = (paths.clone(), self.sender.clone());
         std::thread::spawn(move || {
@@ -125,6 +151,31 @@ impl View {
                 .map_err(|error| error.to_string());
             let actions = source.actions(&id).map_err(|error| error.to_string());
             let _ = sender.send(Arrived::Page(id, Box::new(state), actions));
+        });
+    }
+
+    fn types(&self, paths: &Paths) {
+        let (paths, sender) = (paths.clone(), self.sender.clone());
+        std::thread::spawn(move || {
+            let types = Source::of(&paths)
+                .types()
+                .map_err(|error| error.to_string());
+            let _ = sender.send(Arrived::Types(types));
+        });
+    }
+
+    fn save(&self, paths: &Paths, name: String, kind: String) {
+        let (paths, sender) = (paths.clone(), self.sender.clone());
+        std::thread::spawn(move || {
+            let saved = berth_api::SavedProvisioner {
+                kind,
+                settings: None,
+            };
+            let said = Source::of(&paths)
+                .save(&name, &saved)
+                .map(|()| name)
+                .map_err(|error| error.to_string());
+            let _ = sender.send(Arrived::Saved(said));
         });
     }
 
@@ -179,25 +230,7 @@ impl View {
         status: &mut String,
     ) {
         let (paths, sender) = (paths.clone(), self.sender.clone());
-        if !action.changes {
-            *status = format!("Asking {id}…");
-            std::thread::spawn(move || {
-                let ran = Source::of(&paths).resource_run(
-                    &id,
-                    &action.name,
-                    values,
-                    &mut std::io::sink(),
-                    &mut std::io::sink(),
-                );
-                let said = match ran {
-                    Ok(Ran::Answered(answer)) => Ok(answer_lines(&answer)),
-                    Ok(Ran::Ended(code)) => Ok(vec![format!("It ended with {code}")]),
-                    Err(error) => Err(error.to_string()),
-                };
-                let _ = sender.send(Arrived::Answered(id, said));
-            });
-            return;
-        }
+        *status = format!("Asking {id}…");
         let closed = self.panel(&format!("{} · {id}", action.title()));
         std::thread::spawn(move || {
             let mut out = Lines(sender.clone(), closed);
@@ -231,10 +264,38 @@ impl View {
                     if let Err(error) = &listed {
                         *status = format!("✗ {error}");
                     }
+                    let ready = listed.is_ok();
                     self.listing = Some(listed);
                     self.asked = false;
+                    if let Some(kind) = self.creating.take()
+                        && ready
+                    {
+                        self.create(paths, &kind, status);
+                    }
+                }
+                // One that was removed takes its page back to the list.
+                Arrived::Page(_, state, _)
+                    if state
+                        .as_ref()
+                        .as_ref()
+                        .is_err_and(|error| error.starts_with("No provisioner ")) =>
+                {
+                    self.tab.page = None;
+                    self.listing = None;
+                    self.load(paths);
                 }
                 Arrived::Page(id, state, actions) => self.tab.opened(&id, *state, actions),
+                Arrived::Types(types) => {
+                    if let Some(said) = self.tab.adding(types) {
+                        *status = said;
+                    }
+                }
+                Arrived::Saved(Ok(name)) => {
+                    *status = format!("Registered {name}. Its page has its settings and secrets");
+                    self.listing = None;
+                    self.load(paths);
+                }
+                Arrived::Saved(Err(error)) => *status = format!("✗ {error}"),
                 // One that was removed takes its page back to its provisioner's.
                 Arrived::Resource(id, seen, _)
                     if seen
@@ -249,11 +310,6 @@ impl View {
                 Arrived::Resource(id, seen, actions) => {
                     self.tab.opened_resource(&id, *seen, actions)
                 }
-                Arrived::Answered(id, Ok(lines)) => {
-                    *status = lines.first().cloned().unwrap_or_default();
-                    self.tab.answered(&id, lines);
-                }
-                Arrived::Answered(_, Err(error)) => *status = format!("✗ {error}"),
                 Arrived::Output(data) => {
                     if let Some(job) = &mut self.job {
                         job.feed(&data);
@@ -281,8 +337,9 @@ impl View {
         shown
     }
 
-    /// Draw what is over the tab: a job's panel, a question, the arguments.
-    pub fn draw_over(&self, frame: &mut Frame) {
+    /// Draw what is over the tab: a job's panel, a form, a question, the
+    /// arguments. `status` is the last message, which a form shows itself.
+    pub fn draw_over(&self, frame: &mut Frame, status: &str) {
         if let Some(job) = &self.job {
             let keys = match job.outcome() {
                 None => " It runs · its output comes as it is written ",
@@ -292,6 +349,9 @@ impl View {
             berth_tui::screen::draw_panel(frame, &job.title, job.screen(), job.outcome(), keys, "");
             return;
         }
+        if let Some(form) = self.tab.form() {
+            form.draw(frame, status);
+        }
         if let Some(question) = self.tab.question() {
             berth_tui::screen::draw_question(frame, question);
         }
@@ -300,29 +360,10 @@ impl View {
         }
     }
 
-    /// Run an action, in a thread: one that only reads answers on the page,
-    /// one that changes something is a job whose output fills a panel.
+    /// Run an action, in a thread. Its output, or its answer, fills a panel.
     fn run(&mut self, paths: &Paths, id: String, action: Action, values: Act, status: &mut String) {
         let (paths, sender) = (paths.clone(), self.sender.clone());
-        if !action.changes {
-            *status = format!("Asking {id}…");
-            std::thread::spawn(move || {
-                let ran = Source::of(&paths).run(
-                    &id,
-                    &action.name,
-                    values,
-                    &mut std::io::sink(),
-                    &mut std::io::sink(),
-                );
-                let said = match ran {
-                    Ok(Ran::Answered(answer)) => Ok(answer_lines(&answer)),
-                    Ok(Ran::Ended(code)) => Ok(vec![format!("It ended with {code}")]),
-                    Err(error) => Err(error.to_string()),
-                };
-                let _ = sender.send(Arrived::Answered(id, said));
-            });
-            return;
-        }
+        *status = format!("Asking {id}…");
         let closed = self.panel(&format!("{} · {id}", action.title()));
         std::thread::spawn(move || {
             let mut out = Lines(sender.clone(), closed);
@@ -376,7 +417,43 @@ impl View {
             return Left::Stay;
         };
         let list = self.list().to_vec();
-        match self.tab.key(shared, &list, platform) {
+        let asked = self.tab.key(shared, &list, platform);
+        if asked == Asked::Other {
+            match key.code {
+                KeyCode::Char(digit @ '1'..='6') => {
+                    return Left::Tab(digit as usize - '1' as usize);
+                }
+                // Next to the hosts: Tab goes on to the settings, Shift+Tab back.
+                KeyCode::Tab => return Left::Tab(2),
+                KeyCode::BackTab | KeyCode::Esc => return Left::Tab(0),
+                KeyCode::Char('q') => return Left::Quit,
+                _ => {}
+            }
+        }
+        self.asked(paths, asked, status)
+    }
+
+    /// Put pasted text into what is being typed.
+    pub fn paste(&mut self, text: &str) {
+        self.tab.paste(text);
+    }
+
+    /// A click while a form is open, which the form takes.
+    pub fn click(
+        &mut self,
+        paths: &Paths,
+        (column, row): (u16, u16),
+        status: &mut String,
+        platform: &mut dyn Platform,
+    ) -> Left {
+        let list = self.list().to_vec();
+        let asked = self.tab.click(column, row, &list, platform);
+        self.asked(paths, asked, status)
+    }
+
+    /// Do what a key or a click on the tab asked for.
+    fn asked(&mut self, paths: &Paths, asked: Asked, status: &mut String) -> Left {
+        match asked {
             Asked::Nothing(said) => {
                 if let Some(said) = said {
                     *status = said;
@@ -385,6 +462,11 @@ impl View {
             Asked::List => {
                 self.listing = None;
                 self.load(paths);
+            }
+            Asked::Add => self.types(paths),
+            Asked::Save { name, kind } => {
+                *status = format!("Registering {name}…");
+                self.save(paths, name, kind);
             }
             Asked::Open(id) => self.open(paths, id),
             Asked::Run {
@@ -411,16 +493,8 @@ impl View {
                 self.run_resource(paths, resource, *action, change, status);
             }
             Asked::Logs(id) => self.logs(paths, id),
-            Asked::Other => match key.code {
-                KeyCode::Char(digit @ '1'..='6') => {
-                    return Left::Tab(digit as usize - '1' as usize);
-                }
-                // Next to the hosts: Tab goes on to the settings, Shift+Tab back.
-                KeyCode::Tab => return Left::Tab(2),
-                KeyCode::BackTab | KeyCode::Esc => return Left::Tab(0),
-                KeyCode::Char('q') => return Left::Quit,
-                _ => {}
-            },
+            Asked::Hosts => return Left::Tab(0),
+            Asked::Other => {}
         }
         Left::Stay
     }

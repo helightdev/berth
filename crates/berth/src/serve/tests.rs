@@ -1604,6 +1604,19 @@ async fn an_access_token_gets_in_with_the_role_it_names() {
         with("berth:operate"),
         with("berth:admin"),
     );
+    // Registering one is set-up, for an admin alone.
+    let registered = json!({"type": "fake/vm"});
+    let (status, said) = as_bearer(
+        address,
+        &operator,
+        "PUT",
+        "/v1/provisioners/vm",
+        registered.clone(),
+    )
+    .await;
+    assert_eq!(status, 403, "{said}");
+    let (status, said) = as_bearer(address, &admin, "PUT", "/v1/provisioners/vm", registered).await;
+    assert_eq!(status, 200, "{said}");
     let profile = json!({"builder": {}, "access": {"address": "192.0.2.7"}});
 
     // Looking is for every role, using for two, set-up for one.
@@ -1694,8 +1707,8 @@ async fn an_access_token_gets_in_with_the_role_it_names() {
     // A provisioner is looked at by anyone, and each of its actions has its own role.
     for path in [
         "/v1/provisioners",
-        "/v1/provisioners/fake/vm/actions",
-        "/v1/provisioners/fake/vm",
+        "/v1/provisioners/vm/actions",
+        "/v1/provisioners/vm",
     ] {
         let (status, said) = as_bearer(address, &viewer, "GET", path, Value::Null).await;
         assert_eq!(status, 200, "{path}: {said}");
@@ -1709,7 +1722,7 @@ async fn an_access_token_gets_in_with_the_role_it_names() {
         (&viewer, "images", 501),
         (&admin, "prune", 501),
     ] {
-        let path = format!("/v1/provisioners/fake/vm/actions/{action}");
+        let path = format!("/v1/provisioners/vm/actions/{action}");
         let (status, said) = as_bearer(address, token, "POST", &path, Value::Null).await;
         assert_eq!(status, wanted, "{action}: {said}");
     }
@@ -1920,6 +1933,15 @@ fn quick() -> berth_core::provision::Options {
     }
 }
 
+/// Register the fake plugin's provisioners as `vm` and `old`.
+async fn register_fake(client: &mut Client) {
+    for (name, kind) in [("vm", "fake/vm"), ("old", "fake/old")] {
+        let path = format!("/v1/provisioners/{name}");
+        let (status, said) = send(client, "PUT", &path, json!({"type": kind})).await;
+        assert_eq!(status, 200, "{said}");
+    }
+}
+
 /// The fake provisioner as a plugin of the server's own, and its folder.
 fn fake_provisioner(served: &Served) -> PathBuf {
     write_fake_provisioner(served.dir.path())
@@ -1988,6 +2010,7 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
     let fake = fake_provisioner(&served);
     let mut client = served.client().await;
     let client = &mut client;
+    register_fake(client).await;
     served.state.paths.prepare().unwrap();
     let message = |said: &Value| said["error"]["message"].as_str().unwrap_or("").to_owned();
 
@@ -2003,28 +2026,28 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
             .clone()
     };
     assert!(
-        find("fake/vm")["problem"]
+        find("vm")["problem"]
             .as_str()
             .unwrap()
             .contains("api_token")
     );
     assert!(
-        find("fake/old")["problem"]
+        find("old")["problem"]
             .as_str()
             .unwrap()
             .contains("version 1")
     );
-    assert_eq!(find("fake/vm")["own"], json!(["server"]));
-    assert_eq!(find("fake/vm")["kinds"][0]["id"], "machine");
-    assert_eq!(find("fake/vm")["actions"][0]["name"], "images");
-    let (status, page) = send(client, "GET", "/v1/provisioners/fake/vm", Value::Null).await;
+    assert_eq!(find("vm")["own"], json!(["server"]));
+    assert_eq!(find("vm")["kinds"][0]["id"], "machine");
+    assert_eq!(find("vm")["actions"][0]["name"], "images");
+    let (status, page) = send(client, "GET", "/v1/provisioners/vm", Value::Null).await;
     assert_eq!(
         (status, &page["state"]),
         (200, &json!("unusable")),
         "{page}"
     );
     assert_eq!(
-        send(client, "GET", "/v1/provisioners/fake/none", Value::Null)
+        send(client, "GET", "/v1/provisioners/none", Value::Null)
             .await
             .0,
         404
@@ -2038,13 +2061,7 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
     .await;
 
     // Its settings are an action of berth's, a job like any that changes something.
-    let (status, actions) = send(
-        client,
-        "GET",
-        "/v1/provisioners/fake/vm/actions",
-        Value::Null,
-    )
-    .await;
+    let (status, actions) = send(client, "GET", "/v1/provisioners/vm/actions", Value::Null).await;
     assert_eq!(status, 200, "{actions}");
     let names: Vec<&str> = actions
         .as_array()
@@ -2052,24 +2069,35 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
         .iter()
         .map(|action| action["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["images", "prune", "restart", "settings"]);
-    assert_eq!(actions[0]["arguments"][0]["name"], "server");
+    assert_eq!(
+        names,
+        [
+            "new-deployment",
+            "settings",
+            "images",
+            "prune",
+            "restart",
+            "secrets",
+            "remove"
+        ]
+    );
+    assert_eq!(actions[2]["arguments"][0]["name"], "server");
     let (status, said) = send(
         client,
         "POST",
-        "/v1/provisioners/fake/vm/actions/dance",
+        "/v1/provisioners/vm/actions/dance",
         Value::Null,
     )
     .await;
     assert_eq!(status, 404, "{said}");
     assert!(
-        message(&said).contains("Its actions: images, prune"),
+        message(&said).contains("Its actions: new-deployment, settings, images"),
         "{said}"
     );
     let (status, said) = send(
         client,
         "POST",
-        "/v1/provisioners/fake/vm/actions/images",
+        "/v1/provisioners/vm/actions/images",
         Value::Null,
     )
     .await;
@@ -2079,26 +2107,26 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
     let (status, acted) = send(
         client,
         "POST",
-        "/v1/provisioners/fake/vm/actions/settings",
+        "/v1/provisioners/vm/actions/settings",
         settings.clone(),
     )
     .await;
     assert_eq!(status, 202, "{acted}");
     assert_eq!(
         (&acted["job"]["subject"], &acted["job"]["action"]),
-        (&json!("provisioner:fake/vm"), &json!("settings"))
+        (&json!("provisioner:vm"), &json!("settings"))
     );
     let (output, code) = job_ended(&served.socket, acted["job"]["id"].as_str().unwrap()).await;
     assert_eq!(code, 0, "{output}");
     assert!(
-        output.contains("fake/vm uses server=https://192.0.2.10:8443"),
+        output.contains("vm uses server=https://192.0.2.10:8443"),
         "{output}"
     );
     // The same token again is the same job.
     let (_, again) = send(
         client,
         "POST",
-        "/v1/provisioners/fake/vm/actions/settings",
+        "/v1/provisioners/vm/actions/settings",
         settings,
     )
     .await;
@@ -2113,7 +2141,7 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
     let (status, acted) = send(
         client,
         "POST",
-        "/v1/provisioners/fake/vm/actions/images",
+        "/v1/provisioners/vm/actions/images",
         Value::Null,
     )
     .await;
@@ -2126,7 +2154,7 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
     let (status, acted) = send(
         client,
         "POST",
-        "/v1/provisioners/fake/vm/actions/prune",
+        "/v1/provisioners/vm/actions/prune",
         json!({"arguments": {"password": "hunter2-pass"}}),
     )
     .await;
@@ -2148,14 +2176,14 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
         Value::Null,
     )
     .await;
-    assert_eq!(job["subject"], "provisioner:fake/vm");
+    assert_eq!(job["subject"], "provisioner:vm");
     // One that fails says why, in the job or as the answer.
     std::fs::write(fake.join("code.act"), "1").unwrap();
     std::fs::write(fake.join("say.act"), "engine gone\n").unwrap();
     let (status, said) = send(
         client,
         "POST",
-        "/v1/provisioners/fake/vm/actions/images",
+        "/v1/provisioners/vm/actions/images",
         Value::Null,
     )
     .await;
@@ -2164,14 +2192,14 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
     // Two changes to one provisioner do not overlap.
     let held = berth_core::runner::lock(
         &served.state.paths,
-        &berth_core::runner::Subject::Provisioner("fake/vm".into()),
+        &berth_core::runner::Subject::Provisioner("vm".into()),
         "prune",
     )
     .unwrap();
     let (status, said) = send(
         client,
         "POST",
-        "/v1/provisioners/fake/vm/actions/prune",
+        "/v1/provisioners/vm/actions/prune",
         Value::Null,
     )
     .await;
@@ -2190,7 +2218,7 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
         r#"{"resources": [{"id": "vm-7", "kind": "machine", "name": "attic", "state": "running"}]}"#,
     )
     .unwrap();
-    let (status, page) = send(client, "GET", "/v1/provisioners/fake/vm", Value::Null).await;
+    let (status, page) = send(client, "GET", "/v1/provisioners/vm", Value::Null).await;
     assert_eq!(status, 200, "{page}");
     assert_eq!(
         (&page["state"], &page["message"]),
@@ -2212,22 +2240,110 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
         .call(
             "provisioners.act",
             None,
-            json!({"plugin": "fake", "id": "vm", "action": "images"}),
+            json!({"name": "vm", "action": "images"}),
             None,
         )
         .await
         .unwrap();
     assert_eq!(acted["result"]["message"], "1 image");
     let got = portal
-        .call(
-            "provisioners.get",
-            None,
-            json!({"plugin": "fake", "id": "vm"}),
-            None,
-        )
+        .call("provisioners.get", None, json!({"name": "vm"}), None)
         .await
         .unwrap();
     assert_eq!(got["state"], "ready");
+
+    // A registered one keeps secrets of its own, under the names its plugin gives them.
+    let (status, acted) = send(
+        client,
+        "POST",
+        "/v1/provisioners/vm/actions/secrets",
+        json!({"arguments": {"api_token": "tok-own"}}),
+    )
+    .await;
+    assert_eq!(status, 202, "{acted}");
+    let (output, code) = job_ended(&served.socket, acted["job"]["id"].as_str().unwrap()).await;
+    assert_eq!(code, 0, "{output}");
+    assert!(!output.contains("tok-own"), "{output}");
+    let registries = berth_core::registry::Store::own(served.state.store.clone());
+    assert_eq!(
+        registries
+            .secret("provisioner/vm/api_token")
+            .unwrap()
+            .as_deref(),
+        Some("tok-own")
+    );
+
+    // A deployment is made with an action of the provisioner, from its specification.
+    std::fs::write(
+        fake.join("answer.create"),
+        r#"{"id": "wiki-1", "state": "running"}"#,
+    )
+    .unwrap();
+    let (status, acted) = send(
+        client,
+        "POST",
+        "/v1/provisioners/vm/actions/new-deployment",
+        json!({"arguments": {"name": "wiki", "spec": "services:\n  wiki:\n    image: wiki\n"}}),
+    )
+    .await;
+    assert_eq!(status, 202, "{acted}");
+    let (output, code) = job_ended(&served.socket, acted["job"]["id"].as_str().unwrap()).await;
+    assert_eq!(code, 0, "{output}");
+    let (_, made) = send(client, "GET", "/v1/resources?provisioner=vm", Value::Null).await;
+    let deployment = made
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|made| made["kind"] == "deployment")
+        .unwrap_or_else(|| panic!("a deployment in {made}"));
+    assert_eq!(deployment["name"], "wiki");
+    let asked = std::fs::read_to_string(fake.join("last.create")).unwrap();
+    assert!(
+        asked.contains("\"api_token\":\"tok-own\"") && asked.contains("image: wiki"),
+        "{asked}"
+    );
+    assert!(!deployment["spec_sha256"].as_str().unwrap().is_empty());
+
+    // One that holds something is kept; one that holds nothing is forgotten.
+    let (status, said) = send(client, "DELETE", "/v1/provisioners/vm", Value::Null).await;
+    assert_eq!(status, 409, "{said}");
+    assert!(
+        message(&said).contains(deployment["id"].as_str().unwrap()),
+        "{said}"
+    );
+    let (status, said) = send(client, "DELETE", "/v1/provisioners/old", Value::Null).await;
+    assert_eq!(status, 204, "{said}");
+    let (_, listed) = send(client, "GET", "/v1/provisioners", Value::Null).await;
+    let names: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|known| known["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["vm"]);
+    // A registered one keeps its type, and a type has to be one a plugin brings.
+    let (status, said) = send(
+        client,
+        "PUT",
+        "/v1/provisioners/vm",
+        json!({"type": "fake/old"}),
+    )
+    .await;
+    assert_eq!(status, 400, "{said}");
+    for (name, kind) in [("other", "fake/none"), ("Bad/Name", "fake/vm")] {
+        let path = format!("/v1/provisioners/{name}");
+        let (status, said) = send(client, "PUT", &path, json!({"type": kind})).await;
+        assert!(status == 400 || status == 404, "{name}: {status} {said}");
+    }
+    let (_, types) = send(client, "GET", "/v1/provisioner-types", Value::Null).await;
+    assert!(
+        types
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|known| known["type"] == "fake/vm" && known["id"] == "fake/vm"),
+        "{types}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2236,6 +2352,7 @@ async fn machines_are_created_and_deleted_through_the_api() {
     let fake = fake_provisioner(&served);
     let mut client = served.client().await;
     let client = &mut client;
+    register_fake(client).await;
     let paths = &served.state.paths;
     paths.prepare().unwrap();
     // How the server reaches it is its own; the address comes from the provisioner.
@@ -2255,14 +2372,14 @@ async fn machines_are_created_and_deleted_through_the_api() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|known| known["id"] == "fake/vm")
+        .find(|known| known["id"] == "vm")
         .unwrap()
         .clone();
     assert_eq!(vm["missing_secrets"], json!(["api_token"]));
     assert_eq!(vm["kinds"][1]["actions"][1]["role"], "admin");
 
     // Refusals are answers of their own, before there is a job.
-    let asked = json!({"provisioner": "fake/vm", "host": "studio",
+    let asked = json!({"provisioner": "vm", "host": "studio",
                        "arguments": {"server": "https://192.0.2.10:8443"}});
     let (status, said) = send(client, "POST", "/v1/resources", asked.clone()).await;
     assert_eq!(status, 400, "{said}");
@@ -2270,10 +2387,10 @@ async fn machines_are_created_and_deleted_through_the_api() {
     let secret = json!({"value": "tok-s3cret"});
     send(client, "PUT", "/v1/secrets/api_token", secret).await;
     for (body, wanted) in [
-        (json!({"provisioner": "fake/vm", "host": "nobody"}), 404),
-        (json!({"provisioner": "fake/none", "host": "studio"}), 404),
-        (json!({"provisioner": "fake/vm", "host": "studio"}), 400),
-        (json!({"provisioner": "fake/vm"}), 400),
+        (json!({"provisioner": "vm", "host": "nobody"}), 404),
+        (json!({"provisioner": "none", "host": "studio"}), 404),
+        (json!({"provisioner": "vm", "host": "studio"}), 400),
+        (json!({"provisioner": "vm"}), 400),
         (json!({"nothing": 1}), 400),
     ] {
         let (status, said) = send(client, "POST", "/v1/resources", body.clone()).await;
@@ -2408,13 +2525,7 @@ async fn machines_are_created_and_deleted_through_the_api() {
             {"id": "vm-9", "kind": "machine", "name": "attic"}]}"#,
     )
     .unwrap();
-    let (_, page) = send(
-        client,
-        "GET",
-        "/v1/provisioners/fake/vm?server=x",
-        Value::Null,
-    )
-    .await;
+    let (_, page) = send(client, "GET", "/v1/provisioners/vm?server=x", Value::Null).await;
     assert_eq!(page["resources"][0]["resource"], json!(id), "{page}");
     assert_eq!(page["resources"][0]["state"], "running");
     assert!(page["resources"][1].get("resource").is_none());
@@ -2483,6 +2594,7 @@ async fn a_deployment_keeps_its_spec_and_gets_its_secrets_only_on_standard_input
     let fake = fake_provisioner(&served);
     let mut client = served.client().await;
     let client = &mut client;
+    register_fake(client).await;
     let paths = &served.state.paths;
     paths.prepare().unwrap();
     let message = |said: &Value| said["error"]["message"].as_str().unwrap_or("").to_owned();
@@ -2494,7 +2606,7 @@ async fn a_deployment_keeps_its_spec_and_gets_its_secrets_only_on_standard_input
     )
     .await;
     let spec = "services:\n  wiki:\n    image: wiki\n    environment:\n      DB: ${DB_PASSWORD}\n";
-    let asked = json!({"provisioner": "fake/vm", "kind": "deployment", "name": "wiki",
+    let asked = json!({"provisioner": "vm", "kind": "deployment", "name": "wiki",
                        "arguments": {"server": "x"}, "spec": spec,
                        "secrets": [{"name": "wiki_db", "env": "DB_PASSWORD"}], "token": "t-1"});
     // A secret it is given has to have a value; a name and a spec have to fit.

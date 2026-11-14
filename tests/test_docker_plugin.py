@@ -126,7 +126,9 @@ class Provision(Harness):
         self.assertEqual(entry['verbs'], ['list'])
         self.assertNotIn('secrets', entry)
         self.assertEqual([a['name'] for a in entry['arguments']], ['host'])
-        machine, deployment = entry['kinds']
+        machine, deployment, instance = entry['kinds']
+        self.assertEqual((instance['id'], instance['verbs']), ('instance', ['start', 'stop', 'change', 'logs']))
+        self.assertEqual(instance['arguments'][0]['name'], 'image')
         self.assertEqual((machine['id'], machine['setup']), ('machine', 'apply'))
         self.assertEqual(machine['verbs'], ['start', 'stop', 'change', 'logs'])
         self.assertEqual([a['name'] for a in machine['arguments']],
@@ -135,7 +137,8 @@ class Provision(Harness):
         source = (PLUGIN / 'bin/provision').read_text()
         for action in entry['actions']:
             self.assertIn(f"'{action['name']}': act_", source)
-        self.assertEqual([a['name'] for a in entry['actions'] if a.get('changes', True)], ['build', 'prune'])
+        self.assertEqual([a['name'] for a in entry['actions'] if a.get('changes', True)],
+                         ['create-volume', 'remove-volume', 'pull-image', 'remove-image', 'build', 'prune'])
         prune = [a for a in entry['actions'] if a['name'] == 'prune'][0]
         self.assertTrue(prune['confirm'])
         self.assertTrue(os.access(PLUGIN / 'bin/provision', os.X_OK))
@@ -463,6 +466,151 @@ class Provision(Harness):
         self.assertIn('Unable to locate package nope', done.stderr)
 
 
+class Instance(Harness):
+    def make(self, verb, extra=None, arguments=None, rules=None):
+        request = {'kind': 'instance', 'name': 'web-1', 'token': 'tok-web', 'provisioner': 'container',
+                   'labels': {'berth-resource': 'r1', 'berth-token': 'tok-web'}}
+        if verb != 'create':
+            request['id'] = 'web-1'
+        request.update(extra or {})
+        arguments = dict({'image': 'debian:12', 'command': '', 'environment': '', 'ports': '', 'volumes': '',
+                          'network': '', 'restart': 'no', 'cpus': '', 'memory': ''}, **(arguments or {}))
+        return self.run_verb(verb, request, arguments=arguments, rules=rules)
+
+    def test_create_runs_a_plain_container_from_the_image_with_no_berth_host(self):
+        rules = [{'prefix': ['ps', '--all', '--format', '{{.Names}}', '--filter', 'label=berth-token=tok-web'], 'results': [[0, '', '']]},
+                 {'prefix': ['container', 'inspect'], 'results': [MISSING]}]
+        done = self.make('create', arguments={'command': 'sleep infinity', 'environment': f'A={SECRET}\n# note\n',
+                                              'ports': '8080:80, 9000:9000', 'restart': 'unless-stopped',
+                                              'memory': '2GiB'}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {'id': 'web-1', 'state': 'running'})
+        [call] = [c for c in self.calls() if c['args'][:1] == ['run']]
+        run = call['args']
+        self.assertIn('berth-token=tok-web', run)
+        self.assertIn('berth-resource=r1', run)
+        self.assertNotIn('berth-host=', ' '.join(run))
+        # A value reaches docker in its environment, and only the name is on its command line.
+        self.assertEqual(run[run.index('--env') + 1], 'A')
+        self.assertNotIn(SECRET, ' '.join(run))
+        self.assertEqual(call['env']['A'], SECRET)
+        self.assertEqual(run[run.index('--restart') + 1], 'unless-stopped')
+        self.assertEqual(run[-3:], ['debian:12', 'sleep', 'infinity'])
+
+    def test_create_again_with_its_token_is_the_same_container(self):
+        rules = [{'prefix': ['ps', '--all', '--format', '{{.Names}}', '--filter', 'label=berth-token=tok-web'],
+                  'results': [[0, 'web-1\n', '']]},
+                 {'prefix': ['container', 'inspect'], 'results': [inspect(OURS)]}]
+        done = self.make('create', rules=rules)
+        self.assertEqual(json.loads(done.stdout), {'id': 'web-1', 'state': 'running'})
+        self.assertEqual(self.argv('run'), [])
+
+    def test_a_taken_name_or_a_bad_image_is_refused(self):
+        rules = [{'prefix': ['ps', '--all', '--format', '{{.Names}}', '--filter', 'label=berth-token=tok-web'], 'results': [[0, '', '']]},
+                 {'prefix': ['container', 'inspect'], 'results': [inspect(OURS)]}]
+        done = self.make('create', rules=rules)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('already has a container named web-1', done.stderr)
+        empty = [{'prefix': ['ps', '--all', '--format', '{{.Names}}', '--filter', 'label=berth-token=tok-web'], 'results': [[0, '', '']]},
+                 {'prefix': ['container', 'inspect'], 'results': [MISSING]}]
+        done = self.make('create', arguments={'image': ''}, rules=empty)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('needs an image', done.stderr)
+        done = self.make('create', arguments={'environment': 'NOEQUALS'}, rules=empty)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('NAME=VALUE', done.stderr)
+        done = self.make('create', arguments={'image': '--privileged'}, rules=empty)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('cannot start with a dash', done.stderr)
+        self.assertEqual(self.argv('run'), [])
+
+    def test_a_container_that_fails_to_start_is_removed(self):
+        rules = [{'prefix': ['ps', '--all', '--format', '{{.Names}}', '--filter', 'label=berth-token=tok-web'],
+                  'results': [[0, '', ''], [0, 'web-1\n', '']]},
+                 {'prefix': ['container', 'inspect'], 'results': [MISSING]},
+                 {'prefix': ['run'], 'results': [[125, '', 'Error: port is already allocated']]}]
+        done = self.make('create', arguments={'ports': '8080:80'}, rules=rules)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('port is already allocated', done.stderr)
+        self.assertEqual(self.argv('rm'), [['rm', '--force', 'web-1']])
+
+    def test_an_instance_is_listed_beside_the_machines_and_not_as_one(self):
+        rules = [{'prefix': ['ps', '--all', '--format', '{{.Names}}', '--filter', 'label=berth-resource'], 'results': [[0, 'web-1\n', '']]},
+                 {'prefix': ['container', 'inspect', 'web-1'], 'results': [inspect({'berth-resource': 'r1'})]},
+                 {'prefix': ['container', 'inspect', 'berth-studio'], 'results': [inspect(OURS)]},
+                 {'prefix': ['ps'], 'results': [[0, '', '']]}]
+        done = self.run_verb('list', {'kind': 'instance'}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {'resources': [
+            {'id': 'web-1', 'kind': 'instance', 'name': 'web-1', 'host': '', 'state': 'running'}]})
+
+    def test_the_containers_of_a_deployment_are_no_instances(self):
+        compose = {'berth-resource': 'shop', 'berth-token': 'tok-9', 'com.docker.compose.project': 'shop'}
+        rules = [{'prefix': ['ps', '--all', '--format', '{{.Names}}', '--filter', 'label=berth-resource'],
+                  'results': [[0, 'web-1\nshop-web-1\n', '']]},
+                 {'prefix': ['container', 'inspect', 'web-1'], 'results': [inspect({'berth-resource': 'r1'})]},
+                 {'prefix': ['container', 'inspect', 'shop-web-1'], 'results': [inspect(compose)]},
+                 {'prefix': ['ps'], 'results': [[0, '', '']]}]
+        done = self.run_verb('list', {'kind': 'instance'}, rules=rules)
+        self.assertEqual([r['id'] for r in json.loads(done.stdout)['resources']], ['web-1'])
+        done = self.make('stop', {'id': 'shop-web-1'}, rules=rules)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('was not made by berth as an instance', done.stderr)
+        self.assertEqual(self.argv('stop'), [])
+
+    def test_change_applies_limits_and_refuses_what_is_fixed(self):
+        rules = [{'prefix': ['container', 'inspect', 'web-1'], 'results': [inspect({'berth-resource': 'r1'})]}]
+        done = self.make('change', {'changed': ['cpus']}, arguments={'cpus': '2'}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.argv('update'), [['update', '--cpus', '2', 'web-1']])
+        done = self.make('change', {'changed': ['cpus', 'image']}, arguments={'cpus': '4', 'image': 'debian:13'},
+                         rules=rules)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('cannot change its image', done.stderr)
+        self.assertIn('make a new instance', done.stderr)
+        self.assertEqual(len(self.argv('update')), 1)
+
+    def test_stop_start_and_destroy_only_what_berth_made_as_an_instance(self):
+        rules = [{'prefix': ['container', 'inspect', 'web-1'], 'results': [inspect({'berth-resource': 'r1'})]}]
+        self.assertEqual(self.make('stop', rules=rules).returncode, 0)
+        self.assertEqual(self.argv('stop'), [['stop', '--time', '30', 'web-1']])
+        self.assertEqual(self.make('start', rules=rules).returncode, 0)
+        self.assertEqual(self.argv('start'), [['start', 'web-1']])
+        self.assertEqual(self.make('destroy', rules=rules).returncode, 0)
+        self.assertIn(['rm', '--force', '--volumes', 'web-1'], self.calls() and self.argv('rm'))
+        stranger = [{'prefix': ['container', 'inspect', 'web-1'], 'results': [inspect(OURS)]}]
+        done = self.make('stop', rules=stranger)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('was not made by berth as an instance', done.stderr)
+
+    def test_the_storage_actions_list_create_and_remove(self):
+        rules = [{'prefix': ['volume', 'ls'], 'results': [[0, json.dumps({'Name': 'wiki-data', 'Labels': 'berth-host=studio'}) + '\n', '']]},
+                 {'prefix': ['ps'], 'results': [[0, '', '']]}]
+        done = self.run_verb('act', {'kind': 'instance', 'action': {'name': 'volumes', 'arguments': {}}}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout)['details'][0]['label'], 'wiki-data')
+        done = self.run_verb('act', {'action': {'name': 'create-volume', 'arguments': {'name': 'data_1'}}})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.argv('volume', 'create'), [['volume', 'create', 'data_1']])
+        done = self.run_verb('act', {'action': {'name': 'create-volume', 'arguments': {'name': 'bad name!'}}})
+        self.assertEqual(done.returncode, 1)
+        done = self.run_verb('act', {'action': {'name': 'remove-volume', 'arguments': {'name': 'data_1'}}})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(['volume', 'rm', 'data_1'], self.argv('volume', 'rm'))
+        done = self.run_verb('act', {'action': {'name': 'pull-image', 'arguments': {'image': 'debian:12'}}})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.argv('pull'), [['pull', 'debian:12']])
+        done = self.run_verb('act', {'action': {'name': 'remove-image', 'arguments': {'image': 'debian:12'}}})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.argv('image', 'rm'), [['image', 'rm', 'debian:12']])
+        # Nothing that docker would read as an option reaches it.
+        for name, arguments in [('pull-image', {'image': '--all-tags'}), ('remove-image', {'image': '-f'}),
+                                ('remove-volume', {'name': '-f'}), ('remove-volume', {'name': ''})]:
+            done = self.run_verb('act', {'action': {'name': name, 'arguments': arguments}})
+            self.assertEqual(done.returncode, 1, name)
+        self.assertEqual(len(self.argv('pull') + self.argv('image', 'rm') + self.argv('volume', 'rm')), 3)
+
+
 class Deployment(Harness):
     def deploy(self, verb, extra=None, arguments=None, rules=None, environment=None):
         request = {'kind': 'deployment', 'name': 'shop', 'environment': environment or {}}
@@ -690,7 +838,7 @@ class Deployment(Harness):
         self.assertIn('of a deployment', done.stderr)
         done = self.run_verb('act', {'kind': 'machine', 'id': 'berth-studio', 'action': {'name': 'services'}})
         self.assertEqual(done.returncode, 1)
-        self.assertIn('a machine has no actions', done.stderr)
+        self.assertIn('the kind machine has no actions', done.stderr)
         # Without an id an action is the provisioner's own.
         done = self.run_verb('act', {'kind': 'deployment', 'action': {'name': 'images', 'arguments': {}}})
         self.assertEqual(done.returncode, 0, done.stderr)

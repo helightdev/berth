@@ -8,6 +8,7 @@ answer on stdout, progress on stderr. `logs` writes the log on stdout instead.
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -101,9 +102,9 @@ class Docker:
         if endpoint:
             self.env['DOCKER_HOST'] = endpoint
 
-    def run(self, *args, input=None, check=True, merge=False):
+    def run(self, *args, input=None, check=True, merge=False, env=None):
         try:
-            done = subprocess.run(['docker', *args], env=self.env, input=input, text=True, errors='replace',
+            done = subprocess.run(['docker', *args], env=dict(self.env, **(env or {})), input=input, text=True, errors='replace',
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT if merge else subprocess.PIPE)
         except FileNotFoundError:
             raise Failure('docker is not installed or not on the PATH')
@@ -455,6 +456,8 @@ def list_all(request):
         resources += machines(docker)
     if kind in ('', 'deployment'):
         resources += deployments(docker)
+    if kind in ('', 'instance'):
+        resources += instances(docker)
     return {'resources': resources}
 
 
@@ -552,11 +555,65 @@ def berth_volumes(docker):
     return found
 
 
+def all_volumes(docker):
+    """Every volume of the engine, with the host berth made it for, if any, and the containers that use it."""
+    found = []
+    for volume in docker.json_lines('volume', 'ls'):
+        name = volume.get('Name') or ''
+        if not name:
+            continue
+        labels = dict(part.split('=', 1) for part in (volume.get('Labels') or '').split(',') if '=' in part)
+        found.append((name, labels.get('berth-host', ''), docker.names(f'volume={name}')))
+    return found
+
+
 def act_volumes(cfg, arguments):
-    volumes = berth_volumes(cfg['docker'])
-    rows = [{'label': name, 'value': f'for {host or "?"} · ' + (f'used by {", ".join(users)}' if users else 'unused')}
+    volumes = all_volumes(cfg['docker'])
+    rows = [{'label': name, 'value': (f'made by berth for {host}' if host else 'not made by berth') + ' · ' + (f'used by {", ".join(users)}' if users else 'unused')}
             for name, host, users in volumes]
-    return {'message': f'{counted(len(volumes), "volume")} berth made at {cfg["docker"].where()}', 'details': rows}
+    return {'message': f'{counted(len(volumes), "volume")} at {cfg["docker"].where()}', 'details': rows}
+
+
+VOLUME = r'[A-Za-z0-9][A-Za-z0-9_.-]+'
+
+
+def act_create_volume(cfg, arguments):
+    name = (arguments.get('name') or '').strip()
+    if not re.fullmatch(VOLUME, name):
+        raise Failure(f'{name!r} is not a name a volume can have: use letters, digits, dots, dashes and underscores')
+    cfg['docker'].run('volume', 'create', name)
+    return {'message': f'Created the volume {name} at {cfg["docker"].where()}'}
+
+
+def act_remove_volume(cfg, arguments):
+    name = (arguments.get('name') or '').strip()
+    if not re.fullmatch(VOLUME, name):
+        raise Failure(f'{name!r} is not a name a volume can have: name the volume to remove')
+    # Docker refuses a volume that a container uses, and says which.
+    cfg['docker'].run('volume', 'rm', name)
+    return {'message': f'Removed the volume {name}'}
+
+
+def image_of(arguments, what):
+    """The image an argument names, which docker would read as an option if it began with a dash."""
+    image = (arguments.get('image') or '').strip()
+    if not image:
+        raise Failure(f'{what}, such as debian:12')
+    if image.startswith('-'):
+        raise Failure(f'{image!r} is not an image reference: it cannot start with a dash')
+    return image
+
+
+def act_pull_image(cfg, arguments):
+    image = image_of(arguments, 'name the image to pull')
+    cfg['docker'].run('pull', image)
+    return {'message': f'Pulled {image} at {cfg["docker"].where()}'}
+
+
+def act_remove_image(cfg, arguments):
+    image = image_of(arguments, 'name the image to remove')
+    cfg['docker'].run('image', 'rm', image)
+    return {'message': f'Removed the image {image}'}
 
 
 def act_build(cfg, arguments):
@@ -591,7 +648,187 @@ def act_prune(cfg, arguments):
 
 
 ACTIONS = {'engine': act_engine, 'images': act_images, 'volumes': act_volumes,
+           'create-volume': act_create_volume, 'remove-volume': act_remove_volume,
+           'pull-image': act_pull_image, 'remove-image': act_remove_image,
            'build': act_build, 'prune': act_prune}
+
+
+# Instances: one plain container from any image, which becomes no berth host. berth labels it with
+# berth-resource and berth-token, and only a container with the first label is one of its own.
+
+RESTART = ('no', 'unless-stopped', 'always')
+# What `docker update` changes in place; the rest are fixed when the container is made.
+CHANGEABLE = ('cpus', 'memory')
+# Compose puts this label on the containers of a deployment, which carry berth-resource too.
+COMPOSE_PROJECT = 'com.docker.compose.project'
+
+
+def is_instance(info):
+    labels = (info or {}).get('Config', {}).get('Labels') or {}
+    return 'berth-resource' in labels and COMPOSE_PROJECT not in labels
+
+
+def instance_ours(docker, name):
+    info = docker.inspect(name)
+    if info is not None and not is_instance(info):
+        raise Failure(f'{name} was not made by berth as an instance, so berth leaves it alone.')
+    return info
+
+
+def instance_name(request):
+    name = re.sub(r'[^a-z0-9_.-]+', '-', (request.get('name') or '').lower()).strip('-.')[:63]
+    if not re.fullmatch(r'[a-z0-9][a-z0-9_.-]*', name):
+        raise Failure(f'{request.get("name")!r} cannot name a Docker container: it has to start with a letter or a digit.')
+    return name
+
+
+def split_list(text):
+    """The items of a comma-separated argument, without the empty ones."""
+    return [item.strip() for item in (text or '').split(',') if item.strip()]
+
+
+def instance_create(request):
+    cfg = settings(request)
+    docker = cfg['docker']
+    arguments = request.get('arguments') or {}
+    labels = request.get('labels') or {}
+    token = labels.get('berth-token') or request.get('token') or ''
+    if not token:
+        raise Failure('the request carries no token')
+    found = docker.names(f'label=berth-token={token}')
+    if found:
+        name = found[0]
+        if not (docker.inspect(name) or {}).get('State', {}).get('Running'):
+            say(f'Starting {name}.')
+            docker.run('start', name)
+        return {'id': name, 'state': 'running'}
+    name = instance_name(request)
+    if docker.inspect(name) is not None:
+        raise Failure(f'{docker.where()} already has a container named {name}. Choose another name.')
+    image = image_of(arguments, 'an instance needs an image')
+    restart = (arguments.get('restart') or 'no').strip()
+    if restart not in RESTART:
+        raise Failure(f'{restart!r} is not a restart policy; there are {", ".join(RESTART)}')
+    args = ['run', '--detach', '--name', name, '--restart', restart,
+            '--label', f'berth-resource={labels.get("berth-resource") or name}', '--label', f'berth-token={token}']
+    # Docker takes each value from its own environment, so no value is on its command line.
+    variables = {}
+    for line in (arguments.get('environment') or '').splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        variable, equals, value = line.partition('=')
+        if not equals or not re.fullmatch(VARIABLE, variable):
+            raise Failure(f'{variable!r} is not a variable: write it as NAME=VALUE')
+        variables[variable] = value
+        args += ['--env', variable]
+    for port in split_list(arguments.get('ports')):
+        args += ['--publish', port]
+    for volume in split_list(arguments.get('volumes')):
+        args += ['--volume', volume]
+    if (arguments.get('network') or '').strip():
+        args += ['--network', arguments['network'].strip()]
+    if (arguments.get('cpus') or '').strip():
+        args += ['--cpus', parse_cpus(arguments['cpus'].strip())]
+    if (arguments.get('memory') or '').strip():
+        args += ['--memory', parse_memory(arguments['memory'].strip())]
+    command = shlex.split(arguments.get('command') or '')
+    say(f'Creating {name} from {image}.')
+    done = docker.run(*args, image, *command, check=False, env=variables)
+    if done.returncode != 0:
+        # A container that was made but did not start would keep the name, so it goes.
+        for made in docker.names(f'label=berth-token={token}'):
+            docker.run('rm', '--force', made, check=False)
+        raise failure('docker run', done.stderr or done.stdout)
+    return {'id': name, 'state': 'running'}
+
+
+def instance_status(request):
+    info = settings(request)['docker'].inspect(identify(request))
+    if info is None:
+        return {'state': 'gone'}
+    return {'state': 'running' if info.get('State', {}).get('Running') else 'stopped'}
+
+
+def instance_start(request):
+    docker = settings(request)['docker']
+    name = identify(request)
+    if instance_ours(docker, name) is None:
+        raise Failure(f'{name} does not exist')
+    docker.run('start', name)
+    return {}
+
+
+def instance_stop(request):
+    docker = settings(request)['docker']
+    name = identify(request)
+    if instance_ours(docker, name) is None:
+        raise Failure(f'{name} does not exist')
+    docker.run('stop', '--time', '30', name)
+    return {}
+
+
+def instance_destroy(request):
+    docker = settings(request)['docker']
+    name = identify(request)
+    if instance_ours(docker, name) is not None:
+        docker.run('rm', '--force', '--volumes', name)
+    return {}
+
+
+def instance_change(request):
+    cfg = settings(request)
+    docker = cfg['docker']
+    name = identify(request)
+    if instance_ours(docker, name) is None:
+        raise Failure(f'{name} does not exist')
+    fixed = [argument for argument in request.get('changed') or [] if argument not in CHANGEABLE]
+    if fixed:
+        raise Failure(f'{name} cannot change its {", ".join(fixed)} in place: make a new instance instead')
+    args = []
+    if cfg['cpus']:
+        args += ['--cpus', parse_cpus(cfg['cpus'])]
+    if cfg['memory']:
+        memory = parse_memory(cfg['memory'])
+        args += ['--memory', memory, '--memory-swap', str(int(memory) * 2)]
+    if args:
+        say(f'Changing the limits of {name}.')
+        docker.run('update', *args, name)
+    running = (docker.inspect(name) or {}).get('State', {}).get('Running')
+    return {'state': 'running' if running else 'stopped'}
+
+
+def instance_logs(request):
+    docker = settings(request)['docker']
+    name = identify(request)
+    if instance_ours(docker, name) is None:
+        raise Failure(f'{name} does not exist')
+    lines = str(int(request.get('tail') or LOG_LINES))
+    if not request.get('follow'):
+        done = docker.run('logs', '--tail', lines, name, check=False, merge=True)
+        if done.returncode != 0:
+            raise Failure(f'docker logs failed: {tail(done.stdout or "")}')
+        sys.stdout.write(done.stdout or '')
+        return None
+    stream(['docker', 'logs', '--tail', lines, '--follow', name], docker.env, 'docker logs')
+    return None
+
+
+def instances(docker):
+    resources = []
+    for name in docker.names('label=berth-resource'):
+        info = docker.inspect(name)
+        if not is_instance(info) or 'berth-host' in info.get('Config', {}).get('Labels', {}):
+            continue
+        running = info.get('State', {}).get('Running')
+        resources.append({'id': name, 'kind': 'instance', 'name': name, 'host': '',
+                          'state': 'running' if running else 'stopped'})
+    return resources
+
+
+INSTANCE_VERBS = {'create': instance_create, 'status': instance_status, 'start': instance_start,
+                  'stop': instance_stop, 'destroy': instance_destroy, 'change': instance_change,
+                  'logs': instance_logs}
 
 
 # Deployments: one Compose project each, named after the deployment.
@@ -886,7 +1123,7 @@ def act(request):
     if request.get('id'):
         kind = request.get('kind') or 'machine'
         if kind != 'deployment':
-            raise Failure(f'a {kind} has no actions')
+            raise Failure(f'the kind {kind} has no actions')
         if name not in DEPLOYMENT_ACTIONS:
             raise Failure(f'there is no action {name!r} of a deployment; there are {", ".join(DEPLOYMENT_ACTIONS)}')
         return DEPLOYMENT_ACTIONS[name](request, Compose(request, request['id']), arguments)
@@ -904,6 +1141,8 @@ def handler(verb, request):
     about_one = verb == 'create' or (verb != 'act' and request.get('id'))
     if request.get('kind') == 'deployment' and verb in DEPLOYMENT_VERBS and about_one:
         return DEPLOYMENT_VERBS[verb]
+    if request.get('kind') == 'instance' and verb in INSTANCE_VERBS and about_one:
+        return INSTANCE_VERBS[verb]
     return VERBS[verb]
 
 

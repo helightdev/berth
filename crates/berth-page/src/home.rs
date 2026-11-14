@@ -228,6 +228,8 @@ pub struct Home {
     go_to: Option<String>,
     plugins: plugins::Tab,
     pub provisioners: provisioners::Tab,
+    /// Set when the hosts' list is to be shown again, for the page to take.
+    pub to_hosts: bool,
     /// The server, and the link that opens this page signed in, when there
     /// is one to give: a row of the Settings tab.
     pub connect: Option<(String, String)>,
@@ -333,9 +335,23 @@ impl Home {
 
     fn provisioners_key(&mut self, key: Key, admin: &Admin) -> Option<String> {
         let listed = admin.data.borrow().provisioners.clone();
-        match self.provisioners.key(key, &listed, &mut Here) {
+        let asked = self.provisioners.key(key, &listed, &mut Here);
+        self.provisioners_asked(asked, admin)
+    }
+
+    /// A click while a form of the Provisioners tab is open, which takes it.
+    pub fn form_click(&mut self, column: u16, row: u16, admin: &Admin) -> Option<String> {
+        let listed = admin.data.borrow().provisioners.clone();
+        let asked = self.provisioners.click(column, row, &listed, &mut Here);
+        self.provisioners_asked(asked, admin)
+    }
+
+    fn provisioners_asked(&mut self, asked: provisioners::Asked, admin: &Admin) -> Option<String> {
+        match asked {
             provisioners::Asked::Nothing(said) => return said,
             provisioners::Asked::List => admin.provisioners(),
+            provisioners::Asked::Add => admin.provisioner_types(),
+            provisioners::Asked::Save { name, kind } => admin.provisioner_save(&name, &kind),
             provisioners::Asked::Open(name) => admin.provisioner(&name),
             // The panel takes its size from the page once it is shown.
             provisioners::Asked::Run {
@@ -350,6 +366,7 @@ impl Home {
                 values,
             } => admin.resource_act(&resource, &action, &values, (24, 80)),
             provisioners::Asked::Logs(id) => admin.resource_logs(&id, (24, 80)),
+            provisioners::Asked::Hosts => self.to_hosts = true,
             provisioners::Asked::Other => {}
         }
         None

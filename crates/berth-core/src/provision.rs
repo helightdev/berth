@@ -141,6 +141,18 @@ pub(crate) fn find<'a>(plugins: &'a [Plugin], name: &str) -> Result<(&'a Plugin,
         .ok_or_else(|| format!("No provisioner {name}. See: berth provisioners").into())
 }
 
+/// The provisioner a name stands for: a registered entry's type, or the
+/// `PLUGIN/ID` itself when no entry has that name.
+pub(crate) fn resolve<'a>(
+    paths: &Paths,
+    plugins: &'a [Plugin],
+    name: &str,
+) -> Result<(&'a Plugin, &'a Provisioner)> {
+    let kind =
+        crate::provisioner::entry(paths, name)?.map_or_else(|| name.to_owned(), |entry| entry.kind);
+    find(plugins, &kind)
+}
+
 /// The value of a secret, when it has a usable one here.
 fn secret(store: &Store, name: &str) -> Option<String> {
     store
@@ -150,14 +162,19 @@ fn secret(store: &Store, name: &str) -> Option<String> {
         .filter(|value| !value.is_empty() && value != KEPT)
 }
 
-/// The secrets a provisioner is given, and the required ones without a value.
+/// The secrets of the provisioner registered as `name`, under the names its
+/// plugin declares, and the required ones without a value. Each entry keeps
+/// its own, as `provisioner/NAME/SECRET`.
 pub(crate) fn secrets(
     store: &Store,
+    name: &str,
     provisioner: &Provisioner,
 ) -> (Map<String, Value>, Vec<String>) {
     let (mut given, mut missing) = (Map::new(), vec![]);
     for wanted in &provisioner.secrets {
-        match secret(store, &wanted.name) {
+        match secret(store, &format!("provisioner/{name}/{}", wanted.name))
+            .or_else(|| secret(store, &wanted.name))
+        {
             Some(value) => {
                 given.insert(wanted.name.clone(), json!(value));
             }
@@ -254,14 +271,44 @@ pub(crate) fn request(
 /// The provisioners there are, with the required secrets that are not set,
 /// the settings kept for each, and why one cannot be used here.
 pub fn list(paths: &Paths, store: &Store) -> Vec<ProvisionerInfo> {
-    found(paths)
-        .iter()
-        .flat_map(|plugin| {
-            plugin.provisioners.iter().map(|provisioner| {
-                crate::provisioner::describe(paths, store, &plugin.id, provisioner)
-            })
+    let plugins = found(paths);
+    crate::provisioner::entries(paths)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(name, entry)| match find(&plugins, &entry.kind) {
+            Ok((plugin, provisioner)) => {
+                crate::provisioner::describe(paths, store, &name, &plugin.id, provisioner)
+            }
+            // Its plugin was removed: it stays listed, to add the plugin again or remove it.
+            Err(_) => ProvisionerInfo {
+                id: name,
+                label: entry.kind.clone(),
+                problem: format!(
+                    "No plugin brings {} any more: add its plugin again",
+                    entry.kind
+                ),
+                kind: entry.kind,
+                settings: entry.settings,
+                ..ProvisionerInfo::default()
+            },
         })
         .collect()
+}
+
+/// The types of provisioner the plugins bring, each as `PLUGIN/ID`, which a
+/// provisioner is registered as.
+pub fn types(paths: &Paths) -> Vec<ProvisionerInfo> {
+    let mut types: Vec<ProvisionerInfo> = found(paths)
+        .iter()
+        .flat_map(|plugin| {
+            plugin
+                .provisioners
+                .iter()
+                .map(|provisioner| provisioner.info(&plugin.id, vec![]))
+        })
+        .collect();
+    types.sort_by(|one, other| one.id.cmp(&other.id));
+    types
 }
 
 // ── Running a provisioner ───────────────────────────────────────────────────
@@ -412,7 +459,7 @@ pub(crate) fn call(
 /// run. A server checks before it starts a job, and runs it in the job.
 pub struct Prepared {
     host: String,
-    /// `PLUGIN/ID`.
+    /// The provisioner's name.
     name: String,
     dir: PathBuf,
     provisioner: Provisioner,
@@ -459,7 +506,7 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) ->
         return Err("A machine is given no secrets of its own; its profile names them".into());
     }
     let plugins = found(paths);
-    let (plugin, provisioner) = find(&plugins, &asked.provisioner)?;
+    let (plugin, provisioner) = resolve(paths, &plugins, &asked.provisioner)?;
     runnable(provisioner)?;
     if provisioner.machine().is_none() {
         return Err(format!("{} makes no machines for hosts", asked.provisioner).into());
@@ -471,7 +518,7 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) ->
         &asked.arguments,
         &settings,
     )?;
-    let (secrets, missing) = secrets(store, provisioner);
+    let (secrets, missing) = secrets(store, &asked.provisioner, provisioner);
     needs_secrets(&asked.provisioner, &missing)?;
     if provisioner.setup == Setup::Apply && profile.access().user.is_empty() {
         return Err(format!(
@@ -1381,6 +1428,19 @@ print(out)
         }
     }
 
+    /// Register the fake plugin's provisioner `kind` as `name`.
+    fn register(world: &World, name: &str, kind: &str) {
+        crate::provisioner::register(
+            &world.paths,
+            name,
+            &berth_api::SavedProvisioner {
+                kind: kind.into(),
+                settings: None,
+            },
+        )
+        .unwrap();
+    }
+
     fn with_secret(world: &World) {
         world
             .store()
@@ -1486,8 +1546,14 @@ print(out)
             "{said}"
         );
         assert!(refused("fake/vm", &[("server", "x")]).contains("api_token"));
+        // Only registered ones are listed, by their names.
+        assert!(list(&world.paths, &world.store()).is_empty());
+        register(&world, "vm", "fake/vm");
         let listed = list(&world.paths, &world.store());
-        assert_eq!(listed[0].id, "fake/vm");
+        assert_eq!(
+            (listed[0].id.as_str(), listed[0].kind.as_str()),
+            ("vm", "fake/vm")
+        );
         assert_eq!(listed[0].missing_secrets, ["api_token"]);
         with_secret(&world);
         assert!(
@@ -2128,15 +2194,23 @@ print(out)
             "answer.create",
             r#"{"id": "vm-1", "address": "192.0.2.20"}"#,
         );
+        register(&world, "lab", "fake/vm");
+        // A secret of its own wins over the one all share.
+        world
+            .store()
+            .set_secret("provisioner/lab/api_token", Some("tok-lab"))
+            .unwrap();
         crate::provisioner::save_settings(
             &world.paths,
-            "fake/vm",
+            "lab",
             &BTreeMap::from([("server".to_owned(), "https://192.0.2.10:8443".to_owned())]),
         )
         .unwrap();
-        world.provision("fake/vm", &[]).0.unwrap();
+        world.provision("lab", &[]).0.unwrap();
         let (_, create) = world.requests().pop().unwrap();
         assert_eq!(create["arguments"]["server"], "https://192.0.2.10:8443");
+        assert_eq!(create["secrets"]["api_token"], "tok-lab");
+        assert_eq!(world.record().unwrap().provisioner, "lab");
         // The record keeps where it was made, whatever the setting says later.
         assert_eq!(
             world.record().unwrap().arguments["server"],
@@ -2148,7 +2222,7 @@ print(out)
         // An empty value is forgotten.
         crate::provisioner::save_settings(
             &world.paths,
-            "fake/vm",
+            "lab",
             &BTreeMap::from([("server".to_owned(), " ".to_owned())]),
         )
         .unwrap();
@@ -2157,7 +2231,7 @@ print(out)
         assert!(
             listed[0]
                 .problem
-                .contains("berth provisioner fake/vm run settings server=VALUE"),
+                .contains("berth provisioner lab run settings server=VALUE"),
             "{}",
             listed[0].problem
         );
@@ -2283,12 +2357,12 @@ print(out)
         let world = World::new();
         let listed = actions(&world.paths, &world.store(), "fake/vm").unwrap();
         let names: Vec<&str> = listed.iter().map(|action| action.name.as_str()).collect();
-        assert_eq!(names, ["images", "prune", SETTINGS]);
+        assert_eq!(names, [SETTINGS, "images", "prune"]);
         // Without its secret its own actions cannot run, and say why; its settings can.
-        assert!(!listed[0].available && listed[0].why.contains("api_token"));
-        assert!(listed[2].available);
+        assert!(!listed[1].available && listed[1].why.contains("api_token"));
+        assert!(listed[0].available);
         // Until it is set, an action asks for where the provisioner is.
-        let asks: Vec<&str> = listed[0]
+        let asks: Vec<&str> = listed[1]
             .arguments
             .iter()
             .map(|argument| argument.name.as_str())
@@ -2318,7 +2392,7 @@ print(out)
             .unwrap()
             .to_string()
         };
-        assert!(refused("dance", &[]).contains("Its actions: images, prune, settings"));
+        assert!(refused("dance", &[]).contains("Its actions: settings, images, prune"));
         let said = refused("images", &[("colour", "red")]);
         assert!(said.contains("It takes: filter, server"), "{said}");
         assert!(refused("images", &[]).contains("needs server=VALUE"));
@@ -2384,8 +2458,8 @@ print(out)
         assert_eq!(act["arguments"]["server"], "https://192.0.2.11:8443");
         assert_eq!(act["action"]["arguments"], json!({"filter": ""}));
         let listed = actions(&world.paths, &world.store(), "fake/vm").unwrap();
-        assert_eq!(listed[2].arguments[0].default, "https://192.0.2.11:8443");
-        assert_eq!(listed[0].arguments.len(), 1);
+        assert_eq!(listed[0].arguments[0].default, "https://192.0.2.11:8443");
+        assert_eq!(listed[1].arguments.len(), 1);
     }
 
     #[test]
