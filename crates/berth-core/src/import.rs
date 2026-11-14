@@ -1166,7 +1166,7 @@ mod tests {
         fs::create_dir_all(&hosts).unwrap();
         fs::write(
             hosts.join("studio.json"),
-            r#"{"hostname": "studio", "profile": "cloud", "operator_username": "ops",
+            r#"{"hostname": "studio", "target": "cloud", "operator_username": "ops",
                 "builder": {"ssh_host": "192.0.2.10", "ssh_user": "admin", "ssh_key": "",
                             "ask_become_pass": true, "ask_pass": false}}"#,
         )

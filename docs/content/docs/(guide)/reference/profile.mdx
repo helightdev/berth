@@ -20,7 +20,7 @@ Settings of the Ansible role go under `ansible_vars`, and how berth reaches and 
 ```json title="studio's profile (excerpt)"
 {
   "hostname": "studio",
-  "profile": "laptop",
+  "target": "laptop",
   "operator_username": "ops",
   "operator_ssh_public_keys": ["ssh-ed25519 AAAA... you@workstation"],
   "agent_username": "agent",
@@ -39,7 +39,7 @@ Settings of the Ansible role go under `ansible_vars`, and how berth reaches and 
 <TypeTable
   type={{
     hostname: { type: 'string', description: 'Hostname of the installed machine: lower-case letters, digits and hyphens, starting with a letter. F4 generates one. A cloud seed or a created machine without one takes the name of the host.' },
-    profile: { type: '"laptop" | "cloud"', default: '"laptop"', description: 'Provisioning defaults. Only laptop adds a physical login and power settings. A created machine is always cloud. A profile that still says qemu is read as cloud with the recovery SSH CIDR 10.0.2.2/32.' },
+    target: { type: '"laptop" | "cloud"', default: '"laptop"', description: 'What the host is installed on, with its provisioning defaults. Only laptop adds a physical login and power settings. A created machine is always cloud. A profile that still says qemu is read as cloud with the recovery SSH CIDR 10.0.2.2/32.' },
     keyboard: { type: 'string', description: 'Keyboard layout of the installer, such as de or us.' },
     tailscale_auth_key: { type: 'string', description: 'Optional enrollment key; prefer a short-lived, one-use key.' },
     tailscale_auto_key: { type: 'boolean', default: 'false', description: 'berth creates a one-use enrollment key whenever the host joins the tailnet. A pasted key wins. See Access.' },

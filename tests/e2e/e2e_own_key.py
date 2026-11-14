@@ -23,7 +23,7 @@ from harness import (AGENT, HOST, OPERATOR, SEED, SRC, BerthdLink, Serve, Workst
 def bare_profile(template):
     """A profile for the test host as a new host starts, with no SSH key in it."""
     profile = json.loads(json.dumps(template))
-    profile.update({'hostname': HOST, 'profile': 'cloud', 'keyboard': 'us', 'ansible_vars': light_vars()})
+    profile.update({'hostname': HOST, 'target': 'cloud', 'keyboard': 'us', 'ansible_vars': light_vars()})
     profile['builder'] = {'shipped_plugins': True}
     profile['access'] = {'address': HOST, 'user': OPERATOR, 'auth': 'berth'}
     return profile

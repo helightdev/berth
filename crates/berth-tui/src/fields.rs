@@ -1,6 +1,7 @@
 //! The settings the UI can edit, and the wizard steps and actions around them.
 
-pub const PROFILES: &[&str] = &["laptop", "cloud"];
+/// What a host can be installed on, as its profile's `target` says.
+pub const TARGETS: &[&str] = &["laptop", "cloud"];
 pub const DISK_MODES: &[&str] = &[
     "auto", "serial", "model", "path", "largest", "smallest", "ssd", "hdd",
 ];
@@ -219,7 +220,7 @@ pub struct Spec {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Field {
-    Profile,
+    Target,
     Hostname,
     Keyboard,
     Geometry,
@@ -277,11 +278,11 @@ impl Field {
         use Field::*;
         use Kind::*;
         let (label, pointer, kind, help) = match self {
-            Profile => (
-                "Host profile",
-                "/profile",
-                Choice(PROFILES),
-                "Choose laptop or cloud provisioning defaults. Only laptop adds a physical login and power settings. Cloud leaves SSH open to any address when no recovery SSH CIDR is set; for a QEMU guest, set that to 10.0.2.2/32.",
+            Target => (
+                "Target",
+                "/target",
+                Choice(TARGETS),
+                "What the host is installed on: laptop or cloud, with their provisioning defaults. Only laptop adds a physical login and power settings. Cloud leaves SSH open to any address when no recovery SSH CIDR is set; for a QEMU guest, set that to 10.0.2.2/32.",
             ),
             Hostname => (
                 "Hostname",

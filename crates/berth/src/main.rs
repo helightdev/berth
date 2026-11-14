@@ -1113,14 +1113,14 @@ mod tests {
         assert_eq!(legacy["target_disk_mode"], "serial");
         assert_eq!(legacy["wifi_enabled"], true);
         assert_eq!(legacy["release_url"], "");
-        // A profile of the qemu kind there once was shows as cloud, reached from the QEMU host.
-        let qemu = parse_config(br#"{"profile": "qemu"}"#).unwrap();
-        assert_eq!(qemu["profile"], "cloud");
+        // A profile of the qemu target there once was shows as cloud, reached from the QEMU host.
+        let qemu = parse_config(br#"{"target": "qemu"}"#).unwrap();
+        assert_eq!(qemu["target"], "cloud");
         assert_eq!(
             qemu["ansible_vars"]["devbox_bootstrap_ssh_cidr"],
             "10.0.2.2/32"
         );
-        let app = app(r#"{"profile": "qemu"}"#);
+        let app = app(r#"{"target": "qemu"}"#);
         assert_eq!(app.text(Field::RecoveryCidr), "10.0.2.2/32");
     }
 
@@ -1179,10 +1179,10 @@ mod tests {
         app.activate(Field::ToolsJvm);
         assert_eq!(app.config["ansible_vars"]["devbox_tools_jvm"], true);
 
-        app.activate(Field::Profile);
-        assert_eq!(app.text(Field::Profile), "cloud");
-        app.commit(Field::Profile, "desktop");
-        assert_eq!(app.text(Field::Profile), "cloud");
+        app.activate(Field::Target);
+        assert_eq!(app.text(Field::Target), "cloud");
+        app.commit(Field::Target, "desktop");
+        assert_eq!(app.text(Field::Target), "cloud");
         assert!(app.unsaved());
     }
 

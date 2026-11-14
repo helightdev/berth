@@ -3926,7 +3926,7 @@ fn the_screen_keeps_the_address_a_server_gave_a_new_machine_and_opens_its_overvi
     // The server made the machine in a job of its own and gave its profile the address.
     let mut made = own.load(&served.state.paths).unwrap().unwrap();
     made["access"] = json!({"address": "192.0.2.40", "user": "ops", "auth": "berth"});
-    made["profile"] = json!("cloud");
+    made["target"] = json!("cloud");
     own.save(&served.state.paths, &made).unwrap();
     let stage = crate::job::Stage {
         title: "Create machine".into(),

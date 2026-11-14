@@ -34,7 +34,8 @@ The software berth puts on a host is called *devbox*. The name appears in paths 
 | --- | --- |
 | Host | Anything berth reaches and logs in to: a laptop, server, VM or container |
 | Type | What berth does with a host: `ssh` only logs in, `managed` adds berth's controller, `workstation` applies the whole profile. See [Host types](/docs/use/types) |
-| Profile | The JSON document that describes one host, from what to install to how it is reached. berth keeps it in its store. See [Profile](/docs/reference/profile) |
+| Profile | The JSON document that describes one host, from what to install to how it is reached, or a template to start one from. berth keeps it in its store. See [Profile](/docs/reference/profile) |
+| Target | What a host is installed on, such as a laptop, a cloud machine or a container. A profile says it as `target` |
 | Operator | Your account on the host, `ops` by default, for SSH and Cockpit |
 | Agent | The account the coding agents work in, `agent` by default. The virtual desktop runs as this account. Its sudo rights are its [privileges](/docs/use/accounts) |
 | Task | Something a host can do, such as Status or a sign-in, run from its overview or with `berth run HOST TASK`. Plugins add tasks |

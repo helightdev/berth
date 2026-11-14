@@ -62,7 +62,8 @@ pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: &[String]) -> Valu
         .filter(|key| !key.is_empty())
         .collect();
     vars["devbox_berth_ssh_public_key"] = json!(own.join("\n"));
-    vars["devbox_profile"] = config["profile"].clone();
+    // The role names the target by its older name.
+    vars["devbox_profile"] = config["target"].clone();
     vars["devbox_plugin_dirs"] = plugin_dirs.clone();
     if let Some(key) = config["tailscale_auth_key"]
         .as_str()
@@ -362,7 +363,7 @@ mod tests {
     #[test]
     fn variables_come_from_the_profile() {
         let config = json!({
-            "profile": "cloud", "agent_username": "bot", "agent_privileges": "limited",
+            "target": "cloud", "agent_username": "bot", "agent_privileges": "limited",
             "tailscale_auth_key": "tskey", "ansible_vars": {"devbox_geometry": "1x1"},
             "operator_ssh_public_key": "ssh-ed25519 ME",
         });
@@ -390,8 +391,8 @@ mod tests {
         assert_eq!(vars["devbox_tailscale_auth_key"], "tskey");
         // A pasted key without a login server goes to Tailscale, as always.
         assert!(vars.get("devbox_tailscale_login_server").is_none());
-        // A profile of the qemu kind there once was is applied as cloud, reached from the QEMU host.
-        let qemu = ansible_vars(&json!({"profile": "qemu"}), &json!({}), &[]);
+        // A profile of the qemu target there once was is applied as cloud, reached from the QEMU host.
+        let qemu = ansible_vars(&json!({"target": "qemu"}), &json!({}), &[]);
         assert_eq!(qemu["devbox_profile"], "cloud");
         assert_eq!(qemu["devbox_bootstrap_ssh_cidr"], "10.0.2.2/32");
         let headscale = json!({"tailscale_login_server": "https://hs.example.org"});
@@ -422,7 +423,7 @@ mod tests {
         let host = Host {
             name: "box".into(),
             place: Place::own("box").unwrap(),
-            config: json!({"profile": "cloud", "access": {"address": "box", "user": "ops", "sudo": "password"}}),
+            config: json!({"target": "cloud", "access": {"address": "box", "user": "ops", "sudo": "password"}}),
         };
         let prepared = prepare(&paths, &host, Some("hunter2")).unwrap();
         let args: Vec<String> = prepared
@@ -467,7 +468,7 @@ mod tests {
             paths.own_public_key().unwrap()
         );
         assert_eq!(extra["devbox_berth_profile"]["host"], "box");
-        assert_eq!(extra["devbox_berth_profile"]["profile"]["profile"], "cloud");
+        assert_eq!(extra["devbox_berth_profile"]["profile"]["target"], "cloud");
         assert!(
             extra["devbox_berth_profile"]["profile"]
                 .get("access")

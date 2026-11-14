@@ -32,7 +32,7 @@ RELEASE_SOURCES = [
     'crates/berth/Cargo.toml', 'crates/berth/build.rs', 'crates/berth/src', 'crates/vendor/tui-input',
     'crates/vendor/README.md',
 ]
-PROFILES = {'laptop', 'cloud'}
+TARGETS = {'laptop', 'cloud'}
 # Where a QEMU guest on the user-mode network sees the machine it runs on.
 QEMU_HOST = '10.0.2.2/32'
 DEFAULT_OPERATOR = 'ops'
@@ -145,12 +145,12 @@ def release_delivered():
 
 
 def retire_qemu(c):
-    """A profile of the qemu kind there once was, as the cloud one it is now.
-    That kind let SSH in only from the QEMU host when no recovery network was
+    """A profile of the qemu target there once was, as the cloud one it is now.
+    That target let SSH in only from the QEMU host when no recovery network was
     named, so it gets that network rather than SSH open to every address."""
-    if c.get('profile') != 'qemu':
+    if c.get('target') != 'qemu':
         return c
-    c = dict(c, profile='cloud')
+    c = dict(c, target='cloud')
     variables = dict(c.get('ansible_vars') or {})
     if not variables.get('devbox_bootstrap_ssh_cidr'):
         variables['devbox_bootstrap_ssh_cidr'] = QEMU_HOST
@@ -166,8 +166,8 @@ def checked_config(path, kind):
     c = retire_qemu(c)
     if not HOSTNAME.fullmatch(text(c, 'hostname')):
         raise ValueError('Invalid hostname: use lowercase letters, digits and hyphens, starting with a letter')
-    if text(c, 'profile') not in PROFILES:
-        raise ValueError('profile must be laptop or cloud')
+    if text(c, 'target') not in TARGETS:
+        raise ValueError('target must be laptop or cloud')
 
     operator = text(c, 'operator_username', DEFAULT_OPERATOR)
     agent = text(c, 'agent_username', 'agent')
@@ -305,7 +305,7 @@ def deployment(c, sha):
     # berth hands over the profile as the host keeps it, and the role writes it.
     if isinstance(c.get('berth_profile'), dict):
         variables['devbox_berth_profile'] = c['berth_profile']
-    return {'profile': c['profile'], 'release_sha256': sha,
+    return {'target': c['target'], 'release_sha256': sha,
             'release_url': '' if release_delivered() else c.get('release_url', ''), 'ansible_vars': variables}
 
 

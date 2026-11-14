@@ -1,6 +1,6 @@
 {
   "hostname": "",
-  "profile": "laptop",
+  "target": "laptop",
   "operator_username": "ops",
   "operator_ssh_public_keys": [],
   "operator_password_hash": "",

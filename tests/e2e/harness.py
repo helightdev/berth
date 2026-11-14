@@ -269,7 +269,7 @@ def profile(**values):
     """A profile like berth writes for a new host, with the test host's address."""
     base = json.loads((SRC / 'provision/config/example.json').read_text())
     base.update({
-        'hostname': HOST, 'profile': 'cloud', 'keyboard': 'us',
+        'hostname': HOST, 'target': 'cloud', 'keyboard': 'us',
         # The operator's sudo needs no password, as by default, so berth asks
         # for none. shipped_plugins says the features are chosen already, as
         # in every profile berth saves. berth logs in with the user's SSH

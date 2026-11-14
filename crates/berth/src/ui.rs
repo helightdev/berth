@@ -1017,7 +1017,7 @@ fn choose(app: &mut App, entry: Entry) -> Flow {
     match entry {
         Entry::Action(action) => {
             app.action = action.choose(&mut app.config);
-            berth_tui::setup::fit_profile(&mut app.config, app.action);
+            berth_tui::setup::fit_target(&mut app.config, app.action);
         }
         Entry::Field(field) => app.activate(field),
         Entry::Setup => app.set_step(Step::Install),
@@ -4456,12 +4456,12 @@ mod tests {
             )
         };
         // What `berth provision` does from the screen: the machine's address
-        // and the cloud profile go into the stored profile.
+        // and the cloud target go into the stored profile.
         let provisioned = |port: &str| {
             let mut kept = place.load(&paths).unwrap().unwrap();
             kept["access"]["address"] = json!("192.0.2.40");
             kept["access"]["port"] = json!(port);
-            kept["profile"] = json!("cloud");
+            kept["target"] = json!("cloud");
             place.save(&paths, &kept).unwrap();
         };
         let mut app = open();
@@ -4484,7 +4484,7 @@ mod tests {
         app.save().unwrap();
         let kept = place.load(&paths).unwrap().unwrap();
         assert_eq!(
-            (&kept["access"]["port"], &kept["keyboard"], &kept["profile"]),
+            (&kept["access"]["port"], &kept["keyboard"], &kept["target"]),
             (&json!("2200"), &json!("us"), &json!("cloud"))
         );
     }
@@ -4556,7 +4556,7 @@ mod tests {
         assert_eq!(app.action, Action::Iso);
         let install = screen(&mut app);
         assert!(install.contains("● USB installer"));
-        assert!(install.contains("▌ Host profile  laptop"), "{install}");
+        assert!(install.contains("▌ Target  laptop"), "{install}");
         assert!(install.contains("Suggestions"));
         assert!(!install.contains("Disk selection") && !install.contains("Source ISO"));
 
@@ -5232,18 +5232,18 @@ mod tests {
     fn the_provisioner_is_a_choice_like_the_others() {
         use KeyCode::*;
         use berth_tui::machine::Pick;
-        let mut app = unsaved_app(br#"{"profile": "laptop"}"#);
+        let mut app = unsaved_app(br#"{"target": "laptop"}"#);
         app.machine.asking();
         app.machine.listed(Ok(vec![
             lab("lab/vm", "Lab machine", &["cpus"]),
             lab("lab/box", "Lab box", &[]),
         ]));
         app.machine.found(Ok(None));
-        // Choosing the way makes the profile a cloud one, and offers none to choose.
+        // Choosing the way makes the target cloud, and offers none to choose.
         select(&mut app, Entry::Action(Action::Machine));
         press(&mut app, &[Enter]);
-        assert_eq!(app.config["profile"], "cloud");
-        assert!(!lines(&app).iter().any(|row| row.contains("Host profile")));
+        assert_eq!(app.config["target"], "cloud");
+        assert!(!lines(&app).iter().any(|row| row.contains("Target")));
         // The row offers the provisioners in the panel, at the chosen one.
         select(&mut app, Entry::Machine(Pick::Provisioner));
         let shown = screen(&mut app);

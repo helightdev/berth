@@ -512,7 +512,7 @@ impl App {
             "/access/port",
             "/access/user",
             "/access/auth",
-            "/profile",
+            "/target",
         ] {
             let kept = profile.pointer(pointer).cloned().unwrap_or(Value::Null);
             if self.config.pointer(pointer) != Some(&kept) && !kept.is_null() {
@@ -970,7 +970,7 @@ impl App {
             && !self.methods().contains(&self.action)
         {
             self.action = self.methods()[0];
-            setup::fit_profile(&mut self.config, self.action);
+            setup::fit_target(&mut self.config, self.action);
         }
         // The Manage tab acts on the running host; the others on the install method.
         if step == Step::Manage {
@@ -983,7 +983,7 @@ impl App {
         }
         // A profile saved with another kind opens as the machine's.
         if step != Step::Manage && self.action == Action::Machine {
-            setup::fit_profile(&mut self.config, self.action);
+            setup::fit_target(&mut self.config, self.action);
         }
         // A host with an address opens on its tasks rather than the address.
         let task = |entry: &Entry| matches!(entry, Entry::Task(_) | Entry::HostTask(_));
@@ -2475,7 +2475,7 @@ impl App {
         // The machine is made from the profile, which has to be whole first,
         // and of the kind a created machine is.
         if pick == machine::Pick::Create {
-            setup::fit_profile(&mut self.config, Action::Machine);
+            setup::fit_target(&mut self.config, Action::Machine);
         }
         if pick == machine::Pick::Create && !self.problems().is_empty() {
             self.status = "Fix the listed problems first".into();
@@ -2620,7 +2620,7 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
         }
     }
     for (key, value) in [
-        ("profile", json!("laptop")),
+        ("target", json!("laptop")),
         ("keyboard", json!("de")),
         ("operator_username", json!("ops")),
         ("agent_username", json!("agent")),

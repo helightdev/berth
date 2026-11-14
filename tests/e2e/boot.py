@@ -83,7 +83,7 @@ def password_hash():
 def boot_profile(station, kind, **values):
     profile = json.loads((SRC / 'provision/config/example.json').read_text())
     profile.update({
-        'hostname': HOST, 'profile': 'cloud', 'keyboard': 'us',
+        'hostname': HOST, 'target': 'cloud', 'keyboard': 'us',
         # As berth writes a new host: the shipped plugins' features are chosen
         # in the list, not switched on for a profile from before them.
         'builder': {'shipped_plugins': True},

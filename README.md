@@ -51,7 +51,7 @@ curl -fsSL https://raw.githubusercontent.com/helightdev/berth/main/install-remot
 ## Quick start
 
 ```bash
-berth studio          # a new profile: choose how to install, features and settings
+berth studio          # a new host: choose how to install, features and settings
 berth                 # the home screen with all hosts
 berth run studio status
 ```

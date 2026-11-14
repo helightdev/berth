@@ -83,7 +83,7 @@ impl Setup {
     /// The set-up of a new host, from the server's starting profile.
     pub fn new(name: &str, template: Value, admin: &Admin) -> Setup {
         let mut setup = Setup::with(name, template, Value::Null);
-        setup::fit_profile(&mut setup.config, setup.action);
+        setup::fit_target(&mut setup.config, setup.action);
         setup.ask_machine(admin);
         setup
     }
@@ -144,7 +144,7 @@ impl Setup {
                     self.action = Action::Ssh;
                 }
                 // A profile saved with another kind opens as the machine's.
-                setup::fit_profile(&mut self.config, self.action);
+                setup::fit_target(&mut self.config, self.action);
             }
             Err(error) => self.failed = Some(error),
         }
@@ -453,7 +453,7 @@ impl Setup {
         match entry {
             Entry::Action(action) => {
                 self.action = action.choose(&mut self.config);
-                setup::fit_profile(&mut self.config, self.action);
+                setup::fit_target(&mut self.config, self.action);
             }
             Entry::Field(field) => return self.activate(field),
             Entry::Registry(index) => {
@@ -472,7 +472,7 @@ impl Setup {
                 // The machine is made from the profile, which has to be whole
                 // first, and of the kind a created machine is.
                 if pick == machine::Pick::Create {
-                    setup::fit_profile(&mut self.config, Action::Machine);
+                    setup::fit_target(&mut self.config, Action::Machine);
                 }
                 if pick == machine::Pick::Create && !self.problems().is_empty() {
                     return Some("Fix the listed problems first".into());

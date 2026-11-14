@@ -436,7 +436,7 @@ mod tests {
 
     fn profile() -> Value {
         json!({
-            "hostname": "studio", "profile": "cloud",
+            "hostname": "studio", "target": "cloud",
             "operator_username": "ops", "operator_password_hash": "$6$salt$hash",
             "operator_ssh_public_keys": ["ssh-ed25519 AAAA user"],
             "agent_username": "agent", "agent_password_hash": "$6$salt$agent",
@@ -571,7 +571,7 @@ mod tests {
         let kept = json!({
             "format": 1, "berth": "0.4.1", "host": "studio", "written": "2026-11-13T10:00:00Z",
             "profile": {
-                "hostname": "studio", "profile": "cloud", "operator_username": "ops",
+                "hostname": "studio", "target": "cloud", "operator_username": "ops",
                 "operator_ssh_public_keys": ["ssh-ed25519 AAAA user"],
                 "builder": {"ask_become_pass": true, "ask_pass": false, "shipped_plugins": true},
             },

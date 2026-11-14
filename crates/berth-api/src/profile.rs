@@ -60,7 +60,7 @@ pub fn operator(config: &Value) -> &str {
 /// keep what they say. Says whether it changed the profile.
 pub fn settle_after_apply(config: &mut Value) -> bool {
     let mut access = Access::of(config);
-    if config["profile"] == "container"
+    if config["target"] == "container"
         || host_type(config) != crate::HostType::Workstation
         || access.link.is_some()
         || access.user.is_empty()
@@ -473,14 +473,14 @@ pub fn joins_automatically(config: &Value) -> bool {
 /// Where a QEMU guest on the user-mode network sees the machine it runs on.
 pub const QEMU_HOST: &str = "10.0.2.2/32";
 
-/// Make a profile of the `qemu` kind there once was a `cloud` one. That kind
-/// let SSH in only from the QEMU host when no recovery network was named, so
+/// Make a profile of the `qemu` target there once was a `cloud` one. That
+/// target let SSH in only from the QEMU host when no recovery network was named, so
 /// it gets that network rather than SSH open to every address.
 pub fn retire_qemu(config: &mut Value) {
-    if config["profile"] != "qemu" {
+    if config["target"] != "qemu" {
         return;
     }
-    config["profile"] = json!("cloud");
+    config["target"] = json!("cloud");
     if !config["ansible_vars"].is_object() {
         config["ansible_vars"] = json!({});
     }
@@ -583,7 +583,7 @@ mod tests {
         assert!(!asks_become_pass(&named));
         // A container has no operator, and a host of another type was not set up by berth.
         let mut container =
-            json!({"profile": "container", "access": {"user": "ops", "sudo": "password"}});
+            json!({"target": "container", "access": {"user": "ops", "sudo": "password"}});
         assert!(!settle_after_apply(&mut container));
         let mut managed = json!({"type": "managed", "access": {"address": "192.0.2.4", "user": "ops", "sudo": "password"}});
         assert!(!settle_after_apply(&mut managed));
@@ -687,21 +687,21 @@ mod tests {
 
     #[test]
     fn a_qemu_profile_is_a_cloud_one_reached_from_the_qemu_host() {
-        let mut old = json!({"profile": "qemu"});
+        let mut old = json!({"target": "qemu"});
         retire_qemu(&mut old);
         assert_eq!(
             old,
-            json!({"profile": "cloud", "ansible_vars": {"devbox_bootstrap_ssh_cidr": "10.0.2.2/32"}})
+            json!({"target": "cloud", "ansible_vars": {"devbox_bootstrap_ssh_cidr": "10.0.2.2/32"}})
         );
         // A network it names stays, and other kinds are left as they are.
-        let mut named = json!({"profile": "qemu", "ansible_vars": {"devbox_bootstrap_ssh_cidr": "192.0.2.0/24"}});
+        let mut named = json!({"target": "qemu", "ansible_vars": {"devbox_bootstrap_ssh_cidr": "192.0.2.0/24"}});
         retire_qemu(&mut named);
-        assert_eq!(named["profile"], "cloud");
+        assert_eq!(named["target"], "cloud");
         assert_eq!(
             named["ansible_vars"]["devbox_bootstrap_ssh_cidr"],
             "192.0.2.0/24"
         );
-        for kept in [json!({"profile": "laptop"}), json!({"profile": "cloud"})] {
+        for kept in [json!({"target": "laptop"}), json!({"target": "cloud"})] {
             let mut profile = kept.clone();
             retire_qemu(&mut profile);
             assert_eq!(profile, kept);
