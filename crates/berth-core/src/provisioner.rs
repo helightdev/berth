@@ -457,7 +457,7 @@ pub fn state(
 fn settings_action(provisioner: &Provisioner, kept: &BTreeMap<String, String>) -> Action {
     Action {
         name: SETTINGS.into(),
-        label: "Settings".into(),
+        label: "Change settings".into(),
         help: "Where the provisioner is, such as the server or engine to use. berth keeps these values in its store and uses them for every call to it, and for each machine made with it unless it is given others. An empty value is forgotten.".into(),
         group: "Set-Up".into(),
         arguments: own_arguments(provisioner)
@@ -492,14 +492,13 @@ pub fn actions(paths: &Paths, store: &Store, name: &str) -> Result<Vec<Action>> 
         .filter(|argument| argument.required && argument.default.is_empty())
         .filter(|argument| kept.get(&argument.name).is_none_or(String::is_empty))
         .collect();
+    // Creating comes first: it is what a provisioner is most often used for.
     let mut actions: Vec<Action> = provisioner
-        .actions
+        .kinds
         .iter()
-        .cloned()
-        .map(|mut action| {
-            let mut arguments = unset.clone();
-            arguments.append(&mut action.arguments);
-            action.arguments = arguments;
+        .filter(|kind| kind.id != plugins::MACHINE)
+        .map(|kind| {
+            let mut action = new_action(&provisioner, kind, &unset);
             if let Some(why) = &why {
                 action.available = false;
                 action.why = why.to_string();
@@ -507,21 +506,20 @@ pub fn actions(paths: &Paths, store: &Store, name: &str) -> Result<Vec<Action>> 
             action
         })
         .collect();
-    for kind in provisioner
-        .kinds
-        .iter()
-        .filter(|kind| kind.id != plugins::MACHINE)
-    {
-        let mut action = new_action(&provisioner, kind, &unset);
+    // The settings come next, where they are found and changed in place.
+    if !provisioner.own.is_empty() {
+        actions.push(settings_action(&provisioner, &kept));
+    }
+    actions.extend(provisioner.actions.iter().cloned().map(|mut action| {
+        let mut arguments = unset.clone();
+        arguments.append(&mut action.arguments);
+        action.arguments = arguments;
         if let Some(why) = &why {
             action.available = false;
             action.why = why.to_string();
         }
-        actions.push(action);
-    }
-    if !provisioner.own.is_empty() {
-        actions.push(settings_action(&provisioner, &kept));
-    }
+        action
+    }));
     if entry(paths, name)?.is_some() {
         if !provisioner.secrets.is_empty() {
             actions.push(secrets_action(name, &provisioner));
@@ -565,7 +563,7 @@ fn new_action(
             required: true,
             kind: Argument::TEXT.into(),
             help: format!(
-                "What it is made from{}. Paste it whole: its lines are kept.",
+                "What it is made from{}. berth keeps it with the resource.",
                 match format.is_empty() {
                     true => String::new(),
                     false => format!(", as {format}"),
@@ -574,12 +572,15 @@ fn new_action(
             ..Argument::default()
         });
     }
-    arguments.push(Argument {
-        name: "secrets".into(),
-        label: "Secrets".into(),
-        help: "The berth secrets it is given in its environment, separated by commas. NAME gives the secret as the variable NAME, and NAME:VARIABLE as another.".into(),
-        ..Argument::default()
-    });
+    // Secrets are given to what a specification describes, such as a Compose file's ${NAME}.
+    if kind.spec.is_some() {
+        arguments.push(Argument {
+            name: "secrets".into(),
+            label: "Secrets".into(),
+            help: "The berth secrets it is given in its environment, separated by commas. NAME gives the secret as the variable NAME, and NAME:VARIABLE as another.".into(),
+            ..Argument::default()
+        });
+    }
     arguments.extend(
         crate::resource::declared(provisioner, &kind.id)
             .into_iter()
@@ -589,7 +590,11 @@ fn new_action(
         name: format!("{NEW}{}", kind.id),
         label: format!("New {}", label.to_lowercase()),
         help: format!(
-            "Make a {label} with this provisioner, from what you paste. berth keeps it as a resource, with a page of its own and its actions.{}",
+            "Make a {label} with this provisioner{}. berth keeps it as a resource, with a page of its own and its actions.{}",
+            match kind.spec.is_some() {
+                true => ", from its specification",
+                false => "",
+            },
             match kind.id == "deployment" {
                 true =>
                     " From the command line also: berth deploy NAME --provisioner PROVISIONER --spec FILE",

@@ -33,6 +33,8 @@ class FakeIncus(ThreadingHTTPServer):
         self.socket = context.wrap_socket(self.socket, server_side=True)
         self.trusted = True
         self.instances = {}
+        self.pools = {'default': 'zfs', 'fast': 'dir'}
+        self.volumes = {}
         self.operations = {}
         self.events = []
         self.lock = threading.Lock()
@@ -93,8 +95,36 @@ class Handler(BaseHTTPRequestHandler):
                                                      'storage_supported_drivers': [{'name': 'zfs'}, {'name': 'dir'}]}})
         if not server.trusted:
             return self.answer(403, 'not authorized', 'error')
-        if parts == ['1.0', 'storage-pools']:
-            return self.answer(200, [{'name': 'default', 'driver': 'zfs'}, {'name': 'fast', 'driver': 'dir'}])
+        if parts == ['1.0', 'storage-pools'] and self.command == 'GET':
+            return self.answer(200, [{'name': name, 'driver': driver} for name, driver in server.pools.items()])
+        if parts == ['1.0', 'storage-pools'] and self.command == 'POST':
+            data = json.loads(body)
+            server.events.append(('pool', data))
+            server.pools[data['name']] = data['driver']
+            return self.answer(200, {})
+        if parts[:2] == ['1.0', 'storage-pools'] and len(parts) == 3 and self.command == 'DELETE':
+            if any(pool == parts[2] for pool, _ in server.volumes):
+                return self.answer(400, 'The storage pool is currently in use', 'error')
+            server.pools.pop(parts[2], None)
+            return self.answer(200, {})
+        if parts[:2] == ['1.0', 'storage-pools'] and parts[3:5] == ['volumes', 'custom']:
+            pool = parts[2]
+            if len(parts) == 5 and self.command == 'GET':
+                return self.answer(200, [v for (p, _), v in server.volumes.items() if p == pool])
+            if len(parts) == 5 and self.command == 'POST':
+                data = json.loads(body)
+                server.volumes[(pool, data['name'])] = {'name': data['name'], 'config': data.get('config') or {},
+                                                        'content_type': 'filesystem', 'used_by': []}
+                return self.answer(200, {})
+            if len(parts) == 6 and self.command == 'DELETE':
+                if server.volumes.pop((pool, parts[5]), None) is None:
+                    return self.answer(404, 'Storage volume not found', 'error')
+                return self.answer(200, {})
+        if parts[:3] == ['1.0', 'images', 'aliases']:
+            return self.answer(404, 'not found', 'error')
+        if parts[:2] == ['1.0', 'images'] and len(parts) == 3 and self.command == 'DELETE':
+            server.events.append(('image-delete', parts[2]))
+            return self.answer(202, server.operation(), 'async')
         if parts[:2] == ['1.0', 'storage-pools'] and parts[3:] == ['resources']:
             if parts[2] == 'fast':
                 return self.answer(500, 'no resources for dir', 'error')
@@ -115,7 +145,8 @@ class Handler(BaseHTTPRequestHandler):
             if data['source']['alias'] == 'ubuntu/missing/cloud':
                 return self.answer(202, server.operation(
                     "Failed getting remote image info: The requested image couldn't be found"), 'async')
-            server.instances[data['name']] = {'name': data['name'], 'type': data['type'], 'status': 'Stopped',
+            server.instances[data['name']] = {'name': data['name'], 'type': data['type'],
+                                              'status': 'Running' if data.get('start') else 'Stopped',
                                               'config': data['config'], 'devices': data['devices'],
                                               'request': data, 'files': {}}
             return self.answer(202, server.operation(), 'async')
@@ -361,6 +392,48 @@ class IncusPluginTests(unittest.TestCase):
         # A provisioner lists the instances of its own type.
         self.assertEqual(self.run_verb('list', 'vm')[1], {'resources': []})
 
+    def test_an_instance_is_any_image_with_its_own_user_data_and_no_host(self):
+        def make(name='web_1', token='7f3a', **arguments):
+            return self.run_verb('create', 'container', kind='instance', name=name, token=token,
+                                 labels={'berth-resource': 'r1', 'berth-token': token},
+                                 arguments={'image': 'debian/12', 'user_data': '#cloud-config\npackages: [nginx]\n',
+                                            **arguments})
+        code, answer, err = make()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(answer, {'id': 'web-1', 'state': 'running', 'address': '192.0.2.50'})
+        made = self.server.instances['web-1']['request']
+        self.assertTrue(made['start'])
+        self.assertEqual(made['source']['alias'], 'debian/12')
+        self.assertEqual(made['config']['cloud-init.user-data'], '#cloud-config\npackages: [nginx]\n')
+        self.assertEqual(made['config']['user.berth-resource'], 'r1')
+        self.assertNotIn('user.berth-host', made['config'])
+        # Nothing of berth is copied into it.
+        self.assertEqual([e for e in self.server.events if e[0] == 'push'], [])
+        # Asked again with its token, it is the same one.
+        self.assertEqual(make()[1]['id'], 'web-1')
+        self.assertEqual(len([e for e in self.server.events if e[0] == 'create']), 1)
+        # A name that is taken is refused.
+        code, _, err = make(token='other')
+        self.assertEqual(code, 1)
+        self.assertIn('already has an instance named web-1', err)
+        # It is listed as an instance, beside the machines.
+        self.create()
+        listed = self.run_verb('list')[1]['resources']
+        self.assertEqual(sorted((r['id'], r['kind'], r['host']) for r in listed),
+                         [('berth-studio-2', 'machine', 'studio-2'), ('web-1', 'instance', '')])
+        self.assertEqual([r['id'] for r in self.run_verb('list', kind='instance')[1]['resources']], ['web-1'])
+        # berth changes and removes it as one of its own.
+        self.assertEqual(self.run_verb('change', id='web-1', arguments={'cpus': '2', 'memory': '1GiB'})[0], 0)
+        self.assertEqual(self.server.instances['web-1']['config']['limits.memory'], '1GiB')
+        # What is fixed when it is made is refused before anything is changed.
+        code, _, err = self.run_verb('change', kind='instance', id='web-1', changed=['memory', 'image', 'pool'],
+                                     arguments={'memory': '4GiB', 'image': 'debian/13', 'pool': 'fast'})
+        self.assertEqual(code, 1)
+        self.assertIn('cannot change its image, pool in place: make a new instance instead', err)
+        self.assertEqual(self.server.instances['web-1']['config']['limits.memory'], '1GiB')
+        self.assertEqual(self.run_verb('destroy', id='web-1')[:2], (0, {}))
+        self.assertNotIn('web-1', self.server.instances)
+
     def test_status_without_an_id_is_the_server(self):
         code, answer, err = self.run_verb('status')
         self.assertEqual(code, 0, err)
@@ -369,6 +442,29 @@ class IncusPluginTests(unittest.TestCase):
         self.assertEqual(answer['values'], {'pool': ['default', 'fast'], 'network': ['eth0', 'incusbr0']})
         rows = {row['label']: row['value'] for row in answer['details']}
         self.assertEqual((rows['Name'], rows['Storage'], rows['Kernel']), ('dock', 'zfs, dir', 'Linux 6.17.0'))
+
+    def test_volumes_and_pools_are_created_listed_and_removed(self):
+        def act(action, **arguments):
+            return self.run_verb('act', action={'name': action, 'arguments': arguments})
+        code, answer, err = act('create-pool', name='bulk', driver='zfs', size='50GiB')
+        self.assertEqual(code, 0, err)
+        self.assertIn(('pool', {'name': 'bulk', 'driver': 'zfs', 'config': {'size': '50GiB'}}), self.server.events)
+        code, answer, err = act('create-volume', pool='bulk', name='wiki-data', size='10GiB')
+        self.assertEqual(code, 0, err)
+        code, answer, err = act('volumes')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(answer['details'], [{'label': 'bulk/wiki-data', 'value': 'filesystem · 10GiB · unused'}])
+        # A pool that holds a volume is refused, and Incus says why.
+        code, _, err = act('remove-pool', name='bulk')
+        self.assertEqual(code, 1)
+        self.assertIn('in use', err)
+        self.assertEqual(act('remove-volume', pool='bulk', name='wiki-data')[0], 0)
+        self.assertEqual(act('remove-pool', name='bulk')[0], 0)
+        self.assertNotIn('bulk', self.server.pools)
+        self.assertEqual(act('create-volume', name='bad name!')[0], 1)
+        code, answer, err = act('remove-image', image='abcdef')
+        self.assertEqual(code, 0, err)
+        self.assertIn(('image-delete', 'abcdef1234567890'), self.server.events)
 
     def test_actions_answer_with_rows(self):
         code, answer, err = self.run_verb('act', action={'name': 'pools', 'arguments': {}})

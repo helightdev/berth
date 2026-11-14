@@ -2357,12 +2357,12 @@ print(out)
         let world = World::new();
         let listed = actions(&world.paths, &world.store(), "fake/vm").unwrap();
         let names: Vec<&str> = listed.iter().map(|action| action.name.as_str()).collect();
-        assert_eq!(names, ["images", "prune", SETTINGS]);
+        assert_eq!(names, [SETTINGS, "images", "prune"]);
         // Without its secret its own actions cannot run, and say why; its settings can.
-        assert!(!listed[0].available && listed[0].why.contains("api_token"));
-        assert!(listed[2].available);
+        assert!(!listed[1].available && listed[1].why.contains("api_token"));
+        assert!(listed[0].available);
         // Until it is set, an action asks for where the provisioner is.
-        let asks: Vec<&str> = listed[0]
+        let asks: Vec<&str> = listed[1]
             .arguments
             .iter()
             .map(|argument| argument.name.as_str())
@@ -2392,7 +2392,7 @@ print(out)
             .unwrap()
             .to_string()
         };
-        assert!(refused("dance", &[]).contains("Its actions: images, prune, settings"));
+        assert!(refused("dance", &[]).contains("Its actions: settings, images, prune"));
         let said = refused("images", &[("colour", "red")]);
         assert!(said.contains("It takes: filter, server"), "{said}");
         assert!(refused("images", &[]).contains("needs server=VALUE"));
@@ -2458,8 +2458,8 @@ print(out)
         assert_eq!(act["arguments"]["server"], "https://192.0.2.11:8443");
         assert_eq!(act["action"]["arguments"], json!({"filter": ""}));
         let listed = actions(&world.paths, &world.store(), "fake/vm").unwrap();
-        assert_eq!(listed[2].arguments[0].default, "https://192.0.2.11:8443");
-        assert_eq!(listed[0].arguments.len(), 1);
+        assert_eq!(listed[0].arguments[0].default, "https://192.0.2.11:8443");
+        assert_eq!(listed[1].arguments.len(), 1);
     }
 
     #[test]

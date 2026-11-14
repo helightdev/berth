@@ -2072,16 +2072,16 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
     assert_eq!(
         names,
         [
+            "new-deployment",
+            "settings",
             "images",
             "prune",
             "restart",
-            "new-deployment",
-            "settings",
             "secrets",
             "remove"
         ]
     );
-    assert_eq!(actions[0]["arguments"][0]["name"], "server");
+    assert_eq!(actions[2]["arguments"][0]["name"], "server");
     let (status, said) = send(
         client,
         "POST",
@@ -2091,7 +2091,7 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
     .await;
     assert_eq!(status, 404, "{said}");
     assert!(
-        message(&said).contains("Its actions: images, prune"),
+        message(&said).contains("Its actions: new-deployment, settings, images"),
         "{said}"
     );
     let (status, said) = send(

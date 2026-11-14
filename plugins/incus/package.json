@@ -40,13 +40,53 @@
               {"name": "pool", "label": "Storage pool", "default": "default", "help": "The storage pool of the Incus server its disk is in."},
               {"name": "network", "label": "Network", "default": "", "help": "The network it is attached to. Empty takes the network of the default profile."}
             ]
+          },
+          {
+            "id": "instance",
+            "label": "Instance",
+            "verbs": ["start", "stop", "change", "logs"],
+            "arguments": [
+              {"name": "image", "label": "Image", "default": "ubuntu/24.04", "help": "The image on images.linuxcontainers.org to start from, such as debian/12 or alpine/3.20. It becomes no berth host: nothing of berth is put in it."},
+              {"name": "user_data", "label": "Cloud-init user data", "kind": "text", "help": "What cloud-init does on its first boot, such as packages to install and users to add, for an image that has cloud-init. Empty leaves the image as it is."},
+              {"name": "cpus", "label": "CPUs", "default": "2", "kind": "resource", "help": "How many CPUs the virtual machine gets."},
+              {"name": "memory", "label": "Memory", "default": "2GiB", "kind": "resource", "help": "How much memory it gets, such as 2GiB."},
+              {"name": "disk", "label": "Disk size", "default": "20GiB", "kind": "resource", "help": "The size of its root disk, such as 20GiB."},
+              {"name": "pool", "label": "Storage pool", "default": "default", "help": "The storage pool of the Incus server its disk is in."},
+              {"name": "network", "label": "Network", "default": "", "help": "The network it is attached to. Empty takes the network of the default profile."}
+            ]
           }
         ],
         "actions": [
           {"name": "server", "label": "Check the server", "group": "Server", "changes": false, "help": "Ask the Incus server for its version, its kernel and its storage drivers, and whether it trusts berth's client certificate."},
           {"name": "pools", "label": "Storage pools", "group": "Storage", "changes": false, "help": "The storage pools of the server, with how much of each is used."},
           {"name": "images", "label": "Cached images", "group": "Storage", "changes": false, "help": "The images the server keeps in its project, with their sizes. Incus fetches one from images.linuxcontainers.org when a machine first needs it."},
-          {"name": "networks", "label": "Networks", "group": "Server", "changes": false, "help": "The networks of the server a machine can be attached to."}
+          {"name": "networks", "label": "Networks", "group": "Server", "changes": false, "help": "The networks of the server a machine can be attached to."},
+          {"name": "volumes", "label": "Volumes", "group": "Storage", "changes": false, "help": "The custom volumes of every storage pool in the project, with their sizes and whether an instance uses each."},
+          {"name": "create-volume", "label": "New volume", "group": "Storage", "help": "Create a custom volume in a storage pool, which an instance can mount.",
+           "arguments": [
+             {"name": "pool", "label": "Pool", "default": "default", "help": "The storage pool to create it in."},
+             {"name": "name", "label": "Name", "default": "", "help": "The name of the volume, such as wiki-data."},
+             {"name": "size", "label": "Size", "default": "", "help": "The largest the volume may grow, such as 10GiB. Empty leaves it to the pool."}
+           ]},
+          {"name": "remove-volume", "label": "Remove volume", "group": "Storage", "confirm": "Remove this volume and everything in it?", "help": "Remove a custom volume and what is in it. Incus refuses it while an instance uses it.",
+           "arguments": [
+             {"name": "pool", "label": "Pool", "default": "default", "help": "The storage pool it is in."},
+             {"name": "name", "label": "Name", "default": "", "help": "The name of the volume to remove."}
+           ]},
+          {"name": "create-pool", "label": "New storage pool", "group": "Storage", "help": "Create a storage pool on the server, for machines, instances and volumes.",
+           "arguments": [
+             {"name": "name", "label": "Name", "default": "", "help": "The name of the pool, such as fast."},
+             {"name": "driver", "label": "Driver", "default": "dir", "values": ["dir", "zfs", "btrfs", "lvm"], "help": "How the pool keeps its data. dir uses a folder on the server; the others make a loop file of the given size unless the server is set up otherwise."},
+             {"name": "size", "label": "Size", "default": "", "help": "The size of the loop file for zfs, btrfs and lvm, such as 50GiB. dir takes no size."}
+           ]},
+          {"name": "remove-pool", "label": "Remove storage pool", "group": "Storage", "confirm": "Remove this storage pool?", "help": "Remove a storage pool. Incus refuses it while it holds instances, volumes or images.",
+           "arguments": [
+             {"name": "name", "label": "Name", "default": "", "help": "The name of the pool to remove."}
+           ]},
+          {"name": "remove-image", "label": "Remove image", "group": "Storage", "confirm": "Remove this image from the server?", "help": "Remove a cached image from the project. Incus fetches it again when something needs it.",
+           "arguments": [
+             {"name": "image", "label": "Image", "default": "", "help": "The image's alias, or the start of its fingerprint as the cached images show it."}
+           ]}
         ]
       },
       {
@@ -76,13 +116,54 @@
               {"name": "pool", "label": "Storage pool", "default": "default", "help": "The storage pool of the Incus server its disk is in."},
               {"name": "network", "label": "Network", "default": "", "help": "The network it is attached to. Empty takes the network of the default profile."}
             ]
+          },
+          {
+            "id": "instance",
+            "label": "Instance",
+            "verbs": ["start", "stop", "change", "logs"],
+            "arguments": [
+              {"name": "image", "label": "Image", "default": "ubuntu/24.04", "help": "The image on images.linuxcontainers.org to start from, such as debian/12 or alpine/3.20. It becomes no berth host: nothing of berth is put in it."},
+              {"name": "user_data", "label": "Cloud-init user data", "kind": "text", "help": "What cloud-init does on its first boot, such as packages to install and users to add, for an image that has cloud-init. Empty leaves the image as it is."},
+              {"name": "cpus", "label": "CPUs", "default": "2", "kind": "resource", "help": "How many CPUs the container gets."},
+              {"name": "memory", "label": "Memory", "default": "2GiB", "kind": "resource", "help": "How much memory it gets, such as 2GiB."},
+              {"name": "disk", "label": "Disk size", "default": "20GiB", "kind": "resource", "help": "The size of its root disk, such as 20GiB."},
+              {"name": "pool", "label": "Storage pool", "default": "default", "help": "The storage pool of the Incus server its disk is in."},
+              {"name": "network", "label": "Network", "default": "", "help": "The network it is attached to. Empty takes the network of the default profile."},
+              {"name": "nesting", "label": "Nesting", "default": "yes", "values": ["yes", "no"], "help": "Whether containers can run in it, such as Docker's. yes also lets the guest's systemd come up in an unprivileged container."}
+            ]
           }
         ],
         "actions": [
           {"name": "server", "label": "Check the server", "group": "Server", "changes": false, "help": "Ask the Incus server for its version, its kernel and its storage drivers, and whether it trusts berth's client certificate."},
           {"name": "pools", "label": "Storage pools", "group": "Storage", "changes": false, "help": "The storage pools of the server, with how much of each is used."},
           {"name": "images", "label": "Cached images", "group": "Storage", "changes": false, "help": "The images the server keeps in its project, with their sizes. Incus fetches one from images.linuxcontainers.org when a machine first needs it."},
-          {"name": "networks", "label": "Networks", "group": "Server", "changes": false, "help": "The networks of the server a machine can be attached to."}
+          {"name": "networks", "label": "Networks", "group": "Server", "changes": false, "help": "The networks of the server a machine can be attached to."},
+          {"name": "volumes", "label": "Volumes", "group": "Storage", "changes": false, "help": "The custom volumes of every storage pool in the project, with their sizes and whether an instance uses each."},
+          {"name": "create-volume", "label": "New volume", "group": "Storage", "help": "Create a custom volume in a storage pool, which an instance can mount.",
+           "arguments": [
+             {"name": "pool", "label": "Pool", "default": "default", "help": "The storage pool to create it in."},
+             {"name": "name", "label": "Name", "default": "", "help": "The name of the volume, such as wiki-data."},
+             {"name": "size", "label": "Size", "default": "", "help": "The largest the volume may grow, such as 10GiB. Empty leaves it to the pool."}
+           ]},
+          {"name": "remove-volume", "label": "Remove volume", "group": "Storage", "confirm": "Remove this volume and everything in it?", "help": "Remove a custom volume and what is in it. Incus refuses it while an instance uses it.",
+           "arguments": [
+             {"name": "pool", "label": "Pool", "default": "default", "help": "The storage pool it is in."},
+             {"name": "name", "label": "Name", "default": "", "help": "The name of the volume to remove."}
+           ]},
+          {"name": "create-pool", "label": "New storage pool", "group": "Storage", "help": "Create a storage pool on the server, for machines, instances and volumes.",
+           "arguments": [
+             {"name": "name", "label": "Name", "default": "", "help": "The name of the pool, such as fast."},
+             {"name": "driver", "label": "Driver", "default": "dir", "values": ["dir", "zfs", "btrfs", "lvm"], "help": "How the pool keeps its data. dir uses a folder on the server; the others make a loop file of the given size unless the server is set up otherwise."},
+             {"name": "size", "label": "Size", "default": "", "help": "The size of the loop file for zfs, btrfs and lvm, such as 50GiB. dir takes no size."}
+           ]},
+          {"name": "remove-pool", "label": "Remove storage pool", "group": "Storage", "confirm": "Remove this storage pool?", "help": "Remove a storage pool. Incus refuses it while it holds instances, volumes or images.",
+           "arguments": [
+             {"name": "name", "label": "Name", "default": "", "help": "The name of the pool to remove."}
+           ]},
+          {"name": "remove-image", "label": "Remove image", "group": "Storage", "confirm": "Remove this image from the server?", "help": "Remove a cached image from the project. Incus fetches it again when something needs it.",
+           "arguments": [
+             {"name": "image", "label": "Image", "default": "", "help": "The image's alias, or the start of its fingerprint as the cached images show it."}
+           ]}
         ]
       }
     ]

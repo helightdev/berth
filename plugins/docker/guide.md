@@ -6,7 +6,8 @@ applies its role to it over SSH, as it does to any other machine.
 
 Use it to try berth without a spare machine, or to run a host on a Docker
 engine you already have. It also runs Compose projects on the same engine,
-as [deployments](#deployments).
+as [deployments](#deployments), and plain containers from any image, as
+[instances](#instances).
 
 ## What it makes
 
@@ -92,6 +93,33 @@ Leave `host` empty then. The socket gives root on that machine. The
 berth never touches a container without that label, even when its name
 matches.
 
+## Instances
+
+An instance is one plain container from any image, such as `nginx:1.27` or
+`debian:12`. It becomes no berth host, and berth puts nothing of its own in it.
+Make one with **+ New instance** under the hosts, or the action New instance
+on the provisioner's page. Both open a form laid out like a host's set-up, with every field on a row. Or:
+
+    berth provisioner docker run new-instance name=web image=nginx:1.27 ports=8080:80
+
+| Argument | Default | Meaning |
+| --- | --- | --- |
+| `image` | empty | The image to start from. It's required. |
+| `command` | empty | The command to run instead of the image's own. |
+| `environment` | empty | Variables, one `NAME=VALUE` a line. |
+| `ports` | empty | Ports to publish, comma-separated, such as `8080:80`. |
+| `volumes` | empty | Volumes to mount, comma-separated, as `NAME:/path` or `/host/path:/path`. |
+| `network` | empty | The Docker network to attach it to. |
+| `restart` | `no` | `no`, `unless-stopped` or `always`. |
+| `cpus`, `memory` | empty | Limits, as for machines. |
+
+The container gets the labels `berth-resource` and `berth-token`. berth starts,
+stops, changes the limits of and removes only a container with the first one,
+and not one of a deployment. Only `cpus` and `memory` change in place: a change
+to another argument is refused, so make a new instance for it. The values of
+`environment` reach Docker in its environment, not on its command line.
+Removing an instance removes its anonymous volumes and keeps named ones.
+
 ## Deployments
 
 A deployment is a Compose project. Its spec is a Compose file, and its name is
@@ -145,7 +173,11 @@ actions:
 | --- | --- |
 | `engine` | Says the engine's version and runtimes, and how many machines berth made there. |
 | `images` | The engine's images, with their sizes. |
-| `volumes` | The volumes berth made, and whether a container uses each. |
+| `volumes` | Every volume of the engine, marked when berth made it, and whether a container uses each. |
+| `create-volume` | Creates a named volume, which an instance can mount. |
+| `remove-volume` | Removes a named volume. Docker refuses one that a container uses. |
+| `pull-image` | Pulls an image onto the engine. |
+| `remove-image` | Removes an image. Docker refuses one that a container uses. |
 | `build` | Builds the bundled image ahead of the first machine. |
 | `prune` | Removes the images of older versions of this plugin that no container uses. With `volumes=yes` it also removes the volumes berth made that no container uses, such as those kept with `keep_volume`, and the work in them. |
 

@@ -869,6 +869,10 @@ pub const REMOVE: &str = "remove";
 /// berth's own action that changes a resource's arguments and specification.
 pub const CHANGE: &str = "change";
 
+/// The argument of the change form that holds the specification, when the
+/// kind has one.
+pub const SPEC_FIELD: &str = "spec";
+
 fn own(name: &str, label: &str, help: &str) -> Action {
     Action {
         name: name.into(),
@@ -952,10 +956,22 @@ pub fn actions(paths: &Paths, store: &Store, kept: &Kept) -> Vec<Action> {
             .collect();
         let help = match kind.spec.is_some() {
             true => {
-                "Give it other values of its arguments, with the specification it has; a new specification is given with: berth resource ID change --spec FILE"
+                "Give it other values of its arguments, and its specification, which berth keeps and opens in the editor. From the command line a new one is given with: berth resource ID change --spec FILE"
             }
             false => "Give it other values of its arguments, as its provisioner can.",
         };
+        let mut arguments = arguments;
+        if kind.spec.is_some() {
+            arguments.push(Argument {
+                name: SPEC_FIELD.into(),
+                label: "Specification".into(),
+                kind: Argument::TEXT.into(),
+                default: kept.spec(paths).ok().flatten().unwrap_or_default(),
+                required: false,
+                help: "The specification, as the kind takes it and as berth keeps it.".into(),
+                ..Argument::default()
+            });
+        }
         actions.push(limit(own(CHANGE, "Change", help).with_arguments(arguments)));
     }
     for action in kind.map(|kind| kind.actions.clone()).unwrap_or_default() {
@@ -1052,6 +1068,40 @@ enum Doing {
     },
 }
 
+/// What a change is given, apart: the values of the arguments of its form,
+/// kept ones where none is given, and a new specification. The form's
+/// specification field is no argument, and is new only when it differs
+/// from `stored`.
+fn change_values(
+    name: &str,
+    form: &[Argument],
+    given: &Given,
+    kept: &BTreeMap<String, String>,
+    stored: Option<&str>,
+) -> Result<(BTreeMap<String, String>, Option<String>)> {
+    let declared: Vec<Argument> = form
+        .iter()
+        .filter(|argument| argument.name != SPEC_FIELD)
+        .cloned()
+        .collect();
+    let mut arguments = given.arguments.clone();
+    let form_spec = arguments.remove(SPEC_FIELD);
+    let spec = given
+        .spec
+        .clone()
+        .or_else(|| form_spec.filter(|spec| stored != Some(spec.as_str())));
+    Ok((values_of(name, &declared, &arguments, kept)?, spec))
+}
+
+/// The names of the arguments whose value in `after` is not the one in `before`.
+fn changed(before: &BTreeMap<String, String>, after: &BTreeMap<String, String>) -> Vec<String> {
+    after
+        .iter()
+        .filter(|(name, value)| before.get(*name) != Some(*value))
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
 /// Check that the action `action` of a resource can run with what is given,
 /// and make its request. One that changes something takes the resource's
 /// lock now.
@@ -1112,14 +1162,18 @@ pub fn prepare_action(
             }
         }
         CHANGE => {
-            let declared: Vec<Argument> = found.arguments.clone();
-            let theirs = values_of(
+            let (theirs, new_spec) = change_values(
                 &format!("{CHANGE} of {}", kept.record.id),
-                &declared,
-                &given.arguments,
+                &found.arguments,
+                given,
                 &kept.record.arguments,
+                spec_of(&kept).ok().flatten().as_deref(),
             )?;
-            let mut arguments = called.arguments();
+            let mut given = given.clone();
+            given.spec = new_spec;
+            let before = called.arguments();
+            let changed = changed(&before, &theirs);
+            let mut arguments = before;
             arguments.extend(theirs);
             let spec = match (
                 &given.spec,
@@ -1153,6 +1207,9 @@ pub fn prepare_action(
                 request["spec"] = json!(spec);
             }
             request["environment"] = Value::Object(environment);
+            // The arguments carry every value, so a provisioner that changes only some can tell
+            // which were given anew.
+            request["changed"] = json!(changed);
             let new_spec = given.spec.clone();
             Doing::Verb {
                 verb: CHANGE.to_owned(),
@@ -1459,4 +1516,59 @@ pub(crate) fn listed_of(answer: &Value) -> Vec<berth_api::ListedResource> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argument(name: &str, default: &str) -> Argument {
+        Argument {
+            name: name.into(),
+            default: default.into(),
+            ..Argument::default()
+        }
+    }
+
+    fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn the_specification_of_a_change_form_is_no_argument() {
+        let stored = "services:\n  wiki:\n    image: wiki:1\n";
+        let form = [argument("replicas", "1"), argument(SPEC_FIELD, stored)];
+        let kept = map(&[("replicas", "1")]);
+        let given = |pairs: &[(&str, &str)]| Given {
+            arguments: map(pairs),
+            ..Given::default()
+        };
+        let new = "services:\n  wiki:\n    image: wiki:2\n";
+        let (values, spec) = change_values(
+            "change",
+            &form,
+            &given(&[(SPEC_FIELD, new), ("replicas", "2")]),
+            &kept,
+            Some(stored),
+        )
+        .unwrap();
+        assert_eq!(values, map(&[("replicas", "2")]));
+        assert_eq!(spec.as_deref(), Some(new));
+        // The stored one given back is no new one, and none given is none.
+        for pairs in [&[(SPEC_FIELD, stored)][..], &[]] {
+            let (values, spec) =
+                change_values("change", &form, &given(pairs), &kept, Some(stored)).unwrap();
+            assert_eq!((values, spec), (map(&[("replicas", "1")]), None));
+        }
+    }
+
+    #[test]
+    fn a_change_names_the_arguments_given_anew() {
+        let before = map(&[("cpus", "2"), ("image", "debian:12"), ("host", "")]);
+        let after = map(&[("cpus", "4"), ("image", "debian:12"), ("memory", "2g")]);
+        assert_eq!(changed(&before, &after), ["cpus", "memory"]);
+    }
 }

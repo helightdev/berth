@@ -87,10 +87,39 @@ Besides creating, starting, stopping and deleting, the plugin changes a
 machine's CPU and memory limits and grows its root disk. Its log is the
 console log Incus keeps, or cloud-init's output when the console has none.
 
+## Instances
+
+An instance is a plain container or virtual machine that doesn't become a berth
+host. It starts from any image on `https://images.linuxcontainers.org`, such as
+`debian/12`, and berth puts nothing of its own in it. Cloud-init user data that
+you paste sets it up on its first boot, if the image has cloud-init.
+
+Make one with **+ New instance** under the hosts, or the action New instance
+on the provisioner's page. Both open a form laid out like a host's set-up, with every field on a row. Or:
+
+    berth provisioner ovh-incus run new-instance name=web image=debian/12
+
+berth keeps it as a resource with a page of its own. There it starts, stops,
+changes and removes it, and shows its console log. The plugin marks it with
+`user.berth-resource` and `user.berth-token`. Only `cpus`, `memory` and `disk`
+change in place: a change to another argument is refused, so make a new
+instance for it.
+
+| Argument | Default | Meaning |
+| --- | --- | --- |
+| `image` | `ubuntu/24.04` | Image to start from. |
+| `user_data` | | Cloud-init user data, several lines. Empty leaves the image as it is. |
+| `cpus` | `2` | CPUs for the instance. |
+| `memory` | `2GiB` | Memory for the instance. |
+| `disk` | `20GiB` | Size of the root disk. |
+| `pool` | `default` | Storage pool for the root disk. |
+| `network` | | Network for the instance. Left empty, it uses the network of the `default` profile. |
+| `nesting` | `yes` | Lets a container run containers of its own, such as Docker's. |
+
 ## Actions
 
 The provisioner's page in berth, and `berth provisioner NAME`, list these
-actions. They only read.
+actions:
 
 | Action | What it does |
 | --- | --- |
@@ -98,6 +127,12 @@ actions. They only read.
 | `pools` | The storage pools, with how much of each is used. |
 | `images` | The images the server keeps in the project, with their sizes. |
 | `networks` | The networks a machine can be attached to. |
+| `volumes` | The custom volumes of every pool, with their sizes and whether an instance uses each. |
+| `create-volume` | Creates a custom volume in a pool, with an optional size. |
+| `remove-volume` | Removes a custom volume. Incus refuses one that an instance uses. |
+| `create-pool` | Creates a storage pool with the driver `dir`, `zfs`, `btrfs` or `lvm`. The last three take a size for their loop file. |
+| `remove-pool` | Removes a storage pool. Incus refuses one that still holds something. |
+| `remove-image` | Removes a cached image, by its alias or the start of its fingerprint. |
 
 The page also offers the server's pools and networks for `pool` and `network`.
 

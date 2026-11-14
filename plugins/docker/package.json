@@ -54,12 +54,44 @@
               {"name": "restart", "label": "Restart", "group": "Compose", "confirm": "Restart every container of this deployment?", "help": "Restart the project's containers as they are, without reading the Compose file again."},
               {"name": "pull", "label": "Pull and update", "group": "Compose", "confirm": "Pull the images of this deployment and recreate the containers whose image changed?", "help": "Pull the images the Compose file names, then bring the project up again, so containers whose image changed are recreated."}
             ]
+          },
+          {
+            "id": "instance",
+            "label": "Instance",
+            "verbs": ["start", "stop", "change", "logs"],
+            "arguments": [
+              {"name": "image", "label": "Image", "default": "", "help": "The image to start from, such as debian:12 or any image reference. It becomes no berth host: nothing of berth is put in it."},
+              {"name": "command", "label": "Command", "default": "", "help": "The command to run in the container, such as sleep infinity. Empty runs the image's own command."},
+              {"name": "environment", "label": "Environment", "default": "", "kind": "text", "help": "Variables for the container, one NAME=VALUE a line. A line starting with # is a comment."},
+              {"name": "ports", "label": "Ports", "default": "", "help": "Ports to publish, comma-separated, such as 8080:80. Empty publishes none."},
+              {"name": "volumes", "label": "Volumes", "default": "", "help": "Volumes to mount, comma-separated, as NAME:/path or /host/path:/path. Bind mounts need absolute paths on the Docker host."},
+              {"name": "network", "label": "Network", "default": "", "help": "The network to attach to. Empty uses the engine's default network."},
+              {"name": "restart", "label": "Restart", "default": "no", "values": ["no", "unless-stopped", "always"], "help": "Whether the container starts again when the engine or the machine restarts."},
+              {"name": "cpus", "label": "CPUs", "default": "", "kind": "resource", "help": "How many CPUs the container may use, such as 2. Empty sets no limit."},
+              {"name": "memory", "label": "Memory", "default": "", "kind": "resource", "help": "How much memory the container may use, such as 2g. Empty sets no limit."}
+            ]
           }
         ],
         "actions": [
           {"name": "engine", "label": "Check the engine", "group": "Engine", "changes": false, "help": "Ask the Docker engine for its version, its runtimes and how many containers berth made there."},
           {"name": "images", "label": "Images", "group": "Engine", "changes": false, "help": "The images the engine has, with their sizes."},
-          {"name": "volumes", "label": "Volumes berth made", "group": "Storage", "changes": false, "help": "The volumes berth made for its machines, and whether a container uses each. One kept with keep_volume stays here until it is removed."},
+          {"name": "volumes", "label": "Volumes", "group": "Storage", "changes": false, "help": "Every volume of the engine, marked when berth made it, and whether a container uses each. One kept with keep_volume stays here until it is removed."},
+          {"name": "create-volume", "label": "New volume", "group": "Storage", "help": "Create a named volume on the engine, which a container can mount.",
+           "arguments": [
+             {"name": "name", "label": "Name", "default": "", "help": "The name of the volume, such as wiki-data."}
+           ]},
+          {"name": "remove-volume", "label": "Remove volume", "group": "Storage", "confirm": "Remove this volume and everything in it?", "help": "Remove a named volume and what is in it. Docker refuses it while a container uses it.",
+           "arguments": [
+             {"name": "name", "label": "Name", "default": "", "help": "The name of the volume to remove."}
+           ]},
+          {"name": "pull-image", "label": "Pull image", "group": "Engine", "help": "Fetch an image from its registry onto the engine.",
+           "arguments": [
+             {"name": "image", "label": "Image", "default": "", "help": "The image to pull, such as debian:12."}
+           ]},
+          {"name": "remove-image", "label": "Remove image", "group": "Engine", "confirm": "Remove this image from the engine?", "help": "Remove an image from the engine. Docker refuses it while a container uses it.",
+           "arguments": [
+             {"name": "image", "label": "Image", "default": "", "help": "The image to remove, such as debian:12."}
+           ]},
           {"name": "build", "label": "Build the image", "group": "Engine", "help": "Build the image the plugin brings, which a new machine starts from unless it names another. Creating the first machine builds it too; this does it ahead of time."},
           {"name": "prune", "label": "Remove what berth left behind", "group": "Storage", "confirm": "Remove the images of older versions of this plugin that no container uses, and with volumes=yes the volumes berth made that no container uses?", "help": "Remove the images of older versions of this plugin that no container uses. With volumes=yes also the volumes berth made that no container uses, such as those kept with keep_volume, and the agent's work in them. Nothing berth did not make is touched, and no container is.",
            "arguments": [
