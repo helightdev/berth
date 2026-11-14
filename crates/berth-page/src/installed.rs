@@ -1,6 +1,6 @@
-//! The screen a setup key opens, after an install: berth is installed, this
-//! browser is signed in, and the token for a terminal. The key works until
-//! Done, so opening the link again before then shows the screen again.
+//! The screen a setup key opens, after an install: berth is installed, these
+//! screens are signed in, and the token for berth. The key works until Done,
+//! so starting again with it before then shows the screen again.
 
 use crate::device::{self, Here};
 use berth_tui::screen::{Platform, note_hints, wrap};
@@ -67,7 +67,7 @@ impl Installed {
                         }
                     }
                     Ok((401, _)) => Claim::Failed(
-                        "The setup key in the link was not taken: it is wrong, used up or expired. Make a new one where the server runs (berth setup-key), or give the token."
+                        "The setup key was not taken: it is wrong, used up or expired. Make a new one where the server runs (berth setup-key), or give the token."
                             .into(),
                     ),
                     Ok((status, body)) => {

@@ -81,7 +81,7 @@ jobs:
           key: e2e-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-${{ github.sha }}
           restore-keys: e2e-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-
       - name: Build berth
-        run: ci/run.sh run cargo build --locked -p berth --features web
+        run: ci/run.sh run cargo build --locked -p berth
       # berth, and the berthd and box it puts into the role's files. A tar
       # keeps their modes, which an artifact does not.
       - name: Pack what the shards test

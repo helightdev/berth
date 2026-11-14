@@ -12,12 +12,11 @@
 FROM rust:1-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends musl-tools python3 \
     && rm -rf /var/lib/apt/lists/* \
-    && rustup target add x86_64-unknown-linux-musl wasm32-unknown-unknown
+    && rustup target add x86_64-unknown-linux-musl
 WORKDIR /src
 COPY . .
 ARG BERTH_BUILD_VERSION=
-# With the page for a browser, which the default command serves.
-RUN cargo build --release --locked --target x86_64-unknown-linux-musl -p berth --features web \
+RUN cargo build --release --locked --target x86_64-unknown-linux-musl -p berth \
     && said=$(target/x86_64-unknown-linux-musl/release/berth --version) && echo "$said" \
     && { [ -z "$BERTH_BUILD_VERSION" ] || [ "$said" = "berth $BERTH_BUILD_VERSION" ]; }
 
@@ -37,4 +36,4 @@ ENV XDG_CONFIG_HOME=/config XDG_DATA_HOME=/data TERM=xterm-256color
 VOLUME ["/config", "/data"]
 EXPOSE 7777
 ENTRYPOINT ["tini", "--", "berth"]
-CMD ["serve", "--listen", "0.0.0.0:7777", "--expose", "--web"]
+CMD ["serve", "--listen", "0.0.0.0:7777", "--expose"]

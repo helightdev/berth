@@ -92,7 +92,7 @@ mod tests {
         }
 
         fn open(&mut self, _: &str) -> Result<(), String> {
-            Err("no browser".into())
+            Err("nothing to open it with".into())
         }
     }
 

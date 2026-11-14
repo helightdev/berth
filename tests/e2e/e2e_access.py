@@ -200,7 +200,7 @@ class Access(unittest.TestCase):
         try:
             server = Workstation('access-penalty', ssh_key=False, trust=False)
             server.write_profile(profile(access={'address': HOST, 'user': OPERATOR, 'auth': 'berth'}))
-            serve = Serve(server, web=False)
+            serve = Serve(server)
             try:
                 client = Workstation('access-penalty-client', ssh_key=False, trust=False)
                 client.berth('config', 'server', serve.url)

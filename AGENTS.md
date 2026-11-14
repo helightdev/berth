@@ -9,12 +9,11 @@ berth sets up and looks after agent workstations. These are Ubuntu machines with
 | `crates/berth/` | The `berth` program: terminal UI, commands and `berth serve` (`crates/berth/src/serve/`). In `serve/`, `actions.rs` has the actions of hosts and of the installation, `keys.rs` the key ring's routes, `provisioners.rs` and `resources.rs` those of provisioners and resources |
 | `crates/berth-api/` | Types and the operations table shared by every program (`ops.rs` names each operation, its HTTP route and its role) |
 | `crates/berth-core/` | Hosts, profiles, links to hosts, registries and secrets, and plugins. The store is in `store/`. `kept.rs` and `plugin_state.rs` write files from it, and `import.rs` takes in the files of older versions. `kept_profile.rs` is the profile a host keeps of itself and `berth adopt`. `runner.rs` runs every action as a job. `keys/` is the key ring and how berth logs in to hosts. `level.rs` says what a host can do at each level. `provisioner.rs` and `resource.rs` are the provisioners of plugins and what they made |
-| `crates/berth-tui/` | The parts of the UI that run in a terminal and in a browser |
+| `crates/berth-tui/` | The parts of the UI that `berth` and `berth-remote` share |
 | `crates/berth-pty/` | Terminals for sessions |
 | `crates/berthd/`, `crates/box/` | The controller on each host and the agent's own tool there |
-| `crates/berth-page/` | The screens of the page of `berth serve`, shared by `berth-web` and `berth-remote`. `device.rs` is what a browser and a terminal each give them, and `portal.rs` the server's portal over it |
-| `crates/berth-web/` | The page of `berth serve --web`, built for WebAssembly: the browser's side of `berth-page`'s device |
-| `crates/berth-remote/` | `berth-remote`, the same screens in a terminal on Linux, macOS and Windows, for a `berth serve` on another machine |
+| `crates/berth-page/` | The screens of `berth-remote` for a `berth serve` elsewhere. `device.rs` is what the program gives them, and `portal.rs` the server's portal over it |
+| `crates/berth-remote/` | `berth-remote`, those screens in a terminal on Linux, macOS and Windows, for a `berth serve` on another machine |
 | `crates/vendor/` | The vendored `tui-input` crate |
 | `provision/` | The installer side of the provisioning source: the role in `ansible/`, first-boot provisioning in `bootstrap/`, the builder of seeds and releases in `bin/devbox.py` and the example profile in `config/`. berth names these paths in `layout` in `crates/berth-core/src/paths.rs` |
 | `plugins/` | The plugins that come with berth, each an npm-format package with a `guide.md`. With `provision/` they make the provisioning source, which berth carries and unpacks with the same layout |
@@ -48,16 +47,13 @@ Use cargo for everything Rust. These are what CI runs:
 
 ```bash
 cargo test --locked
-cargo test --locked -p berth --features web
-cargo fmt --check -p berth-api -p berth-pty -p berth-core -p berth-tui -p berth -p berthd -p box -p berth-page -p berth-web -p berth-remote
+cargo fmt --check -p berth-api -p berth-pty -p berth-core -p berth-tui -p berth -p berthd -p box -p berth-page -p berth-remote
 cargo clippy --locked --all-targets -- -D warnings
-cargo clippy --locked --all-targets -p berth --features web -- -D warnings
-cargo clippy --locked -p berth-web --target wasm32-unknown-unknown -- -D warnings
 python3 -m unittest discover -s tests -v
 vale --minAlertLevel=warning README.md docs/content/docs plugins/*/guide.md
 ```
 
-Development and test builds embed quick builds of berthd, box and the page (the `host-dev` and `web-dev` profiles). Only `--release` embeds the release builds. The `web` feature needs the `wasm32-unknown-unknown` target. The Python tests skip their YAML checks without PyYAML, so install `provision/requirements.txt` in a virtual environment to run them all.
+Development and test builds embed quick builds of berthd and box (the `host-dev` profile). Only `--release` embeds the release builds. The Python tests skip their YAML checks without PyYAML, so install `provision/requirements.txt` in a virtual environment to run them all.
 
 ### In containers
 

@@ -2104,8 +2104,6 @@ struct Home {
     status: String,
     /// The water moves with the time since then.
     started: std::time::Instant,
-    /// The link that opens the server's page, as a QR code, while it is shown.
-    qr: Option<berth_tui::qr::Overlay>,
     /// The SSH keys of this berth's key ring, or of the berth server it
     /// uses, by name and public half, and that server. Asked for when
     /// Settings is first shown; empty when unknown.
@@ -2222,16 +2220,12 @@ type RingKeys = (Vec<(String, String)>, Option<String>);
 enum SettingsRow {
     /// A key of the ring, by its place in the list.
     Key(usize),
-    Connect,
 }
 
-fn settings_extras(home: &Home, paths: &Paths) -> Vec<SettingsRow> {
+fn settings_extras(home: &Home) -> Vec<SettingsRow> {
     let mut extras = vec![];
     if let Some((keys, _)) = &home.berth_key {
         extras.extend((0..keys.len()).map(SettingsRow::Key));
-    }
-    if connect_link(paths).is_some() {
-        extras.push(SettingsRow::Connect);
     }
     extras
 }
@@ -2327,14 +2321,6 @@ fn setting(
     (stored.unwrap_or_default(), fallback)
 }
 
-/// The berth server this berth uses, and the link that opens its page signed
-/// in with its token. None without a token: a login is not handed on.
-fn connect_link(paths: &Paths) -> Option<(String, String)> {
-    let server = berth_core::server::Server::configured(paths)?;
-    let link = berth_tui::qr::served_link(&server.url, server.token.as_deref()?)?;
-    Some((server.url, link))
-}
-
 /// Clears a status line once it has been showing for a while.
 #[derive(Default)]
 struct Fade {
@@ -2419,7 +2405,6 @@ fn home_loop(
         mode: HomeMode::Hosts,
         status: String::new(),
         started: std::time::Instant::now(),
-        qr: None,
         berth_key: None,
         served: None,
         known: None,
@@ -2461,12 +2446,6 @@ fn home_loop(
             continue;
         }
         let event = hint_click(crate::keys::read()?);
-        if home.qr.is_some() {
-            if let Some(event) = crate::keys::event(&event) {
-                berth_tui::qr::take(&mut home.qr, &vec![], &event, &mut None);
-            }
-            continue;
-        }
         let left = match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -2595,7 +2574,7 @@ fn home_key(
     platform: &mut dyn Platform,
 ) -> Option<Option<String>> {
     let extras = match home.mode {
-        HomeMode::Settings(..) => settings_extras(home, paths),
+        HomeMode::Settings(..) => settings_extras(home),
         _ => vec![],
     };
     let extra = |selected: usize| {
@@ -2671,8 +2650,7 @@ fn home_key(
         HomeMode::Settings(selected, editor) => match key.code {
             KeyCode::Up => *selected = selected.saturating_sub(1),
             KeyCode::Down => {
-                // The key of berth and the row that opens the server's page
-                // come after the settings.
+                // The keys of berth come after the settings.
                 let last = crate::paths::SETTINGS.len() + extras.len() - 1;
                 *selected = (*selected + 1).min(last);
             }
@@ -2688,15 +2666,6 @@ fn home_key(
                     && let Some((_, public)) = keys.get(index)
                 {
                     home.status = berth_tui::berth_key::copy(platform, public);
-                }
-            }
-            KeyCode::Enter | KeyCode::Char('r')
-                if key.code == KeyCode::Enter || key.modifiers.contains(KeyModifiers::ALT) =>
-            {
-                if extra(*selected) == Some(SettingsRow::Connect)
-                    && let Some((_, link)) = connect_link(paths)
-                {
-                    home.qr = Some(berth_tui::qr::Overlay::connect(link));
                 }
             }
             _ => match leave_tab(key, tabs::SETTINGS) {
@@ -2810,8 +2779,7 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
     let muted = Style::new().fg(theme::MUTED);
     let (rows, selected, editor, help, keys): (Vec<Line>, usize, _, String, _) = match &home.mode {
         HomeMode::Settings(selected, editor) => {
-            let connect = connect_link(paths);
-            let extras = settings_extras(home, paths);
+            let extras = settings_extras(home);
             let (keys, server) = home.berth_key.clone().unwrap_or_default();
             let mut rows: Vec<Line> = crate::paths::SETTINGS
                 .iter()
@@ -2843,17 +2811,13 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                         let (name, public) = &keys[*index];
                         berth_tui::berth_key::row(name, public)
                     }
-                    SettingsRow::Connect => Line::from(vec![
-                        Span::styled("Open on another device  ", Style::new().fg(theme::TEXT)),
-                        Span::styled("QR code and link, with the token", muted),
-                    ]),
                 });
             }
             let selected = (*selected).min(rows.len() - 1);
             let extra = selected
                 .checked_sub(crate::paths::SETTINGS.len())
                 .and_then(|index| extras.get(index));
-            let (help, keys) = match (crate::paths::SETTINGS.get(selected), extra, &connect) {
+            let (help, keys) = match (crate::paths::SETTINGS.get(selected), extra) {
                 (Some((name, help)), ..) => (
                     format!(
                         "{}.\n\nLeave it empty to use the default. Also: berth config {name} VALUE\n\nKept {}",
@@ -2874,13 +2838,9 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
                     ),
                     "↑↓ select · Enter change · q quit",
                 ),
-                (None, Some(SettingsRow::Key(index)), _) => (
+                (None, Some(SettingsRow::Key(index))) => (
                     berth_tui::berth_key::help(&keys[*index].0, &keys[*index].1, server.as_deref()),
                     "↑↓ select · Enter copy the key · q quit",
-                ),
-                (None, Some(SettingsRow::Connect), Some((url, _))) => (
-                    berth_tui::qr::connect_help(url, true),
-                    "↑↓ select · Enter show the QR code · q quit",
                 ),
                 _ => (String::new(), ""),
             };
@@ -3131,9 +3091,6 @@ fn draw_home(frame: &mut Frame, paths: &Paths, home: &Home, hits: &mut Vec<(Rect
     draw_footer(frame, footer, keys, status, theme::WARN);
     if let HomeMode::Provisioners(view) = &home.mode {
         view.draw_over(frame, status);
-    }
-    if let Some(qr) = &home.qr {
-        qr.draw(frame);
     }
 }
 
@@ -3438,7 +3395,6 @@ mod tests {
             mode: HomeMode::Hosts,
             status: String::new(),
             started: std::time::Instant::now(),
-            qr: None,
             berth_key: None,
             served: None,
             known: None,
@@ -3544,7 +3500,6 @@ mod tests {
             mode: HomeMode::Hosts,
             status: String::new(),
             started: std::time::Instant::now(),
-            qr: None,
             berth_key: None,
             served: None,
             known: None,
@@ -3637,7 +3592,6 @@ mod tests {
             mode: HomeMode::Hosts,
             status: String::new(),
             started: std::time::Instant::now(),
-            qr: None,
             berth_key: None,
             served: None,
             known: None,
@@ -3867,7 +3821,6 @@ mod tests {
             mode: HomeMode::Hosts,
             status: String::new(),
             started: std::time::Instant::now(),
-            qr: None,
             berth_key: None,
             served: None,
             known: None,
@@ -3974,77 +3927,6 @@ mod tests {
     }
 
     #[test]
-    fn settings_offer_the_link_to_the_servers_page_as_a_qr_code() {
-        let directory = tempfile::tempdir().unwrap();
-        let paths = Paths {
-            config_dir: directory.path().join("config"),
-            data_dir: directory.path().join("data"),
-        };
-        let mut home = Home {
-            hosts: vec![],
-            selected: 0,
-            mode: HomeMode::Settings(0, None),
-            status: String::new(),
-            started: std::time::Instant::now(),
-            qr: None,
-            berth_key: None,
-            served: None,
-            known: None,
-            asking: false,
-            refresh: false,
-            rotating: vec![],
-        };
-        let last = berth_core::paths::SETTINGS.len();
-        let down = |home: &mut Home| {
-            for _ in 0..last + 2 {
-                home_key(
-                    home,
-                    &paths,
-                    KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-                    &mut Clipboard::default(),
-                );
-            }
-        };
-        // Without a server, or with one reached through a socket, there is no such row.
-        down(&mut home);
-        assert!(matches!(home.mode, HomeMode::Settings(index, _) if index == last - 1));
-        paths.set("server", "https://berth.example.ts.net").unwrap();
-        paths.set("server_token", "a1b2").unwrap();
-        down(&mut home);
-        assert!(matches!(home.mode, HomeMode::Settings(index, _) if index == last));
-        let mut terminal = Terminal::new(TestBackend::new(110, 50)).unwrap();
-        let mut shown = |home: &Home| {
-            terminal
-                .draw(|frame| draw_home(frame, &paths, home, &mut vec![]))
-                .unwrap();
-            let buffer = terminal.backend().buffer();
-            (0..50)
-                .map(|y| {
-                    (0..110)
-                        .map(|x| buffer[(x, y)].symbol())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        let screen = shown(&home);
-        assert!(screen.contains("Open on another device") && screen.contains("server's token"));
-        home_key(
-            &mut home,
-            &paths,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &mut Clipboard::default(),
-        );
-        let overlay = home.qr.clone().unwrap();
-        assert_eq!(overlay.link(), "https://berth.example.ts.net/#token=a1b2");
-        let screen = shown(&home);
-        assert!(
-            screen.contains('▀') && screen.contains("#token=a1b2"),
-            "{screen}"
-        );
-    }
-
-    #[test]
     fn alt_r_shows_the_links_of_a_panel_as_qr_codes() {
         let mut app = unsaved_app(b"{}");
         app.links = vec![(
@@ -4080,7 +3962,6 @@ mod tests {
             mode: HomeMode::Hosts,
             status: String::new(),
             started: std::time::Instant::now(),
-            qr: None,
             berth_key: None,
             served: None,
             known: None,
@@ -4149,7 +4030,6 @@ mod tests {
             mode: HomeMode::Settings(0, None),
             status: String::new(),
             started: std::time::Instant::now(),
-            qr: None,
             berth_key: None,
             served: None,
             known: None,
@@ -5124,7 +5004,6 @@ mod tests {
             mode: HomeMode::Settings(0, None),
             status: String::new(),
             started: std::time::Instant::now(),
-            qr: None,
             berth_key: Some((
                 vec![("berth".into(), BERTH_KEY.into())],
                 Some("https://192.0.2.7:8443".into()),
@@ -5145,7 +5024,7 @@ mod tests {
                 &mut clipboard,
             );
         }
-        // The key comes after the settings, before the row with the QR code.
+        // The key comes after the settings.
         assert!(matches!(home.mode, HomeMode::Settings(index, _) if index == settings));
         let mut terminal = Terminal::new(TestBackend::new(130, 50)).unwrap();
         terminal
@@ -5165,7 +5044,6 @@ mod tests {
             "{screen}"
         );
         assert!(screen.contains("Enter copy the key") && screen.contains("berth server at"));
-        assert!(screen.contains("Open on another device"));
         home_key(
             &mut home,
             &paths,
@@ -5174,32 +5052,16 @@ mod tests {
         );
         assert_eq!(clipboard.0.as_deref(), Some(BERTH_KEY));
         assert_eq!(home.status, "Copied this berth's SSH public key");
-        assert!(home.qr.is_none());
-        // The row after it still shows the QR code.
+        // Without a key to give there is no row for it.
+        home.berth_key = Some((vec![], None));
+        home.mode = HomeMode::Settings(settings, None);
         home_key(
             &mut home,
             &paths,
             KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
             &mut clipboard,
         );
-        home_key(
-            &mut home,
-            &paths,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &mut clipboard,
-        );
-        assert!(home.qr.is_some());
-        // Without a key to give there is no row for it.
-        home.berth_key = Some((vec![], None));
-        home.mode = HomeMode::Settings(settings, None);
-        home.qr = None;
-        home_key(
-            &mut home,
-            &paths,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &mut clipboard,
-        );
-        assert!(home.qr.is_some());
+        assert!(matches!(home.mode, HomeMode::Settings(index, _) if index == settings - 1));
     }
 
     fn lab(id: &str, label: &str, resources: &[&str]) -> berth_api::ProvisionerInfo {

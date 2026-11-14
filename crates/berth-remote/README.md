@@ -1,6 +1,6 @@
 # berth-remote
 
-berth-remote shows the hosts of a `berth serve` on another machine, in a terminal. It has the screens of the page that `berth serve --web` gives, and it runs on Windows, macOS and Linux.
+berth-remote shows the hosts of a `berth serve` on another machine, in a terminal. It runs on Windows, macOS and Linux.
 
 It is only a client. Setting up hosts, Ansible and SSH stay on the server.
 
@@ -25,7 +25,7 @@ Each script checks the download against its SHA-256. It installs to `%LOCALAPPDA
 Start the server on an address of your network:
 
 ```bash
-berth serve --listen 0.0.0.0:7878
+berth serve --listen 0.0.0.0:7878 --expose
 ```
 
 Then on your own machine:
@@ -55,7 +55,7 @@ Ctrl+Q quits.
 
 ## How it is built
 
-The screens are in `crates/berth-page`, which the page for a browser (`crates/berth-web`) uses too. This crate gives them a terminal in place of a browser: `device.rs` has the clipboard, links, the file dialog and the kept settings, `net.rs` and `socket.rs` the HTTP requests and the portal's WebSocket over TCP or TLS.
+The screens are in `crates/berth-page`. This crate gives them a terminal: `device.rs` has the clipboard, links, the file dialog and the kept settings, `net.rs` and `socket.rs` the HTTP requests and the portal's WebSocket over TCP or TLS.
 
 On the system it is for:
 

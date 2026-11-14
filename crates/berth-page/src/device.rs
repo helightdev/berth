@@ -1,6 +1,5 @@
-//! What the screens need from the device they run on, which a browser and a
-//! terminal give in their own ways: the clipboard, links, files, what is kept
-//! between runs, plain HTTP and the portal's socket. The program installs its
+//! What the screens need from the device they run on: the clipboard, links,
+//! files, what is kept between runs, plain HTTP and the portal's socket. The program installs its
 //! [`Device`] before it makes the [`App`](crate::App).
 
 use berth_tui::screen::Platform;
@@ -16,7 +15,7 @@ pub enum Kept {
     Token,
 }
 
-/// What the program was started with, such as from a link to the page.
+/// What the program was started with.
 #[derive(Clone, Default)]
 pub struct Linked {
     pub server: Option<String>,
@@ -58,13 +57,7 @@ pub trait Device {
     fn stored(&self, key: Kept) -> Option<String>;
     /// Keep `value`, or forget what was kept when it is empty.
     fn store(&self, key: Kept, value: &str);
-    /// Whether the server that gave these screens is the one to use.
-    fn embedded(&self) -> bool;
     fn linked(&self) -> Linked;
-    /// The address of the server that gave these screens, when it did.
-    fn origin(&self) -> String;
-    /// The page a link for a phone opens.
-    fn page(&self) -> String;
     /// One plain HTTP request with a bearer; `then` gets its status and body.
     fn request(&self, method: &str, url: &str, bearer: &str, then: Answer);
     /// Open a WebSocket to `url` with `token` as its protocol. `said` gets
@@ -109,20 +102,8 @@ impl Platform for Here {
     }
 }
 
-pub(crate) fn embedded() -> bool {
-    device().embedded()
-}
-
 pub(crate) fn linked() -> Linked {
     device().linked()
-}
-
-pub(crate) fn origin() -> String {
-    device().origin()
-}
-
-pub(crate) fn page() -> String {
-    device().page()
 }
 
 pub(crate) fn stored(key: Kept) -> Option<String> {

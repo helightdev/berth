@@ -1,6 +1,6 @@
-//! What a browser does for the page, done by this program instead: the
-//! clipboard, opening links, choosing a file, plain HTTP, the portal's socket,
-//! and the server and token it keeps between runs.
+//! The device the screens run on, in a terminal: the clipboard, opening
+//! links, choosing a file, plain HTTP, the portal's socket, and the server
+//! and token it keeps between runs.
 
 use crate::settings::Settings;
 use crate::{net, socket};
@@ -157,24 +157,8 @@ impl Device for Terminal {
         }
     }
 
-    /// This program is never given by a server: it always asks which one.
-    fn embedded(&self) -> bool {
-        false
-    }
-
     fn linked(&self) -> Linked {
         self.linked.clone()
-    }
-
-    fn origin(&self) -> String {
-        String::new()
-    }
-
-    /// The page `berth serve --web` gives at the server in use, for a phone.
-    fn page(&self) -> String {
-        self.stored(Kept::Server)
-            .map(|server| format!("{}/", server.trim_end_matches('/')))
-            .unwrap_or_default()
     }
 
     fn request(&self, method: &str, url: &str, bearer: &str, then: Answer) {
@@ -474,7 +458,10 @@ mod tests {
         let again =
             Terminal::new(Linked::default(), Settings::new(Some(dir.clone())), false).unwrap();
         assert_eq!(again.stored(Kept::Token).as_deref(), Some("secret"));
-        assert_eq!(again.page(), "https://studio.example/");
+        assert_eq!(
+            again.stored(Kept::Server).as_deref(),
+            Some("https://studio.example")
+        );
 
         let forgetting =
             Terminal::new(Linked::default(), Settings::new(Some(dir.clone())), true).unwrap();
@@ -484,7 +471,10 @@ mod tests {
         forgetting.store(Kept::Server, "https://dock.example");
         forgetting.store(Kept::Token, "other");
         assert_eq!(forgetting.stored(Kept::Token).as_deref(), Some("other"));
-        assert_eq!(forgetting.page(), "https://dock.example/");
+        assert_eq!(
+            forgetting.stored(Kept::Server).as_deref(),
+            Some("https://dock.example")
+        );
         assert!(!dir.exists());
     }
 

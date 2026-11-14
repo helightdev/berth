@@ -11,6 +11,3 @@ npm-debug.log*
 /content/docs/api/host/
 /content/docs/api/serve/
 /public/openapi/
-
-# the page of berth serve, copied from target/web-dist (npm run gather)
-/public/web/

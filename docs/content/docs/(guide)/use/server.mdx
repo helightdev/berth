@@ -83,13 +83,14 @@ It prints the key. On your own machine, give it to berth when it asks:
 berth connect https://berth.example.ts.net
 ```
 
-berth checks the key, collects the token and saves `server` and `server_token`. Or open the server's page with the key in the link:
+berth checks the key, collects the token and saves `server` and `server_token`. [berth-remote](#with-berth-remote) takes the key in `BERTH_SETUP_KEY` instead:
 
-```text
-https://berth.example.ts.net/#setup-key=KEY
+```bash
+read -rs BERTH_SETUP_KEY && export BERTH_SETUP_KEY
+berth-remote --server https://berth.example.ts.net
 ```
 
-The page signs the browser in and shows the token, with the two `berth config` commands for a terminal. The key lasts 24 hours. It ends sooner when you choose **Done** on the page, or when `berth connect` has saved the token. Until then it's as good as the token, so keep it to yourself. A new key replaces the old one, and `berth setup-key --remove` ends it. A server with `serve_token` off has no token to hand out, so it doesn't make a key.
+berth-remote signs in and shows the token, with the two `berth config` commands for berth. The key lasts 24 hours. It ends sooner when you choose **Done** there, or when `berth connect` has saved the token. Until then it's as good as the token, so keep it to yourself. A new key replaces the old one, and `berth setup-key --remove` ends it. A server with `serve_token` off has no token to hand out, so it doesn't make a key.
 
 | Address | Reaches |
 | --- | --- |
@@ -97,61 +98,9 @@ The page signs the browser in and shows the token, with the two `berth config` c
 | `http://HOST:PORT` | A server's port directly |
 | `unix:/path/to/serve.sock` | A `berth serve` on this machine, without a token |
 
-## In a browser
-
-With `--web`, `berth serve` also shows its hosts as a page. It needs the build of berth with the page in it. The container image is one, and the install script takes it with `BERTH_VARIANT=web` ([Building](/docs/reference/building#with-the-page-for-a-browser)).
-
-```bash title="On the server"
-berth serve --listen 0.0.0.0:7777 --expose --web
-```
-
-Open the server's address in a browser and enter the token:
-
-```
-https://berth.example.ts.net/
-https://berth.example.ts.net/#token=TOKEN     # a link that signs in
-```
-
-To open the page on a phone, choose **Open on another device** on the Settings tab of the home screen. It shows a QR code and the link with the token in it, so anyone who scans it gets in. The row is there when berth reaches the server with its token, such as `server_token`, and in the page for the role `admin`. From the terminal UI the link opens the server's own page, which needs `--web`. From the page it opens the same page you are on, such as the one at /web.
-
-The page is the terminal UI drawn in the browser. It has the host list and the overview of each host, where tasks run and sessions open in the terminal panel. The browser keeps the token until **o** on the host list signs out. A token in a link is taken out of the address bar when the page opens.
-
-With the role `admin` the page also sets the server up, with the same screens as the terminal UI:
-
-- **Provisioners**, **Settings**, **Registries**, **Secrets** and **Plugins** are tabs of the home screen. On **Plugins**, `u` sends a `.tgz` from the device. A provisioner's page opens the pages of what berth made with it ([Resources](/docs/deploy/resources#in-the-terminal-ui)).
-- **New host** starts a profile, and a host's overview opens its Install, Features, Settings and Run tabs. A new host opens on Install with **Create a machine** chosen, and offers only Create a machine, Cloud-init seed and Existing host over SSH.
-- **Run** does what the chosen method does on the server. That is creating the machine, a cloud-init seed to copy, or an apply over SSH. The output is shown as it runs.
-- **Install secrets and registry logins** sends a host what its profile names.
-
-Some keys differ:
-
-| In the page | Instead of |
-| --- | --- |
-| **Alt+Q** leaves a running session | `Ctrl+Q`, which closes some browsers |
-| **Ctrl+V** and the browser's paste | The desktop clipboard tools |
-| A click on a link opens a tab | `xdg-open` |
-| **g** generates and **p** takes a password to hash | `F4` and `F5`, which reloads a page |
-
-A password the server makes up is shown once in the page. The server keeps a copy in its store, and `berth credentials HOST` shows it again to an admin of the server.
-
-What needs your own machine stays in the terminal UI. That is the USB installer and the container image, values read from your local keys, and sending a plugin's folder.
-
-Keys the browser keeps for itself, such as `Ctrl+W` and `Ctrl+T`, never reach a shell in the page. A phone can tap rows and key hints, but has no keyboard for a terminal.
-
-### Without `--web`
-
-The same page is part of this site, at [/web](/web/). It asks which server to use, or takes it from its address:
-
-```
-/web/?server=https://berth.example.ts.net
-/web/?server=https://berth.example.ts.net#token=TOKEN
-```
-
-Your browser talks to the server you name, and to nothing else. It keeps the server and the token. A page loaded over `https` can only reach a server over `https`.
-
 ## With berth-remote
 
-berth runs on Linux. `berth-remote` uses the hosts of a server from a terminal on Windows, macOS or Linux. It shows the screens of the page, and works with a server that runs without `--web`. Install it on Windows in PowerShell:
+berth runs on Linux. `berth-remote` uses the hosts of a server from a terminal on Windows, macOS or Linux. Install it on Windows in PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex
@@ -192,13 +141,32 @@ The server and the token are in `settings.json` in a folder of your own:
 
 It talks to a server over `https` only with a certificate that the system or the Mozilla roots trust. It opens only `http` and `https` links, in the system's browser.
 
-The screens and keys are those of the page. **Ctrl+Q** quits, and `u` on **Plugins** opens the system's file dialog: on Linux that of zenity or kdialog.
+berth-remote has the host list and the overview of each host, where tasks run and sessions open in the terminal panel. **o** on the host list signs out.
+
+With the role `admin` it also sets the server up, with the same screens as the terminal UI:
+
+- **Provisioners**, **Settings**, **Registries**, **Secrets** and **Plugins** are tabs of the home screen. On **Plugins**, `u` opens the system's file dialog to send a `.tgz`: on Linux that of zenity or kdialog. A provisioner's page opens the pages of what berth made with it ([Resources](/docs/deploy/resources#in-the-terminal-ui)).
+- **New host** starts a profile, and a host's overview opens its Install, Features, Settings and Run tabs. A new host opens on Install with **Create a machine** chosen, and offers only Create a machine, Cloud-init seed and Existing host over SSH.
+- **Run** does what the chosen method does on the server. That is creating the machine, a cloud-init seed to copy, or an apply over SSH. The output is shown as it runs.
+- **Install secrets and registry logins** sends a host what its profile names.
+
+Some keys differ from the terminal UI:
+
+| In berth-remote | Instead of |
+| --- | --- |
+| **Ctrl+Q** quits | `q` on the home screen |
+| **Alt+Q** leaves a running session | `Ctrl+Q` |
+| **g** generates and **p** takes a password to hash | `F4` and `F5` |
+
+A password the server makes up is shown once. The server keeps a copy in its store, and `berth credentials HOST` shows it again to an admin of the server.
+
+What needs berth on your own machine stays in the terminal UI. That is the USB installer and the container image, values read from your local keys, and sending a plugin's folder.
 
 ## What works from another machine
 
 | Works through the server | Stays on a machine with the host's profile |
 | --- | --- |
-| `berth list`, and the host list of the home screen and of the page | USB installers: `berth iso` and writing a drive |
+| `berth list`, and the host list of the home screen and of berth-remote | USB installers: `berth iso` and writing a drive |
 | The host's overview with its tasks, sessions and terminal panel | Applying to this machine or an inventory, and container images |
 | The host commands such as `berth run`, `exec`, `attach` and `channel` | Publishing a release or an image by hand |
 | The set-up tabs of a host, new hosts, and `berth remove` | |

@@ -65,7 +65,6 @@ HOSTS = {
         'e2e_serve.Roles',
         'e2e_serve.SetUp',
         'e2e_serve.ClosedSetUp',
-        'e2e_serve.Page',
         'e2e_client.Client',
         'e2e_client.AccessToken',
         # served_extended(): applied by the server, with a plugin and the tailnet.

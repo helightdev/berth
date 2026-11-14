@@ -230,13 +230,8 @@ pub struct Home {
     pub provisioners: provisioners::Tab,
     /// Set when the hosts' list is to be shown again, for the page to take.
     pub to_hosts: bool,
-    /// The server, and the link that opens this page signed in, when there
-    /// is one to give: a row of the Settings tab.
-    pub connect: Option<(String, String)>,
     /// The address of the server, as the header shows it.
     pub server: String,
-    /// A QR code to show, for the page to take.
-    pub qr: Option<berth_tui::qr::Overlay>,
 }
 
 /// The rows of the Settings tab after the server's own settings.
@@ -244,7 +239,6 @@ pub struct Home {
 enum SettingsRow {
     /// A key of the server's ring, by its place in the list.
     Key(usize),
-    Connect,
 }
 
 /// The tabs after Hosts, in their order.
@@ -382,9 +376,6 @@ impl Home {
             return extras;
         }
         extras.extend((0..data.keys.len()).map(SettingsRow::Key));
-        if self.connect.is_some() {
-            extras.push(SettingsRow::Connect);
-        }
         extras
     }
 
@@ -418,20 +409,12 @@ impl Home {
                 SettingsRow::Key(index) => {
                     berth_key::row(&data.keys[*index].0, &data.keys[*index].1)
                 }
-                SettingsRow::Connect => Line::from(vec![
-                    Span::styled("Open on another device  ", Style::new().fg(theme::TEXT)),
-                    Span::styled("QR code and link, with the token", muted),
-                ]),
             });
         }
         let extra = self.selected[SETTINGS]
             .checked_sub(data.settings.len())
             .and_then(|index| extras.get(index).copied());
-        let help = match (
-            data.settings.get(self.selected[SETTINGS]),
-            extra,
-            &self.connect,
-        ) {
+        let help = match (data.settings.get(self.selected[SETTINGS]), extra) {
             (Some(setting), ..) => {
                 let meaning =
                     berth_tui::screen::describe_setting(setting["meaning"].as_str().unwrap_or(""));
@@ -443,12 +426,9 @@ impl Home {
                     ),
                 }
             }
-            (None, Some(SettingsRow::Key(index)), _) => {
+            (None, Some(SettingsRow::Key(index))) => {
                 let (name, public) = &data.keys[index];
                 berth_key::help(name, public, Some(&self.server))
-            }
-            (None, Some(SettingsRow::Connect), Some((server, _))) => {
-                berth_tui::qr::connect_help(server, false)
             }
             _ => "Asking the server for its settings…".into(),
         };
@@ -460,9 +440,6 @@ impl Home {
             keys: match (&self.editor, extra) {
                 (Some(_), _) => "Enter accept · Esc cancel · Ctrl+O copy",
                 (None, Some(SettingsRow::Key(_))) => "↑↓ select · Enter copy the key · Esc hosts",
-                (None, Some(SettingsRow::Connect)) => {
-                    "↑↓ select · Enter show the QR code · Esc hosts"
-                }
                 (None, None) => "↑↓ select · Enter change · Esc hosts",
             },
         }
@@ -501,14 +478,6 @@ impl Home {
         {
             let public = keys.get(index).map(|(_, public)| public.as_str());
             return Some(berth_key::copy(&mut Here, public.unwrap_or("")));
-        }
-        // The last row shows the link that opens this page.
-        if extra == Some(SettingsRow::Connect)
-            && (key.code == Code::Enter || berth_tui::qr::is_key(&key))
-            && let Some((_, link)) = &self.connect
-        {
-            self.qr = Some(berth_tui::qr::Overlay::connect(link.clone()));
-            return None;
         }
         match key.code {
             Code::Up => self.selected[SETTINGS] = selected.saturating_sub(1),

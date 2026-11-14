@@ -1,6 +1,5 @@
 """berth serve over TCP: its routes and the portal, the roles of access
-tokens, setting the server up through the API, applying as a job, and the
-page for a browser.
+tokens, setting the server up through the API, and applying as a job.
 
 All but ApplyJob use berth serve as harness.served() starts it. ApplyJob
 looks at the job of the server's own shared state (harness.served_extended())."""
@@ -285,35 +284,11 @@ class ApplyJob(unittest.TestCase):
 class ClosedSetUp(unittest.TestCase):
     def test_set_up_can_be_closed_to_the_network(self):
         station = Workstation('closed', ssh_key=False)
-        closed = Serve(station, web=False, env={'BERTH_SERVE_SETUP': 'off'})
+        closed = Serve(station, env={'BERTH_SERVE_SETUP': 'off'})
         try:
             self.assertEqual(closed.call('GET', '/v1/access'), {'role': 'operate', 'setup': False})
             status, answer = closed.request('PUT', '/v1/secrets/x', {'value': 'y'})
             self.assertEqual(status, 403)
             self.assertIn('set-up', answer['error']['message'])
-            # The page is only there with --web.
-            status, _ = closed.request('GET', '/', token='')
-            self.assertNotEqual(status, 200)
         finally:
             closed.stop()
-
-
-@needs_e2e
-class Page(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.serve = served()
-
-    def test_the_page_is_given_to_anyone(self):
-        status, page, headers = self.serve.request('GET', '/', token='', raw=True)
-        self.assertEqual(status, 200)
-        self.assertTrue(headers['content-type'].startswith('text/html'), headers)
-        self.assertIn(b'berth-web', page)
-        status, script, headers = self.serve.request('GET', '/berth-web.js', token='', raw=True)
-        self.assertEqual(status, 200)
-        self.assertIn('javascript', headers['content-type'])
-        status, wasm, headers = self.serve.request('GET', '/berth-web_bg.wasm', token='', raw=True)
-        self.assertEqual((status, wasm[:4], headers['content-type']), (200, b'\0asm', 'application/wasm'))
-        # What the page shows it fetches with a token.
-        self.assertEqual(self.serve.request('GET', '/v1/hosts', token='')[0], 401)
-

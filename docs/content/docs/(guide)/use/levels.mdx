@@ -27,7 +27,7 @@ The level is part of the host's [profile](/docs/reference/profile#level), as `le
 | Apply, roll-out, cloud seed, USB installer | no | no | yes |
 | Desktop and access links | no | no | yes |
 
-The terminal UI, the browser page, the commands and the API all use the same check in berth. An action the level rules out is still listed, as unavailable, with the reason and what raises the level. Asked for anyway, the server refuses it with `501 not_available`. A roll-out leaves hosts that aren't workstations and says how many it left.
+The terminal UI, berth-remote, the commands and the API all use the same check in berth. An action the level rules out is still listed, as unavailable, with the reason and what raises the level. Asked for anyway, the server refuses it with `501 not_available`. A roll-out leaves hosts that aren't workstations and says how many it left.
 
 ## Adding a machine that exists
 
@@ -63,7 +63,7 @@ berth host level dock controller
 
 `berth host level HOST LEVEL` only changes the profile here. A host's page says the same when its controller reports more than its profile says. berth refuses to install the controller alone on a host that is a workstation, whatever its profile here says. It asks the host's controller first, and the playbook checks the host's own record and the profile it keeps.
 
-In the terminal UI, create a host on the home screen and choose **Existing host, SSH only** on the **Install** tab. The address and the login are all the set-up asks for, and **Run** saves the host. For a controller, choose **Existing host over SSH** and set **Level** to `controller`. **Run** then installs the controller. The browser page does the same through the server.
+In the terminal UI, create a host on the home screen and choose **Existing host, SSH only** on the **Install** tab. The address and the login are all the set-up asks for, and **Run** saves the host. For a controller, choose **Existing host over SSH** and set **Level** to `controller`. **Run** then installs the controller. berth-remote does the same through the server.
 
 Over the API, `hosts.save` takes a profile with only the level and `access`:
 
@@ -98,7 +98,7 @@ berth host install dock
 
 The controller is berthd and box with the files they read, from the same part of the role that a full apply runs. Nothing else of a workstation is installed: no accounts, desktop, agents or plugins. The SSH user is the account sessions run as, and its home is where the file calls may go. The host's level becomes `controller`, and its tasks are status, update, reboot and secrets.
 
-The same is the host's action **Install the controller** on its overview, in the browser page and over the API as `install-controller`. On a controller host it's called **Update the controller**: run it after updating berth, as berth's own version is all such a host is compared with. A workstation's controller comes with applying its configuration, so the action is not offered there.
+The same is the host's action **Install the controller** on its overview, in berth-remote and over the API as `install-controller`. On a controller host it's called **Update the controller**: run it after updating berth, as berth's own version is all such a host is compared with. A workstation's controller comes with applying its configuration, so the action is not offered there.
 
 berth also refuses it on a host that is a workstation whatever its profile here says. It asks the host's controller first. The role checks again on the host before it changes anything. It stops when the host's record says workstation. It also stops when berthd there serves an account other than the SSH user. Installing the controller alone on such a host would take the workstation's controller apart. The overview and `berth tasks` say when a host is more than its profile, and how to adopt it.
 

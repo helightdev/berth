@@ -2,7 +2,7 @@
 //! in groups, and the dialogs before an action runs, its question and then
 //! its arguments one after another. A host's page is one. A page of another
 //! subject is its state and its actions given to the same functions; the
-//! terminal and the browser draw the rows each their own way.
+//! berth and berth-remote draw the rows each their own way.
 
 use berth_api::{Action, Argument};
 use std::collections::BTreeMap;

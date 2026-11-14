@@ -3,7 +3,7 @@
 //! [`crate::page`]: how it is now, what it says of itself, what it holds by
 //! kind, and its actions. A resource berth made with it has a page of its own
 //! with its state, its actions and its log. berth shows those of this machine or of its
-//! berth server, the page in a browser those of the server it came from. What
+//! berth server, berth-remote those of the server it is signed in to. What
 //! the tab asks for, each of them does its own way, and tells the tab what
 //! came back.
 

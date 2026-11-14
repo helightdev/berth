@@ -355,8 +355,8 @@ def served():
     wait_for('the operator taking the server\'s key', lambda: server.ssh(
         OPERATOR, 'true', key=key, check=False).returncode == 0)
     issuer = Issuer()
-    serve = Serve(server, web=True, env={'BERTH_OAUTH_ISSUER': issuer.url, 'BERTH_OAUTH_AUDIENCE': 'berth',
-                                         **package_registry().env()})
+    serve = Serve(server, env={'BERTH_OAUTH_ISSUER': issuer.url, 'BERTH_OAUTH_AUDIENCE': 'berth',
+                               **package_registry().env()})
     serve.issuer = issuer
     # The host's profile as the workstation has it, so applying it from the
     # server keeps the workstation's keys; the server adds its own. What the
@@ -688,11 +688,11 @@ def unb64(text):
 class Serve:
     """`berth serve --listen` of a workstation, on a port of its own."""
 
-    def __init__(self, station, web=True, env=None):
+    def __init__(self, station, env=None):
         MADE['serve'] += 1
         self.station = station
         self.port = free_port()
-        args = ['serve', '--listen', f'127.0.0.1:{self.port}'] + (['--web'] if web else [])
+        args = ['serve', '--listen', f'127.0.0.1:{self.port}']
         self.process = station.spawn(*args, env=env)
         self.lines = []
         self._reader = threading.Thread(target=self._read, daemon=True)

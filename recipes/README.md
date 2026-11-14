@@ -13,8 +13,8 @@ A recipe runs without berth. The playbooks use only the modules that come
 with `ansible-core`, and share the tasks in `shared/`.
 
 The recipes that set up a berth server end with a setup key. With it the
-first user collects the server's token, with `berth connect URL` or in a
-browser, so the token never has to be read out or passed on.
+first user collects the server's token, with `berth connect URL` or with
+`berth-remote`, so the token never has to be read out or passed on.
 
 ## Get the recipes
 

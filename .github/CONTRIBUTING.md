@@ -109,7 +109,7 @@ A pull request is ready when:
   vale --minAlertLevel=warning "docs/content/docs/(guide)" README.md AGENTS.md
   ```
 
-- The terminal client and the page in a browser do the same things. A feature
+- berth and berth-remote do the same things with a server's hosts. A feature
   added to one is added to the other, with the shared part in
   `crates/berth-tui`.
 - Commits follow [Conventional Commits](https://www.conventionalcommits.org/),
