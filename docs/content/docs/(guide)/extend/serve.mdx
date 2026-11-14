@@ -153,6 +153,14 @@ berth config oauth_audience berth
 
 A token is a JWT signed with one of the issuer's keys (RSA, ECDSA or Ed25519). It needs `iss` and `exp`, and the role in the claim: `berth:view`, `berth:operate` or `berth:admin`. In a claim other than `scope` the bare `view`, `operate` and `admin` count too. The highest role named is the caller's.
 
+The roles can be written in the claim three ways:
+
+| Claim's value | Example | Roles read |
+| --- | --- | --- |
+| Text | `"openid berth:operate"` | The words, split at spaces and commas |
+| List | `["berth:view", "admin"]` | Each entry |
+| Object | `{"admin": {…}, "billing": {…}}` | Each key. Zitadel writes project roles this way, in `urn:zitadel:iam:org:project:roles` |
+
 ```bash
 curl -H "Authorization: Bearer $ACCESS_TOKEN" https://berth.example.ts.net/v1/access
 # {"role":"operate","setup":true,"subject":"ada"}

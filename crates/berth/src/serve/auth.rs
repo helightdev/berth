@@ -378,8 +378,9 @@ fn metadata_addresses(issuer: &str) -> Vec<String> {
 }
 
 /// The highest role a claim names. The claim is a name, or a way into objects
-/// with dots; its value a text of words or a list. In `scope` only `berth:ROLE`
-/// counts, in a claim of its own the bare role does too.
+/// with dots; its value a text of words, a list, or an object whose keys are
+/// the words. In `scope` only `berth:ROLE` counts, in a claim of its own the
+/// bare role does too.
 pub fn role(claims: &Value, claim: &str) -> Option<Role> {
     let value = match claims.get(claim) {
         Some(value) => value,
@@ -392,6 +393,8 @@ pub fn role(claims: &Value, claim: &str) -> Option<Role> {
             .split(|ch: char| ch.is_whitespace() || ch == ',')
             .collect(),
         Value::Array(list) => list.iter().filter_map(Value::as_str).collect(),
+        // Zitadel writes a project's roles so: each role a key, its value where it holds.
+        Value::Object(roles) => roles.keys().map(String::as_str).collect(),
         _ => vec![],
     };
     let bare = !matches!(claim, "scope" | "scp");
@@ -427,6 +430,19 @@ mod tests {
         );
         assert_eq!(role(&claims, "groups"), None);
         assert_eq!(role(&json!({"scope": "openid"}), "scope"), None);
+        // An object's keys are the words, as Zitadel writes a project's roles.
+        let zitadel = json!({
+            "urn:zitadel:iam:org:project:roles": {
+                "view": {"317401": "studio.example"},
+                "berth:operate": {"317401": "studio.example"},
+                "billing": {},
+            },
+        });
+        assert_eq!(
+            role(&zitadel, "urn:zitadel:iam:org:project:roles"),
+            Some(Role::Operate)
+        );
+        assert_eq!(role(&json!({"roles": {}}), "roles"), None);
     }
 
     #[test]
