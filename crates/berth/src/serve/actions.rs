@@ -985,10 +985,8 @@ fn rename(state: Arc<Serve>, name: String, act: Act) -> Run {
         let new = given(&act, "name").unwrap_or_default().to_owned();
         let hostname = yes(&act, "hostname")?;
         let to = own_place(&new)?;
-        if hostname && !berth_tui::setup::valid_hostname(&new) {
-            return Err(bad(format!(
-                "{new} cannot be a hostname: lower-case letters, digits and `-`, starting with a letter"
-            )));
+        if hostname && let Some(problem) = berth_tui::setup::hostname_problem(&new) {
+            return Err(bad(problem));
         }
         let from = own_place(&name)?;
         if hostname {
@@ -1005,13 +1003,20 @@ fn rename(state: Arc<Serve>, name: String, act: Act) -> Run {
         request.token = act.token;
         // The rename takes the locks of both names itself.
         request.changes = false;
-        let serve = state.clone();
+        let (serve, runtime) = (state.clone(), tokio::runtime::Handle::current());
         let work = Work::Function(Box::new(move |out| {
+            let _inside = runtime.enter();
             // Its channel is not taken in under the old name meanwhile.
             serve.forget(&name);
-            match berth_core::profiles::rename(&serve.paths, &from, &new, hostname) {
+            let done = berth_core::profiles::rename(&serve.paths, &from, &new, hostname);
+            if done.is_ok() {
+                serve.renamed(&name, &new);
+            }
+            // Its channel is followed again at once: under the new name, or
+            // under the old one when nothing changed.
+            serve.refresh(false);
+            match done {
                 Ok(_) => {
-                    serve.renamed(&name, &new);
                     let _ = writeln!(out, "✓ {name} is called {new} now");
                     if hostname {
                         let _ = writeln!(

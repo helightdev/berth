@@ -1343,11 +1343,8 @@ pub fn remove(paths: &Paths, name: &str) -> Result<()> {
 /// which it takes at its next apply.
 pub fn rename(paths: &Paths, name: &str, new: &str, hostname: bool) -> Result<()> {
     let host = Host::load(paths, name).map_err(|_| format!("No host {name}"))?;
-    if hostname && !berth_tui::setup::valid_hostname(new) {
-        return Err(format!(
-            "{new} cannot be a hostname: lower-case letters, digits and `-`, starting with a letter"
-        )
-        .into());
+    if hostname && let Some(problem) = berth_tui::setup::hostname_problem(new) {
+        return Err(problem.into());
     }
     let Some(server) = host.served(paths) else {
         let place = berth_core::profiles::rename(paths, &host.place, new, hostname)?;

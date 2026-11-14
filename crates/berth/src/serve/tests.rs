@@ -3075,6 +3075,9 @@ async fn a_host_is_renamed_as_a_job_with_what_the_server_keeps_of_it() {
     assert_eq!(job["exit_code"], 0, "{job}");
     // The job is the renamed host's now, as its messages are.
     assert_eq!(job["subject"], "host:studio");
+    // The server knows it by its new name without being asked for its hosts.
+    assert!(served.state.host("studio").is_some());
+    assert!(served.state.host("test").is_none());
     let (status, _) = send(client, "GET", "/v1/hosts/test", Value::Null).await;
     assert_eq!(status, 404);
     let (status, host) = send(client, "GET", "/v1/hosts/studio", Value::Null).await;
