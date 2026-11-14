@@ -298,7 +298,7 @@ For an engine at `ssh://user@address`, the provisioner only sets `DOCKER_HOST`, 
 | `build` | Builds the image the plugin brings ahead of the first machine |
 | `prune` | Removes the plugin's images of older versions that no container uses. With `volumes=yes` it also removes the volumes berth made that no container uses, with the agent's work in them |
 
-The container runs privileged by default. With `runtime=sysbox` it runs under [Sysbox](https://github.com/nestybox/sysbox) instead, which the Docker host needs to have. Read the limits in `plugins/docker/guide.md` before you use an engine that others share.
+The container runs privileged by default. With `runtime=sysbox` it runs under [Sysbox](https://github.com/nestybox/sysbox) instead, which the Docker host needs to have. Read the limits in `plugins/docker/guide.md` before you use an engine that others share. In the container Chromium uses its setuid sandbox helper, as the [self-test](/docs/reference/on-the-host#the-self-test) describes.
 
 ```bash
 berth provision studio-2 docker/container runtime=sysbox
@@ -306,7 +306,7 @@ berth provision studio-2 docker/container runtime=sysbox
 
 ### Incus
 
-`incus/vm` makes a virtual machine and `incus/container` a system container on an Incus server. Both are set up from the cloud seed, and the plugin puts the release archive into the machine. The profile does without a `release_url`. They offer `start`, `stop`, `change`, `logs` and `list`.
+`incus/vm` makes a virtual machine and `incus/container` a system container on an Incus server. Both are set up from the cloud seed, and the plugin puts the release archive into the machine. The profile does without a `release_url`. They offer `start`, `stop`, `change`, `logs` and `list`. In a container Chromium uses its setuid sandbox helper, and in a virtual machine a user namespace, as the [self-test](/docs/reference/on-the-host#the-self-test) describes.
 
 berth talks to the Incus API over HTTPS. `server` is required, as a setting or for each machine. Incus must trust a certificate of berth, which you store as the secrets `incus_client_cert` and `incus_client_key`. The secret `incus_server_cert` is optional and pins the server's own certificate. `plugins/incus/guide.md` shows how to make and trust the certificate.
 

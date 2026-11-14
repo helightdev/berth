@@ -50,3 +50,35 @@
     HOME: "{{ devbox_home }}"
   changed_when: false
   when: devbox_install_playwright
+- name: Check whether this machine is a container
+  ansible.builtin.command: systemd-detect-virt --container
+  register: devbox_container_kind
+  changed_when: false
+  failed_when: false
+  when: devbox_install_playwright
+# A container's processes are unconfined in the AppArmor of the machine that
+# runs it, so on Ubuntu that machine takes away the capabilities Chromium needs
+# in a user namespace, and nothing in the container can change it. Chromium
+# then sandboxes itself with its setuid helper, which it looks for beside its
+# binary and which only root may own.
+- name: Give Playwright's Chromium its sandbox helper in a container
+  ansible.builtin.shell: |
+    set -euo pipefail
+    cache={{ devbox_home | quote }}/.cache/ms-playwright
+    for helper in "$cache"/chromium-*/chrome-linux*/chrome_sandbox; do
+      [[ -f $helper ]] || continue
+      build=${helper#"$cache"/chromium-}
+      build=${build%%/*}
+      for dir in "${helper%/*}" "$cache"/chromium_headless_shell-"$build"/chrome-headless-shell-linux*; do
+        [[ -d $dir ]] || continue
+        if ! cmp -s "$helper" "$dir/chrome-sandbox" || [[ $(stat -c %u:%g:%a "$dir/chrome-sandbox") != 0:0:4755 ]]; then
+          install -o root -g root -m 4755 "$helper" "$dir/chrome-sandbox"
+          echo "$dir/chrome-sandbox"
+        fi
+      done
+    done
+  args:
+    executable: /bin/bash
+  register: devbox_chromium_helper
+  changed_when: devbox_chromium_helper.stdout | length > 0
+  when: devbox_install_playwright and devbox_container_kind.rc == 0

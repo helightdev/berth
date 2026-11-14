@@ -215,7 +215,8 @@
         "site=packages.mozilla.org";
       };
 # Ubuntu only lets programs with an AppArmor profile create user namespaces.
-# Playwright's Chromium has none, so its sandbox would refuse to start.
+# Playwright's Chromium and its headless shell have none, so their sandbox
+# would refuse to start.
 - name: Allow Playwright's Chromium to sandbox itself
   ansible.builtin.copy:
     dest: /etc/apparmor.d/devbox-playwright-chromium
@@ -224,15 +225,25 @@
       abi <abi/4.0>,
       include <tunables/global>
 
-      profile devbox-playwright-chromium {{ devbox_home }}/.cache/ms-playwright/chromium*/chrome-linux*/{chrome,headless_shell} flags=(unconfined) {
+      profile devbox-playwright-chromium {{ devbox_home }}/.cache/ms-playwright/chromium*/chrome-{linux,headless-shell-linux}*/{chrome,chrome-headless-shell,headless_shell} flags=(unconfined) {
         userns,
         include if exists <local/devbox-playwright-chromium>
       }
   register: devbox_chromium_apparmor
   when: devbox_install_playwright
+# A Docker container has no AppArmor interface of its own, and loading the
+# profile through the host's would change the policy of the machine running it.
+- name: Check for an AppArmor interface of this machine's own
+  ansible.builtin.stat:
+    path: /sys/kernel/security/apparmor
+    get_attributes: false
+    get_checksum: false
+    get_mime: false
+  register: devbox_apparmor_interface
+  when: devbox_install_playwright and devbox_chromium_apparmor.changed and devbox_start_services
 - name: Load the Chromium AppArmor profile
   ansible.builtin.command: apparmor_parser -r /etc/apparmor.d/devbox-playwright-chromium
-  when: devbox_install_playwright and devbox_chromium_apparmor.changed and devbox_start_services
+  when: devbox_install_playwright and devbox_chromium_apparmor.changed and devbox_start_services and devbox_apparmor_interface.stat.exists
 - name: Install Docker from Ubuntu repositories
   ansible.builtin.apt:
     name: [docker.io, docker-compose-v2, docker-buildx]

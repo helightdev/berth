@@ -93,6 +93,10 @@ The page also offers the server's pools and networks for `pool` and `network`.
 
 - A container needs nesting for its systemd to come up. The plugin turns on
   `security.nesting` for each container it makes.
+- In a container on an Ubuntu server, Chromium can't sandbox itself in a user
+  namespace. berth gives the Chromium that comes with Playwright its setuid
+  sandbox helper instead. A Chromium that the agent installs itself has none,
+  so it can't start sandboxed. A virtual machine doesn't have this limit.
 - A virtual machine needs KVM on the server. Without it Incus refuses to start
   the machine.
 - The server needs to reach `https://images.linuxcontainers.org` to download the
