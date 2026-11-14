@@ -9,6 +9,7 @@ pub mod device;
 pub mod keys;
 pub mod net;
 pub mod options;
+pub mod screens;
 pub mod settings;
 pub mod socket;
 

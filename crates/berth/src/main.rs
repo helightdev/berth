@@ -31,6 +31,9 @@ const USAGE: &str = "berth: set up and look after agent workstations.
 Usage:
   berth                      choose a host, or create one
   berth HOST                 open a host (a saved name, or a path to a profile)
+  berth ui [HOST]            the screens of berth serve: of the server this berth
+                             uses, of a berth serve of yours on this machine, or of
+                             one that runs in berth itself until it ends
   berth list                 saved hosts
   berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH]
           [--type ssh|managed|workstation] [--no-contact]
@@ -280,6 +283,7 @@ fn opens_screen(args: &[&str]) -> bool {
         "kv",
         "store",
         "help",
+        "ui",
     ];
     match args {
         [] => true,
@@ -543,6 +547,56 @@ fn no_terminal(paths: &Paths, word: Option<&str>) -> String {
     }
 }
 
+/// `berth ui [HOST]`: the screens of a server, as `berth-remote` shows
+/// them: the server this berth is set to use, a `berth serve` of this user
+/// on this machine, or else one in this process for as long as they are open.
+fn screens(paths: &Paths, host: Option<&str>) -> Result<()> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Err(no_terminal(paths, host).into());
+    }
+    let mut here = None;
+    let (server, token) = match berth_core::server::Server::configured(paths) {
+        Some(server) => (server.url, server.token),
+        None => {
+            let socket = serve::here::socket();
+            if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+                (format!("unix:{}", socket.display()), None)
+            } else {
+                let started = serve::here::Here::start(paths)?;
+                berth_remote::net::serve_here(started.dial());
+                here = Some(started);
+                (berth_page::device::HERE.to_owned(), None)
+            }
+        }
+    };
+    let linked = berth_page::device::Linked {
+        server: Some(server),
+        token,
+        setup_key: None,
+    };
+    let device = berth_remote::device::Terminal::new(
+        linked,
+        berth_remote::settings::Settings::new(None),
+        false,
+    )?;
+    berth_page::device::install(device);
+    let shown = berth_remote::screens::run(host.map(str::to_owned));
+    if let Some(here) = &here {
+        here.wait_for_jobs(|jobs| {
+            let names: Vec<String> = jobs
+                .iter()
+                .map(|job| format!("{} {}", job.action, job.host).trim().to_owned())
+                .collect();
+            eprintln!(
+                "berth: waiting for what runs in this berth to end: {}. Ctrl+C stops it unfinished; berth serve keeps jobs running after the screens close.",
+                names.join(", ")
+            );
+        });
+    }
+    Ok(shown?)
+}
+
 fn main() {
     end_quietly_on_a_closed_pipe();
     if let Err(error) = run() {
@@ -608,6 +662,7 @@ fn run() -> Result<()> {
         "connect",
         "setup-key",
         "store",
+        "ui",
     ];
     // The screen opens at once on what the last mirror left; the commands
     // that print are given current data.
@@ -705,6 +760,8 @@ fn run() -> Result<()> {
         }
         ["update", ref rest @ ..] => return update::command(rest),
         ["serve", ref rest @ ..] => return serve::command(&paths, rest),
+        ["ui"] => return screens(&paths, None),
+        ["ui", host] => return screens(&paths, Some(host)),
         ["setup-key", ref rest @ ..] => return serve::setup_key::command(&paths, rest),
         ["connect", url] => return commands::connect(&paths, url),
         ["inbox", ref rest @ ..] => return serve::inbox_command(&paths, rest),

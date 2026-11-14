@@ -172,9 +172,9 @@ fn request(id: u32, op: &str, host: Option<&str>, args: Value, data: Value) -> V
 }
 
 impl Portal {
-    /// Open the portal at `url`, showing the token as the WebSocket's
+    /// Open the portal of `server`, showing the token as the WebSocket's
     /// protocol.
-    pub fn open(url: &str, token: &str) -> Result<Portal, String> {
+    pub fn open(server: &str, token: &str) -> Result<Portal, String> {
         let inner = Rc::new(Inner {
             socket: RefCell::default(),
             link: Cell::new(Link::Connecting),
@@ -185,7 +185,8 @@ impl Portal {
         });
         let weak: Weak<Inner> = Rc::downgrade(&inner);
         let socket = device::device().connect(
-            url,
+            server,
+            berth_api::ops::PORTAL,
             token,
             Box::new(move |said| {
                 if let Some(inner) = weak.upgrade() {
@@ -326,18 +327,19 @@ mod tests {
         fn linked(&self) -> Linked {
             Linked::default()
         }
-        fn request(&self, _: &str, _: &str, _: &str, then: Answer) {
+        fn request(&self, _: &str, _: &str, _: &str, _: &str, then: Answer) {
             then(Err("no".into()))
         }
         fn connect(
             &self,
-            url: &str,
+            server: &str,
+            path: &str,
             token: &str,
             said: Box<dyn Fn(Said)>,
         ) -> Result<Box<dyn Socket>, String> {
             assert_eq!(
-                (url, token),
-                ("ws://192.0.2.10:7878/v1/portal", "the-token")
+                (server, path, token),
+                ("http://192.0.2.10:7878", "/v1/portal", "the-token")
             );
             *self.said.borrow_mut() = Some(said);
             Ok(Box::new(WireSocket(self.sent.clone())))
@@ -347,7 +349,7 @@ mod tests {
     fn portal() -> (Wire, Portal) {
         let wire = Wire::default();
         device::install(wire.clone());
-        let portal = Portal::open("ws://192.0.2.10:7878/v1/portal", "the-token").unwrap();
+        let portal = Portal::open("http://192.0.2.10:7878", "the-token").unwrap();
         (wire, portal)
     }
 

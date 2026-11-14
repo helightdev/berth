@@ -89,7 +89,7 @@ async fn berth_remote_signs_in_with_a_setup_key_and_uses_the_portal() {
     });
 
     // The portal answers with the token, and a wrong one is refused.
-    let portal = Portal::open(&berth_page::device::portal_url(&url), "s3cret-token").unwrap();
+    let portal = Portal::open(&url, "s3cret-token").unwrap();
     let hosts = Rc::new(RefCell::new(None));
     let answer = hosts.clone();
     portal.call("hosts.list", None, json!({}), Value::Null, move |result| {
@@ -98,7 +98,7 @@ async fn berth_remote_signs_in_with_a_setup_key_and_uses_the_portal() {
     until("answer", || hosts.borrow().is_some());
     assert_eq!(portal.link(), Link::Open);
     assert_eq!(hosts.borrow_mut().take().unwrap(), Ok(json!([])));
-    let refused = Portal::open(&berth_page::device::portal_url(&url), "wrong").unwrap();
+    let refused = Portal::open(&url, "wrong").unwrap();
     until("refusal", || refused.link() != Link::Connecting);
     assert_eq!(refused.link(), Link::Refused);
 

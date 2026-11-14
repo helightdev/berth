@@ -42,9 +42,14 @@ impl Socket for NativeSocket {
     }
 }
 
-/// Open a WebSocket to `url`, with `token` as its protocol.
-pub fn open(url: &str, token: &str, to: Box<dyn Fn(Said)>) -> Result<NativeSocket, String> {
-    let target = net::target(url)?;
+/// Open a WebSocket to `path` of `server`, with `token` as its protocol.
+pub fn open(
+    server: &str,
+    path: &str,
+    token: &str,
+    to: Box<dyn Fn(Said)>,
+) -> Result<NativeSocket, String> {
+    let target = net::target(server, path)?;
     let (out, outgoing) = unbounded_channel();
     let (said, heard) = mpsc::channel();
     net::runtime().spawn(run(target, token.to_owned(), outgoing, said));

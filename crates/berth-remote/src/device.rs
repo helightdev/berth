@@ -161,18 +161,27 @@ impl Device for Terminal {
         self.linked.clone()
     }
 
-    fn request(&self, method: &str, url: &str, bearer: &str, then: Answer) {
-        let (method, url, bearer) = (method.to_owned(), url.to_owned(), bearer.to_owned());
-        net::later(async move { net::http(&method, &url, &bearer).await }, then);
+    fn request(&self, method: &str, server: &str, path: &str, bearer: &str, then: Answer) {
+        let (method, server, path, bearer) = (
+            method.to_owned(),
+            server.to_owned(),
+            path.to_owned(),
+            bearer.to_owned(),
+        );
+        net::later(
+            async move { net::http(&method, &server, &path, &bearer).await },
+            then,
+        );
     }
 
     fn connect(
         &self,
-        url: &str,
+        server: &str,
+        path: &str,
         token: &str,
         said: Box<dyn Fn(Said)>,
     ) -> Result<Box<dyn Socket>, String> {
-        let socket = socket::open(url, token, said)?;
+        let socket = socket::open(server, path, token, said)?;
         Ok(Box::new(socket))
     }
 }

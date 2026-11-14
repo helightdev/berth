@@ -144,6 +144,8 @@ pub struct App {
     qr: Option<qr::Overlay>,
     /// The token collected with a setup key, until Done.
     installed: Option<Installed>,
+    /// A host to open once the server has listed its hosts.
+    wanted: Option<String>,
 }
 
 impl App {
@@ -164,8 +166,11 @@ impl App {
                     .flatten()
             })
             .unwrap_or_default();
-        device::store(Kept::Server, &server);
-        device::store(Kept::Token, &token);
+        // A server on this machine is never kept: it is found again each run.
+        if !device::local(&server) {
+            device::store(Kept::Server, &server);
+            device::store(Kept::Token, &token);
+        }
         let mut app = App {
             screen: Screen::Token,
             portal: None,
@@ -207,6 +212,7 @@ impl App {
             over_links: vec![],
             qr: None,
             installed: None,
+            wanted: None,
         };
         // A setup key signs in with the token it collects, whatever was kept.
         if let (Some(key), false) = (linked.setup_key, app.server.is_empty()) {
@@ -214,10 +220,41 @@ impl App {
             app.screen = Screen::Installed;
             return app;
         }
-        if !app.token.is_empty() && !app.server.is_empty() {
+        if (!app.token.is_empty() && !app.server.is_empty()) || device::local(&app.server) {
             app.connect();
         }
         app
+    }
+
+    /// The server is on this machine, and the screens need no token for it.
+    fn local(&self) -> bool {
+        device::local(&self.server)
+    }
+
+    /// Open the host `name` once the server has listed it.
+    pub fn open_when_listed(&mut self, name: &str) {
+        self.wanted = Some(name.to_owned());
+    }
+
+    /// Open the host that was asked for, once the list has come.
+    fn open_wanted(&mut self) {
+        if !self.hosts.borrow().answered || self.screen != Screen::Hosts {
+            return;
+        }
+        let Some(name) = self.wanted.take() else {
+            return;
+        };
+        let address = self
+            .hosts
+            .borrow()
+            .list
+            .iter()
+            .find(|host| host["name"] == name.as_str())
+            .map(|host| host["address"].as_str().unwrap_or("").to_owned());
+        match address {
+            Some(address) => self.open_host(&name, &address),
+            None => self.status = format!("There is no host {name}"),
+        }
     }
 
     /// Open the portal with the token there is.
@@ -225,7 +262,7 @@ impl App {
         self.host.disconnect();
         self.asked = None;
         self.retry = None;
-        match Portal::open(&device::portal_url(&self.server), &self.token) {
+        match Portal::open(&self.server, &self.token) {
             Ok(portal) => {
                 // Who the token is here decides what the page offers.
                 let admin = Admin::new(portal.clone(), self.data.clone());
@@ -320,7 +357,7 @@ impl App {
             }
             // A token that never opened the portal is asked for again; one that
             // has is the right one, and the server is only away.
-            Some(Link::Refused) if !self.proven => {
+            Some(Link::Refused) if !self.proven && !self.local() => {
                 self.sign_out("The server did not open its portal for that token.");
                 return;
             }
@@ -339,6 +376,7 @@ impl App {
             return;
         }
         self.take_in();
+        self.open_wanted();
         if self
             .asked
             .is_none_or(|asked| asked.elapsed() >= HOSTS_EVERY)
@@ -540,11 +578,14 @@ impl App {
             rows.push(Row::info(""));
         }
         rows.push(heading("Connection"));
-        rows.push(Row::info(format!(
-            "  {} · through the berth server at {}",
-            self.address,
-            device::shown(&self.server)
-        )));
+        rows.push(Row::info(match self.local() {
+            true => format!("  {}", self.address),
+            false => format!(
+                "  {} · through the berth server at {}",
+                self.address,
+                device::shown(&self.server)
+            ),
+        }));
         for line in host::type_lines(&self.name, &self.host) {
             rows.push(Row::info(Line::styled(
                 format!("  {line}"),
@@ -1125,7 +1166,7 @@ impl App {
                 }
                 _ => {}
             },
-            Code::Char('o') => self.sign_out(""),
+            Code::Char('o') if !self.local() => self.sign_out(""),
             _ => {}
         }
     }
@@ -1395,6 +1436,7 @@ impl App {
             let text = match (&hosts.error, hosts.answered) {
                 (Some(error), _) => format!("✗ {error}"),
                 (None, false) => "Asking the server for its hosts…".into(),
+                (None, true) if self.local() => "No hosts yet.".into(),
                 (None, true) => {
                     "The server has no hosts yet. They are set up with berth where it runs, or from here with the role admin.".into()
                 }
@@ -1414,12 +1456,15 @@ impl App {
         if let Some(input) = &self.naming {
             draw_editor(frame, edit, " New host name ", input, false);
         }
-        let keys = match (admin, self.naming.is_some()) {
-            (_, true) => "Enter create · Esc cancel · Ctrl+O copy",
-            (true, false) => {
+        let keys = match (admin, self.naming.is_some(), self.local()) {
+            (_, true, _) => "Enter create · Esc cancel · Ctrl+O copy",
+            (true, false, true) => {
+                "↑↓ select · Enter open · n new host · d default · x remove · r refresh"
+            }
+            (true, false, false) => {
                 "↑↓ select · Enter open · n new host · d default · x remove · r refresh · o sign out"
             }
-            (false, false) => "↑↓ select · Enter open · r refresh · o sign out",
+            (false, false, _) => "↑↓ select · Enter open · r refresh · o sign out",
         };
         draw_footer(frame, footer, keys, &self.status, theme::ACCENT);
     }

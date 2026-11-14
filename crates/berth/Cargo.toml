@@ -28,10 +28,9 @@ pulldown-cmark = { version = "0.13", default-features = false }
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 
 tui-input = { workspace = true, features = ["crossterm"] }
+berth-page.workspace = true
+berth-remote = { path = "../berth-remote" }
 
 [dev-dependencies]
 # Signs the access tokens of the tests.
 ring = "0.17"
-# berth-remote signs in to a berth serve of the tests.
-berth-page.workspace = true
-berth-remote = { path = "../berth-remote" }

@@ -58,13 +58,15 @@ pub trait Device {
     /// Keep `value`, or forget what was kept when it is empty.
     fn store(&self, key: Kept, value: &str);
     fn linked(&self) -> Linked;
-    /// One plain HTTP request with a bearer; `then` gets its status and body.
-    fn request(&self, method: &str, url: &str, bearer: &str, then: Answer);
-    /// Open a WebSocket to `url` with `token` as its protocol. `said` gets
-    /// what it says, on the thread that draws, from a later turn on.
+    /// One plain HTTP request to `path` of `server` with a bearer; `then`
+    /// gets its status and body.
+    fn request(&self, method: &str, server: &str, path: &str, bearer: &str, then: Answer);
+    /// Open a WebSocket to `path` of `server` with `token` as its protocol.
+    /// `said` gets what it says, on the thread that draws, from a later turn on.
     fn connect(
         &self,
-        url: &str,
+        server: &str,
+        path: &str,
         token: &str,
         said: Box<dyn Fn(Said)>,
     ) -> Result<Box<dyn Socket>, String>;
@@ -123,18 +125,32 @@ pub(crate) fn choose_file(
 
 pub(crate) fn request(
     method: &str,
-    url: &str,
+    server: &str,
+    path: &str,
     bearer: &str,
     then: impl FnOnce(Result<(u16, String), String>) + 'static,
 ) {
-    device().request(method, url, bearer, Box::new(then))
+    device().request(method, server, path, bearer, Box::new(then))
+}
+
+/// The server that runs in the program itself, as the screens name it.
+pub const HERE: &str = "here:";
+
+/// Whether the server is on this machine, reached without a token: the one
+/// in the program, or the socket of a `berth serve` of this user.
+pub fn local(server: &str) -> bool {
+    server == HERE || server.starts_with("unix:")
 }
 
 /// A server's address as typed, made whole: without a scheme it is https,
 /// or http for this machine itself.
 pub fn address(typed: &str) -> String {
     let typed = typed.trim().trim_end_matches('/');
-    if typed.is_empty() || typed.starts_with("http://") || typed.starts_with("https://") {
+    if typed.is_empty()
+        || typed.starts_with("http://")
+        || typed.starts_with("https://")
+        || local(typed)
+    {
         return typed.to_owned();
     }
     let local = ["localhost", "127.", "[::1]"]
@@ -143,20 +159,17 @@ pub fn address(typed: &str) -> String {
     format!("{}://{typed}", if local { "http" } else { "https" })
 }
 
-/// A server as it is shown: `host:port`.
+/// A server as it is shown: `host:port`, or where on this machine it is.
 pub fn shown(server: &str) -> &str {
+    if server == HERE {
+        return "this machine";
+    }
+    if server.starts_with("unix:") {
+        return "berth serve on this machine";
+    }
     server
         .trim_start_matches("https://")
         .trim_start_matches("http://")
-}
-
-/// The address of the portal of a server.
-pub fn portal_url(server: &str) -> String {
-    let scheme = match server.starts_with("https://") {
-        true => "wss",
-        false => "ws",
-    };
-    format!("{scheme}://{}{}", shown(server), berth_api::ops::PORTAL)
 }
 
 #[cfg(test)]
@@ -172,13 +185,12 @@ mod tests {
         assert_eq!(address("127.0.0.1:7878/"), "http://127.0.0.1:7878");
         assert_eq!(address(" https://192.0.2.10/ "), "https://192.0.2.10");
         assert_eq!(shown("https://studio.example:8080"), "studio.example:8080");
+        assert_eq!(address("here:"), "here:");
         assert_eq!(
-            portal_url("https://studio.example"),
-            "wss://studio.example/v1/portal"
+            address("unix:/run/berth/serve.sock"),
+            "unix:/run/berth/serve.sock"
         );
-        assert_eq!(
-            portal_url("http://192.0.2.10:7878"),
-            "ws://192.0.2.10:7878/v1/portal"
-        );
+        assert!(local(HERE) && !local("https://studio.example"));
+        assert_eq!(shown(HERE), "this machine");
     }
 }
