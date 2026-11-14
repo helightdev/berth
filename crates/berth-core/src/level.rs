@@ -243,10 +243,44 @@ pub fn install_controller_action(name: &str, level: Level, observed: Option<Leve
     action
 }
 
+/// berth's own action that gives a host another name, at any level: the
+/// machine stays as it is.
+pub fn rename_action() -> Action {
+    Action {
+        name: "rename".into(),
+        label: "Rename".into(),
+        help: "Give the host another name in berth. Its profile, passwords, host keys, machine record, messages and jobs go with it. The machine itself stays as it is and keeps running, and so does its hostname unless hostname says otherwise.".into(),
+        group: "Set-Up".into(),
+        role: Role::Admin,
+        arguments: vec![
+            berth_api::Argument {
+                name: "name".into(),
+                label: "New name".into(),
+                help: "The host's name in berth from now on: letters, digits, `-`, `_` and `.`."
+                    .into(),
+                required: true,
+                ..Default::default()
+            },
+            berth_api::Argument {
+                name: "hostname".into(),
+                label: "Hostname too".into(),
+                help: "Make the new name the profile's hostname as well. The machine takes it at its next apply.".into(),
+                default: "no".into(),
+                values: vec!["no".into(), "yes".into()],
+                ..Default::default()
+            },
+        ],
+        ..Action::default()
+    }
+}
+
 /// berth's own actions on a host of this machine, which need no server:
-/// those that change the host's level.
+/// those that change the host's level, and renaming it.
 pub fn local_actions(name: &str, level: Level, observed: Option<Level>) -> Vec<Action> {
-    vec![install_controller_action(name, level, observed)]
+    vec![
+        install_controller_action(name, level, observed),
+        rename_action(),
+    ]
 }
 
 #[cfg(test)]

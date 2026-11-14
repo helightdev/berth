@@ -754,7 +754,8 @@ async fn a_hosts_actions_are_its_tasks_and_berths_own() {
             "seed",
             "secrets",
             "trust-key",
-            "host-key"
+            "host-key",
+            "rename"
         ]
     );
     let status = &actions[0];
@@ -3012,6 +3013,77 @@ fn generate_operator_password(app: &mut crate::app::App) -> String {
         Ok(()) => app.status.clone(),
         Err(error) => error.to_string(),
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_is_renamed_as_a_job_with_what_the_server_keeps_of_it() {
+    let served = served().await;
+    let mut client = served.client().await;
+    let client = &mut client;
+    let paths = &served.state.paths;
+    let profile = json!({"hostname": "test", "builder": {}, "access": {"address": "192.0.2.7", "link": ["sh", "-c", "exit 1"]}});
+    let test = berth_core::profiles::Place::own("test").unwrap();
+    test.save(paths, &profile).unwrap();
+    berth_core::profiles::Place::own("lab")
+        .unwrap()
+        .save(paths, &profile)
+        .unwrap();
+    let message = berth_api::Message {
+        id: 1,
+        topic: "agent/done".into(),
+        body: json!({}),
+        keep: berth_api::Keep::Log,
+        from: berth_api::From {
+            level: berth_api::Level::Agent,
+            uid: 1001,
+            session: None,
+        },
+        time: berth_api::rfc3339(berth_api::unix_now()),
+    };
+    served.state.store.take_in("test", &message).unwrap();
+    let (status, listed) = send(client, "GET", "/v1/hosts/test/actions", Value::Null).await;
+    assert_eq!(status, 200, "{listed}");
+    let rename = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["name"] == "rename")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (&rename["available"], &rename["role"]),
+        (&json!(true), &json!("admin"))
+    );
+
+    // A name that is taken, or that is no name, is refused before a job starts.
+    let act =
+        |name: &str, hostname: &str| json!({"arguments": {"name": name, "hostname": hostname}});
+    let path = "/v1/hosts/test/actions/rename";
+    let (status, said) = send(client, "POST", path, act("lab", "no")).await;
+    assert_eq!(status, 409, "{said}");
+    let (status, said) = send(client, "POST", path, act("a b", "no")).await;
+    assert_eq!(status, 400, "{said}");
+    let (status, said) = send(client, "POST", path, act("Studio_1", "yes")).await;
+    assert_eq!(status, 400, "{said}");
+    let (status, said) = send(client, "POST", path, json!({})).await;
+    assert_eq!(status, 400, "{said}");
+
+    let (status, acted) = send(client, "POST", path, act("studio", "yes")).await;
+    assert_eq!(status, 202, "{acted}");
+    let id = acted["job"]["id"].as_str().unwrap().to_owned();
+    let job = job_done(client, &id).await;
+    assert_eq!(job["exit_code"], 0, "{job}");
+    // The job is the renamed host's now, as its messages are.
+    assert_eq!(job["subject"], "host:studio");
+    let (status, _) = send(client, "GET", "/v1/hosts/test", Value::Null).await;
+    assert_eq!(status, 404);
+    let (status, host) = send(client, "GET", "/v1/hosts/studio", Value::Null).await;
+    assert_eq!(status, 200, "{host}");
+    let (_, saved) = send(client, "GET", "/v1/hosts/studio/profile", Value::Null).await;
+    assert_eq!(saved["hostname"], "studio");
+    assert_eq!(saved["access"]["address"], "192.0.2.7");
+    let (_, inbox) = send(client, "GET", "/v1/inbox?host=studio", Value::Null).await;
+    assert_eq!(inbox["messages"][0]["topic"], "agent/done", "{inbox}");
 }
 
 // Not on a runtime of the test's: the screen waits for the server on one of its own.

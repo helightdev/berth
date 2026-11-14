@@ -229,6 +229,98 @@ pub fn remove(paths: &Paths, place: &Place) -> Result<()> {
     Ok(())
 }
 
+/// Whether a rename may give the host's profile the new name as its
+/// hostname: only a workstation is applied, which is what sets it.
+pub fn hostname_allowed(name: &str, profile: &Value) -> Result<()> {
+    match crate::level::of(profile) {
+        crate::level::Level::Workstation => Ok(()),
+        level => Err(format!(
+            "{name} is a {level} host, and only a workstation is given its hostname by berth"
+        )
+        .into()),
+    }
+}
+
+/// Give a saved host another name in its scope: its profile, its generated
+/// passwords, what berth knows of its SSH, the passwords it keeps for logging
+/// in and the resources that belong to it, in one change. A host of this
+/// installation's own takes its messages and jobs along. The machine stays as
+/// it is, and so does its hostname unless `hostname` asks for the profile's to
+/// be the new name, which an apply then gives the machine. Returns the new place.
+pub fn rename(paths: &Paths, from: &Place, to: &str, hostname: bool) -> Result<Place> {
+    let Place::Stored { scope, name: old } = from else {
+        return Err("A profile in a file is renamed by moving the file".into());
+    };
+    let place = Place::stored(scope, to)?;
+    if old == to {
+        return Err(format!("{old} has that name already").into());
+    }
+    // Nothing is done to either name meanwhile, such as creating its machine.
+    fn busy(name: &str) -> impl FnOnce(&str) -> String + '_ {
+        move |holder| {
+            format!("Something else is being done to {name}{holder}. Try again when it has ended")
+        }
+    }
+    let held = crate::runner::lock_at(&from.lock_file(paths), "rename the host", busy(old))?;
+    let _new = crate::runner::lock_at(&place.lock_file(paths), "rename the host", busy(to))?;
+    let mut profile = from.load(paths)?.ok_or_else(|| format!("No host {old}"))?;
+    if place.load(paths)?.is_some() {
+        return Err(format!("There is a host {to} already").into());
+    }
+    if hostname {
+        hostname_allowed(old, &profile)?;
+        profile["hostname"] = serde_json::json!(to);
+    }
+    let store = store::shared(paths)?;
+    let mut writes = vec![(
+        kind::PROFILE,
+        scope.as_str(),
+        to,
+        serde_json::to_vec(&profile)?,
+    )];
+    let mut removals = vec![(kind::PROFILE, scope.as_str(), old.as_str())];
+    let mut moved = vec![
+        (kind::CREDENTIALS, scope.clone(), old.clone(), to.to_owned()),
+        (kind::ACCESS, scope.clone(), old.clone(), to.to_owned()),
+    ];
+    if scope == OWN {
+        for secret in [crate::keys::password_secret, crate::keys::sudo_secret] {
+            moved.push((kind::SECRET, OWN.into(), secret(from), secret(&place)));
+        }
+    }
+    for (kind, scope, old, new) in &moved {
+        if let Some(value) = store.read(kind, scope, old)? {
+            writes.push((kind, scope.as_str(), new.as_str(), value));
+            removals.push((kind, scope.as_str(), old.as_str()));
+        }
+    }
+    // A resource keeps its id and its name at the provisioner; only the host
+    // it belongs to is named anew.
+    let mut resources = vec![];
+    for (id, value) in store.entries(kind::RESOURCE, scope)? {
+        let mut record: crate::resource::Record =
+            serde_json::from_slice(&value).map_err(|error| {
+                format!("The record of the resource {id} in berth's store: {error}")
+            })?;
+        if record.host == *old {
+            record.host = to.to_owned();
+            resources.push((id, serde_json::to_vec(&record)?));
+        }
+    }
+    for (id, value) in &resources {
+        writes.push((kind::RESOURCE, scope.as_str(), id.as_str(), value.clone()));
+    }
+    match scope == OWN {
+        true => store.rename_host(old, to, &writes, &removals)?,
+        false => store.change(&writes, &removals)?,
+    }
+    // ssh's file for the host is written from its row under the new alias.
+    let _ = fs::remove_file(crate::keys::known::file(paths, from));
+    drop(held);
+    let _ = fs::remove_file(from.lock_file(paths));
+    Ok(place)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,6 +430,138 @@ mod tests {
         remove(&paths, &file).unwrap();
         assert!(!home.path().join("elsewhere/attic.json").exists());
         assert!(crate::credentials::load(&paths, &again).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_renamed_host_takes_what_berth_keeps_of_it() {
+        let (_home, paths) = scratch();
+        let test = Place::own("test").unwrap();
+        let profile = json!({"hostname": "test", "access": {"address": "192.0.2.10"}});
+        test.save(&paths, &profile).unwrap();
+        crate::credentials::save(&paths, &test, "ops", "made-up-1").unwrap();
+        let store = store::shared(&paths).unwrap();
+        store
+            .write_json(
+                kind::ACCESS,
+                OWN,
+                "test",
+                &json!({"host_keys": ["ssh-ed25519 AAAA"]}),
+            )
+            .unwrap();
+        store
+            .write(kind::SECRET, OWN, "ssh/test", b"made-up-2")
+            .unwrap();
+        store
+            .write(kind::SECRET, OWN, "ssh/lab", b"made-up-3")
+            .unwrap();
+        let machine = crate::resource::Record {
+            id: "r-test".into(),
+            provisioner: "incus".into(),
+            kind: crate::plugins::MACHINE.into(),
+            name: "berth-test".into(),
+            host: "test".into(),
+            ..Default::default()
+        };
+        store
+            .write_json(
+                kind::RESOURCE,
+                OWN,
+                "r-test",
+                &serde_json::to_value(&machine).unwrap(),
+            )
+            .unwrap();
+        let known = crate::keys::known::file(&paths, &test);
+        fs::create_dir_all(known.parent().unwrap()).unwrap();
+        fs::write(&known, "berth.test ssh-ed25519 AAAA\n").unwrap();
+
+        let studio = rename(&paths, &test, "studio", false).unwrap();
+        assert_eq!(studio, Place::own("studio").unwrap());
+        assert_eq!(test.load(&paths).unwrap(), None);
+        // The hostname stays unless asked for.
+        assert_eq!(studio.load(&paths).unwrap().unwrap(), profile);
+        assert_eq!(
+            crate::credentials::load(&paths, &studio).unwrap()["ops"],
+            "made-up-1"
+        );
+        assert!(crate::credentials::load(&paths, &test).unwrap().is_empty());
+        let record = crate::keys::known::Record::load(&store, &studio).unwrap();
+        assert_eq!(record.host_keys, ["ssh-ed25519 AAAA"]);
+        assert_eq!(store.read(kind::ACCESS, OWN, "test").unwrap(), None);
+        assert_eq!(
+            store
+                .read(kind::SECRET, OWN, "ssh/studio")
+                .unwrap()
+                .unwrap(),
+            b"made-up-2"
+        );
+        assert_eq!(store.read(kind::SECRET, OWN, "ssh/test").unwrap(), None);
+        assert_eq!(
+            store.read(kind::SECRET, OWN, "ssh/lab").unwrap().unwrap(),
+            b"made-up-3"
+        );
+        let kept = crate::resource::of_place(&paths, &studio).unwrap().unwrap();
+        assert_eq!(
+            (kept.record.id.as_str(), kept.record.name.as_str()),
+            ("r-test", "berth-test")
+        );
+        assert!(crate::resource::of_place(&paths, &test).unwrap().is_none());
+        assert!(!known.exists());
+
+        // With hostname, the profile's is the new name.
+        let lab = rename(&paths, &studio, "lab", true).unwrap();
+        assert_eq!(lab.load(&paths).unwrap().unwrap()["hostname"], "lab");
+    }
+
+    #[test]
+    fn a_rename_needs_a_host_a_free_name_and_a_saved_host() {
+        let (home, paths) = scratch();
+        let test = Place::own("test").unwrap();
+        let studio = Place::own("studio").unwrap();
+        let error = |result: Result<Place>| result.unwrap_err().to_string();
+        assert_eq!(
+            error(rename(&paths, &test, "studio", false)),
+            "No host test"
+        );
+        test.save(&paths, &json!({"access": {"address": "192.0.2.10"}}))
+            .unwrap();
+        studio
+            .save(&paths, &json!({"access": {"address": "192.0.2.20"}}))
+            .unwrap();
+        assert_eq!(
+            error(rename(&paths, &test, "studio", false)),
+            "There is a host studio already"
+        );
+        assert_eq!(
+            error(rename(&paths, &test, "a b", false)),
+            "Not a host name: a b"
+        );
+        assert_eq!(
+            error(rename(&paths, &test, "test", false)),
+            "test has that name already"
+        );
+        // Only a workstation is given a hostname by berth.
+        let dock = Place::own("dock").unwrap();
+        dock.save(
+            &paths,
+            &json!({"level": "reachable", "access": {"address": "192.0.2.30"}}),
+        )
+        .unwrap();
+        assert_eq!(
+            error(rename(&paths, &dock, "pier", true)),
+            "dock is a reachable host, and only a workstation is given its hostname by berth"
+        );
+        assert!(dock.load(&paths).unwrap().is_some());
+        let file = Place::File(home.path().join("attic.json"));
+        assert!(rename(&paths, &file, "attic2", false).is_err());
+        // Something being done to the host, such as creating its machine, stops it.
+        let held =
+            crate::runner::lock_at(&test.lock_file(&paths), "test", |_| String::new()).unwrap();
+        assert!(
+            error(rename(&paths, &test, "lab", false))
+                .starts_with("Something else is being done to test")
+        );
+        drop(held);
+        assert!(test.load(&paths).unwrap().is_some());
     }
 
     #[test]

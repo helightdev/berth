@@ -39,6 +39,7 @@ With a [berth server](/docs/use/server) set, by `--server` or the `server` setti
 | `berth host install HOST` | Install berth's controller alone on a host below a workstation ([Installing the controller](/docs/use/levels#installing-the-controller)) |
 | `berth host level HOST LEVEL` | Save the level the host's profile says, such as for a host with berth's controller added by its address. A workstation is adopted instead ([Adding a machine that exists](/docs/use/levels#adding-a-machine-that-exists)) |
 | `berth apply --behind [--update] [--reboot [--force]]` | Apply every host that is behind, one at a time ([Updates](/docs/use/updates#bringing-hosts-up-to-date)). `--all` takes the current ones too |
+| `berth host rename HOST NAME [--hostname]` | Give a host another name in berth, with everything berth keeps of it. The machine is left as it is. With `--hostname`, the profile's hostname changes to NAME as well, for the next apply ([Renaming a host](/docs/use/moving#renaming-a-host)) |
 | `berth remove HOST` | Forget a host. The machine itself is left as it is, and a machine berth created for the host must be deleted first |
 | `berth adopt HOST [[USER@]ADDRESS] [--port PORT] [--key FILE] [--force]` | Save a host from the profile it keeps, read over SSH with sudo. Without an address, a saved host by its own ([Moving a host](/docs/use/moving)) |
 | `berth key` | The SSH keys of berth's [key ring](/docs/use/accounts#keys), with their public halves, the hosts that use each, and what is being replaced. With a berth server set, the server's |

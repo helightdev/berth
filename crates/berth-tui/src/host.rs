@@ -716,6 +716,7 @@ pub fn command_of(action: &str) -> String {
         "host-key" => "berth key host HOST [--accept]".into(),
         "apply" => "berth apply HOST".into(),
         "seed" => "berth seed HOST".into(),
+        "rename" => "berth host rename HOST NAME [--hostname]".into(),
         name => format!("berth run HOST {name}"),
     }
 }

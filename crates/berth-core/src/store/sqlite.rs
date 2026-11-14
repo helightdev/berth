@@ -568,6 +568,43 @@ impl Backend for SqliteBackend {
         Ok(())
     }
 
+    fn rename_host(
+        &mut self,
+        old: &str,
+        new: &str,
+        writes: &[StateRow],
+        removals: &[(String, String, String)],
+    ) -> Result<()> {
+        let transaction = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        for row in writes {
+            put_state(&transaction, row)?;
+        }
+        for (kind, scope, name) in removals {
+            transaction.execute(
+                "DELETE FROM state WHERE kind = ?1 AND scope = ?2 AND name = ?3",
+                [kind, scope, name],
+            )?;
+        }
+        let (old_subject, new_subject) = (format!("host:{old}"), format!("host:{new}"));
+        transaction.execute("DELETE FROM messages WHERE host = ?1", [new])?;
+        transaction.execute("DELETE FROM cursors WHERE host = ?1", [new])?;
+        transaction.execute("UPDATE messages SET host = ?2 WHERE host = ?1", [old, new])?;
+        transaction.execute("UPDATE cursors SET host = ?2 WHERE host = ?1", [old, new])?;
+        transaction.execute("UPDATE jobs SET host = ?2 WHERE host = ?1", [old, new])?;
+        transaction.execute(
+            "UPDATE jobs SET token = NULL WHERE subject = ?1",
+            [&new_subject],
+        )?;
+        transaction.execute(
+            "UPDATE jobs SET subject = ?2 WHERE subject = ?1",
+            [&old_subject, &new_subject],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     fn swap_states(&mut self, rows: &[(StateRow, StateRow)]) -> Result<bool> {
         // Immediate: no other writer gets in between the count and the updates.
         let transaction = self
