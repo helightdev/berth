@@ -419,7 +419,7 @@ def server_status(incus):
         {'label': 'Incus', 'value': environment.get('server_version') or 'unknown'},
         {'label': 'Name', 'value': environment.get('server_name') or ''},
         {'label': 'Kernel', 'value': f'{environment.get("kernel") or "?"} {environment.get("kernel_version") or ""}'.strip()},
-        {'label': 'Storage', 'value': ', '.join(d.get('name') or '' for d in environment.get('storage_supported_drivers') or [])
+        {'label': 'Storage', 'value': ', '.join(filter(None, (d.get('Name') or d.get('name') for d in environment.get('storage_supported_drivers') or [])))
          or environment.get('storage') or ''},
         {'label': 'Project', 'value': incus.project},
     ]
