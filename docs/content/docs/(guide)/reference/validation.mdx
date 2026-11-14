@@ -37,7 +37,7 @@ After the first boot, berth reaches the host over SSH and checks:
 - `berth apply --all --reboot` refuses while a session runs, then reboots the host, waits for it and checks it
 - the end-to-end tests of commands, berthd's API and secrets
 
-The guest runs on QEMU's user network with a package cache and a release server on the container's side. The cache is in `build/boot/cache` and makes a second run a lot quicker. The profile leaves out the coding agents, toolchains, Docker, Cockpit and the office and graphics programs, and keeps the desktop. On GitHub the Boot workflow runs either one when started by hand. Logs, timings and the disk and memory used are in `build/boot/KIND/`.
+The guest runs on QEMU's user network with a package cache and a release server on the container's side. The cache is in `build/boot/cache` and makes a second run a lot quicker. The profile leaves out the coding agents, toolchains, Docker and Cockpit, and keeps the desktop. The programs a host can do without, such as the office and graphics programs, are left out too unless `BERTH_CI_BOOT_EXTRAS=1` is set. On GitHub the Boot workflow runs either one when started by hand. Started by hand or by its weekly schedule, it installs those programs as well. Logs, timings and the disk and memory used are in `build/boot/KIND/`.
 
 ## Checking a build by hand
 

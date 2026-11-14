@@ -135,7 +135,11 @@ jobs:
       # role's files. A newer Cargo.lock makes it.
       - name: Have the build script run
         run: touch Cargo.lock
+      # A change boots without the programs a host can do without. The weekly
+      # run and one started by hand install them too.
       - name: Boot ${{ matrix.kind }}
+        env:
+          BERTH_CI_BOOT_EXTRAS: ${{ github.event_name != 'pull_request' && github.event_name != 'push' && '1' || '' }}
         run: ci/run.sh boot ${{ matrix.kind }}
       - name: Disk and memory
         if: always()
