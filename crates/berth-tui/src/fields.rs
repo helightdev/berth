@@ -97,19 +97,41 @@ pub enum Action {
     Apply,
     Docker,
     Ssh,
+    /// An existing host berth only logs in to: a way offered on the Install
+    /// tab that chooses [`Action::Ssh`] at the level reachable.
+    Reach,
     Manage,
 }
 
 impl Action {
     /// The ways to install a host, offered on the Install tab.
-    pub const METHODS: [Action; 6] = [
+    pub const METHODS: [Action; 7] = [
         Action::Machine,
         Action::Iso,
         Action::CloudSeed,
         Action::Ssh,
+        Action::Reach,
         Action::Apply,
         Action::Docker,
     ];
+
+    /// The action a way of the Install tab sets, with the level it gives the
+    /// profile when it gives one.
+    pub fn choose(self, config: &mut serde_json::Value) -> Action {
+        let level = berth_api::profile::level(config);
+        match self {
+            Action::Reach => {
+                berth_api::profile::set_level(config, berth_api::HostLevel::Reachable);
+                Action::Ssh
+            }
+            // Installing over SSH installs something: the whole profile, unless the controller is chosen.
+            Action::Ssh if level == berth_api::HostLevel::Reachable => {
+                berth_api::profile::set_level(config, berth_api::HostLevel::Workstation);
+                Action::Ssh
+            }
+            action => action,
+        }
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -122,6 +144,7 @@ impl Action {
             Action::Apply => "This machine or an inventory",
             Action::Docker => "Container image",
             Action::Ssh => "Existing host over SSH",
+            Action::Reach => "Existing host, SSH only",
             Action::Manage => "Manage an installed host",
         }
     }
@@ -153,6 +176,9 @@ impl Action {
             }
             Action::Ssh => {
                 "Install on an existing Ubuntu host over SSH. Enter a hostname, IP address or SSH config alias, and how berth logs in: its own key by default. A host that does not take that key yet gets it with berth key trust HOST and a password used once. Sudo prompts use the normal terminal."
+            }
+            Action::Reach => {
+                "Add a host berth only logs in to over SSH, such as a server that stays as it is: nothing is installed on it. Enter a hostname, IP address or SSH config alias, and how berth logs in. Run saves it; a host that does not take berth's key yet gets it with berth key trust HOST. Its page can install the controller later, for sessions, tasks and files."
             }
         }
     }

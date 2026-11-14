@@ -825,10 +825,12 @@ impl<'a> Profile<'a> {
         // A host below a workstation needs only to be reached.
         let level = berth_api::profile::level(self.config);
         if action == Action::Ssh && level != berth_api::HostLevel::Workstation {
-            return (
-                vec![],
-                vec![Level, SshHost, SshUser, SshPort, Login, AskBecomePass],
-            );
+            let mut after = vec![Level, SshHost, SshUser, SshPort, Login];
+            // Nothing is installed on a reachable host, so nothing asks for sudo.
+            if level == berth_api::HostLevel::Controller {
+                after.push(AskBecomePass);
+            }
+            return (vec![], after);
         }
         // A created machine is always a cloud host, so there is no profile to choose.
         let before = match action {
@@ -1035,11 +1037,21 @@ impl<'a> Profile<'a> {
         rows
     }
 
+    /// The way of the Install tab the action and the profile's level are:
+    /// over SSH at the level reachable, the host is only logged in to.
+    pub fn way(&self) -> Action {
+        match (self.action, berth_api::profile::level(self.config)) {
+            (Action::Ssh, berth_api::HostLevel::Reachable) => Action::Reach,
+            (action, _) => action,
+        }
+    }
+
     /// The ways to install on the Install page, with the chosen one marked.
     pub fn method_rows(&self, methods: &[Action]) -> Vec<Row> {
         let mut rows = vec![Row::heading("How To Install")];
+        let chosen = self.way();
         for action in methods.iter().copied() {
-            let mark = if action == self.action { "●" } else { "○" };
+            let mark = if action == chosen { "●" } else { "○" };
             rows.push(Row::entry(
                 format!("  {mark} {}", action.label()),
                 Entry::Action(action),
@@ -1146,7 +1158,7 @@ impl<'a> Profile<'a> {
         match self.action {
             Action::Machine => rows.extend(page.machine.run_rows()),
             _ => rows.push(Row::entry(
-                format!("[Run · {}]", self.action.label()),
+                format!("[Run · {}]", self.way().label()),
                 Entry::Run,
             )),
         }
@@ -1815,6 +1827,59 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn an_existing_host_can_be_added_to_be_reached_over_ssh_alone() {
+        let mut config = json!({"profile": "laptop"});
+        assert_eq!(Action::Reach.choose(&mut config), Action::Ssh);
+        assert_eq!(config["level"], "reachable");
+        let machine = incus();
+        let profile = Profile {
+            config: &config,
+            step: Step::Install,
+            action: Action::Ssh,
+            features: &[],
+            registries: &[],
+            secrets: &[],
+            own_key: "",
+            named: true,
+        };
+        assert_eq!(profile.way(), Action::Reach);
+        let rows: Vec<String> = profile
+            .page_rows(Page {
+                methods: &Action::METHODS,
+                machine: &machine,
+                problems: &[],
+                notes: vec![],
+            })
+            .iter()
+            .map(|row| row.line.to_string())
+            .collect();
+        assert!(
+            rows.iter().any(|row| row == "  ● Existing host, SSH only"),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row == "  ○ Existing host over SSH"),
+            "{rows:?}"
+        );
+        // Only how it is reached is asked, not a profile to install.
+        assert!(
+            rows.iter().any(|row| row.contains("SSH address")),
+            "{rows:?}"
+        );
+        assert!(!rows.iter().any(|row| row.contains("sudo")), "{rows:?}");
+        assert!(
+            !rows.iter().any(|row| row.contains("Host profile")),
+            "{rows:?}"
+        );
+        // Installing over SSH again means installing something.
+        assert_eq!(Action::Ssh.choose(&mut config), Action::Ssh);
+        assert!(config.get("level").is_none());
+        let mut controller = json!({"level": "controller"});
+        Action::Ssh.choose(&mut controller);
+        assert_eq!(controller["level"], "controller");
     }
 
     #[test]

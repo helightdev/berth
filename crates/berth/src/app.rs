@@ -936,7 +936,12 @@ impl App {
     /// does itself.
     pub fn methods(&self) -> &'static [Action] {
         match self.served() {
-            Some(_) => &[Action::Machine, Action::CloudSeed, Action::Ssh],
+            Some(_) => &[
+                Action::Machine,
+                Action::CloudSeed,
+                Action::Ssh,
+                Action::Reach,
+            ],
             None => &Action::METHODS,
         }
     }
@@ -1957,7 +1962,8 @@ impl App {
         let profile = seeded.as_ref().map(|file| file.path().to_owned());
         let mut command;
         match action {
-            Action::Save | Action::Manage | Action::Machine => {
+            // Reach is only a way to choose, which sets Ssh at the level reachable.
+            Action::Save | Action::Manage | Action::Machine | Action::Reach => {
                 return Err("Nothing to run".into());
             }
             Action::Release => {

@@ -244,6 +244,29 @@ pub fn dialog(frame: &mut Frame, title: &str, keys: &str, lines: Vec<Line>) -> R
     area
 }
 
+/// Draw the box something is typed in, under the rows it belongs to.
+pub fn draw_editor(frame: &mut Frame, area: Rect, title: &str, input: &Input, masked: bool) {
+    let width = area.width.saturating_sub(4) as usize;
+    let typed = match masked {
+        true => "•".repeat(input.value().chars().count()),
+        false => input.value().to_owned(),
+    };
+    // The end of what is typed stays in view.
+    let count = typed.chars().count();
+    let scroll = count.saturating_sub(width);
+    let shown: String = typed.chars().skip(scroll).collect();
+    let cursor = match masked {
+        true => count,
+        false => input.visual_cursor(),
+    }
+    .saturating_sub(scroll);
+    frame.render_widget(
+        Paragraph::new(shown).block(theme::panel(title.trim(), true)),
+        area,
+    );
+    frame.set_cursor_position((area.x + 2 + cursor as u16, area.y + 1));
+}
+
 /// Split a line of output into text and the web addresses in it.
 pub fn with_links(line: &str) -> Vec<(String, bool)> {
     let mut parts = vec![];

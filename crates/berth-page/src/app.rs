@@ -489,6 +489,18 @@ impl App {
                 Arrived::ProvisionerPage(name, state, actions) => {
                     self.home.provisioners.opened(&name, state, actions);
                 }
+                Arrived::Making(kind) => {
+                    let listed = self.data.borrow().provisioners.clone();
+                    match self.home.provisioners.create(&listed, &kind) {
+                        berth_tui::provisioners::Asked::Open(name) => {
+                            if let Some(admin) = &self.admin {
+                                admin.provisioner(&name);
+                            }
+                        }
+                        berth_tui::provisioners::Asked::Nothing(Some(said)) => self.status = said,
+                        _ => {}
+                    }
+                }
                 Arrived::ProvisionerTypes(types) => {
                     if let Some(said) = self.home.provisioners.adding(types) {
                         self.status = said;
@@ -508,10 +520,6 @@ impl App {
                     } else {
                         self.home.provisioners.opened_resource(&id, seen, actions);
                     }
-                }
-                Arrived::ProvisionerAnswer(name, said) => {
-                    let lines = said.unwrap_or_else(|error| vec![format!("✗ {error}")]);
-                    self.home.provisioners.answered(&name, lines);
                 }
             }
         }
@@ -1024,7 +1032,8 @@ impl App {
 
     /// The hosts, and for whoever may add one the row that does.
     fn host_rows(&self) -> usize {
-        self.hosts.borrow().list.len() + usize::from(self.is_admin())
+        let made = 1 + berth_tui::provisioners::MAKES.len();
+        self.hosts.borrow().list.len() + made * usize::from(self.is_admin())
     }
 
     fn open_selected(&mut self) {
@@ -1035,7 +1044,20 @@ impl App {
                     self.open_host(name, host["address"].as_str().unwrap_or(""));
                 }
             }
-            None if self.is_admin() => self.naming = Some(Input::default()),
+            None if self.is_admin() => {
+                let count = self.hosts.borrow().list.len();
+                match self.cursor.checked_sub(count + 1) {
+                    // An instance or a compose project is made on its
+                    // provisioner's page, whose form opens at once.
+                    Some(index) if index < berth_tui::provisioners::MAKES.len() => {
+                        self.open_tab(1 + crate::home::PROVISIONERS);
+                        if let Some(admin) = &self.admin {
+                            admin.provisioners_for(berth_tui::provisioners::MAKES[index].0);
+                        }
+                    }
+                    _ => self.naming = Some(Input::default()),
+                }
+            }
             None => {}
         }
     }
@@ -1136,6 +1158,19 @@ impl App {
             if mouse.click != Click::Left {
                 return;
             }
+            // A form covers the tab, and takes the click itself.
+            if self.tab == crate::home::PROVISIONERS + 1
+                && self.home.provisioners.form().is_some()
+                && let Some(admin) = self.admin.clone()
+            {
+                if let Some(said) = self.home.form_click(mouse.column, mouse.row, &admin) {
+                    self.status = said;
+                }
+                if std::mem::take(&mut self.home.to_hosts) {
+                    self.open_tab(0);
+                }
+                return;
+            }
             let tab = self
                 .tab_hits
                 .iter()
@@ -1174,7 +1209,11 @@ impl App {
             if let Some(input) = self.naming.as_mut().or(self.home.editor.as_mut()) {
                 event::paste(input, text.trim());
             } else if self.tab == crate::home::PROVISIONERS + 1 {
-                self.home.provisioners.paste(text.trim());
+                // A text of several lines keeps its last line break.
+                match self.home.provisioners.form().is_some() {
+                    true => self.home.provisioners.paste(text),
+                    false => self.home.provisioners.paste(text.trim()),
+                }
             }
             return;
         }
@@ -1203,6 +1242,9 @@ impl App {
                 }
                 if let Some(shown) = self.home.qr.take() {
                     self.qr = Some(shown);
+                }
+                if std::mem::take(&mut self.home.to_hosts) {
+                    self.open_tab(0);
                 }
             }
         }
@@ -1285,6 +1327,9 @@ impl App {
             if let Some((actions, asked)) = self.home.provisioners.arguments() {
                 screen::draw_action_arguments(frame, actions, asked);
             }
+            if let Some(form) = self.home.provisioners.form() {
+                form.draw(frame, &self.status);
+            }
         }
     }
 
@@ -1352,6 +1397,12 @@ impl App {
         }
         if admin {
             lines.push(Line::styled("+ New host", Style::new().fg(theme::ACCENT)));
+            for (_, label) in berth_tui::provisioners::MAKES {
+                lines.push(Line::styled(
+                    format!("+ New {label}"),
+                    Style::new().fg(theme::ACCENT),
+                ));
+            }
         }
         let [body, edit] = Layout::vertical([
             Constraint::Min(1),
