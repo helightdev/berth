@@ -28,6 +28,32 @@
     lock_timeout: 300
   environment:
     DEBIAN_FRONTEND: noninteractive
+# A program that cannot be installed does not stop the set-up: the rest are
+# installed one at a time, and the next apply tries the missing ones again.
+- name: Install further programs
+  when: devbox_extra_packages | length > 0
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  block:
+    - name: Install further programs together
+      ansible.builtin.apt:
+        name: "{{ devbox_extra_packages }}"
+        state: present
+        lock_timeout: 300
+  rescue:
+    - name: Install further programs one at a time
+      ansible.builtin.apt:
+        name: "{{ item }}"
+        state: present
+        lock_timeout: 300
+      loop: "{{ devbox_extra_packages }}"
+      register: devbox_extra_installed
+      ignore_errors: true
+    - name: Name the programs that are missing
+      ansible.builtin.debug:
+        msg: >-
+          Not installed: {{ devbox_extra_installed.results | selectattr('failed') | map(attribute='item') | join(', ') }}.
+          The host is set up without them, and the next apply tries them again.
 - name: Configure accounts and paths
   ansible.builtin.import_tasks: accounts.yml
 - name: Install application runtimes

@@ -15,6 +15,7 @@
 #                           read-only; otherwise it is downloaded to build/boot
 # BERTH_CI_BOOT_ISO_SHA256  the SHA-256 it must have (default: Ubuntu's SHA256SUMS)
 # BERTH_CI_BOOT_MEMORY      the guest's memory in MiB (default: 4096)
+# BERTH_CI_BOOT_EXTRAS      1 installs the programs a host can do without too
 # BERTH_CI_BOOT_CPUS        its vCPUs (default: 4, at most what is there)
 # BERTH_CI_BOOT_SSH_PORT    the loopback port of its SSH with --keep (default: 22722)
 # BERTH_CI_BOOT_CONTROL_URL, BERTH_CI_BOOT_CONTROL_KEY

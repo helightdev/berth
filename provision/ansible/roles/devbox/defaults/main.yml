@@ -146,6 +146,8 @@ devbox_claude_version: "2.1.322"
 devbox_t3_version: "0.1.8"
 devbox_t3_sha256: b9c49dc00c23fbbc5961bdaff2d88e556d96c8dbd638c4501e2937c70650a9e5
 devbox_playwright_version: "1.65.0"
+# What the role's own tasks, the desktop and berth's programs need. A host is
+# not set up without them.
 devbox_packages:
   - sudo
   - ca-certificates
@@ -158,9 +160,6 @@ devbox_packages:
   - dbus-x11
   - xfce4
   - xfce4-terminal
-  - mousepad
-  - thunar-archive-plugin
-  - xarchiver
   # The virtual display also supplies the private RFB backend for noVNC.
   - tigervnc-standalone-server
   - tigervnc-tools
@@ -172,9 +171,7 @@ devbox_packages:
   - xdotool
   - wmctrl
   - xclip
-  - xsel
   - scrot
-  - at-spi2-core
   - xdg-utils
   - xdg-user-dirs
   - xdg-desktop-portal-gtk
@@ -192,6 +189,37 @@ devbox_packages:
   - vulkan-tools
   - xvfb
   - libatomic1
+  - imagemagick
+  - fonts-dejavu
+  - git
+  - jq
+  - yq
+  - ripgrep
+  - fd-find
+  - rsync
+  - unzip
+  - zip
+  - xz-utils
+  - zstd
+  - openssh-client
+  - build-essential
+  - pkg-config
+  - libssl-dev
+  - python3-venv
+  - python3-pip
+  - nodejs
+  - npm
+  - iproute2
+  - restic
+# Programs for the agent and whoever uses the desktop. One that cannot be
+# installed is named and left for the next apply, and the host is set up
+# all the same.
+devbox_extra_packages:
+  - mousepad
+  - thunar-archive-plugin
+  - xarchiver
+  - xsel
+  - at-spi2-core
   - libreoffice-writer
   - libreoffice-calc
   - libreoffice-impress
@@ -200,7 +228,6 @@ devbox_packages:
   - gimp
   - inkscape
   - ristretto
-  - imagemagick
   - ffmpeg
   - poppler-utils
   - tesseract-ocr
@@ -208,41 +235,22 @@ devbox_packages:
   - tesseract-ocr-deu
   - ocrmypdf
   - pandoc
-  - fonts-dejavu
   - fonts-liberation
   - fonts-noto-core
   - fonts-noto-cjk
   - fonts-noto-color-emoji
   - bash-completion
   - tmux
-  - git
   - git-lfs
-  - jq
-  - yq
-  - ripgrep
-  - fd-find
   - fzf
   - tree
   - less
   - file
-  - rsync
-  - unzip
-  - zip
   - 7zip
-  - xz-utils
-  - zstd
-  - openssh-client
-  - build-essential
   - cmake
   - ninja-build
-  - pkg-config
-  - libssl-dev
-  - python3-venv
-  - python3-pip
   - python3-tk
   - pipx
-  - nodejs
-  - npm
   - htop
   - ncdu
   - lsof
@@ -250,5 +258,3 @@ devbox_packages:
   - pciutils
   - usbutils
   - dnsutils
-  - iproute2
-  - restic

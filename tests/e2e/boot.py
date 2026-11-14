@@ -34,14 +34,6 @@ FIXTURE = SRC / 'tests/e2e/fixtures/plugin'
 TARGET, DECOY = 'berth-boot-target', 'berth-boot-decoy'
 # The disk guard's answer when no disk has the serial it was given.
 REFUSED = 'Expected exactly one matching disk, got 0'
-# Programs of the default package set that nothing here uses, left out to keep
-# the first boot short. The desktop itself stays.
-EXTRAS = {
-    'libreoffice-writer', 'libreoffice-calc', 'libreoffice-impress', 'libreoffice-draw', 'gimp', 'inkscape',
-    'evince', 'tesseract-ocr', 'tesseract-ocr-eng', 'tesseract-ocr-deu', 'ocrmypdf', 'pandoc',
-    'fonts-noto-cjk',
-}
-
 # The tests that run after the boot, in order. Those of the container suite
 # that apply the light profile of tests/e2e/site.yml, or that expect no
 # systemd, are left out.
@@ -63,9 +55,9 @@ def control_server():
 def boot_vars():
     """The role as someone would set up a quick host: the desktop and berth's
     own parts, with the plugin of the tests, and without coding agents,
-    toolchains, Playwright, Docker, Cockpit or office and graphics programs."""
-    import yaml  # noqa: PLC0415 (from the venv with ansible)
-    defaults = yaml.safe_load((SRC / 'provision/ansible/roles/devbox/defaults/main.yml').read_text())
+    toolchains, Playwright, Docker or Cockpit. The programs a host can do
+    without are installed only when BERTH_BOOT_EXTRAS asks, as nothing here
+    uses them and they take most of the first boot's downloads."""
     variables = {
         'devbox_plugin_features': ['e2e/hello'],
         'devbox_install_dev_tools': False,
@@ -73,8 +65,9 @@ def boot_vars():
         'devbox_install_docker': False,
         'devbox_install_tailscale': False,
         'devbox_install_cockpit': False,
-        'devbox_packages': [name for name in defaults['devbox_packages'] if name not in EXTRAS],
     }
+    if not os.environ.get('BERTH_BOOT_EXTRAS'):
+        variables['devbox_extra_packages'] = []
     if control_server():
         # Enrolment on first boot. The role's option for a control server of
         # one's own is not there yet; its name goes here when it is.
