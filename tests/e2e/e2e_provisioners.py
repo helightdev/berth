@@ -83,13 +83,17 @@ MANIFEST = {
 
 
 def lab(station):
-    """The plugin in the workstation's own plugin folder, and that folder."""
+    """The plugin in the workstation's own plugin folder, registered as `box`
+    and `old`, and that folder."""
     folder = station.berth_dir / 'plugins/lab'
     (folder / 'bin').mkdir(parents=True)
     (folder / 'package.json').write_text(json.dumps(MANIFEST))
     program = folder / 'bin/provision'
     program.write_text(PROGRAM)
     program.chmod(program.stat().st_mode | stat.S_IXUSR)
+    # berth runs each type under a name of its own.
+    station.berth('provisioner', 'add', 'box', 'lab/box')
+    station.berth('provisioner', 'add', 'old', 'lab/old')
     return folder
 
 
@@ -110,45 +114,48 @@ class Provisioners(unittest.TestCase):
 
     def test_a_provisioner_is_listed_with_why_it_cannot_be_used(self):
         listed = self.berth('provisioner').stdout
-        self.assertIn('lab/box  Lab box  · not usable: lab/box needs place', listed)
-        self.assertIn('lab/old  Old box  · not usable: lab/old speaks version 1', listed)
-        page = self.berth('provisioner', 'lab/old').stdout
+        self.assertIn('box  Lab box (lab/box)  · not usable: box needs place', listed)
+        self.assertIn('old  Old box (lab/old)  · not usable: lab/old speaks version 1', listed)
+        types = self.berth('provisioner', 'types').stdout
+        self.assertRegex(types, r'(?m)^lab/box\s+Lab box  · makes machine, deployment$')
+        page = self.berth('provisioner', 'old').stdout
         self.assertIn('unusable', page)
 
     def test_its_settings_page_and_actions_from_the_command_line(self):
-        self.berth('provisioner', 'lab/box', 'run', 'settings', 'place=attic', '--yes')
-        page = self.berth('provisioner', 'lab/box').stdout
+        self.berth('provisioner', 'box', 'run', 'settings', 'place=attic', '--yes')
+        page = self.berth('provisioner', 'box').stdout
         for line in ('State     ready · The lab at attic answers', 'Benches   3', 'Settings  place=attic',
                      'Machines berth made with it', '  attic            box-1  running · berth has no record of it',
                      '    look'):
             self.assertIn(line, page)
         # For this once, another place.
-        self.assertIn('The lab at cellar answers', self.berth('provisioner', 'lab/box', 'place=cellar').stdout)
-        looked = self.berth('provisioner', 'lab/box', 'run', 'look').stdout
+        self.assertIn('The lab at cellar answers', self.berth('provisioner', 'box', 'place=cellar').stdout)
+        looked = self.berth('provisioner', 'box', 'run', 'look').stdout
         self.assertEqual(looked.splitlines(), ['Looked around attic', '  Dust  little'])
-        swept = self.berth('provisioner', 'lab/box', 'run', 'sweep', 'shelf=bottom', '--yes')
+        swept = self.berth('provisioner', 'box', 'run', 'sweep', 'shelf=bottom', '--yes')
         self.assertIn('sweeping bottom with \n', swept.stdout)
         self.assertIn('✓ Swept', swept.stdout)
-        refused = self.berth('provisioner', 'lab/box', 'run', 'sweep', 'shelf=middle', '--yes', check=False)
+        refused = self.berth('provisioner', 'box', 'run', 'sweep', 'shelf=middle', '--yes', check=False)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn('shelf=top or bottom only', refused.stderr)
         self.assertEqual(requests(self.folder)[-1]['verb'], 'act')
 
     def test_through_berth_serve_an_action_that_changes_something_is_a_job(self):
-        self.berth('provisioner', 'lab/box', 'run', 'settings', 'place=attic', '--yes')
+        self.berth('provisioner', 'box', 'run', 'settings', 'place=attic', '--yes')
         serve = Serve(self.station, web=False)
         try:
-            page = serve.call('GET', '/v1/provisioners/lab/box')
+            page = serve.call('GET', '/v1/provisioners/box')
             self.assertEqual((page['state'], page['message']), ('ready', 'The lab at attic answers'))
             self.assertEqual(page['values'], {'shelf': ['top', 'bottom']})
-            actions = serve.call('GET', '/v1/provisioners/lab/box/actions')
-            self.assertEqual([action['name'] for action in actions], ['look', 'sweep', 'settings'])
-            looked = serve.call('POST', '/v1/provisioners/lab/box/actions/look')
+            actions = serve.call('GET', '/v1/provisioners/box/actions')
+            self.assertEqual([action['name'] for action in actions],
+                             ['look', 'sweep', 'new-deployment', 'settings', 'remove'])
+            looked = serve.call('POST', '/v1/provisioners/box/actions/look')
             self.assertEqual(looked['result']['message'], 'Looked around attic')
-            acted = serve.call('POST', '/v1/provisioners/lab/box/actions/sweep',
+            acted = serve.call('POST', '/v1/provisioners/box/actions/sweep',
                                {'arguments': {'code': 's3cret-code'}, 'token': 'sweep-1'}, expect=202)
             job = acted['job']
-            self.assertEqual((job['subject'], job['action']), ('provisioner:lab/box', 'sweep'))
+            self.assertEqual((job['subject'], job['action']), ('provisioner:box', 'sweep'))
             portal = serve.portal()
             texts, data, _ = portal.stream('jobs.follow', {'id': job['id']},
                                            until=lambda texts, data: any('exited' in t for t in texts if t))
@@ -157,14 +164,14 @@ class Provisioners(unittest.TestCase):
             self.assertNotIn('s3cret-code', output)
             # The same token again is the same job, and nothing runs again.
             before = len(requests(self.folder))
-            again = serve.call('POST', '/v1/provisioners/lab/box/actions/sweep',
+            again = serve.call('POST', '/v1/provisioners/box/actions/sweep',
                                {'arguments': {'code': 's3cret-code'}, 'token': 'sweep-1'}, expect=202)
             self.assertEqual(again['job']['id'], job['id'])
             self.assertEqual(len(requests(self.folder)), before)
             # And from a client of the server.
             client = Workstation('provisioners-client', ssh_key=False, trust=False)
             listed = client.berth('--server', serve.url, '--token', serve.token, 'provisioner').stdout
-            self.assertIn('lab/box  Lab box', listed)
+            self.assertIn('box  Lab box (lab/box)', listed)
             portal.close()
         finally:
             serve.stop()
@@ -178,14 +185,14 @@ class Deployments(unittest.TestCase):
     def setUpClass(cls):
         cls.station = Workstation('deployments', ssh_key=False, trust=False)
         cls.folder = lab(cls.station)
-        cls.station.berth('provisioner', 'lab/box', 'run', 'settings', 'place=attic', '--yes')
+        cls.station.berth('provisioner', 'box', 'run', 'settings', 'place=attic', '--yes')
         cls.station.berth('secret', 'set', 'bench_token', input='b3nch-t0ken-made-up\n')
 
     def berth(self, *args, **kwargs):
         return self.station.berth(*args, **kwargs)
 
     def test_1_a_deployment_is_made_from_its_spec_with_a_secret_by_name(self):
-        made = self.berth('deploy', 'bench', '--provisioner', 'lab/box', '--spec', '-',
+        made = self.berth('deploy', 'bench', '--provisioner', 'box', '--spec', '-',
                           '--secret', 'bench_token:TOKEN', input='benches: 3\n')
         output = made.stdout + made.stderr
         self.assertIn('deploying bench with [secret]', output)
@@ -196,8 +203,8 @@ class Deployments(unittest.TestCase):
         self.assertEqual(list(create['environment']), ['TOKEN'])
         self.assertNotIn('b3nch-t0ken', create['spec'] + json.dumps(create['arguments']))
         listed = self.berth('resource').stdout
-        self.assertRegex(listed, r'(?m)^r-\S+\s+deployment\s+bench\s+lab/box\s+running$')
-        page = self.berth('provisioner', 'lab/box').stdout
+        self.assertRegex(listed, r'(?m)^r-\S+\s+deployment\s+bench\s+box\s+running$')
+        page = self.berth('provisioner', 'box').stdout
         self.assertIn('Bench setup berth made with it', page)
         self.assertRegex(page, r'  bench\s+project-bench  r-')
 
@@ -211,14 +218,14 @@ class Deployments(unittest.TestCase):
         log = self.berth('resource', 'bench', 'logs', '--tail', '5').stdout
         self.assertIn('project-bench started, tail 5', log)
         (self.station.root / 'bench.txt').write_text('benches: 4\n')
-        self.berth('deploy', 'bench', '--provisioner', 'lab/box', '--spec', str(self.station.root / 'bench.txt'))
+        self.berth('deploy', 'bench', '--provisioner', 'box', '--spec', str(self.station.root / 'bench.txt'))
         self.assertEqual((self.folder / 'spec.bench').read_text(), 'benches: 4\n')
         self.assertEqual(requests(self.folder)[-1]['verb'], 'change')
 
     def test_3_through_berth_serve_with_a_token_asked_twice(self):
         serve = Serve(self.station, web=False)
         try:
-            body = {'provisioner': 'lab/box', 'kind': 'deployment', 'name': 'yard', 'spec': 'yard: 1\n',
+            body = {'provisioner': 'box', 'kind': 'deployment', 'name': 'yard', 'spec': 'yard: 1\n',
                     'secrets': [{'name': 'bench_token', 'env': 'TOKEN'}], 'token': 'yard-1'}
             created = serve.call('POST', '/v1/resources', body, expect=202)
             again = serve.call('POST', '/v1/resources', body, expect=202)
@@ -245,6 +252,18 @@ class Deployments(unittest.TestCase):
         self.assertIn('Removed the deployment bench', removed.stdout)
         self.assertNotIn('bench', self.berth('resource').stdout)
 
+    def test_5_the_provisioners_own_action_makes_one_and_it_is_kept_while_it_holds_one(self):
+        self.berth('provisioner', 'box', 'run', 'new-deployment', 'name=shed', 'spec=shed: 1\nbenches: 2\n',
+                   'secrets=bench_token:TOKEN', '--yes')
+        self.assertEqual((self.folder / 'spec.shed').read_text(), 'shed: 1\nbenches: 2\n')
+        self.assertIn('shed', self.berth('resource').stdout)
+        refused = self.berth('provisioner', 'remove', 'box', check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('box still holds', refused.stderr)
+        self.berth('resource', 'shed', 'remove', '--yes')
+        self.assertIn('Removed the provisioner box', self.berth('provisioner', 'remove', 'box').stdout)
+        self.assertNotIn('Lab box', self.berth('provisioner').stdout)
+
 
 @needs_e2e
 @unittest.skipUnless(os.environ.get('BERTH_E2E_DOCKER_HOST'), 'no Docker engine on the test network')
@@ -254,23 +273,23 @@ class DockerEngine(unittest.TestCase):
     def test_the_engine_answers_and_lists_its_runtimes(self):
         station = Workstation('provisioners-docker', ssh_key=False, trust=False)
         endpoint = os.environ['BERTH_E2E_DOCKER_HOST']
-        station.berth('provisioner', 'docker/container', 'run', 'settings', f'host={endpoint}', '--yes')
-        page = station.berth('provisioner', 'docker/container').stdout
+        station.berth('provisioner', 'add', 'docker', 'docker/container', f'host={endpoint}')
+        page = station.berth('provisioner', 'docker').stdout
         self.assertIn(f'answers at {endpoint}', page)
         self.assertIn('Runtimes', page)
-        volumes = station.berth('provisioner', 'docker/container', 'run', 'volumes').stdout
+        volumes = station.berth('provisioner', 'docker', 'run', 'volumes').stdout
         self.assertIn('berth made at', volumes)
 
     def test_a_compose_deployment_is_made_changed_and_removed(self):
         station = Workstation('provisioners-compose', ssh_key=False, trust=False)
         endpoint = os.environ['BERTH_E2E_DOCKER_HOST']
-        station.berth('provisioner', 'docker/container', 'run', 'settings', f'host={endpoint}', '--yes')
+        station.berth('provisioner', 'add', 'docker', 'docker/container', f'host={endpoint}')
         station.berth('secret', 'set', 'compose_token', input='c0mpose-t0ken-made-up\n')
         spec = ('services:\n  idle:\n    image: busybox:1.37\n'
                 '    command: ["sh", "-c", "echo token-is-$$TOKEN; sleep 600"]\n'
                 '    environment:\n      TOKEN: ${TOKEN}\n')
         name = 'berth-test-e2e'
-        made = station.berth('deploy', name, '--provisioner', 'docker/container', '--spec', '-',
+        made = station.berth('deploy', name, '--provisioner', 'docker', '--spec', '-',
                              '--secret', 'compose_token:TOKEN', input=spec, timeout=300)
         self.assertNotIn('c0mpose-t0ken', made.stdout + made.stderr)
         try:

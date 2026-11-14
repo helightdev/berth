@@ -15,7 +15,7 @@ terminal. A set-up has these pieces:
 | `berth` client | The program on the user's machine. It has a terminal UI and commands. |
 | berth server | Optional. `berth serve`, usually in a Docker container, reached over a tailnet with TLS. It keeps the hosts, profiles and secrets. |
 | Host | A machine berth works with, at one of three levels. `reachable` means berth only logs in, `controller` adds berthd and box, and `workstation` is set up from a profile. A machine that exists is added with `berth host add NAME ADDRESS --user USER`. |
-| Provisioner | A program from a plugin that creates the machine for a host, such as on Docker or Incus. The names are `docker/container`, `incus/vm` and `incus/container`. `berth provisioner` lists them, and the Provisioners tab of the terminal UI (key `2`) shows each one's page. |
+| Provisioner | Creates the machine for a host, such as on Docker or Incus. Plugins bring the types `docker/container`, `incus/vm` and `incus/container`, and berth runs each provisioner under a name of its own, registered with `berth provisioner add NAME TYPE`. The `incus-host` recipe registers `incus-vm`, `incus-container` and `docker`. `berth provisioner` lists them, and the Provisioners tab of the terminal UI (key `2`) shows each one's page. |
 
 ## Where to look things up
 

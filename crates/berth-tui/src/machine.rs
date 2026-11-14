@@ -56,7 +56,7 @@ pub struct Machine {
     /// The machine berth created for the host, the resource of the machine
     /// kind whose host it is; `None` inside when it has none.
     pub instance: Option<Result<Option<Resource>, String>>,
-    /// The chosen provisioner, by `PLUGIN/ID`.
+    /// The chosen provisioner, by its name.
     pub chosen: Option<String>,
     /// What its arguments are given, by name.
     pub values: BTreeMap<String, String>,
@@ -208,12 +208,19 @@ impl Machine {
         self.values = values;
     }
 
-    /// The provisioners to choose from, as (label, `PLUGIN/ID`), the way a
+    /// The provisioners to choose from, as (label, name), the way a
     /// choice field offers its values.
     pub fn choices(&self) -> Vec<(String, String)> {
         self.all()
             .iter()
-            .map(|known| (known.label.clone(), known.id.clone()))
+            .map(|known| {
+                // Two provisioners of one type differ by their names alone.
+                let label = match known.kind.is_empty() || known.kind == known.id {
+                    true => known.label.clone(),
+                    false => format!("{} · {}", known.id, known.label),
+                };
+                (label, known.id.clone())
+            })
             .collect()
     }
 
@@ -242,7 +249,7 @@ impl Machine {
         Some(self.values.get(&argument.name).map_or("", String::as_str))
     }
 
-    /// Choose the provisioner with this `PLUGIN/ID`.
+    /// Choose the provisioner with this name.
     pub fn choose_id(&mut self, id: &str) {
         if let Some(index) = self.all().iter().position(|known| known.id == id) {
             self.choose(index);
@@ -294,7 +301,7 @@ impl Machine {
             Some(Err(error)) => problems.push(Problem::new(Step::Install, error.clone())),
             Some(Ok(all)) if all.is_empty() => problems.push(Problem::new(
                 Step::Install,
-                "No provisioner is installed. Plugins bring them.",
+                "No provisioner is registered. Add one on the Provisioners tab.",
             )),
             _ => {}
         }
@@ -777,7 +784,7 @@ mod tests {
             texts(none.problems()),
             [(
                 Step::Install,
-                "No provisioner is installed. Plugins bring them.".into()
+                "No provisioner is registered. Add one on the Provisioners tab.".into()
             )]
         );
     }

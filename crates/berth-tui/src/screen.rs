@@ -721,6 +721,9 @@ pub fn action_arguments_event(
                 edit(&mut asked.input, key);
             }
         },
+        Event::Paste(text) if asked.text => {
+            crate::event::paste_lines(&mut asked.input, text, crate::page::NEWLINE)
+        }
         Event::Paste(text) => paste(&mut asked.input, text),
         _ => {}
     }

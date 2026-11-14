@@ -3638,9 +3638,37 @@ mod tests {
             );
         };
         key(&mut home, KeyCode::Char('2'));
+        settle(&mut home, &|screen| {
+            screen.contains("No provisioner is registered")
+        });
+        // A provisioner is registered under a name of its own, of a type a plugin brings.
+        key(&mut home, KeyCode::Char('a'));
+        settle(&mut home, &|screen| {
+            screen.contains("Add provisioner · 1 of 2")
+        });
+        for ch in "lab".chars() {
+            key(&mut home, KeyCode::Char(ch));
+        }
+        key(&mut home, KeyCode::Enter);
+        // The lab's type sorts first, so it is offered first.
+        let screen = settle(&mut home, &|screen| {
+            screen.contains("Add provisioner · 2 of 2")
+        });
+        assert!(screen.contains("aa-lab/box"), "{screen}");
+        key(&mut home, KeyCode::Enter);
         let screen = settle(&mut home, &|screen| screen.contains("Lab box"));
-        assert!(screen.contains("Provisioners") && screen.contains("aa-lab/box"));
-        // The lab sorts first; its page asks it how it is.
+        assert!(
+            screen.contains("lab") && screen.contains("(aa-lab/box)"),
+            "{screen}"
+        );
+        assert_eq!(
+            berth_core::provisioner::entry(&paths, "lab")
+                .unwrap()
+                .unwrap()
+                .kind,
+            "aa-lab/box"
+        );
+        // Its page asks it how it is.
         key(&mut home, KeyCode::Enter);
         let screen = settle(&mut home, &|screen| screen.contains("The lab answers"));
         assert!(

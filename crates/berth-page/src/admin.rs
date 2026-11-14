@@ -42,6 +42,8 @@ pub enum Arrived {
     ),
     /// What an action of a provisioner that answers at once said.
     ProvisionerAnswer(String, Result<Vec<String>, String>),
+    /// The types of provisioner, to register one.
+    ProvisionerTypes(Result<Vec<berth_api::ProvisionerInfo>, String>),
     /// What the server lists as a host's actions.
     Actions(String, Vec<berth_api::Action>),
 }
@@ -94,7 +96,7 @@ impl Data {
     pub fn secret_names(&self) -> Vec<String> {
         self.secrets
             .iter()
-            .filter(|name| !name.starts_with("registry/"))
+            .filter(|name| !name.starts_with("registry/") && !name.starts_with("provisioner/"))
             .cloned()
             .collect()
     }
@@ -947,13 +949,44 @@ impl Admin {
         );
     }
 
+    /// Ask for the types of provisioner the plugins bring, to register one.
+    pub fn provisioner_types(&self) {
+        let admin = self.clone();
+        self.portal.call(
+            "provisioners.types",
+            None,
+            json!({}),
+            Value::Null,
+            move |types| {
+                let types = types.and_then(|found| {
+                    serde_json::from_value(found).map_err(|error| error.to_string())
+                });
+                admin.arrive(Arrived::ProvisionerTypes(types));
+            },
+        );
+    }
+
+    /// Register a provisioner of the type `kind` under `name`.
+    pub fn provisioner_save(&self, name: &str, kind: &str) {
+        let name = name.to_owned();
+        self.say(format!("Registering {name}…"));
+        self.call(
+            "provisioners.save",
+            json!({"name": name}),
+            json!({"type": kind}),
+            move |admin, _| {
+                admin.say(format!(
+                    "Registered {name}. Its page has its settings and secrets"
+                ));
+                admin.provisioners();
+            },
+        );
+    }
+
     /// Ask a provisioner how it is and what it can do, for its page.
     pub fn provisioner(&self, name: &str) {
-        let Some((plugin, id)) = name.split_once('/') else {
-            return;
-        };
         let (admin, name) = (self.clone(), name.to_owned());
-        let args = json!({"plugin": plugin, "id": id});
+        let args = json!({"name": name});
         self.portal.call(
             "provisioners.get",
             None,
@@ -989,9 +1022,6 @@ impl Admin {
         values: &std::collections::BTreeMap<String, String>,
         size: (u16, u16),
     ) {
-        let Some((plugin, id)) = name.split_once('/') else {
-            return;
-        };
         let (admin, name) = (self.clone(), name.to_owned());
         let title = format!("{} · {name}", action.title());
         self.say(match action.changes {
@@ -1001,7 +1031,7 @@ impl Admin {
         self.portal.call(
             "provisioners.act",
             None,
-            json!({"plugin": plugin, "id": id, "action": action.name}),
+            json!({"name": name, "action": action.name}),
             json!({"arguments": values}),
             move |result| match result {
                 Ok(acted) if acted["job"].is_null() => {

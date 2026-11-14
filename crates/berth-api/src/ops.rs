@@ -279,18 +279,25 @@ pub static SERVE: &[Op] = &[
     admin(call("setup.catalogue", "GET", "/v1/setup")),
     admin(call("setup.generate", "POST", "/v1/setup/generate")),
     call("provisioners.list", "GET", "/v1/provisioners"),
-    call("provisioners.get", "GET", "/v1/provisioners/{plugin}/{id}"),
+    call("provisioners.types", "GET", "/v1/provisioner-types"),
+    call("provisioners.get", "GET", "/v1/provisioners/{name}"),
+    admin(call("provisioners.save", "PUT", "/v1/provisioners/{name}")),
+    admin(call(
+        "provisioners.remove",
+        "DELETE",
+        "/v1/provisioners/{name}",
+    )),
     call(
         "provisioners.actions",
         "GET",
-        "/v1/provisioners/{plugin}/{id}/actions",
+        "/v1/provisioners/{name}/actions",
     ),
     // Anyone let in may ask; the action's own role is checked when it is run.
     role(
         call(
             "provisioners.act",
             "POST",
-            "/v1/provisioners/{plugin}/{id}/actions/{action}",
+            "/v1/provisioners/{name}/actions/{action}",
         ),
         Role::View,
     ),
@@ -442,6 +449,8 @@ mod tests {
         assert_eq!(role(SERVE, "hosts.act"), Role::View);
         assert_eq!(role(SERVE, "provisioners.get"), Role::View);
         assert_eq!(role(SERVE, "provisioners.act"), Role::View);
+        assert_eq!(role(SERVE, "provisioners.save"), Role::Admin);
+        assert_eq!(role(SERVE, "provisioners.remove"), Role::Admin);
         assert_eq!(role(SERVE, "resources.get"), Role::View);
         assert_eq!(role(SERVE, "resources.create"), Role::Admin);
         assert_eq!(role(SERVE, "resources.act"), Role::View);
@@ -451,11 +460,12 @@ mod tests {
             SERVE,
             Kind::Call,
             "POST",
-            "/v1/provisioners/docker/container/actions/prune",
+            "/v1/provisioners/docker/actions/prune",
         )
         .unwrap();
         assert_eq!(op.name, "provisioners.act");
-        assert_eq!(args[2], ("action", "prune".to_owned()));
+        assert_eq!(args[0], ("name", "docker".to_owned()));
+        assert_eq!(args[1], ("action", "prune".to_owned()));
         assert_eq!(role(SERVE, "plugins.upload"), Role::Admin);
         assert_eq!(role(SERVE, "kv.set"), Role::Operate);
         assert!(Role::View < Role::Operate && Role::Operate < Role::Admin);

@@ -144,3 +144,19 @@ pub fn paste(input: &mut tui_input::Input, text: &str) {
         input.handle(tui_input::InputRequest::InsertChar(ch));
     }
 }
+
+/// Type pasted text of several lines into a line: each line break is shown
+/// as `newline`, and a tab as two spaces.
+pub fn paste_lines(input: &mut tui_input::Input, text: &str, newline: char) {
+    for ch in text.replace("\r\n", "\n").chars() {
+        let typed: &[char] = match ch {
+            '\n' | '\r' => &[newline],
+            '\t' => &[' ', ' '],
+            ch if ch.is_control() => &[],
+            _ => &[ch],
+        };
+        for &ch in typed {
+            input.handle(tui_input::InputRequest::InsertChar(ch));
+        }
+    }
+}

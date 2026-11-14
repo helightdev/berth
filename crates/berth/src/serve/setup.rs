@@ -205,6 +205,9 @@ fn secret_name(name: &str) -> Answer<&str> {
             false => Err(bad(format!("Not a host's name: {host}"))),
         };
     }
+    if berth_core::provisioner::is_secret_name(name) {
+        return Ok(name);
+    }
     let plain = name.strip_prefix("registry/").unwrap_or(name);
     match plugins::valid_name(plain) {
         true => Ok(name),

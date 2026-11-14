@@ -7,7 +7,7 @@ use crate::Result;
 use crate::commands::{follow_job, parse_arguments, ready};
 use berth_api::{
     self as api, Act, Action, NewResource, ProvisionerInfo, ProvisionerState, Resource,
-    ResourceSecret,
+    ResourceSecret, SavedProvisioner,
 };
 use berth_core::{
     paths::Paths,
@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::Write;
 
-const USAGE: &str = "Usage: berth provisioner [PLUGIN/ID [NAME=VALUE…] | PLUGIN/ID actions | PLUGIN/ID run ACTION [NAME=VALUE…] [--yes]]";
+const USAGE: &str = "Usage: berth provisioner [types | add NAME TYPE [SETTING=VALUE…] | remove NAME | NAME [SETTING=VALUE…] | NAME actions | NAME run ACTION [ARGUMENT=VALUE…] [--yes]]";
 
 /// Where the provisioners are: here, or on the berth server berth uses.
 pub enum Source {
@@ -34,13 +34,6 @@ pub enum Ran {
     Answered(Value),
     /// It ran as a job to its end, with this exit code.
     Ended(i32),
-}
-
-/// `PLUGIN/ID` as the two parts of a route.
-fn parts(name: &str) -> Result<(&str, &str)> {
-    name.split_once('/')
-        .filter(|(plugin, id)| !plugin.is_empty() && !id.is_empty())
-        .ok_or_else(|| format!("No provisioner {name}. See: berth provisioner").into())
 }
 
 impl Source {
@@ -70,6 +63,44 @@ impl Source {
         }
     }
 
+    /// The types the plugins bring, which a provisioner is registered as.
+    pub fn types(&self) -> Result<Vec<ProvisionerInfo>> {
+        match self {
+            Source::Here(paths) => Ok(provision::types(paths)),
+            Source::Server(server) => Ok(serde_json::from_value(server.call(
+                "provisioners.types",
+                Value::Null,
+                None,
+            )?)?),
+        }
+    }
+
+    /// Register a provisioner, or change the settings of one that is.
+    pub fn save(&self, name: &str, saved: &SavedProvisioner) -> Result<()> {
+        match self {
+            Source::Here(paths) => provisioner::register(paths, name, saved).map(|_| ()),
+            Source::Server(server) => server
+                .call(
+                    "provisioners.save",
+                    json!({"name": name}),
+                    Some(serde_json::to_value(saved)?),
+                )
+                .map(|_| ()),
+        }
+    }
+
+    /// Forget a registered provisioner.
+    pub fn remove(&self, name: &str) -> Result<()> {
+        match self {
+            Source::Here(paths) => {
+                provisioner::remove_entry(paths, &registry::Store::new(paths)?, name)
+            }
+            Source::Server(server) => server
+                .call("provisioners.remove", json!({"name": name}), None)
+                .map(|_| ()),
+        }
+    }
+
     /// Its page; `given` are values of its own arguments for this once.
     pub fn state(&self, name: &str, given: &BTreeMap<String, String>) -> Result<ProvisionerState> {
         match self {
@@ -81,9 +112,8 @@ impl Source {
                 &Default::default(),
             ),
             Source::Server(server) => {
-                let (plugin, id) = parts(name)?;
                 let mut asked = json!(given);
-                (asked["plugin"], asked["id"]) = (json!(plugin), json!(id));
+                asked["name"] = json!(name);
                 Ok(serde_json::from_value(server.call(
                     "provisioners.get",
                     asked,
@@ -96,14 +126,11 @@ impl Source {
     pub fn actions(&self, name: &str) -> Result<Vec<Action>> {
         match self {
             Source::Here(paths) => provisioner::actions(paths, &registry::Store::new(paths)?, name),
-            Source::Server(server) => {
-                let (plugin, id) = parts(name)?;
-                Ok(serde_json::from_value(server.call(
-                    "provisioners.actions",
-                    json!({"plugin": plugin, "id": id}),
-                    None,
-                )?)?)
-            }
+            Source::Server(server) => Ok(serde_json::from_value(server.call(
+                "provisioners.actions",
+                json!({"name": name}),
+                None,
+            )?)?),
         }
     }
 
@@ -147,10 +174,9 @@ impl Source {
                 Ok(Ran::Ended(code.unwrap_or(1)))
             }
             Source::Server(server) => {
-                let (plugin, id) = parts(name)?;
                 let acted = server.call(
                     "provisioners.act",
-                    json!({"plugin": plugin, "id": id, "action": action}),
+                    json!({"name": name, "action": action}),
                     Some(serde_json::to_value(&act)?),
                 )?;
                 let acted: api::Acted = serde_json::from_value(acted)?;
@@ -307,7 +333,7 @@ impl Source {
                     resource::Asked::Again(kept) => {
                         let plugins = provision::list_plugins(paths);
                         let _ = writeln!(progress, "It was asked for with this token before");
-                        return Ok((resource::info(&kept, &plugins, false), 0));
+                        return Ok((resource::info(paths, &kept, &plugins, false), 0));
                     }
                     resource::Asked::New(creating) => creating,
                 };
@@ -326,7 +352,7 @@ impl Source {
                 let code = runner::here(paths, request, work, out)?.unwrap_or(1);
                 let plugins = provision::list_plugins(paths);
                 let kept = resource::find(paths, kept.id()).unwrap_or(kept);
-                Ok((resource::info(&kept, &plugins, false), code))
+                Ok((resource::info(paths, &kept, &plugins, false), code))
             }
             Source::Server(server) => {
                 let created: api::Created = serde_json::from_value(server.call(
@@ -468,12 +494,16 @@ impl Source {
 /// The line a provisioner has in the list: its name, and why it cannot be
 /// used here when it cannot.
 pub fn summary(provisioner: &ProvisionerInfo) -> String {
-    match provisioner.problem.is_empty() {
+    let named = match provisioner.kind.is_empty() || provisioner.kind == provisioner.id {
         true => format!("{}  {}", provisioner.id, provisioner.label),
         false => format!(
-            "{}  {}  · not usable: {}",
-            provisioner.id, provisioner.label, provisioner.problem
+            "{}  {} ({})",
+            provisioner.id, provisioner.label, provisioner.kind
         ),
+    };
+    match provisioner.problem.is_empty() {
+        true => named,
+        false => format!("{named}  · not usable: {}", provisioner.problem),
     }
 }
 
@@ -613,11 +643,55 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
         [] => {
             let listed = source.list()?;
             if listed.is_empty() {
-                println!("No plugin brings a provisioner. See: berth plugins");
+                println!(
+                    "No provisioner is registered. Add one: berth provisioner add NAME TYPE, with a type of: berth provisioner types"
+                );
             }
             for provisioner in &listed {
                 println!("{}", summary(provisioner));
             }
+            Ok(())
+        }
+        ["types"] => {
+            let types = source.types()?;
+            if types.is_empty() {
+                println!("No plugin brings a provisioner. See: berth plugins");
+            }
+            for kind in &types {
+                let mut makes: Vec<&str> = kind.kinds.iter().map(|made| made.id.as_str()).collect();
+                if makes.is_empty() {
+                    makes.push("machine");
+                }
+                println!(
+                    "{:<20} {}  · makes {}",
+                    kind.id,
+                    kind.label,
+                    makes.join(", ")
+                );
+            }
+            Ok(())
+        }
+        ["add", name, kind, rest @ ..] if rest.iter().all(|arg| arg.contains('=')) => {
+            let (settings, _) = parse_arguments(rest)?;
+            if source.list()?.iter().any(|known| known.id == *name) {
+                return Err(format!(
+                    "There is a provisioner {name} already. Change its settings with: berth provisioner {name} run settings NAME=VALUE"
+                )
+                .into());
+            }
+            source.save(
+                name,
+                &SavedProvisioner {
+                    kind: (*kind).to_owned(),
+                    settings: Some(settings),
+                },
+            )?;
+            println!("Registered {name}, a {kind}. See it with: berth provisioner {name}");
+            Ok(())
+        }
+        ["remove", name] => {
+            source.remove(name)?;
+            println!("Removed the provisioner {name}");
             Ok(())
         }
         [name, "actions"] => {
@@ -776,7 +850,6 @@ mod tests {
         let lines = answer_lines(&json!({"message": "2 pools", "details": [
             {"label": "default", "value": "zfs"}, {"label": "fast-ssd", "value": "dir"}]}));
         assert_eq!(lines, ["2 pools", "  default   zfs", "  fast-ssd  dir"]);
-        assert!(parts("incus").is_err() && parts("incus/").is_err());
         let refused = ProvisionerInfo {
             id: "lab/old".into(),
             label: "Old".into(),

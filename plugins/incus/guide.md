@@ -1,12 +1,17 @@
 # Incus
 
-This plugin creates the machine for a host on an Incus server. It offers two
-provisioners:
+This plugin creates the machine for a host on an Incus server. It brings two
+types of provisioner:
 
-| Provisioner | What it makes |
+| Type | What it makes |
 | --- | --- |
 | `incus/vm` | A virtual machine. The server needs KVM. |
 | `incus/container` | A system container. It starts faster and shares the server's kernel. |
+
+Register a provisioner of a type for each Incus server, under a name of your
+own and with the server as its setting:
+
+    berth provisioner add ovh-incus incus/vm server=https://192.0.2.10:8443
 
 Both start from an Ubuntu cloud image and set themselves up from berth's cloud
 seed. Because the plugin copies the release into the machine itself, the profile
@@ -47,6 +52,13 @@ accepts exactly that certificate and no other:
 
 On the server the certificate is `/var/lib/incus/server.crt`.
 
+Every Incus provisioner shares these three secrets. A provisioner for another
+server may be given its own instead:
+
+    berth secret set provisioner/lab-incus/incus_server_cert < lab-server.crt
+
+The action `secrets` on the provisioner's page sets them too.
+
 ## Arguments
 
 In berth each argument has a short label, and its row's Information panel
@@ -56,7 +68,7 @@ size are under Machine on the Settings tab.
 `server` and `project` are the provisioner's own arguments. berth keeps them as
 its settings, which every machine and action uses unless the call gives a value:
 
-    berth provisioner incus/vm run settings server=https://192.0.2.10:8443
+    berth provisioner ovh-incus run settings server=https://192.0.2.10:8443
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
@@ -77,7 +89,7 @@ console log Incus keeps, or cloud-init's output when the console has none.
 
 ## Actions
 
-The provisioner's page in berth, and `berth provisioner incus/vm`, list these
+The provisioner's page in berth, and `berth provisioner NAME`, list these
 actions. They only read.
 
 | Action | What it does |

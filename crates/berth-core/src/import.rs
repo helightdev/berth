@@ -41,6 +41,9 @@ pub const ACCESS_MARKER: &str = "import:access";
 /// The marker of the fifth, which makes each record of a host's machine a
 /// resource of the machine kind.
 pub const RESOURCES_MARKER: &str = "import:resources";
+/// The marker of the sixth, which registers each provisioner that has
+/// settings or made something under a name of its own.
+pub const PROVISIONERS_MARKER: &str = "import:provisioners";
 
 /// What a row of the import is.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -70,6 +73,7 @@ pub fn run(paths: &Paths, installation: &Installation, store: &Store) -> Result<
         && !setup_key_file(paths).exists()
         && marked(store, ACCESS_MARKER)?
         && marked(store, RESOURCES_MARKER)?
+        && marked(store, PROVISIONERS_MARKER)?
     {
         return Ok(());
     }
@@ -138,7 +142,95 @@ pub fn run(paths: &Paths, installation: &Installation, store: &Store) -> Result<
             );
         }
     }
+    if !marked(store, PROVISIONERS_MARKER)? {
+        let registered = take_in_provisioners(store)?;
+        if !registered.is_empty() {
+            eprintln!(
+                "berth: the provisioners in use are registered as {}: see berth provisioner",
+                registered.join(", ")
+            );
+        }
+    }
     Ok(())
+}
+
+/// The sixth import, in one change with its marker: each type of provisioner
+/// that has settings, or that made a resource of any scope, is registered
+/// under a name of its own, such as `incus-vm` for `incus/vm`, with those
+/// settings. Its resources name it by that name. Returns the names.
+pub(crate) fn take_in_provisioners(store: &Store) -> Result<Vec<String>> {
+    use crate::provisioner::{Entry, default_name};
+    let mut types: std::collections::BTreeMap<String, Entry> = Default::default();
+    let mut writes: Vec<(&'static str, String, String, Vec<u8>)> = vec![];
+    let mut removals: Vec<(&'static str, String, String)> = vec![];
+    for (kind, value) in store.entries(kind::PROVISIONER, OWN)? {
+        removals.push((kind::PROVISIONER, OWN.into(), kind.clone()));
+        let settings = serde_json::from_slice(&value).unwrap_or_default();
+        types.insert(kind.clone(), Entry { kind, settings });
+    }
+    let mut scopes = std::collections::BTreeSet::new();
+    if let crate::store::Rows::State(rows) = store.export(crate::store::Table::State)? {
+        for row in rows.into_iter().filter(|row| row.kind == kind::RESOURCE) {
+            scopes.insert(row.scope);
+        }
+    }
+    for scope in scopes {
+        for (id, value) in store.entries(kind::RESOURCE, &scope)? {
+            let Ok(mut record) = serde_json::from_slice::<crate::resource::Record>(&value) else {
+                continue;
+            };
+            if !record.provisioner.contains('/') {
+                continue;
+            }
+            types
+                .entry(record.provisioner.clone())
+                .or_insert_with(|| Entry {
+                    kind: record.provisioner.clone(),
+                    ..Entry::default()
+                });
+            record.provisioner = default_name(&record.provisioner);
+            writes.push((
+                kind::RESOURCE,
+                scope.clone(),
+                id,
+                serde_json::to_vec(&record)?,
+            ));
+        }
+    }
+    let taken = store.names(kind::PROVISIONER_ENTRY, OWN)?;
+    let mut registered = vec![];
+    for (kind, entry) in types {
+        let name = default_name(&kind);
+        // One registered under that name already keeps what it has.
+        if taken.contains(&name) {
+            continue;
+        }
+        writes.push((
+            kind::PROVISIONER_ENTRY,
+            OWN.into(),
+            name.clone(),
+            serde_json::to_vec(&entry)?,
+        ));
+        registered.push(name);
+    }
+    let marker =
+        json!({"version": berth_api::VERSION, "at": berth_api::rfc3339(berth_api::unix_now())});
+    writes.push((
+        kind::META,
+        OWN.into(),
+        PROVISIONERS_MARKER.into(),
+        marker.to_string().into_bytes(),
+    ));
+    let writes: Vec<(&str, &str, &str, Vec<u8>)> = writes
+        .iter()
+        .map(|(kind, scope, name, value)| (*kind, scope.as_str(), name.as_str(), value.clone()))
+        .collect();
+    let removals: Vec<(&str, &str, &str)> = removals
+        .iter()
+        .map(|(kind, scope, name)| (*kind, scope.as_str(), name.as_str()))
+        .collect();
+    store.change(&writes, &removals)?;
+    Ok(registered)
 }
 
 /// What berth before 0.5 kept of a host's machine, beside its profile.
@@ -1201,8 +1293,9 @@ mod tests {
         let (_dir, paths) = scratch();
         let store = open(&paths);
         let report = store.seal_report().unwrap();
-        assert_eq!((report.sealed, report.plain), (0, 5));
+        assert_eq!((report.sealed, report.plain), (0, 6));
         assert!(read(&store, kind::META, MARKER).is_some());
+        assert!(read(&store, kind::META, PROVISIONERS_MARKER).is_some());
         assert!(read(&store, kind::META, PROFILES_MARKER).is_some());
         assert!(read(&store, kind::META, KEYS_MARKER).is_some());
         assert!(read(&store, kind::META, ACCESS_MARKER).is_some());
@@ -1220,8 +1313,8 @@ mod tests {
         let store = open(&paths);
         assert!(store.encrypted());
         let report = store.seal_report().unwrap();
-        // Two secrets, a registry, two settings and the five markers.
-        assert_eq!((report.sealed, report.plain), (10, 0));
+        // Two secrets, a registry, two settings and the six markers.
+        assert_eq!((report.sealed, report.plain), (11, 0));
         assert_eq!(read(&store, kind::SECRET, "github").unwrap(), "ghp-made-up");
     }
 
@@ -1273,6 +1366,53 @@ mod tests {
         fs::write(served.join("yard.json"), "{}").unwrap();
     }
 
+    #[test]
+    fn the_provisioners_in_use_are_registered_under_names_of_their_own() {
+        let (_dir, paths) = scratch();
+        let store = open(&paths);
+        store
+            .write_json(
+                kind::PROVISIONER,
+                OWN,
+                "incus/vm",
+                &json!({"server": "https://192.0.2.10:8443"}),
+            )
+            .unwrap();
+        // A resource of another scope, such as a mirror's, names its provisioner too.
+        let record = crate::resource::Record {
+            id: "r-mirror01".into(),
+            provisioner: "docker/container".into(),
+            kind: "deployment".into(),
+            name: "wiki".into(),
+            ..Default::default()
+        };
+        store
+            .write_json(kind::RESOURCE, "mirror", &record.id, &json!(record))
+            .unwrap();
+        // One registered already keeps what it has.
+        let kept =
+            json!({"type": "docker/container", "settings": {"host": "ssh://ops@192.0.2.20"}});
+        store
+            .write_json(kind::PROVISIONER_ENTRY, OWN, "docker-container", &kept)
+            .unwrap();
+        assert_eq!(take_in_provisioners(&store).unwrap(), ["incus-vm"]);
+        assert_eq!(
+            json_row(&store, kind::PROVISIONER_ENTRY, "incus-vm").unwrap(),
+            json!({"type": "incus/vm", "settings": {"server": "https://192.0.2.10:8443"}})
+        );
+        assert!(json_row(&store, kind::PROVISIONER, "incus/vm").is_none());
+        assert_eq!(
+            json_row(&store, kind::PROVISIONER_ENTRY, "docker-container").unwrap(),
+            kept
+        );
+        let moved = store
+            .read_json(kind::RESOURCE, "mirror", &record.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(moved["provisioner"], "docker-container");
+        assert!(read(&store, kind::META, PROVISIONERS_MARKER).is_some());
+    }
+
     fn json_row(store: &Store, kind: &str, name: &str) -> Option<Value> {
         store.read_json(kind, OWN, name).unwrap()
     }
@@ -1312,7 +1452,12 @@ mod tests {
                 record.provisioner.as_str(),
                 record.name.as_str()
             ),
-            ("vm-1", "t0k", "machine", "cloud/vm", "studio")
+            ("vm-1", "t0k", "machine", "cloud-vm", "studio")
+        );
+        // Its provisioner is registered under a name of its own, of the type it named.
+        assert_eq!(
+            json_row(&store, kind::PROVISIONER_ENTRY, "cloud-vm").unwrap(),
+            json!({"type": "cloud/vm", "settings": {}})
         );
         assert!(crate::resource::valid_id(&record.id), "{}", record.id);
         assert!(json_row(&store, kind::INSTANCE, "studio").is_none());

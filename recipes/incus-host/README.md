@@ -128,11 +128,17 @@ The token itself gives full control of every host. Without a key, read it with
 `sudo cat /srv/berth/data/berth/serve.token`, then set it with
 `berth config server` and `berth config server_token`.
 
-The server's provisioners are ready. `incus/vm` and `incus/container` have the
-setting `server=https://incus-host:8444`, and `docker/container` uses the
-engine of this machine. The container connects to the guests at their
-addresses on the bridge. berth can set up a new machine there before it has
-joined a tailnet.
+The server's provisioners are ready. The recipe registers three of them,
+unless the server has provisioners of those names already:
+
+| Name | Type | Setting |
+| --- | --- | --- |
+| `incus-vm` | `incus/vm` | `server=https://incus-host:8444` |
+| `incus-container` | `incus/container` | `server=https://incus-host:8444` |
+| `docker` | `docker/container` | none: the engine of this machine |
+
+The container connects to the guests at their addresses on the bridge. berth
+can set up a new machine there before it has joined a tailnet.
 
 Docker's socket gives root on this machine, as the Incus certificate does. So
 whoever has the server's token controls the whole machine.
@@ -154,7 +160,7 @@ machine made with `runtime=sysbox` runs without `--privileged`:
 
 ```bash
 sudo ./install.sh -e sysbox=true
-berth provision studio-2 docker/container host=ssh://root@192.0.2.10 runtime=sysbox
+berth provision studio-2 docker host=ssh://root@192.0.2.10 runtime=sysbox
 ```
 
 The recipe downloads the package from the Sysbox release page on GitHub and

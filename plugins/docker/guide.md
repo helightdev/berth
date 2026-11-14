@@ -25,10 +25,16 @@ added when the container is created. The same image serves every host.
 In berth each argument has a short label, and its row's Information panel
 says what it means. CPUs and Memory are under Machine on the Settings tab.
 
+The plugin brings the type `docker/container`. Register a provisioner of it for
+each engine, under a name of your own:
+
+    berth provisioner add docker docker/container
+    berth provisioner add build-box docker/container host=ssh://ops@192.0.2.20
+
 `host` is the provisioner's own argument. berth keeps it as a setting, which
 every machine and action uses unless it is given another:
 
-    berth provisioner docker/container run settings host=ssh://ops@192.0.2.20
+    berth provisioner build-box run settings host=ssh://ops@192.0.2.20
 
 | Name | Default | Meaning |
 | --- | --- | --- |
@@ -114,6 +120,10 @@ have them.
 | Destroy | `docker compose down`. It removes the project's named volumes too, unless `keep_volumes` is `yes`. |
 | List | The projects whose containers have berth's labels. |
 
+Make one with `berth deploy NAME --provisioner NAME --spec FILE`, or with the
+action `new-deployment` on the provisioner's page, which takes the Compose file
+pasted whole.
+
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `keep_volumes` | `no` | `yes` keeps the project's named volumes when the deployment is removed. |
@@ -128,8 +138,8 @@ A deployment's page lists these actions:
 
 ## Actions
 
-The provisioner's page in berth, and `berth provisioner docker/container`,
-list these actions:
+The provisioner's page in berth, and `berth provisioner NAME`, list these
+actions:
 
 | Action | What it does |
 | --- | --- |
@@ -149,7 +159,7 @@ container is not root on the Docker host. With `runtime=sysbox` the plugin
 starts the container with `--runtime sysbox-runc` in place of `--privileged`
 and its cgroup and `/run` options:
 
-    berth provision studio-2 docker/container runtime=sysbox
+    berth provision studio-2 docker runtime=sysbox
 
 The Docker host needs Sysbox installed. The plugin checks for the runtime
 `sysbox-runc` before it makes anything, and says what to install when it is

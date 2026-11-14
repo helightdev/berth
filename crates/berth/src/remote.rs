@@ -415,6 +415,7 @@ mod tests {
             choices: vec![],
             chosen: None,
             secret: false,
+            text: false,
         });
         until(&mut host, "choices", |host| {
             host.arguments.as_ref().unwrap().choices == ["ann", "bob"]

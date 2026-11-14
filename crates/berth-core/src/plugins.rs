@@ -128,6 +128,7 @@ impl Provisioner {
     pub fn info(&self, plugin: &str, missing_secrets: Vec<String>) -> ProvisionerInfo {
         ProvisionerInfo {
             id: format!("{plugin}/{}", self.id),
+            kind: format!("{plugin}/{}", self.id),
             label: self.label.clone(),
             description: self.description.clone(),
             setup: self.setup.name().into(),

@@ -34,6 +34,11 @@ pub enum Asked {
     Nothing(Option<String>),
     /// Read the list again.
     List,
+    /// Ask for the types of provisioner, to register one: [`Tab::adding`].
+    Add,
+    /// Register a provisioner of the type `kind` under `name`, then read the
+    /// list again.
+    Save { name: String, kind: String },
     /// Ask a provisioner how it is and what it can do, for its page.
     Open(String),
     /// Run an action of a provisioner with these values.
@@ -77,7 +82,7 @@ pub struct ResourcePart {
 /// The page of one provisioner, or of one resource it made, as it was last
 /// heard of.
 pub struct Page {
-    /// The provisioner's `PLUGIN/ID`, or the resource's id.
+    /// The provisioner's name, or the resource's id.
     pub id: String,
     /// Set on a resource's page.
     pub resource: Option<ResourcePart>,
@@ -98,6 +103,45 @@ pub struct Page {
 pub struct Tab {
     pub selected: usize,
     pub page: Option<Page>,
+    /// The dialog that registers a provisioner, with its one action.
+    adding: Option<(Vec<Action>, Arguments)>,
+}
+
+/// The action of the dialog that registers a provisioner: its name, then
+/// its type, of `types`.
+fn add_action(types: &[ProvisionerInfo]) -> Action {
+    let offered: Vec<String> = types.iter().map(|kind| kind.id.clone()).collect();
+    let described: Vec<String> = types
+        .iter()
+        .map(|kind| format!("{} is {}", kind.id, kind.label))
+        .collect();
+    Action {
+        name: "add".into(),
+        label: "Add provisioner".into(),
+        arguments: vec![
+            berth_api::Argument {
+                name: "name".into(),
+                label: "Name".into(),
+                required: true,
+                help: "The provisioner's name in berth, such as ovh-incus: lowercase letters, digits, - and _, starting with a letter.".into(),
+                ..Default::default()
+            },
+            berth_api::Argument {
+                name: "type".into(),
+                label: "Type".into(),
+                required: true,
+                default: offered.first().cloned().unwrap_or_default(),
+                help: format!(
+                    "What it is, of the types the plugins bring: {}.",
+                    described.join(", ")
+                ),
+                values: offered,
+                ..Default::default()
+            },
+        ],
+        role: berth_api::ops::Role::Admin,
+        ..Action::default()
+    }
 }
 
 /// How a provisioner is, in a few words, with its colour.
@@ -142,7 +186,10 @@ pub fn answer_lines(answer: &Value) -> Vec<String> {
 pub fn rows(provisioners: &[ProvisionerInfo]) -> Vec<Line<'static>> {
     let muted = Style::new().fg(theme::MUTED);
     if provisioners.is_empty() {
-        return vec![Line::styled("No plugin brings a provisioner", muted)];
+        return vec![Line::styled(
+            "No provisioner is registered: a adds one",
+            muted,
+        )];
     }
     provisioners
         .iter()
@@ -150,10 +197,16 @@ pub fn rows(provisioners: &[ProvisionerInfo]) -> Vec<Line<'static>> {
             let (said, colour) = usable(provisioner);
             Line::from(vec![
                 Span::styled(
-                    format!("{:<28}", provisioner.label),
+                    format!("{:<20}", provisioner.id),
                     Style::new().fg(theme::TEXT),
                 ),
-                Span::styled(format!("{:<20}", provisioner.id), muted),
+                Span::styled(
+                    format!(
+                        "{:<28}",
+                        format!("{} ({})", provisioner.label, provisioner.kind)
+                    ),
+                    muted,
+                ),
                 Span::styled(said, Style::new().fg(colour)),
             ])
         })
@@ -192,10 +245,13 @@ pub fn plural(label: &str) -> String {
 pub fn help(provisioner: Option<&ProvisionerInfo>, place: &str) -> String {
     let Some(provisioner) = provisioner else {
         return format!(
-            "A plugin brings provisioners, which create machines for hosts and may have actions of their own. None of the plugins on {place} does. See the Plugins tab."
+            "A provisioner creates machines for hosts, and other resources such as Compose projects. Plugins bring the types, such as an Incus virtual machine; berth runs each as a provisioner registered under a name of its own, with its own settings, such as the server it uses. None is registered on {place}: a adds one. From the command line: `berth provisioner add NAME TYPE`"
         );
     };
-    let mut text = format!("{}\n\n", provisioner.description);
+    let mut text = format!(
+        "{}, a {}.\n\n{}\n\n",
+        provisioner.id, provisioner.kind, provisioner.description
+    );
     if !provisioner.problem.is_empty() {
         text += &format!("It cannot be used here: {}\n\n", provisioner.problem);
     }
@@ -558,8 +614,28 @@ impl Tab {
         list.get(self.selected)
     }
 
+    /// Open the dialog that registers a provisioner, with the types there
+    /// are; what to say when there is none.
+    pub fn adding(&mut self, types: Result<Vec<ProvisionerInfo>, String>) -> Option<String> {
+        let types = match types {
+            Ok(types) if types.is_empty() => {
+                return Some("No plugin brings a provisioner. See the Plugins tab".into());
+            }
+            Ok(types) => types,
+            Err(error) => return Some(format!("✗ {error}")),
+        };
+        let actions = vec![add_action(&types)];
+        let Begin::Arguments(mut dialog) = page::begin(&actions, 0, true) else {
+            return None;
+        };
+        dialog.choices = actions[0].arguments[0].values.clone();
+        self.adding = Some((actions, dialog));
+        None
+    }
+
     /// Leave a dialog, on changing tabs.
     pub fn leave(&mut self) {
+        self.adding = None;
         if let Some(page) = &mut self.page {
             page.question = None;
             page.arguments = None;
@@ -568,16 +644,26 @@ impl Tab {
 
     /// Put pasted text into the argument being asked for, if one is.
     pub fn paste(&mut self, text: &str) {
-        if let Some(dialog) = self.page.as_mut().and_then(|page| page.arguments.as_mut()) {
-            crate::event::paste(&mut dialog.input, text);
+        let dialog = match &mut self.adding {
+            Some((_, dialog)) => Some(dialog),
+            None => self.page.as_mut().and_then(|page| page.arguments.as_mut()),
+        };
+        match dialog {
+            Some(dialog) if dialog.text => {
+                crate::event::paste_lines(&mut dialog.input, text, page::NEWLINE)
+            }
+            Some(dialog) => crate::event::paste(&mut dialog.input, text),
+            None => {}
         }
     }
 
     /// Whether keys go to a dialog, so none of them changes tabs.
     pub fn typing(&self) -> bool {
-        self.page
-            .as_ref()
-            .is_some_and(|page| page.question.is_some() || page.arguments.is_some())
+        self.adding.is_some()
+            || self
+                .page
+                .as_ref()
+                .is_some_and(|page| page.question.is_some() || page.arguments.is_some())
     }
 
     /// Take in what a provisioner said for its page.
@@ -651,6 +737,9 @@ impl Tab {
 
     /// The arguments being asked for, with the actions they are of.
     pub fn arguments(&self) -> Option<(&[Action], &Arguments)> {
+        if let Some((actions, dialog)) = &self.adding {
+            return Some((actions, dialog));
+        }
         let page = self.page.as_ref()?;
         Some((&page.actions, page.arguments.as_ref()?))
     }
@@ -699,7 +788,7 @@ impl Tab {
                 rows: rows(list),
                 selected,
                 help: help(list.get(selected), place),
-                keys: "↑↓ select · Enter open · r refresh · Esc hosts",
+                keys: "↑↓ select · Enter open · a add · r refresh · Esc hosts",
             };
         };
         let items = page.items();
@@ -790,6 +879,32 @@ impl Tab {
         list: &[ProvisionerInfo],
         platform: &mut dyn Platform,
     ) -> Asked {
+        if let Some((actions, dialog)) = self.adding.take() {
+            let mut said = None;
+            let mut open = Some(dialog);
+            let accepted =
+                screen::action_arguments_event(&mut open, &Event::Key(key), platform, &mut said);
+            if accepted && let Some(dialog) = open.take() {
+                return match page::accept(&actions, dialog) {
+                    Accepted::Next(mut next) => {
+                        next.choices = actions[0].arguments[next.index].values.clone();
+                        self.adding = Some((actions, next));
+                        Asked::Nothing(None)
+                    }
+                    Accepted::Missing(dialog, said) => {
+                        self.adding = Some((actions, dialog));
+                        Asked::Nothing(Some(said))
+                    }
+                    Accepted::Run((_, values)) => Asked::Save {
+                        name: values.get("name").cloned().unwrap_or_default(),
+                        kind: values.get("type").cloned().unwrap_or_default(),
+                    },
+                };
+            }
+            // Esc closes it; any other key leaves it open.
+            self.adding = open.map(|dialog| (actions, dialog));
+            return Asked::Nothing(said);
+        }
         let Some(page) = &mut self.page else {
             let count = list.len();
             match key.code {
@@ -805,7 +920,9 @@ impl Tab {
                         self.page = Some(Page::new(&id));
                         return Asked::Open(id);
                     }
+                    return Asked::Add;
                 }
+                Code::Char('a') => return Asked::Add,
                 Code::Char('r') => return Asked::List,
                 _ => return Asked::Other,
             }
@@ -986,6 +1103,81 @@ mod tests {
 
     fn key(code: Code) -> Key {
         Key::plain(code)
+    }
+
+    #[test]
+    fn a_provisioner_is_registered_with_a_name_and_a_type() {
+        let mut tab = Tab::default();
+        let none: Vec<ProvisionerInfo> = vec![];
+        // An empty list says how to add one; Enter and a both ask for the types.
+        assert!(text(&tab.shown(&none, "this machine"))[0].contains("a adds one"));
+        assert_eq!(tab.key(key(Code::Enter), &none, &mut Nowhere), Asked::Add);
+        assert_eq!(
+            tab.key(key(Code::Char('a')), &none, &mut Nowhere),
+            Asked::Add
+        );
+        assert_eq!(
+            tab.adding(Ok(vec![])).as_deref(),
+            Some("No plugin brings a provisioner. See the Plugins tab")
+        );
+        assert!(tab.adding(Ok(listed())).is_none() && tab.typing());
+        // A name is needed, then the type is one of those offered.
+        assert_eq!(
+            tab.key(key(Code::Enter), &none, &mut Nowhere),
+            Asked::Nothing(Some("Name is needed".into()))
+        );
+        for ch in "lab".chars() {
+            tab.key(key(Code::Char(ch)), &none, &mut Nowhere);
+        }
+        tab.key(key(Code::Enter), &none, &mut Nowhere);
+        let (actions, asked) = tab.arguments().unwrap();
+        assert_eq!(actions[0].arguments[asked.index].name, "type");
+        assert_eq!(asked.choices, ["docker/container", "lab/old"]);
+        assert_eq!(asked.input.value(), "docker/container");
+        tab.key(key(Code::Down), &none, &mut Nowhere);
+        tab.key(key(Code::Down), &none, &mut Nowhere);
+        assert_eq!(
+            tab.key(key(Code::Enter), &none, &mut Nowhere),
+            Asked::Save {
+                name: "lab".into(),
+                kind: "lab/old".into()
+            }
+        );
+        assert!(!tab.typing());
+        // Esc leaves it.
+        tab.adding(Ok(listed()));
+        tab.key(key(Code::Esc), &none, &mut Nowhere);
+        assert!(!tab.typing());
+    }
+
+    #[test]
+    fn a_text_argument_keeps_the_lines_that_are_pasted() {
+        let actions = vec![Action {
+            name: "new-deployment".into(),
+            arguments: vec![Argument {
+                name: "spec".into(),
+                required: true,
+                kind: Argument::TEXT.into(),
+                ..Argument::default()
+            }],
+            ..Action::default()
+        }];
+        let Begin::Arguments(dialog) = page::begin(&actions, 0, true) else {
+            panic!("it asks for its spec");
+        };
+        assert!(dialog.text);
+        let mut open = Some(dialog);
+        let mut said = None;
+        let pasted = Event::Paste("services:\r\n  wiki:\n\timage: wiki\n".into());
+        screen::action_arguments_event(&mut open, &pasted, &mut Nowhere, &mut said);
+        let dialog = open.unwrap();
+        assert_eq!(dialog.input.value(), "services:⏎  wiki:⏎  image: wiki⏎");
+        match page::accept(&actions, dialog) {
+            Accepted::Run((_, values)) => {
+                assert_eq!(values["spec"], "services:\n  wiki:\n  image: wiki\n")
+            }
+            _ => panic!("all is there"),
+        }
     }
 
     fn text(shown: &Shown) -> Vec<String> {

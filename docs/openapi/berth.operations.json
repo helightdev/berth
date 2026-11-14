@@ -238,7 +238,7 @@
             "type": "string"
           },
           "kind": {
-            "description": "`resource` for an argument of a provisioner that sizes the machine:\nits CPUs, memory or disk. Empty for any other argument.",
+            "description": "`resource` for an argument of a provisioner that sizes the machine:\nits CPUs, memory or disk. `text` for one whose value has several\nlines. Empty for any other argument.",
             "type": "string"
           },
           "label": {
@@ -732,7 +732,7 @@
             "type": "string"
           },
           "subject": {
-            "description": "What it was done to: `host:NAME`, `provisioner:PLUGIN/ID`,\n`resource:ID` or `installation`. Empty for a job from before 0.5.",
+            "description": "What it was done to: `host:NAME`, `provisioner:NAME`,\n`resource:ID` or `installation`. Empty for a job from before 0.5.",
             "type": "string"
           }
         },
@@ -956,7 +956,7 @@
             "type": "string"
           },
           "provisioner": {
-            "description": "`PLUGIN/ID`.",
+            "description": "The provisioner's name.",
             "type": "string"
           },
           "secrets": {
@@ -1340,7 +1340,7 @@
             "type": "string"
           },
           "id": {
-            "description": "`PLUGIN/ID`.",
+            "description": "The name it is registered under, such as `ovh-incus`. In the list of\ntypes, the type itself.",
             "type": "string"
           },
           "kinds": {
@@ -1390,6 +1390,10 @@
           },
           "setup": {
             "description": "`seed`: the machine boots with berth's cloud seed and sets itself up.\n`apply`: berth applies the profile over SSH once the machine answers.",
+            "type": "string"
+          },
+          "type": {
+            "description": "The plugin's provisioner it is, as `PLUGIN/ID`, such as `incus/vm`.",
             "type": "string"
           },
           "verbs": {
@@ -1564,7 +1568,7 @@
             "type": "string"
           },
           "provisioner": {
-            "description": "`PLUGIN/ID`.",
+            "description": "The name of the provisioner that made it.",
             "type": "string"
           },
           "secrets": {
@@ -1736,6 +1740,29 @@
           "host"
         ],
         "type": "string"
+      },
+      "SavedProvisioner": {
+        "description": "A provisioner to register, or the type and settings of one that is.",
+        "properties": {
+          "settings": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Values of its own arguments, such as the server it uses. Empty ones\nare not kept. Left out, the settings it has stay.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "type": {
+            "description": "The plugin's provisioner it is, as `PLUGIN/ID`. A registered one keeps\nits type: this is the same or empty.",
+            "type": "string"
+          }
+        },
+        "type": "object"
       },
       "SecretNames": {
         "description": "The names of the secrets the server keeps. Their values never leave it\nexcept to a host.",
@@ -3133,17 +3160,32 @@
       "summary": "What the plugins can create machines and other resources with, what each asks for and can do, and whether it can be used here."
     },
     {
+      "args": [],
+      "group": "provisioners",
+      "http": {
+        "method": "GET",
+        "path": "/v1/provisioner-types"
+      },
+      "kind": "call",
+      "name": "provisioners.types",
+      "portal": true,
+      "result": {
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/ProvisionerInfo"
+          },
+          "type": "array"
+        }
+      },
+      "role": "view",
+      "summary": "The types of provisioner the plugins bring, which a provisioner is registered as."
+    },
+    {
       "args": [
         {
-          "description": "The plugin",
+          "description": "The provisioner's name",
           "in": "path",
-          "name": "plugin",
-          "required": true
-        },
-        {
-          "description": "The provisioner within the plugin",
-          "in": "path",
-          "name": "id",
+          "name": "name",
           "required": true
         },
         {
@@ -3163,7 +3205,7 @@
       "group": "provisioners",
       "http": {
         "method": "GET",
-        "path": "/v1/provisioners/{plugin}/{id}"
+        "path": "/v1/provisioners/{name}"
       },
       "kind": "call",
       "name": "provisioners.get",
@@ -3179,15 +3221,77 @@
     {
       "args": [
         {
-          "description": "The plugin",
+          "description": "Its name: lowercase letters, digits, - and _, starting with a letter",
           "in": "path",
-          "name": "plugin",
+          "name": "name",
           "required": true
+        }
+      ],
+      "data": {
+        "description": null,
+        "schema": {
+          "$ref": "#/components/schemas/SavedProvisioner"
+        }
+      },
+      "errors": [
+        {
+          "description": "The name, the type or a setting does not fit; the message says which",
+          "status": "400"
+        }
+      ],
+      "group": "provisioners",
+      "http": {
+        "method": "PUT",
+        "path": "/v1/provisioners/{name}"
+      },
+      "kind": "call",
+      "name": "provisioners.save",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/ProvisionerInfo"
+        }
+      },
+      "role": "admin",
+      "summary": "Register a provisioner under a name of its own, of a type a plugin brings, or change the settings of one that is registered. A registered one keeps its type."
+    },
+    {
+      "args": [
+        {
+          "description": "Its name",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "No such provisioner",
+          "status": "404"
         },
         {
-          "description": "The provisioner within the plugin",
+          "description": "It still holds resources; the message names them",
+          "status": "409"
+        }
+      ],
+      "group": "provisioners",
+      "http": {
+        "method": "DELETE",
+        "path": "/v1/provisioners/{name}"
+      },
+      "kind": "call",
+      "name": "provisioners.remove",
+      "portal": true,
+      "result": null,
+      "role": "admin",
+      "summary": "Forget a registered provisioner, with its settings and the secrets it keeps of its own. It is kept while it holds resources."
+    },
+    {
+      "args": [
+        {
+          "description": "The provisioner's name",
           "in": "path",
-          "name": "id",
+          "name": "name",
           "required": true
         }
       ],
@@ -3200,7 +3304,7 @@
       "group": "provisioners",
       "http": {
         "method": "GET",
-        "path": "/v1/provisioners/{plugin}/{id}/actions"
+        "path": "/v1/provisioners/{name}/actions"
       },
       "kind": "call",
       "name": "provisioners.actions",
@@ -3219,15 +3323,9 @@
     {
       "args": [
         {
-          "description": "The plugin",
+          "description": "The provisioner's name",
           "in": "path",
-          "name": "plugin",
-          "required": true
-        },
-        {
-          "description": "The provisioner within the plugin",
-          "in": "path",
-          "name": "id",
+          "name": "name",
           "required": true
         },
         {
@@ -3279,7 +3377,7 @@
       "group": "provisioners",
       "http": {
         "method": "POST",
-        "path": "/v1/provisioners/{plugin}/{id}/actions/{action}"
+        "path": "/v1/provisioners/{name}/actions/{action}"
       },
       "kind": "call",
       "name": "provisioners.act",
@@ -3295,7 +3393,7 @@
     {
       "args": [
         {
-          "description": "Only those of this provisioner, `PLUGIN/ID`.",
+          "description": "Only those of this provisioner, by its name.",
           "header": null,
           "in": "query",
           "name": "provisioner",

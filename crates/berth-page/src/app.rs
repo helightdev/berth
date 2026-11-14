@@ -477,8 +477,22 @@ impl App {
                         .collect();
                 }
                 Arrived::Actions(..) => {}
+                // One that was removed takes its page back to the list.
+                Arrived::ProvisionerPage(_, Err(error), _)
+                    if error.starts_with("No provisioner ") =>
+                {
+                    self.home.provisioners.page = None;
+                    if let Some(admin) = &self.admin {
+                        admin.provisioners();
+                    }
+                }
                 Arrived::ProvisionerPage(name, state, actions) => {
                     self.home.provisioners.opened(&name, state, actions);
+                }
+                Arrived::ProvisionerTypes(types) => {
+                    if let Some(said) = self.home.provisioners.adding(types) {
+                        self.status = said;
+                    }
                 }
                 Arrived::ResourcePage(id, seen, actions) => {
                     if seen

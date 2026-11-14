@@ -31,6 +31,10 @@ enum Arrived {
         Result<Vec<Action>, String>,
     ),
     Answered(String, Result<Vec<String>, String>),
+    /// The types of provisioner, to register one.
+    Types(Result<Vec<ProvisionerInfo>, String>),
+    /// A provisioner was registered under this name, or why not.
+    Saved(Result<String, String>),
     Output(Vec<u8>),
     /// A job ended: the subject's page to ask again, a resource's or a
     /// provisioner's, and how it ended.
@@ -125,6 +129,31 @@ impl View {
                 .map_err(|error| error.to_string());
             let actions = source.actions(&id).map_err(|error| error.to_string());
             let _ = sender.send(Arrived::Page(id, Box::new(state), actions));
+        });
+    }
+
+    fn types(&self, paths: &Paths) {
+        let (paths, sender) = (paths.clone(), self.sender.clone());
+        std::thread::spawn(move || {
+            let types = Source::of(&paths)
+                .types()
+                .map_err(|error| error.to_string());
+            let _ = sender.send(Arrived::Types(types));
+        });
+    }
+
+    fn save(&self, paths: &Paths, name: String, kind: String) {
+        let (paths, sender) = (paths.clone(), self.sender.clone());
+        std::thread::spawn(move || {
+            let saved = berth_api::SavedProvisioner {
+                kind,
+                settings: None,
+            };
+            let said = Source::of(&paths)
+                .save(&name, &saved)
+                .map(|()| name)
+                .map_err(|error| error.to_string());
+            let _ = sender.send(Arrived::Saved(said));
         });
     }
 
@@ -234,7 +263,29 @@ impl View {
                     self.listing = Some(listed);
                     self.asked = false;
                 }
+                // One that was removed takes its page back to the list.
+                Arrived::Page(_, state, _)
+                    if state
+                        .as_ref()
+                        .as_ref()
+                        .is_err_and(|error| error.starts_with("No provisioner ")) =>
+                {
+                    self.tab.page = None;
+                    self.listing = None;
+                    self.load(paths);
+                }
                 Arrived::Page(id, state, actions) => self.tab.opened(&id, *state, actions),
+                Arrived::Types(types) => {
+                    if let Some(said) = self.tab.adding(types) {
+                        *status = said;
+                    }
+                }
+                Arrived::Saved(Ok(name)) => {
+                    *status = format!("Registered {name}. Its page has its settings and secrets");
+                    self.listing = None;
+                    self.load(paths);
+                }
+                Arrived::Saved(Err(error)) => *status = format!("✗ {error}"),
                 // One that was removed takes its page back to its provisioner's.
                 Arrived::Resource(id, seen, _)
                     if seen
@@ -385,6 +436,11 @@ impl View {
             Asked::List => {
                 self.listing = None;
                 self.load(paths);
+            }
+            Asked::Add => self.types(paths),
+            Asked::Save { name, kind } => {
+                *status = format!("Registering {name}…");
+                self.save(paths, name, kind);
             }
             Asked::Open(id) => self.open(paths, id),
             Asked::Run {

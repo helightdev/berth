@@ -15,7 +15,7 @@ use crate::{
     plugins::{self, Plugin, Provisioner},
     profiles::{FILE_SCOPE, Place},
     provision::{
-        self, Options, call, find as provisioner_of, found, needs_secrets, runnable, secrets,
+        self, Options, call, found, needs_secrets, resolve as provisioner_of, runnable, secrets,
         values_of,
     },
     registry::Store,
@@ -31,7 +31,7 @@ use std::{collections::BTreeMap, io::Write, path::PathBuf};
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Record {
     pub id: String,
-    /// `PLUGIN/ID`.
+    /// The name of the provisioner that made it.
     pub provisioner: String,
     pub kind: String,
     pub name: String,
@@ -320,9 +320,9 @@ pub(crate) fn declared(provisioner: &Provisioner, kind: &str) -> Vec<Argument> {
 }
 
 /// What is said of a resource, as berth's record has it.
-pub fn info(kept: &Kept, plugins: &[Plugin], busy: bool) -> Resource {
+pub fn info(paths: &Paths, kept: &Kept, plugins: &[Plugin], busy: bool) -> Resource {
     let record = &kept.record;
-    let verbs = provisioner_of(plugins, &record.provisioner)
+    let verbs = provisioner_of(paths, plugins, &record.provisioner)
         .ok()
         .and_then(|(_, provisioner)| kind_of(provisioner, &record.kind).cloned())
         .map(|kind| kind.verbs)
@@ -374,7 +374,7 @@ pub fn listed(
         .filter(|kept| host.is_none_or(|wanted| kept.record.host == wanted))
         .map(|kept| {
             let busy = kept.record.external_id.is_empty() && kept.busy(paths);
-            info(&kept, &plugins, busy)
+            info(paths, &kept, &plugins, busy)
         })
         .collect())
 }
@@ -392,8 +392,8 @@ pub(crate) struct Called {
 impl Called {
     pub(crate) fn load(paths: &Paths, store: &Store, kept: Kept) -> Result<Called> {
         let plugins = found(paths);
-        let (plugin, provisioner) =
-            provisioner_of(&plugins, &kept.record.provisioner).map_err(|_| {
+        let (plugin, provisioner) = provisioner_of(paths, &plugins, &kept.record.provisioner)
+            .map_err(|_| {
                 format!(
                     "No provisioner {} any more, which made {}: add its plugin again",
                     kept.record.provisioner,
@@ -401,7 +401,7 @@ impl Called {
                 )
             })?;
         runnable(provisioner)?;
-        let (secrets, missing) = secrets(store, provisioner);
+        let (secrets, missing) = secrets(store, &kept.record.provisioner, provisioner);
         needs_secrets(&kept.record.provisioner, &missing)?;
         Ok(Called {
             dir: plugin.dir.clone(),
@@ -534,12 +534,12 @@ pub fn status(paths: &Paths, store: &Store, id: &str, options: &Options) -> Resu
     let plugins = found(paths);
     if kept.record.external_id.is_empty() {
         let busy = kept.busy(paths);
-        return Ok(info(&kept, &plugins, busy));
+        return Ok(info(paths, &kept, &plugins, busy));
     }
     let called = match Called::load(paths, store, kept.clone()) {
         Ok(called) => called,
         Err(error) => {
-            let mut said = info(&kept, &plugins, false);
+            let mut said = info(paths, &kept, &plugins, false);
             (said.state, said.problem) = ("unknown".into(), error.to_string());
             return Ok(said);
         }
@@ -574,7 +574,7 @@ pub fn status(paths: &Paths, store: &Store, id: &str, options: &Options) -> Resu
         },
         Err(error) => problem = error.to_string(),
     }
-    let mut said = info(&kept, &plugins, false);
+    let mut said = info(paths, &kept, &plugins, false);
     if !problem.is_empty() {
         (said.state, said.problem) = ("unknown".into(), problem);
     }
@@ -661,7 +661,7 @@ pub fn prepare(paths: &Paths, store: &Store, asked: &berth_api::NewResource) -> 
         .into());
     }
     let plugins = found(paths);
-    let (plugin, provisioner) = provisioner_of(&plugins, &asked.provisioner)?;
+    let (plugin, provisioner) = provisioner_of(paths, &plugins, &asked.provisioner)?;
     runnable(provisioner)?;
     let declared_kind = kind_of(provisioner, &kind).ok_or_else(|| {
         let kinds: Vec<&str> = provisioner
@@ -717,7 +717,7 @@ pub fn prepare(paths: &Paths, store: &Store, asked: &berth_api::NewResource) -> 
         &asked.arguments,
         &settings,
     )?;
-    let (secrets, missing) = secrets(store, provisioner);
+    let (secrets, missing) = secrets(store, &asked.provisioner, provisioner);
     needs_secrets(&asked.provisioner, &missing)?;
     let environment = environment(store, &asked.secrets)?;
     // Asked again after a failure, the provisioner finds it by its token.
@@ -888,7 +888,7 @@ pub fn actions(paths: &Paths, store: &Store, kept: &Kept) -> Vec<Action> {
     let record = &kept.record;
     let made = !record.external_id.is_empty();
     let machine = record.kind == plugins::MACHINE;
-    let provisioner = provisioner_of(&plugins, &record.provisioner)
+    let provisioner = provisioner_of(paths, &plugins, &record.provisioner)
         .ok()
         .map(|(_, found)| found);
     let kind = provisioner.and_then(|found| kind_of(found, &record.kind));
@@ -898,7 +898,12 @@ pub fn actions(paths: &Paths, store: &Store, kept: &Kept) -> Vec<Action> {
             record.provisioner
         )),
         Some(found) => runnable(found)
-            .and_then(|()| needs_secrets(&record.provisioner, &secrets(store, found).1))
+            .and_then(|()| {
+                needs_secrets(
+                    &record.provisioner,
+                    &secrets(store, &record.provisioner, found).1,
+                )
+            })
             .err()
             .map(|error| error.to_string())
             .or_else(|| (!made).then(|| format!("{} is not made yet", kept.title()))),

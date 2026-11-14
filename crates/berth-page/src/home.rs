@@ -336,6 +336,8 @@ impl Home {
         match self.provisioners.key(key, &listed, &mut Here) {
             provisioners::Asked::Nothing(said) => return said,
             provisioners::Asked::List => admin.provisioners(),
+            provisioners::Asked::Add => admin.provisioner_types(),
+            provisioners::Asked::Save { name, kind } => admin.provisioner_save(&name, &kind),
             provisioners::Asked::Open(name) => admin.provisioner(&name),
             // The panel takes its size from the page once it is shown.
             provisioners::Asked::Run {

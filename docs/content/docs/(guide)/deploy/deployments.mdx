@@ -4,7 +4,7 @@ description: Run a Compose project on a Docker engine as a resource of berth, wi
 icon: LayoutGrid
 ---
 
-A deployment is a [resource](/docs/deploy/resources) made from a specification. berth keeps the specification in its store and hands it to the provisioner, but never reads it. The Docker plugin's provisioner `docker/container` makes deployments from Compose files.
+A deployment is a [resource](/docs/deploy/resources) made from a specification. berth keeps the specification in its store and hands it to the provisioner, but never reads it. A provisioner of the Docker plugin's type `docker/container` makes deployments from Compose files. The examples here use one registered as `docker` ([Register a provisioner](/docs/deploy/provisioners#register-a-provisioner)).
 
 A deployment belongs to no host. Compose runs where berth runs, against the Docker engine of the provisioner's `host` setting, so that machine needs the `docker compose` plugin. With a [berth server](/docs/use/server) set, that is the server.
 
@@ -35,14 +35,14 @@ Store the password as a berth secret, then deploy:
 
 ```bash
 berth secret set notes_db_password
-berth deploy notes --provisioner docker/container \
+berth deploy notes --provisioner docker \
   --spec notes.compose.yaml --secret notes_db_password:DB_PASSWORD
 ```
 
 ```text
-▸ Creating the deployment notes with docker/container
+▸ Creating the deployment notes with docker
 …
-✓ docker/container created notes: running
+✓ docker created notes: running
 notes: berth resource r-p5x2hd7a
 ```
 
@@ -51,13 +51,24 @@ The output of Compose follows as it runs. The last line gives the new resource's
 | Option | Means |
 | --- | --- |
 | `NAME` | The deployment's name, which is the Compose project's. Lowercase letters, digits, `-` and `_`, starting with a letter or digit |
-| `--provisioner PLUGIN/ID` | The provisioner that makes it, here `docker/container` |
+| `--provisioner NAME` | The provisioner that makes it, here `docker` |
 | `--spec FILE` | The Compose file. `-` reads it from standard input |
 | `--secret NAME[:VARIABLE]` | A berth secret it gets, as the variable `VARIABLE`, or as `NAME` when none is given. Give it once for each secret |
 | `--token TEXT` | Any text of yours. The same token again answers with the first job, and nothing is made twice |
 | `NAME=VALUE` | Values of its arguments, such as `keep_volumes=yes`, or `host=…` for an engine other than the setting's |
 
 berth refuses before anything is made when a secret has no value, or when the name of a variable is not one a shell takes. A deployment of that name that exists already is changed instead, with the new file.
+
+### From the provisioner's page
+
+The provisioner's page has the action **New compose project**, `new-deployment`, in the terminal UI and in the page of [`berth serve --web`](/docs/use/server#in-a-browser). It asks for the name, the Compose file and the secrets, then the deployment's own arguments. Paste the Compose file into its field: its lines are kept, and each line break shows as `⏎`. Give the secrets as `NAME` or `NAME:VARIABLE`, separated by commas. The deployment is made as a job of the provisioner, and is listed on its page when the job ends.
+
+From the command line the action takes the same values:
+
+```bash
+berth provisioner docker run new-deployment name=notes \
+  spec="$(cat notes.compose.yaml)" secrets=notes_db_password:DB_PASSWORD --yes
+```
 
 ## Look after it
 
@@ -66,7 +77,7 @@ berth resource notes
 ```
 
 ```text
-r-p5x2hd7a  deployment notes of docker/container
+r-p5x2hd7a  deployment notes of docker
 State      running
 Made as    notes
 Created    2026-11-13T09:12:40Z
@@ -99,7 +110,7 @@ berth resource notes run stop
 Deploy again with the same name, or use `change`:
 
 ```bash
-berth deploy notes --provisioner docker/container --spec notes.compose.yaml
+berth deploy notes --provisioner docker --spec notes.compose.yaml
 berth resource notes change --spec notes.compose.yaml
 berth resource notes change keep_volumes=yes
 ```

@@ -346,7 +346,8 @@ pub struct Argument {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub choices: String,
     /// `resource` for an argument of a provisioner that sizes the machine:
-    /// its CPUs, memory or disk. Empty for any other argument.
+    /// its CPUs, memory or disk. `text` for one whose value has several
+    /// lines. Empty for any other argument.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
     /// What it is for, in a sentence or two, beside its short label.
@@ -365,6 +366,9 @@ pub struct Argument {
 impl Argument {
     /// The kind that marks a resource of the machine.
     pub const RESOURCE: &'static str = "resource";
+    /// The kind of an argument whose value has several lines, such as a
+    /// Compose file.
+    pub const TEXT: &'static str = "text";
 
     /// Whether it sizes the machine a provisioner creates.
     pub fn is_resource(&self) -> bool {
@@ -586,7 +590,7 @@ pub struct Acted {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct JobInfo {
     pub id: String,
-    /// What it was done to: `host:NAME`, `provisioner:PLUGIN/ID`,
+    /// What it was done to: `host:NAME`, `provisioner:NAME`,
     /// `resource:ID` or `installation`. Empty for a job from before 0.5.
     #[serde(default)]
     pub subject: String,
@@ -1004,8 +1008,12 @@ pub struct PluginUpdateSpec {
 /// Something a plugin creates machines with, for a saved host's profile.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ProvisionerInfo {
-    /// `PLUGIN/ID`.
+    /// The name it is registered under, such as `ovh-incus`. In the list of
+    /// types, the type itself.
     pub id: String,
+    /// The plugin's provisioner it is, as `PLUGIN/ID`, such as `incus/vm`.
+    #[serde(rename = "type", default)]
+    pub kind: String,
     pub label: String,
     #[serde(default)]
     pub description: String,
@@ -1043,6 +1051,19 @@ pub struct ProvisionerInfo {
     /// Empty when it can.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub problem: String,
+}
+
+/// A provisioner to register, or the type and settings of one that is.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct SavedProvisioner {
+    /// The plugin's provisioner it is, as `PLUGIN/ID`. A registered one keeps
+    /// its type: this is the same or empty.
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    /// Values of its own arguments, such as the server it uses. Empty ones
+    /// are not kept. Left out, the settings it has stay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<BTreeMap<String, String>>,
 }
 
 /// A kind of thing a provisioner makes.
@@ -1149,7 +1170,7 @@ impl ResourceSecret {
 pub struct Resource {
     /// berth's id of it, stable for the life of the record.
     pub id: String,
-    /// `PLUGIN/ID`.
+    /// The name of the provisioner that made it.
     pub provisioner: String,
     /// `machine`, or a kind the plugin declares.
     pub kind: String,
@@ -1191,7 +1212,7 @@ pub struct Resource {
 /// What to create a resource with.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct NewResource {
-    /// `PLUGIN/ID`.
+    /// The provisioner's name.
     pub provisioner: String,
     /// `machine` when empty.
     #[serde(default)]
