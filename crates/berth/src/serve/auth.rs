@@ -181,19 +181,21 @@ impl Auth {
                 format!("{} takes {} as its bearer, over HTTP", op.name, op.key),
             ));
         }
-        if self.role(access) >= op.role {
+        self.permits(access, op.name, op.role)
+    }
+
+    /// Whether the caller's role is at least `role`, for what is called `name`:
+    /// an operation, or an action whose own role is checked when it runs.
+    pub fn permits(&self, access: &Access, name: &str, role: Role) -> Result<(), Refusal> {
+        if self.role(access) >= role {
             return Ok(());
         }
-        let message = if access.role >= op.role {
-            format!(
-                "{} is set-up, which this berth serve does not take over the network",
-                op.name
-            )
+        let message = if access.role >= role {
+            format!("{name} is set-up, which this berth serve does not take over the network")
         } else {
             format!(
-                "{} needs the role {}; this caller has {}",
-                op.name,
-                op.role.name(),
+                "{name} needs the role {}; this caller has {}",
+                role.name(),
                 access.role.name()
             )
         };
@@ -431,7 +433,12 @@ mod tests {
     fn a_request_is_an_operation_with_a_role() {
         let name = |method, path, stream| operation(method, path, stream).unwrap().unwrap().name;
         assert_eq!(name("GET", "/v1/hosts", false), "hosts.list");
-        assert_eq!(name("POST", "/v1/hosts/a/apply", false), "hosts.apply");
+        assert_eq!(
+            name("POST", "/v1/hosts/a/actions/apply", false),
+            "hosts.act"
+        );
+        assert_eq!(name("GET", "/v1/hosts/a/actions", false), "hosts.actions");
+        assert_eq!(name("POST", "/v1/actions/rollout", false), "actions.act");
         assert_eq!(name("GET", "/v1/hosts/a/sessions", false), "sessions.list");
         assert_eq!(
             name("GET", "/v1/hosts/a/sessions/x", true),
@@ -442,13 +449,10 @@ mod tests {
             "secrets.set"
         );
         // The routes of berth serve below a host are its own, not the host's.
+        assert_eq!(name("POST", "/v1/resources", false), "resources.create");
         assert_eq!(
-            name("POST", "/v1/hosts/a/instance", false),
-            "instances.create"
-        );
-        assert_eq!(
-            name("POST", "/v1/hosts/a/instance/stop", false),
-            "instances.power"
+            name("GET", "/v1/resources/r-a/logs", true),
+            "resources.follow"
         );
         assert!(operation("GET", "/v1/portal", true).unwrap().is_none());
         // What nobody knows below a host is not let through on a guess.
@@ -460,7 +464,7 @@ mod tests {
             oauth: None,
         };
         let admin = Access::local();
-        let apply = ops::find(ops::SERVE, "hosts.apply").unwrap();
+        let apply = ops::find(ops::SERVE, "hosts.save").unwrap();
         let run = ops::find(ops::HOST, "tasks.run").unwrap();
         assert_eq!(auth.role(&admin), Role::Operate);
         assert!(auth.allows(&admin, run).is_ok());
@@ -470,6 +474,14 @@ mod tests {
             subject: None,
         };
         assert!(auth.allows(&viewer, run).unwrap_err().1.contains("operate"));
+        // An action's own role is asked the same way.
+        assert!(auth.permits(&viewer, "apply", Role::Admin).is_err());
+        assert!(
+            auth.permits(&admin, "apply", Role::Admin)
+                .unwrap_err()
+                .1
+                .contains("set-up")
+        );
         assert_eq!(
             metadata_addresses("https://id.example/realms/x")[1],
             "https://id.example/.well-known/oauth-authorization-server/realms/x"

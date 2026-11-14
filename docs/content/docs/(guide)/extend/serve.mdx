@@ -16,25 +16,66 @@ It prints where it listens and how many hosts it knows. Only one runs per user. 
 
 | Operations | For |
 | --- | --- |
-| [`hosts.*`](/docs/api/serve/hosts) | The saved hosts and their profiles. A host can be added, changed, removed and applied as a job, and `hosts.rollout` applies the hosts that are behind one after another. Each host says whether it is behind. The server also renders its cloud-init seed and sends its secrets |
+| [`hosts.*`](/docs/api/serve/hosts) | The saved hosts and their profiles, and whether each is behind. Each says its [level](/docs/use/levels), the level it was seen to have, and whether a key rotation has yet to reach it. `hosts.save` takes a host below a workstation with only `level` and `access`. `hosts.actions` lists what can be done to a host and `hosts.act` runs one of those [actions](#actions) |
+| [`actions.*`](/docs/api/serve/actions) | The actions of the installation itself, such as `rollout`, which applies the hosts that are behind one after another |
 | [`secrets.*`](/docs/api/serve/secrets), [`registries.*`](/docs/api/serve/registries), [`settings.*`](/docs/api/serve/settings) | What the server keeps beside the hosts. A secret's value goes in and never comes back out |
 | [`plugins.*`](/docs/api/serve/plugins) | The server's plugins. One is installed from its npm registry, from an `https://` address, or from a `.tgz` that is sent, and one of its own is removed. `plugins.check` asks the registries for newer versions and `plugins.update` installs them. `setup.catalogue` lists the new features straight away |
-| [`provisioners.*`](/docs/api/serve/provisioners), [`instances.*`](/docs/api/serve/instances) | The provisioners of the plugins, and the machine berth created for a host. A machine is created and deleted as a job, and started and stopped with `instances.power`. The role `admin` is needed ([Machine from a provisioner](/docs/deploy/provisioners)) |
-| Every [berthd operation](/docs/api/host) | With a host: `"host": "NAME"` on the portal, `/v1/hosts/NAME/…` over HTTP. Only the `secrets` task is refused; `hosts.secrets` sends the server's own |
-| [`jobs.*`](/docs/api/serve/jobs) | Jobs such as an apply or a roll-out, with their output. A roll-out's job has a report, host by host |
+| [`provisioners.*`](/docs/api/serve/provisioners) | The provisioners of the plugins with their pages and actions. A page lists what berth made with the provisioner, by kind. An action of a provisioner has its own role ([Provisioners](/docs/deploy/provisioners#with-a-berth-server)) |
+| [`resources.*`](/docs/api/serve/resources) | What provisioners made for berth, such as a host's machine or a deployment. Creating, changing and removing one are jobs of the subject `resource:ID` and need the role `admin`. Its log needs `operate`, and its actions have their own roles ([Resources](/docs/deploy/resources#with-a-berth-server)) |
+| Every [berthd operation](/docs/api/host) | With a host: `"host": "NAME"` on the portal, `/v1/hosts/NAME/…` over HTTP. Only the `secrets` task is refused; the host's `secrets` action sends the server's own |
+| [`jobs.*`](/docs/api/serve/jobs) | Jobs, one for each run of an action that runs here or follows a task, with their output. Each says its subject and its action. A roll-out's job has a report, host by host |
 | [`inbox.*`](/docs/api/serve/inbox) | Messages the hosts published on their channels and kept, taken in while `berth serve` runs; each can be marked done |
 | [`kv.*`](/docs/api/serve/kv) | A key-value store with revisions, for user interfaces to keep state in |
 | [`events.follow`](/docs/api/serve/events) | One stream of channel messages, jobs and key-value changes, at `/v1/events` |
 
 All of it is also on the [portal](/docs/api/portal), the one WebSocket at `/v1/portal` for calls and streams together.
 
-The inbox, jobs and key-value store are kept in a store in berth's data directory for `retention_days` (90 by default), and are also readable without the server:
+## Actions
+
+What berth does to a host or to the installation is an *action*. `GET /v1/hosts/NAME/actions` lists a host's, and `GET /v1/actions` lists those of the installation. A form can be built from an action's description. It has the arguments with their defaults and choices, a question to confirm, the least role, and whether it can run now.
+
+| Action | Of | Runs | Answers |
+| --- | --- | --- | --- |
+| A task of the host, such as `status` | The host | On the host, as a session | `202` with the session and a job that copies its output. A task that needs a terminal answers `200` with the session alone, to attach to |
+| `apply` | The host | Here, as a job | `202` with the job |
+| `install-controller` | The host | Here, as a job | `202` with the job. It installs berthd and box alone on a host below a workstation |
+| `seed` | The host | Here, at once | `200` with the seed's `user_data` as the result |
+| `secrets` | The host | On the host, with the server's secrets | `202` with the session and its job |
+| `rollout` | The installation | Here, as a job | `202` with the job; its report says how each host went |
+
+An action that the host's level rules out is listed with `available` false, and its `why` says which action raises the level. Run anyway, it is refused with `501 not_available`.
+
+To run one, POST to its name with its arguments:
+
+```bash
+curl --unix-socket "$XDG_RUNTIME_DIR/berth/serve.sock" -X POST \
+  -d '{"arguments": {"update": "yes"}, "token": "nightly-2026-11-13"}' \
+  http://berth/v1/actions/rollout
+```
+
+The token is optional. The same token again for the same subject and action answers with the job the first request started, and nothing runs a second time. That lets a caller that lost the answer ask again. While an action changes a host, a second one that changes it is refused with `409` until the first has ended, and so is a second roll-out. A job is followed with `jobs.get`, `jobs.output` and the `jobs.follow` stream, and the events stream says when it starts and ends.
+
+The inbox, jobs and key-value store are kept in berth's store for `retention_days` (90 by default), and are also readable without the server:
 
 ```bash
 berth inbox studio --topic ask/        # what is open; --all includes what is done
 berth kv set ui layout '{"columns": 2}'
 berth kv ls ui
 ```
+
+## The store
+
+The store is where berth keeps the host profiles, with their generated passwords and the records of the machines it created. It also keeps the registries, secrets and settings. berth's own SSH key, the server's token and setup key and the list of your own plugins are there too, with the inbox, jobs and key-value store. It is `berth.db`, a SQLite file in berth's data directory, unless the `store` setting or `BERTH_STORE` names another file or a PostgreSQL database. [The store](/docs/use/store) says how to choose it, encrypt it, move it to another database and restore a server from it.
+
+`berth serve` serves the hosts of its own installation. It does not start on a berth that has the `server` setting, or `BERTH_SERVER`, as that berth's hosts are the other server's. Clear it with `berth config server ""`.
+
+| Command | Does |
+| --- | --- |
+| `berth profile HOST` | Prints a host's profile as JSON |
+| `berth profile HOST --set FILE` | Saves the profile in FILE as the host's, `-` for standard input |
+| `berth credentials HOST` | Prints the passwords berth generated for the host's accounts. `hosts.credentials` gives them to an admin of the server |
+
+`berth store` says where the store is and whether its values are encrypted, and `berth store encrypt` seals them with a key file ([Encrypt it](/docs/use/store#encrypt-it)).
 
 ## Where it listens
 
@@ -54,7 +95,7 @@ curl --unix-socket "$XDG_RUNTIME_DIR/berth/serve.sock" http://berth/v1/hosts
 berth serve --listen 127.0.0.1:7777
 ```
 
-Requests over TCP, the portal included, send the token as a bearer. The token is made on first use and kept in `serve.token` in berth's data directory:
+Requests over TCP, the portal included, send the token as a bearer. The token is made on first use and kept in the store. berth writes it to `serve.token` in its data directory too:
 
 ```bash
 curl -H "Authorization: Bearer $(cat ~/.local/share/berth/serve.token)" http://127.0.0.1:7777/v1/hosts
@@ -87,6 +128,8 @@ A caller over TCP shows the server's token or an OAuth 2.0 access token, and act
 | `view` | Read what the hosts and the server report, such as sessions with their output, logs, jobs and the inbox |
 | `operate` | Work on the hosts with tasks, commands, terminals and files. Units, power and the key-value store are included |
 | `admin` | Change profiles, secrets, registries, settings and plugins, apply a profile to a host, and create or delete the machine of a host |
+
+Each action has a role of its own, which is checked when it runs. A host's tasks need `operate`, berth's own actions `admin`.
 
 The server's token is `admin`. The socket doesn't ask for a token and is `admin` too. The [API reference](/docs/api/serve) lists the role of each operation, and [`access`](/docs/api/serve/general) tells a caller its own.
 
@@ -146,7 +189,7 @@ berth config serve_setup off
 A caller over TCP is then `operate` at most, and the socket stays `admin`. Some things are refused from a caller of any role:
 
 - The settings that say who gets in and where the server's files are. `settings.set` takes only `default_host` and `retention_days`.
-- A profile's `builder.link`, which is a command the server runs.
+- A profile's `access.link`, which is a command the server runs, and `access.auth` `ssh`, the SSH configuration of the server's own account.
 - A path on the server as what `plugins.add` installs. It takes a package name or an `https://` address, and `plugins.upload` takes a `.tgz`.
 - Building a USB installer, which needs the drive.
 
@@ -164,11 +207,11 @@ docker exec berth cat /data/berth/serve.token
 
 | Path | Holds |
 | --- | --- |
-| `/config/berth/` | Settings and host profiles (`/config/berth/hosts`) |
-| `/data/berth/` | The store, `serve.token`, the server's SSH key and builds |
+| `/config/berth/` | `config.json` with the settings of this machine, the key file of an encrypted store, and the folder of the server's own plugins |
+| `/data/berth/` | The store, unless `BERTH_STORE` names a PostgreSQL database. Beside it `serve.token` and the server's SSH key, written from the store, the output of jobs, and builds |
 | `/home/berth/.ssh` | Further SSH keys and configuration for reaching hosts |
 
-The image contains ansible-core, the OpenSSH client and Python, so it can also apply configurations, and npm for installing plugins. See [A berth server](/docs/use/server) for using it from berth on another machine.
+The image contains ansible-core, the OpenSSH client and Python, so it can also apply configurations, and npm for installing plugins. See [A berth server](/docs/use/server) for using it from berth on another machine, and [The store](/docs/use/store#in-the-container) for keeping its state in PostgreSQL.
 
 ## The API documents
 

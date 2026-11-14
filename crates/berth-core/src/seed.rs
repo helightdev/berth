@@ -33,6 +33,8 @@ pub struct Archive {
 /// needs no `release_url`.
 pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Result<Seed> {
     let host = Host::load(paths, name)?;
+    // A seed installs a whole workstation.
+    crate::level::guard(&host, crate::level::Capability::Apply)?;
     let source = paths.source()?;
     let dirs = apply::plugin_dirs(&plugins::found(
         &source,
@@ -47,18 +49,19 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
             .map_err(|error| format!("Publishing to {release} failed: {error}"))?;
         let mut profile = host.config.clone();
         profile["release_url"] = json!(url);
-        save_profile(&host.path, &profile)?;
+        host.place.save(paths, &profile)?;
     }
     // The seed is rendered from a private copy of the profile, which holds a
     // new enrollment key for a host that joins the tailnet automatically.
-    let saved: Value = serde_json::from_slice(&fs::read(&host.path)?)?;
+    let saved: Value = host
+        .place
+        .load(paths)?
+        .ok_or_else(|| format!("No host {name}"))?;
     let mut config = named(tailnet::seed_profile(paths, &saved, name)?, name);
-    crate::kept::for_seed(&mut config, name, &saved);
+    crate::kept_profile::for_seed(&mut config, &host.place.title(), &saved);
     let seeded = tailnet::profile_file(&config)?;
-    // The machine's operator takes this key, so that berth can always reach it.
-    let own = paths
-        .own_public_key()
-        .ok_or("berth has no SSH key of its own to give the machine's operator: check that ssh-keygen works")?;
+    // The machine's operator takes these keys, so that berth can always reach it.
+    let own = crate::keys::operator_keys(paths, &saved)?;
     let build = paths.build_dir();
     let mut command = Command::new("python3");
     command
@@ -67,7 +70,7 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
         .arg(seeded.path())
         .env("DEVBOX_BUILD_DIR", &build)
         .env("BERTH_PLUGINS", dirs.to_string())
-        .env("BERTH_SSH_PUBLIC_KEY", own)
+        .env("BERTH_SSH_PUBLIC_KEY", own.join("\n"))
         .stdin(std::process::Stdio::null());
     if delivered {
         command.env("BERTH_RELEASE_DELIVERED", "1");
@@ -153,15 +156,4 @@ pub fn named(mut config: Value, name: &str) -> Value {
         config["hostname"] = json!(name);
     }
     config
-}
-
-/// Write a profile in place of the old one, privately.
-pub fn save_profile(path: &std::path::Path, profile: &Value) -> Result<()> {
-    let parent = path.parent().ok_or("A profile is in a directory")?;
-    // Temporary files are created private, which the profile stays.
-    let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    serde_json::to_writer_pretty(&mut file, profile)?;
-    std::io::Write::write_all(&mut file, b"\n")?;
-    file.persist(path)?;
-    Ok(())
 }

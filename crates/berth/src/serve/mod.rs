@@ -2,12 +2,15 @@
 //! host through a link, as the UI does, and adds nothing to a host's own API.
 //! The commands that only read the store (`inbox`, `kv`) are here too.
 
+mod actions;
 mod api;
 mod auth;
 mod docs;
+pub(crate) mod keys;
 #[cfg(feature = "web")]
 mod page;
 mod provisioners;
+mod resources;
 mod setup;
 pub mod setup_key;
 #[cfg(test)]
@@ -32,6 +35,9 @@ use std::{
 use tokio::sync::broadcast;
 
 pub use docs::{asyncapi, openapi, operations};
+
+/// How a host's answer starts when berth logged in and found no berthd.
+pub(crate) const NO_BERTHD: &str = "no berthd on the host yet";
 
 /// How long an answer about a host's reachability is used again.
 const SEEN_FOR: Duration = Duration::from_secs(10);
@@ -87,13 +93,17 @@ impl Remote {
         {
             return answer.clone();
         }
+        // A host that refused the login a short while ago is not asked by
+        // the list: each refused login counts against the server's address
+        // at the host's sshd.
+        if let Some(refused) = link.refused() {
+            return Err(refused);
+        }
         let asked =
             tokio::time::timeout(Duration::from_secs(15), link.get::<Version>("/v1/version")).await;
         let answer = match asked {
             Ok(Ok(version)) => Ok(version),
-            Ok(Err(error)) if Link::missing(&error) => {
-                Err(format!("no berthd on the host yet: {error}"))
-            }
+            Ok(Err(error)) if Link::missing(&error) => Err(format!("{NO_BERTHD}: {error}")),
             Ok(Err(error)) => Err(error.to_string()),
             Err(_) => Err("no answer in time".into()),
         };
@@ -104,12 +114,14 @@ impl Remote {
 
 pub struct Serve {
     pub paths: Paths,
-    pub store: Mutex<Store>,
+    pub store: Arc<Store>,
     pub hosts: RwLock<BTreeMap<String, Arc<Remote>>>,
     pub events: broadcast::Sender<Event>,
     /// Who is let in over TCP, and as what.
     pub auth: auth::Auth,
     pub jobs_dir: PathBuf,
+    /// What runs the jobs, with their records in the store.
+    pub runner: berth_core::runner::Runner,
     /// The tasks that take in the hosts' channels, by host.
     followers: Mutex<BTreeMap<String, tokio::task::AbortHandle>>,
     /// The sudo passwords given at the start, which outlive a changed profile.
@@ -123,18 +135,26 @@ impl Serve {
     /// With only the server's own token to get in by.
     #[cfg(test)]
     pub fn new(paths: Paths, store: Store, token: Option<String>) -> Arc<Serve> {
-        Serve::with(paths, store, auth::Auth::token(token))
+        Serve::with(paths, Arc::new(store), auth::Auth::token(token))
     }
 
-    pub fn with(paths: Paths, store: Store, auth: auth::Auth) -> Arc<Serve> {
-        let jobs_dir = paths.data_dir.join("jobs");
+    pub fn with(paths: Paths, store: Arc<Store>, auth: auth::Auth) -> Arc<Serve> {
+        let jobs_dir = berth_core::runner::jobs_dir(&paths);
+        let events = broadcast::channel(1024).0;
+        let told = events.clone();
+        let notify = Arc::new(move |job: &store::Job| {
+            let _ = told.send(Event::Job(job.json()));
+        });
+        let runner =
+            berth_core::runner::Runner::new(paths.clone(), store.clone(), jobs_dir.clone(), notify);
         Arc::new(Serve {
             paths,
-            store: Mutex::new(store),
+            store,
             hosts: RwLock::new(BTreeMap::new()),
-            events: broadcast::channel(1024).0,
+            events,
             auth,
             jobs_dir,
+            runner,
             followers: Mutex::new(BTreeMap::new()),
             passwords: Mutex::new(BTreeMap::new()),
             provision: Default::default,
@@ -175,27 +195,37 @@ impl Serve {
         }
     }
 
-    /// Take up saved hosts that are not known yet. Only at the start may a
-    /// password be asked for on the terminal.
+    /// Take up saved hosts that are not known yet: the server's own, whatever
+    /// its settings say. Only at the start may a password be asked for on the
+    /// terminal.
     pub fn refresh(self: &Arc<Self>, start: bool) {
-        for (name, _) in self.paths.hosts() {
+        let saved = berth_core::profiles::list(&self.paths, store::OWN).unwrap_or_default();
+        for (name, config) in saved {
             if self.host(&name).is_some() {
                 continue;
             }
-            let Ok(host) = Host::load(&self.paths, &name) else {
+            let Ok(place) = berth_core::profiles::Place::own(&name) else {
                 continue;
             };
+            let host = Host {
+                name,
+                place,
+                config,
+            };
             // A link that is a command of its own goes through no sudo of ours.
-            let asks = host.asks_password() && !host.config["builder"]["link"].is_array();
+            let asks = host.asks_password() && host.access().link.is_none();
             let password = match (start, asks) {
                 (_, false) => Ok(None),
-                (true, true) => host.sudo_password().map_err(|error| error.to_string()),
+                (true, true) => host
+                    .sudo_password(&self.paths)
+                    .map_err(|error| error.to_string()),
                 (false, true) => self
                     .passwords
                     .lock()
                     .unwrap()
                     .get(&host.name)
                     .cloned()
+                    .or_else(|| host.kept_sudo_password(&self.paths))
                     .or_else(|| std::env::var("BERTH_SUDO_PASSWORD").ok())
                     .map(Some)
                     .ok_or_else(|| {
@@ -209,18 +239,18 @@ impl Serve {
                 let mut passwords = self.passwords.lock().unwrap();
                 passwords.insert(host.name.clone(), password.clone());
             }
-            let reachable = !host.address().is_empty() || host.config["builder"]["link"].is_array();
+            let reachable = host.access().reachable();
             let link = password.clone().and_then(|password| match reachable {
                 true => host
-                    .link(password.as_deref())
+                    .link(&self.paths, password.as_deref())
                     .map_err(|error| error.to_string()),
                 false => Err("its profile has no SSH address yet".into()),
             });
             let remote = match link {
-                Ok(spec) => Remote::new(&host.name, host.address(), spec),
+                Ok(spec) => Remote::new(&host.name, &host.address(), spec),
                 Err(problem) => Remote {
                     name: host.name.clone(),
-                    address: host.address().to_owned(),
+                    address: host.address(),
                     link: None,
                     password: None,
                     problem: Some(problem),
@@ -236,7 +266,7 @@ impl Serve {
 
     /// A message from a host: store what is kept and tell whoever listens.
     fn accept(&self, host: &str, message: Message) {
-        let taken = self.store.lock().unwrap().take_in(host, &message);
+        let taken = self.store.take_in(host, &message);
         let _ = self.events.send(Event::Channel {
             host: host.to_owned(),
             message,
@@ -254,12 +284,18 @@ impl Serve {
     fn prune(&self) {
         let days = self
             .paths
-            .settings()
-            .ok()
-            .and_then(|settings| settings.get("retention_days")?.as_str()?.parse().ok())
+            .setting("retention_days")
+            .and_then(|days| days.parse().ok())
             .unwrap_or(store::RETENTION_DAYS);
-        if let Ok(files) = self.store.lock().unwrap().prune(days) {
-            for file in files {
+        if let Ok(files) = self.store.prune(days) {
+            // Only files of this machine's own jobs: a row of a shared store
+            // can name any file.
+            for file in files
+                .iter()
+                .filter_map(|file| berth_core::runner::output_file(&self.paths, file))
+            {
+                // A roll-out's report is beside its output.
+                let _ = std::fs::remove_file(api::report_path(&file));
                 let _ = std::fs::remove_file(file);
             }
         }
@@ -273,12 +309,13 @@ async fn take_in(state: Arc<Serve>, remote: Arc<Remote>) {
     };
     let mut wait = 1;
     loop {
-        let since = state
-            .store
-            .lock()
-            .unwrap()
-            .cursor(&remote.name)
-            .unwrap_or(0);
+        // A refused login is not tried again by itself until its back-off
+        // has passed or someone logged in with it; the store says which.
+        if link.refused().is_some() {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            continue;
+        }
+        let since = state.store.cursor(&remote.name).unwrap_or(0);
         if let Ok(mut stream) = link.stream(&format!("/v1/channel?since={since}")).await {
             wait = 1;
             while let Some(Ok(frame)) = stream.next().await {
@@ -294,41 +331,21 @@ async fn take_in(state: Arc<Serve>, remote: Arc<Remote>) {
     }
 }
 
-fn copy(paths: &Paths) -> Paths {
-    Paths {
-        config_dir: paths.config_dir.clone(),
-        data_dir: paths.data_dir.clone(),
-    }
+fn open_store(paths: &Paths) -> Result<Arc<Store>> {
+    store::shared(paths)
 }
 
-pub fn store_path(paths: &Paths) -> PathBuf {
-    paths.data_dir.join("berth.db")
-}
-
-fn open_store(paths: &Paths) -> Result<Store> {
-    Ok(Store::open(&store_path(paths))?)
-}
-
-/// The token clients over TCP have to show, made on first use.
-fn token(paths: &Paths) -> Result<String> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let path = paths.data_dir.join("serve.token");
-    if let Ok(token) = std::fs::read_to_string(&path)
-        && token.trim().len() >= 32
-    {
-        return Ok(token.trim().to_owned());
-    }
-    let mut bytes = [0u8; 32];
-    std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut bytes)?;
-    let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    std::fs::create_dir_all(&paths.data_dir)?;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&path)?;
-    std::io::Write::write_all(&mut file, format!("{token}\n").as_bytes())?;
+/// The token clients over TCP have to show, made on first use. The store
+/// holds it, so a server restored from its database keeps its clients;
+/// `serve.token` is written from it for whoever reads the file.
+pub(crate) fn token(paths: &Paths) -> Result<String> {
+    let store = open_store(paths)?;
+    let values = berth_core::kept::serve_token(paths).settle(
+        paths,
+        &store,
+        &berth_core::kept::generate_token,
+    )?;
+    let token = String::from_utf8_lossy(&values[0]).trim().to_owned();
     Ok(token)
 }
 
@@ -349,6 +366,21 @@ fn lock(paths: &Paths) -> Result<std::fs::File> {
 }
 
 const USAGE: &str = "Usage: berth serve [--listen ADDRESS:PORT [--expose] [--web]]";
+
+/// A berth set to use a berth server keeps that server's hosts, so its
+/// commands, and the ones a serve starts, would take a host's name for one of
+/// those. berth serve serves this installation's own hosts, and does not
+/// start like that.
+fn refuse_a_server(paths: &Paths) -> Result<()> {
+    match berth_core::server::Server::configured(paths) {
+        Some(server) => Err(format!(
+            "This berth uses the berth server at {}, so its hosts are that server's. berth serve serves the hosts of this machine: stop using the other server with berth config server \"\" (and unset BERTH_SERVER), then start berth serve again",
+            server.url
+        )
+        .into()),
+        None => Ok(()),
+    }
+}
 
 /// `berth serve [--listen ADDRESS:PORT [--expose] [--web]]`
 ///
@@ -390,16 +422,24 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
             Some(address)
         }
     };
+    refuse_a_server(paths)?;
     let _lock = lock(paths)?;
-    let mut store = open_store(paths)?;
+    let store = open_store(paths)?;
     store.end_lost_jobs()?;
+    // From the next step on the store holds keys and passwords.
+    if store.backend_name() == "postgres" && !store.encrypted() {
+        eprintln!(
+            "berth serve: the PostgreSQL database holds this installation's keys and passwords readable; berth store encrypt seals them"
+        );
+    }
+    crate::restore_plugins(paths);
     let token = match listen {
         Some(_) => Some(token(paths)?),
         None => None,
     };
     let auth = auth::Auth::configured(paths, token)?;
     let admitted = auth.describe();
-    let state = Serve::with(copy(paths), store, auth);
+    let state = Serve::with(paths.clone(), store, auth);
     std::fs::create_dir_all(&state.jobs_dir)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -497,7 +537,7 @@ pub fn inbox_command(paths: &Paths, args: &[&str]) -> Result<()> {
 
 /// `berth kv get|set|rm|ls NAMESPACE [KEY] [JSON]`
 pub fn kv_command(paths: &Paths, args: &[&str]) -> Result<()> {
-    let mut store = open_store(paths)?;
+    let store = open_store(paths)?;
     match *args {
         ["ls", namespace] => {
             for entry in store.list(namespace)? {

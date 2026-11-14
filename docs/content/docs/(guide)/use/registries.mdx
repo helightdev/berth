@@ -15,7 +15,7 @@ A registry is a server with one address and one login. Hosts get npm and Docker 
 
 A registry with a user name logs in with user name and password. Without a user name, what is stored is used as a token: `_authToken` for npm, a bearer token for uploads.
 
-Addresses and user names are kept in `~/.config/berth/config.json`, passwords and tokens in `~/.config/berth/secrets.json`.
+Registries, with their addresses and user names, are kept in berth's store. Passwords and tokens are kept there as secrets, sealed when the store is encrypted. `berth store` says where the store is.
 
 ## Adding registries
 
@@ -34,7 +34,7 @@ berth registry                                  # the list
 berth registry check                            # do they answer and accept the login?
 ```
 
-The **Registries** tab of the home screen (`3`) does the same. Enter changes the selected row, or switches the kind or format; `x` removes a repository, a user name or a stored password. `x` twice on a registry's name removes the registry.
+The **Registries** tab of the home screen (`4`) does the same. Enter changes the selected row, or switches the kind or format; `x` removes a repository, a user name or a stored password. `x` twice on a registry's name removes the registry.
 
 `c` on the tab, or `berth registry check`, checks that the server answers, that each repository exists and is readable with the stored login, and that a Docker address speaks the Docker API. It only reads, so it does not show whether the account may upload.
 

@@ -5,7 +5,7 @@
 //! - `http://HOST:PORT`, `https://HOST[:PORT]`: over TCP, with the token
 //! - `unix:/path/to/serve.sock`: the socket of a `berth serve` on this machine
 
-use crate::{Result, paths::Paths};
+use crate::{Result, paths::Paths, store::kind};
 use berth_api::{
     client::{self, Error},
     ops,
@@ -136,7 +136,8 @@ pub async fn fetch(url: &str) -> client::Result<Vec<u8>> {
 impl Server {
     /// The server this berth is set to use, if any. The environment wins.
     pub fn configured(paths: &Paths) -> Option<Server> {
-        let settings = paths.settings().unwrap_or_default();
+        // Local settings only, so that finding the server never opens the store.
+        let settings = paths.local_settings().unwrap_or_default();
         let setting = |key: &str| settings.get(key).and_then(Value::as_str).map(str::to_owned);
         let variable = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
         let url = variable("BERTH_SERVER").or_else(|| setting("server"))?;
@@ -175,8 +176,32 @@ impl Server {
 
     /// One operation of the server itself, waited for.
     pub fn call(&self, op: &str, args: Value, data: Option<Value>) -> Result<Value> {
-        Ok(crate::link::runtime()?
-            .block_on(async { self.portal().await?.call(op, None, args, data).await })?)
+        crate::link::runtime()?.block_on(async {
+            let portal = self.portal().await?;
+            self.ask(&portal, op, args, data).await
+        })
+    }
+
+    /// One operation on an open portal. A server that lacks the operation is
+    /// an older one, which is said in words, with its version when it tells.
+    pub async fn ask(
+        &self,
+        portal: &Portal,
+        op: &str,
+        args: Value,
+        data: Option<Value>,
+    ) -> Result<Value> {
+        match portal.call(op, None, args, data).await {
+            Err(error) if missing_operation(&error).is_some() => {
+                let version = portal
+                    .call("version", None, Value::Null, None)
+                    .await
+                    .ok()
+                    .and_then(|version| version["version"].as_str().map(str::to_owned));
+                Err(unsupported(&self.url, version.as_deref(), &error).into())
+            }
+            other => Ok(other?),
+        }
     }
 
     /// The server's hosts: name, address and whether each answers.
@@ -189,41 +214,43 @@ impl Server {
         Ok(hosts.as_array().cloned().unwrap_or_default())
     }
 
-    /// Where what is known of this server is kept: a folder of the data
-    /// directory per server, written anew by [`Server::mirror`].
-    pub fn dir(&self, paths: &Paths) -> std::path::PathBuf {
-        let name: String = self
-            .url
-            .chars()
-            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-            .collect();
-        paths.data_dir.join("served").join(name)
+    /// The scope of the store that holds what is known of this server: its
+    /// registries, the names of its secrets, and what the last mirror found.
+    pub fn scope(&self) -> String {
+        format!("served:{}", self.url)
     }
 
-    /// The profiles of the server's hosts.
-    pub fn hosts_dir(&self, paths: &Paths) -> std::path::PathBuf {
-        self.dir(paths).join("hosts")
-    }
-
-    /// Write what the server has: a profile for each of its hosts, its
-    /// registries and the names of its secrets. Whoever may set the server up
-    /// gets the profiles as they are there, and saving one sends it back;
-    /// anyone else gets profiles that only say where the hosts are.
+    /// Keep what the server has in the store, under the server's scope: a
+    /// profile for each of its hosts, its registries and the names of its
+    /// secrets. Whoever may set the
+    /// server up gets the profiles as they are there, and saving one sends it
+    /// back; anyone else gets profiles that only say where the hosts are.
     pub fn mirror(&self, paths: &Paths) -> Result<()> {
         let fetched = crate::link::runtime()?.block_on(self.fetch())?;
-        let dir = self.dir(paths);
-        let _ = std::fs::remove_dir_all(&dir);
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(dir.join("hosts"))?;
+        self.keep(paths, fetched)
+    }
+
+    fn keep(&self, paths: &Paths, fetched: Fetched) -> Result<()> {
+        let mut state = serde_json::Map::new();
+        for (host, _) in &fetched.hosts {
+            if let Some(name) = host["name"].as_str().filter(|name| safe(name)) {
+                state.insert(
+                    name.to_owned(),
+                    json!({
+                        "reachable": host["reachable"] == true,
+                        "error": host["error"],
+                        "version": host["version"],
+                        "rotating": host["rotating"] == true,
+                    }),
+                );
+            }
         }
+        // One transaction, so a screen that reads meanwhile sees the old
+        // mirror or the new one, not half of one.
+        let mut items: Vec<(&str, String, Vec<u8>)> = vec![];
         // A whole profile, so every screen has what it expects; only where the
         // host is and that it is the server's are its own.
-        let example = std::fs::read(paths.source()?.join(crate::paths::layout::EXAMPLE))?;
-        let example: Value = serde_json::from_slice(&example)?;
+        let mut example: Option<Value> = None;
         for (host, profile) in fetched.hosts {
             let Some(name) = host["name"].as_str().filter(|name| safe(name)) else {
                 continue;
@@ -231,43 +258,96 @@ impl Server {
             let mut profile = match profile {
                 Some(profile) if profile.is_object() => profile,
                 _ => {
-                    let mut profile = example.clone();
-                    profile["builder"]["ssh_host"] = host["address"].clone();
-                    profile["builder"]["ask_become_pass"] = json!(false);
+                    if example.is_none() {
+                        let file = paths.source()?.join(crate::paths::layout::EXAMPLE);
+                        example = Some(serde_json::from_slice(&std::fs::read(file)?)?);
+                    }
+                    let mut profile = example.clone().unwrap_or_default();
+                    profile["access"] = json!({"address": host["address"], "sudo": "none"});
                     profile["builder"]["served_only"] = json!(true);
                     profile
                 }
             };
             profile["builder"]["served"] = json!(self.url);
-            private(
-                &dir.join("hosts").join(format!("{name}.json")),
-                &serde_json::to_string_pretty(&profile)?,
-            )?;
+            items.push((
+                kind::PROFILE,
+                name.to_owned(),
+                profile.to_string().into_bytes(),
+            ));
         }
-        private(
-            &dir.join("config.json"),
-            &serde_json::to_string_pretty(&json!({"registries": fetched.registries}))?,
-        )?;
-        let secrets: serde_json::Map<String, Value> = fetched
-            .secrets
-            .into_iter()
-            .map(|name| (name, json!(KEPT)))
+        for (name, registry) in fetched.registries.as_object().into_iter().flatten() {
+            items.push((
+                kind::REGISTRY,
+                name.clone(),
+                registry.to_string().into_bytes(),
+            ));
+        }
+        for name in fetched.secrets {
+            items.push((kind::SECRET, name, KEPT.as_bytes().to_vec()));
+        }
+        let state = json!({"version": fetched.version, "hosts": state});
+        items.push((kind::MIRROR, "state".into(), state.to_string().into_bytes()));
+        items.push((
+            kind::MIRROR,
+            "access".into(),
+            fetched.access.to_string().into_bytes(),
+        ));
+        let items: Vec<(&str, &str, Vec<u8>)> = items
+            .iter()
+            .map(|(kind, name, value)| (*kind, name.as_str(), value.clone()))
             .collect();
-        private(
-            &dir.join("secrets.json"),
-            &serde_json::to_string_pretty(&secrets)?,
-        )?;
-        private(
-            &dir.join("access.json"),
-            &serde_json::to_string_pretty(&fetched.access)?,
+        crate::store::shared(paths)?.replace(
+            &self.scope(),
+            &[kind::PROFILE, kind::REGISTRY, kind::SECRET, kind::MIRROR],
+            &items,
         )?;
         Ok(())
     }
 
-    async fn fetch(&self) -> client::Result<Fetched> {
+    /// A row the last mirror wrote, as JSON; null when there is none.
+    fn mirrored(&self, paths: &Paths, name: &str) -> Value {
+        crate::store::shared(paths)
+            .ok()
+            .and_then(|store| store.read_json(kind::MIRROR, &self.scope(), name).ok())
+            .flatten()
+            .unwrap_or(Value::Null)
+    }
+
+    /// What the last mirror found out about the server and its hosts.
+    pub fn known(&self, paths: &Paths) -> Known {
+        let state = self.mirrored(paths, "state");
+        let hosts = state["hosts"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(name, host)| {
+                let text = |key: &str| host[key].as_str().map(str::to_owned);
+                (
+                    name.clone(),
+                    Reach {
+                        reachable: host["reachable"] == true,
+                        error: text("error"),
+                        version: text("version"),
+                        rotating: host["rotating"] == true,
+                    },
+                )
+            })
+            .collect();
+        Known {
+            version: state["version"].as_str().map(str::to_owned),
+            hosts,
+        }
+    }
+
+    async fn fetch(&self) -> Result<Fetched> {
         let portal = self.portal().await?;
-        let call = |op: &'static str, args: Value| portal.call(op, None, args, None);
+        let call = |op: &'static str, args: Value| self.ask(&portal, op, args, None);
         let listed = call("hosts.list", Value::Null).await?;
+        // A server too old to tell its version is shown as not knowing it.
+        let version = call("version", Value::Null)
+            .await
+            .ok()
+            .and_then(|version| version["version"].as_str().map(str::to_owned));
         // A server from before roles were there lets its token do everything
         // it has, which is not set-up.
         let access = call("access", Value::Null)
@@ -297,15 +377,14 @@ impl Server {
             registries,
             secrets,
             access,
+            version,
         })
     }
 
     /// Whether this berth may set the server up, as the last mirror found.
     pub fn admin(&self, paths: &Paths) -> bool {
-        std::fs::read(self.dir(paths).join("access.json"))
-            .ok()
-            .and_then(|data| serde_json::from_slice::<Value>(&data).ok())
-            .is_some_and(|access| access["role"] == "admin" && access["setup"] == true)
+        let access = self.mirrored(paths, "access");
+        access["role"] == "admin" && access["setup"] == true
     }
 
     /// Give the server a profile to keep under a name. What marks it as the
@@ -330,18 +409,51 @@ struct Fetched {
     registries: Value,
     secrets: Vec<String>,
     access: Value,
+    /// The server's own version, when it tells.
+    version: Option<String>,
 }
 
-fn private(path: &std::path::Path, text: &str) -> Result<()> {
-    use std::{io::Write, os::unix::fs::OpenOptionsExt};
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(format!("{text}\n").as_bytes())?;
-    Ok(())
+/// Whether one host answered the server when the mirror was made.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Reach {
+    pub reachable: bool,
+    /// Why it did not.
+    pub error: Option<String>,
+    /// The version of its berthd.
+    pub version: Option<String>,
+    /// A rotation of a key it logs in with has not reached it yet.
+    pub rotating: bool,
+}
+
+/// What a mirror kept of the server beside the profiles.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Known {
+    /// The version of the server, when it said.
+    pub version: Option<String>,
+    pub hosts: std::collections::BTreeMap<String, Reach>,
+}
+
+/// The operation a server does not have, when that is what the error says.
+pub fn missing_operation(error: &Error) -> Option<&str> {
+    match error {
+        Error::Api { code, message, .. } if code == "not_found" => {
+            message.strip_prefix("No operation ")
+        }
+        _ => None,
+    }
+}
+
+/// What to tell of an operation the server does not have.
+pub fn unsupported(url: &str, version: Option<&str>, error: &Error) -> String {
+    let op = missing_operation(error).unwrap_or("this");
+    match version {
+        Some(version) => format!(
+            "The berth server at {url} runs {version}, which does not have {op} yet. Update the berth server."
+        ),
+        None => format!(
+            "The berth server at {url} does not have {op} yet, so it is older than this berth. Update the berth server."
+        ),
+    }
 }
 
 /// A name that is a file name and nothing else.
@@ -375,5 +487,123 @@ mod tests {
         assert!(parts("ftp://x").is_err());
         assert!(parts("http://").is_err());
         assert!(safe("studio-1") && !safe("../x") && !safe(".x") && !safe("a/b"));
+    }
+
+    #[test]
+    fn a_missing_operation_is_said_in_words() {
+        let error = Error::api(berth_api::code::NOT_FOUND, "No operation instances.get");
+        assert_eq!(missing_operation(&error), Some("instances.get"));
+        assert_eq!(
+            unsupported("http://192.0.2.7:7777", Some("0.3.0"), &error),
+            "The berth server at http://192.0.2.7:7777 runs 0.3.0, which does not have instances.get yet. Update the berth server."
+        );
+        assert!(
+            unsupported("http://192.0.2.7:7777", None, &error).contains("older than this berth")
+        );
+        // Another not-found is not this.
+        let host = Error::api(berth_api::code::NOT_FOUND, "No host studio");
+        assert_eq!(missing_operation(&host), None);
+        assert_eq!(
+            missing_operation(&Error::Transport("No operation x".into())),
+            None
+        );
+    }
+
+    fn scratch() -> (tempfile::TempDir, Paths, Server) {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: directory.path().join("config"),
+            data_dir: directory.path().join("data"),
+        };
+        let server = Server {
+            url: "http://192.0.2.7:7777".into(),
+            token: None,
+        };
+        (directory, paths, server)
+    }
+
+    fn fetched(registry: &str, secret: &str, admin: bool) -> Fetched {
+        Fetched {
+            hosts: vec![
+                (
+                    json!({"name": "studio", "reachable": true, "version": "0.3.0"}),
+                    Some(
+                        json!({"hostname": "studio", "builder": {}, "access": {"address": "192.0.2.20"}}),
+                    ),
+                ),
+                (
+                    json!({"name": "attic", "reachable": false, "error": "timed out"}),
+                    Some(json!({"hostname": "attic", "builder": {}})),
+                ),
+            ],
+            registries: json!({registry: {"type": "npm", "url": "https://npm.example"}}),
+            secrets: vec![secret.to_owned(), format!("registry/{registry}")],
+            access: json!({"role": if admin { "admin" } else { "operate" }, "setup": true}),
+            version: Some("0.3.0".into()),
+        }
+    }
+
+    #[test]
+    fn a_mirror_keeps_who_answers() {
+        let (_directory, paths, server) = scratch();
+        assert_eq!(server.known(&paths), Known::default());
+        assert!(!server.admin(&paths));
+        server.keep(&paths, fetched("npm", "github", true)).unwrap();
+        let known = server.known(&paths);
+        assert_eq!(known.version.as_deref(), Some("0.3.0"));
+        assert!(known.hosts["studio"].reachable);
+        assert_eq!(known.hosts["attic"].error.as_deref(), Some("timed out"));
+        assert!(server.admin(&paths));
+        // The profiles are in the store, under the server's scope, and no file is written.
+        let studio = crate::profiles::Place::stored(&server.scope(), "studio")
+            .unwrap()
+            .load(&paths)
+            .unwrap()
+            .unwrap();
+        assert_eq!(studio["builder"]["served"], json!(server.url));
+        assert_eq!(studio["access"]["address"], "192.0.2.20");
+        assert!(!paths.data_dir.join("served").exists());
+    }
+
+    #[test]
+    fn a_mirror_replaces_its_scope_and_leaves_the_own_alone() {
+        let (_directory, paths, server) = scratch();
+        let store = crate::store::shared(&paths).unwrap();
+        let own = crate::store::OWN;
+        store
+            .write(kind::SECRET, own, "github", b"ghp-made-up")
+            .unwrap();
+        store.write(kind::REGISTRY, own, "npm", b"{}").unwrap();
+        store
+            .write(kind::PROFILE, own, "studio", br#"{"builder": {}}"#)
+            .unwrap();
+        server.keep(&paths, fetched("npm", "github", true)).unwrap();
+        let profiles = |scope: &str| store.names(kind::PROFILE, scope).unwrap();
+        assert_eq!(profiles(&server.scope()), ["attic", "studio"]);
+        server
+            .keep(&paths, fetched("hub", "deploy", false))
+            .unwrap();
+        let scope = server.scope();
+        assert_eq!(scope, "served:http://192.0.2.7:7777");
+        assert_eq!(store.names(kind::REGISTRY, &scope).unwrap(), ["hub"]);
+        assert_eq!(
+            store.names(kind::SECRET, &scope).unwrap(),
+            ["deploy", "registry/hub"]
+        );
+        for (_, value) in store.entries(kind::SECRET, &scope).unwrap() {
+            assert_eq!(value, KEPT.as_bytes());
+        }
+        assert!(!server.admin(&paths));
+        assert_eq!(
+            store.read(kind::SECRET, own, "github").unwrap().unwrap(),
+            b"ghp-made-up"
+        );
+        assert_eq!(store.names(kind::REGISTRY, own).unwrap(), ["npm"]);
+        // The host of this installation's own stays as it was.
+        assert_eq!(profiles(own), ["studio"]);
+        assert_eq!(
+            store.read(kind::PROFILE, own, "studio").unwrap().unwrap(),
+            br#"{"builder": {}}"#
+        );
     }
 }

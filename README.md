@@ -9,7 +9,8 @@ A host runs XFCE on a virtual display that you open in a browser. Plugins add
 the agents, such as Claude Code, Codex and Pi with T3 Code as their web front
 end, and the toolchains they work with. Each host has a profile that berth
 installs and can apply again. Once the host runs, its page in berth has the
-status, sign-ins, updates and secrets.
+status, sign-ins, updates and secrets. A machine you only log in to can be
+a host too: `berth host add dock 192.0.2.4 --user ops`.
 
 <img src="docs/public/screens/overview.png" alt="berth's terminal UI showing the overview of a host with its tasks">
 
@@ -35,6 +36,17 @@ cargo install --locked --git https://github.com/helightdev/berth berth
 Setting up hosts also needs `ssh`, `python3` and `ansible-playbook` on your
 machine. berth is also an image, `ghcr.io/helightdev/berth`, which runs its
 local API server by default.
+
+`berth-remote` uses the hosts of a berth server from a terminal on Windows,
+macOS or Linux:
+
+```powershell
+irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex   # Windows
+```
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/helightdev/berth/main/install-remote.sh | sh   # macOS, Linux
+```
 
 ## Quick start
 

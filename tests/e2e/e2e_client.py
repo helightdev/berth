@@ -1,8 +1,9 @@
 """berth on another machine, with its hosts those of a berth serve: the
-commands go through the server, which reaches the host."""
+commands go through the server, which reaches the host. ClientApply looks at
+the apply of the shared state of berth serve (harness.served_extended())."""
 import unittest
 
-from harness import AGENT, HOST, Workstation, needs_e2e, served
+from harness import AGENT, HOST, Workstation, needs_e2e, served, served_extended
 
 
 @needs_e2e
@@ -43,15 +44,9 @@ class Client(unittest.TestCase):
         finally:
             terminal.close()
 
-    def test_apply_is_a_job_of_the_server(self):
-        done = self.station.berth('apply', HOST, timeout=900)
-        self.assertIn(f'on the berth server at {self.serve.url}', done.stderr)
-        self.assertIn('PLAY RECAP', done.stdout)
-        self.assertRegex(done.stdout, r'failed=0')
-
     def test_the_seed_is_rendered_by_the_server(self):
         profile = self.serve.call('GET', f'/v1/hosts/{HOST}/profile')
-        draft = {**profile, 'hostname': 'cloud-3', 'builder': {},
+        draft = {**profile, 'hostname': 'cloud-3', 'builder': {}, 'access': {},
                  'operator_password_hash': '$6$e2e$' + 'x' * 86,
                  'release_url': 'https://192.0.2.30/berth-release.tar.gz'}
         self.serve.call('PUT', '/v1/hosts/cloud-3/profile', draft)
@@ -59,7 +54,7 @@ class Client(unittest.TestCase):
             written = self.station.berth('seed', 'cloud-3').stdout.strip()
             seed = open(written).read()
             self.assertTrue(seed.startswith('#cloud-config'))
-            own = self.serve.station.own_key.with_suffix('.pub').read_text().split()[1]
+            own = self.serve.station.own_public().split()[1]
             self.assertIn(own, seed)
         finally:
             self.serve.call('DELETE', '/v1/hosts/cloud-3')
@@ -71,6 +66,22 @@ class Client(unittest.TestCase):
         refused = once.berth('--server', self.serve.url, '--token', 'wrong', 'list', check=False)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn(self.serve.url, refused.stderr)
+
+
+@needs_e2e
+class ClientApply(unittest.TestCase):
+    """Applying from a terminal client: the first apply of the shared state
+    of berth serve (harness.served_extended()), which a client of the server made."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.applied = served_extended()
+
+    def test_apply_is_a_job_of_the_server(self):
+        done = self.applied.first
+        self.assertIn(f'on the berth server at {self.applied.serve.url}', done.stderr)
+        self.assertIn('PLAY RECAP', done.stdout)
+        self.assertRegex(done.stdout, r'failed=0')
 
 
 @needs_e2e

@@ -3,10 +3,11 @@
 //! business; requests go out through it and what happened comes back.
 
 use crate::event::{Key, key_bytes};
+use crate::page::{self, Accepted, Begin};
+pub use crate::page::{Arguments, Launch, argument_label};
 use berth_api as api;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use tui_input::Input;
 use web_time::{Duration, Instant};
 
 /// The lowest `api` of a host this berth can work with.
@@ -220,20 +221,9 @@ pub enum State {
 /// Something to say yes to before it happens.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Pending {
-    /// Run the task at this index.
-    Task(usize),
+    /// Run the action at this index of [`HostView::actions`].
+    Action(usize),
     Apply,
-}
-
-/// The dialog that asks for a task's arguments, one after another.
-pub struct Arguments {
-    pub task: usize,
-    pub index: usize,
-    pub values: BTreeMap<String, String>,
-    pub input: Input,
-    pub choices: Vec<String>,
-    /// The choice last put into the input, for stepping through them.
-    pub chosen: Option<usize>,
 }
 
 /// What the overview knows of the host, and the panel onto one of its sessions.
@@ -245,6 +235,13 @@ pub struct HostView {
     pub stats: Option<api::Stats>,
     /// What changed since the host was applied, when berth knows.
     pub behind: Option<api::Behind>,
+    /// The level the host's profile means it to have.
+    pub level: api::HostLevel,
+    /// The level the host was seen to have, once it was asked.
+    pub seen: Option<api::HostLevel>,
+    /// berth's own actions on the host, beside its tasks: what a berth
+    /// server lists for its host, or what this berth does itself.
+    pub own: Vec<api::Action>,
     pub view: Option<View>,
     /// The SSH user's sudo password, kept for this run of the UI.
     pub password: Option<String>,
@@ -266,6 +263,9 @@ impl Default for HostView {
             sessions: vec![],
             stats: None,
             behind: None,
+            level: api::HostLevel::Workstation,
+            seen: None,
+            own: vec![],
             view: None,
             password: None,
             question: None,
@@ -304,6 +304,7 @@ impl HostView {
         self.sessions.clear();
         self.stats = None;
         self.behind = None;
+        self.seen = None;
         self.state = State::Idle;
     }
 
@@ -322,79 +323,86 @@ impl HostView {
         });
     }
 
-    /// Begin a task: its question first, then its arguments. Returns the
-    /// task to run now when it needs neither.
+    /// What can be done on the host: its tasks as actions, each task that
+    /// is no step of another, with the steps plugins add to it, and then
+    /// berth's own that are no task of the host.
+    pub fn actions(&self) -> Vec<api::Action> {
+        let mut actions = api::Action::of_tasks(&self.tasks);
+        let own = self
+            .own
+            .iter()
+            .filter(|action| !actions.iter().any(|task| task.name == action.name))
+            .cloned()
+            .collect::<Vec<_>>();
+        actions.extend(own);
+        actions
+    }
+
+    /// Whether the action at `index` is one of berth's own, run by berth and
+    /// not by the host.
+    pub fn is_own(&self, index: usize) -> bool {
+        self.actions()
+            .get(index)
+            .is_some_and(|action| self.task(action).is_none())
+    }
+
+    /// Begin an action: its question first, then its arguments. Returns the
+    /// action to run now when it needs neither.
     pub fn begin_task(&mut self, index: usize, confirmed: bool) -> Option<Launch> {
-        let task = self.tasks.get(index)?.clone();
-        if let (Some(question), false) = (&task.confirm, confirmed) {
-            self.question = Some((question.clone(), Pending::Task(index)));
-            return None;
+        match page::begin(&self.actions(), index, confirmed) {
+            Begin::Ask(question) => self.question = Some((question, Pending::Action(index))),
+            Begin::Arguments(dialog) => {
+                self.arguments = Some(dialog);
+                self.ask_choices();
+            }
+            Begin::Run(launch) => return Some(launch),
+            Begin::Nothing => {}
         }
-        if task.arguments.is_empty() {
-            return Some((index, BTreeMap::new()));
-        }
-        self.arguments = Some(Arguments {
-            task: index,
-            index: 0,
-            values: BTreeMap::new(),
-            input: Input::new(task.arguments[0].default.clone()),
-            choices: vec![],
-            chosen: None,
-        });
-        self.ask_choices();
         None
     }
 
     fn ask_choices(&self) {
-        if let Some(dialog) = &self.arguments
-            && let Some(task) = self.tasks.get(dialog.task)
-            && let Some(argument) = task.arguments.get(dialog.index)
-            && !argument.choices.is_empty()
+        if let Some((task, argument)) = self
+            .arguments
+            .as_ref()
+            .and_then(|dialog| dialog.wants_choices(&self.actions()))
         {
-            self.send(Request::Choices {
-                task: task.name.clone(),
-                argument: argument.name.clone(),
-            });
+            self.send(Request::Choices { task, argument });
         }
     }
 
     /// Take the value typed for the argument being asked and go on to the
-    /// next. Returns the task to run after the last, or what is missing.
+    /// next. Returns the action to run after the last, or what is missing.
     pub fn accept_argument(&mut self) -> Result<Option<Launch>, String> {
-        let Some(mut dialog) = self.arguments.take() else {
+        let Some(dialog) = self.arguments.take() else {
             return Ok(None);
         };
-        let Some(task) = self.tasks.get(dialog.task).cloned() else {
-            return Ok(None);
-        };
-        let argument = &task.arguments[dialog.index];
-        let value = dialog.input.value().to_owned();
-        if value.is_empty() && argument.required {
-            self.arguments = Some(dialog);
-            return Err(format!("{} is needed", argument_label(argument)));
-        }
-        dialog.values.insert(argument.name.clone(), value);
-        dialog.index += 1;
-        match task.arguments.get(dialog.index) {
-            Some(next) => {
-                dialog.input = Input::new(next.default.clone());
-                dialog.choices.clear();
-                dialog.chosen = None;
-                self.arguments = Some(dialog);
+        match page::accept(&self.actions(), dialog) {
+            Accepted::Next(next) => {
+                self.arguments = Some(next);
                 self.ask_choices();
                 Ok(None)
             }
-            None => Ok(Some((dialog.task, dialog.values))),
+            Accepted::Run(launch) => Ok(Some(launch)),
+            Accepted::Missing(dialog, said) => {
+                self.arguments = Some(dialog);
+                Err(said)
+            }
         }
     }
 
     /// What starting a task sends: its arguments, and the panel's size for a terminal.
-    pub fn task_body(&self, task: &api::Task, values: &BTreeMap<String, String>) -> Value {
+    pub fn task_body(&self, action: &api::Action, values: &BTreeMap<String, String>) -> Value {
         let mut body = json!({"arguments": values});
-        if task.terminal {
+        if action.terminal {
             (body["rows"], body["cols"]) = (json!(self.size.0), json!(self.size.1));
         }
         body
+    }
+
+    /// The task an action of the host runs, with what the host keeps of it.
+    pub fn task(&self, action: &api::Action) -> Option<&api::Task> {
+        self.tasks.iter().find(|task| task.name == action.name)
     }
 
     /// Start a shell as `user`.
@@ -458,7 +466,11 @@ impl HostView {
                 Event::Version(version) if version.api < NEEDS_API => {
                     self.state = State::Old(version.version);
                 }
-                Event::Version(version) => self.state = State::Ready(version.version),
+                Event::Version(version) => {
+                    // A controller without a record was installed outside berth.
+                    self.seen = Some(version.level.unwrap_or(api::HostLevel::Controller));
+                    self.state = State::Ready(version.version);
+                }
                 Event::Failed { message, missing } => {
                     // A wrong password is asked for again.
                     if self.password.is_some()
@@ -468,6 +480,7 @@ impl HostView {
                         self.state = State::Password;
                         note = Some("sudo on the host did not take that password".to_owned());
                     } else if missing {
+                        self.seen = Some(api::HostLevel::Reachable);
                         self.state = State::Missing;
                     } else if message.contains("a password is required") {
                         self.state = State::Password;
@@ -517,15 +530,9 @@ impl HostView {
                     argument,
                     choices,
                 } => {
-                    if let Some(dialog) = &mut self.arguments
-                        && let Some(known) = self.tasks.get(dialog.task)
-                        && known.name == task
-                        && known
-                            .arguments
-                            .get(dialog.index)
-                            .is_some_and(|known| known.name == argument)
-                    {
-                        dialog.choices = choices;
+                    let actions = self.actions();
+                    if let Some(dialog) = &mut self.arguments {
+                        dialog.offered(&actions, &task, &argument, choices);
                     }
                 }
                 Event::Error(message) => {
@@ -588,24 +595,6 @@ fn uptime(seconds: u64) -> String {
     }
 }
 
-/// A task and the values of its arguments, ready to run.
-pub type Launch = (usize, BTreeMap<String, String>);
-
-pub fn argument_label(argument: &api::Argument) -> &str {
-    match argument.label.is_empty() {
-        true => &argument.name,
-        false => &argument.label,
-    }
-}
-
-/// What a task is called on screen.
-pub fn task_label(task: &api::Task) -> &str {
-    match task.label.is_empty() {
-        true => &task.name,
-        false => &task.label,
-    }
-}
-
 /// How a session of the list is doing, in a word.
 pub fn session_state(session: &api::Session) -> String {
     match (session.running(), session.lost, session.exit_code) {
@@ -620,7 +609,7 @@ pub fn session_state(session: &api::Session) -> String {
 /// Something the overview of a host offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick {
-    /// A task, by index into what the host listed.
+    /// An action, by index into [`HostView::actions`].
     Task(usize),
     Terminal,
     /// A session, by index.
@@ -631,25 +620,10 @@ pub enum Pick {
 /// each in the group it names, with the terminal among the first and the
 /// host's sessions after them.
 pub fn groups(host: &HostView, terminal_user: &str) -> Vec<(String, Vec<(String, Pick)>)> {
-    let mut groups: Vec<(String, Vec<(String, Pick)>)> = vec![];
-    for (index, task) in host.tasks.iter().enumerate() {
-        // A step of another task has no row of its own.
-        if !task.extends.is_empty() {
-            continue;
-        }
-        let title = match task.group.is_empty() {
-            true => "System",
-            false => task.group.as_str(),
-        };
-        let row = (format!("  ▸ {}", task_label(task)), Pick::Task(index));
-        match groups
-            .iter_mut()
-            .find(|(known, _)| known.eq_ignore_ascii_case(title))
-        {
-            Some((_, rows)) => rows.push(row),
-            None => groups.push((title.to_owned(), vec![row])),
-        }
-    }
+    let mut groups: Vec<(String, Vec<(String, Pick)>)> = page::groups(&host.actions(), Pick::Task)
+        .into_iter()
+        .map(|group| (group.title, group.rows))
+        .collect();
     let terminal = (format!("  ▸ Terminal · as {terminal_user}"), Pick::Terminal);
     match groups.iter_mut().find(|(title, _)| title == "System") {
         Some((_, rows)) => rows.insert(1.min(rows.len()), terminal),
@@ -670,6 +644,27 @@ pub fn groups(host: &HostView, terminal_user: &str) -> Vec<(String, Vec<(String,
         groups.push(("Sessions".to_owned(), rows));
     }
     groups
+}
+
+/// The line the overview shows of the host's level, with what the host
+/// itself was seen to be when that is different.
+pub fn level_line(name: &str, host: &HostView) -> String {
+    let mut line = format!("Level · {} ({})", host.level, host.level.describe());
+    if let Some(said) = api::level_mismatch(name, host.level, host.seen) {
+        line += &format!(". {said}");
+    } else if let Some(seen) = host.seen.filter(|seen| *seen != host.level) {
+        line += &format!(". The host itself is {seen} now");
+    }
+    line
+}
+
+/// How wide the overview's lines about the host are wrapped, so they fit
+/// the page beside the information box.
+pub const NOTE_WIDTH: usize = 64;
+
+/// [`level_line`], wrapped to the overview's width.
+pub fn level_lines(name: &str, host: &HostView) -> Vec<String> {
+    crate::screen::wrap(&level_line(name, host), NOTE_WIDTH)
 }
 
 /// What the overview says of a host whose configuration is behind.
@@ -704,30 +699,25 @@ pub fn exited(frame: &Value) -> Option<Option<i32>> {
     Some(code.as_i64().map(|code| code as i32))
 }
 
-/// What the information box says of a task: its own help, what it asks for,
-/// and what plugins add to it.
+/// What the information box says of an action of the host.
 pub fn task_help(host: &HostView, index: usize) -> String {
-    let Some(task) = host.tasks.get(index) else {
-        return String::new();
-    };
-    let mut help = task.help.clone();
-    if !task.arguments.is_empty() {
-        let names: Vec<&str> = task.arguments.iter().map(argument_label).collect();
-        help += &format!("\n\nAsks for: {}.", names.join(", "));
+    match host.actions().get(index) {
+        Some(action) => page::help(action, &command_of(&action.name)),
+        None => String::new(),
     }
-    let steps: Vec<_> = host
-        .tasks
-        .iter()
-        .filter(|step| step.extends.contains(&task.name))
-        .collect();
-    if !steps.is_empty() {
-        help += "\n\n### From plugins\n\n";
-        for step in steps {
-            help += &format!("- **{}**: {}\n", step.label, step.help.replace('\n', " "));
-        }
+}
+
+/// The command that runs an action of a host: berth's own have commands
+/// of their own, the others are run by name.
+pub fn command_of(action: &str) -> String {
+    match action {
+        "install-controller" => "berth host install HOST".into(),
+        "trust-key" => "berth key trust HOST".into(),
+        "host-key" => "berth key host HOST [--accept]".into(),
+        "apply" => "berth apply HOST".into(),
+        "seed" => "berth seed HOST".into(),
+        name => format!("berth run HOST {name}"),
     }
-    help += &format!("\n\nFrom the command line: `berth run HOST {}`", task.name);
-    help
 }
 
 /// What the information box says of a session of the list.
@@ -747,4 +737,79 @@ pub fn session_help(host: &HostView, index: usize) -> String {
         session.started,
         id = session.id,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn berths_own_actions_follow_the_tasks_and_say_when_they_cannot_run() {
+        let mut host = HostView {
+            tasks: vec![api::Task {
+                name: "status".into(),
+                label: "Status".into(),
+                group: "System".into(),
+                ..api::Task::default()
+            }],
+            ..HostView::default()
+        };
+        host.own = vec![
+            api::Action {
+                name: "status".into(),
+                ..api::Action::default()
+            },
+            api::Action {
+                name: "install-controller".into(),
+                label: "Update the controller".into(),
+                group: "Set-Up".into(),
+                available: false,
+                why: "studio is a workstation".into(),
+                ..api::Action::default()
+            },
+        ];
+        let actions = host.actions();
+        let names: Vec<&str> = actions.iter().map(|action| action.name.as_str()).collect();
+        // A task of the host wins over one of berth's of the same name.
+        assert_eq!(names, ["status", "install-controller"]);
+        assert!(!host.is_own(0) && host.is_own(1));
+        let groups = groups(&host, "agent");
+        let setup = groups.iter().find(|(title, _)| title == "Set-Up").unwrap();
+        assert_eq!(setup.1[0].0, "  ▸ Update the controller · not now");
+        assert!(task_help(&host, 1).contains("It cannot run now: studio is a workstation"));
+    }
+
+    #[test]
+    fn the_level_line_says_what_the_host_was_seen_to_be() {
+        let mut host = HostView {
+            level: api::HostLevel::Reachable,
+            ..HostView::default()
+        };
+        assert_eq!(
+            level_line("studio", &host),
+            "Level · reachable (SSH only, nothing of berth installed)"
+        );
+        host.seen = Some(api::HostLevel::Reachable);
+        assert!(!level_line("studio", &host).contains("now"));
+        // One seen to be more than its profile says names how to adopt it.
+        host.seen = Some(api::HostLevel::Workstation);
+        assert!(
+            level_line("studio", &host)
+                .contains("studio is a workstation; its profile here says reachable. To adopt it"),
+            "{}",
+            level_line("studio", &host)
+        );
+        host.level = api::HostLevel::Workstation;
+        host.seen = Some(api::HostLevel::Controller);
+        assert!(level_line("studio", &host).ends_with("The host itself is controller now"));
+        // Wrapped, every line fits the overview beside the information box.
+        host.level = api::HostLevel::Reachable;
+        host.seen = Some(api::HostLevel::Workstation);
+        let lines = level_lines("studio", &host);
+        assert!(lines.len() > 1);
+        assert!(
+            lines.iter().all(|line| line.chars().count() <= NOTE_WIDTH),
+            "{lines:?}"
+        );
+    }
 }

@@ -1,15 +1,17 @@
 //! The tabs of the home screen that set the server up: its settings, its
-//! registries, its secrets and its plugins. What they show is what the server
-//! last said; what they change goes to the server.
+//! registries, its secrets, its plugins and its provisioners. What they show
+//! is what the server last said; what they change goes to the server.
 
 use crate::admin::{Admin, Data};
-use crate::browser::Browser;
+use crate::device::Here;
 use berth_tui::berth_key;
 use berth_tui::fields::Kind;
 use berth_tui::plugins::{self, Asked, Place};
+use berth_tui::provisioners;
+use berth_tui::screen;
 use berth_tui::setup::{valid_name, value_line};
 use berth_tui::{Code, Key, event, theme};
-use ratzilla::ratatui::{
+use ratatui::{
     style::Style,
     text::{Line, Span},
 };
@@ -215,7 +217,8 @@ fn registry_rows(data: &Data) -> Vec<(RegistryRow, Line<'static>)> {
 
 #[derive(Default)]
 pub struct Home {
-    selected: [usize; 3],
+    /// The selected row of each tab after Hosts that keeps its own, by its index.
+    selected: [usize; 5],
     pub editor: Option<Input>,
     /// A removal waits for a second x.
     armed: bool,
@@ -224,6 +227,7 @@ pub struct Home {
     /// A new or renamed registry, to select once the rows have it.
     go_to: Option<String>,
     plugins: plugins::Tab,
+    pub provisioners: provisioners::Tab,
     /// The server, and the link that opens this page signed in, when there
     /// is one to give: a row of the Settings tab.
     pub connect: Option<(String, String)>,
@@ -236,15 +240,17 @@ pub struct Home {
 /// The rows of the Settings tab after the server's own settings.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsRow {
-    BerthKey,
+    /// A key of the server's ring, by its place in the list.
+    Key(usize),
     Connect,
 }
 
 /// The tabs after Hosts, in their order.
-pub const SETTINGS: usize = 0;
-pub const REGISTRIES: usize = 1;
-pub const SECRETS: usize = 2;
-pub const PLUGINS: usize = 3;
+pub const PROVISIONERS: usize = 0;
+pub const SETTINGS: usize = 1;
+pub const REGISTRIES: usize = 2;
+pub const SECRETS: usize = 3;
+pub const PLUGINS: usize = 4;
 
 fn cycle(all: &[&str], current: &str) -> String {
     let index = all
@@ -258,6 +264,7 @@ impl Home {
     pub fn select(&mut self, tab: usize, row: usize) {
         match tab {
             PLUGINS => self.plugins.selected = row,
+            PROVISIONERS => self.provisioners.select_row(row),
             tab => self.selected[tab] = row,
         }
     }
@@ -265,7 +272,21 @@ impl Home {
     pub fn selected(&self, tab: usize) -> usize {
         match tab {
             PLUGINS => self.plugins.selected,
+            PROVISIONERS => self.provisioners.selected_row(),
             tab => self.selected[tab],
+        }
+    }
+
+    /// Whether the tab takes this key itself rather than the home screen:
+    /// every key while a dialog is open, and Esc on a provisioner's page,
+    /// which goes back to the list.
+    pub fn takes(&self, tab: usize, key: &Key) -> bool {
+        match tab {
+            PROVISIONERS => {
+                self.provisioners.typing()
+                    || (self.provisioners.page.is_some() && key.code == Code::Esc)
+            }
+            _ => false,
         }
     }
 
@@ -275,6 +296,7 @@ impl Home {
         self.naming = None;
         self.armed = false;
         self.plugins.leave();
+        self.provisioners.leave();
     }
 
     pub fn shown(&mut self, tab: usize, data: &Data) -> Shown {
@@ -282,6 +304,16 @@ impl Home {
             SETTINGS => self.settings_shown(data),
             REGISTRIES => self.registries_shown(data),
             PLUGINS => self.plugins_shown(data),
+            PROVISIONERS => {
+                let shown = self.provisioners.shown(&data.provisioners, "the server");
+                Shown {
+                    rows: shown.rows,
+                    selected: shown.selected,
+                    editor: None,
+                    help: shown.help,
+                    keys: shown.keys,
+                }
+            }
             _ => self.secrets_shown(data),
         }
     }
@@ -292,8 +324,35 @@ impl Home {
             SETTINGS => self.settings_key(key, admin),
             REGISTRIES => self.registries_key(key, admin),
             PLUGINS => self.plugins_key(key, admin),
+            PROVISIONERS => self.provisioners_key(key, admin),
             _ => self.secrets_key(key, admin),
         }
+    }
+
+    // ── Provisioners ────────────────────────────────────────────────────────
+
+    fn provisioners_key(&mut self, key: Key, admin: &Admin) -> Option<String> {
+        let listed = admin.data.borrow().provisioners.clone();
+        match self.provisioners.key(key, &listed, &mut Here) {
+            provisioners::Asked::Nothing(said) => return said,
+            provisioners::Asked::List => admin.provisioners(),
+            provisioners::Asked::Open(name) => admin.provisioner(&name),
+            // The panel takes its size from the page once it is shown.
+            provisioners::Asked::Run {
+                provisioner,
+                action,
+                values,
+            } => admin.provisioner_act(&provisioner, &action, &values, (24, 80)),
+            provisioners::Asked::OpenResource(id) => admin.resource(&id),
+            provisioners::Asked::RunResource {
+                resource,
+                action,
+                values,
+            } => admin.resource_act(&resource, &action, &values, (24, 80)),
+            provisioners::Asked::Logs(id) => admin.resource_logs(&id, (24, 80)),
+            provisioners::Asked::Other => {}
+        }
+        None
     }
 
     // ── Settings ────────────────────────────────────────────────────────────
@@ -305,9 +364,7 @@ impl Home {
         if data.settings.is_empty() {
             return extras;
         }
-        if !data.own_key.is_empty() {
-            extras.push(SettingsRow::BerthKey);
-        }
+        extras.extend((0..data.keys.len()).map(SettingsRow::Key));
         if self.connect.is_some() {
             extras.push(SettingsRow::Connect);
         }
@@ -341,7 +398,9 @@ impl Home {
             .collect();
         for extra in &extras {
             rows.push(match extra {
-                SettingsRow::BerthKey => berth_key::row(&data.own_key),
+                SettingsRow::Key(index) => {
+                    berth_key::row(&data.keys[*index].0, &data.keys[*index].1)
+                }
                 SettingsRow::Connect => Line::from(vec![
                     Span::styled("Open on another device  ", Style::new().fg(theme::TEXT)),
                     Span::styled("QR code and link, with the token", muted),
@@ -357,17 +416,19 @@ impl Home {
             &self.connect,
         ) {
             (Some(setting), ..) => {
-                let meaning = setting["meaning"].as_str().unwrap_or("");
+                let meaning =
+                    berth_tui::screen::describe_setting(setting["meaning"].as_str().unwrap_or(""));
                 match setting["open"] == true {
-                    true => format!("The {meaning}.\n\nLeave it empty to use the default."),
+                    true => format!("{meaning}.\n\nLeave it empty to use the default."),
                     false => format!(
-                        "The {meaning}.\n\nIt says who gets in or where the server's files are, so it is set on the server itself: `berth config {} VALUE`. A token is never shown.",
+                        "{meaning}.\n\nIt says who gets in or where the server's files are, so it is set on the server itself: `berth config {} VALUE`. A token is never shown.",
                         setting["key"].as_str().unwrap_or("")
                     ),
                 }
             }
-            (None, Some(SettingsRow::BerthKey), _) => {
-                berth_key::help(&data.own_key, Some(&self.server))
+            (None, Some(SettingsRow::Key(index)), _) => {
+                let (name, public) = &data.keys[index];
+                berth_key::help(name, public, Some(&self.server))
             }
             (None, Some(SettingsRow::Connect), Some((server, _))) => {
                 berth_tui::qr::connect_help(server, false)
@@ -380,14 +441,12 @@ impl Home {
             editor: self.editor.as_ref().map(|_| (" Edit ", false)),
             help,
             keys: match (&self.editor, extra) {
-                (Some(_), _) => "Enter accept · Esc cancel",
-                (None, Some(SettingsRow::BerthKey)) => {
-                    "↑↓ select · Enter copy the key · Tab registries · Esc hosts"
-                }
+                (Some(_), _) => "Enter accept · Esc cancel · Ctrl+O copy",
+                (None, Some(SettingsRow::Key(_))) => "↑↓ select · Enter copy the key · Esc hosts",
                 (None, Some(SettingsRow::Connect)) => {
-                    "↑↓ select · Enter show the QR code · Tab registries · Esc hosts"
+                    "↑↓ select · Enter show the QR code · Esc hosts"
                 }
-                (None, None) => "↑↓ select · Enter change · Tab registries · Esc hosts",
+                (None, None) => "↑↓ select · Enter change · Esc hosts",
             },
         }
     }
@@ -399,7 +458,7 @@ impl Home {
         let count = settings + extras.len();
         let selected = self.selected[SETTINGS].min(count.saturating_sub(1));
         let setting = data.settings.get(selected).cloned().unwrap_or_default();
-        let own_key = data.own_key.clone();
+        let keys = data.keys.clone();
         drop(data);
         let extra = selected
             .checked_sub(settings)
@@ -413,14 +472,18 @@ impl Home {
                     self.editor = None;
                     admin.set_setting(&name, &typed, format!("Saved {name}"));
                 }
+                _ if screen::is_copy_field(&key) => {
+                    return Some(screen::copy_field(&mut Here, input));
+                }
                 _ => event::edit(input, &key),
             }
             return None;
         }
-        if extra == Some(SettingsRow::BerthKey)
+        if let Some(SettingsRow::Key(index)) = extra
             && (key.code == Code::Enter || berth_key::is_copy(&key))
         {
-            return Some(berth_key::copy(&mut Browser, &own_key));
+            let public = keys.get(index).map(|(_, public)| public.as_str());
+            return Some(berth_key::copy(&mut Here, public.unwrap_or("")));
         }
         // The last row shows the link that opens this page.
         if extra == Some(SettingsRow::Connect)
@@ -487,8 +550,8 @@ impl Home {
                 .map(|_| (title, self.naming.is_some() || !adding)),
             help,
             keys: match self.editor {
-                Some(_) => "Enter accept · Esc cancel",
-                None => "↑↓ select · Enter set · x remove · Tab plugins · Esc hosts",
+                Some(_) => "Enter accept · Esc cancel · Ctrl+O copy",
+                None => "↑↓ select · Enter set · x remove · Esc hosts",
             },
         }
     }
@@ -524,6 +587,9 @@ impl Home {
                         return Some("Nothing entered, kept as it was".into());
                     }
                     admin.set_secret(&name, &typed, format!("Stored {name}"));
+                }
+                _ if screen::is_copy_field(&key) => {
+                    return Some(screen::copy_field(&mut Here, input));
                 }
                 _ => event::edit(input, &key),
             }
@@ -583,8 +649,8 @@ impl Home {
                 .map(|_| (title, matches!(row, RegistryRow::Password(_)))),
             help,
             keys: match self.editor {
-                Some(_) => "Enter accept · Esc cancel",
-                None => "↑↓ select · Enter change · x remove · c check · Tab secrets · Esc hosts",
+                Some(_) => "Enter accept · Esc cancel · Ctrl+O copy",
+                None => "↑↓ select · Enter change · x remove · c check · Esc hosts",
             },
             rows: listed.into_iter().map(|(_, line)| line).collect(),
         }
@@ -737,6 +803,9 @@ impl Home {
                         Err(why) => Some(why),
                     };
                 }
+                _ if screen::is_copy_field(&key) => {
+                    return Some(screen::copy_field(&mut Here, input));
+                }
                 _ => event::edit(input, &key),
             }
             return None;
@@ -848,7 +917,7 @@ impl Home {
                 .map(|_| (Place::Page.editor_title(), false)),
             help,
             keys: match self.editor {
-                Some(_) => "Enter install · Esc cancel",
+                Some(_) => "Enter install · Esc cancel · Ctrl+O copy",
                 None => {
                     "↑↓ select · Enter add · u send a .tgz · c check · U update · A all · x remove · Esc hosts"
                 }
@@ -863,6 +932,12 @@ impl Home {
             self.plugins.behind = data.behind.clone();
             (data.plugins.clone(), data.report.clone())
         };
+        // The shared tab does not know the clipboard, so the copy is taken here.
+        if let Some(input) = &self.editor
+            && screen::is_copy_field(&key)
+        {
+            return Some(screen::copy_field(&mut Here, input));
+        }
         let asked = self
             .plugins
             .key(key, &mut self.editor, &listed, &mut report, &Place::Page);
@@ -876,9 +951,12 @@ impl Home {
             Asked::Rollout(options) => admin.roll_out(&options),
             Asked::Other if key.code == Code::Char('u') => {
                 let admin = admin.clone();
-                crate::browser::choose_file(".tgz,.tar.gz", move |name, package| {
+                let chosen = crate::device::choose_file(".tgz,.tar.gz", move |name, package| {
                     admin.upload_plugin(&name, &package)
                 });
+                if let Err(why) = chosen {
+                    return Some(why);
+                }
             }
             Asked::Other => {}
         }

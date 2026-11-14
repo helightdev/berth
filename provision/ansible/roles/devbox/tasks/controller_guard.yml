@@ -1,0 +1,42 @@
+---
+# A workstation's controller describes the agent and its desktop: installing
+# the controller alone over it would take that apart, so it is refused here,
+# whatever the profile on berth's side says. Nothing skips this check.
+- name: Read what berth installed on the host before
+  ansible.builtin.slurp:
+    src: "{{ devbox_controller_etc }}/{{ item }}.json"
+  loop: [applied, berthd]
+  register: devbox_controller_found
+  failed_when: false
+# Only whether it is there: the kept profile holds the accounts' password hashes.
+- name: See whether the host keeps a workstation's profile
+  ansible.builtin.stat:
+    path: "{{ devbox_controller_etc }}/profile.json"
+    get_checksum: false
+  register: devbox_controller_kept
+- name: Take in what berth installed before
+  ansible.builtin.set_fact:
+    devbox_controller_recorded: "{{ (devbox_controller_found.results[0].content | b64decode | from_json) if 'content' in devbox_controller_found.results[0] else {} }}"
+    devbox_controller_config: "{{ (devbox_controller_found.results[1].content | b64decode | from_json) if 'content' in devbox_controller_found.results[1] else {} }}"
+- name: Refuse a host that berth set up as a workstation
+  ansible.builtin.fail:
+    msg: >-
+      {{ inventory_hostname }} is a workstation that berth set up, and its
+      profile here says otherwise. Installing the controller alone would take
+      its controller apart, so nothing was changed. To adopt it from the
+      profile it keeps: berth adopt NAME.
+  when: >-
+    devbox_controller_kept.stat.exists
+    or (devbox_controller_recorded | length > 0
+        and devbox_controller_recorded.level | default('workstation') == 'workstation')
+- name: Refuse a host whose controller serves another account
+  ansible.builtin.fail:
+    msg: >-
+      berthd on {{ inventory_hostname }} serves the agent account
+      {{ devbox_controller_config.agent }}, not the SSH user
+      {{ devbox_controller_user }}: berth set it up as a workstation, and its
+      profile here says otherwise. Nothing was changed. To adopt it from the
+      profile it keeps: berth adopt NAME.
+  when:
+    - devbox_controller_config.agent | default('') | length > 0
+    - devbox_controller_config.agent != devbox_controller_user

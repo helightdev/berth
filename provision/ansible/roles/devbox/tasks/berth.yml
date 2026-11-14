@@ -50,8 +50,8 @@
       value:
         agent: "{{ devbox_user }}"
         operator: "{{ '' if devbox_profile == 'container' else devbox_operator_user }}"
-        roots: ["{{ devbox_home }}", /srv/agent]
-        units: "{{ ['ssh', 'tailscaled', 'berthd', 'cockpit.socket', 'docker', 'lightdm'] + devbox_service_units }}"
+        roots: "{{ devbox_berthd_roots }}"
+        units: "{{ devbox_berthd_units }}"
         agent_env: /usr/local/bin/agent-env
     - {name: tasks, value: "{{ devbox_tasks }}"}
     - {name: services, value: "{{ devbox_plugin_services }}"}
@@ -69,8 +69,9 @@
     group: root
     mode: '0440'
     validate: /usr/sbin/visudo -cf %s
+  when: devbox_level == 'workstation'
 - name: Run berthd and the services of plugins
-  when: devbox_profile != 'container'
+  when: devbox_berthd_systemd | bool
   block:
     - name: Install the berthd unit
       ansible.builtin.template:

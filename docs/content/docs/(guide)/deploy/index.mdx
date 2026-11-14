@@ -4,7 +4,7 @@ description: The ways to install a host, and which one fits which machine.
 icon: HardDriveDownload
 ---
 
-import { Boxes, Cloud, Container, FlaskConical, Server, Terminal, Usb } from 'lucide-react';
+import { Boxes, Cloud, Container, FlaskConical, Server, LayoutGrid, Shapes, Terminal, Usb } from 'lucide-react';
 
 The install methods all run the same Ansible role with the settings of the host's profile. Choose one under **How To Install** on the **Install** tab of a host, or use the matching command.
 
@@ -29,8 +29,14 @@ The target is Ubuntu 26.04 on amd64. The USB installer installs it, and the othe
   <Card icon={<Cloud />} title="Cloud machine from a seed" href="/docs/deploy/cloud">
     cloud-init user data and the release archive it downloads.
   </Card>
-  <Card icon={<Boxes />} title="Machine from a provisioner" href="/docs/deploy/provisioners">
+  <Card icon={<Boxes />} title="Provisioners" href="/docs/deploy/provisioners">
     Have a plugin create a container or virtual machine for a host.
+  </Card>
+  <Card icon={<Shapes />} title="Resources" href="/docs/deploy/resources">
+    Look after what provisioners made, machines and deployments alike.
+  </Card>
+  <Card icon={<LayoutGrid />} title="Deployments" href="/docs/deploy/deployments">
+    Run a Compose project on Docker, with secrets from berth.
   </Card>
   <Card icon={<Container />} title="Container" href="/docs/deploy/container">
     The desktop on Docker, on loopback ports.

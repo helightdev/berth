@@ -1,8 +1,8 @@
 {
   "name": "berth-plugin-docker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "displayName": "Docker",
-  "description": "Creates a long-running Ubuntu container with systemd and SSH, to be set up like any other machine.",
+  "description": "Creates a long-running Ubuntu container with systemd and SSH, to be set up like any other machine, and runs Compose projects as deployments.",
   "license": "MIT OR Apache-2.0",
   "keywords": [
     "berth-plugin"
@@ -17,19 +17,54 @@
       {
         "id": "container",
         "label": "Docker container",
-        "description": "An Ubuntu 26.04 container with systemd and an SSH server, on the local Docker or on the engine named by host. berth applies its role to it over SSH.",
+        "description": "An Ubuntu 26.04 container with systemd and an SSH server, on the local Docker or on the engine named by host. berth applies its role to it over SSH. It also runs Compose projects there as deployments.",
         "command": "bin/provision",
-        "setup": "apply",
-        "verbs": ["start", "stop", "list", "log"],
+        "protocol": 2,
+        "verbs": ["list"],
         "arguments": [
-          {"name": "host", "label": "Docker endpoint", "default": "", "help": "The Docker engine to run it on, such as ssh://ops@192.0.2.10. Empty uses the local default."},
-          {"name": "image", "label": "Image", "default": "", "help": "The image to start from. Empty builds the one that comes with the plugin."},
-          {"name": "ssh_port", "label": "SSH port", "default": "", "help": "A port of the Docker host to publish the container's SSH on, such as 2222. Empty publishes none."},
-          {"name": "publish_address", "label": "Publish address", "default": "127.0.0.1", "help": "The address berth reaches the published SSH port at. A loopback address such as 127.0.0.1 keeps the port on the Docker host's loopback; any other publishes it on every address of the Docker host."},
-          {"name": "volume", "label": "Volume", "default": "", "help": "The volume for /srv/agent, the agent's work. Empty uses berth-HOST-data."},
-          {"name": "cpus", "label": "CPUs", "default": "", "kind": "resource", "help": "How many CPUs the container may use, such as 4. Empty sets no limit."},
-          {"name": "memory", "label": "Memory", "default": "", "kind": "resource", "help": "How much memory the container may use, such as 8g. Empty sets no limit."},
-          {"name": "keep_volume", "label": "Keep volume on destroy", "default": "no", "values": ["no", "yes"], "help": "Whether deleting the machine keeps its volume, so a new machine can take the agent's work over."}
+          {"name": "host", "label": "Docker endpoint", "default": "", "help": "The Docker engine to use, such as ssh://ops@192.0.2.10. Empty uses the local default."}
+        ],
+        "kinds": [
+          {
+            "id": "machine",
+            "label": "Machine",
+            "setup": "apply",
+            "verbs": ["start", "stop", "change", "logs"],
+            "arguments": [
+              {"name": "image", "label": "Image", "default": "", "help": "The image to start from. Empty builds the one that comes with the plugin."},
+              {"name": "runtime", "label": "Runtime", "default": "privileged", "values": ["privileged", "sysbox"], "help": "privileged runs the container with --privileged, so root in it is root on the Docker host. sysbox runs it with the Sysbox runtime instead, which needs Sysbox on the Docker host."},
+              {"name": "ssh_port", "label": "SSH port", "default": "", "help": "A port of the Docker host to publish the container's SSH on, such as 2222. Empty publishes none."},
+              {"name": "publish_address", "label": "Publish address", "default": "127.0.0.1", "help": "The address berth reaches the published SSH port at. A loopback address such as 127.0.0.1 keeps the port on the Docker host's loopback; any other publishes it on every address of the Docker host."},
+              {"name": "volume", "label": "Volume", "default": "", "help": "The volume for /srv/agent, the agent's work. Empty uses berth-HOST-data."},
+              {"name": "cpus", "label": "CPUs", "default": "", "kind": "resource", "help": "How many CPUs the container may use, such as 4. Empty sets no limit."},
+              {"name": "memory", "label": "Memory", "default": "", "kind": "resource", "help": "How much memory the container may use, such as 8g. Empty sets no limit."},
+              {"name": "keep_volume", "label": "Keep volume on destroy", "default": "no", "values": ["no", "yes"], "help": "Whether deleting the machine keeps its volume, so a new machine can take the agent's work over."}
+            ]
+          },
+          {
+            "id": "deployment",
+            "label": "Compose project",
+            "verbs": ["start", "stop", "change", "logs"],
+            "spec": {"format": "compose", "label": "Compose file"},
+            "arguments": [
+              {"name": "keep_volumes", "label": "Keep volumes on remove", "default": "no", "values": ["no", "yes"], "help": "Whether removing the deployment keeps the named volumes of its project. no removes them with what is in them."}
+            ],
+            "actions": [
+              {"name": "services", "label": "Services", "group": "Compose", "changes": false, "help": "Each container of the project, with its service and its state."},
+              {"name": "restart", "label": "Restart", "group": "Compose", "confirm": "Restart every container of this deployment?", "help": "Restart the project's containers as they are, without reading the Compose file again."},
+              {"name": "pull", "label": "Pull and update", "group": "Compose", "confirm": "Pull the images of this deployment and recreate the containers whose image changed?", "help": "Pull the images the Compose file names, then bring the project up again, so containers whose image changed are recreated."}
+            ]
+          }
+        ],
+        "actions": [
+          {"name": "engine", "label": "Check the engine", "group": "Engine", "changes": false, "help": "Ask the Docker engine for its version, its runtimes and how many containers berth made there."},
+          {"name": "images", "label": "Images", "group": "Engine", "changes": false, "help": "The images the engine has, with their sizes."},
+          {"name": "volumes", "label": "Volumes berth made", "group": "Storage", "changes": false, "help": "The volumes berth made for its machines, and whether a container uses each. One kept with keep_volume stays here until it is removed."},
+          {"name": "build", "label": "Build the image", "group": "Engine", "help": "Build the image the plugin brings, which a new machine starts from unless it names another. Creating the first machine builds it too; this does it ahead of time."},
+          {"name": "prune", "label": "Remove what berth left behind", "group": "Storage", "confirm": "Remove the images of older versions of this plugin that no container uses, and with volumes=yes the volumes berth made that no container uses?", "help": "Remove the images of older versions of this plugin that no container uses. With volumes=yes also the volumes berth made that no container uses, such as those kept with keep_volume, and the agent's work in them. Nothing berth did not make is touched, and no container is.",
+           "arguments": [
+             {"name": "volumes", "label": "Also volumes", "default": "no", "values": ["no", "yes"], "help": "yes also removes the volumes berth made that no container uses, with what is in them."}
+           ]}
         ]
       }
     ]

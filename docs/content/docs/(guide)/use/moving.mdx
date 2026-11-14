@@ -17,14 +17,14 @@ The file contains the profile as berth stores it, with a few fields left out:
 | Field | Kept | Why |
 | --- | --- | --- |
 | `tailscale_auth_key` | No | An enrollment key works once. The new berth makes a new one when the host has to join again |
-| `builder.ssh_host`, `ssh_user`, `ssh_port` | No | `berth adopt` sets them from how it reached the host |
-| `builder.ssh_key`, `builder.link`, `builder.served` | No | A key file, a command and a server of the old berth's machine mean nothing to another one |
+| `access` | No | `berth adopt` sets the address, user and port from how it reached the host. A key name means a key of the old berth's key ring, and a link command is a program of the old berth's machine |
+| `builder.served` | No | A server of the old berth means nothing to another one |
 | `secrets`, `registries` | Names only | Their values stay in each berth's own store and are never in a profile |
 | `operator_password_hash`, `agent_password_hash` | Yes | They are in `/etc/shadow` already. Without its hash, an apply would lock the agent's password |
 | `wifi` | Yes | The USB installer wrote the same network into the host's network settings |
-| The machine a provisioner made | Yes | Its record, so `berth instance` still works. Its token is a label on the machine and does not grant access |
+| The machine a provisioner made | Yes | Its record, so it is still a [resource](/docs/deploy/resources) of the host. Its token is a label on the machine and does not grant access |
 
-The file also says its format, the version of the berth that wrote it, the time, and the host's name there.
+The file also says its format, the version of the berth that wrote it, the time, and the host's name there. A file of berth 0.4.1 has format 1 and the profile layout of then. berth converts it when it adopts the host.
 
 berthd serves the same file to an administrator as `GET /v1/applied/profile`. Through a berth server that is `GET /v1/hosts/NAME/applied/profile`.
 
@@ -35,13 +35,17 @@ berth adopt studio ops@192.0.2.10
 berth apply studio
 ```
 
-`berth adopt NAME [USER@]ADDRESS` logs in over SSH as a user who can become root, reads the file with sudo and saves it as host `NAME`. It does not need berthd. `--port PORT` gives another SSH port. `--key FILE` offers one more identity file for this read only. `--force` replaces a saved host of the same name. Without it, berth refuses.
+`berth adopt NAME [USER@]ADDRESS` logs in over SSH as a user who can become root, reads the file with sudo and saves it as host `NAME`. It does not need berthd. `--port PORT` gives another SSH port. `--key FILE` offers one more private key for this read only. `--force` replaces a saved host of the same name. Without it, berth refuses.
+
+Without an address, `berth adopt NAME` adopts the saved host `NAME` at the address its profile has. This is the way for a workstation that was saved by its address with [`berth host add`](/docs/use/levels#adding-a-machine-that-exists), whose profile here says less than the host keeps. `berth host add` suggests the command when it finds such a host. A host saved as a workstation already needs `--force`.
+
+The profile's `access` comes from how berth got in. It logs in with `berth` when this berth's own key worked, and with `ssh` when your SSH configuration, your agent or the key of `--key` did. `sudo` is `password` when sudo asked for one. After the first apply, the operator takes this berth's key, and an apply as the operator sets `sudo` to `none` ([Logging in to hosts](/docs/use/accounts#logging-in-to-hosts)).
 
 berth asks on the terminal for a sudo password when sudo on the host needs one. `BERTH_SUDO_PASSWORD` gives it without a terminal.
 
 The output lists what the profile names and this berth lacks: secret values and registries. Set them before you apply. `berth apply` then makes the host this berth's.
 
-With a [berth server](/docs/use/server) set, `berth adopt` saves the host on the server. The server applies with its own key, and it does not take the record of a machine a provisioner made.
+With a [berth server](/docs/use/server) set, `berth adopt` reads the file from this machine and saves the host on the server. The server applies with its own key, and it does not take the record of a machine a provisioner made.
 
 ## Getting in
 
@@ -49,26 +53,27 @@ With a [berth server](/docs/use/server) set, `berth adopt` saves the host on the
 
 ### Bring the old berth's key
 
-The old berth keeps its key as `id_ed25519` and `id_ed25519.pub` in its data directory, `~/.local/share/berth` by default. Copy both into the new berth's data directory before the new berth uses its own key. The copy goes through a pipe. The key is never part of a command line:
+Give `berth adopt` the old berth's private key with `--key FILE`. A berth since 0.5 keeps its key in its store, and writes it to `keys/berth` in its data directory, `~/.local/share/berth` by default, when it logs in to a host. A berth of 0.4 kept it as `id_ed25519` there. Copy it through a pipe, so the key is never part of a command line:
 
 ```bash
 umask 077
-mkdir -p ~/.local/share/berth
-ssh old-machine 'cat ~/.local/share/berth/id_ed25519' > ~/.local/share/berth/id_ed25519
-ssh old-machine 'cat ~/.local/share/berth/id_ed25519.pub' > ~/.local/share/berth/id_ed25519.pub
+ssh old-machine 'cat ~/.local/share/berth/keys/berth' > old-berth.key
+berth adopt studio ops@192.0.2.10 --key old-berth.key
+berth key trust studio --key old-berth.key
+rm old-berth.key
 ```
 
-The hosts keep taking the same key, so nothing on them changes.
+`berth key trust` logs in once with the old key and gives the operator this berth's key. The first apply then logs in without the old key. The key file is never saved.
 
 ### Authorize the new berth's key
 
 Print the new berth's public key:
 
 ```bash
-berth key
+berth key show
 ```
 
-For a berth server, run `berth key` as the user that runs `berth serve`, or copy **This berth's SSH key** from the Settings tab of its page.
+For a berth server, run `berth key show` as the user that runs `berth serve`, or copy **This berth's SSH key** from the Settings tab of its page.
 
 Add that line to `~/.ssh/authorized_keys` of the operator on the host. Do it from the machine's console or from any login you still have:
 

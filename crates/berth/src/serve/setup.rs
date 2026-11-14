@@ -4,7 +4,7 @@
 
 use super::{
     Serve,
-    api::{Answer, App, Fail, internal, remote},
+    api::{Answer, App, Fail, internal},
 };
 use axum::{
     Json,
@@ -12,13 +12,13 @@ use axum::{
     extract::{Path, State},
 };
 use berth_api::{
-    Done, ErrorBody, PluginList, PluginOrigin, PluginReport, PluginUpdateSpec, PluginUpdates,
-    Session, b64, code,
+    Done, ErrorBody, PluginList, PluginOrigin, PluginReport, PluginUpdateSpec, PluginUpdates, code,
 };
 use berth_core::{
-    host::Host,
-    paths::{Paths, SETTINGS, layout},
-    plugins, provision,
+    paths::{SETTINGS, layout},
+    plugins,
+    profiles::{self, Place},
+    provision,
     registry::{self, Store},
     server::safe,
 };
@@ -34,24 +34,30 @@ fn missing(what: impl std::fmt::Display) -> Fail {
     Fail::new(code::NOT_FOUND, what.to_string())
 }
 
-/// The server's registries and secrets.
+/// The server's registries and secrets: its own, even when its settings
+/// name another berth server for its commands.
 fn store(state: &Serve) -> Store {
-    Store::at(state.paths.config_dir.clone())
+    Store::own(state.store.clone())
 }
 
 // ── Profiles ────────────────────────────────────────────────────────────────
 
-/// Where the profile of a host of this name is. A name is a file name here,
-/// and never a path.
-pub(super) fn profile_path(state: &Serve, name: &str) -> Answer<std::path::PathBuf> {
-    if !safe(name)
-        || name.ends_with(".json")
-        || name.ends_with(".credentials")
-        || name.ends_with(".instance")
-    {
+/// Where the profile of a host of this name is: a host of the server's own,
+/// whatever its settings say, by a name that is never a path.
+pub(super) fn own_place(name: &str) -> Answer<Place> {
+    if !safe(name) {
         return Err(bad(format!("Not a host name: {name}")));
     }
-    state.paths.profile(name).map_err(bad)
+    Place::own(name).map_err(bad)
+}
+
+/// A saved host's profile, or a 404.
+pub(super) fn saved_profile(state: &Serve, name: &str) -> Answer<(Place, Value)> {
+    let place = own_place(name)?;
+    match place.load(&state.paths).map_err(internal)? {
+        Some(profile) => Ok((place, profile)),
+        None => Err(missing(format!("No host {name}"))),
+    }
 }
 
 #[utoipa::path(get, path = "/v1/hosts/{name}/profile", summary = "A host's profile, as it is saved.", tag = "set-up",
@@ -59,14 +65,12 @@ pub(super) fn profile_path(state: &Serve, name: &str) -> Answer<std::path::PathB
     responses((status = 200, description = "The profile, with the passwords and keys in it", body = Value),
               (status = 404, description = "No such host", body = ErrorBody)))]
 pub async fn profile(State(state): App, Path(name): Path<String>) -> Answer<Json<Value>> {
-    let path = profile_path(&state, &name)?;
-    let data = std::fs::read(&path).map_err(|_| missing(format!("No host {name}")))?;
-    Ok(Json(serde_json::from_slice(&data).map_err(internal)?))
+    Ok(Json(saved_profile(&state, &name)?.1))
 }
 
-#[utoipa::path(put, path = "/v1/hosts/{name}/profile", summary = "Save a host's profile: a new host, or a changed one.", tag = "set-up",
+#[utoipa::path(put, path = "/v1/hosts/{name}/profile", summary = "Save a host's profile: a new host, or a changed one. A host below a workstation needs only its level and access.", tag = "set-up",
     params(("name" = String, Path, description = "The name to save it under: letters, digits, `-`, `_` and `.`")),
-    request_body(content = Value, description = "The whole profile"),
+    request_body(content = Value, description = "The whole profile. A workstation's has a builder object; a reachable or controller host's needs only level and access"),
     responses((status = 200, description = "Saved", body = Done),
               (status = 400, description = "Not a profile, or not a name", body = ErrorBody)))]
 pub async fn save_profile(
@@ -74,32 +78,51 @@ pub async fn save_profile(
     Path(name): Path<String>,
     Json(mut profile): Json<Value>,
 ) -> Answer<Json<Done>> {
-    let path = profile_path(&state, &name)?;
-    if !profile.is_object() || !profile["builder"].is_object() {
-        return Err(bad("A profile is an object with a builder in it"));
+    let place = own_place(&name)?;
+    if !profile.is_object() {
+        return Err(bad("A profile is an object"));
+    }
+    // A caller of an older layout: its access fields are read as now. A key
+    // file it names is on another machine, so the server logs in with its own.
+    if let Some(builder) = profile["builder"].as_object_mut() {
+        builder.remove("ssh_key");
+    }
+    berth_core::import::convert_profile(&state.paths, &name, &mut profile);
+    // A workstation's has its set-up's part; a host below that, only how it is reached.
+    let problems = berth_api::profile::problems(&profile);
+    if !problems.is_empty() {
+        return Err(bad(problems.join("; ")));
+    }
+    let access = berth_api::profile::Access::of(&profile);
+    if let Some(key) = access.auth.key() {
+        let store = berth_core::store::shared(&state.paths).map_err(internal)?;
+        let known = berth_core::keys::ring::names(&store).map_err(internal)?;
+        if key != berth_api::profile::BERTH_KEY && !known.iter().any(|known| known == key) {
+            return Err(bad(format!("The server has no key {key}. See: berth key")));
+        }
     }
     // How the caller reached this server is not part of the host.
     if let Some(builder) = profile["builder"].as_object_mut() {
         builder.remove("served");
         builder.remove("served_only");
     }
-    // The link is a command this server runs: only its own user names one.
-    let kept = std::fs::read(&path)
-        .ok()
-        .and_then(|data| serde_json::from_slice::<Value>(&data).ok());
-    let link = kept.as_ref().map(|kept| &kept["builder"]["link"]);
-    if !profile["builder"]["link"].is_null() && link != Some(&profile["builder"]["link"]) {
+    // The link is a command this server runs, and the SSH configuration is
+    // its account's: only its own user chooses either.
+    let kept = place.load(&state.paths).map_err(internal)?;
+    let kept_access = kept.as_ref().map(berth_api::profile::Access::of);
+    let link = kept_access.as_ref().and_then(|kept| kept.link.clone());
+    if access.link.is_some() && link != access.link {
         return Err(bad(
-            "builder.link is a command the server runs, and is set on the server itself",
+            "access.link is a command the server runs, and is set on the server itself",
         ));
     }
-    state.paths.prepare().map_err(internal)?;
-    let parent = path.parent().ok_or_else(|| internal("no directory"))?;
-    // Temporary files are created private, which the profile stays.
-    let mut file = tempfile::NamedTempFile::new_in(parent).map_err(internal)?;
-    serde_json::to_writer_pretty(&mut file, &profile).map_err(internal)?;
-    std::io::Write::write_all(&mut file, b"\n").map_err(internal)?;
-    file.persist(&path).map_err(internal)?;
+    let ssh = kept_access.is_some_and(|kept| kept.auth == berth_api::profile::Auth::Ssh);
+    if access.auth == berth_api::profile::Auth::Ssh && !ssh {
+        return Err(bad(
+            "access.auth ssh is the SSH configuration of the server's own account, and is set on the server itself",
+        ));
+    }
+    place.save(&state.paths, &profile).map_err(internal)?;
     // Where it is and how it is reached may be different now.
     state.forget(&name);
     state.refresh(false);
@@ -112,88 +135,48 @@ pub async fn save_profile(
               (status = 404, description = "No such host", body = ErrorBody),
               (status = 409, description = "It has a machine berth created, which is deleted first, or one is being created", body = ErrorBody)))]
 pub async fn remove_host(State(state): App, Path(name): Path<String>) -> Answer<Json<Done>> {
-    let path = profile_path(&state, &name)?;
-    if !path.is_file() {
-        return Err(missing(format!("No host {name}")));
-    }
+    let (place, _) = saved_profile(&state, &name)?;
     // Without its record nobody could delete the machine any more.
-    if let Some(record) = provision::Record::load(&state.paths, &name)
+    if let Some(kept) = berth_core::resource::of_place(&state.paths, &place)
         .map_err(internal)?
-        .filter(|record| !record.id.is_empty())
+        .filter(|kept| !kept.record.external_id.is_empty())
     {
         return Err(Fail::new(
             code::CONFLICT,
             format!(
-                "{name} has a machine berth created, {} of {}. Delete it first: berth instance {name} destroy",
-                record.id, record.provisioner
+                "{name} has a machine berth created, {} of {}. Delete it first: berth resource {} remove",
+                kept.record.external_id, kept.record.provisioner, kept.record.id
             ),
         ));
     }
     if provision::busy(&state.paths, &name) {
         return Err(Fail::new(
             code::CONFLICT,
-            format!("A machine is being created for {name}. Remove it when that has ended"),
+            format!(
+                "Something is being done to {name} now, such as creating its machine. Remove it when that has ended"
+            ),
         ));
     }
-    std::fs::remove_file(&path).map_err(|_| missing(format!("No host {name}")))?;
-    for beside in ["credentials.json", "instance.json", "instance.lock"] {
-        let _ = std::fs::remove_file(path.with_extension(beside));
-    }
+    profiles::remove(&state.paths, &place).map_err(internal)?;
     state.forget(&name);
     Ok(Json(Done { ok: true }))
 }
 
-// ── What a host is given ────────────────────────────────────────────────────
-
-/// What a new machine is started with to become the host.
+/// The passwords berth generated for a host's accounts.
 #[derive(Serialize, ToSchema)]
-pub struct Seed {
-    /// cloud-init user data, for the provider's field of that name.
-    pub user_data: String,
+pub struct Credentials {
+    /// The password of each account, by the account's name.
+    pub credentials: Map<String, Value>,
 }
 
-#[utoipa::path(post, path = "/v1/hosts/{name}/seed", summary = "Render the cloud-init seed that installs the host on a new machine.", tag = "set-up",
+#[utoipa::path(get, path = "/v1/hosts/{name}/credentials", summary = "The passwords the server generated for a host's accounts.", tag = "set-up",
     params(("name" = String, Path, description = "A saved host")),
-    responses((status = 200, description = "The seed", body = Seed),
-              (status = 400, description = "The profile cannot be installed this way; the message says why", body = ErrorBody),
+    responses((status = 200, description = "The passwords by account; none when none were generated", body = Credentials),
               (status = 404, description = "No such host", body = ErrorBody)))]
-pub async fn seed(State(state): App, Path(name): Path<String>) -> Answer<Json<Seed>> {
-    profile_path(&state, &name)?;
-    Host::load(&state.paths, &name).map_err(|_| missing(format!("No host {name}")))?;
-    let paths = Paths {
-        config_dir: state.paths.config_dir.clone(),
-        data_dir: state.paths.data_dir.clone(),
-    };
-    let registries = store(&state);
-    // It may publish the release and runs the seed builder, and waits for both.
-    let seed = tokio::task::spawn_blocking(move || {
-        berth_core::seed::cloud(&paths, &registries, &name, false)
-            .map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(internal)?
-    .map_err(bad)?;
-    Ok(Json(Seed {
-        user_data: seed.user_data,
-    }))
-}
-
-#[utoipa::path(post, path = "/v1/hosts/{name}/secrets", summary = "Send the host the secrets and registry logins its profile names.", tag = "set-up",
-    params(("name" = String, Path, description = "A saved host")),
-    responses((status = 200, description = "The session on the host that installs them", body = Session),
-              (status = 400, description = "A secret has no value, or a registry is not known", body = ErrorBody),
-              (status = 404, description = "No such host", body = ErrorBody)))]
-pub async fn send_secrets(State(state): App, Path(name): Path<String>) -> Answer<Json<Session>> {
-    state.refresh(false);
-    let remote = remote(&state, &name)?;
-    let host = Host::load(&state.paths, &name).map_err(bad)?;
-    let payload = store(&state).host_payload(&host.config).map_err(bad)?;
-    let Some(link) = &remote.link else {
-        let problem = remote.problem.clone().unwrap_or_else(|| "no link".into());
-        return Err(Fail::new(code::UNREACHABLE, problem));
-    };
-    let body = json!({"arguments": {}, "input_b64": b64(format!("{payload}\n").as_bytes())});
-    Ok(Json(link.post("/v1/tasks/secrets", &body).await?))
+pub async fn credentials(State(state): App, Path(name): Path<String>) -> Answer<Json<Credentials>> {
+    let (place, _) = saved_profile(&state, &name)?;
+    let credentials = berth_core::credentials::load(&state.paths, &place).map_err(internal)?;
+    Ok(Json(Credentials { credentials }))
 }
 
 // ── Secrets ─────────────────────────────────────────────────────────────────
@@ -212,6 +195,16 @@ pub struct SecretValue {
 }
 
 fn secret_name(name: &str) -> Answer<&str> {
+    // A host's SSH or sudo password is kept under the host's name.
+    if let Some(host) = name
+        .strip_prefix("ssh/")
+        .or_else(|| name.strip_prefix("sudo/"))
+    {
+        return match profiles::valid_name(host) {
+            true => Ok(name),
+            false => Err(bad(format!("Not a host's name: {host}"))),
+        };
+    }
     let plain = name.strip_prefix("registry/").unwrap_or(name);
     match plugins::valid_name(plain) {
         true => Ok(name),
@@ -224,10 +217,8 @@ fn secret_name(name: &str) -> Answer<&str> {
 #[utoipa::path(get, path = "/v1/secrets", summary = "The names of the secrets.", tag = "set-up",
     responses((status = 200, description = "The names", body = SecretNames)))]
 pub async fn secrets(State(state): App) -> Answer<Json<SecretNames>> {
-    let names = store(&state).secrets().map_err(internal)?;
-    Ok(Json(SecretNames {
-        names: names.keys().cloned().collect(),
-    }))
+    let names = store(&state).all_secret_names().map_err(internal)?;
+    Ok(Json(SecretNames { names }))
 }
 
 #[utoipa::path(put, path = "/v1/secrets/{name}", summary = "Set a secret's value.", tag = "set-up",
@@ -252,7 +243,7 @@ pub async fn set_secret(
               (status = 404, description = "No such secret", body = ErrorBody)))]
 pub async fn remove_secret(State(state): App, Path(name): Path<String>) -> Answer<Json<Done>> {
     let store = store(&state);
-    if store.secret(&name).map_err(internal)?.is_none() {
+    if !store.has_secret(&name).map_err(internal)? {
         return Err(missing(format!("No secret {name}")));
     }
     store.set_secret(&name, None).map_err(internal)?;
@@ -379,7 +370,7 @@ pub async fn settings(State(state): App) -> Answer<Json<Vec<Setting>>> {
         .map(|(key, meaning)| Setting {
             key: (*key).into(),
             value: match saved.get(*key) {
-                Some(_) if key.ends_with("token") => String::new(),
+                Some(_) if berth_core::paths::is_secret(key) => String::new(),
                 Some(Value::String(text)) => text.clone(),
                 Some(other) => other.to_string(),
                 None => String::new(),
@@ -475,8 +466,8 @@ pub async fn add_plugin(
             "{spec} is no package of a registry or https address of a .tgz. A file of yours is sent with plugins.upload"
         )));
     }
-    let own = plugin_dir(&state);
-    change_plugins(move || plugins::install(&own, &spec)).await
+    let paths = state.paths.clone();
+    change_plugins(move || plugins::install(&paths, &spec)).await
 }
 
 #[utoipa::path(post, path = "/v1/plugins/package", summary = "Install a plugin from a .tgz, as npm pack makes one, which the server keeps.", tag = "set-up",
@@ -484,8 +475,8 @@ pub async fn add_plugin(
     responses((status = 200, description = "Installed; what npm said", body = PluginReport),
               (status = 400, description = "Not a .tgz, or npm failed; the message has its output", body = ErrorBody)))]
 pub async fn upload_plugin(State(state): App, body: Bytes) -> Answer<Json<PluginReport>> {
-    let own = plugin_dir(&state);
-    change_plugins(move || plugins::install_upload(&own, &body)).await
+    let paths = state.paths.clone();
+    change_plugins(move || plugins::install_upload(&paths, &body)).await
 }
 
 #[utoipa::path(delete, path = "/v1/plugins/{id}", summary = "Remove one of the server's own plugins.", tag = "set-up",
@@ -509,7 +500,8 @@ pub async fn remove_plugin(
             format!("{} comes with berth and stays", plugin.label),
         ));
     }
-    change_plugins(move || plugins::remove(&own, &plugin)).await
+    let paths = state.paths.clone();
+    change_plugins(move || plugins::remove(&paths, &plugin)).await
 }
 
 #[utoipa::path(get, path = "/v1/plugins/updates", summary = "Ask the registries the server's own plugins came from whether they have newer versions.", tag = "set-up",
@@ -548,8 +540,9 @@ pub async fn update_plugins(State(state): App, body: Bytes) -> Answer<Json<Plugi
     {
         return Err(missing(format!("No plugin {name}")));
     }
+    let paths = state.paths.clone();
     let Json(mut report) =
-        change_plugins(move || plugins::update(&own, &found, asked.id.as_deref())).await?;
+        change_plugins(move || plugins::update(&paths, &found, asked.id.as_deref())).await?;
     report.behind = super::api::behind_hosts(&state).await;
     Ok(Json(report))
 }
@@ -573,10 +566,6 @@ pub struct Catalogue {
     pub template: Value,
     /// What the server's plugins can install, in the order they are applied.
     pub features: Vec<FeatureInfo>,
-    /// The server's own SSH public key, which the operator of a host it sets
-    /// up takes unless the profile says otherwise.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
 }
 
 #[utoipa::path(get, path = "/v1/setup", summary = "What a new host starts from, and what plugins can install on one.", tag = "set-up",
@@ -604,11 +593,7 @@ pub async fn catalogue(State(state): App) -> Answer<Json<Catalogue>> {
     if !template["builder"].is_object() {
         template["builder"] = json!({});
     }
-    Ok(Json(Catalogue {
-        template,
-        features,
-        key: state.paths.own_public_key(),
-    }))
+    Ok(Json(Catalogue { template, features }))
 }
 
 /// Something for the server to make up for a profile.
@@ -617,7 +602,8 @@ pub struct Generate {
     /// `hostname`, `password` or `tailscale_key`.
     pub what: String,
     /// For `password`: the password to hash. Without it one is made up and
-    /// kept beside the profile of `host`, under `user`.
+    /// kept in the server's store with `host`, under `user`, for
+    /// `hosts.credentials` to give.
     pub password: Option<String>,
     pub host: Option<String>,
     pub user: Option<String>,
@@ -641,15 +627,10 @@ pub struct Generated {
 pub async fn generate(State(state): App, Json(asked): Json<Generate>) -> Answer<Json<Generated>> {
     use berth_core::credentials;
     let kept = match (&asked.host, asked.what.as_str()) {
-        (Some(host), "password") if asked.password.is_none() => {
-            Some(profile_path(&state, host)?.with_extension("credentials.json"))
-        }
+        (Some(host), "password") if asked.password.is_none() => Some(own_place(host)?),
         _ => None,
     };
-    let paths = Paths {
-        config_dir: state.paths.config_dir.clone(),
-        data_dir: state.paths.data_dir.clone(),
-    };
+    let paths = state.paths.clone();
     let made = tokio::task::spawn_blocking(move || -> Result<Generated, String> {
         let fail = |error: Box<dyn std::error::Error>| error.to_string();
         match asked.what.as_str() {
@@ -664,29 +645,31 @@ pub async fn generate(State(state): App, Json(asked): Json<Generate>) -> Answer<
                     note: "Password hashed".into(),
                     password: None,
                 }),
-                (None, Some(path)) => {
+                (None, Some(place)) => {
                     let password = credentials::password().map_err(fail)?;
                     let value = credentials::hash(&password).map_err(fail)?;
                     let user = asked.user.filter(|user| !user.is_empty());
-                    credentials::save(&path, user.as_deref().unwrap_or("account"), &password)
-                        .map_err(fail)?;
+                    let user = user.as_deref().unwrap_or("account");
+                    credentials::save(&paths, &place, user, &password).map_err(fail)?;
                     Ok(Generated {
                         value,
                         note: format!(
-                            "Generated password saved privately on the server in {}",
-                            path.display()
+                            "Generated password kept in the server's store; see it with: berth credentials {}",
+                            place.argument()
                         ),
                         password: Some(password),
                     })
                 }
                 (None, None) => {
-                    Err("A made-up password is kept beside a host: name the host".into())
+                    Err("A made-up password is kept with a host: name the host".into())
                 }
             },
             "tailscale_key" => {
                 let host = asked.host.unwrap_or_default();
-                let config = Host::load(&paths, &host)
-                    .map(|host| host.config)
+                let config = Place::own(&host)
+                    .and_then(|place| place.load(&paths))
+                    .ok()
+                    .flatten()
                     .unwrap_or_default();
                 let (value, note) =
                     berth_core::tailnet::generate(&paths, &config, &host).map_err(fail)?;

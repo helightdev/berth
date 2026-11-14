@@ -3,7 +3,7 @@
 
 use crate::{
     event::{Click, Code, Event, Key, edit, paste},
-    host::{HostView, View, argument_label},
+    host::{Arguments, HostView, View, argument_label},
     theme,
 };
 use ratatui::{
@@ -459,12 +459,16 @@ pub fn draw_question(frame: &mut Frame, question: &str) {
     dialog(frame, " Are you sure? ", " y yes · n no ", lines);
 }
 
-/// The dialog that asks for the arguments of a task, one after another.
+/// The dialog that asks for the arguments of an action, one after another.
 pub fn draw_arguments(frame: &mut Frame, host: &HostView) {
-    let Some(asked) = &host.arguments else {
-        return;
-    };
-    let Some(task) = host.tasks.get(asked.task) else {
+    if let Some(asked) = &host.arguments {
+        draw_action_arguments(frame, &host.actions(), asked);
+    }
+}
+
+/// The dialog that asks for the arguments of one of a subject's actions.
+pub fn draw_action_arguments(frame: &mut Frame, actions: &[berth_api::Action], asked: &Arguments) {
+    let Some(task) = actions.get(asked.action) else {
         return;
     };
     let Some(argument) = task.arguments.get(asked.index) else {
@@ -483,7 +487,11 @@ pub fn draw_arguments(frame: &mut Frame, host: &HostView) {
         ));
     }
     lines.push(Line::raw(""));
-    let typed = ellipsize(asked.input.value(), 52);
+    // A secret is not shown as it is typed, only how much of it there is.
+    let typed = match argument.secret {
+        true => "•".repeat(asked.input.value().chars().count().min(52)),
+        false => ellipsize(asked.input.value(), 52),
+    };
     lines.push(Line::from(vec![
         Span::styled("› ", Style::new().fg(theme::ACCENT)),
         Span::raw(typed.clone()),
@@ -491,15 +499,16 @@ pub fn draw_arguments(frame: &mut Frame, host: &HostView) {
     let title = ellipsize(
         &format!(
             " {} · {} of {} ",
-            task.label,
+            task.title(),
             asked.index + 1,
             task.arguments.len()
         ),
         58,
     );
-    let keys = match asked.choices.is_empty() {
-        true => " Enter accept · Esc cancel ",
-        false => " ↑↓ choose · Enter accept · Esc cancel ",
+    let keys = match (asked.choices.is_empty(), argument.secret) {
+        (_, true) => " Enter accept · Esc cancel ",
+        (true, false) => " Enter accept · Esc cancel · Ctrl+O copy ",
+        (false, false) => " ↑↓ choose · Enter accept · Esc cancel · Ctrl+O copy ",
     };
     let rows = lines.len() as u16;
     let area = dialog(frame, &title, keys, lines);
@@ -515,6 +524,61 @@ pub trait Platform {
     /// What is on the clipboard, where it can be read right away.
     fn paste(&mut self) -> Option<String>;
     fn open(&mut self, link: &str) -> Result<(), String>;
+}
+
+/// The hint of the key that copies the text of the field being edited. Ctrl+Y
+/// would be the usual choice, but the input takes it to paste what it cut, and
+/// the other Ctrl letters are line editing, so this one is free.
+pub const COPY_FIELD: &str = "Ctrl+O copy";
+
+/// The tabs of the home screen, in their order, in the terminal and on the
+/// page alike: a digit key is one more than the index. The tab bar shows
+/// them with their digits, so the footers do not list them again.
+pub const HOME_TABS: [&str; 6] = [
+    "Hosts",
+    "Provisioners",
+    "Settings",
+    "Registries",
+    "Secrets",
+    "Plugins",
+];
+
+/// Whether the key copies the text of the field being edited.
+pub fn is_copy_field(key: &Key) -> bool {
+    key.is_ctrl('o') && !key.alt
+}
+
+/// Put the text of the field on the clipboard. Returns what to say, which is
+/// not the text: it may be a secret.
+pub fn copy_field(platform: &mut dyn Platform, input: &Input) -> String {
+    if input.value().is_empty() {
+        return "The field is empty".into();
+    }
+    match platform.copy(input.value()) {
+        true => "Copied the text of the field".into(),
+        false => "Could not reach the clipboard".into(),
+    }
+}
+
+/// A setting's description as the start of a sentence. Most begin with a noun
+/// that has no article, so only the first letter changes; a program's name
+/// keeps its case.
+pub fn describe_setting(help: &str) -> String {
+    let mut chars = help.chars();
+    match chars.next() {
+        Some(first) if !help.starts_with("berth ") => first.to_uppercase().chain(chars).collect(),
+        _ => help.to_owned(),
+    }
+}
+
+/// A secret as a list shows it: the end of it, so that one can tell two apart.
+/// A short one is not shown at all.
+pub fn short_secret(value: &str) -> String {
+    let count = value.chars().count();
+    match count > 12 {
+        true => format!("…{}", value.chars().skip(count - 4).collect::<String>()),
+        false => "••••".into(),
+    }
 }
 
 /// A click on a web address opens it; a right-click copies it, or the word
@@ -614,13 +678,32 @@ pub fn view_event(
 
 /// Keys of the dialog that asks for a task's arguments. Returns whether the
 /// value was accepted, for the caller to go on with.
-pub fn arguments_event(host: &mut HostView, event: &Event) -> bool {
-    let Some(asked) = &mut host.arguments else {
+pub fn arguments_event(
+    host: &mut HostView,
+    event: &Event,
+    platform: &mut dyn Platform,
+    said: &mut Option<String>,
+) -> bool {
+    action_arguments_event(&mut host.arguments, event, platform, said)
+}
+
+/// Keys of the dialog that asks for the arguments of any subject's action.
+pub fn action_arguments_event(
+    dialog: &mut Option<Arguments>,
+    event: &Event,
+    platform: &mut dyn Platform,
+    said: &mut Option<String>,
+) -> bool {
+    let Some(asked) = dialog else {
         return false;
     };
     match event {
+        Event::Key(key) if is_copy_field(key) && asked.secret => {
+            *said = Some("A secret is not copied".into())
+        }
+        Event::Key(key) if is_copy_field(key) => *said = Some(copy_field(platform, &asked.input)),
         Event::Key(key) => match key.code {
-            Code::Esc => host.arguments = None,
+            Code::Esc => *dialog = None,
             Code::Enter => return true,
             Code::Up | Code::Down if !asked.choices.is_empty() => {
                 let count = asked.choices.len().min(8);

@@ -1,6 +1,9 @@
 """The profile a host keeps of itself, and another berth taking the host over
 from it: the file the role writes, berthd serving it, berth adopt reading it
-over SSH while berthd is broken, and the next applies of the new berth."""
+over SSH while berthd is broken, and the next applies of the new berth.
+
+It looks at the host as provisioned() applied it, and leaves it so: the new
+berth applies the profile the host kept, and its key goes again at the end."""
 import hashlib
 import json
 import unittest
@@ -8,8 +11,8 @@ import unittest
 from harness import HOST, BerthdLink, OPERATOR, Workstation, changed_tasks, needs_e2e, provisioned, shell_quote
 
 KEPT = '/etc/berth/profile.json'
-# How the berth that wrote it reaches the host, which stays out of the file.
-REACH = {'ssh_host', 'ssh_user', 'ssh_port', 'ssh_key', 'link', 'served', 'served_only'}
+# What belongs to one berth's way to the host, which stays out of the file.
+LOCAL = {'served', 'served_only', 'usb_device', 'manage_task'}
 
 
 def marker(public):
@@ -34,39 +37,42 @@ class Adopt(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.station = provisioned()
-        # The host keeps what this workstation applied last, whatever came before.
-        cls.station.berth('apply', HOST, timeout=900)
         cls.kept = json.loads(cls.station.root_on_host(f'cat {KEPT}').stdout)
 
     def test_the_host_keeps_its_profile_for_root_only(self):
         self.assertEqual(self.station.root_on_host(f'stat -c %a:%U:%G {KEPT}').stdout.strip(), '600:root:root')
         self.assertNotEqual(self.station.ssh(OPERATOR, f'cat {KEPT}', check=False).returncode, 0)
-        self.assertEqual((self.kept['format'], self.kept['host']), (1, HOST))
+        self.assertEqual((self.kept['format'], self.kept['host']), (2, HOST))
         self.assertRegex(self.kept['written'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
         saved = self.station.read_profile()
         kept = self.kept['profile']
-        self.assertEqual(kept['builder'], {key: value for key, value in saved['builder'].items() if key not in REACH})
+        # How this berth logs in means nothing to another one.
+        self.assertNotIn('access', kept)
+        self.assertEqual(kept['builder'], {key: value for key, value in saved['builder'].items() if key not in LOCAL})
         self.assertNotIn('tailscale_auth_key', kept)
         for key, value in saved.items():
-            if key not in ('builder', 'tailscale_auth_key'):
-                self.assertEqual(kept[key], value, key)
+            if key not in ('access', 'builder', 'tailscale_auth_key'):
+                # An empty list a test saved since the last apply is not on the host yet.
+                self.assertEqual(kept.get(key, []), value, key)
 
     def test_berthd_serves_it(self):
         # With the user's key, which the profile lists, whichever berth applied last.
         link = BerthdLink(self.station, key=self.station.key)
         self.assertEqual(link.get('/v1/applied/profile'), self.kept)
+        # The controller says the host is a workstation, as the file shows.
+        self.assertEqual(link.get('/v1/version')['level'], 'workstation')
 
     def test_another_berth_adopts_the_host_while_berthd_is_broken(self):
         adopter = Workstation('adopter')
-        own = adopter.berth('key').stdout.strip()
-        old_own = self.station.own_key.with_suffix('.pub').read_text().strip()
+        own = adopter.own_public()
+        old_own = self.station.own_public()
         self.assertEqual(block(self.station, marker(old_own)), [old_own])
-        # Its keys are not on the host yet, and it says the two ways in.
+        # Its keys are not on the host yet, and it says the ways in.
         refused = adopter.berth('adopt', HOST, f'{OPERATOR}@{HOST}', check=False)
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn('berth key', refused.stderr)
-        self.assertIn('id_ed25519', refused.stderr)
-        self.assertFalse(adopter.profile_path().exists())
+        self.assertIn('berth key show', refused.stderr)
+        self.assertIn('--key', refused.stderr)
+        self.assertNotEqual(adopter.berth('profile', HOST, check=False).returncode, 0)
         # Its public key put into authorized_keys by hand, as from the console.
         self.station.ssh(OPERATOR, f'echo {shell_quote(own)} >> ~/.ssh/authorized_keys')
         self.station.root_on_host('mv /usr/local/bin/berthd /usr/local/bin/berthd.away')
@@ -78,9 +84,9 @@ class Adopt(unittest.TestCase):
         self.assertIn(f'Adopted {HOST}', adopted.stdout)
         self.assertIn(f'berth apply {HOST}', adopted.stdout)
         self.assertIn('still has access', adopted.stdout)
+        # It logs in as it got in: with its own key, and the operator's sudo took no password.
         profile = adopter.read_profile()
-        self.assertEqual((profile['builder']['ssh_host'], profile['builder']['ssh_user']), (HOST, OPERATOR))
-        self.assertEqual(adopter.profile_path().stat().st_mode & 0o777, 0o600)
+        self.assertEqual(profile['access'], {'address': HOST, 'user': OPERATOR, 'auth': 'berth'})
         # Once there, it is not replaced without being asked.
         again = adopter.berth('adopt', HOST, f'{OPERATOR}@{HOST}', check=False)
         self.assertNotEqual(again.returncode, 0)
@@ -95,6 +101,8 @@ class Adopt(unittest.TestCase):
         # The berth that set the host up keeps its access.
         self.assertEqual(block(self.station, marker(old_own)), [old_own])
         self.assertEqual(self.station.ssh(OPERATOR, 'id -un', key=self.station.own_key).stdout.strip(), OPERATOR)
+        # The apply as the operator settled how it logs in.
+        self.assertEqual(adopter.read_profile()['access']['sudo'], 'none')
         # The profile it applied is the one the host kept, so the file stays as it was.
         kept = json.loads(self.station.root_on_host(f'cat {KEPT}').stdout)
         self.assertEqual(kept, self.kept)

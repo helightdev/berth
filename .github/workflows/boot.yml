@@ -2,8 +2,11 @@ name: Boot
 # Real installs in QEMU with KVM: the cloud image with berth's seed, and
 # berth's unattended installer on a blank virtual disk (ci/run.sh boot). They
 # take long, so they only run for changes that can break a first boot, or when
-# started by hand.
+# started by hand. The installer takes longest and is used least, so a change
+# boots only the cloud image, and the installer is booted once a week.
 on:
+  schedule:
+    - cron: '17 3 * * 1'
   pull_request:
     paths:
       - 'provision/**'
@@ -44,11 +47,13 @@ jobs:
       - id: plan
         env:
           KIND: ${{ inputs.kind }}
+          EVENT: ${{ github.event_name }}
         run: |
-          case "$KIND" in
-            cloud) kinds='["cloud"]' ;;
-            iso) kinds='["iso"]' ;;
-            *) kinds='["cloud","iso"]' ;;
+          case "$EVENT:$KIND" in
+            workflow_dispatch:cloud) kinds='["cloud"]' ;;
+            workflow_dispatch:iso) kinds='["iso"]' ;;
+            workflow_dispatch:*|schedule:*) kinds='["cloud","iso"]' ;;
+            *) kinds='["cloud"]' ;;
           esac
           echo "kinds=$kinds" >> "$GITHUB_OUTPUT"
 

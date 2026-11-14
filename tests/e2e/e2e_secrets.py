@@ -41,7 +41,7 @@ class Secrets(unittest.TestCase):
         listed = self.station.berth('secret').stdout
         self.assertIn('github', listed)
         self.assertNotIn(self.token, listed)
-        self.assertNotIn(self.token, self.station.profile_path().read_text())
+        self.assertNotIn(self.token, self.station.berth('profile', HOST).stdout)
         given = self.station.berth('host', HOST).stdout
         self.assertRegex(given, r'secret\s+github\s+env GH_TOKEN')
         self.assertRegex(given, r'registry\s+npm-e2e')

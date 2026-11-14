@@ -254,6 +254,10 @@ class RenderTests(unittest.TestCase):
                 builder.checked_config(path,'cloud')
                 path.write_text(json.dumps({**c,'agent_ssh_public_keys':[key(2),'not a key']}))
                 with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
+        # While berth's key rotates, the operator takes both, one to a line.
+        with patch.dict(os.environ,{'BERTH_SSH_PUBLIC_KEY':key(4)+'\n'+key(5)+'\n'}):
+            self.assertEqual(builder.account_keys(c,'operator')[-2:],[key(4),key(5)])
+            self.assertEqual(builder.deployment(c,'a'*64)['ansible_vars']['devbox_berth_ssh_public_key'],key(4)+'\n'+key(5))
         # Without berth, nothing but the profile's keys.
         with patch.dict(os.environ,{'BERTH_SSH_PUBLIC_KEY':''}):
             self.assertEqual(builder.deployment(c,'a'*64)['ansible_vars']['devbox_berth_ssh_public_key'],'')

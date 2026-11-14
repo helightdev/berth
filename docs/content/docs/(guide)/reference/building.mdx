@@ -74,9 +74,9 @@ ci/run.sh shell              # a shell with the toolchain, the checkout at /src
 
 The checkout is mounted, and files are written as you. Cargo's downloads and the target directory stay in the volumes `berth-ci-cargo` and `berth-ci-target`, so later runs are fast. `ci/run.sh clean` removes them and the images.
 
-The test host of the end-to-end tests is an Ubuntu container with SSH and an operator account. A profile is applied to it over SSH, with the role's tasks for the accounts, the plugins and berthd. The tests then use the host through berth's commands, berthd's API and `berth serve`. The desktop packages, toolchains and browsers are left out. The test host and the tests are on an internal network with no way out. Each run starts from a new host and removes it afterwards. After a failure the host's logs are in `build/ci/logs/`.
+The end-to-end tests have two test hosts, `studio` and `dock`. Each is an Ubuntu container with SSH and an operator account, and the two run in parallel. A profile is applied to a host over SSH, with the role's tasks for the accounts, the plugins and berthd. The tests then use the host through berth's commands, berthd's API and `berth serve`. Test cases that look at the same state of a host follow each other, so the state is applied once. The desktop packages, toolchains and browsers are left out. Some modules need less than that. `e2e_access` and `e2e_controller.Controller` use the bare host `dock`, which has only SSH. `e2e_provisioners` runs without a host. `e2e_restore` starts a second `berth serve` on the host `studio` and leaves the host as it is. With Docker, `ci/run.sh` also starts an engine on the test network for the Docker plugin's cases. `BERTH_CI_DOCKER` switches it on or off, and `BERTH_CI_DIND_IMAGES` names images to load into it. The test hosts and the tests are on an internal network with no way out. Each run starts from new hosts and removes them afterwards. A run ends with the time of each test and the number of playbook runs. After a failure the hosts' logs are in `build/ci/logs/`.
 
-To run one module or one test case, name it: `ci/run.sh e2e e2e_serve.Roles`. The modules are listed in order in `tests/e2e/run.py`. A new one goes there, after the ones whose state it uses.
+To run one module or one test case, name it: `ci/run.sh e2e e2e_serve.Roles`. `ci/run.sh e2e --shard dock` runs the tests of one test host, as a CI job does. The test cases of each host are listed in order in `tests/e2e/run.py`. A new one goes there, after the ones whose state it uses.
 
 ### Boot tests
 
@@ -123,21 +123,21 @@ GitHub Actions build on every push:
 
 | Workflow | Does |
 | --- | --- |
-| CI | The checks above and the end-to-end tests, both with `ci/run.sh`, and Vale |
-| Boot | The boot tests, `boot cloud` and `boot iso`, when started by hand |
+| CI | The checks above and the end-to-end tests, both with `ci/run.sh`, and Vale. berth is built once, and the tests of each test host run in a job of their own |
+| Boot | The boot tests. `boot cloud` runs for changes to provisioning. `boot iso` runs once a week and when started by hand, because the installer takes longest and is used least |
 | Docs | The docs build, and publishing it to GitHub Pages from `main` |
-| Build | The static `berth` for Linux x86_64 as artifact `berth-x86_64-linux`, the host programs as `host-programs-x86_64-linux`; the container image `ghcr.io/helightdev/berth`, tagged `edge` from `main` |
+| Build | The static `berth` for Linux x86_64 as artifact `berth-x86_64-linux`, the host programs as `host-programs-x86_64-linux`, `berth-remote` for each system as `berth-remote-<target>`; the container image `ghcr.io/helightdev/berth`, tagged `edge` from `main` |
 
 To release, push a tag such as `v0.3.0`, or create the release on GitHub's release page with a new tag. Build then:
 
 1. Builds `berth`, `berthd`, `box` and the page with the version of the tag, and checks that each says it. Runs `boot cloud`. When it fails, nothing is published.
-2. Publishes the release with both archives, their checksum files, `install.sh` and `VERSION`. A release made on the page gets the files added.
+2. Publishes the release with both archives, the archives of `berth-remote`, their checksum files, `install.sh`, `install-remote.sh`, `install.ps1` and `VERSION`. A release made on the page gets the files added.
 3. Pushes the image tagged `0.3.0`, `0.3` and `latest`.
-4. Commits the version to `main` in `Cargo.toml`, `Cargo.lock` and `docs/openapi/`, and starts CI, Build and Docs for that commit.
+4. Opens a pull request that sets the version on `main` in `Cargo.toml`, `Cargo.lock` and `docs/openapi/`. Merge it once its checks have passed.
 
 You don't edit a version anywhere. A build from a checkout says the version in `Cargo.toml`, which is that of the latest release. That way `berth update` never offers an older version. `berth`, `berthd`, `box` and the page take the version from `berth_api::VERSION`. A release build sets it with `BERTH_BUILD_VERSION`, and `docker build` takes the same name as a build argument.
 
-A tag with a suffix, such as `v0.4.0-rc.1`, makes a pre-release. Its programs say `0.4.0-rc.1` and its image is tagged only with that. `main` stays as it is. `install.sh` and `berth update` pass over pre-releases, and `BERTH_VERSION=v0.4.0-rc.1` installs one.
+A tag with a suffix, such as `v0.4.0-rc.1`, makes a pre-release. Its programs say `0.4.0-rc.1` and its image is tagged only with that. `main` stays as it is. The install scripts and `berth update` pass over pre-releases, and `BERTH_VERSION=v0.4.0-rc.1` installs one.
 
 ## With the page for a browser
 
@@ -154,3 +154,25 @@ cargo build --release -p berth --features web
 | With the page | `berth-web-x86_64-linux.tar.gz` | `BERTH_VARIANT=web` |
 
 `berth update` stays with the build it is. The container image is the one with the page. The docs build takes the page from `target/web-dist` for `/web`. It builds the page with the `web` profile, as a release does, by setting `BERTH_WEB_PROFILE=web`.
+
+## berth-remote
+
+`berth-remote` is the client for a [berth server](/docs/use/server#with-berth-remote) in a terminal. The screens of the page are in `crates/berth-page/`, which `crates/berth-web/` builds for a browser and `crates/berth-remote/` for a terminal. Each program gives the screens its own `Device`, from `crates/berth-page/src/device.rs`. It covers the clipboard, links, files, what is kept and the portal's socket.
+
+It builds on the system it is for:
+
+```bash
+cargo build --release --locked -p berth-remote
+```
+
+A release builds it on a runner of each system and checks that it says its version:
+
+| System | Target | Archive |
+| --- | --- | --- |
+| Windows x86_64 | `x86_64-pc-windows-msvc`, with the C runtime linked in | `berth-remote-x86_64-windows.zip` |
+| macOS on Apple silicon | `aarch64-apple-darwin` | `berth-remote-aarch64-macos.tar.gz` |
+| macOS on Intel | `x86_64-apple-darwin` | `berth-remote-x86_64-macos.tar.gz` |
+| Linux x86_64 | `x86_64-unknown-linux-musl` | `berth-remote-x86_64-linux.tar.gz` |
+| Linux arm64 | `aarch64-unknown-linux-musl` | `berth-remote-aarch64-linux.tar.gz` |
+
+On Windows, the build needs Rust from rustup and the Visual Studio build tools.

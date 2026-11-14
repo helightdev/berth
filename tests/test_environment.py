@@ -303,8 +303,8 @@ class Operator(unittest.TestCase):
         # The block ends with its file, so other accounts keep the server's settings.
         self.assertEqual(agent['passwordauthentication'], 'yes')
 
-    def test_the_key_of_berth_has_a_block_no_apply_removes(self):
-        task = named('Give the operator the key of the berth that applies this', 'accounts.yml')
+    def test_the_keys_of_berth_have_a_block_no_apply_removes(self):
+        task = named('Give the operator the keys of the berth that applies this', 'accounts.yml')
         module = task['ansible.builtin.blockinfile']
         self.assertEqual(module['block'], '{{ devbox_berth_ssh_public_key }}')
         self.assertIn('BERTH', module['marker'])
@@ -313,9 +313,11 @@ class Operator(unittest.TestCase):
         # It is in place before the profile's keys are, and checked after.
         names = [task['name'] for task in tasks('accounts.yml')]
         self.assertLess(names.index(task['name']), names.index('Configure account authorized public keys'))
-        check = named('Check that the operator takes the key of the berth that applies this', 'accounts.yml')
+        check = named('Check that the operator takes the keys of the berth that applies this', 'accounts.yml')
         self.assertLess(names.index('Configure account authorized public keys'), names.index(check['name']))
-        self.assertEqual(check['ansible.builtin.command']['argv'][:4], ['grep', '-qxF', '--', '{{ devbox_berth_ssh_public_key }}'])
+        # Each of them, one to a line: berth's own, the one replacing it, and the one the profile logs in with.
+        self.assertEqual(check['ansible.builtin.command']['argv'][:4], ['grep', '-qxF', '--', '{{ item }}'])
+        self.assertEqual(check['loop'], '{{ devbox_berth_ssh_public_key.splitlines() }}')
         self.assertNotIn('failed_when', check)
         # Both come before any change to the SSH server.
         main = (ROLE / 'tasks/main.yml').read_text()

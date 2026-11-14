@@ -44,6 +44,94 @@ pub struct Version {
     /// recorded it. An older berthd does not say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied: Option<Applied>,
+    /// What was installed on the host, by that record: `controller` when
+    /// only the controller was, `workstation` for a whole profile. Absent
+    /// when the host keeps no record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<HostLevel>,
+}
+
+/// How much of berth a host has: what its profile means it to have, or
+/// what it was seen to have. Each level can do what the ones before it can.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum HostLevel {
+    /// berth logs in over SSH. Nothing of berth is installed.
+    Reachable,
+    /// berthd and box are installed and answer: sessions, tasks and files.
+    Controller,
+    /// The whole profile is applied: desktop, agents and plugins.
+    #[default]
+    Workstation,
+}
+
+impl HostLevel {
+    pub const ALL: [HostLevel; 3] = [
+        HostLevel::Reachable,
+        HostLevel::Controller,
+        HostLevel::Workstation,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            HostLevel::Reachable => "reachable",
+            HostLevel::Controller => "controller",
+            HostLevel::Workstation => "workstation",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<HostLevel> {
+        HostLevel::ALL
+            .into_iter()
+            .find(|level| level.name() == text.trim())
+    }
+
+    /// What a host of this level has, in a few words that fit a line
+    /// beside the level on a narrow page.
+    pub fn describe(self) -> &'static str {
+        match self {
+            HostLevel::Reachable => "SSH only, nothing of berth installed",
+            HostLevel::Controller => "berthd alone: sessions, tasks, files",
+            HostLevel::Workstation => "the whole profile",
+        }
+    }
+}
+
+impl std::fmt::Display for HostLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// What to say when a host is seen to be more than its profile here says,
+/// with how to adopt it: as when a workstation is added by its address.
+pub fn level_mismatch(
+    name: &str,
+    intended: HostLevel,
+    observed: Option<HostLevel>,
+) -> Option<String> {
+    let observed = observed.filter(|observed| *observed > intended)?;
+    Some(match observed {
+        HostLevel::Workstation => format!(
+            "{name} is a workstation; its profile here says {intended}. To adopt it from the profile it keeps: berth adopt {name}"
+        ),
+        _ => format!(
+            "{name} has berth's controller; its profile here says {intended}. To adopt it: berth host level {name} controller"
+        ),
+    })
 }
 
 /// What a setup key says of the server it is for.
@@ -268,6 +356,10 @@ pub struct Argument {
     /// few. Empty for one that takes any text.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub values: Vec<String>,
+    /// What is given is a secret, such as a password: it is not shown as it
+    /// is typed, nor kept, nor written to a job's output.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
 }
 
 impl Argument {
@@ -326,6 +418,190 @@ pub struct RunTask {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Choices {
     pub choices: Vec<String>,
+}
+
+// ── Actions ─────────────────────────────────────────────────────────────────
+
+/// Where an action runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Runs {
+    /// Where berth runs, as a function of berth or a plugin's program. A run
+    /// that changes something is a job.
+    #[default]
+    Berth,
+    /// On the host, by its controller, as a session there.
+    Host,
+}
+
+/// What a plugin adds to an action: a step run after it in the same run.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ActionStep {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub help: String,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn operate() -> crate::ops::Role {
+    crate::ops::Role::Operate
+}
+
+/// Something that can be done to a subject: a host, the installation, and
+/// later a provisioner or a resource. It says enough to build a form from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct Action {
+    pub name: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub help: String,
+    /// The group of the page it is listed in; `System` when empty.
+    #[serde(default)]
+    pub group: String,
+    #[serde(default)]
+    pub arguments: Vec<Argument>,
+    /// The question to answer yes to before it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<String>,
+    #[serde(default)]
+    pub runs: Runs,
+    /// It needs a terminal session attached; only a host runs these.
+    #[serde(default)]
+    pub terminal: bool,
+    /// False when it only reads, and may be called at any time.
+    #[serde(default = "yes")]
+    pub changes: bool,
+    /// The least role that may run it.
+    #[serde(default = "operate")]
+    pub role: crate::ops::Role,
+    /// False, with `why`, when the subject's state rules it out now.
+    #[serde(default = "yes")]
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub why: String,
+    /// What plugins add to it, in the order they run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<ActionStep>,
+}
+
+impl Default for Action {
+    fn default() -> Action {
+        Action {
+            name: String::new(),
+            label: String::new(),
+            help: String::new(),
+            group: String::new(),
+            arguments: vec![],
+            confirm: None,
+            runs: Runs::Berth,
+            terminal: false,
+            changes: true,
+            role: crate::ops::Role::Operate,
+            available: true,
+            why: String::new(),
+            steps: vec![],
+        }
+    }
+}
+
+impl Action {
+    /// The actions of a host's tasks, in the order the host lists them: each
+    /// task that is no step of another, with the steps plugins add to it. The
+    /// host keeps the rest of a task (its user, its command, its input), and
+    /// runs it by name.
+    pub fn of_tasks(tasks: &[Task]) -> Vec<Action> {
+        tasks
+            .iter()
+            .filter(|task| task.extends.is_empty())
+            .map(|task| Action {
+                name: task.name.clone(),
+                label: task.label.clone(),
+                help: task.help.clone(),
+                group: task.group.clone(),
+                arguments: task.arguments.clone(),
+                confirm: task.confirm.clone(),
+                runs: Runs::Host,
+                terminal: task.terminal,
+                steps: tasks
+                    .iter()
+                    .filter(|step| step.extends.contains(&task.name))
+                    .map(|step| ActionStep {
+                        label: step.label.clone(),
+                        help: step.help.clone(),
+                    })
+                    .collect(),
+                ..Action::default()
+            })
+            .collect()
+    }
+
+    /// What it is called on screen.
+    pub fn title(&self) -> &str {
+        match self.label.is_empty() {
+            true => &self.name,
+            false => &self.label,
+        }
+    }
+}
+
+/// What running an action is given.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct Act {
+    #[serde(default)]
+    pub arguments: BTreeMap<String, String>,
+    /// Any text of the caller's. The same token again for the same subject
+    /// and action answers with the job the first call started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// The SSH user's sudo password, for an action that logs in to a host
+    /// whose sudo asks for one. It is neither shown nor kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sudo_password: Option<String>,
+    /// The size of the terminal, for an action that runs in one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cols: Option<u16>,
+}
+
+/// What running an action answers: one of the three.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct Acted {
+    /// The job that runs it, for an action of berth that changes something.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<JobInfo>,
+    /// The session on the host, for an action the host runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Session>,
+    /// What an action that answers at once and changes nothing said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+}
+
+/// A job of berth: one run of an action, with its output kept where it ran.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct JobInfo {
+    pub id: String,
+    /// What it was done to: `host:NAME`, `provisioner:PLUGIN/ID`,
+    /// `resource:ID` or `installation`. Empty for a job from before 0.5.
+    #[serde(default)]
+    pub subject: String,
+    /// The action it runs, such as `apply`, `rollout` or `provision`.
+    #[serde(default)]
+    pub action: String,
+    /// The hosts it is about, for a reader: a name, or several with commas.
+    #[serde(default)]
+    pub host: String,
+    pub started: String,
+    pub ended: Option<String>,
+    pub exit_code: Option<i32>,
+    /// How a roll-out went, host by host, once it has ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<RolloutReport>,
 }
 
 // ── System ──────────────────────────────────────────────────────────────────
@@ -746,51 +1022,220 @@ pub struct ProvisionerInfo {
     /// The required ones that have no value. Not looked at in a plugin's listing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing_secrets: Vec<String>,
+    /// What creating a machine takes: the provisioner's own arguments first,
+    /// then those of its machines.
     #[serde(default)]
     pub arguments: Vec<Argument>,
-}
-
-/// What to create a host's machine with.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct Provision {
-    /// `PLUGIN/ID`.
-    pub provisioner: String,
-    /// Values of its arguments; the others take their defaults.
-    #[serde(default)]
-    pub arguments: BTreeMap<String, String>,
-}
-
-/// The machine berth created for a host.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
-pub struct Instance {
-    /// `PLUGIN/ID`.
-    pub provisioner: String,
-    /// The provisioner's id of the machine; empty until `create` said it.
-    pub id: String,
-    /// `running`, `stopped`, `gone`, `unknown` or `creating`.
-    pub state: String,
-    #[serde(default)]
-    pub address: String,
-    /// When it was asked for, RFC 3339.
-    #[serde(default)]
-    pub created: String,
-    #[serde(default)]
-    pub arguments: BTreeMap<String, String>,
-    /// What can be done to it besides `destroy`: `start`, `stop`.
-    #[serde(default)]
-    pub verbs: Vec<String>,
-    /// Why the state is `unknown`.
+    /// The names of the provisioner's own arguments, which say where it is,
+    /// such as an Incus server. Their values are kept as its settings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub own: Vec<String>,
+    /// The values of its own arguments that are kept, by name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub settings: BTreeMap<String, String>,
+    /// What it can make: `machine`, and kinds its plugin names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<ProvisionerKind>,
+    /// Its plugin's own actions, such as listing images or pruning.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<Action>,
+    /// Why it cannot be used here, as a sentence that says what to change.
+    /// Empty when it can.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub problem: String,
 }
 
-/// A machine a provisioner has that berth created.
+/// A kind of thing a provisioner makes.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct ListedInstance {
+pub struct ProvisionerKind {
+    /// `machine`, or a kind the plugin names, such as `deployment`.
     pub id: String,
-    /// The host it was created for, as its labels say.
+    #[serde(default)]
+    pub label: String,
+    /// For a machine: `seed` or `apply`, as for the provisioner.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub setup: String,
+    /// What can be done to one besides `create`, `status` and `destroy`:
+    /// `start`, `stop`, `change`, `logs`.
+    #[serde(default)]
+    pub verbs: Vec<String>,
+    #[serde(default)]
+    pub arguments: Vec<Argument>,
+    /// The specification one is made from, for a kind that has one: its
+    /// `format` and `label`, as the plugin declares them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<Value>,
+    /// What its plugin can do to one, each run with the verb `act` and the
+    /// resource's id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<Action>,
+}
+
+/// A row of what a provisioner says, shown as it is given.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct Detail {
+    pub label: String,
+    #[serde(default)]
+    pub value: String,
+}
+
+/// What a provisioner lists of what it holds, beside berth's records.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ListedResource {
+    /// The provisioner's id of it; empty for a record whose `create` did not end.
+    #[serde(default)]
+    pub id: String,
+    /// `machine`, or a kind the plugin names, such as `deployment`.
+    pub kind: String,
+    pub name: String,
+    /// The host a machine was made for, when it says.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub host: String,
+    /// What the provisioner's list says, or empty when it was not asked.
+    #[serde(default)]
     pub state: String,
+    /// berth's id of it, when berth has a record of it. One the provisioner
+    /// lists without one is not berth's, or berth lost track of it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub resource: String,
+}
+
+/// A provisioner's page: what it is, what it says of itself now, and what
+/// it holds.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ProvisionerState {
+    pub provisioner: ProvisionerInfo,
+    /// `ready`, `unreachable` or `unusable`, or what the provisioner said.
+    pub state: String,
+    /// What it said of itself, or why it could not be asked.
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub details: Vec<Detail>,
+    /// The values an argument takes here, by its name, where the
+    /// provisioner narrows what it declares, such as the pools there are.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub values: BTreeMap<String, Vec<String>>,
+    /// berth's records of what it made, with what its own list says.
+    #[serde(default)]
+    pub resources: Vec<ListedResource>,
+}
+
+/// A berth secret a resource is given in its environment, by name. Its
+/// value is resolved when the provisioner is called and never kept with
+/// the resource.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ResourceSecret {
+    /// The name of the berth secret.
+    pub name: String,
+    /// The environment variable it becomes; the secret's name when empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub env: String,
+}
+
+impl ResourceSecret {
+    /// The variable it is given as.
+    pub fn variable(&self) -> &str {
+        match self.env.is_empty() {
+            true => &self.name,
+            false => &self.env,
+        }
+    }
+}
+
+/// Something a provisioner made for berth: a machine, which may be a
+/// host's, or a kind its plugin names, such as a deployment.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct Resource {
+    /// berth's id of it, stable for the life of the record.
+    pub id: String,
+    /// `PLUGIN/ID`.
+    pub provisioner: String,
+    /// `machine`, or a kind the plugin declares.
+    pub kind: String,
+    /// Unique per provisioner and kind.
+    pub name: String,
+    /// `creating`, `running`, `stopped`, `missing` or `unknown`, as last seen.
+    pub state: String,
+    /// The provisioner's id of it; empty until `create` said it.
+    #[serde(default)]
+    pub external_id: String,
+    /// The host a machine belongs to, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub address: String,
+    #[serde(default)]
+    pub arguments: BTreeMap<String, String>,
+    /// The berth secrets it is given, by name; never their values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<ResourceSecret>,
+    /// The SHA-256 of its stored specification, for a kind that has one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub spec_sha256: String,
+    /// When it was asked for, RFC 3339.
+    #[serde(default)]
+    pub created: String,
+    /// When its provisioner was last asked about it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub checked: String,
+    /// What can be done to it besides being removed: `start`, `stop`,
+    /// `change`, `logs`, as its kind declares.
+    #[serde(default)]
+    pub verbs: Vec<String>,
+    /// Why its state is `unknown`, or what is wrong with it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub problem: String,
+}
+
+/// What to create a resource with.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct NewResource {
+    /// `PLUGIN/ID`.
+    pub provisioner: String,
+    /// `machine` when empty.
+    #[serde(default)]
+    pub kind: String,
+    /// The host's name for a host's machine when empty.
+    #[serde(default)]
+    pub name: String,
+    /// The saved host a machine is made for, and set up as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// Values of the provisioner's and the kind's arguments; the others
+    /// take their settings or defaults.
+    #[serde(default)]
+    pub arguments: BTreeMap<String, String>,
+    /// The specification, for a kind that has one, as its plugin reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<ResourceSecret>,
+    /// Any text of the caller's. The same token again answers with the
+    /// resource and the job the first call started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+/// What to change of a resource: what is given replaces what it had.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ResourceChange {
+    /// Values of the kind's arguments, over those it has.
+    #[serde(default)]
+    pub arguments: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<Vec<ResourceSecret>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+/// What creating a resource answers: its record and the job that makes it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct Created {
+    pub resource: Resource,
+    pub job: JobInfo,
 }
 
 // ── What a host was applied from ────────────────────────────────────────────
@@ -815,12 +1260,13 @@ pub struct Applied {
 }
 
 /// The profile a host keeps of itself, at `/etc/berth/profile.json`: the
-/// profile as berth holds it, without the enrollment key and without how the
-/// berth that wrote it reaches the host. A berth that does not have the host
-/// can take it over from this.
+/// profile as berth holds it, without the enrollment key and without its
+/// `access`, how the berth that wrote it reaches the host. A berth that does
+/// not have the host can take it over from this.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct KeptProfile {
-    /// The format of this document; 1 for now.
+    /// The format of this document: 2, or 1 for one berth 0.4.1 wrote, whose
+    /// profile has the layout before `access`.
     pub format: u64,
     /// The version of the berth that wrote it.
     pub berth: String,
@@ -831,7 +1277,11 @@ pub struct KeptProfile {
     pub host: String,
     /// The profile.
     pub profile: Value,
-    /// The record of the machine berth created for the host, when it did.
+    /// The record of the machine berth created for the host, as a resource,
+    /// when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<Value>,
+    /// The same in a document of format 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance: Option<Value>,
 }
@@ -932,6 +1382,51 @@ pub struct Rollout {
     pub force: bool,
 }
 
+impl Rollout {
+    /// The arguments of the `rollout` action that ask for this.
+    pub fn arguments(&self) -> BTreeMap<String, String> {
+        let word = |on: bool| if on { "yes" } else { "no" }.to_owned();
+        let mut arguments = BTreeMap::from([
+            ("all".to_owned(), word(self.all)),
+            ("update".to_owned(), word(self.update)),
+            ("reboot".to_owned(), word(self.reboot)),
+            ("force".to_owned(), word(self.force)),
+        ]);
+        if !self.hosts.is_empty() {
+            arguments.insert("hosts".into(), self.hosts.join(","));
+        }
+        arguments
+    }
+
+    /// What the arguments of the `rollout` action ask for.
+    pub fn from_arguments(arguments: &BTreeMap<String, String>) -> Result<Rollout, String> {
+        let flag = |name: &str| match arguments.get(name).map(|value| value.trim()) {
+            None | Some("" | "no" | "false") => Ok(false),
+            Some("yes" | "true") => Ok(true),
+            Some(other) => Err(format!("{name} is yes or no, not {other}")),
+        };
+        let hosts = arguments.get("hosts").map_or(vec![], |hosts| {
+            hosts
+                .split(',')
+                .map(str::trim)
+                .filter(|host| !host.is_empty())
+                .map(str::to_owned)
+                .collect()
+        });
+        let rollout = Rollout {
+            hosts,
+            all: flag("all")?,
+            update: flag("update")?,
+            reboot: flag("reboot")?,
+            force: flag("force")?,
+        };
+        if rollout.force && !rollout.reboot {
+            return Err("force only goes with reboot".into());
+        }
+        Ok(rollout)
+    }
+}
+
 /// How one host of a roll-out went.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
@@ -940,7 +1435,8 @@ pub enum RolloutState {
     Done,
     /// Nothing to do: it was current.
     Current,
-    /// Not started, because an earlier host stopped the roll-out.
+    /// Not started, because an earlier host stopped the roll-out, or left
+    /// because something else was changing it, as its `error` says.
     #[default]
     Skipped,
     /// Something went wrong; the roll-out stopped here.

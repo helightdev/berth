@@ -157,8 +157,7 @@ async fn worker(
             Request::Refresh => drop(tokio::spawn(refresh(link, events, true, compare.clone()))),
             Request::Poll => drop(tokio::spawn(refresh(link, events, false, None))),
             Request::Run { name, body } => drop(tokio::spawn(async move {
-                let path = format!("/v1/tasks/{}", api::client::encode(&name));
-                let _ = events.send(match link.post::<api::Session>(&path, &body).await {
+                let _ = events.send(match link.run_task(&name, &body).await {
                     Ok(session) => Event::Opened(Box::new(session)),
                     Err(error) => Event::Error(error.to_string()),
                 });
@@ -359,6 +358,7 @@ mod tests {
             ],
             first_line: None,
             via: None,
+            ..LinkSpec::default()
         };
         let mut host = HostView::default();
         assert!(connect(&mut host, spec).is_none());
@@ -408,12 +408,13 @@ mod tests {
             argument: "who".into(),
         });
         host.arguments = Some(Arguments {
-            task: 2,
+            action: 1,
             index: 0,
             values: Default::default(),
             input: Default::default(),
             choices: vec![],
             chosen: None,
+            secret: false,
         });
         until(&mut host, "choices", |host| {
             host.arguments.as_ref().unwrap().choices == ["ann", "bob"]
@@ -492,6 +493,7 @@ mod tests {
             args: vec!["-c".into(), script.into()],
             first_line: None,
             via: None,
+            ..LinkSpec::default()
         };
         let state = |script: &str, password: Option<&str>| {
             let mut host = HostView::default();

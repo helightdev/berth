@@ -269,6 +269,38 @@
       },
       "x-berth-level": "host",
       "x-berth-resumable": false
+    },
+    "resource-logs": {
+      "address": "/v1/resources/{id}/logs",
+      "bindings": {
+        "ws": {
+          "query": {
+            "properties": {
+              "tail": {
+                "description": "The last so many lines first; all when 0 (default 100).",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      "description": "What a resource writes, as its provisioner gives it, with secrets masked: the last lines, then what follows.",
+      "messages": {
+        "resource-logs.exited": {
+          "$ref": "#/components/messages/resource-logs.exited"
+        },
+        "resource-logs.output": {
+          "$ref": "#/components/messages/resource-logs.output"
+        }
+      },
+      "parameters": {
+        "id": {
+          "description": "id"
+        }
+      },
+      "x-berth-level": "host",
+      "x-berth-resumable": false
     }
   },
   "components": {
@@ -330,10 +362,11 @@
           {
             "payload": {
               "job": {
+                "action": "apply",
                 "host": "server",
                 "id": "j1",
                 "started": "2026-11-12T10:00:00Z",
-                "what": "apply"
+                "subject": "host:server"
               },
               "source": "job"
             }
@@ -670,6 +703,32 @@
           "type": "object"
         },
         "summary": "A key was written."
+      },
+      "resource-logs.exited": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "exited": {
+                "exit_code": 0
+              }
+            }
+          }
+        ],
+        "name": "exited",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "The log ended, or the provisioner stopped giving it. The last frame; with `error` when it failed."
+      },
+      "resource-logs.output": {
+        "contentType": "application/octet-stream",
+        "name": "output",
+        "payload": {
+          "format": "binary",
+          "type": "string"
+        },
+        "summary": "Lines of its log."
       }
     }
   },
@@ -839,6 +898,20 @@
         },
         {
           "$ref": "#/channels/kv/messages/kv.removed"
+        }
+      ]
+    },
+    "resource-logs.send": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/resource-logs"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/resource-logs/messages/resource-logs.output"
+        },
+        {
+          "$ref": "#/channels/resource-logs/messages/resource-logs.exited"
         }
       ]
     }

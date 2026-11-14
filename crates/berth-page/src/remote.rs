@@ -192,8 +192,15 @@ impl Transport for Remote {
                 });
             }
             Request::Poll => self.poll(),
+            // A task is the host's action on the server, which keeps a job of it.
             Request::Run { name, body } => {
-                self.call("tasks.run", json!({"name": name}), body, Remote::opened)
+                let events = self.events.clone();
+                let args = json!({"name": self.host, "action": name});
+                self.portal
+                    .call("hosts.act", None, args, body, move |result| {
+                        let session = result.map(|acted| acted["session"].clone());
+                        Remote::opened(session, &events)
+                    });
             }
             Request::Start { body } => self.call("sessions.start", json!({}), body, Remote::opened),
             Request::Open(session) => {

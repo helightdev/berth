@@ -109,9 +109,11 @@ def check_public_key(value, account):
         raise ValueError(f'{account} SSH public key is too short')
 
 
-def berth_key():
-    """The public key of the berth that builds this, which the operator always takes."""
-    return os.environ.get('BERTH_SSH_PUBLIC_KEY', '').strip()
+def berth_keys():
+    """The public keys of the berth that builds this, one to a line, which the operator
+    always takes: berth's own, the one replacing it while it rotates, and a key of
+    berth's that the profile logs in with."""
+    return [key.strip() for key in os.environ.get('BERTH_SSH_PUBLIC_KEY', '').splitlines() if key.strip()]
 
 
 def account_keys(config, account, berth=True):
@@ -124,7 +126,7 @@ def account_keys(config, account, berth=True):
     keys = [key.strip() for key in listed]
     keys += [key.strip() for key in text(config, f'{account}_ssh_public_key').splitlines()]
     if account == 'operator' and berth:
-        keys.append(berth_key())
+        keys += berth_keys()
     unique = []
     for key in keys:
         if key and key not in unique:
@@ -288,7 +290,7 @@ def account_vars(c):
         'devbox_operator_user': c.get('operator_username', DEFAULT_OPERATOR),
         'devbox_operator_password_hash': c.get('operator_password_hash', ''),
         'devbox_operator_ssh_public_key': '\n'.join(account_keys(c, 'operator', berth=False)),
-        'devbox_berth_ssh_public_key': berth_key(),
+        'devbox_berth_ssh_public_key': '\n'.join(berth_keys()),
     }
 
 

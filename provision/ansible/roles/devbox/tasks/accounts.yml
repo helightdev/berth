@@ -144,9 +144,10 @@
       loop_control:
         label: "{{ item.user }}"
       register: devbox_authorized_keys
-    # Each berth that applies this keeps its key in a block of its own, which no
-    # later apply removes, so a change to the profile's keys never locks it out.
-    - name: Give the operator the key of the berth that applies this
+    # Each berth that applies this keeps its keys in a block of its own, named
+    # after its own key, which no later apply removes, so a change to the
+    # profile's keys never locks it out.
+    - name: Give the operator the keys of the berth that applies this
       ansible.builtin.blockinfile:
         path: "/home/{{ devbox_operator_user }}/.ssh/authorized_keys"
         create: true
@@ -170,8 +171,9 @@
       loop_control:
         label: "{{ item.item.user }}"
       when: item.item.key | length > 0 or item.stat.exists
-    - name: Check that the operator takes the key of the berth that applies this
+    - name: Check that the operator takes the keys of the berth that applies this
       ansible.builtin.command:
-        argv: [grep, -qxF, --, "{{ devbox_berth_ssh_public_key }}", "/home/{{ devbox_operator_user }}/.ssh/authorized_keys"]
+        argv: [grep, -qxF, --, "{{ item }}", "/home/{{ devbox_operator_user }}/.ssh/authorized_keys"]
+      loop: "{{ devbox_berth_ssh_public_key.splitlines() }}"
       changed_when: false
-      when: devbox_profile != 'container' and devbox_berth_ssh_public_key | length > 0
+      when: devbox_profile != 'container'

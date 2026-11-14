@@ -53,6 +53,7 @@ mod page {
             .expect("the checkout");
         for entry in [
             "crates/berth-web",
+            "crates/berth-page",
             "crates/berth-tui",
             "crates/berth-api",
             "crates/vendor/tui-input",

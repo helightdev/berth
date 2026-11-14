@@ -31,6 +31,12 @@ pub struct LinkSpec {
     pub first_line: Option<String>,
     /// Instead of a command: the host of this name behind a `berth serve`.
     pub via: Option<(Server, String)>,
+    /// Set in the command's environment, as ssh's askpass helper needs.
+    pub env: Vec<(String, String)>,
+    /// The host's name, for what is said when it fails.
+    pub name: String,
+    /// Where a refused login is noted, for a link over SSH.
+    pub guard: Option<crate::keys::refusal::Guard>,
 }
 
 /// A private directory for sockets of ours.
@@ -101,6 +107,9 @@ pub struct Link {
     idle: Mutex<Vec<Client>>,
     /// What the link commands last wrote to standard error.
     complaints: Arc<Mutex<String>>,
+    /// Whether a login worked since the link was made, so a refusal noted
+    /// before is forgotten once.
+    worked: std::sync::atomic::AtomicBool,
 }
 
 impl Link {
@@ -110,6 +119,23 @@ impl Link {
             portal: Default::default(),
             idle: Mutex::new(vec![]),
             complaints: Default::default(),
+            worked: Default::default(),
+        }
+    }
+
+    /// Why nothing automatic should use the link now: the host refused its
+    /// login a short while ago, or turned this address away. Whatever the
+    /// user asks for uses it all the same, and tries once.
+    pub fn refused(&self) -> Option<String> {
+        self.spec.guard.as_ref()?.refused()
+    }
+
+    fn worked(&self) {
+        use std::sync::atomic::Ordering;
+        if let Some(guard) = &self.spec.guard
+            && !self.worked.swap(true, Ordering::Relaxed)
+        {
+            guard.worked();
         }
     }
 
@@ -117,6 +143,7 @@ impl Link {
     pub async fn connect(&self) -> client::Result<Conn> {
         let mut child = tokio::process::Command::new(&self.spec.program)
             .args(&self.spec.args)
+            .envs(self.spec.env.iter().map(|(name, value)| (name, value)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -126,16 +153,18 @@ impl Link {
         let mut input = child.stdin.take().expect("piped");
         let output = child.stdout.take().expect("piped");
         let mut errors = child.stderr.take().expect("piped");
+        // Each command's words are its own, so requests made at once do not
+        // clear each other's; the link keeps the last command's that said any.
         let complaints = self.complaints.clone();
-        complaints.lock().unwrap().clear();
         tokio::spawn(async move {
             let mut buffer = [0; 1024];
+            let mut said = String::new();
             while let Ok(count) = errors.read(&mut buffer).await
                 && count > 0
             {
-                let mut text = complaints.lock().unwrap();
-                if text.len() < 4096 {
-                    text.push_str(&String::from_utf8_lossy(&buffer[..count]));
+                if said.len() < 4096 {
+                    said.push_str(&String::from_utf8_lossy(&buffer[..count]));
+                    *complaints.lock().unwrap() = said.clone();
                 }
             }
         });
@@ -150,14 +179,35 @@ impl Link {
         })
     }
 
-    /// Why a connection failed, in the link command's own words when it said any.
-    fn explain(&self, error: Error) -> Error {
+    /// Why a connection failed, in the link command's own words when it said
+    /// any. The command is given a moment to say them, as it may still be
+    /// writing when the connection is seen to be closed.
+    async fn explain(&self, error: Error) -> Error {
         let Error::Transport(message) = error else {
             return error;
         };
+        for _ in 0..4 {
+            if !self.complaints.lock().unwrap().trim().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
         let said = self.complaints.lock().unwrap().trim().to_owned();
+        // A refused login is noted, so nothing automatic repeats it at once.
+        let noted = match (&self.spec.guard, said.is_empty()) {
+            (Some(guard), false) => {
+                self.worked
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                guard.failed(&said)
+            }
+            _ => None,
+        };
         Error::Transport(if said.is_empty() {
             message
+        } else if let Some(noted) = noted {
+            noted
+        } else if let Some(changed) = crate::keys::known::changed_key(&self.spec.name, &said) {
+            changed
         } else if said.contains("a password is required") {
             format!("{said}: set BERTH_SUDO_PASSWORD")
         } else {
@@ -166,7 +216,10 @@ impl Link {
     }
 
     async fn fresh(&self) -> client::Result<Client> {
-        Client::over(self.connect().await?).await
+        match Client::over(self.connect().await?).await {
+            Ok(client) => Ok(client),
+            Err(error) => Err(self.explain(error).await),
+        }
     }
 
     /// One request. An idle connection is used when there is one; if it turns
@@ -193,6 +246,9 @@ impl Link {
                 .await
             {
                 Ok(response) => {
+                    // What a command said before it worked is no reason for a later failure.
+                    self.complaints.lock().unwrap().clear();
+                    self.worked();
                     let mut idle = self.idle.lock().unwrap();
                     if client.usable() && idle.len() < IDLE {
                         idle.push(client);
@@ -203,11 +259,7 @@ impl Link {
                     attempt = false;
                     client = self.fresh().await?;
                 }
-                Err(error) => {
-                    // Give the command a moment to say why it gave up.
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                    return Err(self.explain(error));
-                }
+                Err(error) => return Err(self.explain(error).await),
             }
         }
     }
@@ -236,6 +288,26 @@ impl Link {
         self.call("POST", path, Some(body)).await
     }
 
+    /// Run a task of the host, as `tasks.run` takes it, and the session it
+    /// runs as. Through a berth server it is the host's action there, which
+    /// the server keeps a job of and gives the server's secrets to.
+    pub async fn run_task(&self, name: &str, body: &Value) -> client::Result<berth_api::Session> {
+        let Some((server, host)) = &self.spec.via else {
+            let path = format!("/v1/tasks/{}", client::encode(name));
+            return self.post(&path, body).await;
+        };
+        let portal = self.portal(server).await?;
+        let args = serde_json::json!({"name": host, "action": name});
+        let acted = portal
+            .call("hosts.act", None, args, Some(body.clone()))
+            .await?;
+        serde_json::from_value(acted["session"].clone()).map_err(|_| {
+            Error::Transport(format!(
+                "{name} on {host} is not a task of the host: run it with berth run {host} {name}"
+            ))
+        })
+    }
+
     /// Open a stream. It holds its connection for as long as it lives.
     pub async fn stream(&self, path: &str) -> client::Result<LinkStream> {
         if let Some((server, host)) = &self.spec.via {
@@ -250,11 +322,11 @@ impl Link {
         }
         let conn = self.connect().await?;
         match client::websocket(conn, path, "").await {
-            Ok(stream) => Ok(Box::pin(stream)),
-            Err(error) => {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                Err(self.explain(error))
+            Ok(stream) => {
+                self.worked();
+                Ok(Box::pin(stream))
             }
+            Err(error) => Err(self.explain(error).await),
         }
     }
 

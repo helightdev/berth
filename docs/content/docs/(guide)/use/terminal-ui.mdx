@@ -13,15 +13,16 @@ berth studio           # open a host directly
 
 ## The home screen
 
-The home screen has five tabs, switched with the number keys or Tab.
+The home screen has six tabs, switched with the number keys, or with Tab and Shift+Tab in this order.
 
 | Tab | Holds |
 | --- | --- |
-| `1` Hosts | The saved hosts and their addresses. `n` creates one, `d` makes the selected one the default |
-| `2` Settings | The settings of `berth config`, the SSH key of berth to copy, and with a berth server a QR code that opens its page on a phone. With a server, the `tailnet_` settings are the server's |
-| `3` Registries | npm, Docker, file and Nexus registries ([Registries](/docs/use/registries)) |
-| `4` Secrets | Secret values kept on your machine ([Secrets](/docs/use/secrets)) |
-| `5` Plugins | Built-in and installed plugins, and adding, updating and removing your own ([Plugins](/docs/extend/plugins#updating-a-plugin)). With a server set, the server's |
+| `1` Hosts | The saved hosts and their addresses. With a berth server, a dot shows whether each host answered the server, and the Information panel says why not. A host that still takes the old key of a [key rotation](/docs/use/accounts#rekeying) is marked `key rotation pending`. `n` creates one, `d` makes the selected one the default, `r` asks the server again, or reads the saved hosts again when there is no server |
+| `2` Provisioners | The provisioners of the plugins, and whether each can be used here. Enter opens the page of one, with how it is and what berth made with it, grouped by kind. Enter on one of its actions runs it. Enter on something it made opens that [resource's page](/docs/deploy/resources#in-the-terminal-ui), with its state, its actions and its log. Esc goes back a page ([Provisioners](/docs/deploy/provisioners#a-provisioners-page)). With a server set, the server's |
+| `3` Settings | The settings of `berth config`, the SSH keys of berth's key ring to copy, and with a berth server a QR code that opens its page on a phone. With a server, the `tailnet_` settings are the server's |
+| `4` Registries | npm, Docker, file and Nexus registries ([Registries](/docs/use/registries)) |
+| `5` Secrets | Secret values, kept in berth's store ([Secrets](/docs/use/secrets)) |
+| `6` Plugins | Built-in and installed plugins, and adding, updating and removing your own ([Plugins](/docs/extend/plugins#updating-a-plugin)). With a server set, the server's |
 
 <Screen name="home-plugins" alt="The Plugins tab of the home screen, listing the shipped plugins and their features" />
 
@@ -67,6 +68,7 @@ The **Information** panel on the right explains the selected row. **Apply this c
 | F3 | Browse for a file on path fields; Ctrl+Enter picks the directory itself |
 | F4 | Generate a value, such as a hostname, a password hash or a Tailscale key, or download the ISO |
 | F5 | Type a password and store its hash; on Wi-Fi fields, unlock the saved passwords |
+| c | On a key of the key ring, such as **This berth's SSH key**, copy its public half to the clipboard |
 | Alt+R | In a panel, show its links as QR codes to scan with a phone. Left and Right go to the other links, any other key closes it. Where Alt+R is taken by other software, click its hint at the bottom of the panel |
 | Ctrl+S | Save the profile, as **Save** on the Run tab does |
 | Ctrl+U, Esc | Clear the field being edited, cancel the edit |
@@ -82,7 +84,7 @@ berth fills suggestions and blank fields from what it finds locally. It reads, a
 <Accordions>
 <Accordion title="SSH">
 
-Every `.pub` file in `~/.ssh`, keys held by ssh-agent, private key paths, and `Host` aliases from the SSH configuration, including `Include` files.
+Every `.pub` file in `~/.ssh`, keys held by ssh-agent, the ways to log in with the keys of berth's key ring, and `Host` aliases from the SSH configuration, including `Include` files.
 
 </Accordion>
 <Accordion title="Tailscale">

@@ -3,12 +3,13 @@
 //! and kept by the server.
 
 use crate::admin::{Admin, Data};
+use crate::device::Here;
 use berth_tui::fields::{Action, Field, Kind, Step};
 use berth_tui::machine::{self, Machine, Next};
-use berth_tui::screen::{draw_footer, draw_header, draw_question, inside};
+use berth_tui::screen::{self, draw_footer, draw_header, draw_question, inside};
 use berth_tui::setup::{self, Account, Entry, Feature, Item, Page, Problem, Profile, Row};
 use berth_tui::{Click, Code, Event, Key, event, markdown, theme};
-use ratzilla::ratatui::{
+use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::Style,
@@ -68,6 +69,8 @@ pub struct Setup {
     stores: Vec<String>,
     /// The server's own SSH public key.
     own_key: String,
+    /// The names of the keys of the server's key ring.
+    ring_keys: Vec<String>,
     list: ListState,
     display: ListState,
     editing: Option<Input>,
@@ -123,6 +126,7 @@ impl Setup {
             secrets: vec![],
             stores: vec![],
             own_key: String::new(),
+            ring_keys: vec![],
             list: ListState::default().with_selected(Some(0)),
             display: ListState::default(),
             editing: None,
@@ -183,6 +187,17 @@ impl Setup {
         self.secrets = setup::host_secrets(names);
         self.stores = setup::release_stores(&data.registries);
         self.own_key = data.own_key.clone();
+        self.ring_keys = data.keys.iter().map(|(name, _)| name.clone()).collect();
+    }
+
+    /// The ways the host can be logged in to: the server's keys, a password,
+    /// and its account's SSH configuration only for a host that has it.
+    fn login_choices(&self) -> Vec<String> {
+        setup::login_choices(
+            &self.ring_keys,
+            self.config["access"]["auth"].as_str().unwrap_or(""),
+            true,
+        )
     }
 
     fn view(&self) -> Profile<'_> {
@@ -303,11 +318,13 @@ impl Setup {
                 Some("Saving…".into())
             }
             Next::Power(verb) => {
-                admin.power(&name, verb);
+                let id = self.machine.machine().map(|made| made.id.clone())?;
+                admin.power(&name, &id, verb, size);
                 None
             }
             Next::Destroy => {
-                admin.unprovision(&name, size);
+                let id = self.machine.machine().map(|made| made.id.clone())?;
+                admin.unprovision(&name, &id, size);
                 None
             }
         }
@@ -328,6 +345,16 @@ impl Setup {
 
     /// Toggle or cycle the field, or open the editor for free text.
     fn activate(&mut self, field: Field) -> Option<String> {
+        if field == Field::Login {
+            let choices = self.login_choices();
+            let current = self.view().text(field);
+            let next = choices
+                .iter()
+                .position(|choice| choice == current)
+                .map_or(0, |index| (index + 1) % choices.len());
+            self.set(field, json!(choices[next]));
+            return None;
+        }
         if field == Field::ReleaseStore {
             let next = setup::next_of(&self.stores, self.view().text(field));
             self.set(field, json!(next));
@@ -417,9 +444,22 @@ impl Setup {
             return Some("Fix the listed problems first".into());
         }
         let (name, action, size) = (self.name.clone(), self.action, self.panel);
-        admin.save(&self.name, &self.config, move |admin| match action {
-            Action::CloudSeed => admin.seed(&name),
-            _ => admin.apply(&name, None, size),
+        // Over SSH a host below a workstation gets the controller alone, or nothing.
+        let level = berth_api::profile::level(&self.config);
+        let install = berth_api::Action {
+            name: "install-controller".into(),
+            label: "Install the controller".into(),
+            ..berth_api::Action::default()
+        };
+        admin.save(&self.name, &self.config, move |admin| {
+            match (action, level) {
+                (Action::CloudSeed, _) => admin.seed(&name),
+                (Action::Ssh, berth_api::HostLevel::Controller) => {
+                    admin.act(&name, &install, &Default::default(), size)
+                }
+                (Action::Ssh, berth_api::HostLevel::Reachable) => {}
+                _ => admin.apply(&name, None, size),
+            }
         });
         Some("Saving…".into())
     }
@@ -522,6 +562,9 @@ impl Setup {
                     self.move_selection(key.code == Code::Up);
                 }
                 Code::Char('u') if key.ctrl => input.reset(),
+                _ if screen::is_copy_field(&key) => {
+                    say(Some(screen::copy_field(&mut Here, input)));
+                }
                 _ => event::edit(input, &key),
             }
             return Flow::Stay;
@@ -740,7 +783,7 @@ impl Setup {
             draw_editor(frame, edit, &title, input, masked);
         }
         let keys = match (&self.editing, field) {
-            (Some(_), _) => "Enter accept · Esc cancel · Ctrl+S save".to_owned(),
+            (Some(_), _) => "Enter accept · Esc cancel · Ctrl+O copy · Ctrl+S save".to_owned(),
             (None, Some(field)) if field.is_password_hash() => {
                 "↑↓ select · g generate · p type a password · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned()
             }

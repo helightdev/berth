@@ -1,23 +1,12 @@
 //! berth in a browser: the hosts of the `berth serve` that served this page,
-//! through its portal. The page keeps nothing but the token; every host is
-//! the server's.
+//! through its portal. The screens are berth-page's; this program gives them
+//! the browser's canvas, keys, clipboard, storage and WebSocket. The page
+//! keeps nothing but the token; every host is the server's.
 
-#[cfg(target_arch = "wasm32")]
-mod admin;
-#[cfg(target_arch = "wasm32")]
-mod app;
 #[cfg(target_arch = "wasm32")]
 mod browser;
 #[cfg(target_arch = "wasm32")]
-mod home;
-#[cfg(target_arch = "wasm32")]
-mod installed;
-#[cfg(target_arch = "wasm32")]
-mod portal;
-#[cfg(target_arch = "wasm32")]
-mod remote;
-#[cfg(target_arch = "wasm32")]
-mod setup;
+mod socket;
 
 #[cfg(target_arch = "wasm32")]
 fn main() {

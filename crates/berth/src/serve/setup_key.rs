@@ -1,8 +1,9 @@
 //! The setup key: a short-lived key, made where `berth serve` runs, that lets
 //! the first user collect the server's token. Whoever installs the server can
 //! hand it on without ever holding the token, and it ends when the user says
-//! they are done or after a day. It is kept beside `serve.token` and read on
-//! every request, so a running server takes a new one without a restart.
+//! they are done or after a day. It is kept in the store and read from there
+//! on every request, so a running server takes one that `berth setup-key`
+//! made in another process a moment ago.
 
 use super::{
     Serve,
@@ -13,8 +14,8 @@ use crate::Result;
 use axum::{Json, extract::State, http::HeaderMap};
 use berth_api::{Done, ErrorBody, SetupClaim, SetupKey, code, rfc3339, unix_now};
 use berth_core::paths::Paths;
+use berth_core::store::{OWN, Store, kind};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 /// How long a setup key works.
 pub const LIFETIME: u64 = 24 * 3600;
@@ -26,9 +27,8 @@ struct Stored {
     expires: u64,
 }
 
-fn path(paths: &Paths) -> PathBuf {
-    paths.data_dir.join("serve.setup-key")
-}
+/// Its row's name, of kind `token` in the installation's own scope.
+pub const NAME: &str = berth_core::kept::SETUP_KEY;
 
 /// Whether the settings leave `berth serve` without its own token over the network.
 fn token_off(paths: &Paths) -> bool {
@@ -55,27 +55,20 @@ pub fn make(paths: &Paths) -> Result<(String, u64)> {
         key: key.clone(),
         expires,
     })?;
-    // A file of its own, private from the start, that takes the old one's place whole.
-    let mut file = tempfile::NamedTempFile::new_in(&paths.data_dir)?;
-    std::io::Write::write_all(&mut file, format!("{text}\n").as_bytes())?;
-    file.persist(path(paths)).map_err(|error| error.error)?;
+    berth_core::store::shared(paths)?.write(kind::TOKEN, OWN, NAME, text.as_bytes())?;
     Ok((key, expires))
 }
 
 /// Delete the setup key; whether there was one.
-pub fn remove(paths: &Paths) -> Result<bool> {
-    match std::fs::remove_file(path(paths)) {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.into()),
-    }
+pub fn remove(store: &Store) -> Result<bool> {
+    Ok(store.forget(kind::TOKEN, OWN, NAME)?)
 }
 
 /// The setup key there is now. One that has expired is deleted.
-fn current(paths: &Paths) -> Option<Stored> {
-    let stored: Stored = serde_json::from_slice(&std::fs::read(path(paths)).ok()?).ok()?;
+fn current(store: &Store) -> Option<Stored> {
+    let stored: Stored = serde_json::from_slice(&store.read(kind::TOKEN, OWN, NAME).ok()??).ok()?;
     if stored.expires <= unix_now() {
-        let _ = std::fs::remove_file(path(paths));
+        let _ = store.forget(kind::TOKEN, OWN, NAME);
         return None;
     }
     Some(stored).filter(|stored| stored.key.len() >= 32)
@@ -97,7 +90,8 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
             Ok(())
         }
         ["--remove"] => {
-            match remove(paths)? {
+            let store = berth_core::store::shared(paths)?;
+            match remove(&store)? {
                 true => println!("Removed the setup key"),
                 false => println!("There was no setup key"),
             }
@@ -116,7 +110,7 @@ fn admit(state: &Serve, headers: &HeaderMap) -> Answer<Stored> {
         .and_then(|value| value.strip_prefix("Bearer "))
         .map(str::trim)
         .unwrap_or("");
-    match current(&state.paths) {
+    match current(&state.store) {
         Some(stored) if !shown.is_empty() && auth::same(shown, &stored.key) => Ok(stored),
         _ => Err(Fail::new(
             code::UNAUTHORIZED,
@@ -166,6 +160,6 @@ pub async fn claim(State(state): App, headers: HeaderMap) -> Answer<Json<SetupCl
               (status = 401, description = "The key is wrong, missing or expired", body = ErrorBody)))]
 pub async fn done(State(state): App, headers: HeaderMap) -> Answer<Json<Done>> {
     admit(&state, &headers)?;
-    remove(&state.paths).map_err(internal)?;
+    remove(&state.store).map_err(internal)?;
     Ok(Json(Done { ok: true }))
 }

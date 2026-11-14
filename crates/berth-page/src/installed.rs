@@ -2,10 +2,10 @@
 //! browser is signed in, and the token for a terminal. The key works until
 //! Done, so opening the link again before then shows the screen again.
 
-use crate::browser::{self, Browser};
+use crate::device::{self, Here};
 use berth_tui::screen::{Platform, note_hints, wrap};
 use berth_tui::{Code, Event, theme};
-use ratzilla::ratatui::{
+use ratatui::{
     Frame,
     layout::Rect,
     style::Style,
@@ -49,7 +49,7 @@ impl Installed {
     pub fn claim(server: &str, key: String) -> Installed {
         let claim = Rc::new(RefCell::new(Claim::Asking));
         let answered = claim.clone();
-        browser::request(
+        device::request(
             "POST",
             &format!("{server}/v1/setup-key"),
             &key,
@@ -123,9 +123,9 @@ impl Installed {
         let Some(token) = self.token() else {
             return Outcome::Stay;
         };
-        let copy = |text: &str, what: &str| match Browser.copy(text) {
+        let copy = |text: &str, what: &str| match Here.copy(text) {
             true => format!("Copied {what}"),
-            false => "The browser did not let the page copy".into(),
+            false => "Could not copy to the clipboard".into(),
         };
         match key.code {
             Code::Char('c') => *said = copy(&token, "the token"),
@@ -138,7 +138,7 @@ impl Installed {
 
     /// End the key. `then` gets what to say if that did not work.
     pub fn done(&self, then: impl FnOnce(Option<String>) + 'static) {
-        browser::request(
+        device::request(
             "DELETE",
             &format!("{}/v1/setup-key", self.server),
             &self.key,
@@ -169,7 +169,7 @@ impl Installed {
                 };
                 for line in wrap(
                     &format!(
-                        "berth{version} is installed and serves at {}. This browser is signed in.",
+                        "berth{version} is installed and serves at {}. You are signed in here.",
                         self.server
                     ),
                     inner,

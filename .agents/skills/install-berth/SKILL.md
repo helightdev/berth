@@ -14,8 +14,8 @@ terminal. A set-up has these pieces:
 | --- | --- |
 | `berth` client | The program on the user's machine. It has a terminal UI and commands. |
 | berth server | Optional. `berth serve`, usually in a Docker container, reached over a tailnet with TLS. It keeps the hosts, profiles and secrets. |
-| Host | An agent workstation, set up from a profile. |
-| Provisioner | A program from a plugin that creates the machine for a host, such as on Docker or Incus. The names are `docker/container`, `incus/vm` and `incus/container`. |
+| Host | A machine berth works with, at one of three levels. `reachable` means berth only logs in, `controller` adds berthd and box, and `workstation` is set up from a profile. A machine that exists is added with `berth host add NAME ADDRESS --user USER`. |
+| Provisioner | A program from a plugin that creates the machine for a host, such as on Docker or Incus. The names are `docker/container`, `incus/vm` and `incus/container`. `berth provisioner` lists them, and the Provisioners tab of the terminal UI (key `2`) shows each one's page. |
 
 ## Where to look things up
 
@@ -24,6 +24,8 @@ terminal. A set-up has these pieces:
 | `README.md` | Installing the client |
 | `docs/content/docs/(guide)/start/quick-start.mdx` | A first host from the terminal UI |
 | `docs/content/docs/(guide)/use/server.mdx` | Running a server and connecting to it |
+| `docs/content/docs/(guide)/use/levels.mdx` | Host levels, and adding a machine by its address |
+| `docs/content/docs/(guide)/use/store.mdx` | Where a server keeps its state, and restoring it |
 | `docs/content/docs/(guide)/deploy/index.mdx` | The install methods |
 | `docs/content/docs/(guide)/deploy/provisioners.mdx` | Creating a host's machine with a provisioner |
 | `recipes/README.md` | The list of recipes |
@@ -69,7 +71,7 @@ second run would wipe the disks again, so there is no reason to repeat it.
 
 ### `incus-host`
 
-Turns an empty Ubuntu server into a host for machines. It installs Incus with QEMU, Docker,
+Turns an empty Ubuntu server into a host for machines. It installs Incus with QEMU and Docker,
 and sets up a btrfs storage pool, the bridge `incusbr0` and a `ufw` firewall. berth creates
 its hosts there as Incus guests. It needs Ubuntu 24.04 or later, run as root on
 the server, from a fresh install. It does not wipe anything.
@@ -87,9 +89,30 @@ To run a berth server on the same machine:
 sudo ./install.sh -e berth_server=true -e tailscale_auth_key=tskey-auth-EXAMPLE
 ```
 
+To also install Sysbox, so that berth's Docker provisioner can run containers
+with `runtime=sysbox` instead of privileged, add `-e sysbox=true` on the first
+run. It downloads a package and checks it against a sum in `vars.yml`.
+
 A second run changes nothing in place. It leaves a server alone that has a
 storage pool, so it never touches existing guests. Settings are in `vars.yml`,
 and the README lists them.
+
+### Add the server to berth
+
+A server from `rescue-install` and `incus-host` takes the user's public key for
+`root`. On the user's own machine, with the made-up name `big`:
+
+```bash
+berth host add big 192.0.2.20 --user root --auth ssh
+berth host install big
+```
+
+`host add` saves a reachable host. The default `--auth berth` uses berth's own
+key, which berth installs on first contact with a password or a private key that
+logs in once. `--auth ssh` uses the user's own SSH configuration and agent, and
+works with a local berth only. `host install` puts the controller alone on the
+server, for status, updates, a reboot and commands. Sessions then run as `root`.
+Such a server is never applied as a workstation.
 
 ### `berth-server`
 
@@ -140,7 +163,7 @@ user the key and the address, which `tailscale serve status` shows:
 1. On their own machine they run `berth connect https://THIS-MACHINE.YOUR-TAILNET.ts.net` and enter the key.
 2. Or they open `https://THIS-MACHINE.YOUR-TAILNET.ts.net/#setup-key=KEY` in a browser.
 
-The key ends when they choose Done.
+The key ends when they choose Done, or when `berth connect` has saved the token.
 
 **Return the setup key and the address to the user. Never read, store or print
 the permanent token in `serve.token`.**

@@ -33,7 +33,7 @@ The software berth puts on a host is called *devbox*. The name appears in paths 
 | Term | Meaning |
 | --- | --- |
 | Host | A laptop, server, VM or container that berth sets up and manages |
-| Profile | The JSON file that describes one host, from what to install to how it is reached. See [Profile](/docs/reference/profile) |
+| Profile | The JSON document that describes one host, from what to install to how it is reached. berth keeps it in its store. See [Profile](/docs/reference/profile) |
 | Operator | Your account on the host, `ops` by default, for SSH and Cockpit |
 | Agent | The account the coding agents work in, `agent` by default. The virtual desktop runs as this account. Its sudo rights are its [privileges](/docs/use/accounts) |
 | Task | Something a host can do, such as Status or a sign-in, run from its overview or with `berth run HOST TASK`. Plugins add tasks |
@@ -41,9 +41,9 @@ The software berth puts on a host is called *devbox*. The name appears in paths 
 
 ## Connecting to a host
 
-berth connects to a host by running `ssh HOST sudo -n berthd connect` and talking HTTP to berthd over that connection. Several requests share one SSH connection. A profile can name another command instead in `builder.link`, which is how a container is reached:
+berth connects to a host by running `ssh HOST sudo -n berthd connect` and talking HTTP to berthd over that connection. Several requests share one SSH connection. A profile can name another command instead in `access.link`, which is how a container is reached:
 
-```json title="~/.config/berth/hosts/NAME.json"
+```json title="In the host's profile"
 { "builder": { "link": ["docker", "exec", "-i", "CONTAINER", "berthd", "connect"] } }
 ```
 

@@ -17,6 +17,7 @@ exceptions:
   - Docker
   - QEMU
   - Ubuntu
+  - Windows
   - Nexus
   - Vale
   - Fumadocs

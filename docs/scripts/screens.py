@@ -158,8 +158,6 @@ def make_demo(root: Path) -> dict:
                                 "Host build-vm\n  HostName 192.0.2.40\n  User ops\n")
     key = (ssh / "id_ed25519.pub").read_text().strip()
 
-    hosts = home / ".config/berth/hosts"
-    hosts.mkdir(parents=True)
     # The fake hash stands in for what F5 or `mkpasswd -m sha-512` would store.
     fake_hash = "$6$demo$" + "x" * 86
     features = ["claude/cli", "codex/cli", "t3/server", "github/cli", "backup/restic"]
@@ -167,9 +165,10 @@ def make_demo(root: Path) -> dict:
         "studio", profile="laptop", operator_ssh_public_keys=[key], operator_password_hash=fake_hash,
         keyboard="us",
         ansible_vars={"devbox_plugin_features": features},
-        builder={"ssh_host": "100.64.0.12", "ssh_user": "ops", "ask_become_pass": False,
-                 # The demo host is the container; a real profile reaches berthd over SSH.
-                 "link": ["docker", "exec", "-i", CONTAINER, "berthd", "connect"]},
+        builder={},
+        access={"address": "100.64.0.12", "user": "ops", "sudo": "none",
+                # The demo host is the container; a real profile reaches berthd over SSH.
+                "link": ["docker", "exec", "-i", CONTAINER, "berthd", "connect"]},
     )
     cloud = profile(
         "cloud-1", profile="cloud", operator_ssh_public_keys=[key], keyboard="us",
@@ -179,15 +178,12 @@ def make_demo(root: Path) -> dict:
     laptop = profile(
         "garage-laptop", profile="laptop", operator_ssh_public_keys=[key], keyboard="us",
         ansible_vars={"devbox_plugin_features": features[:4]},
-        builder={"ssh_host": "192.0.2.31", "ssh_user": "ops"},
+        builder={},
+        access={"address": "192.0.2.31", "user": "ops"},
     )
     for host in (studio, cloud, laptop):
-        (hosts / f"{host['hostname']}.json").write_text(json.dumps(host, indent=2) + "\n")
-    settings = {
-        "default_host": "studio",
-        "registries": {},
-    }
-    (home / ".config/berth/config.json").write_text(json.dumps(settings, indent=2) + "\n")
+        run(env, "profile", host["hostname"], "--set", "-", stdin=json.dumps(host, indent=2) + "\n")
+    run(env, "config", "default_host", "studio")
     # Registries and a secret, through the commands; nothing is contacted.
     run(env, "registry", "add", "nexus", "nexus", "https://nexus.example.com", "ci-user")
     run(env, "registry", "repo", "nexus", "npm", "npm-group")

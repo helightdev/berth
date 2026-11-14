@@ -2,8 +2,10 @@
 """Virtual machines and containers on an Incus server, through its REST API.
 
 berth runs this as `provision VERB` with one JSON request on standard input and
-reads one JSON answer from standard output. Progress and errors go to standard
-error. Only the standard library is used, as berth needs nothing else where it runs.
+reads one JSON answer from standard output, as version 2 of its provisioner
+protocol says. Progress and errors go to standard error; `logs` writes the
+instance's console log on standard output instead. Only the standard library is
+used, as berth needs nothing else where it runs.
 """
 import hashlib
 import http.client
@@ -23,10 +25,13 @@ BOOTSTRAP = '/opt/devbox-bootstrap'
 ARCHIVE = f'{BOOTSTRAP}/release.tar.gz'
 TYPES = {'vm': 'virtual-machine', 'container': 'container'}
 CLOUD_INIT_LOG = '/var/log/cloud-init-output.log'
-# How many of the latest lines `log` answers with.
+# How many of the latest lines `logs` gives when the request does not say.
 LOG_LINES = 100
 # Incus names are host names: letters, digits and hyphens, at most 63 characters.
 NAME_LIMIT = 63
+PROTOCOL = 2
+# Rows of a listing an action answers with, at most.
+ROWS = 60
 
 
 class Failure(Exception):
@@ -183,6 +188,7 @@ class Incus:
             raise IncusError(status, data.get('error') or f'HTTP {status}')
         if (data.get('metadata') or {}).get('auth') != 'trusted':
             raise self.untrusted()
+        self.about = data.get('metadata') or {}
 
     # Instances.
 
@@ -386,26 +392,155 @@ def power(action):
     return verb
 
 
-def log(incus, request, arguments):
-    """The latest lines of the console, or of cloud-init's output when the console has none."""
+def listed(incus, request, arguments):
+    if (request.get('kind') or 'machine') != 'machine':
+        return {'resources': []}
+    kind = TYPES[request['provisioner']]
+    return {'resources': [
+        {'id': i['name'], 'kind': 'machine', 'name': i['config']['user.berth-host'],
+         'host': i['config']['user.berth-host'], 'state': state_of(i)}
+        for i in incus.instances()
+        if 'user.berth-host' in (i.get('config') or {}) and i.get('type', kind) == kind]}
+
+
+def names(incus, path):
+    return sorted(item.get('name') or '' for item in incus.call('GET', path, query={'recursion': 1}) or [])
+
+
+def gib(count):
+    return f'{(count or 0) / 1024 ** 3:.1f} GiB'
+
+
+def server_status(incus):
+    """The server itself, for the provisioner's own status."""
+    environment = incus.about.get('environment') or {}
+    details = [
+        {'label': 'Server', 'value': incus.server},
+        {'label': 'Incus', 'value': environment.get('server_version') or 'unknown'},
+        {'label': 'Name', 'value': environment.get('server_name') or ''},
+        {'label': 'Kernel', 'value': f'{environment.get("kernel") or "?"} {environment.get("kernel_version") or ""}'.strip()},
+        {'label': 'Storage', 'value': ', '.join(d.get('name') or '' for d in environment.get('storage_supported_drivers') or [])
+         or environment.get('storage') or ''},
+        {'label': 'Project', 'value': incus.project},
+    ]
+    values = {}
+    for argument, path in (('pool', '/1.0/storage-pools'), ('network', '/1.0/networks')):
+        try:
+            values[argument] = [name for name in names(incus, path) if name]
+        except IncusError:
+            pass
+    return {'state': 'ready',
+            'message': f'Incus {environment.get("server_version") or ""} answers at {incus.server} and trusts berth'
+                       .replace('  ', ' '),
+            'details': details, 'values': values}
+
+
+def change(incus, request, arguments):
+    """New limits for an instance: its CPUs and memory, and a larger root disk."""
+    name = request['id']
+    instance = incus.instance(name)
+    if not instance:
+        raise Failure(f'{name} is no longer on {incus.server}.')
+    if 'user.berth-host' not in (instance.get('config') or {}):
+        raise Failure(f'{name} on {incus.server} was not made by berth, so berth leaves it alone.')
+    patch = {'config': {}}
+    if arguments.get('cpus'):
+        patch['config']['limits.cpu'] = arguments['cpus']
+    if arguments.get('memory'):
+        patch['config']['limits.memory'] = arguments['memory']
+    root = ((instance.get('devices') or {}).get('root') or {})
+    if arguments.get('disk') and root and root.get('size') != arguments['disk']:
+        patch['devices'] = {**(instance.get('devices') or {}), 'root': {**root, 'size': arguments['disk']}}
+    if patch['config'] or 'devices' in patch:
+        say(f'Changing {name}…')
+        incus.call('PATCH', f'/1.0/instances/{name}', patch)
+    return {'state': state_of(incus.instance(name))}
+
+
+def logs(incus, request, arguments):
+    """The instance's console log, its last lines, or cloud-init's output when the console has none.
+    Incus keeps the console log as a whole; following it is not offered."""
     name = request['id']
     if not incus.instance(name):
-        return {'lines': []}
+        raise Failure(f'{name} is no longer on {incus.server}.')
     text = incus.text(f'/1.0/instances/{name}/console', {'type': 'log'})
     if not text.strip():
         # A VM's files are out of reach until its agent runs, which answers as no file.
         text = incus.text(f'/1.0/instances/{name}/files', {'path': CLOUD_INIT_LOG})
-    return {'lines': [line for line in text.splitlines() if line.strip()][-LOG_LINES:]}
+    tail = int(request.get('tail') or LOG_LINES)
+    lines = text.splitlines()[-tail:] if tail > 0 else text.splitlines()
+    sys.stdout.write(''.join(line + '\n' for line in lines))
+    if request.get('follow'):
+        say('Incus keeps the console log as a whole; this is all of it for now.')
+    return None
 
 
-def listed(incus, request, arguments):
-    return {'instances': [
-        {'id': i['name'], 'host': i['config']['user.berth-host'], 'state': state_of(i)}
-        for i in incus.instances() if 'user.berth-host' in (i.get('config') or {})]}
+def counted(count, word):
+    return f'{count} {word}' + ('' if count == 1 else 's')
 
 
-VERBS = {'create': create, 'status': status, 'destroy': destroy,
-         'start': power('start'), 'stop': power('stop'), 'list': listed, 'log': log}
+def act_server(incus, arguments):
+    status = server_status(incus)
+    return {'message': status['message'], 'details': status['details']}
+
+
+def act_pools(incus, arguments):
+    rows = []
+    for pool in incus.call('GET', '/1.0/storage-pools', query={'recursion': 1}) or []:
+        name = pool.get('name') or ''
+        try:
+            space = (incus.call('GET', f'/1.0/storage-pools/{name}/resources') or {}).get('space') or {}
+            used = f'{gib(space.get("used"))} of {gib(space.get("total"))} used'
+        except IncusError:
+            used = 'its use is not known'
+        rows.append({'label': name, 'value': f'{pool.get("driver") or "?"} · {used}'})
+    return {'message': f'{counted(len(rows), "storage pool")} on {incus.server}', 'details': rows[:ROWS]}
+
+
+def act_images(incus, arguments):
+    images = incus.call('GET', '/1.0/images', query={'recursion': 1}) or []
+    rows = []
+    for image in images[:ROWS]:
+        aliases = ', '.join(alias.get('name') or '' for alias in image.get('aliases') or [])
+        described = (image.get('properties') or {}).get('description') or ''
+        rows.append({'label': aliases or described or (image.get('fingerprint') or '')[:12],
+                     'value': f'{image.get("type") or "?"} · {gib(image.get("size"))}'
+                              + (' · cached' if image.get('cached') else '')})
+    message = f'{counted(len(images), "image")} in the project {incus.project} on {incus.server}'
+    if len(images) > ROWS:
+        message += f', the first {ROWS} shown'
+    return {'message': message, 'details': rows}
+
+
+def act_networks(incus, arguments):
+    rows = [{'label': network.get('name') or '',
+             'value': f'{network.get("type") or "?"}' + (' · managed by Incus' if network.get('managed') else '')}
+            for network in incus.call('GET', '/1.0/networks', query={'recursion': 1}) or []]
+    return {'message': f'{counted(len(rows), "network")} on {incus.server}', 'details': rows[:ROWS]}
+
+
+ACTIONS = {'server': act_server, 'pools': act_pools, 'images': act_images, 'networks': act_networks}
+
+
+def act(incus, request, arguments):
+    action = request.get('action') or {}
+    name = action.get('name') or ''
+    if name not in ACTIONS:
+        raise Failure(f'There is no action {name!r}; there are {", ".join(ACTIONS)}.')
+    return ACTIONS[name](incus, action.get('arguments') or {})
+
+
+def status_of(incus, request, arguments):
+    if not request.get('id'):
+        return server_status(incus)
+    return status(incus, request, arguments)
+
+
+VERBS = {'create': create, 'status': status_of, 'destroy': destroy,
+         'start': power('start'), 'stop': power('stop'), 'list': listed,
+         'change': change, 'logs': logs, 'act': act}
+# The verbs that are about one instance, and need its id.
+ABOUT_ONE = ('destroy', 'start', 'stop', 'change', 'logs')
 
 
 def main():
@@ -422,9 +557,12 @@ def main():
             raise Failure('The request on standard input is not JSON.') from None
         if not isinstance(request, dict):
             raise Failure('The request on standard input is not a JSON object.')
+        if request.get('version') != PROTOCOL:
+            raise Failure(f'This plugin speaks version {PROTOCOL} of the provisioner protocol, '
+                          f'not {request.get("version")!r}: update berth.')
         if request.get('provisioner') not in TYPES:
             raise Failure(f'This plugin provides {", ".join(TYPES)}, not {request.get("provisioner")!r}.')
-        if verb not in ('create', 'list') and not request.get('id'):
+        if verb in ABOUT_ONE and not request.get('id'):
             raise Failure(f'{verb} needs the instance id.')
         arguments = request.get('arguments') or {}
         with tempfile.TemporaryDirectory(prefix='berth-incus-') as scratch:
@@ -434,7 +572,8 @@ def main():
     except Failure as exc:
         say(str(exc))
         return 1
-    print(json.dumps(answer))
+    if answer is not None:
+        print(json.dumps(answer))
     return 0
 
 

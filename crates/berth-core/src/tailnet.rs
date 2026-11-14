@@ -68,7 +68,7 @@ impl Control {
         let headscale = server_address(&setting("tailnet_login_server"));
         let mut tags = tags(&setting("tailnet_tags"));
         let mut token = Store::new(paths)
-            .secret(TAILNET_API_KEY)
+            .and_then(|store| store.secret(TAILNET_API_KEY))
             .ok()
             .flatten()
             .filter(|token| !token.is_empty() && token != crate::server::KEPT);
@@ -333,6 +333,14 @@ pub fn generate(paths: &Paths, config: &Value, host: &str) -> Result<(String, St
     Ok((key, note))
 }
 
+/// The key `berth tailnet-key WHAT` prints. An apply runs that on this
+/// machine for a host that is not on the tailnet yet, with the name or the
+/// path [`apply_vars`] was given, so it finds the host in the same place.
+pub fn key_for(paths: &Paths, what: &str) -> Result<String> {
+    let host = crate::host::Host::load(paths, what)?;
+    create_key(paths, &host.config, &host.place.title(), APPLY_LIFETIME)
+}
+
 /// The profile as a seed carries it: the login server filled in, and for a
 /// host that joins automatically a new key. Keys are created only here, when
 /// a seed is written, and live for [`SEED_LIFETIME`].
@@ -595,6 +603,7 @@ mod tests {
             "{said}"
         );
         Store::new(&paths)
+            .unwrap()
             .set_secret(TAILNET_API_KEY, Some("hskey-api-x"))
             .unwrap();
         assert!(Control::configured(&paths).can_create());
@@ -655,6 +664,7 @@ mod tests {
         paths.set("tailnet_login_server", &url).unwrap();
         paths.set("tailnet_user", "5").unwrap();
         Store::new(&paths)
+            .unwrap()
             .set_secret(TAILNET_API_KEY, Some("hskey-api-x"))
             .unwrap();
         let config = json!({"hostname": "studio", "tailscale_auto_key": true});
@@ -672,5 +682,47 @@ mod tests {
             &file.as_file().metadata().unwrap().permissions(),
         );
         assert_eq!(mode & 0o077, 0);
+    }
+
+    #[test]
+    fn the_key_command_of_an_apply_finds_its_host_by_name_and_by_path() {
+        let (home, paths) = paths();
+        let (url, seen) = fake(vec![
+            (200, json!({"preAuthKey": {"key": "hskey-auth-named"}})),
+            (200, json!({"preAuthKey": {"key": "hskey-auth-file"}})),
+        ]);
+        paths.set("tailnet_login_server", &url).unwrap();
+        paths.set("tailnet_user", "5").unwrap();
+        Store::new(&paths)
+            .unwrap()
+            .set_secret(TAILNET_API_KEY, Some("hskey-api-x"))
+            .unwrap();
+        let config = json!({"hostname": "studio", "tailscale_auto_key": true});
+        let stored = crate::profiles::Place::own("studio").unwrap();
+        let file = crate::profiles::Place::File(home.path().join("attic.json"));
+        let mut keys = vec![];
+        for place in [&stored, &file] {
+            place.save(&paths, &config).unwrap();
+            let vars = apply_vars(&paths, &config, &place.argument(), Path::new("/b"));
+            let what = vars["devbox_tailscale_key_command"][2].as_str().unwrap();
+            // The child of the apply has the same settings, so it looks in the same place.
+            assert_eq!(
+                &crate::profiles::Place::resolve(&paths, what).unwrap(),
+                place
+            );
+            keys.push(key_for(&paths, what).unwrap());
+            assert!(seen.recv().unwrap().line.starts_with("POST"));
+        }
+        assert_eq!(keys, ["hskey-auth-named", "hskey-auth-file"]);
+        // A berth that uses a berth server has none of its own hosts by name;
+        // berth serve refuses to start like that, so its children never do.
+        paths.set("server", "http://192.0.2.7:7777").unwrap();
+        let said = key_for(&paths, "studio").unwrap_err().to_string();
+        assert_eq!(said, "No host studio");
+        let by_path = file.argument();
+        assert_eq!(
+            crate::profiles::Place::resolve(&paths, &by_path).unwrap(),
+            file
+        );
     }
 }
