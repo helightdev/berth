@@ -68,6 +68,9 @@ pub struct Remote {
     password: Option<String>,
     /// Why there is no link.
     pub problem: Option<String>,
+    /// The saved profile it was taken up from, by which a change to the store
+    /// from another process is noticed.
+    profile: Option<Value>,
     seen: Mutex<Option<(Instant, std::result::Result<Version, String>)>>,
 }
 
@@ -79,6 +82,7 @@ impl Remote {
             link: Some(Link::new(spec)),
             password: None,
             problem: None,
+            profile: None,
             seen: Mutex::new(None),
         }
     }
@@ -196,10 +200,31 @@ impl Serve {
     }
 
     /// Take up saved hosts that are not known yet: the server's own, whatever
-    /// its settings say. Only at the start may a password be asked for on the
-    /// terminal.
+    /// its settings say. A host whose profile went or changed meanwhile, as by
+    /// a berth command beside the server, is dropped or taken up again. Only at
+    /// the start may a password be asked for on the terminal.
     pub fn refresh(self: &Arc<Self>, start: bool) {
-        let saved = berth_core::profiles::list(&self.paths, store::OWN).unwrap_or_default();
+        // A store that cannot be read says nothing of what was removed.
+        let Ok(saved) = berth_core::profiles::list(&self.paths, store::OWN) else {
+            return;
+        };
+        let stale: Vec<String> = {
+            let hosts = self.hosts.read().unwrap();
+            hosts
+                .values()
+                .filter(|remote| {
+                    remote.profile.as_ref().is_some_and(|taken| {
+                        !saved
+                            .iter()
+                            .any(|(name, config)| *name == remote.name && config == taken)
+                    })
+                })
+                .map(|remote| remote.name.clone())
+                .collect()
+        };
+        for name in stale {
+            self.forget(&name);
+        }
         for (name, config) in saved {
             if self.host(&name).is_some() {
                 continue;
@@ -254,11 +279,13 @@ impl Serve {
                     link: None,
                     password: None,
                     problem: Some(problem),
+                    profile: None,
                     seen: Mutex::new(None),
                 },
             };
             self.add(Remote {
                 password: password.ok().flatten(),
+                profile: Some(host.config.clone()),
                 ..remote
             });
         }

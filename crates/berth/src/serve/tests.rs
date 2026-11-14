@@ -3533,3 +3533,97 @@ async fn a_host_whose_controller_does_not_answer_says_why_and_keeps_berths_own_a
         "{said}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_removed_or_changed_in_the_store_by_another_process_is_not_listed_as_it_was() {
+    let served = served().await;
+    let mut client = served.client().await;
+    let client = &mut client;
+    let place = berth_core::profiles::Place::own("studio").unwrap();
+    let paths = &served.state.paths;
+    // A host whose machine is still being made has no address.
+    place.save(paths, &json!({"builder": {}})).unwrap();
+    let (_, hosts) = send(client, "GET", "/v1/hosts", Value::Null).await;
+    assert_eq!(hosts[0]["address"], "", "{hosts}");
+
+    // What `berth` beside the server saves is what the server lists next.
+    let link = json!(["sh", "-c", "exit 255"]);
+    place
+        .save(
+            paths,
+            &json!({"builder": {}, "access": {"address": "192.0.2.40", "link": link}}),
+        )
+        .unwrap();
+    let (_, hosts) = send(client, "GET", "/v1/hosts", Value::Null).await;
+    assert_eq!(hosts[0]["address"], "192.0.2.40", "{hosts}");
+
+    // `berth remove` there takes it off the list, without a restart.
+    berth_core::profiles::remove(paths, &place).unwrap();
+    let (status, hosts) = send(client, "GET", "/v1/hosts", Value::Null).await;
+    assert_eq!((status, hosts), (200, json!([])));
+    let (status, _) = send(client, "GET", "/v1/hosts/studio", Value::Null).await;
+    assert_eq!(status, 404);
+}
+
+// Not on a runtime of the test's: the screen waits for the server on one of its own.
+#[test]
+fn the_screen_keeps_the_address_a_server_gave_a_new_machine_and_opens_its_overview() {
+    use crate::fields::Step;
+    use berth_core::profiles::Place;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let served = runtime.block_on(served());
+    let own = Place::own("studio").unwrap();
+    let profile = json!({"hostname": "studio", "builder": {}, "operator_username": "ops"});
+    own.save(&served.state.paths, &profile).unwrap();
+
+    let elsewhere = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        config_dir: elsewhere.path().join("config"),
+        data_dir: elsewhere.path().join("data"),
+    };
+    let url = format!("unix:{}", served.socket.display());
+    paths.set("server", &url).unwrap();
+    let server = berth_core::server::Server::configured(&paths).unwrap();
+    server.mirror(&paths).unwrap();
+    let place = Place::resolve(&paths, "studio").unwrap();
+    let stored = place.load(&paths).unwrap().unwrap();
+    let mut app = crate::app::App::new(
+        paths.clone(),
+        place.clone(),
+        crate::app::parse_config(stored.to_string().as_bytes()).unwrap(),
+    );
+    app.set_step(Step::Install);
+
+    // The server made the machine in a job of its own and gave its profile the address.
+    let mut made = own.load(&served.state.paths).unwrap().unwrap();
+    made["access"] = json!({"address": "192.0.2.40", "user": "ops", "auth": "berth"});
+    made["profile"] = json!("cloud");
+    own.save(&served.state.paths, &made).unwrap();
+    let stage = crate::job::Stage {
+        title: "Create machine".into(),
+        command: std::process::Command::new("true"),
+        source: None,
+        input: None,
+    };
+    app.job = Some(crate::job::Job::start(vec![stage], "", vec![]).unwrap());
+    app.machine_job = true;
+    for _ in 0..500 {
+        app.job.as_mut().unwrap().tick();
+        if !app.job.as_ref().unwrap().running() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    app.close_job();
+    assert_eq!(app.step, Step::Manage, "{}", app.status);
+    assert_eq!(app.config["access"]["address"], "192.0.2.40");
+    assert!(!app.unsaved());
+
+    // What the screen saves next, as before it starts the machine, keeps the address.
+    app.save().unwrap();
+    let kept = own.load(&served.state.paths).unwrap().unwrap();
+    assert_eq!(kept["access"]["address"], "192.0.2.40", "{kept}");
+}

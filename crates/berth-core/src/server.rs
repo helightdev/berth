@@ -304,6 +304,21 @@ impl Server {
         Ok(())
     }
 
+    /// Keep one host's profile as the server has it now, for whoever may set
+    /// the server up: a job there, such as creating the host's machine, may
+    /// have changed it since the last mirror.
+    pub fn mirror_host(&self, paths: &Paths, name: &str) -> Result<()> {
+        let mut profile = self.call("hosts.profile", json!({"name": name}), None)?;
+        if !profile.is_object() || !safe(name) {
+            return Ok(());
+        }
+        profile["builder"]["served"] = json!(self.url);
+        crate::store::shared(paths)?
+            .write_json(kind::PROFILE, &self.scope(), name, &profile)
+            .map_err(transport)?;
+        Ok(())
+    }
+
     /// A row the last mirror wrote, as JSON; null when there is none.
     fn mirrored(&self, paths: &Paths, name: &str) -> Value {
         crate::store::shared(paths)

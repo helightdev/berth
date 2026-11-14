@@ -243,6 +243,9 @@ fn lift(rows: Vec<setup::Row>) -> Vec<Row> {
         .collect()
 }
 
+/// The title of the job that creates a host's machine.
+const CREATE_MACHINE: &str = "Create machine";
+
 impl App {
     pub fn new(paths: Paths, place: Place, config: Value) -> Self {
         let mut app = App {
@@ -2270,9 +2273,21 @@ impl App {
         // The machine is another one now, or none, and the command may have
         // given the profile the machine's address.
         let mut taken = None;
-        if std::mem::take(&mut self.machine_job) {
+        let machine_job = std::mem::take(&mut self.machine_job);
+        if machine_job {
             self.load_machine();
+            // A berth server ran the command and saved the profile there: without
+            // its copy, the next save from here would undo what it saved.
+            let refreshed = match self.server() {
+                Some(server) => server.mirror_host(&self.paths, &self.name()),
+                None => Ok(()),
+            };
             taken = self.take_in_command();
+            if let Err(error) = refreshed {
+                taken = Some(format!(
+                    "The berth server did not give the profile again: {error}"
+                ));
+            }
         }
         if std::mem::take(&mut self.fetching_iso) {
             if let (true, Some(path)) = (succeeded, job.lines.last()) {
@@ -2287,6 +2302,13 @@ impl App {
         };
         if let Some(said) = taken {
             self.status = format!("{} · {said}", self.status);
+        }
+        // The machine is the host now, so setting it up is over.
+        if machine_job && succeeded && job.title == CREATE_MACHINE {
+            let status = std::mem::take(&mut self.status);
+            self.set_step(Step::Manage);
+            self.reconnect_host();
+            self.status = status;
         }
     }
 
@@ -2477,7 +2499,7 @@ impl App {
                 );
                 args.push("--yes".into());
                 (
-                    "Create machine",
+                    CREATE_MACHINE,
                     args,
                     "The machine is this host now: its overview reaches it.",
                 )
