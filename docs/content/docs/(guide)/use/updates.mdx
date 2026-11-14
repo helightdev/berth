@@ -26,7 +26,9 @@ berth update --check     # is there a newer release?
 berth update             # download it, check its SHA-256 and replace this program
 ```
 
-`berth update` takes the same archive as the install script. It offers only full releases, not pre-releases such as `0.4.0-rc.1`, and moves from a pre-release to its release. A container is updated by pulling a newer image. `berthd` and `box` travel inside `berth`. A host gets the new ones when you apply its configuration. Its overview says when its tools are of another version than your berth. `BERTH_RELEASES` names a mirror of the releases page.
+`berth update` takes the same archive as the install script. It offers only full releases, not pre-releases such as `0.4.0-rc.1`, and moves from a pre-release to its release. A container is updated by pulling a newer image. `berthd` and `box` travel inside `berth`. A host gets the new ones when you apply its configuration. Its overview says when its tools are of another version than your berth.
+
+A berthd of berth 0.5 says the host's type by its older name, and berth reads it. An older berth that meets a newer berthd is out of date: update it. It refuses the profile a newer berth left on the host rather than misread it. `BERTH_RELEASES` names a mirror of the releases page.
 
 ## Hosts that are behind
 

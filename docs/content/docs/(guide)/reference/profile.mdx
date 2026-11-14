@@ -158,6 +158,19 @@ A profile of berth 0.4 kept these under `builder`:
 
  berth converts stored profiles once, and reads a profile in a file in the new layout. The file keeps the old layout until you save it. A key file that `ssh_key` named becomes a key of the key ring, and the host logs in with it. If berth cannot read the file, the host logs in with `ssh`, and berth says so. A host without a key file logs in with `ssh`, which is what it did before.
 
+## Older profiles
+
+A profile of berth 0.5 or earlier names two fields differently:
+
+| berth 0.5 | Now |
+| --- | --- |
+| `level`: `reachable` | `type`: `ssh` |
+| `level`: `controller` | `type`: `managed` |
+| `level`: `workstation` | No `type`, which means a workstation |
+| `profile` | `target` |
+
+berth converts its stored profiles once, the profiles of a berth server's hosts with them. It reads the old names wherever a profile comes from: a file such as `berth ./studio.json`, `berth profile HOST --set FILE`, and the profile a host keeps, which [`berth adopt`](/docs/use/moving) reads. A file keeps the old names until you save it. berth writes the new names only. The API of `berth serve` takes the new names only.
+
 ## Install (`builder`)
 
 How berth installs the host. These settings stay on your machine.

@@ -329,6 +329,42 @@ pub fn minimal(host_type: crate::HostType, access: &Access) -> Value {
     config
 }
 
+/// Give a profile of berth 0.5 or earlier the names fields have now:
+/// `level` (`reachable`, `controller`, `workstation`) becomes `type`
+/// (`ssh`, `managed`, a workstation left unsaid), and `profile`, what the
+/// host is installed on, becomes `target`. What a later berth wrote stays.
+/// Says whether it changed the profile.
+pub fn take_old_names(config: &mut Value) -> bool {
+    let Some(profile) = config.as_object_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    if let Some(level) = profile.remove("level") {
+        changed = true;
+        if !profile.contains_key("type") {
+            match level
+                .as_str()
+                .map(|text| (text, crate::HostType::from_level(text)))
+            {
+                Some((_, Some(crate::HostType::Workstation))) => {}
+                Some((_, Some(host_type))) => {
+                    profile.insert("type".into(), json!(host_type.name()));
+                }
+                // One berth never wrote is kept, so that problems() names it.
+                _ => {
+                    profile.insert("type".into(), level);
+                }
+            }
+        }
+    }
+    if profile.get("profile").is_some_and(Value::is_string) {
+        let target = profile.remove("profile").unwrap_or_default();
+        changed = true;
+        profile.entry("target").or_insert(target);
+    }
+    changed
+}
+
 /// What is wrong with a profile as a whole, in sentences: its type, its
 /// `access`, and for a workstation the `builder` its set-up keeps. A host
 /// of another type needs only to be reachable.
@@ -683,6 +719,36 @@ mod tests {
         let mut changed = ssh.clone();
         set_host_type(&mut changed, HostType::Workstation);
         assert!(changed.get("type").is_none());
+    }
+
+    #[test]
+    fn a_profile_of_berth_05_takes_the_names_of_now() {
+        for (level, written) in [
+            ("reachable", json!("ssh")),
+            ("controller", json!("managed")),
+            ("workstation", Value::Null),
+            ("server", json!("server")),
+        ] {
+            let mut old =
+                json!({"level": level, "profile": "cloud", "access": {"address": "192.0.2.4"}});
+            assert!(take_old_names(&mut old), "{level}");
+            assert_eq!(old["type"], written, "{level}");
+            assert_eq!(old["target"], "cloud");
+            assert!(old.get("level").is_none() && old.get("profile").is_none());
+            assert!(!take_old_names(&mut old), "{level}");
+        }
+        // What a later berth wrote wins, and the old field goes.
+        let mut both = json!({"type": "managed", "level": "reachable", "target": "laptop", "profile": "cloud"});
+        assert!(take_old_names(&mut both));
+        assert_eq!(both, json!({"type": "managed", "target": "laptop"}));
+        // A profile of now is left as it is.
+        let mut now = json!({"type": "ssh", "target": "cloud", "builder": {}});
+        assert!(!take_old_names(&mut now));
+        assert_eq!(
+            now,
+            json!({"type": "ssh", "target": "cloud", "builder": {}})
+        );
+        assert!(!take_old_names(&mut json!([])));
     }
 
     #[test]

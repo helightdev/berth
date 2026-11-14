@@ -1958,6 +1958,21 @@ mod tests {
         let place = Place::own("studio").unwrap();
         let kept = place.load(&paths).unwrap().unwrap();
         assert_eq!(kept["access"]["address"], "192.0.2.20");
+        // One exported by berth 0.5 is saved with the names of now.
+        let store = berth_core::store::shared(&paths).unwrap();
+        let raw = |store: &berth_core::store::Store| -> Value {
+            serde_json::from_slice(&store.read("profile", "", "dock").unwrap().unwrap()).unwrap()
+        };
+        std::fs::write(
+            &file,
+            r#"{"level": "controller", "profile": "cloud", "access": {"address": "192.0.2.21"}}"#,
+        )
+        .unwrap();
+        set_profile(&paths, "dock", file.to_str().unwrap()).unwrap();
+        assert_eq!(
+            raw(&store),
+            json!({"type": "managed", "target": "cloud", "access": {"address": "192.0.2.21"}})
+        );
         // What is not a profile is refused, and the one kept stays.
         std::fs::write(&file, r#"{"builder": []}"#).unwrap();
         assert!(set_profile(&paths, "studio", file.to_str().unwrap()).is_err());

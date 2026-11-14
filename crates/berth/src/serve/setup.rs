@@ -87,8 +87,8 @@ pub async fn save_profile(
     if let Some(builder) = profile["builder"].as_object_mut() {
         builder.remove("ssh_key");
     }
-    berth_core::import::convert_profile(&state.paths, &name, &mut profile);
-    // A workstation's has its set-up's part; a host below that, only how it is reached.
+    berth_core::import::convert_layout(&state.paths, &name, &mut profile);
+    // A workstation's has its set-up's part; a host of another type, only how it is reached.
     let problems = berth_api::profile::problems(&profile);
     if !problems.is_empty() {
         return Err(bad(problems.join("; ")));

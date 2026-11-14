@@ -24,7 +24,7 @@ The file contains the profile as berth stores it, with a few fields left out:
 | `wifi` | Yes | The USB installer wrote the same network into the host's network settings |
 | The machine a provisioner made | Yes | Its record, so it is still a [resource](/docs/deploy/resources) of the host. Its token is a label on the machine and does not grant access |
 
-The file also says its format, the version of the berth that wrote it, the time, and the host's name there. A file of berth 0.4.1 has format 1 and the profile layout of then. berth converts it when it adopts the host.
+The file also says its format, the version of the berth that wrote it, the time, and the host's name there. A file of berth 0.4.1 has format 1 and the profile layout of then. Format 2, of berth 0.5, has the [older names](/docs/reference/profile#older-profiles) `level` and `profile`. berth converts both when it adopts the host, and writes format 3. A berth that knows only format 2 refuses a file of format 3 and asks to be updated.
 
 berthd serves the same file to an administrator as `GET /v1/applied/profile`. Through a berth server that is `GET /v1/hosts/NAME/applied/profile`.
 

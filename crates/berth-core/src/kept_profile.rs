@@ -16,10 +16,12 @@ use std::{io::Write, path::PathBuf, process::Stdio};
 /// Where the role writes it, readable by root only.
 pub const PATH: &str = "/etc/berth/profile.json";
 
-/// The format of the document: 2 has the profile in the layout with
-/// `access`. Format 1, of berth 0.4.1, had the layout before it; it is
-/// converted when it is read. A berth refuses one newer than it knows.
-pub const FORMAT: u64 = 2;
+/// The format of the document: 3 has the profile with the fields `type`
+/// and `target`. Format 2 named them `level` and `profile`, and format 1, of
+/// berth 0.4.1, had the layout before `access`; both are converted when they
+/// are read. A berth refuses one newer than it knows, so a berth of format 2
+/// asks to be updated rather than read `type` as a workstation.
+pub const FORMAT: u64 = 3;
 
 /// What a profile's `builder` held of how one berth reached the host, or of
 /// that berth's own machine, in the layout before `access`, and what still
@@ -243,8 +245,8 @@ pub fn adopted(paths: &Paths, title: &str, kept: &Value, access: &Access) -> Res
     if !profile["builder"].is_object() {
         profile["builder"] = json!({});
     }
-    // berth 0.4.1 kept a profile of the layout before `access`; what is left
-    // of that becomes the new layout, and then the adopting berth's way in.
+    // An older berth kept a profile of older names or of the layout before
+    // `access`; it takes those of now, and then the adopting berth's way in.
     crate::import::convert_profile(paths, title, &mut profile);
     profile = stored(&profile);
     if !profile["builder"].is_object() {
@@ -571,7 +573,7 @@ mod tests {
         let kept = json!({
             "format": 1, "berth": "0.4.1", "host": "studio", "written": "2026-11-13T10:00:00Z",
             "profile": {
-                "hostname": "studio", "target": "cloud", "operator_username": "ops",
+                "hostname": "studio", "profile": "cloud", "operator_username": "ops",
                 "operator_ssh_public_keys": ["ssh-ed25519 AAAA user"],
                 "builder": {"ask_become_pass": true, "ask_pass": false, "shipped_plugins": true},
             },
@@ -580,6 +582,8 @@ mod tests {
         });
         let back = adopted(&paths, "studio", &kept, &reached()).unwrap();
         assert_eq!(back.profile["builder"], json!({"shipped_plugins": true}));
+        assert_eq!(back.profile["target"], "cloud");
+        assert!(back.profile.get("profile").is_none());
         assert_eq!(back.profile["access"]["address"], "192.0.2.10");
         assert_eq!(back.profile["access"]["auth"], "berth");
         // sudo is how the adopting berth found it, not what the old switch said.
@@ -595,6 +599,30 @@ mod tests {
         );
         assert!(resource::valid_id(&machine.id));
         assert_eq!(machine.arguments["server"], "https://192.0.2.20:8443");
+    }
+
+    #[test]
+    fn a_profile_kept_by_berth_05_takes_the_names_of_now() {
+        let (_home, paths) = scratch();
+        let old = |level: &str| {
+            json!({
+                "format": 2, "berth": "0.5.2", "host": "studio", "written": "2026-11-13T10:00:00Z",
+                "profile": {"hostname": "studio", "profile": "laptop", "level": level, "builder": {}},
+            })
+        };
+        let back = adopted(&paths, "studio", &old("workstation"), &reached()).unwrap();
+        assert_eq!(back.profile["target"], "laptop");
+        assert!(back.profile.get("profile").is_none() && back.profile.get("type").is_none());
+        assert!(back.profile.get("level").is_none());
+        let back = adopted(&paths, "studio", &old("controller"), &reached()).unwrap();
+        assert_eq!(back.profile["type"], "managed");
+        // Kept again, it is written in the format of now.
+        let again = document("studio", &back.profile, None);
+        assert_eq!(again["format"], 3);
+        assert_eq!(
+            (&again["profile"]["type"], &again["profile"]["target"]),
+            (&json!("managed"), &json!("laptop"))
+        );
     }
 
     #[test]

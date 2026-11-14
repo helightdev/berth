@@ -135,14 +135,21 @@ impl Place {
     pub fn load(&self, paths: &Paths) -> Result<Option<Value>> {
         match self {
             Place::Stored { scope, name } => {
-                Ok(store::shared(paths)?.read_json(kind::PROFILE, scope, name)?)
+                let mut profile: Option<Value> =
+                    store::shared(paths)?.read_json(kind::PROFILE, scope, name)?;
+                // A row an older berth or berth server wrote after the store's
+                // names were converted is read with the names of now.
+                if let Some(profile) = &mut profile {
+                    berth_api::profile::take_old_names(profile);
+                }
+                Ok(profile)
             }
             Place::File(path) => match fs::read(path) {
                 Ok(data) => {
                     let mut profile: Value = serde_json::from_slice(&data)
                         .map_err(|error| format!("{}: {error}", path.display()))?;
-                    // A profile of berth 0.4 is read in the access layout; the
-                    // file keeps the old one until the user saves.
+                    // A profile of an older berth is read in the layout of now;
+                    // the file keeps the old one until the user saves.
                     crate::import::convert_profile(paths, &self.title(), &mut profile);
                     Ok(Some(profile))
                 }
@@ -184,7 +191,11 @@ pub fn list(paths: &Paths, scope: &str) -> Result<Vec<(String, Value)>> {
     let entries = store::shared(paths)?.entries(kind::PROFILE, scope)?;
     Ok(entries
         .into_iter()
-        .filter_map(|(name, value)| Some((name, serde_json::from_slice(&value).ok()?)))
+        .filter_map(|(name, value)| {
+            let mut profile = serde_json::from_slice(&value).ok()?;
+            berth_api::profile::take_old_names(&mut profile);
+            Some((name, profile))
+        })
         .collect())
 }
 

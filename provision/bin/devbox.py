@@ -144,6 +144,22 @@ def release_delivered():
     return os.environ.get('BERTH_RELEASE_DELIVERED') == '1'
 
 
+def take_old_names(c):
+    """A profile of berth 0.5 or earlier with the names its fields have now:
+    `type` for `level`, whose values were reachable, controller and
+    workstation, and `target` for `profile`. What a later berth wrote stays."""
+    c = dict(c)
+    level = c.pop('level', None)
+    if level is not None and 'type' not in c:
+        host_type = {'reachable': 'ssh', 'controller': 'managed', 'workstation': None}.get(level, level)
+        if host_type is not None:
+            c['type'] = host_type
+    if isinstance(c.get('profile'), str):
+        c.setdefault('target', c.pop('profile'))
+        c.pop('profile', None)
+    return c
+
+
 def retire_qemu(c):
     """A profile of the qemu target there once was, as the cloud one it is now.
     That target let SSH in only from the QEMU host when no recovery network was
@@ -163,7 +179,7 @@ def checked_config(path, kind):
     c = json.loads(Path(path).read_text())
     if not isinstance(c, dict):
         raise ValueError('Configuration must be a JSON object')
-    c = retire_qemu(c)
+    c = retire_qemu(take_old_names(c))
     if not HOSTNAME.fullmatch(text(c, 'hostname')):
         raise ValueError('Invalid hostname: use lowercase letters, digits and hyphens, starting with a letter')
     if text(c, 'target') not in TARGETS:

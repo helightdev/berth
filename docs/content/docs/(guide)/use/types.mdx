@@ -14,6 +14,8 @@ berth does not have to set a machine up to work with it. A host is anything bert
 
 The type is part of the host's [profile](/docs/reference/profile#type), as `type`. A profile that doesn't say is a workstation, so older profiles mean what they always did. What the host has right now is asked of it. The overview and the Hosts tab show both when they differ, such as for a controller installed by hand.
 
+A profile of berth 0.5 or earlier calls the type `level`, with the values `reachable`, `controller` and `workstation`. berth reads it with the names of now ([Older profiles](/docs/reference/profile#older-profiles)).
+
 ## Capabilities
 
 | Capability | `ssh` | `managed` | `workstation` |

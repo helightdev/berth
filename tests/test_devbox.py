@@ -217,6 +217,18 @@ class RenderTests(unittest.TestCase):
                 self.assertEqual(builder.retire_qemu({'target':kept}),{'target':kept})
             c['target']='desktop'; path.write_text(json.dumps(c))
             with self.assertRaisesRegex(ValueError,'laptop or cloud'): builder.checked_config(path,'cloud')
+    def test_a_profile_of_berth_05_is_read_with_the_names_of_now(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'host.json'
+            c=config(); del c['target']; c['profile']='laptop'; c['level']='workstation'
+            path.write_text(json.dumps(c))
+            checked=builder.checked_config(path,'cloud')
+            self.assertEqual(checked['target'],'laptop')
+            self.assertNotIn('profile',checked); self.assertNotIn('level',checked); self.assertNotIn('type',checked)
+            self.assertEqual(builder.deployment(checked,'a'*64)['target'],'laptop')
+        self.assertEqual(builder.take_old_names({'level':'controller','profile':'cloud'}),{'type':'managed','target':'cloud'})
+        self.assertEqual(builder.take_old_names({'type':'ssh','level':'controller','target':'laptop','profile':'cloud'}),
+                         {'type':'ssh','target':'laptop'})
     def test_bootstrap_hands_a_qemu_seed_to_the_role_as_cloud(self):
         script=(ROOT/'provision/bootstrap/bootstrap.sh').read_text()
         start=script.index("python3 - <<'PY'\n")+len("python3 - <<'PY'\n")

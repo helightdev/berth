@@ -3620,6 +3620,11 @@ async fn a_host_added_by_its_address_has_a_type_and_actions_to_match() {
             "type",
         ),
         (json!({"type": "managed"}), "access.address"),
+        // The API takes the names of now only.
+        (
+            json!({"level": "reachable", "access": {"address": "192.0.2.9"}}),
+            "builder",
+        ),
         (json!({"access": {"address": "192.0.2.9"}}), "builder"),
     ] {
         let (status, said) = send(client, "PUT", "/v1/hosts/pier/profile", refused).await;

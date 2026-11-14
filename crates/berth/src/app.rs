@@ -2608,6 +2608,7 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
     if !config.is_object() {
         return Err("Configuration must be a JSON object".into());
     }
+    berth_api::profile::take_old_names(&mut config);
     berth_api::profile::retire_qemu(&mut config);
     for field in ["wifi", "ansible_vars", "builder"] {
         if !config[field].is_null() && !config[field].is_object() {
