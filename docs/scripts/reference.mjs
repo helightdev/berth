@@ -46,7 +46,7 @@ const groups = {
   jobs: ['Jobs', 'Long-running work of berth serve, such as an apply: one run of an action.'],
   inbox: ['Inbox', "Messages taken in from the hosts' channels."],
   kv: ['Key-value store', 'Small JSON values with revisions, for user interfaces.'],
-  events: ['Events', 'One stream for channel messages, jobs and key-value changes.'],
+  events: ['Events', 'One stream for channel messages, jobs, key-value changes and changes to hosts and resources.'],
 };
 const groupOrder = Object.keys(groups);
 

@@ -220,7 +220,7 @@ pub const SERVE: &[Stream] = &[
             ),
             text(
                 "dropped",
-                "This follower was too slow and missed so many events; read the inbox again.",
+                "This follower was too slow. `events` counts the server's events it missed, of every kind. Read the inbox again.",
                 r#"{"dropped":{"events":12}}"#,
             ),
         ],
@@ -246,7 +246,7 @@ pub const SERVE: &[Stream] = &[
             ),
             text(
                 "dropped",
-                "This follower was too slow and missed so many changes; list the namespace again.",
+                "This follower was too slow. `events` counts the server's events it missed, of every kind. List the namespace again.",
                 r#"{"dropped":{"events":12}}"#,
             ),
         ],
@@ -255,7 +255,7 @@ pub const SERVE: &[Stream] = &[
     Stream {
         id: "events",
         path: "/v1/events",
-        summary: "Channel messages of chosen hosts, jobs and key-value changes together. The first frame sent names what to follow; each frame received says where it came from.",
+        summary: "Channel messages of chosen hosts, jobs, key-value changes and changes to hosts and resources together. The first frame sent names what to follow; each frame received says where it came from.",
         level: "host",
         parameters: &[],
         resumable: false,
@@ -276,15 +276,25 @@ pub const SERVE: &[Stream] = &[
                 r#"{"source":"kv","namespace":"ui","key":"layout","value":{},"revision":4}"#,
             ),
             text(
+                "host",
+                "A saved host was `added`, `removed`, `renamed` (with the name it had `from`) or its profile `changed`. Read the host itself with hosts.get.",
+                r#"{"source":"host","host":"studio","change":"renamed","from":"desk"}"#,
+            ),
+            text(
+                "resource",
+                "A resource was `created`, `removed` or its record `changed`. Read it with resources.get.",
+                r#"{"source":"resource","resource":"r-k3v9qz2m","provisioner":"docker","kind":"deployment","change":"created"}"#,
+            ),
+            text(
                 "dropped",
-                "This follower was too slow and missed so many events, of any kind it follows; read what it shows again.",
+                "This follower was too slow. `events` counts the server's events it missed, of every kind. Read what it follows again.",
                 r#"{"dropped":{"events":12}}"#,
             ),
         ],
         client: &[text(
             "follow",
             "What to follow. Sent once, first.",
-            r#"{"hosts":["server"],"topics":["myplugin/"],"jobs":true,"kv":["ui"]}"#,
+            r#"{"hosts":["server"],"topics":["myplugin/"],"jobs":true,"kv":["ui"],"changes":["hosts","resources"]}"#,
         )],
     },
 ];

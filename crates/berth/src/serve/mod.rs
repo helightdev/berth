@@ -55,6 +55,130 @@ pub enum Event {
         value: Option<Value>,
         revision: i64,
     },
+    /// A saved host was added, removed or renamed, or its profile changed.
+    Host {
+        name: String,
+        change: &'static str,
+        /// Its name before, when it was renamed.
+        from: Option<String>,
+    },
+    /// A resource was created, removed, or its record changed.
+    Resource {
+        id: String,
+        provisioner: String,
+        kind: String,
+        change: &'static str,
+    },
+}
+
+/// What the store held of the hosts and resources when last looked at, so a
+/// change to it can be told as an event whoever made it.
+struct Watch {
+    paths: Paths,
+    events: broadcast::Sender<Event>,
+    seen: Mutex<Seen>,
+}
+
+/// Unknown until the store could first be read, which tells nothing.
+#[derive(Default)]
+struct Seen {
+    hosts: Option<BTreeMap<String, Value>>,
+    resources: Option<BTreeMap<String, berth_core::resource::Record>>,
+}
+
+/// How each key of `now` differs from `before`: added, removed or changed.
+fn differences<'a, T: PartialEq>(
+    before: &'a BTreeMap<String, T>,
+    now: &'a BTreeMap<String, T>,
+) -> Vec<(&'a str, &'static str)> {
+    let gone = before
+        .keys()
+        .filter(|name| !now.contains_key(*name))
+        .map(|name| (name.as_str(), "removed"));
+    let came = now
+        .iter()
+        .filter_map(|(name, value)| match before.get(name) {
+            None => Some((name.as_str(), "added")),
+            Some(was) if was != value => Some((name.as_str(), "changed")),
+            Some(_) => None,
+        });
+    gone.chain(came).collect()
+}
+
+impl Watch {
+    fn hosts(&self) -> Option<BTreeMap<String, Value>> {
+        berth_core::profiles::list(&self.paths, store::OWN)
+            .ok()
+            .map(|saved| saved.into_iter().collect())
+    }
+
+    fn resources(&self) -> Option<BTreeMap<String, berth_core::resource::Record>> {
+        let kept = berth_core::resource::list(&self.paths).ok()?;
+        Some(
+            kept.into_iter()
+                .map(|kept| {
+                    // When it was last looked at is no change of it.
+                    let record = berth_core::resource::Record {
+                        checked: String::new(),
+                        ..kept.record
+                    };
+                    (record.id.clone(), record)
+                })
+                .collect(),
+        )
+    }
+
+    /// Tell what changed in the store since it was last looked at.
+    fn notice(&self) {
+        let (hosts, resources) = (self.hosts(), self.resources());
+        // Held while telling, so two callers cannot tell a change twice or out of order.
+        let mut seen = self.seen.lock().unwrap();
+        if let Some(now) = hosts {
+            if let Some(before) = &seen.hosts {
+                for (name, change) in differences(before, &now) {
+                    let _ = self.events.send(Event::Host {
+                        name: name.to_owned(),
+                        change,
+                        from: None,
+                    });
+                }
+            }
+            seen.hosts = Some(now);
+        }
+        if let Some(now) = resources {
+            if let Some(before) = &seen.resources {
+                for (id, change) in differences(before, &now) {
+                    let record = now.get(id).or_else(|| before.get(id));
+                    let change = match change {
+                        "added" => "created",
+                        other => other,
+                    };
+                    let _ = self.events.send(Event::Resource {
+                        id: id.to_owned(),
+                        provisioner: record.map(|r| r.provisioner.clone()).unwrap_or_default(),
+                        kind: record.map(|r| r.kind.clone()).unwrap_or_default(),
+                        change,
+                    });
+                }
+            }
+            seen.resources = Some(now);
+        }
+    }
+
+    /// Tell a rename as one, and not as a host removed and another added.
+    fn renamed(&self, old: &str, new: &str) {
+        let mut seen = self.seen.lock().unwrap();
+        if let Some(hosts) = seen.hosts.as_mut()
+            && let Some(profile) = hosts.remove(old)
+        {
+            hosts.insert(new.to_owned(), profile);
+        }
+        let _ = self.events.send(Event::Host {
+            name: new.to_owned(),
+            change: "renamed",
+            from: Some(old.to_owned()),
+        });
+    }
 }
 
 /// A host as `berth serve` knows it.
@@ -131,6 +255,7 @@ pub struct Serve {
     /// How long provisioners may take and how a new machine is waited for,
     /// which tests make quick.
     pub provision: fn() -> berth_core::provision::Options,
+    watch: Arc<Watch>,
 }
 
 impl Serve {
@@ -143,9 +268,17 @@ impl Serve {
     pub fn with(paths: Paths, store: Arc<Store>, auth: auth::Auth) -> Arc<Serve> {
         let jobs_dir = berth_core::runner::jobs_dir(&paths);
         let events = broadcast::channel(1024).0;
-        let told = events.clone();
+        let watch = Arc::new(Watch {
+            paths: paths.clone(),
+            events: events.clone(),
+            seen: Mutex::new(Seen::default()),
+        });
+        watch.notice();
+        let (told, watching) = (events.clone(), watch.clone());
         let notify = Arc::new(move |job: &store::Job| {
             let _ = told.send(Event::Job(job.json()));
+            // A job is what changes hosts and resources, besides the routes.
+            watching.notice();
         });
         let runner =
             berth_core::runner::Runner::new(paths.clone(), store.clone(), jobs_dir.clone(), notify);
@@ -160,7 +293,14 @@ impl Serve {
             followers: Mutex::new(BTreeMap::new()),
             passwords: Mutex::new(BTreeMap::new()),
             provision: Default::default,
+            watch,
         })
+    }
+
+    /// Tell whoever follows changes what changed among the saved hosts and
+    /// the resources since this was last asked.
+    pub fn notice(&self) {
+        self.watch.notice();
     }
 
     pub fn host(&self, name: &str) -> Option<Arc<Remote>> {
@@ -202,6 +342,7 @@ impl Serve {
     /// [`Serve::refresh`] takes it up under that name.
     pub fn renamed(&self, old: &str, new: &str) {
         self.forget(old);
+        self.watch.renamed(old, new);
         let mut passwords = self.passwords.lock().unwrap();
         if let Some(password) = passwords.remove(old) {
             passwords.insert(new.to_owned(), password);
@@ -217,6 +358,7 @@ impl Serve {
         let Ok(saved) = berth_core::profiles::list(&self.paths, store::OWN) else {
             return;
         };
+        self.notice();
         let stale: Vec<String> = {
             let hosts = self.hosts.read().unwrap();
             hosts
@@ -481,6 +623,16 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
             loop {
                 tokio::time::sleep(Duration::from_secs(86400)).await;
                 daily.prune();
+            }
+        });
+        // Another berth beside the server changes the store too.
+        let watching = state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                if watching.events.receiver_count() > 0 {
+                    watching.notice();
+                }
             }
         });
 

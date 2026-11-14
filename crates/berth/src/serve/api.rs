@@ -988,6 +988,15 @@ struct Follow {
     jobs: bool,
     /// Changes in these namespaces of the key-value store.
     kv: Vec<String>,
+    /// The kinds of thing whose changes to tell.
+    changes: Vec<Changes>,
+}
+
+#[derive(Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum Changes {
+    Hosts,
+    Resources,
 }
 
 async fn events(State(state): App, ws: WebSocketUpgrade) -> Response {
@@ -1019,6 +1028,16 @@ async fn events(State(state): App, ws: WebSocketUpgrade) -> Response {
                 Some(value) => json!({"source": "kv", "namespace": namespace, "key": key, "value": value, "revision": revision}),
                 None => json!({"source": "kv", "namespace": namespace, "key": key, "removed": true}),
             }),
+            Event::Host { name, change, from } if follow.changes.contains(&Changes::Hosts) => {
+                let mut frame = json!({"source": "host", "host": name, "change": change});
+                if let Some(from) = from {
+                    frame["from"] = json!(from);
+                }
+                Some(frame)
+            }
+            Event::Resource { id, provisioner, kind, change } if follow.changes.contains(&Changes::Resources) => {
+                Some(json!({"source": "resource", "resource": id, "provisioner": provisioner, "kind": kind, "change": change}))
+            }
             _ => None,
         })
         .await;

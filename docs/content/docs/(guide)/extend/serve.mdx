@@ -26,7 +26,7 @@ It prints where it listens and how many hosts it knows. Only one runs per user. 
 | [`jobs.*`](/docs/api/serve/jobs) | Jobs, one for each run of an action that runs here or follows a task, with their output. Each says its subject and its action. A roll-out's job has a report, host by host |
 | [`inbox.*`](/docs/api/serve/inbox) | Messages the hosts published on their channels and kept, taken in while `berth serve` runs; each can be marked done |
 | [`kv.*`](/docs/api/serve/kv) | A key-value store with revisions, for user interfaces to keep state in |
-| [`events.follow`](/docs/api/serve/events) | One stream of channel messages, jobs and key-value changes, at `/v1/events` |
+| [`events.follow`](/docs/api/serve/events) | One stream of channel messages, jobs, key-value changes and changes to hosts and resources, at `/v1/events` |
 
 All of it is also on the [portal](/docs/api/portal), the one WebSocket at `/v1/portal` for calls and streams together.
 

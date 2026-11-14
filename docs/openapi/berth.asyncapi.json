@@ -11,7 +11,7 @@
           }
         }
       },
-      "description": "Channel messages of chosen hosts, jobs and key-value changes together. The first frame sent names what to follow; each frame received says where it came from.",
+      "description": "Channel messages of chosen hosts, jobs, key-value changes and changes to hosts and resources together. The first frame sent names what to follow; each frame received says where it came from.",
       "messages": {
         "events.channel": {
           "$ref": "#/components/messages/events.channel"
@@ -22,11 +22,17 @@
         "events.follow": {
           "$ref": "#/components/messages/events.follow"
         },
+        "events.host": {
+          "$ref": "#/components/messages/events.host"
+        },
         "events.job": {
           "$ref": "#/components/messages/events.job"
         },
         "events.kv": {
           "$ref": "#/components/messages/events.kv"
+        },
+        "events.resource": {
+          "$ref": "#/components/messages/events.resource"
         }
       },
       "parameters": {},
@@ -356,13 +362,17 @@
         "payload": {
           "type": "object"
         },
-        "summary": "This follower was too slow and missed so many events, of any kind it follows; read what it shows again."
+        "summary": "This follower was too slow. `events` counts the server's events it missed, of every kind. Read what it follows again."
       },
       "events.follow": {
         "contentType": "application/json",
         "examples": [
           {
             "payload": {
+              "changes": [
+                "hosts",
+                "resources"
+              ],
               "hosts": [
                 "server"
               ],
@@ -381,6 +391,24 @@
           "type": "object"
         },
         "summary": "What to follow. Sent once, first."
+      },
+      "events.host": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "change": "renamed",
+              "from": "desk",
+              "host": "studio",
+              "source": "host"
+            }
+          }
+        ],
+        "name": "host",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "A saved host was `added`, `removed`, `renamed` (with the name it had `from`) or its profile `changed`. Read the host itself with hosts.get."
       },
       "events.job": {
         "contentType": "application/json",
@@ -422,6 +450,25 @@
           "type": "object"
         },
         "summary": "A key changed."
+      },
+      "events.resource": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "change": "created",
+              "kind": "deployment",
+              "provisioner": "docker",
+              "resource": "r-k3v9qz2m",
+              "source": "resource"
+            }
+          }
+        ],
+        "name": "resource",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "A resource was `created`, `removed` or its record `changed`. Read it with resources.get."
       },
       "host.channel.message": {
         "contentType": "application/json",
@@ -659,7 +706,7 @@
         "payload": {
           "type": "object"
         },
-        "summary": "This follower was too slow and missed so many events; read the inbox again."
+        "summary": "This follower was too slow. `events` counts the server's events it missed, of every kind. Read the inbox again."
       },
       "inbox.message": {
         "contentType": "application/json",
@@ -727,7 +774,7 @@
         "payload": {
           "type": "object"
         },
-        "summary": "This follower was too slow and missed so many changes; list the namespace again."
+        "summary": "This follower was too slow. `events` counts the server's events it missed, of every kind. List the namespace again."
       },
       "kv.removed": {
         "contentType": "application/json",
@@ -824,6 +871,12 @@
         },
         {
           "$ref": "#/channels/events/messages/events.kv"
+        },
+        {
+          "$ref": "#/channels/events/messages/events.host"
+        },
+        {
+          "$ref": "#/channels/events/messages/events.resource"
         },
         {
           "$ref": "#/channels/events/messages/events.dropped"

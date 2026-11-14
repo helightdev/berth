@@ -159,6 +159,7 @@ pub async fn remove_host(State(state): App, Path(name): Path<String>) -> Answer<
     }
     profiles::remove(&state.paths, &place).map_err(internal)?;
     state.forget(&name);
+    state.notice();
     Ok(Json(Done { ok: true }))
 }
 

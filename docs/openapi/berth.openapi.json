@@ -3212,7 +3212,7 @@
             "description": "A WebSocket; its frames are in the AsyncAPI document"
           }
         },
-        "summary": "Channel messages of chosen hosts, jobs and key-value changes together. The first frame sent names what to follow; each frame received says where it came from.",
+        "summary": "Channel messages of chosen hosts, jobs, key-value changes and changes to hosts and resources together. The first frame sent names what to follow; each frame received says where it came from.",
         "tags": [
           "streams"
         ]
