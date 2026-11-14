@@ -384,7 +384,7 @@ Each verb adds to it and answers like this:
 | `status` | `id` | `state`, which is `running`, `stopped` or `gone`, and optionally `address`. berth shows `gone` as `missing` |
 | `status` | nothing | The provisioner itself: `state` (`ready` unless it says otherwise), `message`, `details`, `values` |
 | `destroy`, `start`, `stop` | `id` | `{}` |
-| `change` | `id`, the new values in `arguments`, and `environment`. For a kind with a specification, `spec`: the new one, or the one berth has | `state` |
+| `change` | `id`, the new values in `arguments`, `changed` with the names of the arguments whose value is new, and `environment`. For a kind with a specification, `spec`: the new one, or the one berth has | `state` |
 | `logs` | `id`, `tail` and `follow` | The log on standard output, a line at a time, until it ends |
 | `list` | nothing | `resources`, a list of `id`, `kind`, `name`, `host` and `state`, of every kind |
 | `act` | `action`: its `name` and its `arguments`. For an action of a kind, also `environment`, and `spec` when the kind has one | `message`, and optionally `details` |

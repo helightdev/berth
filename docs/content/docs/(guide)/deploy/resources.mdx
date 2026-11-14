@@ -22,7 +22,7 @@ The list comes from berth's records, with each resource as it was last seen. ber
 | Kind | Belongs to | Made with |
 | --- | --- | --- |
 | `machine` | A saved host, at most one machine for each | `berth provision HOST PROVISIONER` ([Create the machine](/docs/deploy/provisioners#create-the-machine)) |
-| A kind its plugin declares, such as `deployment` | No host | `berth deploy` for a deployment, or `resources.create` for any kind |
+| A kind its plugin declares, such as `deployment` or `instance` | No host | `berth deploy` for a deployment, the provisioner's `new-KIND` action, or `resources.create` for any kind |
 
 A provisioner's page says which kinds it makes. Each kind lists which of `start`, `stop`, `change` and `logs` its provisioner takes for it, and can bring actions of its own.
 

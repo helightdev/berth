@@ -61,7 +61,7 @@ berth refuses before anything is made when a secret has no value, or when the na
 
 ### From the provisioner's page
 
-The provisioner's page has the action **New compose project**, `new-deployment`, in the terminal UI and in the page of [`berth serve --web`](/docs/use/server#in-a-browser). It asks for the name, the Compose file and the secrets, then the deployment's own arguments. Paste the Compose file into its field: its lines are kept, and each line break shows as `⏎`. Give the secrets as `NAME` or `NAME:VARIABLE`, separated by commas. The deployment is made as a job of the provisioner, and is listed on its page when the job ends.
+The Hosts tab has the row **+ New compose project**, and the provisioner's page the action of that name, `new-deployment`, in the terminal UI and in the page of [`berth serve --web`](/docs/use/server#in-a-browser). Both open a form laid out like a host's set-up, with the provisioner, the name, the Compose file, the secrets and the deployment's own arguments each on a row. Enter on a row edits it, and Enter on **Run** makes the deployment. The Compose file opens in a text editor that takes the whole screen. Ctrl+S keeps the file, and Esc leaves it as it was. The file is kept in berth's store, so no file on your machine is needed. Give the secrets as `NAME` or `NAME:VARIABLE`, separated by commas. The deployment is made as a job of the provisioner, and is listed on its page when the job ends.
 
 From the command line the action takes the same values:
 

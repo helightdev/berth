@@ -63,7 +63,7 @@ berth host level dock controller
 
 `berth host level HOST LEVEL` only changes the profile here. A host's page says the same when its controller reports more than its profile says. berth refuses to install the controller alone on a host that is a workstation, whatever its profile here says. It asks the host's controller first, and the playbook checks the host's own record and the profile it keeps.
 
-In the terminal UI, create a host on the home screen, choose **Existing host over SSH** on the **Install** tab and set **Level**. Below a workstation, the address and the login are all the set-up asks for. **Run** then installs the controller for a controller host and saves a reachable one. The browser page does the same through the server.
+In the terminal UI, create a host on the home screen and choose **Existing host, SSH only** on the **Install** tab. The address and the login are all the set-up asks for, and **Run** saves the host. For a controller, choose **Existing host over SSH** and set **Level** to `controller`. **Run** then installs the controller. The browser page does the same through the server.
 
 Over the API, `hosts.save` takes a profile with only the level and `access`:
 

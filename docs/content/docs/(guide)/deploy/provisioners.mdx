@@ -90,18 +90,23 @@ Compose project berth made with it
   notes            notes  running · r-p5x2hd7a
 
 Actions (berth provisioner docker run ACTION)
+  Create
+    new-deployment     New compose project
+    new-instance       New instance
+  Set-Up
+    settings           Change settings
+    remove             Remove provisioner
   Engine
     engine             Check the engine
     images             Images
+    pull-image         Pull image
+    remove-image       Remove image
     build              Build the image
   Storage
-    volumes            Volumes berth made
+    volumes            Volumes
+    create-volume      New volume
+    remove-volume      Remove volume
     prune              Remove what berth left behind
-  Create
-    new-deployment     New compose project
-  Set-Up
-    settings           Settings
-    remove             Remove provisioner
 ```
 
 berth asks the provisioner how it is each time. The lines under the state are what it says, shown as they are.
