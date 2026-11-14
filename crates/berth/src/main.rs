@@ -509,7 +509,34 @@ fn host_command(paths: &Paths, host: &str, args: &[&str]) -> Result<()> {
     app.save()
 }
 
+/// End quietly when what reads berth's output has gone, as `head` does after
+/// its lines: printing then panics, which is no fault of berth's to report.
+fn end_quietly_on_a_closed_pipe() {
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic| {
+        let said = panic.payload().downcast_ref::<String>();
+        if said.is_some_and(|said| said.starts_with("failed printing to std")) {
+            std::process::exit(141);
+        }
+        report(panic);
+    }));
+}
+
+/// What to say instead of opening berth's screens where there is no terminal
+/// for them, as in a script or over ssh without one. `word` is what was
+/// given for a host, which may have been meant as a command.
+fn no_terminal(paths: &Paths, word: Option<&str>) -> String {
+    let known = |word: &str| paths.hosts().iter().any(|(name, _)| name == word);
+    match word {
+        Some(word) if !known(word) => format!(
+            "there is no command `{word}`, and no terminal to set up a host of that name in. `berth help` lists the commands"
+        ),
+        _ => "berth's screens need a terminal, and there is none here. `berth help` lists the commands that need none".into(),
+    }
+}
+
 fn main() {
+    end_quietly_on_a_closed_pipe();
     if let Err(error) = run() {
         eprintln!("berth: {error}");
         std::process::exit(1);
@@ -795,6 +822,12 @@ fn run() -> Result<()> {
             return Ok(());
         }
     };
+    {
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return Err(no_terminal(&paths, host.as_deref()).into());
+        }
+    }
     // Find the source before the screen is taken over, so the error is readable.
     paths.source()?;
     if let Some(running) = &mut mirroring {
