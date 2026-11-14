@@ -149,7 +149,7 @@ class Provisioners(unittest.TestCase):
             self.assertEqual(page['values'], {'shelf': ['top', 'bottom']})
             actions = serve.call('GET', '/v1/provisioners/box/actions')
             self.assertEqual([action['name'] for action in actions],
-                             ['look', 'sweep', 'new-deployment', 'settings', 'remove'])
+                             ['new-deployment', 'settings', 'look', 'sweep', 'remove'])
             looked = serve.call('POST', '/v1/provisioners/box/actions/look')
             self.assertEqual(looked['result']['message'], 'Looked around attic')
             acted = serve.call('POST', '/v1/provisioners/box/actions/sweep',
@@ -278,7 +278,7 @@ class DockerEngine(unittest.TestCase):
         self.assertIn(f'answers at {endpoint}', page)
         self.assertIn('Runtimes', page)
         volumes = station.berth('provisioner', 'docker', 'run', 'volumes').stdout
-        self.assertIn('berth made at', volumes)
+        self.assertIn(f'volumes at {endpoint}', volumes)
 
     def test_a_compose_deployment_is_made_changed_and_removed(self):
         station = Workstation('provisioners-compose', ssh_key=False, trust=False)
