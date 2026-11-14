@@ -6,7 +6,7 @@ members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "crates/
 default-members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "crates/berth-tui", "crates/berth", "crates/berthd", "crates/box", "crates/berth-page", "crates/berth-remote"]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
