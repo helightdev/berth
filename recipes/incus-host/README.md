@@ -110,6 +110,7 @@ sudo ./install.sh -e berth_server=true -e tailscale_auth_key=tskey-auth-EXAMPLE
 | Port | 7777 on this machine only |
 | Tailnet | `tailscale serve` puts it at `https://THIS-MACHINE.YOUR-TAILNET.ts.net` with TLS |
 | Incus | The server gets a key and a certificate that this Incus trusts, stored as its secrets |
+| Docker | The container gets the socket of this machine's engine. The server creates Docker machines and deployments here |
 
 The first run makes a setup key and prints it at the end, with the server's
 address. The key lets the first user collect the server's token, for 24 hours
@@ -125,10 +126,20 @@ key with `sudo docker exec berth berth setup-key`.
 
 The token itself gives full control of every host. Without a key, read it with
 `sudo cat /srv/berth/data/berth/serve.token`, then set it with
-`berth config server` and `berth config server_token`. To create a machine on this Incus, give the
-provisioner the argument `server=https://incus-host:8444`. The container
-connects to the guests at their addresses on the bridge. berth can set up a
-new machine there before it has joined a tailnet.
+`berth config server` and `berth config server_token`.
+
+The server's provisioners are ready. `incus/vm` and `incus/container` have the
+setting `server=https://incus-host:8444`, and `docker/container` uses the
+engine of this machine. The container connects to the guests at their
+addresses on the bridge. berth can set up a new machine there before it has
+joined a tailnet.
+
+Docker's socket gives root on this machine, as the Incus certificate does. So
+whoever has the server's token controls the whole machine.
+
+A server from an earlier run keeps the container it has. To give it the
+socket, run `sudo docker rm -f berth` and then the recipe again. The data in
+`/srv/berth` stays.
 
 The tailnet address needs HTTPS certificates switched on for your tailnet.
 Set `berth_server_tailscale_serve` to `false` to leave the server on this

@@ -61,6 +61,18 @@ berth's key. So:
   configuration or agent.
 - ssh cannot ask for a password, because the calls have no terminal.
 
+### berth in a container
+
+berth's own image has Docker's client, Compose and Buildx. To use the engine of
+the machine the container runs on, give the container the engine's socket and
+the socket's group:
+
+    docker run … --volume /var/run/docker.sock:/var/run/docker.sock \
+      --group-add "$(stat --format %g /var/run/docker.sock)" ghcr.io/helightdev/berth
+
+Leave `host` empty then. The socket gives root on that machine. The
+`incus-host` recipe sets its berth server up this way.
+
 ## Machines
 
 | Verb | What it does |

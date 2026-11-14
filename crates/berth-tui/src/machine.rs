@@ -184,7 +184,8 @@ impl Machine {
         }
     }
 
-    /// Choose a provisioner: its form starts from the defaults.
+    /// Choose a provisioner: its form starts from the provisioner's kept
+    /// settings, such as its server, and the defaults of the rest.
     pub fn choose(&mut self, index: usize) {
         let Some(provisioner) = self.all().get(index) else {
             return;
@@ -195,7 +196,13 @@ impl Machine {
         let values = provisioner
             .arguments
             .iter()
-            .map(|argument| (argument.name.clone(), argument.default.clone()))
+            .map(|argument| {
+                let value = match provisioner.settings.get(&argument.name) {
+                    Some(kept) if !kept.is_empty() => kept.clone(),
+                    _ => argument.default.clone(),
+                };
+                (argument.name.clone(), value)
+            })
             .collect();
         self.chosen = Some(provisioner.id.clone());
         self.values = values;
@@ -773,6 +780,21 @@ mod tests {
                 "No provisioner is installed. Plugins bring them.".into()
             )]
         );
+    }
+
+    #[test]
+    fn a_kept_setting_of_the_provisioner_fills_what_it_requires() {
+        let mut kept = provisioner(&[]);
+        kept.settings =
+            BTreeMap::from([("server".to_owned(), "https://192.0.2.10:8443".to_owned())]);
+        let machine = without_machine(vec![kept]);
+        assert_eq!(
+            text(&machine.install_rows())[1],
+            "  └─ Lab server *  https://192.0.2.10:8443"
+        );
+        assert!(machine.problems().is_empty());
+        let request = machine.request().unwrap();
+        assert_eq!(request.arguments["server"], "https://192.0.2.10:8443");
     }
 
     #[test]

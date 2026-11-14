@@ -336,11 +336,15 @@ pub fn provision(paths: &Paths, name: &str, provisioner: &str, args: &[&str]) ->
         .iter()
         .find(|known| known.id == provisioner)
         .ok_or_else(|| format!("No provisioner {provisioner}. See: berth provisioners"))?;
-    // What is required and has no default is asked for here, as `berth run` does.
+    // What is required and has neither a default nor a kept setting is asked for here, as `berth run` does.
     if std::io::stdin().is_terminal() {
         for argument in &found.arguments {
             if argument.required
                 && argument.default.is_empty()
+                && found
+                    .settings
+                    .get(&argument.name)
+                    .is_none_or(String::is_empty)
                 && !values.contains_key(&argument.name)
             {
                 let label = match argument.label.as_str() {
