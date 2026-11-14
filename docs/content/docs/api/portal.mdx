@@ -71,6 +71,25 @@ The reply to a streaming operation is `{"open": true}`. The server then sends fr
 
 The frames inside `data` and the bytes after the four-byte prefix are those of the stream's own WebSocket, listed on each stream's page. Calls go on beside open streams.
 
+## A window on a stream's bytes
+
+When nobody reads a stream, its bytes would fill the other side's memory or hold up the frames of the other streams. A client asks for a window when it opens the stream to prevent this:
+
+```js
+→ {"id": 12, "op": "ports.connect", "args": {"port": 8080}, "window": 262144}
+← {"id": 12, "result": {"open": true, "window": 262144}}
+→ binary: 00 00 00 0c, then up to 262144 bytes
+← {"sub": 12, "credit": 131072}
+```
+
+| Rule | Means |
+| --- | --- |
+| `window` in the request | How many bytes of binary frames each side may send before the other side credits them. The server takes 16 KB to 4 MB |
+| `window` in the answer | The server keeps to that window. Without it, no window applies to the stream |
+| `{"sub": N, "credit": BYTES}` | Either side has taken so many bytes, and the other may send that many more |
+
+A side may send one frame beyond the window, so a large frame isn't held forever. JSON frames don't count against it. Each side says what it took once it has taken half the window. berth's client asks for a window on every stream it opens, and a client that asks for none gets the streams as before.
+
 ## Bytes
 
 Bytes in input or a result are `{"base64": "…"}`, and a result adds `content_type`. The portal takes up to 8 MB of bytes per operation, and a larger result is a `413` error. Use HTTP for larger transfers, such as big files.

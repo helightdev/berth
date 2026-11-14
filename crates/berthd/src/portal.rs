@@ -12,14 +12,14 @@ use axum::{
 use berth_api::{
     ErrorBody, b64, client, code,
     ops::{self, Kind, Op},
-    portal::{tagged, untagged},
+    portal::{Credit, Taken, WINDOWS, tagged, untagged},
     unb64,
 };
 use futures_util::{SinkExt, StreamExt};
 use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use serde_json::{Map, Value, json};
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 use tower::ServiceExt;
 
 /// The messages of the WebSocket an operation is on its own.
@@ -231,6 +231,8 @@ async fn open(
             code::NOT_FOUND,
             code::BAD_REQUEST,
             code::UNREACHABLE,
+            code::NOT_SERVED,
+            code::TIMEOUT,
         ];
         let kind = known
             .into_iter()
@@ -240,23 +242,75 @@ async fn open(
     })
 }
 
+/// The most bytes of frames waiting to be written to the socket. Only the
+/// writer gives room back, and it waits on nothing but the socket, so a task
+/// that waits for room waits for the network and never for another task; the
+/// reader and the credits it answers take no room, so they cannot be stalled
+/// behind a stream's bytes.
+const ROOM: usize = 1 << 20;
+
+/// The frames on their way to the socket, in the order they were sent.
+#[derive(Clone)]
+struct Out {
+    queue: mpsc::UnboundedSender<(Message, u32)>,
+    room: Arc<Semaphore>,
+}
+
+impl Out {
+    /// A frame of a stream or the answer to a call: it waits for room.
+    async fn data(&self, message: Message) -> bool {
+        let size = match &message {
+            Message::Text(text) => text.len(),
+            Message::Binary(bytes) => bytes.len(),
+            _ => 0,
+        };
+        let size = size.clamp(1, ROOM) as u32;
+        let Ok(permit) = self.room.acquire_many(size).await else {
+            return false;
+        };
+        permit.forget();
+        self.queue.send((message, size)).is_ok()
+    }
+
+    /// A small frame that waits for nothing.
+    fn control(&self, frame: Value) {
+        let _ = self
+            .queue
+            .send((Message::Text(frame.to_string().into()), 0));
+    }
+}
+
+/// What the caller sends towards an open stream, and what that stream may
+/// still send the caller.
+struct Inbound {
+    // Unbounded, so the reader never waits on one stream: a caller that
+    // asked for a window sends no more than it.
+    input: mpsc::UnboundedSender<upstream::Frame>,
+    credit: Arc<Credit>,
+}
+
 /// Serve a portal until its socket closes. `router` answers as the caller
 /// the portal was opened by.
 pub async fn run(socket: WebSocket, router: Router, resolve: Resolve) {
     let (mut sink, mut source) = socket.split();
-    let (out, mut outgoing) = mpsc::unbounded_channel::<Message>();
-    tokio::spawn(async move {
-        while let Some(message) = outgoing.recv().await {
-            if sink.send(message).await.is_err() {
+    let (queue, mut outgoing) = mpsc::unbounded_channel::<(Message, u32)>();
+    let room = Arc::new(Semaphore::new(ROOM));
+    let out = Out {
+        queue,
+        room: room.clone(),
+    };
+    let writer = tokio::spawn(async move {
+        while let Some((message, size)) = outgoing.recv().await {
+            let sent = sink.send(message).await;
+            room.add_permits(size as usize);
+            if sent.is_err() {
                 break;
             }
         }
+        // Whoever waits for room would wait for a socket that is gone.
+        room.close();
     });
-    let say = |out: &mpsc::UnboundedSender<Message>, frame: Value| {
-        let _ = out.send(Message::Text(frame.to_string().into()));
-    };
-    // What the caller sends towards each open stream.
-    let mut streams: HashMap<u32, mpsc::UnboundedSender<upstream::Frame>> = HashMap::new();
+    let mut streams: HashMap<u32, Inbound> = HashMap::new();
     while let Some(Ok(message)) = source.next().await {
         let frame: Value = match message {
             Message::Text(text) => match serde_json::from_str(text.as_str()) {
@@ -267,7 +321,9 @@ pub async fn run(socket: WebSocket, router: Router, resolve: Resolve) {
                 if let Some((id, bytes)) = untagged(&bytes)
                     && let Some(stream) = streams.get(&id)
                 {
-                    let _ = stream.send(upstream::Frame::Binary(bytes.to_vec().into()));
+                    let _ = stream
+                        .input
+                        .send(upstream::Frame::Binary(bytes.to_vec().into()));
                 }
                 continue;
             }
@@ -279,7 +335,13 @@ pub async fn run(socket: WebSocket, router: Router, resolve: Resolve) {
             if frame["end"].as_bool() == Some(true) {
                 streams.remove(&id);
             } else if let Some(stream) = streams.get(&id) {
-                let _ = stream.send(upstream::Frame::Text(frame["data"].to_string().into()));
+                match frame["credit"].as_u64() {
+                    Some(bytes) => stream.credit.grant(bytes),
+                    None => {
+                        let text = frame["data"].to_string();
+                        let _ = stream.input.send(upstream::Frame::Text(text.into()));
+                    }
+                }
             }
             continue;
         }
@@ -290,11 +352,11 @@ pub async fn run(socket: WebSocket, router: Router, resolve: Resolve) {
         let target = match resolve(name, frame["host"].as_str()) {
             Ok(target) => target,
             Err(problem) => {
-                say(&out, failure(id, problem));
+                out.control(failure(id, problem));
                 continue;
             }
         };
-        streams.retain(|_, stream| !stream.is_closed());
+        streams.retain(|_, stream| !stream.input.is_closed());
         match target.op.kind {
             Kind::Call => {
                 let (router, out) = (router.clone(), out.clone());
@@ -303,63 +365,99 @@ pub async fn run(socket: WebSocket, router: Router, resolve: Resolve) {
                         Ok(result) => json!({"id": id, "result": result}),
                         Err(problem) => failure(id, problem),
                     };
-                    let _ = out.send(Message::Text(frame.to_string().into()));
+                    out.data(Message::Text(frame.to_string().into())).await;
                 });
             }
             Kind::Stream => {
-                let (towards, mut input) = mpsc::unbounded_channel();
-                streams.insert(id as u32, towards);
+                let window = frame["window"]
+                    .as_u64()
+                    .map(|window| window.clamp(WINDOWS.0.into(), WINDOWS.1.into()) as u32);
+                let (towards, input) = mpsc::unbounded_channel();
+                let credit = Arc::new(Credit::with(window));
+                let inbound = Inbound {
+                    input: towards,
+                    credit: credit.clone(),
+                };
+                streams.insert(id as u32, inbound);
                 let (router, out) = (router.clone(), out.clone());
                 tokio::spawn(async move {
                     let stream = match open(router, &target, &frame["args"]).await {
                         Ok(stream) => stream,
-                        Err(problem) => {
-                            let _ =
-                                out.send(Message::Text(failure(id, problem).to_string().into()));
-                            return;
-                        }
+                        Err(problem) => return out.control(failure(id, problem)),
                     };
-                    let opened = json!({"id": id, "result": {"open": true}});
-                    let _ = out.send(Message::Text(opened.to_string().into()));
-                    let (mut up, mut down) = stream.split();
-                    let sub = id as u32;
-                    loop {
-                        tokio::select! {
-                            frame = down.next() => match frame {
-                                Some(Ok(upstream::Frame::Text(text))) => {
-                                    let data = serde_json::from_str::<Value>(text.as_str())
-                                        .unwrap_or_else(|_| json!(text.as_str()));
-                                    let frame = json!({"sub": sub, "data": data});
-                                    if out.send(Message::Text(frame.to_string().into())).is_err() {
-                                        return;
-                                    }
-                                }
-                                Some(Ok(upstream::Frame::Binary(bytes))) => {
-                                    if out.send(Message::Binary(tagged(sub, &bytes).into())).is_err() {
-                                        return;
-                                    }
-                                }
-                                Some(Ok(upstream::Frame::Close(_))) | Some(Err(_)) | None => break,
-                                Some(Ok(_)) => {}
-                            },
-                            frame = input.recv() => match frame {
-                                Some(frame) => {
-                                    if up.send(frame).await.is_err() {
-                                        break;
-                                    }
-                                }
-                                // The caller ended it, or left.
-                                None => {
-                                    let _ = up.close().await;
-                                    return;
-                                }
-                            },
-                        }
+                    let mut opened = json!({"id": id, "result": {"open": true}});
+                    if let Some(window) = window {
+                        opened["result"]["window"] = json!(window);
                     }
-                    let end = json!({"sub": sub, "end": true});
-                    let _ = out.send(Message::Text(end.to_string().into()));
+                    if !out.data(Message::Text(opened.to_string().into())).await {
+                        return;
+                    }
+                    pipe(id as u32, stream, input, &out, &credit, window).await;
                 });
             }
         }
+    }
+    drop(streams);
+    drop(out);
+    let _ = writer.await;
+}
+
+/// One open stream: its frames to the caller and the caller's to it, each way
+/// on its own, so a direction that waits does not hold up the other.
+async fn pipe(
+    sub: u32,
+    stream: client::WebSocketStream<tokio::io::DuplexStream>,
+    mut input: mpsc::UnboundedReceiver<upstream::Frame>,
+    out: &Out,
+    credit: &Credit,
+    window: Option<u32>,
+) {
+    let (mut up, mut down) = stream.split();
+    let downstream = async {
+        while let Some(Ok(frame)) = down.next().await {
+            let message = match frame {
+                upstream::Frame::Text(text) => {
+                    let data = serde_json::from_str::<Value>(text.as_str())
+                        .unwrap_or_else(|_| json!(text.as_str()));
+                    Message::Text(json!({"sub": sub, "data": data}).to_string().into())
+                }
+                upstream::Frame::Binary(bytes) => {
+                    credit.room().await;
+                    credit.spend(bytes.len());
+                    Message::Binary(tagged(sub, &bytes).into())
+                }
+                upstream::Frame::Close(_) => break,
+                _ => continue,
+            };
+            if !out.data(message).await {
+                return false;
+            }
+        }
+        true
+    };
+    let upstream = async {
+        let mut taken = Taken::new(window);
+        while let Some(frame) = input.recv().await {
+            let size = match &frame {
+                upstream::Frame::Binary(bytes) => bytes.len(),
+                _ => 0,
+            };
+            // A stream that takes nothing more ends from its side, downstream.
+            if up.send(frame).await.is_err() {
+                return std::future::pending().await;
+            }
+            if let Some(credit) = taken.took(sub, size) {
+                out.control(credit);
+            }
+        }
+        // The caller ended it, or left.
+        let _ = up.close().await;
+    };
+    tokio::select! {
+        ended = downstream => if ended {
+            let end = json!({"sub": sub, "end": true});
+            out.data(Message::Text(end.to_string().into())).await;
+        },
+        () = upstream => {}
     }
 }

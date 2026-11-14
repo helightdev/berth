@@ -4043,6 +4043,16 @@
             "topic": "myplugin/progress"
           },
           "name": "message"
+        },
+        {
+          "binary": false,
+          "description": "This follower was too slow. `events` counts the server's events it missed, of every kind. Read the inbox again.",
+          "example": {
+            "dropped": {
+              "events": 12
+            }
+          },
+          "name": "dropped"
         }
       ],
       "resumable": false,
@@ -4187,6 +4197,16 @@
             "removed": true
           },
           "name": "removed"
+        },
+        {
+          "binary": false,
+          "description": "This follower was too slow. `events` counts the server's events it missed, of every kind. List the namespace again.",
+          "example": {
+            "dropped": {
+              "events": 12
+            }
+          },
+          "name": "dropped"
         }
       ],
       "resumable": false,
@@ -4395,6 +4415,39 @@
             "value": {}
           },
           "name": "kv"
+        },
+        {
+          "binary": false,
+          "description": "A saved host was `added`, `removed`, `renamed` (with the name it had `from`) or its profile `changed`. Read the host itself with hosts.get.",
+          "example": {
+            "change": "renamed",
+            "from": "desk",
+            "host": "studio",
+            "source": "host"
+          },
+          "name": "host"
+        },
+        {
+          "binary": false,
+          "description": "A resource was `created`, `removed` or its record `changed`. Read it with resources.get.",
+          "example": {
+            "change": "created",
+            "kind": "deployment",
+            "provisioner": "docker",
+            "resource": "r-k3v9qz2m",
+            "source": "resource"
+          },
+          "name": "resource"
+        },
+        {
+          "binary": false,
+          "description": "This follower was too slow. `events` counts the server's events it missed, of every kind. Read what it follows again.",
+          "example": {
+            "dropped": {
+              "events": 12
+            }
+          },
+          "name": "dropped"
         }
       ],
       "resumable": false,
@@ -4404,6 +4457,10 @@
           "binary": false,
           "description": "What to follow. Sent once, first.",
           "example": {
+            "changes": [
+              "hosts",
+              "resources"
+            ],
             "hosts": [
               "server"
             ],
@@ -4418,7 +4475,7 @@
           "name": "follow"
         }
       ],
-      "summary": "Channel messages of chosen hosts, jobs and key-value changes together. The first frame sent names what to follow; each frame received says where it came from."
+      "summary": "Channel messages of chosen hosts, jobs, key-value changes and changes to hosts and resources together. The first frame sent names what to follow; each frame received says where it came from."
     }
   ],
   "portal": {

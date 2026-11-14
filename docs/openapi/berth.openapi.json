@@ -3212,7 +3212,7 @@
             "description": "A WebSocket; its frames are in the AsyncAPI document"
           }
         },
-        "summary": "Channel messages of chosen hosts, jobs and key-value changes together. The first frame sent names what to follow; each frame received says where it came from.",
+        "summary": "Channel messages of chosen hosts, jobs, key-value changes and changes to hosts and resources together. The first frame sent names what to follow; each frame received says where it came from.",
         "tags": [
           "streams"
         ]
@@ -3968,6 +3968,50 @@
         "summary": "Journal entries.",
         "tags": [
           "host: logs"
+        ]
+      }
+    },
+    "/v1/hosts/{name}/ports/{port}": {
+      "get": {
+        "description": "Host level only.",
+        "operationId": "host_get_v1_ports__port_",
+        "parameters": [
+          {
+            "description": "A saved host",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "port",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "With a WebSocket handshake: the stream `port` of the AsyncAPI document."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Only as a WebSocket: a TCP connection to a port on the host's loopback. A port that nothing listens on is an error before the handshake.",
+        "tags": [
+          "host: ports"
         ]
       }
     },

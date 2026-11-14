@@ -1236,6 +1236,125 @@ async fn the_portal_carries_calls_and_streams_together() {
     assert_eq!(refused.unwrap_err().status(), 403);
 }
 
+/// A listener on the loopback that sends back what it gets, and ends its
+/// side once the caller has ended theirs.
+async fn echo() -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((connection, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                let (mut reading, mut writing) = connection.into_split();
+                let _ = tokio::io::copy(&mut reading, &mut writing).await;
+                let _ = writing.shutdown().await;
+            });
+        }
+    });
+    port
+}
+
+/// Write `data` and end, while what comes back is read: what came back.
+async fn through<T>(open: T, data: &[u8]) -> Vec<u8>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut reading, mut writing) = tokio::io::split(open);
+    let sent = data.to_vec();
+    let writer = tokio::spawn(async move {
+        writing.write_all(&sent).await.unwrap();
+        writing.shutdown().await.unwrap();
+        writing
+    });
+    let mut back = vec![];
+    tokio::time::timeout(Duration::from_secs(60), reading.read_to_end(&mut back))
+        .await
+        .expect("all of it back in time")
+        .unwrap();
+    drop(writer.await.unwrap());
+    back
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_port_on_the_loopback_is_a_stream() {
+    use berth_api::{portal::Portal, tunnel};
+    use tokio::io::AsyncWriteExt;
+    let daemon = Daemon::start(&[]);
+    let port = echo().await;
+    let control = || tokio::net::UnixStream::connect(daemon.socket("control"));
+
+    // What is sent comes back, and after this side's end the rest still arrives.
+    let open = tunnel::tunnel(control().await.unwrap(), port)
+        .await
+        .unwrap();
+    assert_eq!(through(open, b"hello").await, b"hello");
+    // A few MB at once, over the stream's own WebSocket and over the portal's windows.
+    let data: Vec<u8> = (0..4_000_000u32).map(|n| (n % 251) as u8).collect();
+    let open = tunnel::tunnel(control().await.unwrap(), port)
+        .await
+        .unwrap();
+    assert!(through(open, &data).await == data);
+    let portal = Portal::over(daemon.stream("control", "/v1/portal").await);
+    let open = portal.connect_port(None, port).await.unwrap();
+    assert!(through(open, &data).await == data);
+
+    // A stream that is not read holds up neither calls nor other streams.
+    // It takes more than the system's buffers hold, which the window then keeps.
+    let mut stuck = portal.connect_port(None, port).await.unwrap();
+    let writing = vec![7u8; 64 << 20];
+    let writer = tokio::spawn(async move {
+        stuck.write_all(&writing).await.unwrap();
+        stuck
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!writer.is_finished(), "the window let it all through");
+    let version = tokio::time::timeout(
+        Duration::from_secs(10),
+        portal.call("version", None, Value::Null, None),
+    )
+    .await
+    .expect("an answer beside the stuck stream");
+    assert_eq!(version.unwrap()["api"], api::API);
+    let other = portal.connect_port(None, port).await.unwrap();
+    assert_eq!(through(other, b"beside").await, b"beside");
+    drop(writer);
+
+    // A port nothing listens on is an error before the stream opens.
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let refused = tunnel::tunnel(control().await.unwrap(), closed)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!((refused.status(), refused.code()), (503, "not_served"));
+    let refused = portal.connect_port(None, closed).await.err().unwrap();
+    assert_eq!((refused.status(), refused.code()), (503, "not_served"));
+    // Only a port of the loopback, by its number.
+    for wrong in ["0", "65536", "http", "192.0.2.1:22", "-1"] {
+        let path = format!("/v1/ports/{wrong}");
+        let refused = client::websocket_unix(&daemon.socket("control"), &path)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(refused.status(), 400, "{wrong}");
+    }
+    // A plain request is no stream, and the agent may not open one.
+    let plain = daemon
+        .host()
+        .await
+        .get::<Value>(&format!("/v1/ports/{port}"))
+        .await;
+    assert_eq!(code(plain).0, 400);
+    let agent = client::websocket_unix(&daemon.socket("agent"), &format!("/v1/ports/{port}"))
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(agent.status(), 403);
+}
+
 /// The committed API documents are what the program generates. Run with
 /// BERTH_UPDATE_DOCS=1 to write them after a change to the API.
 #[test]

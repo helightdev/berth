@@ -800,16 +800,19 @@ async fn forward(
 ) {
     loop {
         tokio::select! {
-            event = events.recv() => match event {
-                Ok(event) => {
-                    if let Some(frame) = pick(event)
-                        && socket.send(WsMessage::Text(frame.to_string().into())).await.is_err()
-                    {
-                        return;
-                    }
+            event = events.recv() => {
+                let frame = match event {
+                    Ok(event) => pick(event),
+                    // A reader that fell behind is told how much it missed,
+                    // so it can read the current state again.
+                    Err(RecvError::Lagged(missed)) => Some(json!({"dropped": {"events": missed}})),
+                    Err(RecvError::Closed) => return,
+                };
+                if let Some(frame) = frame
+                    && socket.send(WsMessage::Text(frame.to_string().into())).await.is_err()
+                {
+                    return;
                 }
-                Err(RecvError::Lagged(_)) => {}
-                Err(RecvError::Closed) => return,
             },
             frame = socket.recv() => if !matches!(frame, Some(Ok(_))) { return },
         }
@@ -985,6 +988,15 @@ struct Follow {
     jobs: bool,
     /// Changes in these namespaces of the key-value store.
     kv: Vec<String>,
+    /// The kinds of thing whose changes to tell.
+    changes: Vec<Changes>,
+}
+
+#[derive(Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum Changes {
+    Hosts,
+    Resources,
 }
 
 async fn events(State(state): App, ws: WebSocketUpgrade) -> Response {
@@ -1016,6 +1028,16 @@ async fn events(State(state): App, ws: WebSocketUpgrade) -> Response {
                 Some(value) => json!({"source": "kv", "namespace": namespace, "key": key, "value": value, "revision": revision}),
                 None => json!({"source": "kv", "namespace": namespace, "key": key, "removed": true}),
             }),
+            Event::Host { name, change, from } if follow.changes.contains(&Changes::Hosts) => {
+                let mut frame = json!({"source": "host", "host": name, "change": change});
+                if let Some(from) = from {
+                    frame["from"] = json!(from);
+                }
+                Some(frame)
+            }
+            Event::Resource { id, provisioner, kind, change } if follow.changes.contains(&Changes::Resources) => {
+                Some(json!({"source": "resource", "resource": id, "provisioner": provisioner, "kind": kind, "change": change}))
+            }
             _ => None,
         })
         .await;
@@ -1086,32 +1108,41 @@ async fn proxy(
     Ok(response)
 }
 
-/// Frames both ways until either side closes.
+/// Frames both ways until either side closes, each way on its own, so a
+/// side that is slow to take frames does not hold up the other direction.
 async fn pump(socket: WebSocket, upstream: berth_core::link::LinkStream) {
     use client::Frame;
     let (mut to_client, mut from_client) = socket.split();
     let (mut to_host, mut from_host) = upstream.split();
-    loop {
-        tokio::select! {
-            frame = from_client.next() => {
-                let sent = match frame {
-                    Some(Ok(WsMessage::Text(text))) => to_host.send(Frame::Text(text.as_str().into())).await,
-                    Some(Ok(WsMessage::Binary(data))) => to_host.send(Frame::Binary(data)).await,
-                    Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => Ok(()),
-                    _ => break,
-                };
-                if sent.is_err() { break }
-            }
-            frame = from_host.next() => {
-                let sent = match frame {
-                    Some(Ok(Frame::Text(text))) => to_client.send(WsMessage::Text(text.as_str().into())).await,
-                    Some(Ok(Frame::Binary(data))) => to_client.send(WsMessage::Binary(data)).await,
-                    Some(Ok(Frame::Ping(_) | Frame::Pong(_) | Frame::Frame(_))) => Ok(()),
-                    _ => break,
-                };
-                if sent.is_err() { break }
+    let towards_host = async {
+        while let Some(Ok(frame)) = from_client.next().await {
+            let sent = match frame {
+                WsMessage::Text(text) => to_host.send(Frame::Text(text.as_str().into())).await,
+                WsMessage::Binary(data) => to_host.send(Frame::Binary(data)).await,
+                WsMessage::Ping(_) | WsMessage::Pong(_) => Ok(()),
+                WsMessage::Close(_) => break,
+            };
+            if sent.is_err() {
+                break;
             }
         }
+    };
+    let towards_client = async {
+        while let Some(Ok(frame)) = from_host.next().await {
+            let sent = match frame {
+                Frame::Text(text) => to_client.send(WsMessage::Text(text.as_str().into())).await,
+                Frame::Binary(data) => to_client.send(WsMessage::Binary(data)).await,
+                Frame::Ping(_) | Frame::Pong(_) | Frame::Frame(_) => Ok(()),
+                Frame::Close(_) => break,
+            };
+            if sent.is_err() {
+                break;
+            }
+        }
+    };
+    tokio::select! {
+        () = towards_host => {}
+        () = towards_client => {}
     }
     let _ = to_host.send(Frame::Close(None)).await;
     let _ = to_client.send(WsMessage::Close(None)).await;

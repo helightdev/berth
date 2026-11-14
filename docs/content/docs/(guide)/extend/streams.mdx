@@ -61,6 +61,28 @@ Text frames are the same for both kinds:
 Any number of viewers can be connected to one session. A terminal has the size
 that the last viewer to resize it asked for.
 
+## The stream of a port
+
+[`ports.connect`](/docs/api/host/ports) is a TCP connection to a port on the
+host's loopback, `127.0.0.1`. It is at `/v1/ports/{port}`, and through
+`berth serve` at `/v1/hosts/{name}/ports/{port}`. berthd connects to the port
+before the handshake, so a port that nothing listens on gives the error `503
+not_served`. It needs the role `operate` and the host
+level.
+
+Binary frames are the connection's bytes in both directions. Either side ends
+its direction with a text frame:
+
+| Frame | From | Meaning |
+|---|---|---|
+| `{"eof":true}` | client | The client sends no more. The program on the port reads the end, and what it sends still comes back |
+| `{"eof":true}` | server | The program closed its side. Bytes sent towards it still arrive |
+
+The stream ends once both sides have sent `{"eof":true}`. It ends at once when
+the client closes the WebSocket or the connection to the port breaks. A stream
+that closes before its `{"eof":true}` has lost its connection.
+`berth_api::tunnel` reads and writes such a stream like a socket.
+
 ## Resuming
 
 A stream that can be resumed takes `since=` and starts there. The page of each
@@ -104,6 +126,11 @@ A client that cannot keep up does not slow the others down:
   `GET /v1/sessions/{id}/output?since=OFFSET`, or reconnect with `since=`.
 - On the channel, a listener that falls 1,000 messages behind is closed. Open it
   again with `since` set to the last id it saw.
+- On `events.follow`, `inbox.follow` and `kv.follow` of `berth serve`, a
+  follower that is too slow gets `{"dropped":{"events":12}}` and the stream
+  goes on. The number counts all the server's events it missed, also those it
+  does not follow. Read the current state again with `inbox.list`, `kv.list` or
+  `jobs.list`.
 
 ## Events on your machine
 
@@ -116,19 +143,39 @@ GET /v1/events
 The first frame the client sends says what to follow. It is sent once, first:
 
 ```json
-{ "hosts": ["studio"], "jobs": true, "kv": ["ui"], "topics": ["myplugin/"] }
+{ "hosts": ["studio"], "jobs": true, "kv": ["ui"], "topics": ["myplugin/"], "changes": ["hosts", "resources"] }
 ```
 
-`hosts` and `topics` select channel messages by host and by topic prefix. `jobs`
-turns on job starts and ends. `kv` lists the key-value namespaces to watch.
+| Field | Follows |
+| --- | --- |
+| `hosts`, `topics` | Channel messages, by host and by topic prefix. All hosts when `hosts` is empty |
+| `jobs` | Job starts and ends |
+| `kv` | Changes in these key-value namespaces |
+| `changes` | Changes to the saved `hosts` and to `resources` |
 
-Each frame the server sends names where it came from in `source`, which is
-`channel`, `job` or `kv`:
+Each frame the server sends names where it came from in `source`:
 
 ```json
 { "source": "kv", "namespace": "ui", "key": "layout", "revision": 4, "value": {} }
 ```
 
-A channel frame also has the `host` and the `message`, and a job frame has the
-`job`. Events are not resumable. After a reconnect, read what was missed with
-`inbox.list` and `kv.list`, then follow again. `inbox.follow` and `kv.follow` follow one of them alone.
+| `source` | The frame also has |
+| --- | --- |
+| `channel` | The `host` and the `message` |
+| `job` | The `job` |
+| `kv` | The `namespace`, the `key`, and the `value` and `revision`, or `removed` |
+| `host` | The `host` and the `change`: `added`, `removed`, `renamed` or `changed`. A rename has the old name in `from` |
+| `resource` | The `resource` id, its `provisioner` and `kind`, and the `change`: `created`, `removed` or `changed` |
+
+A host or resource frame only names what changed. Read the rest with `hosts.get`
+or `resources.get`. A host changes when its profile is saved, as by
+`hosts.save` or an action, and a resource when its record does, as when a job
+creates it or its state is checked. A change that another berth makes in the
+store is told within a few seconds.
+
+```json
+{ "source": "host", "host": "dock", "change": "renamed", "from": "studio" }
+```
+
+Events are not resumable. After a reconnect, read what was missed with
+`inbox.list`, `kv.list`, `hosts.list` and `resources.list`, then follow again. `inbox.follow` and `kv.follow` follow one of them alone.

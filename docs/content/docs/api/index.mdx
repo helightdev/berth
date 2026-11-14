@@ -27,6 +27,15 @@ Every operation page shows the portal frame and the HTTP request side by side.
 
 A *call* takes arguments and input and gives back a result. After it opens, a *stream* keeps sending frames, such as a session's output or new channel messages, and some streams take frames back, such as typed input. On the portal a stream is a subscription. See [Streams](/docs/extend/streams) for what all streams have in common.
 
+## The API number
+
+`version` answers with `api`, a number that rises when something is added to the API. A client compares it to see what a host or a server can do. In `berth serve`, `hosts.list` gives each host's number too.
+
+| `api` | Added |
+| --- | --- |
+| 1 | The API as first released |
+| 2 | `ports.connect` with windows on the portal's streams, roles from the keys of an object claim, the `dropped` frame of `events.follow`, `inbox.follow` and `kv.follow`, and host and resource changes on `events.follow` |
+
 ## Who may call
 
 berthd answers on two sockets, and each operation says which may use it:

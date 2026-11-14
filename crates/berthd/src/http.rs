@@ -3,7 +3,7 @@
 
 use crate::error::E;
 use crate::state::{Caller, Mode, State};
-use crate::{channel, files, services, sessions, system, tasks};
+use crate::{channel, files, ports, services, sessions, system, tasks};
 use axum::{
     Json, Router,
     extract::{Extension, Request, State as AppState},
@@ -77,6 +77,8 @@ pub const ROUTES: &[Route] = &[
     Route { method: "GET", path: "/v1/services", summary: "The services that can be called, and whether each is up.", level: "both", query: &[], body: "", reply: "Service[]", stream: "", handler: || get(services::list) },
     Route { method: "POST", path: "/v1/services/{plugin}/{name}/{method}", summary: "Call a method of the service PLUGIN/NAME: JSON in, JSON out.", level: "both", query: &[], body: "json", reply: "json", stream: "", handler: || post(services::call) },
     Route { method: "GET", path: "/v1/services/{plugin}/{name}/serve", summary: "Only as a WebSocket: for the program that answers the service's calls.", level: "both", query: &[], body: "", reply: "", stream: "serve", handler: || get(services::serve) },
+
+    Route { method: "GET", path: "/v1/ports/{port}", summary: "Only as a WebSocket: a TCP connection to a port on the host's loopback. A port that nothing listens on is an error before the handshake.", level: "host", query: &[], body: "", reply: "", stream: "port", handler: || get(ports::connect) },
 ];
 
 async fn version(AppState(state): AppState<Arc<State>>) -> Json<api::Version> {
@@ -403,6 +405,11 @@ const PATH_ARGUMENTS: &[(&str, &str, &str)] = &[
     ("services.", "plugin", "The plugin the service belongs to."),
     ("services.", "name", "The service's name within its plugin."),
     ("services.call", "method", "One of the service's methods."),
+    (
+        "ports.",
+        "port",
+        "A TCP port on the host's loopback, 127.0.0.1: a number from 1 to 65535.",
+    ),
     ("jobs.", "id", "A job's id."),
     ("kv.", "namespace", "A namespace."),
     ("kv.", "key", "A key."),

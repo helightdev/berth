@@ -2650,6 +2650,60 @@
         }
       ],
       "summary": "For the program that answers a service's calls. While it is open the service is up."
+    },
+    {
+      "args": [
+        {
+          "description": "A TCP port on the host's loopback, 127.0.0.1: a number from 1 to 65535.",
+          "in": "path",
+          "name": "port",
+          "required": true
+        }
+      ],
+      "group": "ports",
+      "http": {
+        "method": "GET",
+        "path": "/v1/ports/{port}"
+      },
+      "kind": "stream",
+      "level": "Host level only.",
+      "name": "ports.connect",
+      "portal": true,
+      "receives": [
+        {
+          "binary": true,
+          "description": "What the program on the port sent.",
+          "example": null,
+          "name": "bytes"
+        },
+        {
+          "binary": false,
+          "description": "The program on the port closed its side. Bytes sent towards it still arrive. The stream ends once both sides have sent this.",
+          "example": {
+            "eof": true
+          },
+          "name": "eof"
+        }
+      ],
+      "resumable": false,
+      "role": "operate",
+      "sends": [
+        {
+          "binary": true,
+          "description": "Bytes for the program on the port.",
+          "example": null,
+          "name": "bytes"
+        },
+        {
+          "binary": false,
+          "description": "The client sends no more, and the program on the port reads the end. What it sends still comes back.",
+          "example": {
+            "eof": true
+          },
+          "name": "eof"
+        }
+      ],
+      "summary": "A TCP connection to a port on the host's loopback, 127.0.0.1. The port is dialled first, so one that nothing listens on is an error and not a stream."
     }
   ],
   "portal": {

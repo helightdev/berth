@@ -26,7 +26,7 @@ It prints where it listens and how many hosts it knows. Only one runs per user. 
 | [`jobs.*`](/docs/api/serve/jobs) | Jobs, one for each run of an action that runs here or follows a task, with their output. Each says its subject and its action. A roll-out's job has a report, host by host |
 | [`inbox.*`](/docs/api/serve/inbox) | Messages the hosts published on their channels and kept, taken in while `berth serve` runs; each can be marked done |
 | [`kv.*`](/docs/api/serve/kv) | A key-value store with revisions, for user interfaces to keep state in |
-| [`events.follow`](/docs/api/serve/events) | One stream of channel messages, jobs and key-value changes, at `/v1/events` |
+| [`events.follow`](/docs/api/serve/events) | One stream of channel messages, jobs, key-value changes and changes to hosts and resources, at `/v1/events` |
 
 All of it is also on the [portal](/docs/api/portal), the one WebSocket at `/v1/portal` for calls and streams together.
 
@@ -152,6 +152,14 @@ berth config oauth_audience berth
 | `serve_token` | `off`: only access tokens get in, the server's own token does not |
 
 A token is a JWT signed with one of the issuer's keys (RSA, ECDSA or Ed25519). It needs `iss` and `exp`, and the role in the claim: `berth:view`, `berth:operate` or `berth:admin`. In a claim other than `scope` the bare `view`, `operate` and `admin` count too. The highest role named is the caller's.
+
+The roles can be written in the claim three ways:
+
+| Claim's value | Example | Roles read |
+| --- | --- | --- |
+| Text | `"openid berth:operate"` | The words, split at spaces and commas |
+| List | `["berth:view", "admin"]` | Each entry |
+| Object | `{"admin": {…}, "billing": {…}}` | Each key. Zitadel writes project roles this way, in `urn:zitadel:iam:org:project:roles` |
 
 ```bash
 curl -H "Authorization: Bearer $ACCESS_TOKEN" https://berth.example.ts.net/v1/access

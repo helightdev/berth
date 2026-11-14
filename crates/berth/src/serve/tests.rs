@@ -227,6 +227,65 @@ async fn the_key_value_store_over_the_api() {
     assert_eq!(refused.status, 413);
 }
 
+fn kv_event(key: &str, value: Value) -> super::Event {
+    super::Event::Kv {
+        namespace: "ui".into(),
+        key: key.into(),
+        value: Some(value),
+        revision: 1,
+    }
+}
+
+/// Wait for a frame that says events were dropped, past the ones before it.
+async fn dropped<S, E>(stream: &mut S) -> u64
+where
+    S: StreamExt<Item = Result<Frame, E>> + Unpin,
+    E: std::fmt::Debug,
+{
+    loop {
+        let frame = text(stream).await;
+        if let Some(missed) = frame["dropped"]["events"].as_u64() {
+            return missed;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_follower_that_falls_behind_is_told_what_it_missed() {
+    let served = served().await;
+    // The events stream listens from the handshake on, before it is told
+    // what to follow, so all of these are waiting when it starts.
+    let mut events = client::websocket_unix(&served.socket, "/v1/events")
+        .await
+        .unwrap();
+    for n in 0..1100 {
+        let _ = served.state.events.send(kv_event("layout", json!(n)));
+    }
+    let follow = json!({"kv": ["ui"]}).to_string();
+    events.send(Frame::Text(follow.into())).await.unwrap();
+    assert_eq!(text(&mut events).await, json!({"dropped": {"events": 76}}));
+    assert_eq!(text(&mut events).await["value"], 76);
+
+    // A follower of a namespace that reads nothing while the server's buffers
+    // fill misses the rest, and goes on after the notice.
+    let mut changes = client::websocket_unix(&served.socket, "/v1/kv/ui")
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let large = "x".repeat(4096);
+    for _ in 0..5000 {
+        let _ = served.state.events.send(kv_event("layout", json!(large)));
+    }
+    let _ = served.state.events.send(kv_event("last", json!(true)));
+    assert!(dropped(&mut changes).await > 0);
+    loop {
+        let frame = text(&mut changes).await;
+        if frame["key"] == "last" {
+            break;
+        }
+    }
+}
+
 fn message(id: u64, topic: &str, keep: &str) -> berth_api::Message {
     serde_json::from_value(json!({
         "id": id, "topic": topic, "body": {"n": id}, "keep": keep,
@@ -891,6 +950,94 @@ async fn a_hosts_actions_are_its_tasks_and_berths_own() {
             .iter()
             .all(|job| job["subject"] == "host:box")
     );
+}
+
+/// A listener on the loopback that sends back what it gets, and ends its
+/// side once the caller has ended theirs.
+async fn echo() -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((connection, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                let (mut reading, mut writing) = connection.into_split();
+                let _ = tokio::io::copy(&mut reading, &mut writing).await;
+                let _ = writing.shutdown().await;
+            });
+        }
+    });
+    port
+}
+
+/// Write `data` and end, while what comes back is read: what came back.
+async fn through<T>(open: T, data: &[u8]) -> Vec<u8>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut reading, mut writing) = tokio::io::split(open);
+    let sent = data.to_vec();
+    let writer = tokio::spawn(async move {
+        writing.write_all(&sent).await.unwrap();
+        writing.shutdown().await.unwrap();
+        writing
+    });
+    let mut back = vec![];
+    tokio::time::timeout(Duration::from_secs(60), reading.read_to_end(&mut back))
+        .await
+        .expect("all of it back in time")
+        .unwrap();
+    drop(writer.await.unwrap());
+    back
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_port_of_a_host_is_reached_through_the_server() {
+    use berth_api::{portal::Portal, tunnel::Tunnel};
+    let Some(host) = Berthd::start().await else {
+        return;
+    };
+    let served = served().await;
+    served
+        .state
+        .add(Remote::new("studio", "192.0.2.10", host.link()));
+    let port = echo().await;
+    let data: Vec<u8> = (0..3_000_000u32).map(|n| (n % 251) as u8).collect();
+
+    // As the host's own stream, passed through.
+    let path = format!("/v1/hosts/studio/ports/{port}");
+    let open = client::websocket_unix(&served.socket, &path).await.unwrap();
+    assert_eq!(through(Tunnel::new(open), b"hello").await, b"hello");
+    let open = client::websocket_unix(&served.socket, &path).await.unwrap();
+    assert!(through(Tunnel::new(open), &data).await == data);
+
+    // On the portal, with the host named.
+    let portal = Portal::over(
+        client::websocket_unix(&served.socket, "/v1/portal")
+            .await
+            .unwrap(),
+    );
+    let open = portal.connect_port(Some("studio"), port).await.unwrap();
+    assert!(through(open, &data).await == data);
+
+    // A port nothing listens on is the host's error, either way.
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let path = format!("/v1/hosts/studio/ports/{closed}");
+    let refused = client::websocket_unix(&served.socket, &path)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!((refused.status(), refused.code()), (503, "not_served"));
+    let refused = portal
+        .connect_port(Some("studio"), closed)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!((refused.status(), refused.code()), (503, "not_served"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3061,6 +3208,137 @@ async fn a_host_is_renamed_as_a_job_with_what_the_server_keeps_of_it() {
     assert_eq!(saved["access"]["address"], "192.0.2.7");
     let (_, inbox) = send(client, "GET", "/v1/inbox?host=studio", Value::Null).await;
     assert_eq!(inbox["messages"][0]["topic"], "agent/done", "{inbox}");
+}
+
+/// The frames of an events stream up to the first of `source` with `change`, which is returned.
+async fn change_of<S, E>(stream: &mut S, source: &str, change: &str) -> Value
+where
+    S: StreamExt<Item = Result<Frame, E>> + Unpin,
+    E: std::fmt::Debug,
+{
+    let mut seen = vec![];
+    loop {
+        let frame = tokio::time::timeout(Duration::from_secs(20), text(stream))
+            .await
+            .unwrap_or_else(|_| panic!("no {source} {change} after {seen:?}"));
+        if frame["source"] == source && frame["change"] == change {
+            return frame;
+        }
+        seen.push(frame);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hosts_and_resources_that_change_are_told_on_the_events_stream() {
+    let served = served_with(quick).await;
+    let fake = fake_provisioner(&served);
+    let mut client = served.client().await;
+    let client = &mut client;
+    register_fake(client).await;
+    let paths = &served.state.paths;
+    paths.prepare().unwrap();
+    let mut events = client::websocket_unix(&served.socket, "/v1/events")
+        .await
+        .unwrap();
+    let follow = json!({"changes": ["hosts", "resources"]}).to_string();
+    events.send(Frame::Text(follow.into())).await.unwrap();
+
+    // Saved by another berth beside the server: told when the server looks.
+    let profile = json!({"hostname": "studio", "builder": {}, "access": {"address": "192.0.2.7", "link": ["sh", "-c", "exit 1"]}});
+    berth_core::profiles::Place::own("studio")
+        .unwrap()
+        .save(paths, &profile)
+        .unwrap();
+    served.state.notice();
+    assert_eq!(
+        change_of(&mut events, "host", "added").await,
+        json!({"source": "host", "host": "studio", "change": "added"})
+    );
+    let mut moved = profile.clone();
+    moved["access"]["address"] = json!("192.0.2.8");
+    let (status, said) = send(client, "PUT", "/v1/hosts/studio/profile", moved).await;
+    assert_eq!(status, 200, "{said}");
+    assert_eq!(
+        change_of(&mut events, "host", "changed").await["host"],
+        "studio"
+    );
+    let rename = json!({"arguments": {"name": "dock", "hostname": "no"}});
+    let (status, acted) = send(client, "POST", "/v1/hosts/studio/actions/rename", rename).await;
+    assert_eq!(status, 202, "{acted}");
+    assert_eq!(
+        change_of(&mut events, "host", "renamed").await,
+        json!({"source": "host", "host": "dock", "change": "renamed", "from": "studio"})
+    );
+    job_done(client, acted["job"]["id"].as_str().unwrap()).await;
+    let (status, said) = send(client, "DELETE", "/v1/hosts/dock", Value::Null).await;
+    assert_eq!(status, 200, "{said}");
+    assert_eq!(
+        change_of(&mut events, "host", "removed").await["host"],
+        "dock"
+    );
+
+    send(
+        client,
+        "PUT",
+        "/v1/secrets/api_token",
+        json!({"value": "tok-made-up"}),
+    )
+    .await;
+    std::fs::write(
+        fake.join("answer.create"),
+        r#"{"id": "wiki", "state": "running"}"#,
+    )
+    .unwrap();
+    let asked = json!({"provisioner": "vm", "kind": "deployment", "name": "wiki",
+                       "arguments": {"server": "x"}, "spec": "services:\n  wiki:\n    image: wiki\n",
+                       "token": "t-1"});
+    let (status, created) = send(client, "POST", "/v1/resources", asked).await;
+    assert_eq!(status, 202, "{created}");
+    let id = created["resource"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        change_of(&mut events, "resource", "created").await,
+        json!({"source": "resource", "resource": id, "provisioner": "vm", "kind": "deployment", "change": "created"})
+    );
+    let (_, code) = job_ended(&served.socket, created["job"]["id"].as_str().unwrap()).await;
+    assert_eq!(code, 0);
+    // Made, it has the provisioner's id now.
+    assert_eq!(
+        change_of(&mut events, "resource", "changed").await["resource"],
+        json!(id)
+    );
+    let (status, removed) = send(
+        client,
+        "DELETE",
+        &format!("/v1/resources/{id}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 202, "{removed}");
+    assert_eq!(
+        change_of(&mut events, "resource", "removed").await["resource"],
+        json!(id)
+    );
+
+    // Not asked for, nothing of the kind is told.
+    let mut quiet = client::websocket_unix(&served.socket, "/v1/events")
+        .await
+        .unwrap();
+    let follow = json!({"kv": ["ui"]}).to_string();
+    quiet.send(Frame::Text(follow.into())).await.unwrap();
+    berth_core::profiles::Place::own("pier")
+        .unwrap()
+        .save(paths, &profile)
+        .unwrap();
+    served.state.notice();
+    put(&served.socket, &[], "1").await;
+    assert_eq!(text(&mut quiet).await["source"], "kv");
+    // A kind it does not know is refused.
+    let mut wrong = client::websocket_unix(&served.socket, "/v1/events")
+        .await
+        .unwrap();
+    let follow = json!({"changes": ["plugins"]}).to_string();
+    wrong.send(Frame::Text(follow.into())).await.unwrap();
+    assert_eq!(text(&mut wrong).await["error"]["code"], "bad_request");
 }
 
 // Not on a runtime of the test's: the screen waits for the server on one of its own.

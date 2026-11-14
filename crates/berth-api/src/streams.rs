@@ -161,7 +161,34 @@ pub const HOST: &[Stream] = &[
             ),
         ],
     },
+    Stream {
+        id: "port",
+        path: "/v1/ports/{port}",
+        summary: "A TCP connection to a port on the host's loopback, 127.0.0.1. The port is dialled first, so one that nothing listens on is an error and not a stream.",
+        level: "host",
+        parameters: &[],
+        resumable: false,
+        server: &[
+            binary("bytes", "What the program on the port sent."),
+            text(
+                "eof",
+                "The program on the port closed its side. Bytes sent towards it still arrive. The stream ends once both sides have sent this.",
+                EOF,
+            ),
+        ],
+        client: &[
+            binary("bytes", "Bytes for the program on the port."),
+            text(
+                "eof",
+                "The client sends no more, and the program on the port reads the end. What it sends still comes back.",
+                EOF,
+            ),
+        ],
+    },
 ];
+
+/// The frame by which one side of a stream of a port says it sends no more.
+pub const EOF: &str = r#"{"eof":true}"#;
 
 /// The streams `berth serve` adds to each host's own.
 pub const SERVE: &[Stream] = &[
@@ -212,11 +239,18 @@ pub const SERVE: &[Stream] = &[
             ("topic", "Only topics starting with this."),
         ],
         resumable: false,
-        server: &[text(
-            "message",
-            "A stored message with its host.",
-            r#"{"host":"server","id":4812,"topic":"myplugin/progress","body":{},"keep":"log","from":{"level":"agent","uid":1001},"time":"2026-11-12T10:00:00Z","done":false}"#,
-        )],
+        server: &[
+            text(
+                "message",
+                "A stored message with its host.",
+                r#"{"host":"server","id":4812,"topic":"myplugin/progress","body":{},"keep":"log","from":{"level":"agent","uid":1001},"time":"2026-11-12T10:00:00Z","done":false}"#,
+            ),
+            text(
+                "dropped",
+                "This follower was too slow. `events` counts the server's events it missed, of every kind. Read the inbox again.",
+                r#"{"dropped":{"events":12}}"#,
+            ),
+        ],
         client: &[],
     },
     Stream {
@@ -237,13 +271,18 @@ pub const SERVE: &[Stream] = &[
                 "A key was removed.",
                 r#"{"key":"layout","removed":true}"#,
             ),
+            text(
+                "dropped",
+                "This follower was too slow. `events` counts the server's events it missed, of every kind. List the namespace again.",
+                r#"{"dropped":{"events":12}}"#,
+            ),
         ],
         client: &[],
     },
     Stream {
         id: "events",
         path: "/v1/events",
-        summary: "Channel messages of chosen hosts, jobs and key-value changes together. The first frame sent names what to follow; each frame received says where it came from.",
+        summary: "Channel messages of chosen hosts, jobs, key-value changes and changes to hosts and resources together. The first frame sent names what to follow; each frame received says where it came from.",
         level: "host",
         parameters: &[],
         resumable: false,
@@ -263,11 +302,26 @@ pub const SERVE: &[Stream] = &[
                 "A key changed.",
                 r#"{"source":"kv","namespace":"ui","key":"layout","value":{},"revision":4}"#,
             ),
+            text(
+                "host",
+                "A saved host was `added`, `removed`, `renamed` (with the name it had `from`) or its profile `changed`. Read the host itself with hosts.get.",
+                r#"{"source":"host","host":"studio","change":"renamed","from":"desk"}"#,
+            ),
+            text(
+                "resource",
+                "A resource was `created`, `removed` or its record `changed`. Read it with resources.get.",
+                r#"{"source":"resource","resource":"r-k3v9qz2m","provisioner":"docker","kind":"deployment","change":"created"}"#,
+            ),
+            text(
+                "dropped",
+                "This follower was too slow. `events` counts the server's events it missed, of every kind. Read what it follows again.",
+                r#"{"dropped":{"events":12}}"#,
+            ),
         ],
         client: &[text(
             "follow",
             "What to follow. Sent once, first.",
-            r#"{"hosts":["server"],"topics":["myplugin/"],"jobs":true,"kv":["ui"]}"#,
+            r#"{"hosts":["server"],"topics":["myplugin/"],"jobs":true,"kv":["ui"],"changes":["hosts","resources"]}"#,
         )],
     },
 ];

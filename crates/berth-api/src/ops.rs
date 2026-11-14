@@ -29,6 +29,16 @@
 //! ↔ {"sub": 7, "end": true}             the last frame; from the server it may carry "error"
 //! ```
 //!
+//! A request to open a stream may add `"window": BYTES`. A server that keeps
+//! to it says so in its answer, `{"open": true, "window": BYTES}`, with the
+//! window it took. Each side then sends at most that many bytes of binary
+//! frames of the stream that the other side has not yet said it took, and
+//! says what it took as it goes:
+//!
+//! ```text
+//! ↔ {"sub": 7, "credit": 131072}        so many more bytes may come
+//! ```
+//!
 //! Bytes in a result or as input are `{"base64": "…"}` (a result adds
 //! `content_type`), up to [`PORTAL_BYTES`]; larger transfers are HTTP's.
 
@@ -218,6 +228,7 @@ pub static HOST: &[Op] = &[
         "/v1/services/{plugin}/{name}/{method}",
     ),
     stream("services.serve", "/v1/services/{plugin}/{name}/serve"),
+    stream("ports.connect", "/v1/ports/{port}"),
 ];
 
 const IF_MATCH: (&str, &str) = ("if_match", "if-match");
@@ -445,6 +456,7 @@ mod tests {
         assert_eq!(role(HOST, "files.read"), Role::Operate);
         assert_eq!(role(HOST, "applied.profile"), Role::Admin);
         assert_eq!(role(HOST, "sessions.attach"), Role::Operate);
+        assert_eq!(role(HOST, "ports.connect"), Role::Operate);
         assert_eq!(role(SERVE, "hosts.save"), Role::Admin);
         assert_eq!(role(SERVE, "hosts.act"), Role::View);
         assert_eq!(role(SERVE, "provisioners.get"), Role::View);
