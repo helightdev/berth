@@ -3,7 +3,7 @@
 use crate::{
     Result, credentials,
     discovery::{self, Choices, expand_path},
-    fields::{Action, Field, Kind, Step, TASKS},
+    fields::{Action, Field, Kind, OFFERS, Step},
     job::{Job, Stage},
     picker::Picker,
     plugins::{self, Plugin},
@@ -32,13 +32,13 @@ pub enum Entry {
     Action(Action),
     Field(Field),
     /// Something the overview of a host offers, by name.
-    Task(&'static str),
+    Offer(&'static str),
     /// The heading of a group on the Features page.
     Group(usize),
     /// A plugin's feature, switched on or off for this host: its index among them.
     Feature(usize),
-    /// A task of the host, by index into what it listed.
-    HostTask(usize),
+    /// An action of the host, by index into what it listed.
+    HostAction(usize),
     /// A session on the host, by index into what it listed.
     HostSession(usize),
     /// A registry this host can be given, by index into `App::registry_names`.
@@ -657,7 +657,7 @@ impl App {
                     {
                         setup.push(Row::entry(
                             "  ▸ Apply this configuration",
-                            Entry::Task("apply"),
+                            Entry::Offer("apply"),
                         ));
                     }
                     match groups.iter_mut().find(|(title, _)| title == "Set-Up") {
@@ -682,18 +682,18 @@ impl App {
     }
 
     /// The groups of the overview under the connection, as the host lists its
-    /// tasks: each in the group it names, with the terminal among the first and
+    /// actions: each in the group it names, with the terminal among the first and
     /// the host's sessions after them. A host that cannot be asked says why.
     fn overview_groups(&self) -> Vec<(String, Vec<Row>)> {
         let note = |text: String, colour| {
             Row::info(Line::styled(format!("  {text}"), Style::new().fg(colour)))
         };
         let fixed = |name: &'static str| {
-            let label = TASKS
+            let label = OFFERS
                 .iter()
-                .find(|(task, ..)| *task == name)
+                .find(|(offer, ..)| *offer == name)
                 .map_or(name, |(_, label, _)| label);
-            Row::entry(format!("  ▸ {label}"), Entry::Task(name))
+            Row::entry(format!("  ▸ {label}"), Entry::Offer(name))
         };
         // A host that cannot be worked with yet still has berth's own
         // actions, such as first contact and installing the controller.
@@ -723,7 +723,7 @@ impl App {
             // Below a workstation the controller is installed alone.
             State::Missing if self.host.host_type != host_type::HostType::Workstation => {
                 let rows = vec![
-                    note("berth's controller is not on this host. Install it for sessions, tasks and files here; berth reaches the host over SSH meanwhile.".into(), theme::MUTED),
+                    note("berth's controller is not on this host. Install it for sessions, actions and files here; berth reaches the host over SSH meanwhile.".into(), theme::MUTED),
                     fixed("ssh"),
                 ];
                 return host(rows);
@@ -742,7 +742,7 @@ impl App {
                 let mut rows = vec![note(
                     format!(
                         "The host's tools ({version}) are older than this berth needs. {} brings them up to date.",
-                        TASKS
+                        OFFERS
                             .iter()
                             .find(|(name, ..)| *name == raise)
                             .map_or(raise, |(_, label, _)| label)
@@ -803,8 +803,8 @@ impl App {
                             .into_iter()
                             .map(|(line, pick)| {
                                 let entry = match pick {
-                                    Pick::Task(index) => Entry::HostTask(index),
-                                    Pick::Terminal => Entry::Task("terminal"),
+                                    Pick::Action(index) => Entry::HostAction(index),
+                                    Pick::Terminal => Entry::Offer("terminal"),
                                     Pick::Session(index) => Entry::HostSession(index),
                                 };
                                 Row::entry(line, entry)
@@ -816,7 +816,7 @@ impl App {
             .collect()
     }
 
-    /// berth's own actions on the host in their groups, without its tasks.
+    /// berth's own actions on the host in their groups, without its controller's.
     fn own_groups(&self) -> Vec<(String, Vec<Row>)> {
         berth_tui::page::groups(&self.host.actions(), |index| index)
             .into_iter()
@@ -825,7 +825,7 @@ impl App {
                     .rows
                     .into_iter()
                     .filter(|(_, index)| self.host.is_own(*index))
-                    .map(|(line, index)| Row::entry(line, Entry::HostTask(index)))
+                    .map(|(line, index)| Row::entry(line, Entry::HostAction(index)))
                     .collect();
                 (group.title, rows)
             })
@@ -867,12 +867,12 @@ impl App {
         }
     }
 
-    /// The information box for the selected row, as Markdown. A task that has
+    /// The information box for the selected row, as Markdown. An action that has
     /// steps from plugins lists what each of them adds.
     pub fn help(&self) -> String {
         match self.selected_entry() {
             Some(Entry::Feature(index)) => self.catalogue[index].help.clone(),
-            Some(Entry::HostTask(index)) => berth_tui::host::task_help(&self.host, index),
+            Some(Entry::HostAction(index)) => berth_tui::host::action_help(&self.host, index),
             Some(Entry::HostSession(index)) => berth_tui::host::session_help(&self.host, index),
             Some(Entry::Machine(pick)) => self.machine.help(pick),
             _ => self.entry_help().to_owned(),
@@ -883,13 +883,13 @@ impl App {
         match self.selected_entry() {
             Some(Entry::Action(action)) => action.help(),
             Some(Entry::Field(field)) => field.spec().help,
-            Some(Entry::Task(name)) => TASKS
+            Some(Entry::Offer(name)) => OFFERS
                 .iter()
-                .find(|(task, ..)| *task == name)
+                .find(|(offer, ..)| *offer == name)
                 .map_or("", |(.., help)| help),
             Some(Entry::Group(_)) => setup::GROUP_HELP,
             Some(Entry::Feature(_)) => "",
-            Some(Entry::HostTask(_) | Entry::HostSession(_) | Entry::Machine(_)) => "",
+            Some(Entry::HostAction(_) | Entry::HostSession(_) | Entry::Machine(_)) => "",
             Some(Entry::HostRegistry(_)) => {
                 "Give this host the login of this registry. Its npm repositories become the agent's npm registry with the login in ~/.npmrc, and its Docker addresses get the login in ~/.docker/config.json. Registries are set up on the Registries tab of the home screen."
             }
@@ -985,10 +985,10 @@ impl App {
         if step != Step::Manage && self.action == Action::Machine {
             setup::fit_target(&mut self.config, self.action);
         }
-        // A host with an address opens on its tasks rather than the address.
-        let task = |entry: &Entry| matches!(entry, Entry::Task(_) | Entry::HostTask(_));
+        // A host with an address opens on its actions rather than the address.
+        let offered = |entry: &Entry| matches!(entry, Entry::Offer(_) | Entry::HostAction(_));
         let first = match self.text(Field::SshHost).is_empty() {
-            false if step == Step::Manage => self.entries().iter().position(task),
+            false if step == Step::Manage => self.entries().iter().position(offered),
             _ => None,
         };
         if step == Step::Settings {
@@ -1751,7 +1751,7 @@ impl App {
     }
 
     /// Of what a server lists, berth's own that the overview has no row of:
-    /// applying and the seed are on the set-up, sending secrets is a task.
+    /// applying and the seed are on the set-up, sending secrets is an action.
     fn take_own_actions(&mut self) {
         let Some(answers) = &self.own_answers else {
             return;
@@ -1832,30 +1832,30 @@ impl App {
         }
     }
 
-    /// Run a task of the host: after its question and its arguments, if it has any.
-    pub fn begin_task(&mut self, index: usize, confirmed: bool) {
+    /// Run an action of the host: after its question and its arguments, if it has any.
+    pub fn begin_action(&mut self, index: usize, confirmed: bool) {
         if let Some(action) = self.host.actions().get(index)
             && !action.available
         {
             self.status = format!("{} cannot run now: {}", action.title(), action.why);
             return;
         }
-        if let Some((index, values)) = self.host.begin_task(index, confirmed) {
-            self.launch_task(index, values);
+        if let Some((index, values)) = self.host.begin_action(index, confirmed) {
+            self.launch_action(index, values);
         }
     }
 
     /// Take the value typed for the argument being asked and go on to the
-    /// next, or run the task after the last.
+    /// next, or run the action after the last.
     pub fn accept_argument(&mut self) {
         match self.host.accept_argument() {
-            Ok(Some((index, values))) => self.launch_task(index, values),
+            Ok(Some((index, values))) => self.launch_action(index, values),
             Ok(None) => {}
             Err(missing) => self.status = missing,
         }
     }
 
-    fn launch_task(&mut self, index: usize, values: std::collections::BTreeMap<String, String>) {
+    fn launch_action(&mut self, index: usize, values: std::collections::BTreeMap<String, String>) {
         let Some(action) = self.host.actions().get(index).cloned() else {
             return;
         };
@@ -1864,13 +1864,13 @@ impl App {
             self.own_command = Some(own_command(&self.place.argument(), &action, &values));
             return;
         }
-        let mut body = self.host.task_body(&action, &values);
-        // Secrets are built here and travel on the task's standard input. A
+        let mut body = self.host.action_body(&action, &values);
+        // Secrets are built here and travel on the action's standard input. A
         // server's host is given the server's own, which its action sends.
         let secrets = self
             .host
-            .task(&action)
-            .and_then(|task| task.input.as_deref());
+            .host_action(&action)
+            .and_then(|kept| kept.input.as_deref());
         if secrets == Some("secrets") && self.served().is_none() {
             let payload = self
                 .access()
@@ -2249,7 +2249,7 @@ impl App {
     /// Run the chosen action inside the UI. Writing a USB drive first asks for
     /// confirmation and for administrator rights.
     pub fn run(&mut self, confirmed: bool) {
-        // The overview has no action of its own: its rows are the host's tasks.
+        // The overview has no action of its own: its rows are the host's actions.
         if self.action == Action::Manage {
             return;
         }
@@ -2709,7 +2709,7 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
     if config["agent_privileges"].is_null() && config["agent_passwordless_sudo"] == true {
         config["agent_privileges"] = json!("full");
     }
-    // The task last run from the overview was kept once; the host lists its own now.
+    // The action last run from the overview was kept once; the host lists its own now.
     if let Some(builder) = config["builder"].as_object_mut() {
         builder.remove("manage_task");
     }

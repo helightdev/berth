@@ -52,7 +52,7 @@ Usage:
   berth apply --behind [--update] [--reboot [--force]]
                              apply every host that is behind, one at a time, stopping
                              at the first that fails; --all takes current ones too,
-                             --update runs their update task, --reboot reboots those
+                             --update runs their update action, --reboot reboots those
                              that need it unless sessions run (--force: even then)
   berth connect URL          use the berth server at URL: give it the setup key made
                              there with berth setup-key, on standard input
@@ -100,10 +100,11 @@ Usage:
                              delete the machine; the profile stays
   berth key                  this berth's own SSH public key, which the operator of a
                              host it sets up takes
-  berth tasks HOST           what the host can do: its tasks and those of its plugins
-  berth run HOST TASK [NAME=VALUE…] [--yes]
+  berth actions HOST         what the host can do: its controller's actions, those of
+                             its plugins and berth's own
+  berth run HOST ACTION [NAME=VALUE…] [--yes]
                              run one of them and leave with its exit code
-                             (berth manage HOST TASK is the same)
+                             (berth manage HOST ACTION is the same)
   berth exec HOST [--user agent|operator|root] [--keep] -- COMMAND…
                              run a command on the host; its exit code is berth's
   berth attach HOST [ID]     this terminal onto a terminal session of the host, or onto
@@ -802,9 +803,9 @@ fn run() -> Result<()> {
             require_ready(&app)?;
             return app.execute();
         }
-        ["tasks", host] => return commands::tasks(&paths, host),
-        ["run" | "manage", host, task, ref rest @ ..] => {
-            return commands::run(&paths, host, task, rest);
+        ["actions", host] => return commands::actions(&paths, host),
+        ["run" | "manage", host, action, ref rest @ ..] => {
+            return commands::run(&paths, host, action, rest);
         }
         ["exec", host, ref rest @ ..] => return commands::exec(&paths, host, rest),
         ["attach", host] => return commands::attach(&paths, host, None),
@@ -890,7 +891,7 @@ mod tests {
     fn only_the_screen_opens_before_the_mirror_is_made() {
         assert!(opens_screen(&[]) && opens_screen(&["studio"]));
         assert!(!opens_screen(&["list"]) && !opens_screen(&["--version"]));
-        assert!(!opens_screen(&["run", "studio", "task"]));
+        assert!(!opens_screen(&["run", "studio", "status"]));
     }
 
     use super::*;
@@ -989,7 +990,7 @@ mod tests {
         assert!(
             !app.entries()
                 .iter()
-                .any(|entry| matches!(entry, Entry::HostTask(_)))
+                .any(|entry| matches!(entry, Entry::HostAction(_)))
         );
         app.set_item(Item::Feature(0), false);
         assert_eq!(

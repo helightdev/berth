@@ -449,7 +449,7 @@ impl App {
                         setup.machine.found(found);
                     }
                 }
-                // berth's own actions are beside the host's tasks; applying
+                // berth's own actions are beside the controller's; applying
                 // and the seed have rows of their own.
                 Arrived::Actions(name, listed) if name == self.name => {
                     self.host.own = listed
@@ -625,14 +625,14 @@ impl App {
         // A host that cannot be worked with yet still has berth's own
         // actions, such as first contact and installing the controller.
         let actions = self.host.actions();
-        let mut groups: Vec<(String, Vec<Row>)> = berth_tui::page::groups(&actions, Pick::Task)
+        let mut groups: Vec<(String, Vec<Row>)> = berth_tui::page::groups(&actions, Pick::Action)
             .into_iter()
             .map(|group| {
                 let picks = group
                     .rows
                     .into_iter()
                     .filter(
-                        |(_, pick)| matches!(pick, Pick::Task(index) if self.host.is_own(*index)),
+                        |(_, pick)| matches!(pick, Pick::Action(index) if self.host.is_own(*index)),
                     )
                     .map(|(line, pick)| Row {
                         line: line.into(),
@@ -704,7 +704,7 @@ impl App {
 
     fn help(&self) -> String {
         match self.selected() {
-            Some(Entry::Pick(Pick::Task(index))) => host::task_help(&self.host, index),
+            Some(Entry::Pick(Pick::Action(index))) => host::action_help(&self.host, index),
             Some(Entry::Pick(Pick::Session(index))) => host::session_help(&self.host, index),
             Some(Entry::Pick(Pick::Terminal)) => format!(
                 "A shell on the host, as one of its sessions. Space switches between the agent and the SSH user.\n\nLeaving the shell closes it; {LEAVE} leaves it running, to be opened again from Sessions."
@@ -749,21 +749,21 @@ impl App {
             }
             return;
         }
-        let body = self.host.task_body(&action, &values);
+        let body = self.host.action_body(&action, &values);
         self.status = format!("Starting {}…", action.title());
         self.host.run(&action.name, body);
     }
 
     fn choose(&mut self, entry: Entry) {
         match entry {
-            Entry::Pick(Pick::Task(index)) => {
+            Entry::Pick(Pick::Action(index)) => {
                 if let Some(action) = self.host.actions().get(index)
                     && !action.available
                 {
                     self.status = format!("{} cannot run now: {}", action.title(), action.why);
                     return;
                 }
-                if let Some((index, values)) = self.host.begin_task(index, false) {
+                if let Some((index, values)) = self.host.begin_action(index, false) {
                     self.launch(index, values);
                 }
             }
@@ -873,7 +873,7 @@ impl App {
             match key.code {
                 Code::Char('y' | 'Y') => match self.host.question.take() {
                     Some((_, Pending::Action(index))) => {
-                        if let Some((index, values)) = self.host.begin_task(index, true) {
+                        if let Some((index, values)) = self.host.begin_action(index, true) {
                             self.launch(index, values);
                         }
                     }

@@ -54,8 +54,8 @@ async fn refresh(
                 return;
             }
         }
-        if let Ok(tasks) = link.get::<Value>("/v1/tasks").await {
-            let _ = events.send(Event::Tasks(list(tasks, "tasks")));
+        if let Ok(listed) = link.get::<Value>("/v1/actions").await {
+            let _ = events.send(Event::Actions(list(listed, "actions")));
         }
     }
     if let Ok(sessions) = link.get::<Value>("/v1/sessions").await {
@@ -157,7 +157,7 @@ async fn worker(
             Request::Refresh => drop(tokio::spawn(refresh(link, events, true, compare.clone()))),
             Request::Poll => drop(tokio::spawn(refresh(link, events, false, None))),
             Request::Run { name, body } => drop(tokio::spawn(async move {
-                let _ = events.send(match link.run_task(&name, &body).await {
+                let _ = events.send(match link.run_action(&name, &body).await {
                     Ok(session) => Event::Opened(Box::new(session)),
                     Err(error) => Event::Error(error.to_string()),
                 });
@@ -193,10 +193,10 @@ async fn worker(
                 }
                 refresh(link, events, false, None).await;
             })),
-            Request::Choices { task, argument } => drop(tokio::spawn(async move {
+            Request::Choices { action, argument } => drop(tokio::spawn(async move {
                 let path = format!(
-                    "/v1/tasks/{}/choices/{}",
-                    api::client::encode(&task),
+                    "/v1/actions/{}/choices/{}",
+                    api::client::encode(&action),
                     api::client::encode(&argument)
                 );
                 let choices = match link.get::<Value>(&path).await {
@@ -204,7 +204,7 @@ async fn worker(
                     Err(_) => vec![],
                 };
                 let _ = events.send(Event::Choices {
-                    task,
+                    action,
                     argument,
                     choices,
                 });
@@ -273,10 +273,10 @@ mod tests {
 
     #[test]
     fn lists_come_bare_or_under_a_key() {
-        let bare: Vec<api::Task> = list(json!([{"name": "status"}]), "tasks");
-        let keyed: Vec<api::Task> = list(
-            json!({"tasks": [{"name": "status"}, {"no": "name"}]}),
-            "tasks",
+        let bare: Vec<api::HostAction> = list(json!([{"name": "status"}]), "actions");
+        let keyed: Vec<api::HostAction> = list(
+            json!({"actions": [{"name": "status"}, {"no": "name"}]}),
+            "actions",
         );
         assert_eq!((bare.len(), keyed.len()), (1, 1));
         assert_eq!(exited(r#"{"exited":{"exit_code":3}}"#), Some(Some(3)));
@@ -306,7 +306,7 @@ mod tests {
     }
 
     /// The overview against a real controller, when one has been built
-    /// (`cargo build -p berthd`): connect, list, run tasks, type into one.
+    /// (`cargo build -p berthd`): connect, list, run actions, type into one.
     #[test]
     fn the_overview_talks_to_a_controller() {
         let built = std::env::current_exe()
@@ -322,14 +322,14 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("etc")).unwrap();
-        let tasks = json!([
+        let actions = json!([
             {"name": "status", "label": "Status", "group": "System", "user": "agent", "run": "echo up; echo warn >&2"},
             {"name": "demo:status", "label": "Demo", "extends": ["status"], "user": "agent", "run": "echo demo; exit 4"},
             {"name": "greet", "label": "Greet", "user": "agent", "run": "echo \"hello $BERTH_ARG_WHO\"",
              "arguments": [{"name": "who", "required": true, "choices": "printf 'ann\\nbob\\n'"}]},
             {"name": "ask", "label": "Ask", "user": "agent", "terminal": true, "run": "printf 'code? '; read c; echo got $c"},
         ]);
-        std::fs::write(dir.path().join("etc/tasks.json"), tasks.to_string()).unwrap();
+        std::fs::write(dir.path().join("etc/actions.json"), actions.to_string()).unwrap();
         let mut daemon = std::process::Command::new(&built)
             .arg("--single")
             .arg(dir.path())
@@ -374,14 +374,14 @@ mod tests {
             }
             panic!("never: {what}; state {:?}", host.state);
         }
-        until(&mut host, "ready with tasks", |host| {
-            matches!(host.state, State::Ready(_)) && host.tasks.len() == 4
+        until(&mut host, "ready with actions", |host| {
+            matches!(host.state, State::Ready(_)) && host.host_actions.len() == 4
         });
         until(&mut host, "stats", |host| host.stats.is_some());
         assert!(host.stats_line().unwrap().contains("load "));
-        assert!(host.tasks[0].run.is_empty() && host.tasks[1].extends == ["status"]);
+        assert!(host.host_actions[0].run.is_empty() && host.host_actions[1].extends == ["status"]);
 
-        // A task and the step a plugin adds, as one transcript; the first
+        // An action and the step a plugin adds, as one transcript; the first
         // failing step is the outcome.
         host.run("status", json!({}));
         until(&mut host, "status ended", |host| {
@@ -404,7 +404,7 @@ mod tests {
 
         // Arguments reach the command; the host offers choices for one.
         host.send(Request::Choices {
-            task: "greet".into(),
+            action: "greet".into(),
             argument: "who".into(),
         });
         host.arguments = Some(Arguments {
@@ -438,7 +438,7 @@ mod tests {
             host.sessions.iter().any(|session| session.title == "Greet")
         });
 
-        // A terminal task takes typing; left with Ctrl+Q it runs on and can be
+        // A terminal action takes typing; left with Ctrl+Q it runs on and can be
         // opened again.
         host.run("ask", json!({"rows": 10, "cols": 40}));
         until(&mut host, "the question", |host| {
@@ -473,7 +473,7 @@ mod tests {
         assert!(view.screen().contents().contains("got 42") && view.outcome() == Some(true));
         assert!(!view.ours);
 
-        // A task the host does not have says so.
+        // An action the host does not have says so.
         host.close(true);
         host.run("nothing", json!({}));
         let mut said = None;

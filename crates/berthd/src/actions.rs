@@ -1,5 +1,5 @@
-//! Tasks: the host's named operations. Running one starts a session whose
-//! steps are the task and the tasks that extend it, each as its own user.
+//! Actions: the host's named operations. Running one starts a session whose
+//! steps are the action and the actions that extend it, each as its own user.
 
 use crate::error::{E, R};
 use crate::sessions::{Plan, Wait, new_id, started};
@@ -8,24 +8,24 @@ use axum::{
     Json,
     extract::{Extension, Path, Query, State as AppState},
 };
-use berth_api::{self as api, CommandLine, SessionKind, Task};
+use berth_api::{self as api, CommandLine, HostAction, SessionKind};
 use std::{collections::BTreeMap, sync::Arc};
 
-fn allowed(caller: &Caller, task: &Task) -> bool {
-    caller.host() || task.agent
+fn allowed(caller: &Caller, action: &HostAction) -> bool {
+    caller.host() || action.agent
 }
 
-fn find(state: &State, caller: &Caller, name: &str) -> R<Task> {
+fn find(state: &State, caller: &Caller, name: &str) -> R<HostAction> {
     let config = state.config();
-    let task = config
-        .tasks
+    let action = config
+        .actions
         .iter()
-        .find(|task| task.name == name)
-        .ok_or_else(|| E::missing(format!("task {name}")))?;
-    if !allowed(caller, task) {
+        .find(|action| action.name == name)
+        .ok_or_else(|| E::missing(format!("action {name}")))?;
+    if !allowed(caller, action) {
         return Err(E::forbidden(format!("The agent may not run {name}")));
     }
-    Ok(task.clone())
+    Ok(action.clone())
 }
 
 /// The name an argument has in the command's environment.
@@ -46,14 +46,17 @@ pub fn variable(name: &str) -> String {
 pub async fn list(
     AppState(state): AppState<Arc<State>>,
     Extension(caller): Extension<Caller>,
-) -> Json<Vec<Task>> {
+) -> Json<Vec<HostAction>> {
     let config = state.config();
-    let tasks = config.tasks.iter().filter(|task| allowed(&caller, task));
+    let actions = config
+        .actions
+        .iter()
+        .filter(|action| allowed(&caller, action));
     Json(
-        tasks
-            .map(|task| Task {
+        actions
+            .map(|action| HostAction {
                 run: String::new(),
-                ..task.clone()
+                ..action.clone()
             })
             .collect(),
     )
@@ -64,12 +67,16 @@ pub async fn run(
     Extension(caller): Extension<Caller>,
     Path(name): Path<String>,
     Query(wait): Query<Wait>,
-    body: Option<Json<api::RunTask>>,
+    body: Option<Json<api::RunAction>>,
 ) -> R<Json<api::Started>> {
     let request = body.map(|Json(request)| request).unwrap_or_default();
-    let task = find(&state, &caller, &name)?;
-    let mut env = BTreeMap::from([("BERTH_TASK".to_owned(), task.name.clone())]);
-    for argument in &task.arguments {
+    let action = find(&state, &caller, &name)?;
+    // BERTH_TASK is what plugins written for berth 0.5 read.
+    let mut env = BTreeMap::from([
+        ("BERTH_ACTION".to_owned(), action.name.clone()),
+        ("BERTH_TASK".to_owned(), action.name.clone()),
+    ]);
+    for argument in &action.arguments {
         let value = request
             .arguments
             .get(&argument.name)
@@ -83,26 +90,27 @@ pub async fn run(
         }
         env.insert(variable(&argument.name), value);
     }
-    if let Some(unknown) = request
-        .arguments
-        .keys()
-        .find(|key| task.arguments.iter().all(|argument| &argument.name != *key))
-    {
+    if let Some(unknown) = request.arguments.keys().find(|key| {
+        action
+            .arguments
+            .iter()
+            .all(|argument| &argument.name != *key)
+    }) {
         return Err(E::bad(format!("{name} has no argument {unknown}")));
     }
-    let input = match (&task.input, &request.input_b64) {
+    let input = match (&action.input, &request.input_b64) {
         (Some(what), None) => return Err(E::bad(format!("{name} needs {what} sent as input_b64"))),
         (_, Some(data)) => Some(api::unb64(data).ok_or_else(|| E::bad("input_b64 is not base64"))?),
         (None, None) => None,
     };
-    // The task itself, then what extends it, in the order of the file.
+    // The action itself, then what extends it, in the order of the file.
     let config = state.config();
     let extenders = config
-        .tasks
+        .actions
         .iter()
-        .filter(|other| other.extends.contains(&task.name) && other.name != task.name);
+        .filter(|other| other.extends.contains(&action.name) && other.name != action.name);
     let mut steps = vec![];
-    for step in std::iter::once(&task).chain(extenders) {
+    for step in std::iter::once(&action).chain(extenders) {
         let command = crate::users::command(
             &state,
             &step.user,
@@ -121,19 +129,19 @@ pub async fn run(
     }
     let plan = Plan {
         id: new_id(),
-        kind: if task.terminal {
+        kind: if action.terminal {
             SessionKind::Terminal
         } else {
             SessionKind::Process
         },
-        title: if task.label.is_empty() {
-            task.name.clone()
+        title: if action.label.is_empty() {
+            action.name.clone()
         } else {
-            task.label.clone()
+            action.label.clone()
         },
-        command: vec![task.name.clone()],
-        user: task.user.clone(),
-        task: Some(task.name.clone()),
+        command: vec![action.name.clone()],
+        user: action.user.clone(),
+        action: Some(action.name.clone()),
         steps,
         input,
         close_input: true,
@@ -150,8 +158,8 @@ pub async fn choices(
     Extension(caller): Extension<Caller>,
     Path((name, argument)): Path<(String, String)>,
 ) -> R<Json<api::Choices>> {
-    let task = find(&state, &caller, &name)?;
-    let argument = task
+    let action = find(&state, &caller, &name)?;
+    let argument = action
         .arguments
         .iter()
         .find(|known| known.name == argument)
@@ -161,7 +169,7 @@ pub async fn choices(
     }
     let line = CommandLine::Shell(argument.choices.clone());
     let (code, output, errors) =
-        crate::users::capture(&state, &task.user, &line, 15, 256 << 10).await?;
+        crate::users::capture(&state, &action.user, &line, 15, 256 << 10).await?;
     if code != 0 {
         return Err(E::internal(format!(
             "The choices command failed ({code}): {errors}"

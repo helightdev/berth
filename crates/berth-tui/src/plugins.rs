@@ -60,7 +60,7 @@ impl Place<'_> {
 
 fn server_note(dir: &str) -> String {
     format!(
-        "Registries and logins come from the server's npm configuration. npm runs none of the plugin's scripts; its tasks run when a host is applied.\n\nA folder copied to {dir} on the server works as well."
+        "Registries and logins come from the server's npm configuration. npm runs none of the plugin's scripts; its Ansible tasks run when a host is applied.\n\nA folder copied to {dir} on the server works as well."
     )
 }
 

@@ -22,8 +22,8 @@ It prints where it listens and how many hosts it knows. Only one runs per user. 
 | [`plugins.*`](/docs/api/serve/plugins) | The server's plugins. One is installed from its npm registry, from an `https://` address, or from a `.tgz` that is sent, and one of its own is removed. `plugins.check` asks the registries for newer versions and `plugins.update` installs them. `setup.catalogue` lists the new features straight away |
 | [`provisioners.*`](/docs/api/serve/provisioners) | The provisioners of the plugins with their pages and actions. A page lists what berth made with the provisioner, by kind. An action of a provisioner has its own role ([Provisioners](/docs/deploy/provisioners#with-a-berth-server)) |
 | [`resources.*`](/docs/api/serve/resources) | What provisioners made for berth, such as a host's machine or a deployment. Creating, changing and removing one are jobs of the subject `resource:ID` and need the role `admin`. Its log needs `operate`, and its actions have their own roles ([Resources](/docs/deploy/resources#with-a-berth-server)) |
-| Every [berthd operation](/docs/api/host) | With a host: `"host": "NAME"` on the portal, `/v1/hosts/NAME/…` over HTTP. Only the `secrets` task is refused; the host's `secrets` action sends the server's own |
-| [`jobs.*`](/docs/api/serve/jobs) | Jobs, one for each run of an action that runs here or follows a task, with their output. Each says its subject and its action. A roll-out's job has a report, host by host |
+| Every [berthd operation](/docs/api/host) | With a host: `"host": "NAME"` on the portal, `/v1/hosts/NAME/controller/…` over HTTP. Only the controller's own `secrets` action is refused; the server's `secrets` action of the host sends the server's own |
+| [`jobs.*`](/docs/api/serve/jobs) | Jobs, one for each run of an action that runs here or follows one of a host's controller, with their output. Each says its subject and its action. A roll-out's job has a report, host by host |
 | [`inbox.*`](/docs/api/serve/inbox) | Messages the hosts published on their channels and kept, taken in while `berth serve` runs; each can be marked done |
 | [`kv.*`](/docs/api/serve/kv) | A key-value store with revisions, for user interfaces to keep state in |
 | [`events.follow`](/docs/api/serve/events) | One stream of channel messages, jobs, key-value changes and changes to hosts and resources, at `/v1/events` |
@@ -32,11 +32,11 @@ All of it is also on the [portal](/docs/api/portal), the one WebSocket at `/v1/p
 
 ## Actions
 
-What berth does to a host or to the installation is an *action*. `GET /v1/hosts/NAME/actions` lists a host's, and `GET /v1/actions` lists those of the installation. A form can be built from an action's description. It has the arguments with their defaults and choices, a question to confirm, the least role, and whether it can run now.
+What berth does to a host or to the installation is an *action*. `GET /v1/hosts/NAME/actions` lists a host's, and `GET /v1/installation/actions` lists those of the installation. A host's controller has actions of its own, which are among the host's here. Its own list, `actions.list`, is at `/v1/hosts/NAME/controller/actions`. A form can be built from an action's description. It has the arguments with their defaults and choices, a question to confirm, the least role, and whether it can run now.
 
 | Action | Of | Runs | Answers |
 | --- | --- | --- | --- |
-| A task of the host, such as `status` | The host | On the host, as a session | `202` with the session and a job that copies its output. A task that needs a terminal answers `200` with the session alone, to attach to |
+| An action of the host's controller, such as `status` | The host | On the host, as a session | `202` with the session and a job that copies its output. One that needs a terminal answers `200` with the session alone, to attach to |
 | `apply` | The host | Here, as a job | `202` with the job |
 | `install-controller` | The host | Here, as a job | `202` with the job. It installs berthd and box alone on a host that is not a workstation |
 | `seed` | The host | Here, at once | `200` with the seed's `user_data` as the result |
@@ -51,7 +51,7 @@ To run one, POST to its name with its arguments:
 ```bash
 curl --unix-socket "$XDG_RUNTIME_DIR/berth/serve.sock" -X POST \
   -d '{"arguments": {"update": "yes"}, "token": "nightly-2026-11-13"}' \
-  http://berth/v1/actions/rollout
+  http://berth/v1/installation/actions/rollout
 ```
 
 The token is optional. The same token again for the same subject and action answers with the job the first request started, and nothing runs a second time. That lets a caller that lost the answer ask again. While an action changes a host, a second one that changes it is refused with `409` until the first has ended, and so is a second roll-out. A job is followed with `jobs.get`, `jobs.output` and the `jobs.follow` stream, and the events stream says when it starts and ends.
@@ -127,10 +127,10 @@ A caller over TCP shows the server's token or an OAuth 2.0 access token, and act
 | Role | May |
 | --- | --- |
 | `view` | Read what the hosts and the server report, such as sessions with their output, logs, jobs and the inbox |
-| `operate` | Work on the hosts with tasks, commands, terminals and files. Units, power and the key-value store are included |
+| `operate` | Work on the hosts with actions, commands, terminals and files. Units, power and the key-value store are included |
 | `admin` | Change profiles, secrets, registries, settings and plugins, apply a profile to a host, and create or delete the machine of a host |
 
-Each action has a role of its own, which is checked when it runs. A host's tasks need `operate`, berth's own actions `admin`.
+Each action has a role of its own, which is checked when it runs. The actions of a host's controller need `operate`, berth's own actions `admin`.
 
 The server's token is `admin`. The socket doesn't ask for a token and is `admin` too. The [API reference](/docs/api/serve) lists the role of each operation, and [`access`](/docs/api/serve/general) tells a caller its own.
 

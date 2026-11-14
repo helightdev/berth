@@ -82,7 +82,7 @@ pub struct Plan {
     pub title: String,
     pub command: Vec<String>,
     pub user: String,
-    pub task: Option<String>,
+    pub action: Option<String>,
     /// The commands to run one after another, with the step each is. A plain
     /// session has one command and no step.
     pub steps: Vec<(Option<api::Step>, Command)>,
@@ -280,7 +280,7 @@ impl Sessions {
                 uid: caller.uid,
                 session: None,
             },
-            task: plan.task,
+            action: plan.action,
             started: api::now(),
             ended: None,
             exit_code: None,
@@ -450,7 +450,7 @@ impl Session {
         self.meta.lock().unwrap().kind
     }
 
-    /// The agent may look at the sessions it started through a task.
+    /// The agent may look at the sessions it started through an action.
     pub fn visible_to(&self, caller: &Caller) -> bool {
         let meta = self.meta.lock().unwrap();
         caller.host()
@@ -785,7 +785,7 @@ pub async fn start(
         title: request.title.clone().unwrap_or_else(|| words.join(" ")),
         command: words,
         user: request.user.clone(),
-        task: None,
+        action: None,
         steps: vec![(None, command)],
         // Nobody can type into a command that is waited for in one request.
         close_input: input.is_some() || wait.wait.is_some(),
@@ -806,7 +806,7 @@ fn visible(state: &State, caller: &Caller, id: &str) -> R<Arc<Session>> {
     let session = state.sessions.get(id)?;
     if !session.visible_to(caller) {
         return Err(E::forbidden(
-            "The agent sees only the sessions it started through a task",
+            "The agent sees only the sessions it started through an action",
         ));
     }
     Ok(session)

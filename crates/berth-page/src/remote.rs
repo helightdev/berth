@@ -175,11 +175,11 @@ impl Transport for Remote {
                                 events: events.clone(),
                                 stream: Cell::new(None),
                             };
-                            again.call("tasks.list", json!({}), Value::Null, |result, events| {
-                                if let Ok(tasks) = result {
+                            again.call("actions.list", json!({}), Value::Null, |result, events| {
+                                if let Ok(listed) = result {
                                     events
                                         .borrow_mut()
-                                        .push_back(Event::Tasks(list(tasks, "tasks")));
+                                        .push_back(Event::Actions(list(listed, "actions")));
                                 }
                             });
                             again.poll();
@@ -192,7 +192,7 @@ impl Transport for Remote {
                 });
             }
             Request::Poll => self.poll(),
-            // A task is the host's action on the server, which keeps a job of it.
+            // An action is the host's action on the server, which keeps a job of it.
             Request::Run { name, body } => {
                 let events = self.events.clone();
                 let args = json!({"name": self.host, "action": name});
@@ -245,17 +245,22 @@ impl Transport for Remote {
                     },
                 );
             }
-            Request::Choices { task, argument } => {
-                let args = json!({"name": task, "argument": argument});
-                self.call("tasks.choices", args, Value::Null, move |result, events| {
-                    events.borrow_mut().push_back(Event::Choices {
-                        task,
-                        argument,
-                        choices: result
-                            .map(|value| list(value, "choices"))
-                            .unwrap_or_default(),
-                    });
-                });
+            Request::Choices { action, argument } => {
+                let args = json!({"action": action, "argument": argument});
+                self.call(
+                    "actions.choices",
+                    args,
+                    Value::Null,
+                    move |result, events| {
+                        events.borrow_mut().push_back(Event::Choices {
+                            action,
+                            argument,
+                            choices: result
+                                .map(|value| list(value, "choices"))
+                                .unwrap_or_default(),
+                        });
+                    },
+                );
             }
         }
     }

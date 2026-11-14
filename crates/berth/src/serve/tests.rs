@@ -311,7 +311,7 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
     );
     assert_eq!(
         client
-            .get::<Value>("/v1/hosts/nope/version")
+            .get::<Value>("/v1/hosts/nope/controller/version")
             .await
             .unwrap_err()
             .status(),
@@ -348,13 +348,13 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
         "{hosts}"
     );
     let through = client
-        .get::<Value>("/v1/hosts/broken/tasks")
+        .get::<Value>("/v1/hosts/broken/controller/actions")
         .await
         .unwrap_err();
     assert_eq!((through.status(), through.code()), (502, "unreachable"));
     // Secrets are refused before the host is even tried.
     let secrets = client
-        .post::<Value>("/v1/hosts/broken/tasks/secrets", &json!({}))
+        .post::<Value>("/v1/hosts/broken/controller/actions/secrets", &json!({}))
         .await
         .unwrap_err();
     assert_eq!((secrets.status(), secrets.code()), (403, "forbidden"));
@@ -619,11 +619,11 @@ impl Berthd {
     /// A berthd in single-user mode, or nothing when it is not built or does
     /// not answer yet.
     async fn start() -> Option<Berthd> {
-        Berthd::with_tasks(json!([])).await
+        Berthd::with_actions(json!([])).await
     }
 
-    /// The same, with these tasks in its `etc/tasks.json`.
-    async fn with_tasks(tasks: Value) -> Option<Berthd> {
+    /// The same, with these actions in its `etc/actions.json`.
+    async fn with_actions(actions: Value) -> Option<Berthd> {
         let program = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/berthd");
         if !program.is_file() {
             eprintln!("skipped: {} is not built", program.display());
@@ -631,7 +631,7 @@ impl Berthd {
         }
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("etc")).unwrap();
-        std::fs::write(dir.path().join("etc/tasks.json"), tasks.to_string()).unwrap();
+        std::fs::write(dir.path().join("etc/actions.json"), actions.to_string()).unwrap();
         let child = std::process::Command::new(&program)
             .arg("--single")
             .arg(dir.path())
@@ -707,12 +707,15 @@ async fn a_hosts_api_is_passed_through() {
     let hosts: Value = client.get("/v1/hosts").await.unwrap();
     assert_eq!(hosts[0]["reachable"], true, "{hosts}");
     assert_eq!(hosts[0]["version"], berth_api::VERSION);
-    let version: Value = client.get("/v1/hosts/box/version").await.unwrap();
+    let version: Value = client
+        .get("/v1/hosts/box/controller/version")
+        .await
+        .unwrap();
     assert_eq!(version["api"], berth_api::API);
     // A request with a body and a query, and the host's own error passed back.
     let start = json!({"kind": "process", "command": "echo through; exit 3"});
     let ran: Value = client
-        .post("/v1/hosts/box/sessions?wait=20", &start)
+        .post("/v1/hosts/box/controller/sessions?wait=20", &start)
         .await
         .unwrap();
     assert_eq!(ran["exit_code"], 3, "{ran}");
@@ -721,20 +724,21 @@ async fn a_hosts_api_is_passed_through() {
         b"through\n"
     );
     let missing = client
-        .get::<Value>("/v1/hosts/box/sessions/snope")
+        .get::<Value>("/v1/hosts/box/controller/sessions/snope")
         .await
         .unwrap_err();
     assert_eq!((missing.status(), missing.code()), (404, "not_found"));
     let secrets = client
-        .post::<Value>("/v1/hosts/box/tasks/secrets", &json!({}))
+        .post::<Value>("/v1/hosts/box/controller/actions/secrets", &json!({}))
         .await
         .unwrap_err();
     assert_eq!(secrets.status(), 403);
 
     // A stream, both ways: what is published through it comes back on it.
-    let mut channel = client::websocket_unix(&served.socket, "/v1/hosts/box/channel?topic=t/")
-        .await
-        .unwrap();
+    let mut channel =
+        client::websocket_unix(&served.socket, "/v1/hosts/box/controller/channel?topic=t/")
+            .await
+            .unwrap();
     let publish = r#"{"topic":"t/x","body":{"hello":1},"keep":"none"}"#;
     channel.send(Frame::Text(publish.into())).await.unwrap();
     let message = text(&mut channel).await;
@@ -744,9 +748,12 @@ async fn a_hosts_api_is_passed_through() {
     );
     // A terminal session's bytes come through as binary frames.
     let start = json!({"kind": "terminal", "command": "printf ready; read line; echo got-$line"});
-    let session: Value = client.post("/v1/hosts/box/sessions", &start).await.unwrap();
+    let session: Value = client
+        .post("/v1/hosts/box/controller/sessions", &start)
+        .await
+        .unwrap();
     let path = format!(
-        "/v1/hosts/box/sessions/{}?since=0",
+        "/v1/hosts/box/controller/sessions/{}?since=0",
         session["id"].as_str().unwrap()
     );
     let mut terminal = client::websocket_unix(&served.socket, &path).await.unwrap();
@@ -778,8 +785,8 @@ async fn job_done(client: &mut Client, id: &str) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_hosts_actions_are_its_tasks_and_berths_own() {
-    let tasks = json!([
+async fn a_hosts_actions_are_its_controllers_and_berths_own() {
+    let actions = json!([
         {"name": "status", "label": "Status", "group": "System", "user": "agent", "run": "echo up"},
         {"name": "demo:status", "label": "Demo", "extends": ["status"], "user": "agent", "run": "echo demo; exit 4"},
         {"name": "greet", "label": "Greet", "user": "agent", "run": "echo \"hello $BERTH_ARG_WHO\"",
@@ -788,7 +795,7 @@ async fn a_hosts_actions_are_its_tasks_and_berths_own() {
         {"name": "secrets", "label": "Send the secrets", "user": "agent", "input": "secrets", "run": "cat >/dev/null"},
         {"name": "elevated", "label": "As root", "user": "root", "run": "true"},
     ]);
-    let Some(host) = Berthd::with_tasks(tasks).await else {
+    let Some(host) = Berthd::with_actions(actions).await else {
         return;
     };
     let served = served().await;
@@ -799,8 +806,8 @@ async fn a_hosts_actions_are_its_tasks_and_berths_own() {
 
     let actions: Vec<berth_api::Action> = client.get("/v1/hosts/box/actions").await.unwrap();
     let names: Vec<&str> = actions.iter().map(|action| action.name.as_str()).collect();
-    // The host's tasks, a step under the task it extends, then berth's own; the
-    // secrets task is berth's, which sends the server's secrets.
+    // The host's actions, a step under the action it extends, then berth's own; the
+    // secrets action is berth's, which sends the server's secrets.
     assert_eq!(
         names,
         [
@@ -830,7 +837,7 @@ async fn a_hosts_actions_are_its_tasks_and_berths_own() {
     );
     assert!(secrets.available && actions[4].role == Role::Admin);
 
-    // A task that needs no terminal is a session there and a job here, which
+    // An action that needs no terminal is a session there and a job here, which
     // copies its output and ends with its exit code.
     let run = |body: Value| {
         let socket = served.socket.clone();
@@ -861,11 +868,21 @@ async fn a_hosts_actions_are_its_tasks_and_berths_own() {
     );
     // Asked again with its token, it is the same job, and nothing runs again.
     let sessions = |value: Value| berth_tui::host::list::<Value>(value, "sessions").len();
-    let before = sessions(client.get("/v1/hosts/box/sessions").await.unwrap());
+    let before = sessions(
+        client
+            .get("/v1/hosts/box/controller/sessions")
+            .await
+            .unwrap(),
+    );
     let again = run(json!({"token": "t-1"})).await.unwrap();
     assert_eq!(again["job"]["id"], json!(id));
     assert_eq!(
-        sessions(client.get("/v1/hosts/box/sessions").await.unwrap()),
+        sessions(
+            client
+                .get("/v1/hosts/box/controller/sessions")
+                .await
+                .unwrap()
+        ),
         before
     );
 
@@ -880,11 +897,16 @@ async fn a_hosts_actions_are_its_tasks_and_berths_own() {
     assert_eq!(ids.len(), 1, "{ids:?}");
     job_done(&mut client, ids.first().unwrap()).await;
     assert_eq!(
-        sessions(client.get("/v1/hosts/box/sessions").await.unwrap()),
+        sessions(
+            client
+                .get("/v1/hosts/box/controller/sessions")
+                .await
+                .unwrap()
+        ),
         before + 1
     );
 
-    // A task the host will not start ends its job as failed, with the reason,
+    // An action the host will not start ends its job as failed, with the reason,
     // and asked again with the token that is the answer.
     let path = "/v1/hosts/box/actions/elevated";
     let refused = client
@@ -1006,7 +1028,7 @@ async fn a_port_of_a_host_is_reached_through_the_server() {
     let data: Vec<u8> = (0..3_000_000u32).map(|n| (n % 251) as u8).collect();
 
     // As the host's own stream, passed through.
-    let path = format!("/v1/hosts/studio/ports/{port}");
+    let path = format!("/v1/hosts/studio/controller/ports/{port}");
     let open = client::websocket_unix(&served.socket, &path).await.unwrap();
     assert_eq!(through(Tunnel::new(open), b"hello").await, b"hello");
     let open = client::websocket_unix(&served.socket, &path).await.unwrap();
@@ -1026,7 +1048,7 @@ async fn a_port_of_a_host_is_reached_through_the_server() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.local_addr().unwrap().port()
     };
-    let path = format!("/v1/hosts/studio/ports/{closed}");
+    let path = format!("/v1/hosts/studio/controller/ports/{closed}");
     let refused = client::websocket_unix(&served.socket, &path)
         .await
         .err()
@@ -1104,11 +1126,24 @@ async fn the_portal_reaches_serve_and_its_hosts() {
             other => panic!("the stream ended after {seen:?}: {other:?}"),
         }
     }
+    // The controller's actions are its own, apart from the server's of the host.
+    let listed = portal
+        .call("actions.list", Some("box"), Value::Null, None)
+        .await
+        .unwrap();
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|action| action.get("available").is_none()),
+        "{listed}"
+    );
     let secrets = portal
         .call(
-            "tasks.run",
+            "actions.run",
             Some("box"),
-            json!({"name": "secrets"}),
+            json!({"action": "secrets"}),
             Some(json!({})),
         )
         .await;
@@ -1550,7 +1585,7 @@ async fn plugins_are_managed_through_the_api() {
             &json!("1.0.0")
         )
     );
-    assert_eq!(hello["features"][0]["tasks"][0]["name"], "moo");
+    assert_eq!(hello["features"][0]["actions"][0]["name"], "moo");
     assert!(listed["dir"].as_str().unwrap().ends_with("config/plugins"));
     let (_, found) = send(client, "GET", "/v1/setup", Value::Null).await;
     assert!(keys(&found).contains(&"hello/cow".to_owned()));
@@ -1577,10 +1612,10 @@ async fn plugins_are_managed_through_the_api() {
         );
     }
     let asked = json!({"arguments": {"hosts": "nothing"}});
-    let (status, said) = send(client, "POST", "/v1/actions/rollout", asked).await;
+    let (status, said) = send(client, "POST", "/v1/installation/actions/rollout", asked).await;
     assert_eq!(status, 404, "{said}");
     let asked = json!({"arguments": {"force": "yes"}});
-    let (status, said) = send(client, "POST", "/v1/actions/rollout", asked).await;
+    let (status, said) = send(client, "POST", "/v1/installation/actions/rollout", asked).await;
     assert_eq!(status, 400, "{said}");
     let (status, said) = send(client, "DELETE", "/v1/plugins/hello", Value::Null).await;
     assert_eq!(status, 200, "{said}");
@@ -1757,9 +1792,15 @@ async fn an_access_token_gets_in_with_the_role_it_names() {
             .contains("operate")
     );
     assert_eq!(
-        as_bearer(address, &viewer, "POST", "/v1/hosts/a/tasks/x", json!({}))
-            .await
-            .0,
+        as_bearer(
+            address,
+            &viewer,
+            "POST",
+            "/v1/hosts/a/controller/actions/x",
+            json!({})
+        )
+        .await
+        .0,
         403
     );
     assert_eq!(
@@ -1767,7 +1808,7 @@ async fn an_access_token_gets_in_with_the_role_it_names() {
             address,
             &viewer,
             "GET",
-            "/v1/hosts/a/files?path=x",
+            "/v1/hosts/a/controller/files?path=x",
             Value::Null
         )
         .await
@@ -1814,7 +1855,7 @@ async fn an_access_token_gets_in_with_the_role_it_names() {
     for path in [
         "/v1/hosts/a/actions/apply",
         "/v1/hosts/a/actions/seed",
-        "/v1/actions/rollout",
+        "/v1/installation/actions/rollout",
     ] {
         let (status, said) = as_bearer(address, &operator, "POST", path, Value::Null).await;
         assert_eq!(status, 403, "{path}: {said}");
@@ -1823,7 +1864,14 @@ async fn an_access_token_gets_in_with_the_role_it_names() {
             "{said}"
         );
     }
-    let (status, said) = as_bearer(address, &viewer, "GET", "/v1/actions", Value::Null).await;
+    let (status, said) = as_bearer(
+        address,
+        &viewer,
+        "GET",
+        "/v1/installation/actions",
+        Value::Null,
+    )
+    .await;
     assert_eq!((status, &said[0]["name"]), (200, &json!("rollout")));
     assert_eq!(said[0]["role"], "admin");
     // A provisioner is looked at by anyone, and each of its actions has its own role.
@@ -1925,17 +1973,21 @@ async fn an_access_token_gets_in_with_the_role_it_names() {
     assert_eq!(saved.unwrap_err().status(), 403);
     let run = portal
         .call(
-            "tasks.run",
+            "actions.run",
             Some("a"),
-            json!({"name": "x"}),
+            json!({"action": "x"}),
             Some(json!({})),
         )
         .await;
     assert_eq!(run.unwrap_err().status(), 403);
     assert!(
-        client::websocket(connect().await, "/v1/hosts/a/sessions/x", &viewer)
-            .await
-            .is_err()
+        client::websocket(
+            connect().await,
+            "/v1/hosts/a/controller/sessions/x",
+            &viewer
+        )
+        .await
+        .is_err()
     );
 }
 
@@ -1961,7 +2013,7 @@ async fn set_up_can_be_closed_to_the_network() {
                 .unwrap()
                 .contains("set-up")
         );
-        // Installing a plugin is set-up too: its tasks run when a host is applied.
+        // Installing a plugin is set-up too: its Ansible tasks run when a host is applied.
         let spec = json!({"spec": "berth-plugin-foo"});
         assert_eq!(
             as_bearer(address, token, "POST", "/v1/plugins", spec)
@@ -1972,7 +2024,7 @@ async fn set_up_can_be_closed_to_the_network() {
         for (method, path) in [
             ("POST", "/v1/resources"),
             ("DELETE", "/v1/resources/r-a"),
-            ("POST", "/v1/actions/rollout"),
+            ("POST", "/v1/installation/actions/rollout"),
         ] {
             let (status, said) = as_bearer(address, token, method, path, json!({})).await;
             assert_eq!(status, 403, "{method} {path}: {said}");
@@ -3585,23 +3637,35 @@ async fn first_contact_and_keys_are_actions_of_the_server() {
     assert_eq!(acted["result"], json!({"host_keys": [], "accepted": false}));
 
     // The installation rotates a key as keys.rotate does.
-    let (status, listed) = send(client, "GET", "/v1/actions", Value::Null).await;
+    let (status, listed) = send(client, "GET", "/v1/installation/actions", Value::Null).await;
     assert_eq!(status, 200);
     assert_eq!(
         action(&listed, "rotate-key")["arguments"][0]["default"],
         "berth"
     );
     let nothing = json!({"arguments": {"name": "nothing"}});
-    let (status, _) = send(client, "POST", "/v1/actions/rotate-key", nothing).await;
+    let (status, _) = send(
+        client,
+        "POST",
+        "/v1/installation/actions/rotate-key",
+        nothing,
+    )
+    .await;
     assert_eq!(status, 404);
     let asked = json!({"arguments": {"name": "berth"}, "token": "rotate-1"});
-    let (status, acted) = send(client, "POST", "/v1/actions/rotate-key", asked.clone()).await;
+    let (status, acted) = send(
+        client,
+        "POST",
+        "/v1/installation/actions/rotate-key",
+        asked.clone(),
+    )
+    .await;
     assert_eq!(status, 202, "{acted}");
     assert_eq!(acted["job"]["action"], "rotate-key:berth");
     let id = acted["job"]["id"].as_str().unwrap().to_owned();
     let (output, _) = job_ended(&served.socket, &id).await;
     assert!(output.contains("Replacing the key berth"), "{output}");
-    let (_, again) = send(client, "POST", "/v1/actions/rotate-key", asked).await;
+    let (_, again) = send(client, "POST", "/v1/installation/actions/rotate-key", asked).await;
     assert_eq!(again["job"]["id"], json!(id));
 }
 
@@ -3678,7 +3742,13 @@ async fn a_host_added_by_its_address_has_a_type_and_actions_to_match() {
     assert_eq!(status, 501);
 
     // A roll-out leaves it, and says so.
-    let (status, acted) = send(client, "POST", "/v1/actions/rollout", Value::Null).await;
+    let (status, acted) = send(
+        client,
+        "POST",
+        "/v1/installation/actions/rollout",
+        Value::Null,
+    )
+    .await;
     assert_eq!(status, 202, "{acted}");
     let id = acted["job"]["id"].as_str().unwrap().to_owned();
     let (output, code) = job_ended(&served.socket, &id).await;
@@ -3812,7 +3882,13 @@ async fn a_host_whose_controller_does_not_answer_says_why_and_keeps_berths_own_a
         let socket = served.socket.clone();
         async move {
             let mut client = Client::unix(&socket).await.unwrap();
-            send(&mut client, "GET", "/v1/hosts/dock/version", Value::Null).await
+            send(
+                &mut client,
+                "GET",
+                "/v1/hosts/dock/controller/version",
+                Value::Null,
+            )
+            .await
         }
     });
     for (status, answer) in futures_util::future::join_all(asks).await {

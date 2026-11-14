@@ -8,7 +8,7 @@ icon: Terminal
 
 With a [berth server](/docs/use/server) set, by `--server` or the `server` setting, the host commands use the server's hosts. Installing, secrets and registries then stay on the server.
 
-<Screen name="tasks" alt="Output of berth tasks studio: tasks grouped under System, Access, Sync, Sign-In and Backup, with plugin steps marked +" />
+<Screen name="tasks" alt="Output of the command that lists what studio can do, grouped under System, Access, Sync, Sign-In and Backup, with plugin steps marked +" />
 
 ## Hosts and profiles
 
@@ -81,20 +81,20 @@ Both build commands refuse to start while the profile has problems, and list the
 
 With a [berth server](/docs/use/server) set, the server's provisioners, plugins and resources are used. Changing a resource needs the role `admin`, reading its log `operate`, and an action of a provisioner or a resource its own role. See [Provisioners](/docs/deploy/provisioners) and [Resources](/docs/deploy/resources#with-a-berth-server).
 
-## Tasks
+## Actions
 
 ```bash
-berth tasks studio                       # what the host can do
-berth run studio status                  # run a task; its exit code is berth's
+berth actions studio                     # what the host can do
+berth run studio status                  # run an action; its exit code is berth's
 berth run studio backup:restore snapshot=latest --yes
 berth run studio claude:login            # a sign-in runs in your terminal
 ```
 
-`berth run HOST TASK` runs a task and its plugin steps and leaves with the task's exit code. A task's arguments are given as `NAME=VALUE`, and `--yes` answers its confirmation. `berth manage HOST TASK` is the same command. Tasks that need a terminal, such as sign-ins, run in your terminal over `ssh -t`.
+`berth run HOST ACTION` runs an action and its plugin steps and leaves with the action's exit code. An action's arguments are given as `NAME=VALUE`, and `--yes` answers its confirmation. `berth manage HOST ACTION` is the same command. Actions that need a terminal, such as sign-ins, run in your terminal over `ssh -t`.
 
-`berth tasks` lists berth's own actions beside the host's tasks, such as `install-controller`, and says why one cannot run now. A host of the type `ssh` has no tasks yet.
+`berth actions` lists berth's own actions beside those of the host's controller, such as `install-controller`, and says why one cannot run now. A host whose type is `ssh` has none of its controller's yet.
 
-When a [berth server](/docs/use/server) keeps the host, `berth tasks` lists the server's actions for the host: its tasks, and berth's own such as `apply` and `seed`. `berth run` runs any of them through the server, which keeps a job of each run ([Actions](/docs/extend/serve#actions)).
+When a [berth server](/docs/use/server) keeps the host, `berth actions` lists the server's actions for the host: its controller's, and berth's own such as `apply` and `seed`. `berth run` runs any of them through the server, which keeps a job of each run ([Actions](/docs/extend/serve#actions)).
 
 ## Sessions and commands
 

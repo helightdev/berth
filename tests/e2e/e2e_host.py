@@ -14,7 +14,7 @@ class Commands(unittest.TestCase):
         cls.station = provisioned()
 
     def test_tasks_are_listed_by_group(self):
-        listed = self.station.berth('tasks', HOST).stdout
+        listed = self.station.berth('actions', HOST).stdout
         for line in ('System', 'Sync', 'Sign-In'):
             self.assertRegex(listed, rf'(?m)^{line}$')
         self.assertRegex(listed, r'(?m)^  secrets\s+Secrets and registry logins')
@@ -23,7 +23,7 @@ class Commands(unittest.TestCase):
         self.assertEqual(self.station.berth('run', HOST, 'sign-in:status').returncode, 0)
         missing = self.station.berth('run', HOST, 'nothing-like-this', check=False)
         self.assertEqual(missing.returncode, 1)
-        self.assertIn('has no task nothing-like-this', missing.stderr)
+        self.assertIn('has no action nothing-like-this', missing.stderr)
 
     def test_the_status_task_copes_without_systemd(self):
         done = self.station.berth('run', HOST, 'status', check=False, timeout=120)
@@ -124,7 +124,7 @@ class Berthd(unittest.TestCase):
         for path in ('/etc/shadow', '/root', f'/home/{AGENT}/../{OPERATOR}/.ssh/authorized_keys'):
             status, answer = self.link.request('GET', f'/v1/files?path={path}')
             self.assertIn(status, (403, 404), (path, answer))
-        status, _ = self.link.request('PUT', '/v1/files?path=/etc/berth/tasks.json&overwrite=true', b'[]')
+        status, _ = self.link.request('PUT', '/v1/files?path=/etc/berth/actions.json&overwrite=true', b'[]')
         self.assertEqual(status, 403)
 
     def test_units_without_systemd_are_an_answer_not_a_crash(self):
@@ -146,11 +146,11 @@ class Berthd(unittest.TestCase):
         self.assertTrue(any('berthd' in process['command'] for process in processes))
 
     def test_a_task_runs_as_steps(self):
-        tasks = {task['name']: task for task in self.link.get('/v1/tasks')}
+        tasks = {task['name']: task for task in self.link.get('/v1/actions')}
         self.assertEqual(tasks['status']['user'], 'root')
-        session = self.link.post('/v1/tasks/sign-in:status?wait=60s', {})
+        session = self.link.post('/v1/actions/sign-in:status?wait=60s', {})
         self.assertEqual(session['exit_code'], 0)
-        self.assertEqual(session['task'], 'sign-in:status')
+        self.assertEqual(session['action'], 'sign-in:status')
 
     def test_the_channel_keeps_what_it_is_told_to(self):
         topic = random_text('e2e-host/notes')
@@ -162,7 +162,7 @@ class Berthd(unittest.TestCase):
         self.assertEqual([message['body'] for message in messages], [body])
 
     def test_the_agent_sees_its_own_tasks(self):
-        listed = self.station.berth('exec', HOST, '--', 'box', 'tasks').stdout
+        listed = self.station.berth('exec', HOST, '--', 'box', 'actions').stdout
         self.assertIn('sign-in:status', listed)
         self.assertNotIn('reboot', re.findall(r'^\S+', listed, re.M))
         self.assertEqual(self.station.berth('exec', HOST, '--', 'box', 'run', 'sign-in:status').returncode, 0)

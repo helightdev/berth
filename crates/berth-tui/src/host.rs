@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 /// The lowest `api` of a host this berth can work with.
-pub const NEEDS_API: u32 = 1;
+pub const NEEDS_API: u32 = 2;
 /// How often the overview asks for stats and sessions again.
 const POLL: Duration = Duration::from_secs(10);
 /// Lines of a process session's transcript kept for scrolling back.
@@ -25,11 +25,11 @@ pub trait Transport {
 }
 
 pub enum Request {
-    /// Version, tasks, sessions and stats.
+    /// Version, actions, sessions and stats.
     Refresh,
     /// Sessions and stats.
     Poll,
-    /// Run a task; the answer is `Opened`.
+    /// Run an action; the answer is `Opened`.
     Run {
         name: String,
         body: Value,
@@ -45,7 +45,7 @@ pub enum Request {
     Close,
     Delete(String),
     Choices {
-        task: String,
+        action: String,
         argument: String,
     },
 }
@@ -60,7 +60,7 @@ pub enum Event {
         message: String,
         missing: bool,
     },
-    Tasks(Vec<api::Task>),
+    Actions(Vec<api::HostAction>),
     Sessions(Vec<api::Session>),
     Stats(Box<api::Stats>),
     Opened(Box<api::Session>),
@@ -70,7 +70,7 @@ pub enum Event {
     /// The stream of a session ended without it having exited.
     Closed(String),
     Choices {
-        task: String,
+        action: String,
         argument: String,
         choices: Vec<String>,
     },
@@ -230,7 +230,7 @@ pub enum Pending {
 pub struct HostView {
     remote: Option<Box<dyn Transport>>,
     pub state: State,
-    pub tasks: Vec<api::Task>,
+    pub host_actions: Vec<api::HostAction>,
     pub sessions: Vec<api::Session>,
     pub stats: Option<api::Stats>,
     /// What changed since the host was applied, when berth knows.
@@ -239,7 +239,7 @@ pub struct HostView {
     pub host_type: api::HostType,
     /// The type the host was seen to be, once it was asked.
     pub seen: Option<api::HostType>,
-    /// berth's own actions on the host, beside its tasks: what a berth
+    /// berth's own actions on the host, beside its controller's: what a berth
     /// server lists for its host, or what this berth does itself.
     pub own: Vec<api::Action>,
     pub view: Option<View>,
@@ -259,7 +259,7 @@ impl Default for HostView {
         HostView {
             remote: None,
             state: State::Idle,
-            tasks: vec![],
+            host_actions: vec![],
             sessions: vec![],
             stats: None,
             behind: None,
@@ -300,7 +300,7 @@ impl HostView {
     pub fn disconnect(&mut self) {
         self.remote = None;
         self.view = None;
-        self.tasks.clear();
+        self.host_actions.clear();
         self.sessions.clear();
         self.stats = None;
         self.behind = None;
@@ -314,7 +314,7 @@ impl HostView {
         }
     }
 
-    /// Run a task; its session opens in the panel when the host has started it.
+    /// Run an action; its session opens in the panel when the host has started it.
     pub fn run(&mut self, name: &str, body: Value) {
         self.starting = Some(false);
         self.send(Request::Run {
@@ -323,15 +323,15 @@ impl HostView {
         });
     }
 
-    /// What can be done on the host: its tasks as actions, each task that
+    /// What can be done on the host: its controller's actions, each that
     /// is no step of another, with the steps plugins add to it, and then
-    /// berth's own that are no task of the host.
+    /// berth's own that are no action of the host.
     pub fn actions(&self) -> Vec<api::Action> {
-        let mut actions = api::Action::of_tasks(&self.tasks);
+        let mut actions = api::Action::of_host(&self.host_actions);
         let own = self
             .own
             .iter()
-            .filter(|action| !actions.iter().any(|task| task.name == action.name))
+            .filter(|action| !actions.iter().any(|listed| listed.name == action.name))
             .cloned()
             .collect::<Vec<_>>();
         actions.extend(own);
@@ -343,12 +343,12 @@ impl HostView {
     pub fn is_own(&self, index: usize) -> bool {
         self.actions()
             .get(index)
-            .is_some_and(|action| self.task(action).is_none())
+            .is_some_and(|action| self.host_action(action).is_none())
     }
 
     /// Begin an action: its question first, then its arguments. Returns the
     /// action to run now when it needs neither.
-    pub fn begin_task(&mut self, index: usize, confirmed: bool) -> Option<Launch> {
+    pub fn begin_action(&mut self, index: usize, confirmed: bool) -> Option<Launch> {
         match page::begin(&self.actions(), index, confirmed) {
             Begin::Ask(question) => self.question = Some((question, Pending::Action(index))),
             Begin::Arguments(dialog) => {
@@ -362,12 +362,12 @@ impl HostView {
     }
 
     fn ask_choices(&self) {
-        if let Some((task, argument)) = self
+        if let Some((action, argument)) = self
             .arguments
             .as_ref()
             .and_then(|dialog| dialog.wants_choices(&self.actions()))
         {
-            self.send(Request::Choices { task, argument });
+            self.send(Request::Choices { action, argument });
         }
     }
 
@@ -391,8 +391,8 @@ impl HostView {
         }
     }
 
-    /// What starting a task sends: its arguments, and the panel's size for a terminal.
-    pub fn task_body(&self, action: &api::Action, values: &BTreeMap<String, String>) -> Value {
+    /// What starting an action sends: its arguments, and the panel's size for a terminal.
+    pub fn action_body(&self, action: &api::Action, values: &BTreeMap<String, String>) -> Value {
         let mut body = json!({"arguments": values});
         if action.terminal {
             (body["rows"], body["cols"]) = (json!(self.size.0), json!(self.size.1));
@@ -400,9 +400,11 @@ impl HostView {
         body
     }
 
-    /// The task an action of the host runs, with what the host keeps of it.
-    pub fn task(&self, action: &api::Action) -> Option<&api::Task> {
-        self.tasks.iter().find(|task| task.name == action.name)
+    /// What the host keeps of one of its controller's actions.
+    pub fn host_action(&self, action: &api::Action) -> Option<&api::HostAction> {
+        self.host_actions
+            .iter()
+            .find(|kept| kept.name == action.name)
     }
 
     /// Start a shell as `user`.
@@ -489,7 +491,7 @@ impl HostView {
                     }
                 }
                 Event::Behind(behind) => self.behind = behind,
-                Event::Tasks(tasks) => self.tasks = tasks,
+                Event::Actions(listed) => self.host_actions = listed,
                 Event::Sessions(sessions) => self.sessions = sessions,
                 Event::Stats(stats) => self.stats = Some(*stats),
                 Event::Opened(session) => {
@@ -526,13 +528,13 @@ impl HostView {
                     }
                 }
                 Event::Choices {
-                    task,
+                    action,
                     argument,
                     choices,
                 } => {
                     let actions = self.actions();
                     if let Some(dialog) = &mut self.arguments {
-                        dialog.offered(&actions, &task, &argument, choices);
+                        dialog.offered(&actions, &action, &argument, choices);
                     }
                 }
                 Event::Error(message) => {
@@ -610,20 +612,21 @@ pub fn session_state(session: &api::Session) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick {
     /// An action, by index into [`HostView::actions`].
-    Task(usize),
+    Action(usize),
     Terminal,
     /// A session, by index.
     Session(usize),
 }
 
-/// The groups of the overview of a host that answers, as it lists its tasks:
+/// The groups of the overview of a host that answers, as it lists its actions:
 /// each in the group it names, with the terminal among the first and the
 /// host's sessions after them.
 pub fn groups(host: &HostView, terminal_user: &str) -> Vec<(String, Vec<(String, Pick)>)> {
-    let mut groups: Vec<(String, Vec<(String, Pick)>)> = page::groups(&host.actions(), Pick::Task)
-        .into_iter()
-        .map(|group| (group.title, group.rows))
-        .collect();
+    let mut groups: Vec<(String, Vec<(String, Pick)>)> =
+        page::groups(&host.actions(), Pick::Action)
+            .into_iter()
+            .map(|group| (group.title, group.rows))
+            .collect();
     let terminal = (format!("  ▸ Terminal · as {terminal_user}"), Pick::Terminal);
     match groups.iter_mut().find(|(title, _)| title == "System") {
         Some((_, rows)) => rows.insert(1.min(rows.len()), terminal),
@@ -700,7 +703,7 @@ pub fn exited(frame: &Value) -> Option<Option<i32>> {
 }
 
 /// What the information box says of an action of the host.
-pub fn task_help(host: &HostView, index: usize) -> String {
+pub fn action_help(host: &HostView, index: usize) -> String {
     match host.actions().get(index) {
         Some(action) => page::help(action, &command_of(&action.name)),
         None => String::new(),
@@ -745,13 +748,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn berths_own_actions_follow_the_tasks_and_say_when_they_cannot_run() {
+    fn berths_own_actions_follow_the_controllers_and_say_when_they_cannot_run() {
         let mut host = HostView {
-            tasks: vec![api::Task {
+            host_actions: vec![api::HostAction {
                 name: "status".into(),
                 label: "Status".into(),
                 group: "System".into(),
-                ..api::Task::default()
+                ..api::HostAction::default()
             }],
             ..HostView::default()
         };
@@ -771,13 +774,13 @@ mod tests {
         ];
         let actions = host.actions();
         let names: Vec<&str> = actions.iter().map(|action| action.name.as_str()).collect();
-        // A task of the host wins over one of berth's of the same name.
+        // An action of the host wins over one of berth's of the same name.
         assert_eq!(names, ["status", "install-controller"]);
         assert!(!host.is_own(0) && host.is_own(1));
         let groups = groups(&host, "agent");
         let setup = groups.iter().find(|(title, _)| title == "Set-Up").unwrap();
         assert_eq!(setup.1[0].0, "  ▸ Update the controller · not now");
-        assert!(task_help(&host, 1).contains("It cannot run now: studio is a workstation"));
+        assert!(action_help(&host, 1).contains("It cannot run now: studio is a workstation"));
     }
 
     #[test]

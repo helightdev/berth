@@ -296,12 +296,12 @@ impl Link {
         self.call("POST", path, Some(body)).await
     }
 
-    /// Run a task of the host, as `tasks.run` takes it, and the session it
+    /// Run an action of the host, as `actions.run` takes it, and the session it
     /// runs as. Through a berth server it is the host's action there, which
     /// the server keeps a job of and gives the server's secrets to.
-    pub async fn run_task(&self, name: &str, body: &Value) -> client::Result<berth_api::Session> {
+    pub async fn run_action(&self, name: &str, body: &Value) -> client::Result<berth_api::Session> {
         let Some((server, host)) = &self.spec.via else {
-            let path = format!("/v1/tasks/{}", client::encode(name));
+            let path = format!("/v1/actions/{}", client::encode(name));
             return self.post(&path, body).await;
         };
         let portal = self.portal(server).await?;
@@ -311,7 +311,7 @@ impl Link {
             .await?;
         serde_json::from_value(acted["session"].clone()).map_err(|_| {
             Error::Transport(format!(
-                "{name} on {host} is not a task of the host: run it with berth run {host} {name}"
+                "{name} on {host} is not an action of its controller: run it with berth run {host} {name}"
             ))
         })
     }

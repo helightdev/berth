@@ -337,6 +337,66 @@
         ],
         "type": "object"
       },
+      "HostAction": {
+        "description": "An action of the host's controller: an entry of `/etc/berth/actions.json`.\nListed without `run`.",
+        "properties": {
+          "agent": {
+            "description": "The agent may run it.",
+            "type": "boolean"
+          },
+          "arguments": {
+            "items": {
+              "$ref": "#/components/schemas/Argument"
+            },
+            "type": "array"
+          },
+          "confirm": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extends": {
+            "description": "Actions it is a step of; it then has no row of its own.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "group": {
+            "type": "string"
+          },
+          "help": {
+            "type": "string"
+          },
+          "input": {
+            "description": "What the workstation sends on standard input: `secrets`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          },
+          "terminal": {
+            "type": "boolean"
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
       "HostType": {
         "description": "What berth does with a host: what its profile means it to be, or what it\nwas seen to be. They are in the order of how much of berth each has.",
         "enum": [
@@ -762,7 +822,7 @@
         ],
         "type": "object"
       },
-      "RunTask": {
+      "RunAction": {
         "properties": {
           "arguments": {
             "additionalProperties": {
@@ -918,6 +978,13 @@
       },
       "Session": {
         "properties": {
+          "action": {
+            "description": "The action it was started for, if any. The sessions an older\nberthd kept on the host say `task`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "cols": {
             "format": "int32",
             "minimum": 0,
@@ -985,13 +1052,6 @@
               "$ref": "#/components/schemas/Step"
             },
             "type": "array"
-          },
-          "task": {
-            "description": "The task it was started for, if any.",
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "title": {
             "type": "string"
@@ -1255,66 +1315,6 @@
         ],
         "type": "object"
       },
-      "Task": {
-        "description": "An entry of `/etc/berth/tasks.json`. Listed without `run`.",
-        "properties": {
-          "agent": {
-            "description": "The agent may run it.",
-            "type": "boolean"
-          },
-          "arguments": {
-            "items": {
-              "$ref": "#/components/schemas/Argument"
-            },
-            "type": "array"
-          },
-          "confirm": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "extends": {
-            "description": "Tasks it is a step of; it then has no row of its own.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "group": {
-            "type": "string"
-          },
-          "help": {
-            "type": "string"
-          },
-          "input": {
-            "description": "What the workstation sends on standard input: `secrets`.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "label": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "run": {
-            "type": "string"
-          },
-          "terminal": {
-            "type": "boolean"
-          },
-          "user": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "type": "object"
-      },
       "Topic": {
         "description": "An entry of `/etc/berth/channels.json`.",
         "properties": {
@@ -1450,6 +1450,151 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/actions": {
+      "get": {
+        "description": "Host and agent level.",
+        "operationId": "get_v1_actions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/HostAction"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "The actions the caller may run, in the order of the file.",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/v1/actions/{action}": {
+      "post": {
+        "description": "Host and agent level.",
+        "operationId": "post_v1_actions__action_",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "action",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A duration such as 30s, at most 10m: answer when the command has ended, with what it wrote.",
+            "in": "query",
+            "name": "wait",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Started"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Run an action. It and what extends it are the steps of one session.",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/v1/actions/{action}/choices/{argument}": {
+      "get": {
+        "description": "Host and agent level.",
+        "operationId": "get_v1_actions__action__choices__argument_",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "action",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "argument",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Choices"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "The values to offer for an argument.",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
     "/v1/applied/profile": {
       "get": {
         "description": "Host level only.",
@@ -2353,7 +2498,7 @@
             "description": "An error."
           }
         },
-        "summary": "One session's state. The agent sees those it started through a task.",
+        "summary": "One session's state. The agent sees those it started through an action.",
         "tags": [
           "sessions"
         ]
@@ -2690,151 +2835,6 @@
         "summary": "Load, CPU, memory, filesystems, network, GPU and unit states, read now.",
         "tags": [
           "stats"
-        ]
-      }
-    },
-    "/v1/tasks": {
-      "get": {
-        "description": "Host and agent level.",
-        "operationId": "get_v1_tasks",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/Task"
-                  },
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Done."
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "An error."
-          }
-        },
-        "summary": "The tasks the caller may run, in the order of the file.",
-        "tags": [
-          "tasks"
-        ]
-      }
-    },
-    "/v1/tasks/{name}": {
-      "post": {
-        "description": "Host and agent level.",
-        "operationId": "post_v1_tasks__name_",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "A duration such as 30s, at most 10m: answer when the command has ended, with what it wrote.",
-            "in": "query",
-            "name": "wait",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RunTask"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Started"
-                }
-              }
-            },
-            "description": "Done."
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "An error."
-          }
-        },
-        "summary": "Run a task. It and what extends it are the steps of one session.",
-        "tags": [
-          "tasks"
-        ]
-      }
-    },
-    "/v1/tasks/{name}/choices/{argument}": {
-      "get": {
-        "description": "Host and agent level.",
-        "operationId": "get_v1_tasks__name__choices__argument_",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "argument",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Choices"
-                }
-              }
-            },
-            "description": "Done."
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "An error."
-          }
-        },
-        "summary": "The values to offer for an argument.",
-        "tags": [
-          "tasks"
         ]
       }
     },

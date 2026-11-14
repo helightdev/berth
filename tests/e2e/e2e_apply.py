@@ -23,7 +23,7 @@ class Apply(unittest.TestCase):
         self.assertEqual(version['mode'], 'system')
         berthd = json.loads(self.station.root_on_host('cat /etc/berth/berthd.json').stdout)
         self.assertEqual((berthd['agent'], berthd['operator']), (AGENT, OPERATOR))
-        tasks = json.loads(self.station.root_on_host('cat /etc/berth/tasks.json').stdout)
+        tasks = json.loads(self.station.root_on_host('cat /etc/berth/actions.json').stdout)
         self.assertIn('secrets', [task['name'] for task in tasks])
         print(f'\n  first apply: {self.station.apply_seconds:.0f}s, {recap}', end=' ')
 

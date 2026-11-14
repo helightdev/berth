@@ -155,8 +155,8 @@ class Restore(unittest.TestCase):
         profile['secrets'] = [{'name': self.secret, 'env': 'RESTORED_SECRET'}]
         self.serve.call('PUT', f'/v1/hosts/{HOST}/profile', profile)
         session = self.serve.call('POST', f'/v1/hosts/{HOST}/actions/secrets', expect=202)['session']
-        wait_for('the secrets task to end', lambda: self.serve.call(
-            'GET', f'/v1/hosts/{HOST}/sessions/{session["id"]}').get('exit_code') == 0)
+        wait_for('the secrets action to end', lambda: self.serve.call(
+            'GET', f'/v1/hosts/{HOST}/controller/sessions/{session["id"]}').get('exit_code') == 0)
         env = self.worker.root_on_host(f'cat /home/{AGENT}/.config/devbox/secrets.env').stdout
         self.assertIn(f'export RESTORED_SECRET={self.secret_value}', env)
 

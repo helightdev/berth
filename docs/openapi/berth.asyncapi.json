@@ -40,7 +40,7 @@
       "x-berth-resumable": false
     },
     "host.channel": {
-      "address": "/v1/hosts/{name}/channel",
+      "address": "/v1/hosts/{name}/controller/channel",
       "bindings": {
         "ws": {
           "query": {
@@ -76,7 +76,7 @@
       "x-berth-resumable": true
     },
     "host.logs": {
-      "address": "/v1/hosts/{name}/logs",
+      "address": "/v1/hosts/{name}/controller/logs",
       "bindings": {
         "ws": {
           "query": {
@@ -109,7 +109,7 @@
       "x-berth-resumable": true
     },
     "host.port": {
-      "address": "/v1/hosts/{name}/ports/{port}",
+      "address": "/v1/hosts/{name}/controller/ports/{port}",
       "bindings": {
         "ws": {
           "query": {
@@ -139,7 +139,7 @@
       "x-berth-resumable": false
     },
     "host.serve": {
-      "address": "/v1/hosts/{name}/services/{service}/serve",
+      "address": "/v1/hosts/{name}/controller/services/{service}/serve",
       "bindings": {
         "ws": {
           "query": {
@@ -172,7 +172,7 @@
       "x-berth-resumable": false
     },
     "host.session": {
-      "address": "/v1/hosts/{name}/sessions/{id}",
+      "address": "/v1/hosts/{name}/controller/sessions/{id}",
       "bindings": {
         "ws": {
           "query": {
@@ -895,7 +895,7 @@
   },
   "defaultContentType": "application/json",
   "info": {
-    "description": "The WebSockets of berth serve: its own, and each host's under /v1/hosts/{name}. Text frames are JSON, one message each; binary frames carry only session and job bytes.",
+    "description": "The WebSockets of berth serve: its own, and each host's under /v1/hosts/{name}/controller. Text frames are JSON, one message each; binary frames carry only session and job bytes.",
     "title": "berth serve",
     "version": "0.5.2"
   },

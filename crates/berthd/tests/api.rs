@@ -431,31 +431,31 @@ async fn a_terminal_keeps_its_screen_for_viewers_that_come_and_go() {
 }
 
 #[tokio::test]
-async fn tasks_run_as_steps_with_arguments() {
-    let tasks = json!([
+async fn actions_run_as_steps_with_arguments() {
+    let actions = json!([
         {"name": "greet", "label": "Greet", "group": "Demo", "agent": true, "confirm": "Really?",
          "arguments": [{"name": "who", "required": true}, {"name": "how-loud", "default": "quiet"},
                        {"name": "pick", "choices": "echo one; echo; echo 'two words'"}],
          "run": "printf '%s|%s\\n' \"$BERTH_ARG_WHO\" \"$BERTH_ARG_HOW_LOUD\"; exit 2"},
-        {"name": "plug:extra", "extends": ["greet"], "run": "echo extra for $BERTH_TASK"},
+        {"name": "plug:extra", "extends": ["greet"], "run": "echo extra for $BERTH_ACTION and $BERTH_TASK"},
         {"name": "plug:last", "extends": ["greet", "other"], "run": "exit 5"},
         {"name": "private", "run": "echo host only"},
         {"name": "feed", "input": "secrets", "run": "cat"},
         {"name": "ask", "terminal": true, "agent": true, "run": "printf 'go? '; read answer; echo went $answer"},
     ]);
-    let daemon = Daemon::start(&[("tasks.json", tasks)]);
+    let daemon = Daemon::start(&[("actions.json", actions)]);
     let mut host = daemon.host().await;
     let mut agent = daemon.agent().await;
 
-    let listed: Vec<api::Task> = host.get("/v1/tasks").await.unwrap();
+    let listed: Vec<api::HostAction> = host.get("/v1/actions").await.unwrap();
     assert_eq!(listed.len(), 6);
-    assert!(listed.iter().all(|task| task.run.is_empty()));
+    assert!(listed.iter().all(|action| action.run.is_empty()));
     assert_eq!(listed[0].confirm.as_deref(), Some("Really?"));
-    let listed: Vec<api::Task> = agent.get("/v1/tasks").await.unwrap();
+    let listed: Vec<api::HostAction> = agent.get("/v1/actions").await.unwrap();
     assert_eq!(
         listed
             .iter()
-            .map(|task| task.name.as_str())
+            .map(|action| action.name.as_str())
             .collect::<Vec<_>>(),
         ["greet", "ask"]
     );
@@ -463,10 +463,10 @@ async fn tasks_run_as_steps_with_arguments() {
     // Arguments arrive in the environment, quotes and spaces untouched. All
     // steps run; the exit code is the first that was not 0.
     let run = json!({"arguments": {"who": "it's \"me\" $HOME; ls"}});
-    let done: Value = host.post("/v1/tasks/greet?wait=10s", &run).await.unwrap();
+    let done: Value = host.post("/v1/actions/greet?wait=10s", &run).await.unwrap();
     assert_eq!(
         text(&done["stdout_b64"]),
-        "it's \"me\" $HOME; ls|quiet\nextra for greet\n"
+        "it's \"me\" $HOME; ls|quiet\nextra for greet and greet\n"
     );
     assert_eq!(done["exit_code"], 2);
     let steps: Vec<(String, i64)> = done["steps"]
@@ -488,13 +488,16 @@ async fn tasks_run_as_steps_with_arguments() {
             ("plug:last".to_owned(), 5)
         ]
     );
-    assert_eq!(done["task"], "greet");
+    assert_eq!(done["action"], "greet");
 
-    assert_eq!(code(host.post("/v1/tasks/greet", &json!({})).await).0, 400);
+    assert_eq!(
+        code(host.post("/v1/actions/greet", &json!({})).await).0,
+        400
+    );
     assert_eq!(
         code(
             host.post(
-                "/v1/tasks/greet",
+                "/v1/actions/greet",
                 &json!({"arguments": {"who": "x", "nope": "y"}})
             )
             .await
@@ -503,17 +506,17 @@ async fn tasks_run_as_steps_with_arguments() {
         400
     );
     assert_eq!(
-        code(host.post("/v1/tasks/missing", &json!({})).await).0,
+        code(host.post("/v1/actions/missing", &json!({})).await).0,
         404
     );
-    let choices: api::Choices = host.get("/v1/tasks/greet/choices/pick").await.unwrap();
+    let choices: api::Choices = host.get("/v1/actions/greet/choices/pick").await.unwrap();
     assert_eq!(choices.choices, ["one", "two words"]);
 
     // What the workstation sends as input reaches the command and nothing else does.
-    assert_eq!(code(host.post("/v1/tasks/feed", &json!({})).await).0, 400);
+    assert_eq!(code(host.post("/v1/actions/feed", &json!({})).await).0, 400);
     let done: Value = host
         .post(
-            "/v1/tasks/feed?wait=10s",
+            "/v1/actions/feed?wait=10s",
             &json!({"input_b64": api::b64(b"{\"k\":1}\n")}),
         )
         .await
@@ -522,11 +525,11 @@ async fn tasks_run_as_steps_with_arguments() {
 
     // The agent runs what is marked for it, reads and follows that session, and nothing else.
     assert_eq!(
-        code(agent.post("/v1/tasks/private", &json!({})).await).0,
+        code(agent.post("/v1/actions/private", &json!({})).await).0,
         403
     );
     let hosts: Value = host
-        .post("/v1/tasks/private?wait=10s", &json!({}))
+        .post("/v1/actions/private?wait=10s", &json!({}))
         .await
         .unwrap();
     assert_eq!(
@@ -539,7 +542,7 @@ async fn tasks_run_as_steps_with_arguments() {
         403
     );
     let started: Value = agent
-        .post("/v1/tasks/ask", &json!({"rows": 5, "cols": 40}))
+        .post("/v1/actions/ask", &json!({"rows": 5, "cols": 40}))
         .await
         .unwrap();
     assert_eq!(
@@ -1061,6 +1064,7 @@ async fn services_answer_calls_through_their_socket() {
 
 #[tokio::test]
 async fn a_restart_ends_sessions_and_keeps_their_transcripts() {
+    // What the role of berth 0.5 wrote is read until there is the file of now.
     let mut daemon =
         Daemon::start(&[("tasks.json", json!([{"name": "one", "run": "echo first"}]))]);
     let mut host = daemon.host().await;
@@ -1074,18 +1078,20 @@ async fn a_restart_ends_sessions_and_keeps_their_transcripts() {
     let id = started["id"].as_str().unwrap().to_owned();
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // A reload takes up new tasks and leaves the session running.
+    let actions: Vec<api::HostAction> = host.get("/v1/actions").await.unwrap();
+    assert_eq!(actions[0].name, "one");
+    // A reload takes up new actions and leaves the session running.
     std::fs::write(
-        daemon.dir.path().join("etc/tasks.json"),
+        daemon.dir.path().join("etc/actions.json"),
         json!([{"name": "two", "run": "true"}]).to_string(),
     )
     .unwrap();
     let _: Value = host.post("/v1/reload", &json!({})).await.unwrap();
-    let tasks: Vec<api::Task> = host.get("/v1/tasks").await.unwrap();
-    assert_eq!(tasks[0].name, "two");
+    let actions: Vec<api::HostAction> = host.get("/v1/actions").await.unwrap();
+    assert_eq!(actions[0].name, "two");
     let state: api::Session = host.get(&format!("/v1/sessions/{id}")).await.unwrap();
     assert!(state.running());
-    std::fs::write(daemon.dir.path().join("etc/tasks.json"), "not json").unwrap();
+    std::fs::write(daemon.dir.path().join("etc/actions.json"), "not json").unwrap();
     assert_eq!(code(host.post("/v1/reload", &json!({})).await).0, 400);
 
     drop(host);
@@ -1228,7 +1234,7 @@ async fn the_portal_carries_calls_and_streams_together() {
     let agent = Portal::over(daemon.stream("agent", "/v1/portal").await);
     assert!(
         agent
-            .call("tasks.list", None, Value::Null, None)
+            .call("actions.list", None, Value::Null, None)
             .await
             .is_ok()
     );

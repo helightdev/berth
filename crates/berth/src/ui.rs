@@ -59,7 +59,7 @@ fn buttons(app: &App) -> Vec<(&'static str, KeyCode)> {
             ("[All on Space]", KeyCode::Char(' '))
         });
     }
-    if app.selected_entry() == Some(Entry::Task("terminal")) {
+    if app.selected_entry() == Some(Entry::Offer("terminal")) {
         buttons.push(if app.as_agent {
             ("[As the SSH user Space]", KeyCode::Char(' '))
         } else {
@@ -723,14 +723,14 @@ fn view_event(app: &mut App, event: &Event) {
     }
 }
 
-/// The yes-or-no question before a task or before applying.
+/// The yes-or-no question before an action or before applying.
 fn question_event(app: &mut App, event: &Event) -> Flow {
     let Event::Key(key) = event else {
         return Flow::Continue;
     };
     match key.code {
         KeyCode::Char('y' | 'Y') => match app.host.question.take() {
-            Some((_, crate::remote::Pending::Action(index))) => app.begin_task(index, true),
+            Some((_, crate::remote::Pending::Action(index))) => app.begin_action(index, true),
             Some((_, crate::remote::Pending::Apply)) => return apply(app, true),
             None => {}
         },
@@ -740,7 +740,7 @@ fn question_event(app: &mut App, event: &Event) -> Flow {
     Flow::Continue
 }
 
-/// The dialog that asks for a task's arguments.
+/// The dialog that asks for an action's arguments.
 fn arguments_event(app: &mut App, event: &Event, platform: &mut dyn Platform) {
     let Some(event) = crate::keys::event(event) else {
         return;
@@ -1030,21 +1030,21 @@ fn choose(app: &mut App, entry: Entry) -> Flow {
             let item = Item::Feature(index);
             app.set_item(item, !app.item_enabled(item));
         }
-        Entry::HostTask(index) => app.begin_task(index, false),
+        Entry::HostAction(index) => app.begin_action(index, false),
         Entry::HostSession(index) => {
             if let Some(session) = app.host.sessions.get(index).cloned() {
                 app.host.open(&session);
             }
         }
-        Entry::Task("terminal") => app.start_host_shell(),
-        Entry::Task("ssh") => {
+        Entry::Offer("terminal") => app.start_host_shell(),
+        Entry::Offer("ssh") => {
             let (rows, cols) = session_size();
             app.start_shell(rows, cols);
         }
-        Entry::Task("connect") => app.reconnect_host(),
-        Entry::Task("address") => app.edit_address(),
-        Entry::Task("apply") => return apply(app, false),
-        Entry::Task("install-controller") => {
+        Entry::Offer("connect") => app.reconnect_host(),
+        Entry::Offer("address") => app.edit_address(),
+        Entry::Offer("apply") => return apply(app, false),
+        Entry::Offer("install-controller") => {
             let _ = app.save();
             app.own_command = Some(
                 ["host", "install", &app.place.argument()]
@@ -1056,7 +1056,7 @@ fn choose(app: &mut App, entry: Entry) -> Flow {
         Entry::Save => {
             save(app);
         }
-        Entry::Task(_) => {}
+        Entry::Offer(_) => {}
         Entry::Run => {
             if !app.problems().is_empty() {
                 app.status = "Fix the listed problems first".into();
@@ -1196,7 +1196,7 @@ fn key_event(
         }
         KeyCode::Char(' ') => match app.selected_entry() {
             Some(Entry::Group(group)) => app.toggle_group(group),
-            Some(Entry::Task("terminal")) => app.as_agent = !app.as_agent,
+            Some(Entry::Offer("terminal")) => app.as_agent = !app.as_agent,
             Some(
                 entry @ (Entry::Field(_)
                 | Entry::Feature(..)
@@ -4286,7 +4286,7 @@ mod tests {
             .unwrap()
             .remove("served");
         // The action opens the address for editing.
-        choose(&mut app, Entry::Task("address"));
+        choose(&mut app, Entry::Offer("address"));
         assert!(app.retry_address && app.editing.is_some(), "{}", app.status);
         assert_eq!(app.selected_field(), Some(Field::SshHost));
         let mut armed = false;
@@ -4690,8 +4690,8 @@ mod tests {
         assert!(app.confirm.is_none() && app.job.is_none());
     }
 
-    /// A host that has answered, with a few tasks as it would list them.
-    fn host_tasks() -> Vec<berth_api::Task> {
+    /// A host that has answered, with a few actions as it would list them.
+    fn controller_actions() -> Vec<berth_api::HostAction> {
         serde_json::from_value(json!([
             {"name": "status", "label": "Status", "group": "System", "user": "root", "help": "How the host is."},
             {"name": "claude:status", "label": "Claude Code sign-in", "extends": ["sign-in:status"], "help": "Whether Claude is signed in."},
@@ -4718,12 +4718,12 @@ mod tests {
         let text = screen_text(&mut app);
         assert!(text.contains("Type · ssh"), "{text}");
         assert!(text.contains("▸ Install the controller") && text.contains("▸ Terminal over SSH"));
-        assert!(!app.entries().contains(&Entry::Task("apply")));
+        assert!(!app.entries().contains(&Entry::Offer("apply")));
         // Choosing it, and saying yes, runs berth host install in the normal terminal.
         let at = app
             .entries()
             .iter()
-            .position(|entry| *entry == Entry::HostTask(0))
+            .position(|entry| *entry == Entry::HostAction(0))
             .unwrap();
         app.list.select(Some(at));
         press(&mut app, &[KeyCode::Enter]);
@@ -4745,7 +4745,7 @@ mod tests {
             text.contains("Network is unreachable") && text.contains("▸ Install the controller"),
             "{text}"
         );
-        assert!(app.entries().contains(&Entry::HostTask(0)));
+        assert!(app.entries().contains(&Entry::HostAction(0)));
 
         // A managed host lists berth's own beside its actions; one it cannot
         // run is marked, and its reason is in the information box.
@@ -4753,7 +4753,7 @@ mod tests {
         app.config["type"] = json!("managed");
         app.host.host_type = berth_api::HostType::Managed;
         app.host.state = State::Ready(berth_api::VERSION.into());
-        app.host.tasks = host_tasks();
+        app.host.host_actions = controller_actions();
         app.host.own = vec![
             berth_core::host_type::install_controller_action(
                 "devbox",
@@ -4780,14 +4780,14 @@ mod tests {
             1,
             "{rows:?}"
         );
-        assert!(!app.entries().contains(&Entry::Task("apply")));
+        assert!(!app.entries().contains(&Entry::Offer("apply")));
         let index = app
             .host
             .actions()
             .iter()
             .position(|action| action.name == "host-key")
             .unwrap();
-        app.begin_task(index, false);
+        app.begin_action(index, false);
         assert!(app.status.contains("cannot run now: devbox has no profile"));
         assert!(app.own_command.is_none());
     }
@@ -4822,7 +4822,7 @@ mod tests {
         // Without an address there is nothing to ask.
         let manage = screen(&mut app);
         assert!(manage.contains("✗ Enter an SSH hostname") && !manage.contains("▸ Status"));
-        assert!(app.entries().contains(&Entry::Task("apply")));
+        assert!(app.entries().contains(&Entry::Offer("apply")));
 
         app.commit(Field::SshHost, "devbox.example");
         app.config["agent_username"] = json!("robot");
@@ -4832,7 +4832,7 @@ mod tests {
         let applies = |app: &App| {
             app.entries()
                 .iter()
-                .filter(|entry| **entry == Entry::Task("apply"))
+                .filter(|entry| **entry == Entry::Offer("apply"))
                 .count()
         };
         assert!(screen_text(&mut app).contains("not on this host yet") && applies(&app) == 1);
@@ -4840,11 +4840,11 @@ mod tests {
             State::Unreachable("ssh: connect to host devbox.example: timed out\nmore".into());
         let text = screen_text(&mut app);
         assert!(text.contains("✗ ssh: connect to host") && text.contains("▸ Terminal over SSH"));
-        assert!(app.entries().contains(&Entry::Task("connect")));
+        assert!(app.entries().contains(&Entry::Offer("connect")));
 
-        // One that answered lists its tasks in their groups.
+        // One that answered lists its actions in their groups.
         app.host.state = State::Ready("0.2.0".into());
-        app.host.tasks = host_tasks();
+        app.host.host_actions = controller_actions();
         let rows: Vec<String> = app.rows().iter().map(|row| row.line.to_string()).collect();
         let place = |text: &str| rows.iter().position(|row| row.contains(text)).unwrap();
         assert!(
@@ -4863,15 +4863,15 @@ mod tests {
             app.list.select(Some(at.unwrap()));
         };
         // The information box says what the plugins' steps add.
-        select(&mut app, Entry::HostTask(1));
+        select(&mut app, Entry::HostAction(1));
         let help = app.help();
         assert!(
             help.contains("### From plugins") && help.contains("**Claude Code sign-in**: Whether")
         );
         assert!(help.contains("berth run HOST sign-in:status"));
 
-        // A task with a question waits for the yes.
-        select(&mut app, Entry::HostTask(3));
+        // An action with a question waits for the yes.
+        select(&mut app, Entry::HostAction(3));
         assert!(!press(&mut app, &[KeyCode::Enter]));
         assert_eq!(
             app.host.question,
@@ -4884,8 +4884,8 @@ mod tests {
         );
         assert!(app.host.question.is_none());
 
-        // A task with arguments asks for each; a needed one cannot be left empty.
-        select(&mut app, Entry::HostTask(4));
+        // An action with arguments asks for each; a needed one cannot be left empty.
+        select(&mut app, Entry::HostAction(4));
         press(&mut app, &[KeyCode::Enter]);
         let key = |app: &mut App, code| {
             arguments_event(
@@ -4946,7 +4946,7 @@ mod tests {
         // Applying with a session running asks first; then it is the SSH install.
         app.config["hostname"] = json!("devbox-1");
         app.config["operator_ssh_public_key"] = json!("ssh-ed25519 AAAA me");
-        select(&mut app, Entry::Task("apply"));
+        select(&mut app, Entry::Offer("apply"));
         assert!(!press(&mut app, &[KeyCode::Enter]));
         assert!(matches!(app.host.question, Some((_, Pending::Apply))));
         let yes = Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
@@ -4957,7 +4957,7 @@ mod tests {
 
         // Space switches the Terminal row between the two accounts.
         app.host.state = State::Ready("0.2.0".into());
-        select(&mut app, Entry::Task("terminal"));
+        select(&mut app, Entry::Offer("terminal"));
         press(&mut app, &[KeyCode::Char(' ')]);
         assert!(!app.as_agent && screen_text(&mut app).contains("the SSH user"));
         press(&mut app, &[KeyCode::Char(' ')]);

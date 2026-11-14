@@ -1039,9 +1039,55 @@
         ],
         "type": "object"
       },
+      "PluginAction": {
+        "description": "An action a feature adds to a host.",
+        "properties": {
+          "agent": {
+            "description": "The agent may run it with `box run`.",
+            "type": "boolean"
+          },
+          "arguments": {
+            "description": "The names of the arguments it asks for.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "extends": {
+            "description": "Actions of berth it runs after, with no row of its own.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "description": "The action is `PLUGIN:NAME` on the host.",
+            "type": "string"
+          },
+          "user": {
+            "description": "`agent`, `operator` or `root`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "user"
+        ],
+        "type": "object"
+      },
       "PluginFeature": {
         "description": "Something a plugin installs, switched on per host.",
         "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/PluginAction"
+            },
+            "type": "array"
+          },
           "channels": {
             "description": "Channel topics, without the plugin's id.",
             "items": {
@@ -1066,12 +1112,6 @@
           "services": {
             "items": {
               "$ref": "#/components/schemas/PluginService"
-            },
-            "type": "array"
-          },
-          "tasks": {
-            "items": {
-              "$ref": "#/components/schemas/PluginTask"
             },
             "type": "array"
           }
@@ -1217,46 +1257,6 @@
         },
         "required": [
           "spec"
-        ],
-        "type": "object"
-      },
-      "PluginTask": {
-        "description": "A task a feature adds to a host's overview.",
-        "properties": {
-          "agent": {
-            "description": "The agent may run it with `box run`.",
-            "type": "boolean"
-          },
-          "arguments": {
-            "description": "The names of the arguments it asks for.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "extends": {
-            "description": "Tasks of berth it runs after, with no row of its own.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "label": {
-            "type": "string"
-          },
-          "name": {
-            "description": "The task is `PLUGIN:NAME` on the host.",
-            "type": "string"
-          },
-          "user": {
-            "description": "`agent`, `operator` or `root`.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "label",
-          "user"
         ],
         "type": "object"
       },
@@ -1793,6 +1793,13 @@
       },
       "Session": {
         "properties": {
+          "action": {
+            "description": "The action it was started for, if any. The sessions an older\nberthd kept on the host say `task`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "cols": {
             "format": "int32",
             "minimum": 0,
@@ -1860,13 +1867,6 @@
               "$ref": "#/components/schemas/Step"
             },
             "type": "array"
-          },
-          "task": {
-            "description": "The task it was started for, if any.",
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "title": {
             "type": "string"
@@ -2053,7 +2053,7 @@
       }
     }
   },
-  "description": "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME. Only the `secrets` task is refused; the host's `secrets` action sends the server's own. An action's own role is asked when it runs. Each operation names the least role a caller over TCP needs: view, operate or admin.",
+  "description": "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME/controller. Only the controller's own `secrets` action is refused; the server's `secrets` action of the host sends the server's secrets. An action's own role is asked when it runs. Each operation names the least role a caller over TCP needs: view, operate or admin.",
   "hosts": true,
   "operations": [
     {
@@ -2385,7 +2385,7 @@
         }
       },
       "role": "view",
-      "summary": "What can be done to a host: the tasks its controller lists, and berth's own actions."
+      "summary": "What can be done to a host: the actions its controller lists, and berth's own."
     },
     {
       "args": [
@@ -2455,17 +2455,17 @@
         }
       },
       "role": "view",
-      "summary": "Run one of a host's actions. One of berth's that changes something is a job; a task of the host is a session there, which a job follows unless it needs a terminal."
+      "summary": "Run one of a host's actions. One of berth's that changes something is a job; an action of the host's controller is a session there, which a job follows unless it needs a terminal."
     },
     {
       "args": [],
-      "group": "actions",
+      "group": "installation",
       "http": {
         "method": "GET",
-        "path": "/v1/actions"
+        "path": "/v1/installation/actions"
       },
       "kind": "call",
-      "name": "actions.list",
+      "name": "installation.actions",
       "portal": true,
       "result": {
         "schema": {
@@ -2481,7 +2481,7 @@
     {
       "args": [
         {
-          "description": "The action, as actions.list names it",
+          "description": "The action, as installation.actions names it",
           "in": "path",
           "name": "action",
           "required": true
@@ -2518,13 +2518,13 @@
           "status": "409"
         }
       ],
-      "group": "actions",
+      "group": "installation",
       "http": {
         "method": "POST",
-        "path": "/v1/actions/{action}"
+        "path": "/v1/installation/actions/{action}"
       },
       "kind": "call",
-      "name": "actions.act",
+      "name": "installation.act",
       "portal": true,
       "result": null,
       "role": "view",

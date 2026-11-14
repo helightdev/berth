@@ -1,6 +1,7 @@
-//! berthd: the host's API. Sessions, tasks, system calls, a channel and
+//! berthd: the host's API. Sessions, actions, system calls, a channel and
 //! services, over unix sockets.
 
+mod actions;
 mod channel;
 mod error;
 mod files;
@@ -11,7 +12,6 @@ mod services;
 mod sessions;
 pub mod state;
 mod system;
-mod tasks;
 mod transcript;
 mod users;
 

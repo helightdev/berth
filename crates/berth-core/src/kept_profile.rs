@@ -26,7 +26,7 @@ pub const FORMAT: u64 = 3;
 /// What a profile's `builder` held of how one berth reached the host, or of
 /// that berth's own machine, in the layout before `access`, and what still
 /// belongs to this machine alone: a served host names this berth's server,
-/// and a USB drive and the last task were never meant to be kept.
+/// and a USB drive and the last action were never meant to be kept.
 const LOCAL_BUILDER: &[&str] = &[
     "ssh_host",
     "ssh_user",

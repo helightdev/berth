@@ -26,7 +26,7 @@ fn verbs_against_berthd() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("etc")).unwrap();
     std::fs::write(
-        dir.path().join("etc/tasks.json"),
+        dir.path().join("etc/actions.json"),
         r#"[{"name":"hello","label":"Hello","user":"agent","agent":true,"arguments":[{"name":"who","required":true}],"run":"echo hi $BERTH_ARG_WHO; echo err >&2; exit 3"}]"#,
     )
     .unwrap();
@@ -51,11 +51,11 @@ fn verbs_against_berthd() {
         cmd.env("BERTH_DIR", dir.path()).args(args);
         cmd
     };
-    let out = bx(&["tasks"]).output().unwrap();
-    let tasks = String::from_utf8_lossy(&out.stdout).into_owned();
-    if !tasks.contains("hello\tHello\twho*") {
+    let out = bx(&["actions"]).output().unwrap();
+    let actions = String::from_utf8_lossy(&out.stdout).into_owned();
+    if !actions.contains("hello\tHello\twho*") {
         return eprintln!(
-            "skipped: berthd does not serve tasks yet: {tasks} {}",
+            "skipped: berthd does not serve actions yet: {actions} {}",
             String::from_utf8_lossy(&out.stderr)
         );
     }

@@ -21,10 +21,10 @@ berth has a side on your machine, the *workstation*, and a side on each host.
 | --- | --- | --- |
 | `berth` | your machine | Keeps a profile per host and installs it. Manages hosts afterwards from its terminal UI or commands |
 | The role | the host, once per install or apply | The Ansible role that sets up the host. Every install method runs it |
-| `berthd` | the host, as root | Runs tasks, sessions and services and answers the [API](/docs/api/host) |
-| `box` | the host, for the agent | Desktop control, tasks the agent may run, the channel and services, from the agent's side ([box](/docs/reference/box)) |
+| `berthd` | the host, as root | Runs actions, sessions and services and answers the [API](/docs/api/host) |
+| `box` | the host, for the agent | Desktop control, actions the agent may run, the channel and services, from the agent's side ([box](/docs/reference/box)) |
 | `berth serve` | your machine or a server | One API over all hosts, with an inbox and a key-value store. Other machines' berth can use its hosts ([A berth server](/docs/use/server)) |
-| Plugins | both | Optional software, tasks and services, switched on per host ([Plugins](/docs/extend/plugins)) |
+| Plugins | both | Optional software, actions and services, switched on per host ([Plugins](/docs/extend/plugins)) |
 
 The software berth puts on a host is called *devbox*. The name appears in paths and settings there, such as `/etc/devbox` and `devbox_` variables.
 
@@ -32,13 +32,13 @@ The software berth puts on a host is called *devbox*. The name appears in paths 
 
 | Term | Meaning |
 | --- | --- |
-| Host | Anything berth reaches and logs in to: a laptop, server, VM or container |
+| Host | Anything berth reaches and logs in to, such as a laptop, server, VM or container |
 | Type | What berth does with a host: `ssh` only logs in, `managed` adds berth's controller, `workstation` applies the whole profile. See [Host types](/docs/use/types) |
 | Profile | The JSON document that describes one host, from what to install to how it is reached, or a template to start one from. berth keeps it in its store. See [Profile](/docs/reference/profile) |
-| Target | What a host is installed on, such as a laptop, a cloud machine or a container. A profile says it as `target` |
+| Target | The kind of machine a host is installed on, such as a laptop, a cloud machine or a container. A profile says it as `target` |
 | Operator | Your account on the host, `ops` by default, for SSH and Cockpit |
 | Agent | The account the coding agents work in, `agent` by default. The virtual desktop runs as this account. Its sudo rights are its [privileges](/docs/use/accounts) |
-| Task | Something a host can do, such as Status or a sign-in, run from its overview or with `berth run HOST TASK`. Plugins add tasks |
+| Action | Something a host, a provisioner, a resource or the installation can do. A host's controller has actions such as Status or a sign-in, run from its overview or with `berth run HOST ACTION`. Plugins add actions |
 | Host level, agent level | berthd answers on two sockets. berth connects at host level, as root. `box` connects at agent level, as the agent. Each call says which levels may use it |
 
 ## Connecting to a host

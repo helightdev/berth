@@ -1,4 +1,4 @@
-//! The commands that talk to a host's controller: sessions, tasks, the
+//! The commands that talk to a host's controller: sessions, actions, the
 //! channel and services. Each is a plain program that waits on a runtime.
 
 use crate::{
@@ -512,17 +512,17 @@ pub fn output(paths: &Paths, name: &str, id: &str, args: &[&str]) -> Result<()> 
     std::process::exit(code);
 }
 
-fn host_tasks(reach: &Reach) -> Result<Vec<api::Task>> {
+fn controller_actions(reach: &Reach) -> Result<Vec<api::HostAction>> {
     reach
-        .wait(reach.link.get::<Value>("/v1/tasks"))
-        .map(|value| list(value, "tasks"))
+        .wait(reach.link.get::<Value>("/v1/actions"))
+        .map(|value| list(value, "actions"))
         .map_err(|error| explain(error, &reach.host.name))
 }
 
-/// What a host can do, with the tasks its controller lists for a host of
+/// What a host can do, with the actions its controller lists for a host of
 /// this machine. A berth server's host has the server's list of its
-/// actions, which has berth's own beside its tasks.
-fn host_actions(paths: &Paths, reach: &Reach) -> Result<(Vec<api::Action>, Vec<api::Task>)> {
+/// actions, which has berth's own beside its controller's.
+fn host_actions(paths: &Paths, reach: &Reach) -> Result<(Vec<api::Action>, Vec<api::HostAction>)> {
     match reach.host.served(paths) {
         Some(server) => {
             let listed = server.call("hosts.actions", json!({"name": reach.host.name}), None)?;
@@ -531,15 +531,15 @@ fn host_actions(paths: &Paths, reach: &Reach) -> Result<(Vec<api::Action>, Vec<a
         None => {
             // A host of the type ssh has no controller to ask.
             let host_type = host_type::of(&reach.host.config);
-            let tasks = match host_type {
+            let listed = match host_type {
                 host_type::HostType::Ssh => vec![],
-                _ => host_tasks(reach)?,
+                _ => controller_actions(reach)?,
             };
-            let mut actions = api::Action::of_tasks(&tasks);
+            let mut actions = api::Action::of_host(&listed);
             let own = host_type::local_actions(&reach.host.name, host_type, observed(reach));
             actions.retain(|action| !own.iter().any(|known| known.name == action.name));
             actions.extend(own);
-            Ok((actions, tasks))
+            Ok((actions, listed))
         }
     }
 }
@@ -562,8 +562,8 @@ fn observed(reach: &Reach) -> Option<host_type::HostType> {
         .and_then(|version| host_type::seen(Ok(version)))
 }
 
-/// `berth tasks HOST`: what the host can do, by group.
-pub fn tasks(paths: &Paths, name: &str) -> Result<()> {
+/// `berth actions HOST`: what the host can do, by group.
+pub fn actions(paths: &Paths, name: &str) -> Result<()> {
     let reach = reach(paths, name)?;
     let (actions, _) = host_actions(paths, &reach)?;
     if let Some(said) =
@@ -635,7 +635,11 @@ pub(crate) fn ready(
 ) -> Result<(api::Action, BTreeMap<String, String>)> {
     let Some(found) = actions.iter().find(|known| known.name == name) else {
         let names: Vec<&str> = actions.iter().map(|known| known.name.as_str()).collect();
-        return Err(format!("{subject} has no task {name}. Tasks: {}", names.join(", ")).into());
+        return Err(format!(
+            "{subject} has no action {name}. Actions: {}",
+            names.join(", ")
+        )
+        .into());
     };
     if !found.available {
         return Err(format!("{name} cannot run now: {}", found.why).into());
@@ -667,13 +671,13 @@ pub(crate) fn ready(
     Ok((found.clone(), values))
 }
 
-/// `berth run HOST TASK [NAME=VALUE…] [--yes]`: run one of the host's
+/// `berth run HOST ACTION [NAME=VALUE…] [--yes]`: run one of the host's
 /// actions and leave with its exit code.
-pub fn run(paths: &Paths, name: &str, task: &str, args: &[&str]) -> Result<()> {
+pub fn run(paths: &Paths, name: &str, wanted: &str, args: &[&str]) -> Result<()> {
     let (values, yes) = parse_arguments(args)?;
     let reach = reach(paths, name)?;
-    let (actions, tasks) = host_actions(paths, &reach)?;
-    let (action, values) = ready(name, &actions, task, values, yes)?;
+    let (actions, listed) = host_actions(paths, &reach)?;
+    let (action, values) = ready(name, &actions, wanted, values, yes)?;
     let mut act = api::Act {
         arguments: values,
         ..api::Act::default()
@@ -690,7 +694,7 @@ pub fn run(paths: &Paths, name: &str, task: &str, args: &[&str]) -> Result<()> {
             follow_acted(&server, Some(&reach), acted, &mut std::io::stdout())?
         }
         None if action.runs == api::Runs::Berth => run_own(paths, &reach.host, &action.name)?,
-        None => run_here(paths, &reach, &tasks, &action, act)?,
+        None => run_here(paths, &reach, &listed, &action, act)?,
     };
     std::process::exit(code);
 }
@@ -933,11 +937,11 @@ fn seed_host_key(paths: &Paths, place: &Place, access: &api::profile::Access) ->
     Ok(())
 }
 
-/// Run a task of a host of this machine as a session there and follow it.
+/// Run an action of a host of this machine as a session there and follow it.
 fn run_here(
     paths: &Paths,
     reach: &Reach,
-    tasks: &[api::Task],
+    listed: &[api::HostAction],
     action: &api::Action,
     act: api::Act,
 ) -> Result<i32> {
@@ -945,14 +949,14 @@ fn run_here(
     if let (Some(rows), Some(cols)) = (act.rows, act.cols) {
         (body["rows"], body["cols"]) = (json!(rows), json!(cols));
     }
-    // Secrets are built here and travel on the task's standard input.
-    let task = tasks.iter().find(|task| task.name == action.name);
-    if task.and_then(|task| task.input.as_deref()) == Some("secrets") {
+    // Secrets are built here and travel on the action's standard input.
+    let kept = listed.iter().find(|kept| kept.name == action.name);
+    if kept.and_then(|kept| kept.input.as_deref()) == Some("secrets") {
         let payload = registry::Store::new(paths)?.host_payload(&reach.host.config)?;
         body["input_b64"] = json!(api::b64(format!("{payload}\n").as_bytes()));
     }
     reach.wait(async {
-        let path = format!("/v1/tasks/{}", encode(&action.name));
+        let path = format!("/v1/actions/{}", encode(&action.name));
         let session: api::Session = reach.link.post(&path, &body).await?;
         let ended = follow_session(&reach.link, &session).await?;
         Ok::<i32, Box<dyn std::error::Error>>(finish(reach, &session.id, ended, true).await)
@@ -1068,7 +1072,7 @@ pub(crate) fn act_on(
 ) -> Result<api::Acted> {
     let (op, args) = match host {
         Some(name) => ("hosts.act", json!({"name": name, "action": action})),
-        None => ("actions.act", json!({"action": action})),
+        None => ("installation.act", json!({"action": action})),
     };
     let acted = server.call(op, args, Some(serde_json::to_value(act)?))?;
     Ok(serde_json::from_value(acted)?)
@@ -1814,7 +1818,7 @@ mod tests {
     }
 
     #[test]
-    fn task_arguments_are_names_with_values() {
+    fn action_arguments_are_names_with_values() {
         let (values, yes) = parse_arguments(&["folder=~/my project", "--yes", "empty="]).unwrap();
         assert!(yes);
         assert_eq!(values["folder"], "~/my project");

@@ -86,9 +86,9 @@ berth host add big 192.0.2.20 --user root --auth ssh
 berth host install big
 ```
 
-`berth host add` saves `big` as a host of the type `ssh`. `--auth ssh` makes berth log in with your own SSH configuration and agent, so the key that works for `ssh root@192.0.2.20` works for berth. The default, `--auth berth`, uses berth's own key, which berth installs on the first contact with a password or a private key that logs in once. `--auth ssh` works with a local berth only. With a [berth server](/docs/use/server) set, the server logs in with its own keys.
+`berth host add` saves `big` with the type `ssh`. `--auth ssh` makes berth log in with your own SSH configuration and agent, so the key that works for `ssh root@192.0.2.20` works for berth. The default, `--auth berth`, uses berth's own key, which berth installs on the first contact with a password or a private key that logs in once. `--auth ssh` works with a local berth only. With a [berth server](/docs/use/server) set, the server logs in with its own keys.
 
-`berth host install big` puts the controller alone on the server. berth can then report its status and run commands there, and it can update and reboot the server. Sessions run as the SSH user, here `root`. berth does not apply such a server as a workstation. It stays a host of the type `ssh` or `managed`, and the machines on it are created with the Incus or Docker provisioner.
+`berth host install big` puts the controller alone on the server. berth can then report its status and run commands there, and it can update and reboot the server. Sessions run as the SSH user, here `root`. berth does not apply such a server as a workstation. Its type stays `ssh` or `managed`, and the machines on it are created with the Incus or Docker provisioner.
 
 The recipes are in [`recipes/`](https://github.com/helightdev/berth/tree/main/recipes): `rescue-install` installs Ubuntu, and `incus-host` makes the server a host for machines.
 
@@ -102,7 +102,7 @@ The controller is berthd and box with the files they read, from the same part of
 
 The same is the host's action **Install the controller** on its overview, in berth-remote and over the API as `install-controller`. On a managed host it's called **Update the controller**: run it after updating berth, as berth's own version is all such a host is compared with. A workstation's controller comes with applying its configuration, so the action is not offered there.
 
-berth also refuses it on a host that is a workstation whatever its profile here says. It asks the host's controller first. The role checks again on the host before it changes anything. It stops when the host's record says workstation. It also stops when berthd there serves an account other than the SSH user. Installing the controller alone on such a host would take the workstation's controller apart. The overview and `berth tasks` say when a host is more than its profile, and how to adopt it.
+berth also refuses it on a host that is a workstation whatever its profile here says. It asks the host's controller first. The role checks again on the host before it changes anything. It stops when the host's record says workstation. It also stops when berthd there serves an account other than the SSH user. Installing the controller alone on such a host would take the workstation's controller apart. The overview and `berth actions` say when a host is more than its profile, and how to adopt it.
 
 <Callout type="warn" title="A host without systemd">
   On a host with systemd the controller is a service that starts at boot. Without systemd, as in most containers, the controller is installed but nothing on the host starts it. berth says so and waits a minute for it to answer. The install fails when it doesn't. Something on the host then has to run `/usr/local/bin/berthd`, as the init of a container can.

@@ -169,7 +169,7 @@ A profile of berth 0.5 or earlier names two fields differently:
 | `level`: `workstation` | No `type`, which means a workstation |
 | `profile` | `target` |
 
-berth converts its stored profiles once, the profiles of a berth server's hosts with them. It reads the old names wherever a profile comes from: a file such as `berth ./studio.json`, `berth profile HOST --set FILE`, and the profile a host keeps, which [`berth adopt`](/docs/use/moving) reads. A file keeps the old names until you save it. berth writes the new names only. The API of `berth serve` takes the new names only.
+berth converts its stored profiles once, the profiles of a berth server's hosts with them. It reads the old names wherever a profile comes from: a file such as `berth ./studio.json`, `berth profile HOST --set FILE`, and the profile a host keeps, which [`berth adopt`](/docs/use/moving) reads. A file keeps the old names until you save it. berth writes `type` and `target` and nothing else, and the API of `berth serve` takes no other spelling.
 
 ## Install (`builder`)
 

@@ -14,7 +14,7 @@ terminal. A set-up has these pieces:
 | --- | --- |
 | `berth` client | The program on the user's machine. It has a terminal UI and commands. |
 | berth server | Optional. `berth serve`, usually in a Docker container, reached over a tailnet with TLS. It keeps the hosts, profiles and secrets. |
-| Host | A machine berth reaches and logs in to. Its type is one of three: `ssh` means berth only logs in, `managed` adds berthd and box, and `workstation` is set up from a profile. A machine that exists is added with `berth host add NAME ADDRESS --user USER`. |
+| Host | A machine berth logs in to over SSH. Its type is one of three: `ssh` means berth only logs in, `managed` adds berthd and box, and `workstation` is set up from a profile. A machine that exists is added with `berth host add NAME ADDRESS --user USER`. |
 | Provisioner | Creates the machine for a host, such as on Docker or Incus. Plugins bring the types `docker/container`, `incus/vm` and `incus/container`, and berth runs each provisioner under a name of its own, registered with `berth provisioner add NAME TYPE`. The `incus-host` recipe registers `incus-vm`, `incus-container` and `docker`. `berth provisioner` lists them, and the Provisioners tab of the terminal UI (key `2`) shows each one's page. |
 
 ## Where to look things up
@@ -107,7 +107,7 @@ berth host add big 192.0.2.20 --user root --auth ssh
 berth host install big
 ```
 
-`host add` saves a host of the type `ssh`. The default `--auth berth` uses berth's own
+`host add` saves the host with the type `ssh`. The default `--auth berth` uses berth's own
 key, which berth installs on first contact with a password or a private key that
 logs in once. `--auth ssh` uses the user's own SSH configuration and agent, and
 works with a local berth only. `host install` puts the controller alone on the

@@ -91,7 +91,7 @@ The plugin's id is the package name without its scope and without a leading `ber
     commands: { type: 'string[]', description: 'Commands the host must have afterwards; added to /etc/devbox/expected-commands, which the self-test checks.' },
     tasks: { type: 'string', description: 'Path of an Ansible task list in the package.' },
     guide: { type: 'string', description: 'Path of a guide for agents in the package.' },
-    actions: { type: 'Action[]', description: "Tasks for the host's overview." },
+    actions: { type: 'Action[]', description: "Actions for the host's overview." },
     services: { type: 'Service[]', description: 'Programs that keep running on the host and answer calls. See Writing a service.' },
     channels: { type: 'Channel[]', description: "Topics of the host's channel the feature uses, with how long messages are kept." },
   }}
@@ -99,7 +99,7 @@ The plugin's id is the package name without its scope and without a leading `ber
 
 ## Actions
 
-An action becomes a task of the host named `PLUGIN:ACTION`. Applying the configuration writes the actions of the chosen features to the host, and they appear on the overview in their group. From the command line: `berth run HOST PLUGIN:ACTION`.
+An action becomes an action of the host's controller named `PLUGIN:ACTION`. Applying the configuration writes the actions of the chosen features to the host, and they appear on the overview in their group. From the command line: `berth run HOST PLUGIN:ACTION`.
 
 <TypeTable
   type={{
@@ -121,9 +121,9 @@ An action becomes a task of the host named `PLUGIN:ACTION`. Applying the configu
 
 The command finds each argument as `BERTH_ARG_NAME` in its environment, upper-cased, with `_` for anything that is not a letter or digit. Values are never pasted into the command line. `choices` is a command whose output lines are the values to offer.
 
-### Steps of other tasks
+### Steps of other actions
 
-An action with `extends` has no row of its own. It runs after the task it extends, every time, and its output follows the task's. Start that output with the plugin's name. A task and its steps run one after another in one session, each as its own user. All steps run even when one fails. `berth run HOST status` includes what plugins add to it.
+An action with `extends` has no row of its own. It runs after the action it extends, every time, and its output follows that action's. Start that output with the plugin's name. An action and its steps run one after another in one session, each as its own user. All steps run even when one fails. `berth run HOST status` includes what plugins add to it.
 
 ### Terminal actions
 
@@ -275,11 +275,11 @@ A kind other than `machine` belongs to no host. The Docker plugin's `deployment`
 
 berth keeps the specification and never reads it. People give it with `berth deploy` or `berth resource ID change --spec FILE` ([Deployments](/docs/deploy/deployments)).
 
-An action takes most fields of a [task's action](#actions):
+An action takes most fields of a [host's action](#actions):
 
 | Field | Means |
 | --- | --- |
-| `name`, `label`, `help` | As for a task |
+| `name`, `label`, `help` | As for a host's action |
 | `group` | The group of the provisioner's page it is listed in |
 | `arguments` | What it asks for |
 | `confirm` | The question to answer yes to first |

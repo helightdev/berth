@@ -51,8 +51,8 @@ impl Step {
 }
 
 /// The rows of a host's overview that are berth's own: name, label and help.
-/// Everything else there is a task the host lists itself.
-pub const TASKS: &[(&str, &str, &str)] = &[
+/// Everything else there is an action the host lists itself.
+pub const OFFERS: &[(&str, &str, &str)] = &[
     (
         "terminal",
         "Terminal",
@@ -173,13 +173,13 @@ impl Action {
                 "Build the desktop image using Docker Compose. Start it afterwards with docker compose."
             }
             Action::Manage => {
-                "Look after a host that is already set up, over SSH: show its status and access links, publish the desktop on the tailnet, run the smoke test, install updates or reboot. Pick the task on the overview."
+                "Look after a host that is already set up, over SSH: show its status and access links, publish the desktop on the tailnet, run the smoke test, install updates or reboot. Pick the action on the overview."
             }
             Action::Ssh => {
                 "Install on an existing Ubuntu host over SSH. Enter a hostname, IP address or SSH config alias, and how berth logs in: its own key by default. A host that does not take that key yet gets it with berth key trust HOST and a password used once. Sudo prompts use the normal terminal."
             }
             Action::Reach => {
-                "Add a host berth only logs in to over SSH, such as a server that stays as it is: nothing is installed on it. Enter a hostname, IP address or SSH config alias, and how berth logs in. Run saves it; a host that does not take berth's key yet gets it with berth key trust HOST. Its page can install the controller later, for sessions, tasks and files."
+                "Add a host berth only logs in to over SSH, such as a server that stays as it is: nothing is installed on it. Enter a hostname, IP address or SSH config alias, and how berth logs in. Run saves it; a host that does not take berth's key yet gets it with berth key trust HOST. Its page can install the controller later, for sessions, actions and files."
             }
         }
     }

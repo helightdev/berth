@@ -53,7 +53,7 @@ class Controller(unittest.TestCase):
         self.assertEqual(self.station.read_profile(), {
             'type': 'ssh', 'access': {'address': HOST, 'user': OPERATOR, 'auth': 'berth'}})
         self.assertEqual(self.berth('ssh', HOST, 'id -un').stdout.strip(), OPERATOR)
-        listed = self.berth('tasks', HOST).stdout
+        listed = self.berth('actions', HOST).stdout
         self.assertRegex(listed, r'(?m)^  install-controller\s+Install the controller')
         # What needs more than a login is refused, and says what changes the type.
         refused = self.berth('apply', HOST, check=False)
@@ -82,7 +82,7 @@ class Controller(unittest.TestCase):
     def test_3_sessions_and_tasks_run_as_the_ssh_user(self):
         self.assertEqual(self.berth('exec', HOST, '--', 'id', '-un').stdout.strip(), OPERATOR)
         self.assertEqual(self.berth('exec', HOST, '--user', 'root', '--', 'id', '-un').stdout.strip(), 'root')
-        listed = self.berth('tasks', HOST).stdout
+        listed = self.berth('actions', HOST).stdout
         for name in ('status', 'update', 'secrets'):
             self.assertRegex(listed, rf'(?m)^  {name}\s+', name)
         self.assertNotRegex(listed, r'(?m)^  smoke\s+')
@@ -112,14 +112,14 @@ class OnAWorkstation(unittest.TestCase):
 
     def test_a_workstation_added_again_as_ssh_keeps_its_controller(self):
         station = provisioned()
-        files = 'cat /etc/berth/applied.json /etc/berth/berthd.json /etc/berth/tasks.json'
+        files = 'cat /etc/berth/applied.json /etc/berth/berthd.json /etc/berth/actions.json'
         before = station.root_on_host(files).stdout
         added = station.berth('host', 'add', 'adopted', HOST, '--user', OPERATOR, '--type', 'ssh', input='')
         try:
             # berth sees what the host is, and says how to adopt it.
             self.assertIn('adopted is a workstation; its profile here says ssh', added.stdout)
             self.assertIn('berth adopt adopted', added.stdout)
-            listed = station.berth('tasks', 'adopted').stdout
+            listed = station.berth('actions', 'adopted').stdout
             self.assertIn('adopted is a workstation; its profile here says ssh', listed)
             self.assertRegex(listed, r'(?m)^  install-controller\s+.*take its controller apart')
             refused = station.berth('host', 'install', 'adopted', check=False, timeout=600)

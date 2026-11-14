@@ -265,9 +265,10 @@ pub struct Session {
     pub command: Vec<String>,
     pub user: String,
     pub started_by: From,
-    /// The task it was started for, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task: Option<String>,
+    /// The action it was started for, if any. The sessions an older
+    /// berthd kept on the host say `task`.
+    #[serde(default, alias = "task", skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
     pub started: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<String>,
@@ -362,7 +363,7 @@ pub struct Signal {
     pub signal: String,
 }
 
-// ── Tasks ───────────────────────────────────────────────────────────────────
+// ── A host's actions ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct Argument {
@@ -407,9 +408,10 @@ impl Argument {
     }
 }
 
-/// An entry of `/etc/berth/tasks.json`. Listed without `run`.
+/// An action of the host's controller: an entry of `/etc/berth/actions.json`.
+/// Listed without `run`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
-pub struct Task {
+pub struct HostAction {
     pub name: String,
     #[serde(default)]
     pub label: String,
@@ -424,7 +426,7 @@ pub struct Task {
     /// The agent may run it.
     #[serde(default)]
     pub agent: bool,
-    /// Tasks it is a step of; it then has no row of its own.
+    /// Actions it is a step of; it then has no row of its own.
     #[serde(default)]
     pub extends: Vec<String>,
     #[serde(default)]
@@ -439,7 +441,7 @@ pub struct Task {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
-pub struct RunTask {
+pub struct RunAction {
     #[serde(default)]
     pub arguments: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -544,26 +546,26 @@ impl Default for Action {
 }
 
 impl Action {
-    /// The actions of a host's tasks, in the order the host lists them: each
-    /// task that is no step of another, with the steps plugins add to it. The
-    /// host keeps the rest of a task (its user, its command, its input), and
-    /// runs it by name.
-    pub fn of_tasks(tasks: &[Task]) -> Vec<Action> {
-        tasks
+    /// The actions of a host's controller as actions to describe, in the
+    /// order the host lists them: each that is no step of another, with the
+    /// steps plugins add to it. The host keeps the rest of one (its user, its
+    /// command, its input), and runs it by name.
+    pub fn of_host(listed: &[HostAction]) -> Vec<Action> {
+        listed
             .iter()
-            .filter(|task| task.extends.is_empty())
-            .map(|task| Action {
-                name: task.name.clone(),
-                label: task.label.clone(),
-                help: task.help.clone(),
-                group: task.group.clone(),
-                arguments: task.arguments.clone(),
-                confirm: task.confirm.clone(),
+            .filter(|action| action.extends.is_empty())
+            .map(|action| Action {
+                name: action.name.clone(),
+                label: action.label.clone(),
+                help: action.help.clone(),
+                group: action.group.clone(),
+                arguments: action.arguments.clone(),
+                confirm: action.confirm.clone(),
                 runs: Runs::Host,
-                terminal: task.terminal,
-                steps: tasks
+                terminal: action.terminal,
+                steps: listed
                     .iter()
-                    .filter(|step| step.extends.contains(&task.name))
+                    .filter(|step| step.extends.contains(&action.name))
                     .map(|step| ActionStep {
                         label: step.label.clone(),
                         help: step.help.clone(),
@@ -920,10 +922,10 @@ pub enum PluginOrigin {
     Folder,
 }
 
-/// A task a feature adds to a host's overview.
+/// An action a feature adds to a host.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct PluginTask {
-    /// The task is `PLUGIN:NAME` on the host.
+pub struct PluginAction {
+    /// The action is `PLUGIN:NAME` on the host.
     pub name: String,
     pub label: String,
     /// `agent`, `operator` or `root`.
@@ -931,7 +933,7 @@ pub struct PluginTask {
     /// The agent may run it with `box run`.
     #[serde(default)]
     pub agent: bool,
-    /// Tasks of berth it runs after, with no row of its own.
+    /// Actions of berth it runs after, with no row of its own.
     #[serde(default)]
     pub extends: Vec<String>,
     /// The names of the arguments it asks for.
@@ -960,7 +962,7 @@ pub struct PluginFeature {
     #[serde(default)]
     pub help: String,
     #[serde(default)]
-    pub tasks: Vec<PluginTask>,
+    pub actions: Vec<PluginAction>,
     #[serde(default)]
     pub services: Vec<PluginService>,
     /// Channel topics, without the plugin's id.
@@ -1423,7 +1425,7 @@ pub struct Rollout {
     /// Also the hosts that are current.
     #[serde(default)]
     pub all: bool,
-    /// Run each host's `update` task after applying.
+    /// Run each host's `update` action after applying.
     #[serde(default)]
     pub update: bool,
     /// Reboot a host that says it needs it, and wait for it to come back.
@@ -1515,7 +1517,7 @@ pub struct RolloutHost {
 }
 
 /// Whether a line of a roll-out's output is one of its own, rather than
-/// what Ansible or a task wrote: those start with ▸, ✓, ! or ✗.
+/// what Ansible or an action wrote: those start with ▸, ✓, ! or ✗.
 pub fn rollout_line(line: &str) -> bool {
     ["▸ ", "✓ ", "! ", "✗ "]
         .iter()
@@ -1546,6 +1548,17 @@ mod tests {
         assert_eq!(HostType::from_level("reachable"), Some(HostType::Ssh));
         assert_eq!(HostType::from_level("controller"), Some(HostType::Managed));
         assert_eq!(HostType::from_level("ssh"), None);
+    }
+
+    #[test]
+    fn a_session_an_older_berthd_kept_names_its_action() {
+        let kept = json!({"id": "s1", "kind": "process", "title": "", "command": [], "user": "agent",
+            "started_by": {"level": "host", "uid": 0}, "task": "status", "started": "2026-11-12T10:00:00Z"});
+        let session: Session = serde_json::from_value(kept).unwrap();
+        assert_eq!(session.action.as_deref(), Some("status"));
+        let written = json!(session);
+        assert_eq!(written["action"], "status");
+        assert!(written.get("task").is_none());
     }
 
     #[test]

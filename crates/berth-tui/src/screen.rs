@@ -491,10 +491,10 @@ pub fn draw_arguments(frame: &mut Frame, host: &HostView) {
 
 /// The dialog that asks for the arguments of one of a subject's actions.
 pub fn draw_action_arguments(frame: &mut Frame, actions: &[berth_api::Action], asked: &Arguments) {
-    let Some(task) = actions.get(asked.action) else {
+    let Some(action) = actions.get(asked.action) else {
         return;
     };
-    let Some(argument) = task.arguments.get(asked.index) else {
+    let Some(argument) = action.arguments.get(asked.index) else {
         return;
     };
     let mut lines = vec![Line::raw(ellipsize(argument_label(argument), 56))];
@@ -522,9 +522,9 @@ pub fn draw_action_arguments(frame: &mut Frame, actions: &[berth_api::Action], a
     let title = ellipsize(
         &format!(
             " {} · {} of {} ",
-            task.title(),
+            action.title(),
             asked.index + 1,
-            task.arguments.len()
+            action.arguments.len()
         ),
         58,
     );
@@ -699,7 +699,7 @@ pub fn view_event(
     None
 }
 
-/// Keys of the dialog that asks for a task's arguments. Returns whether the
+/// Keys of the dialog that asks for an action's arguments. Returns whether the
 /// value was accepted, for the caller to go on with.
 pub fn arguments_event(
     host: &mut HostView,
