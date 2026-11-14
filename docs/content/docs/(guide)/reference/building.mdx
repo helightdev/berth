@@ -124,7 +124,7 @@ GitHub Actions build on every push:
 | Workflow | Does |
 | --- | --- |
 | CI | The checks above and the end-to-end tests, both with `ci/run.sh`, and Vale. berth is built once, and the tests of each test host run in a job of their own |
-| Boot | The boot tests, `boot cloud` and `boot iso`, for changes to provisioning and when started by hand |
+| Boot | The boot tests. `boot cloud` runs for changes to provisioning. `boot iso` runs once a week and when started by hand, because the installer takes longest and is used least |
 | Docs | The docs build, and publishing it to GitHub Pages from `main` |
 | Build | The static `berth` for Linux x86_64 as artifact `berth-x86_64-linux`, the host programs as `host-programs-x86_64-linux`, `berth-remote` for each system as `berth-remote-<target>`; the container image `ghcr.io/helightdev/berth`, tagged `edge` from `main` |
 

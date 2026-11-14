@@ -87,7 +87,7 @@ That engine starts with Docker when the run is complete, names `e2e_provisioners
 
 CI builds berth once and runs the tests of each test host as a shard, in a job of its own on a machine of its own. Each shard is its host's list in `HOSTS` of `tests/e2e/run.py`, so no state of a host is applied twice. A test case in none of the lists stops the run before it starts.
 
-`ci/run.sh boot` boots berth's cloud seed and its USB installer in QEMU, lets the first boot set the host up, and then runs `tests/e2e/boot_*.py` and part of the container suite against it. Each takes 10 to 15 minutes on a machine with KVM, so run it when a change touches provisioning, the role or first boot. CI runs both for changes to provisioning (the Boot workflow, on a hosted runner with KVM). Logs, timings and disk use are in `build/boot/`.
+`ci/run.sh boot` boots berth's cloud seed and its USB installer in QEMU, lets the first boot set the host up, and then runs `tests/e2e/boot_*.py` and part of the container suite against it. Each takes 10 to 15 minutes on a machine with KVM, so run it when a change touches provisioning, the role or first boot. CI boots only the cloud image for such a change. The installer is booted once a week and when the Boot workflow is started by hand. CI runs both for changes to provisioning (the Boot workflow, on a hosted runner with KVM). Logs, timings and disk use are in `build/boot/`.
 
 ## API changes
 
