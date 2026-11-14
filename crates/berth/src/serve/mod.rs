@@ -199,6 +199,17 @@ impl Serve {
         }
     }
 
+    /// Drop what is known of a host that was given another name, and keep
+    /// the sudo password it was given at the start for its new one. The next
+    /// [`Serve::refresh`] takes it up under that name.
+    pub fn renamed(&self, old: &str, new: &str) {
+        self.forget(old);
+        let mut passwords = self.passwords.lock().unwrap();
+        if let Some(password) = passwords.remove(old) {
+            passwords.insert(new.to_owned(), password);
+        }
+    }
+
     /// Take up saved hosts that are not known yet: the server's own, whatever
     /// its settings say. A host whose profile went or changed meanwhile, as by
     /// a berth command beside the server, is dropped or taken up again. Only at

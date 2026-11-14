@@ -41,6 +41,10 @@ Usage:
   berth host level HOST reachable|controller|workstation
                              say what the host is, as for one added by its address
                              that berth set up before; nothing on the host changes
+  berth host rename HOST NAME [--hostname]
+                             give a host another name in berth, with what berth keeps
+                             of it; the machine is left as it is, and --hostname makes
+                             NAME its profile's hostname for the next apply
   berth iso HOST [--write /dev/sdX]
                              build the unattended installer; write it to a USB drive
   berth seed HOST            render the cloud-init seed
@@ -685,6 +689,11 @@ fn run() -> Result<()> {
         }
         ["host", "install", host] => return commands::install_controller(&paths, host),
         ["host", "level", host, level] => return commands::set_level(&paths, host, level),
+        ["host", "rename", host, name] => return commands::rename(&paths, host, name, false),
+        ["host", "rename", host, name, "--hostname"]
+        | ["host", "rename", host, "--hostname", name] => {
+            return commands::rename(&paths, host, name, true);
+        }
         ["host", host, ref rest @ ..] => return host_command(&paths, host, rest),
         ["--version" | "-V" | "version"] => {
             println!("berth {}", berth_api::VERSION);
@@ -855,6 +864,11 @@ fn run() -> Result<()> {
                 println!("Press Enter to return to berth.");
                 let _ = std::io::stdin().read_line(&mut String::new());
                 terminal = enter()?;
+                // A host renamed meanwhile is opened again under its new name.
+                if let Some(new) = app.renamed.take() {
+                    app = open(&paths, &new)?;
+                    app.start();
+                }
             }
             if host.is_some() {
                 return Ok(());

@@ -1337,6 +1337,50 @@ pub fn remove(paths: &Paths, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// `berth host rename HOST NAME [--hostname]`: give a host another name in
+/// berth, with everything berth keeps under its name. The machine stays as it
+/// is; with `--hostname` its profile's hostname becomes the new name too,
+/// which it takes at its next apply.
+pub fn rename(paths: &Paths, name: &str, new: &str, hostname: bool) -> Result<()> {
+    let host = Host::load(paths, name).map_err(|_| format!("No host {name}"))?;
+    if hostname && let Some(problem) = berth_tui::setup::hostname_problem(new) {
+        return Err(problem.into());
+    }
+    let Some(server) = host.served(paths) else {
+        let place = berth_core::profiles::rename(paths, &host.place, new, hostname)?;
+        println!("Renamed {name} to {}", place.describe());
+        if hostname {
+            println!("Its hostname is {new} in its profile. Apply it: berth apply {new}");
+        }
+        return Ok(());
+    };
+    let act = api::Act {
+        arguments: [
+            ("name".to_owned(), new.to_owned()),
+            (
+                "hostname".to_owned(),
+                if hostname { "yes" } else { "no" }.to_owned(),
+            ),
+        ]
+        .into(),
+        ..api::Act::default()
+    };
+    let acted = act_on(&server, Some(name), "rename", &act)?;
+    let code = follow_acted(&server, None, acted, &mut std::io::stdout())?;
+    if code != 0 {
+        std::process::exit(code);
+    }
+    // What this berth keeps of the server's host, such as its host keys, goes along.
+    if let Err(error) = berth_core::profiles::rename(paths, &host.place, new, false) {
+        eprintln!("! {new} is renamed on the server, but not what is kept of it here: {error}");
+    }
+    server.mirror(paths)?;
+    if hostname {
+        println!("Apply it to give the machine its new hostname: berth apply {new}");
+    }
+    Ok(())
+}
+
 /// `berth profile HOST`: the profile as it is kept, as JSON.
 pub fn show_profile(paths: &Paths, name: &str) -> Result<()> {
     let place = Place::resolve(paths, name)?;

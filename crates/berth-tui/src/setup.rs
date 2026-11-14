@@ -275,6 +275,15 @@ pub fn valid_hostname(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+/// Why a name cannot be a host's hostname, when it cannot.
+pub fn hostname_problem(name: &str) -> Option<String> {
+    (!valid_hostname(name)).then(|| {
+        format!(
+            "{name} cannot be a hostname: lower-case letters, digits and `-`, starting with a letter"
+        )
+    })
+}
+
 pub fn valid_password_hash(hash: &str) -> bool {
     (hash.starts_with("$6$") || hash.starts_with("$y$"))
         && hash.len() >= 40

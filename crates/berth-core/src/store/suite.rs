@@ -90,6 +90,7 @@ on_each_backend!(
     state_rows_are_kept_listed_and_removed,
     replacing_states_leaves_other_scopes_and_kinds_alone,
     changes_are_all_or_nothing,
+    a_renamed_host_takes_its_rows_messages_and_jobs,
     sealed_values_round_trip,
     a_sealed_store_without_its_key_says_so,
     plain_rows_are_read_with_a_key_loaded,
@@ -691,6 +692,81 @@ fn changes_are_all_or_nothing(place: &Place) {
             .is_err()
     );
     assert_eq!(all_names(&store), before);
+}
+
+fn a_renamed_host_takes_its_rows_messages_and_jobs(place: &Place) {
+    let store = place.open().with_keys(Some(keys()), None);
+    store.write("profile", OWN, "test", b"p").unwrap();
+    store.write("profile", OWN, "lab", b"l").unwrap();
+    store.take_in("test", &message(1, "a", Keep::Log)).unwrap();
+    store.take_in("test", &message(2, "b", Keep::Log)).unwrap();
+    store.take_in("lab", &message(1, "a", Keep::Log)).unwrap();
+    // A removed host of the new name left a message and a cursor.
+    store
+        .take_in("studio", &message(1, "old", Keep::Log))
+        .unwrap();
+    let job = |id: &str, host: &str, subject: &str, token: Option<&str>| Job {
+        id: id.into(),
+        host: host.into(),
+        what: "apply".into(),
+        started: rfc3339(unix_now()),
+        output_path: format!("/tmp/{id}.log"),
+        subject: subject.into(),
+        action: "apply".into(),
+        token: token.map(str::to_owned),
+        ..Job::default()
+    };
+    store
+        .add_job(&job("j1", "test", "host:test", Some("t")))
+        .unwrap();
+    store
+        .add_job(&job("j2", "studio", "host:studio", Some("t")))
+        .unwrap();
+    store
+        .add_job(&job("j3", "test, lab", "installation", None))
+        .unwrap();
+
+    store
+        .rename_host(
+            "test",
+            "studio",
+            &[("profile", OWN, "studio", b"p".to_vec())],
+            &[("profile", OWN, "test")],
+        )
+        .unwrap();
+    assert_eq!(
+        all_names(&store),
+        owned(&[("profile", "", "lab"), ("profile", "", "studio")])
+    );
+    assert_eq!(store.read("profile", OWN, "studio").unwrap().unwrap(), b"p");
+    let topics = |host: &str| -> Vec<String> {
+        all(&store)
+            .into_iter()
+            .filter(|stored| stored.host == host)
+            .map(|stored| stored.message.topic)
+            .collect()
+    };
+    assert_eq!(topics("studio"), ["b", "a"]);
+    assert!(topics("test").is_empty());
+    assert_eq!(topics("lab"), ["a"]);
+    assert_eq!(store.cursor("studio").unwrap(), 2);
+    assert_eq!(store.cursor("test").unwrap(), 0);
+    // The cursor goes on from where it was: nothing is taken in twice.
+    assert!(
+        store
+            .take_in("studio", &message(2, "b", Keep::Log))
+            .unwrap()
+            .is_none()
+    );
+
+    let renamed = store.job("j1").unwrap().unwrap();
+    assert_eq!(
+        (renamed.host.as_str(), renamed.subject.as_str()),
+        ("studio", "host:studio")
+    );
+    let found = store.job_by_token("host:studio", "apply", "t").unwrap();
+    assert_eq!(found.map(|job| job.id), Some("j1".into()));
+    assert_eq!(store.job("j3").unwrap().unwrap().host, "test, lab");
 }
 
 fn sealed_values_round_trip(place: &Place) {

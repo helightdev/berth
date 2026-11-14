@@ -101,6 +101,11 @@ pub(super) static HOST: &[Builtin] = &[
         describe: host_key_action,
         run: host_key,
     },
+    Builtin {
+        name: "rename",
+        describe: rename_action,
+        run: rename,
+    },
 ];
 
 /// The actions of the installation itself.
@@ -958,6 +963,78 @@ fn host_key(state: Arc<Serve>, name: String, act: Act) -> Run {
             .collect();
         Ok(Acted {
             result: Some(json!({"host_keys": keys, "accepted": accept})),
+            ..Acted::default()
+        })
+    })
+}
+
+// ── Its name ────────────────────────────────────────────────────────────────
+
+fn rename_action(seen: &Seen) -> Action {
+    let action = level::rename_action();
+    let why = seen
+        .profile
+        .is_null()
+        .then(|| format!("{} has no profile on the server", seen.name));
+    unavailable(action, why)
+}
+
+fn rename(state: Arc<Serve>, name: String, act: Act) -> Run {
+    Box::pin(async move {
+        let bad = |error: String| Fail::new(code::BAD_REQUEST, error);
+        let new = given(&act, "name").unwrap_or_default().to_owned();
+        let hostname = yes(&act, "hostname")?;
+        let to = own_place(&new)?;
+        if hostname && let Some(problem) = berth_tui::setup::hostname_problem(&new) {
+            return Err(bad(problem));
+        }
+        let from = own_place(&name)?;
+        if hostname {
+            berth_core::profiles::hostname_allowed(&name, &profile_of(&state, &name))
+                .map_err(|error| bad(error.to_string()))?;
+        }
+        if to.load(&state.paths).map_err(internal)?.is_some() {
+            return Err(Fail::new(
+                code::CONFLICT,
+                format!("There is a host {new} already"),
+            ));
+        }
+        let mut request = Request::new(Subject::Host(name.clone()), "rename");
+        request.token = act.token;
+        // The rename takes the locks of both names itself.
+        request.changes = false;
+        let (serve, runtime) = (state.clone(), tokio::runtime::Handle::current());
+        let work = Work::Function(Box::new(move |out| {
+            let _inside = runtime.enter();
+            // Its channel is not taken in under the old name meanwhile.
+            serve.forget(&name);
+            let done = berth_core::profiles::rename(&serve.paths, &from, &new, hostname);
+            if done.is_ok() {
+                serve.renamed(&name, &new);
+            }
+            // Its channel is followed again at once: under the new name, or
+            // under the old one when nothing changed.
+            serve.refresh(false);
+            match done {
+                Ok(_) => {
+                    let _ = writeln!(out, "✓ {name} is called {new} now");
+                    if hostname {
+                        let _ = writeln!(
+                            out,
+                            "Its profile's hostname is {new}; the machine takes it at its next apply"
+                        );
+                    }
+                    true
+                }
+                Err(error) => {
+                    let _ = writeln!(out, "✗ {error}");
+                    false
+                }
+            }
+        }));
+        let job = state.runner.start(request, work).map_err(refused)?;
+        Ok(Acted {
+            job: Some(job_info(&state.paths, job)),
             ..Acted::default()
         })
     })

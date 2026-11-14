@@ -185,6 +185,9 @@ pub struct App {
     /// The berth command one of berth's own actions on the host runs, in
     /// the normal terminal, the next time the screen is left.
     pub own_command: Option<Vec<String>>,
+    /// The host's new name after one of berth's own actions renamed it, so
+    /// its screen is opened again under that name.
+    pub renamed: Option<String>,
     /// What the host's controller says the host is, asked in the background
     /// once its address is given on the set-up's Install tab.
     found_level: Option<mpsc::Receiver<Option<level::Level>>>,
@@ -305,6 +308,7 @@ impl App {
             machine_job: false,
             own_answers: None,
             own_command: None,
+            renamed: None,
             found_level: None,
             level_chosen: false,
         };
@@ -2149,6 +2153,15 @@ impl App {
             self.saved = saved;
         }
         self.host.disconnect();
+        if let ["host", "rename", _, new, ..] = words
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice()
+            && status.success()
+        {
+            self.renamed = Some((*new).to_owned());
+        }
         match status.success() {
             true => Ok(()),
             false => Err(format!("berth {} failed ({status})", words.join(" ")).into()),
@@ -2747,6 +2760,18 @@ fn own_command(
             }
             if given("keep_password") == "yes" {
                 words.push("--keep-password".into());
+            }
+            return words;
+        }
+        "rename" => {
+            let mut words = vec![
+                "host".into(),
+                "rename".into(),
+                host.into(),
+                given("name").into(),
+            ];
+            if given("hostname") == "yes" {
+                words.push("--hostname".into());
             }
             return words;
         }

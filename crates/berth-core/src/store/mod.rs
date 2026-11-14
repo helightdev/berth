@@ -396,6 +396,17 @@ pub trait Backend: Send {
         writes: &[StateRow],
         removals: &[(String, String, String)],
     ) -> Result<()>;
+    /// In one transaction: the change of [`Backend::change_states`], and the
+    /// messages, channel cursor and jobs of the host `old` given to `new`.
+    /// What a host of the name `new` left before, which nothing would tell
+    /// from the renamed host's, goes: its messages, cursor and job tokens.
+    fn rename_host(
+        &mut self,
+        old: &str,
+        new: &str,
+        writes: &[StateRow],
+        removals: &[(String, String, String)],
+    ) -> Result<()>;
     /// In one transaction, while nobody else writes to the table: give each
     /// row the value and `sealed` of its new version, leaving `updated` as
     /// it is. False, with nothing changed, when the table no longer holds
@@ -753,6 +764,30 @@ impl Store {
             })
             .collect();
         self.backend().change_states(&rows, &removals)
+    }
+
+    /// A change as [`Store::change`] makes it, in the same transaction as
+    /// moving the messages, channel cursor and jobs of the host `old` to
+    /// `new`: what renames a host of this installation's own.
+    pub fn rename_host(
+        &self,
+        old: &str,
+        new: &str,
+        writes: &[(&str, &str, &str, Vec<u8>)],
+        removals: &[(&str, &str, &str)],
+    ) -> Result<()> {
+        let updated = now();
+        let rows = writes
+            .iter()
+            .map(|(kind, scope, name, value)| self.row(kind, scope, name, value, &updated))
+            .collect::<Result<Vec<_>>>()?;
+        let removals: Vec<_> = removals
+            .iter()
+            .map(|(kind, scope, name)| {
+                ((*kind).to_owned(), (*scope).to_owned(), (*name).to_owned())
+            })
+            .collect();
+        self.backend().rename_host(old, new, &rows, &removals)
     }
 
     /// The ids of the keys the sealed rows of `state` were made with.
