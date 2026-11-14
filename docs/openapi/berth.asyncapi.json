@@ -108,6 +108,36 @@
       "x-berth-level": "host",
       "x-berth-resumable": true
     },
+    "host.port": {
+      "address": "/v1/hosts/{name}/ports/{port}",
+      "bindings": {
+        "ws": {
+          "query": {
+            "properties": {},
+            "type": "object"
+          }
+        }
+      },
+      "description": "A TCP connection to a port on the host's loopback, 127.0.0.1. The port is dialled first, so one that nothing listens on is an error and not a stream.",
+      "messages": {
+        "host.port.bytes": {
+          "$ref": "#/components/messages/host.port.bytes"
+        },
+        "host.port.eof": {
+          "$ref": "#/components/messages/host.port.eof"
+        }
+      },
+      "parameters": {
+        "name": {
+          "description": "name"
+        },
+        "port": {
+          "description": "port"
+        }
+      },
+      "x-berth-level": "host",
+      "x-berth-resumable": false
+    },
     "host.serve": {
       "address": "/v1/hosts/{name}/services/{service}/serve",
       "bindings": {
@@ -533,6 +563,30 @@
         },
         "summary": "One journal entry."
       },
+      "host.port.bytes": {
+        "contentType": "application/octet-stream",
+        "name": "bytes",
+        "payload": {
+          "format": "binary",
+          "type": "string"
+        },
+        "summary": "Bytes for the program on the port."
+      },
+      "host.port.eof": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "eof": true
+            }
+          }
+        ],
+        "name": "eof",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "The client sends no more, and the program on the port reads the end. What it sends still comes back."
+      },
       "host.serve.call": {
         "contentType": "application/json",
         "examples": [
@@ -913,6 +967,34 @@
       "messages": [
         {
           "$ref": "#/channels/host.logs/messages/host.logs.entry"
+        }
+      ]
+    },
+    "host.port.receive": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/host.port"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/host.port/messages/host.port.bytes"
+        },
+        {
+          "$ref": "#/channels/host.port/messages/host.port.eof"
+        }
+      ]
+    },
+    "host.port.send": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/host.port"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/host.port/messages/host.port.bytes"
+        },
+        {
+          "$ref": "#/channels/host.port/messages/host.port.eof"
         }
       ]
     },

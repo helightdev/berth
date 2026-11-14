@@ -61,6 +61,28 @@ Text frames are the same for both kinds:
 Any number of viewers can be connected to one session. A terminal has the size
 that the last viewer to resize it asked for.
 
+## The stream of a port
+
+[`ports.connect`](/docs/api/host/ports) is a TCP connection to a port on the
+host's loopback, `127.0.0.1`. It is at `/v1/ports/{port}`, and through
+`berth serve` at `/v1/hosts/{name}/ports/{port}`. berthd connects to the port
+before the handshake, so a port that nothing listens on gives the error `503
+not_served`. It needs the role `operate` and the host
+level.
+
+Binary frames are the connection's bytes in both directions. Either side ends
+its direction with a text frame:
+
+| Frame | From | Meaning |
+|---|---|---|
+| `{"eof":true}` | client | The client sends no more. The program on the port reads the end, and what it sends still comes back |
+| `{"eof":true}` | server | The program closed its side. Bytes sent towards it still arrive |
+
+The stream ends once both sides have sent `{"eof":true}`. It ends at once when
+the client closes the WebSocket or the connection to the port breaks. A stream
+that closes before its `{"eof":true}` has lost its connection.
+`berth_api::tunnel` reads and writes such a stream like a socket.
+
 ## Resuming
 
 A stream that can be resumed takes `since=` and starts there. The page of each

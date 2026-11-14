@@ -1108,32 +1108,41 @@ async fn proxy(
     Ok(response)
 }
 
-/// Frames both ways until either side closes.
+/// Frames both ways until either side closes, each way on its own, so a
+/// side that is slow to take frames does not hold up the other direction.
 async fn pump(socket: WebSocket, upstream: berth_core::link::LinkStream) {
     use client::Frame;
     let (mut to_client, mut from_client) = socket.split();
     let (mut to_host, mut from_host) = upstream.split();
-    loop {
-        tokio::select! {
-            frame = from_client.next() => {
-                let sent = match frame {
-                    Some(Ok(WsMessage::Text(text))) => to_host.send(Frame::Text(text.as_str().into())).await,
-                    Some(Ok(WsMessage::Binary(data))) => to_host.send(Frame::Binary(data)).await,
-                    Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => Ok(()),
-                    _ => break,
-                };
-                if sent.is_err() { break }
-            }
-            frame = from_host.next() => {
-                let sent = match frame {
-                    Some(Ok(Frame::Text(text))) => to_client.send(WsMessage::Text(text.as_str().into())).await,
-                    Some(Ok(Frame::Binary(data))) => to_client.send(WsMessage::Binary(data)).await,
-                    Some(Ok(Frame::Ping(_) | Frame::Pong(_) | Frame::Frame(_))) => Ok(()),
-                    _ => break,
-                };
-                if sent.is_err() { break }
+    let towards_host = async {
+        while let Some(Ok(frame)) = from_client.next().await {
+            let sent = match frame {
+                WsMessage::Text(text) => to_host.send(Frame::Text(text.as_str().into())).await,
+                WsMessage::Binary(data) => to_host.send(Frame::Binary(data)).await,
+                WsMessage::Ping(_) | WsMessage::Pong(_) => Ok(()),
+                WsMessage::Close(_) => break,
+            };
+            if sent.is_err() {
+                break;
             }
         }
+    };
+    let towards_client = async {
+        while let Some(Ok(frame)) = from_host.next().await {
+            let sent = match frame {
+                Frame::Text(text) => to_client.send(WsMessage::Text(text.as_str().into())).await,
+                Frame::Binary(data) => to_client.send(WsMessage::Binary(data)).await,
+                Frame::Ping(_) | Frame::Pong(_) | Frame::Frame(_) => Ok(()),
+                Frame::Close(_) => break,
+            };
+            if sent.is_err() {
+                break;
+            }
+        }
+    };
+    tokio::select! {
+        () = towards_host => {}
+        () = towards_client => {}
     }
     let _ = to_host.send(Frame::Close(None)).await;
     let _ = to_client.send(WsMessage::Close(None)).await;

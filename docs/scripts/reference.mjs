@@ -38,6 +38,7 @@ const groups = {
   processes: ['Processes', 'The processes of the host.'],
   channel: ['Channel', 'Messages between programs on the host and berth.'],
   services: ['Services', 'Programs of plugins that answer calls.'],
+  ports: ['Ports', "TCP connections to ports on the host's loopback."],
   setup_key: ['Setup key', 'Collecting the token with a short-lived key, after an install.'],
   hosts: ['Hosts', 'The hosts berth serve knows, their profiles, and what can be done to each.'],
   actions: ['Actions', 'What can be done to the installation as a whole, such as a roll-out.'],

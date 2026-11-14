@@ -952,6 +952,94 @@ async fn a_hosts_actions_are_its_tasks_and_berths_own() {
     );
 }
 
+/// A listener on the loopback that sends back what it gets, and ends its
+/// side once the caller has ended theirs.
+async fn echo() -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((connection, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                let (mut reading, mut writing) = connection.into_split();
+                let _ = tokio::io::copy(&mut reading, &mut writing).await;
+                let _ = writing.shutdown().await;
+            });
+        }
+    });
+    port
+}
+
+/// Write `data` and end, while what comes back is read: what came back.
+async fn through<T>(open: T, data: &[u8]) -> Vec<u8>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut reading, mut writing) = tokio::io::split(open);
+    let sent = data.to_vec();
+    let writer = tokio::spawn(async move {
+        writing.write_all(&sent).await.unwrap();
+        writing.shutdown().await.unwrap();
+        writing
+    });
+    let mut back = vec![];
+    tokio::time::timeout(Duration::from_secs(60), reading.read_to_end(&mut back))
+        .await
+        .expect("all of it back in time")
+        .unwrap();
+    drop(writer.await.unwrap());
+    back
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_port_of_a_host_is_reached_through_the_server() {
+    use berth_api::{portal::Portal, tunnel::Tunnel};
+    let Some(host) = Berthd::start().await else {
+        return;
+    };
+    let served = served().await;
+    served
+        .state
+        .add(Remote::new("studio", "192.0.2.10", host.link()));
+    let port = echo().await;
+    let data: Vec<u8> = (0..3_000_000u32).map(|n| (n % 251) as u8).collect();
+
+    // As the host's own stream, passed through.
+    let path = format!("/v1/hosts/studio/ports/{port}");
+    let open = client::websocket_unix(&served.socket, &path).await.unwrap();
+    assert_eq!(through(Tunnel::new(open), b"hello").await, b"hello");
+    let open = client::websocket_unix(&served.socket, &path).await.unwrap();
+    assert!(through(Tunnel::new(open), &data).await == data);
+
+    // On the portal, with the host named.
+    let portal = Portal::over(
+        client::websocket_unix(&served.socket, "/v1/portal")
+            .await
+            .unwrap(),
+    );
+    let open = portal.connect_port(Some("studio"), port).await.unwrap();
+    assert!(through(open, &data).await == data);
+
+    // A port nothing listens on is the host's error, either way.
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let path = format!("/v1/hosts/studio/ports/{closed}");
+    let refused = client::websocket_unix(&served.socket, &path)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!((refused.status(), refused.code()), (503, "not_served"));
+    let refused = portal
+        .connect_port(Some("studio"), closed)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!((refused.status(), refused.code()), (503, "not_served"));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_portal_reaches_serve_and_its_hosts() {
     use berth_api::portal::{Piece, Portal};

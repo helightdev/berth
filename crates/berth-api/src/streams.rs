@@ -161,7 +161,34 @@ pub const HOST: &[Stream] = &[
             ),
         ],
     },
+    Stream {
+        id: "port",
+        path: "/v1/ports/{port}",
+        summary: "A TCP connection to a port on the host's loopback, 127.0.0.1. The port is dialled first, so one that nothing listens on is an error and not a stream.",
+        level: "host",
+        parameters: &[],
+        resumable: false,
+        server: &[
+            binary("bytes", "What the program on the port sent."),
+            text(
+                "eof",
+                "The program on the port closed its side. Bytes sent towards it still arrive. The stream ends once both sides have sent this.",
+                EOF,
+            ),
+        ],
+        client: &[
+            binary("bytes", "Bytes for the program on the port."),
+            text(
+                "eof",
+                "The client sends no more, and the program on the port reads the end. What it sends still comes back.",
+                EOF,
+            ),
+        ],
+    },
 ];
+
+/// The frame by which one side of a stream of a port says it sends no more.
+pub const EOF: &str = r#"{"eof":true}"#;
 
 /// The streams `berth serve` adds to each host's own.
 pub const SERVE: &[Stream] = &[

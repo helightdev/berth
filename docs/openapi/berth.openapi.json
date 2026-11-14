@@ -3971,6 +3971,50 @@
         ]
       }
     },
+    "/v1/hosts/{name}/ports/{port}": {
+      "get": {
+        "description": "Host level only.",
+        "operationId": "host_get_v1_ports__port_",
+        "parameters": [
+          {
+            "description": "A saved host",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "port",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "With a WebSocket handshake: the stream `port` of the AsyncAPI document."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Only as a WebSocket: a TCP connection to a port on the host's loopback. A port that nothing listens on is an error before the handshake.",
+        "tags": [
+          "host: ports"
+        ]
+      }
+    },
     "/v1/hosts/{name}/power/{verb}": {
       "post": {
         "description": "Host level only.",

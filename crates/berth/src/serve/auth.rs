@@ -460,6 +460,7 @@ mod tests {
             name("GET", "/v1/hosts/a/sessions/x", true),
             "sessions.attach"
         );
+        assert_eq!(name("GET", "/v1/hosts/a/ports/8080", true), "ports.connect");
         assert_eq!(
             name("PUT", "/v1/secrets/registry%2Fmain", false),
             "secrets.set"
@@ -490,6 +491,15 @@ mod tests {
             subject: None,
         };
         assert!(auth.allows(&viewer, run).unwrap_err().1.contains("operate"));
+        // A port of a host is used, not looked at.
+        let port = ops::find(ops::HOST, "ports.connect").unwrap();
+        assert!(
+            auth.allows(&viewer, port)
+                .unwrap_err()
+                .1
+                .contains("operate")
+        );
+        assert!(auth.allows(&admin, port).is_ok());
         // An action's own role is asked the same way.
         assert!(auth.permits(&viewer, "apply", Role::Admin).is_err());
         assert!(

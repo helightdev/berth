@@ -9,6 +9,8 @@ pub mod ops;
 pub mod portal;
 pub mod profile;
 pub mod streams;
+#[cfg(feature = "client")]
+pub mod tunnel;
 mod types;
 
 pub use types::*;
