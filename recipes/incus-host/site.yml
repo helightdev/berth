@@ -198,12 +198,22 @@
 
     # ── A berth server, when asked for ──────────────────────────────────────
 
+    - name: Find the group of Docker's socket
+      ansible.builtin.command: stat --format %g /var/run/docker.sock
+      register: docker_socket_group
+      changed_when: false
+      when: berth_server | bool
+
     - name: Run a berth server
       ansible.builtin.include_tasks: ../shared/berth-server.yml
       when: berth_server | bool
       vars:
-        # The Incus API is on the machine the container runs on.
-        berth_server_run_options: --add-host incus-host:host-gateway
+        # The Incus API and the Docker engine are on the machine the container
+        # runs on. The server in the image is no root, so it joins the socket's group.
+        berth_server_run_options: >-
+          --add-host incus-host:host-gateway
+          --volume /var/run/docker.sock:/var/run/docker.sock
+          --group-add {{ docker_socket_group.stdout | trim }}
 
     - name: Set the berth server up for this Incus
       when: berth_server | bool
@@ -225,9 +235,24 @@
           when: "'berth-server,' not in incus_trusted.stdout"
           changed_when: true
 
+        # A server address somebody chose stays as it is.
+        - name: Point the berth server's Incus provisioners at this Incus
+          ansible.builtin.shell: |
+            set -e
+            for provisioner in incus/vm incus/container; do
+              if ! docker exec berth berth provisioner "$provisioner" | grep -q 'server=https://'; then
+                docker exec berth berth provisioner "$provisioner" run settings server=https://incus-host:{{ api_port }} >/dev/null
+                echo set
+              fi
+            done
+          args:
+            executable: /bin/bash
+          register: incus_pointed
+          changed_when: "'set' in incus_pointed.stdout"
+
         - name: Say how to use the berth server
           ansible.builtin.debug:
-            msg: "{{ berth_server_handover + ['It creates machines here with the argument server=https://incus-host:' ~ api_port] }}"
+            msg: "{{ berth_server_handover + ['It creates machines on this Incus and on this Docker engine'] }}"
 
     # ── A look at the result ────────────────────────────────────────────────
 

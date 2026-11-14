@@ -1,5 +1,7 @@
 # berth itself, for running `berth serve` or the terminal UI without installing
-# anything: the program with SSH, Python and Ansible beside it.
+# anything: the program with SSH, Python and Ansible beside it, and Docker's
+# client for the Docker plugin. The engine is another machine's, or this
+# machine's through its socket.
 #
 #   docker build -f container/berth.Dockerfile -t berth .
 #
@@ -22,7 +24,8 @@ RUN cargo build --release --locked --target x86_64-unknown-linux-musl -p berth -
 FROM debian:trixie-slim
 COPY provision/requirements.txt /tmp/requirements.txt
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl npm openssh-client openssl python3 python3-pip tar tini \
+      ca-certificates curl docker-buildx docker-cli docker-compose npm openssh-client openssl \
+      python3 python3-pip tar tini \
     && pip install --no-cache-dir --break-system-packages -r /tmp/requirements.txt \
     && apt-get purge -y python3-pip && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/* /tmp/requirements.txt \
