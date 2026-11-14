@@ -204,14 +204,19 @@ class Incus:
 
     def address(self, name):
         state = self.call('GET', f'/1.0/instances/{name}/state', missing=True) or {}
+        found = []
         for interface, details in sorted((state.get('network') or {}).items()):
-            # Bridges the guest makes itself, such as Docker's, are not how it is reached.
-            if interface == 'lo' or interface.startswith(('docker', 'br-', 'veth', 'tailscale', 'incusbr', 'lxcbr')):
+            # Bridges the guest makes itself, such as Docker's, are not how it is reached, and
+            # devbox0 is the role's own, with an address that only tells NetworkManager it is online.
+            if interface == 'lo' or interface.startswith(('docker', 'br-', 'veth', 'tailscale', 'incusbr', 'lxcbr',
+                                                          'devbox')):
                 continue
             for entry in (details or {}).get('addresses') or []:
                 if entry.get('family') == 'inet' and entry.get('scope') == 'global' and entry.get('address'):
-                    return entry['address']
-        return ''
+                    # Only an interface Incus gave the guest has a name on the server's side.
+                    found.append((not (details or {}).get('host_name'), interface, entry['address']))
+                    break
+        return min(found)[2] if found else ''
 
     def exists(self, name, path):
         """Whether a path exists in the instance; raises while Incus cannot look."""

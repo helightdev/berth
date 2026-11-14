@@ -171,7 +171,13 @@ class Handler(BaseHTTPRequestHandler):
             network = {'lo': {'addresses': [{'family': 'inet', 'address': '127.0.0.1', 'scope': 'local'}]},
                        # A guest that runs Docker has its bridge too, which sorts first.
                        'docker0': {'addresses': [{'family': 'inet', 'address': '172.17.0.1', 'scope': 'global'}]},
-                       'eth0': {'addresses': [{'family': 'inet6', 'address': 'fe80::1', 'scope': 'link'},
+                       # So does the role's dummy interface, once the role has run.
+                       'devbox0': {'addresses': [{'family': 'inet', 'address': '192.0.2.2', 'scope': 'global'}]},
+                       # One the guest made itself has no name on the server's side.
+                       'dummy0': {'host_name': '',
+                                  'addresses': [{'family': 'inet', 'address': '192.0.2.3', 'scope': 'global'}]},
+                       'eth0': {'host_name': 'veth1a2b3c',
+                                'addresses': [{'family': 'inet6', 'address': 'fe80::1', 'scope': 'link'},
                                               {'family': 'inet', 'address': '192.0.2.50', 'scope': 'global'}]}}
             return self.answer(200, {'status': instance['status'], 'network': network if running else None})
         if rest == ['state'] and self.command == 'PUT':
