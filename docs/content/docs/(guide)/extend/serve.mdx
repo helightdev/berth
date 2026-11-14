@@ -158,7 +158,7 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" https://berth.example.ts.net/v1/ac
 # {"role":"operate","setup":true,"subject":"ada"}
 ```
 
-An access token is used like the server's token. It works as a bearer and as the WebSocket protocol. berth takes it as `--token` or `server_token`, and the page for a browser takes it too.
+An access token is used like the server's token. It works as a bearer and as the WebSocket protocol. berth takes it as `--token` or `server_token`, and berth-remote as `BERTH_TOKEN` or when it asks.
 
 The server says which issuer it trusts at `/.well-known/oauth-protected-resource`, without a token.
 
@@ -196,7 +196,7 @@ A caller over TCP is then `operate` at most, and the socket stays `admin`. Some 
 
 ## In a container
 
-The `ghcr.io/helightdev/berth` image runs `berth serve --listen 0.0.0.0:7777 --expose --web` by default, as user `berth` (uid 1000):
+The `ghcr.io/helightdev/berth` image runs `berth serve --listen 0.0.0.0:7777 --expose` by default, as user `berth` (uid 1000):
 
 ```bash
 docker run -d --name berth -p 127.0.0.1:7777:7777 \

@@ -120,9 +120,14 @@ or until they choose Done. On your own machine:
 berth connect https://THIS-MACHINE.YOUR-TAILNET.ts.net
 ```
 
-berth asks for the key. In a browser, open
-`https://THIS-MACHINE.YOUR-TAILNET.ts.net/#setup-key=KEY` instead. Make a new
-key with `sudo docker exec berth berth setup-key`.
+berth asks for the key. berth-remote takes it in `BERTH_SETUP_KEY` instead:
+
+```bash
+read -rs BERTH_SETUP_KEY && export BERTH_SETUP_KEY
+berth-remote --server https://THIS-MACHINE.YOUR-TAILNET.ts.net
+```
+
+Make a new key with `sudo docker exec berth berth setup-key`.
 
 The token itself gives full control of every host. Without a key, read it with
 `sudo cat /srv/berth/data/berth/serve.token`, then set it with

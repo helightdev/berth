@@ -122,4 +122,4 @@ berth moves everything it keeps under the old name to the new one, in one change
 
 With `--hostname`, the new name becomes the profile's hostname as well. The machine takes it at its next apply, which also writes the profile the host keeps with the new name. The name has to suit a hostname then: lower-case letters, digits and `-`.
 
-berth refuses when a host has the new name already. A job that is creating the host's machine blocks the rename until that job ends. When a [berth server](/docs/use/server) keeps the host, the server renames it as a job. On the server's page and over its API it's the host's action **Rename**, `rename`.
+berth refuses when a host has the new name already. A job that is creating the host's machine blocks the rename until that job ends. When a [berth server](/docs/use/server) keeps the host, the server renames it as a job. In berth-remote and over the server's API it's the host's action **Rename**, `rename`.
