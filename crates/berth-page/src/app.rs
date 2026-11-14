@@ -545,13 +545,13 @@ impl App {
             self.address,
             device::shown(&self.server)
         )));
-        for line in host::level_lines(&self.name, &self.host) {
+        for line in host::type_lines(&self.name, &self.host) {
             rows.push(Row::info(Line::styled(
                 format!("  {line}"),
                 Style::new().fg(theme::MUTED),
             )));
         }
-        let workstation = self.host.level == berth_api::HostLevel::Workstation;
+        let workstation = self.host.host_type == berth_api::HostType::Workstation;
         let said = match &self.host.state {
             State::Ready(_) => {
                 if let Some(text) = host::behind_note(&self.host) {
@@ -587,10 +587,10 @@ impl App {
             State::Idle | State::Connecting | State::Password => {
                 vec![note("Asking the host what it can do…".into(), theme::MUTED)]
             }
-            // Below a workstation the controller is installed alone, by berth's own action.
+            // On a host that is not a workstation the controller is installed alone, by berth's own action.
             State::Missing if !workstation => vec![
                 note(
-                    "berth's controller is not on this host. Install it for sessions, tasks and files here.".into(),
+                    "berth's controller is not on this host. Install it for sessions, actions and files here.".into(),
                     theme::MUTED,
                 ),
                 again(),
@@ -722,12 +722,10 @@ impl App {
         self.host.disconnect();
         let listed = self.hosts.borrow();
         let found = listed.list.iter().find(|host| host["name"] == name);
-        let level = |key: &str| {
-            found
-                .and_then(|host| host[key].as_str())
-                .and_then(berth_api::HostLevel::parse)
-        };
-        self.host.level = level("level").unwrap_or_default();
+        self.host.host_type = found
+            .and_then(|host| host["type"].as_str())
+            .and_then(berth_api::HostType::parse)
+            .unwrap_or_default();
         drop(listed);
         self.host.own.clear();
         if let Some(admin) = &self.admin {
@@ -1356,11 +1354,11 @@ impl App {
             if host["behind"].is_object() {
                 line.push(Span::styled("  behind", Style::new().fg(theme::WARN)));
             }
-            if let Some(level) = host["level"]
+            if let Some(host_type) = host["type"]
                 .as_str()
-                .filter(|level| *level != "workstation")
+                .filter(|host_type| *host_type != "workstation")
             {
-                line.push(Span::styled(format!("  {level}"), muted));
+                line.push(Span::styled(format!("  {host_type}"), muted));
             }
             if host["rotating"] == true {
                 line.push(Span::styled(

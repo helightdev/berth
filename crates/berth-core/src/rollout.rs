@@ -246,9 +246,9 @@ pub fn chosen(all: Vec<String>, asked: &[String]) -> Result<Vec<String>> {
 /// The hosts a roll-out applies, and the names of those it leaves because
 /// they are not workstations: only a workstation is applied.
 pub fn workstations(hosts: Vec<Host>) -> (Vec<Host>, Vec<String>) {
-    let (taken, left): (Vec<Host>, Vec<Host>) = hosts
-        .into_iter()
-        .partition(|host| crate::level::of(&host.config) == crate::level::Level::Workstation);
+    let (taken, left): (Vec<Host>, Vec<Host>) = hosts.into_iter().partition(|host| {
+        crate::host_type::of(&host.config) == crate::host_type::HostType::Workstation
+    });
     (taken, left.into_iter().map(|host| host.name).collect())
 }
 
@@ -325,10 +325,7 @@ impl Target for Live<'_> {
     }
 
     fn version(&mut self) -> std::result::Result<Option<Version>, String> {
-        match self
-            .runtime
-            .block_on(self.link.get::<Version>("/v1/version"))
-        {
+        match self.runtime.block_on(self.link.version()) {
             Ok(version) => Ok(Some(version)),
             Err(error) if Link::missing(&error) => Ok(None),
             Err(error) => Err(error.to_string()),
@@ -471,13 +468,10 @@ pub fn survey(paths: &Paths) -> Vec<api::HostBehind> {
             if link.refused().is_some() {
                 return None;
             }
-            let version = tokio::time::timeout(
-                std::time::Duration::from_secs(20),
-                link.get::<Version>("/v1/version"),
-            )
-            .await
-            .ok()?
-            .ok()?;
+            let version = tokio::time::timeout(std::time::Duration::from_secs(20), link.version())
+                .await
+                .ok()?
+                .ok()?;
             Some((host.name.clone(), version))
         },
     )));
@@ -529,7 +523,7 @@ mod tests {
                 api: api::API,
                 mode: "system".into(),
                 applied: self.applied.clone(),
-                level: None,
+                host_type: None,
             }))
         }
         fn apply(&mut self, _out: &mut dyn Write) -> std::result::Result<(), String> {
@@ -835,8 +829,8 @@ mod tests {
         };
         let (taken, skipped) = workstations(vec![
             host("studio", json!({"builder": {}})),
-            host("dock", json!({"level": "controller"})),
-            host("pier", json!({"level": "reachable"})),
+            host("dock", json!({"type": "managed"})),
+            host("pier", json!({"type": "ssh"})),
         ]);
         assert_eq!(taken.len(), 1);
         assert_eq!(taken[0].name, "studio");

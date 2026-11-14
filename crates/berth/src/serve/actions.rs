@@ -24,8 +24,8 @@ use berth_api::{
 use berth_core::{
     apply,
     host::Host,
+    host_type::{self, Capability, HostType},
     keys::{self, Once, contact, ring},
-    level::{self, Capability, Level},
     profiles::Place,
     registry::Store,
     rollout,
@@ -47,10 +47,10 @@ pub(super) struct Seen<'a> {
     pub tasks: Option<&'a [Task]>,
     /// The names of the secrets the server keeps.
     pub secrets: &'a [String],
-    /// The level the host's profile means it to have.
-    pub level: Level,
+    /// The type the host's profile means it to be.
+    pub host_type: HostType,
     /// What its controller says it is, when it answered.
-    pub observed: Option<Level>,
+    pub observed: Option<HostType>,
     /// Why its controller did not answer, when it was asked and did not.
     pub unanswered: Option<&'a str>,
 }
@@ -162,13 +162,13 @@ async fn host_tasks(remote: &Remote) -> Result<Vec<Task>, String> {
 }
 
 /// What a host's controller says the host is, when it answers.
-async fn observed(remote: &Remote) -> Option<Level> {
+async fn observed(remote: &Remote) -> Option<HostType> {
     remote
         .version()
         .await
         .ok()
         .as_ref()
-        .and_then(|version| level::seen(Ok(version)))
+        .and_then(|version| host_type::seen(Ok(version)))
 }
 
 /// A host's actions: its tasks, then berth's own. A task that takes the
@@ -250,9 +250,9 @@ pub async fn host_actions(
     state.refresh(false);
     let remote = remote(&state, &name)?;
     let profile = profile_of(&state, &name);
-    // A host that is only reachable has no controller to ask.
-    let asked = match level::of(&profile) {
-        Level::Reachable => None,
+    // A host of the type ssh has no controller to ask.
+    let asked = match host_type::of(&profile) {
+        HostType::Ssh => None,
         _ => Some(host_tasks(&remote).await),
     };
     let (tasks, unanswered) = match &asked {
@@ -267,7 +267,7 @@ pub async fn host_actions(
         profile: &profile,
         tasks,
         secrets: &secrets,
-        level: level::of(&profile),
+        host_type: host_type::of(&profile),
         observed,
         unanswered,
     })))
@@ -297,10 +297,10 @@ pub async fn host_act(
     let profile = profile_of(&state, &name);
     // berth's own are described without asking the host, which they do themselves.
     let builtin = HOST.iter().find(|builtin| builtin.name == action);
-    let reachable_only = level::of(&profile) == Level::Reachable;
+    let ssh_only = host_type::of(&profile) == HostType::Ssh;
     let mut unanswered = None;
     let tasks = match builtin {
-        Some(_) if reachable_only || !THROUGH_CONTROLLER.contains(&action.as_str()) => None,
+        Some(_) if ssh_only || !THROUGH_CONTROLLER.contains(&action.as_str()) => None,
         // One that runs through the controller is described as the host answers.
         Some(_) => match host_tasks(&remote).await {
             Ok(tasks) => Some(tasks),
@@ -309,7 +309,7 @@ pub async fn host_act(
                 None
             }
         },
-        None if reachable_only => Some(vec![]),
+        None if ssh_only => Some(vec![]),
         None => Some(
             host_tasks(&remote)
                 .await
@@ -323,7 +323,7 @@ pub async fn host_act(
         profile: &profile,
         tasks: tasks.as_deref(),
         secrets: &secrets,
-        level: level::of(&profile),
+        host_type: host_type::of(&profile),
         observed,
         unanswered: unanswered.as_deref(),
     });
@@ -351,7 +351,7 @@ fn installation_list() -> Vec<Action> {
         profile: &Value::Null,
         tasks: None,
         secrets: &[],
-        level: Level::Workstation,
+        host_type: HostType::Workstation,
         observed: None,
         unanswered: None,
     };
@@ -509,7 +509,7 @@ fn apply_action(seen: &Seen) -> Action {
             "Run the installer role against the host again, from the server, with the settings of its profile: for example after changing what is installed. It also installs or updates berth's own tools on the host. It runs as a job of the server.",
         )
     };
-    let action = level::fit(action, seen.name, seen.level, Capability::Apply);
+    let action = host_type::fit(action, seen.name, seen.host_type, Capability::Apply);
     logs_in_alone(seen, action)
 }
 
@@ -534,7 +534,7 @@ fn logs_in_alone(seen: &Seen, action: Action) -> Action {
 }
 
 fn install_controller_action(seen: &Seen) -> Action {
-    let action = level::install_controller_action(seen.name, seen.level, seen.observed);
+    let action = host_type::install_controller_action(seen.name, seen.host_type, seen.observed);
     let action = match seen.profile.is_null() {
         true => unavailable(
             action,
@@ -633,7 +633,7 @@ fn seed_action(seen: &Seen) -> Action {
             "Render the cloud-init user data that installs the host on a new machine, for a provider's field of that name. It answers with the seed.",
         )
     };
-    level::fit(action, seen.name, seen.level, Capability::Apply)
+    host_type::fit(action, seen.name, seen.host_type, Capability::Apply)
 }
 
 fn seed(state: Arc<Serve>, name: String, _: Act) -> Run {
@@ -669,7 +669,7 @@ fn secrets_action(seen: &Seen) -> Action {
         action.help = task.help.clone();
         action.group = task.group.clone();
     }
-    if let Err(refusal) = level::check(seen.name, seen.level, Capability::Secrets) {
+    if let Err(refusal) = host_type::check(seen.name, seen.host_type, Capability::Secrets) {
         return unavailable(action, Some(refusal.why));
     }
     let why = match (seen.tasks, task, seen.unanswered) {
@@ -765,7 +765,7 @@ fn rollout(state: Arc<Serve>, _: String, act: Act) -> Run {
                     .and_then(|place| Host::load_at(&paths, place));
                 // Only a workstation is applied; the others are said and left.
                 let host = match host {
-                    Ok(host) if level::of(&host.config) != Level::Workstation => {
+                    Ok(host) if host_type::of(&host.config) != HostType::Workstation => {
                         skipped.push(host.name);
                         continue;
                     }
@@ -971,7 +971,7 @@ fn host_key(state: Arc<Serve>, name: String, act: Act) -> Run {
 // ── Its name ────────────────────────────────────────────────────────────────
 
 fn rename_action(seen: &Seen) -> Action {
-    let action = level::rename_action();
+    let action = host_type::rename_action();
     let why = seen
         .profile
         .is_null()

@@ -232,10 +232,10 @@ pub fn remove(paths: &Paths, place: &Place) -> Result<()> {
 /// Whether a rename may give the host's profile the new name as its
 /// hostname: only a workstation is applied, which is what sets it.
 pub fn hostname_allowed(name: &str, profile: &Value) -> Result<()> {
-    match crate::level::of(profile) {
-        crate::level::Level::Workstation => Ok(()),
-        level => Err(format!(
-            "{name} is a {level} host, and only a workstation is given its hostname by berth"
+    match crate::host_type::of(profile) {
+        crate::host_type::HostType::Workstation => Ok(()),
+        host_type => Err(format!(
+            "{name} is a host of the type {host_type}, and only a workstation is given its hostname by berth"
         )
         .into()),
     }
@@ -543,12 +543,12 @@ mod tests {
         let dock = Place::own("dock").unwrap();
         dock.save(
             &paths,
-            &json!({"level": "reachable", "access": {"address": "192.0.2.30"}}),
+            &json!({"type": "ssh", "access": {"address": "192.0.2.30"}}),
         )
         .unwrap();
         assert_eq!(
             error(rename(&paths, &dock, "pier", true)),
-            "dock is a reachable host, and only a workstation is given its hostname by berth"
+            "dock is a host of the type ssh, and only a workstation is given its hostname by berth"
         );
         assert!(dock.load(&paths).unwrap().is_some());
         let file = Place::File(home.path().join("attic.json"));

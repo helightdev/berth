@@ -31,7 +31,7 @@ async fn refresh(
     compare: Option<Compare>,
 ) {
     if all {
-        match link.get::<api::Version>("/v1/version").await {
+        match link.version().await {
             Ok(version) => {
                 let old = version.api < NEEDS_API;
                 if let Some(compare) = compare {

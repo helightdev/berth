@@ -284,6 +284,14 @@ impl Link {
         self.call("GET", path, None).await
     }
 
+    /// What the host's controller says of itself, read as this API says it
+    /// also from a berthd of an older API.
+    pub async fn version(&self) -> client::Result<berth_api::Version> {
+        let reply: Value = self.get("/v1/version").await?;
+        berth_api::Version::from_reply(reply)
+            .map_err(|error| Error::Transport(format!("version: {error}")))
+    }
+
     pub async fn post<T: DeserializeOwned>(&self, path: &str, body: &Value) -> client::Result<T> {
         self.call("POST", path, Some(body)).await
     }

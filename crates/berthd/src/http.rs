@@ -95,14 +95,15 @@ async fn version(AppState(state): AppState<Arc<State>>) -> Json<api::Version> {
     let applied = record
         .clone()
         .and_then(|record| serde_json::from_value(record).ok());
-    // A record without a level is of a whole profile, as before levels, and
-    // only a workstation's apply or first boot leaves the profile it keeps.
+    // A record without a level is of a whole profile, as before there were
+    // types, and only a workstation's apply or first boot leaves the profile
+    // it keeps. The role records the type as `level` with its older values.
     let kept = state.config_dir.join("profile.json").exists();
-    let level = match kept {
-        true => Some(api::HostLevel::Workstation),
+    let host_type = match kept {
+        true => Some(api::HostType::Workstation),
         false => record.map(|record| match record["level"].as_str() {
-            Some(level) => api::HostLevel::parse(level).unwrap_or_default(),
-            None => api::HostLevel::Workstation,
+            Some(level) => api::HostType::from_level(level).unwrap_or_default(),
+            None => api::HostType::Workstation,
         }),
     };
     Json(api::Version {
@@ -110,7 +111,7 @@ async fn version(AppState(state): AppState<Arc<State>>) -> Json<api::Version> {
         api: api::API,
         mode: mode.into(),
         applied,
-        level,
+        host_type,
     })
 }
 

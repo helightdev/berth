@@ -20,7 +20,7 @@ use axum::{
     routing::{any, get},
 };
 use berth_api::{
-    Applied, Behind, Done, ErrorBody, ErrorDetail, HostBehind, HostLevel, JobInfo, Message, Output,
+    Applied, Behind, Done, ErrorBody, ErrorDetail, HostBehind, HostType, JobInfo, Message, Output,
     Version, b64, client, code,
     ops::{self, Role},
     streams,
@@ -115,13 +115,14 @@ pub struct HostInfo {
     /// What changed since then, when the server would apply something else now.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub behind: Option<Behind>,
-    /// The level its profile means it to have.
-    pub level: HostLevel,
-    /// The level it was seen to have: what its controller's record says,
-    /// `reachable` when berth logged in and found no controller. Absent
-    /// when it could not be asked.
+    /// The type its profile means it to be.
+    #[serde(rename = "type")]
+    pub host_type: HostType,
+    /// The type it was seen to be: what its controller's record says, `ssh`
+    /// when berth logged in and found no controller. Absent when it could
+    /// not be asked.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub seen: Option<HostLevel>,
+    pub seen: Option<HostType>,
     /// A rotation of a key it logs in with is not done on it yet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub rotating: bool,
@@ -426,13 +427,13 @@ pub(super) fn compare(state: &Serve) -> Compare {
     Arc::new(rollout::comparer(&state.paths))
 }
 
-/// What the server knows of a host apart from asking it: the level of its
+/// What the server knows of a host apart from asking it: the type of its
 /// profile, and whether a key it logs in with is being rotated.
-pub(super) fn known(state: &Serve, name: &str) -> (HostLevel, bool) {
+pub(super) fn known(state: &Serve, name: &str) -> (HostType, bool) {
     let profile = super::setup::saved_profile(state, name).map(|(_, profile)| profile);
-    let level = profile
+    let host_type = profile
         .as_ref()
-        .map_or(HostLevel::Workstation, berth_api::profile::level);
+        .map_or(HostType::Workstation, berth_api::profile::host_type);
     let rotating = profile.is_ok_and(|profile| {
         let place = berth_core::profiles::Place::own(name);
         let store = berth_core::store::shared(&state.paths);
@@ -442,16 +443,16 @@ pub(super) fn known(state: &Serve, name: &str) -> (HostLevel, bool) {
             _ => false,
         }
     });
-    (level, rotating)
+    (host_type, rotating)
 }
 
-async fn info(remote: Arc<Remote>, compare: Compare, known: (HostLevel, bool)) -> HostInfo {
+async fn info(remote: Arc<Remote>, compare: Compare, known: (HostType, bool)) -> HostInfo {
     let seen = remote.version().await;
     let applied = seen
         .as_ref()
         .ok()
         .and_then(|version| version.applied.clone());
-    let observed = berth_core::level::seen(
+    let observed = berth_core::host_type::seen(
         seen.as_ref()
             .map_err(|error| error.starts_with(super::NO_BERTHD)),
     );
@@ -464,7 +465,7 @@ async fn info(remote: Arc<Remote>, compare: Compare, known: (HostLevel, bool)) -
         error: seen.err(),
         behind: applied.as_ref().and_then(|applied| compare(applied)),
         applied: applied.map(|applied| applied.berth),
-        level: known.0,
+        host_type: known.0,
         seen: observed,
         rotating: known.1,
     }
@@ -505,7 +506,7 @@ async fn version() -> Json<Version> {
         api: berth_api::API,
         mode: "serve".into(),
         applied: None,
-        level: None,
+        host_type: None,
     })
 }
 

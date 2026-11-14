@@ -33,12 +33,12 @@ Usage:
   berth HOST                 open a host (a saved name, or a path to a profile)
   berth list                 saved hosts
   berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH]
-          [--level reachable|controller|workstation] [--no-contact]
+          [--type ssh|managed|workstation] [--no-contact]
                              save a machine that exists already, by its address, and
-                             install berth's key there; it is reachable unless told
-  berth host install HOST    install berth's controller alone on a host below a
-                             workstation: sessions, tasks and files, no desktop
-  berth host level HOST reachable|controller|workstation
+                             install berth's key there; its type is ssh unless told
+  berth host install HOST    install berth's controller alone on a host that is not
+                             a workstation: sessions, actions and files, no desktop
+  berth host type HOST ssh|managed|workstation
                              say what the host is, as for one added by its address
                              that berth set up before; nothing on the host changes
   berth host rename HOST NAME [--hostname]
@@ -399,7 +399,10 @@ fn open(paths: &Paths, host: &str) -> Result<App> {
 /// Stop with the list of problems when the profile cannot run the action.
 fn require_ready(app: &App) -> Result<()> {
     // A seed and an installer make a whole workstation.
-    berth_core::level::guard(&app.host_profile(), berth_core::level::Capability::Apply)?;
+    berth_core::host_type::guard(
+        &app.host_profile(),
+        berth_core::host_type::Capability::Apply,
+    )?;
     let problems = app.problems();
     if problems.is_empty() {
         return Ok(());
@@ -688,7 +691,7 @@ fn run() -> Result<()> {
             return commands::add_host(&paths, name, address, rest);
         }
         ["host", "install", host] => return commands::install_controller(&paths, host),
-        ["host", "level", host, level] => return commands::set_level(&paths, host, level),
+        ["host", "type", host, given] => return commands::set_type(&paths, host, given),
         ["host", "rename", host, name] => return commands::rename(&paths, host, name, false),
         ["host", "rename", host, name, "--hostname"]
         | ["host", "rename", host, "--hostname", name] => {

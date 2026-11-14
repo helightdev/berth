@@ -225,8 +225,7 @@ impl Remote {
         if let Some(refused) = link.refused() {
             return Err(refused);
         }
-        let asked =
-            tokio::time::timeout(Duration::from_secs(15), link.get::<Version>("/v1/version")).await;
+        let asked = tokio::time::timeout(Duration::from_secs(15), link.version()).await;
         let answer = match asked {
             Ok(Ok(version)) => Ok(version),
             Ok(Err(error)) if Link::missing(&error) => Err(format!("{NO_BERTHD}: {error}")),

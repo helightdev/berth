@@ -113,7 +113,7 @@ pub fn playbook(source: &std::path::Path) -> Command {
 /// host that asks for a password is asked for on the terminal. Only a
 /// workstation is applied: every way to apply comes through here.
 pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Result<Prepared> {
-    crate::level::guard(host, crate::level::Capability::Apply)?;
+    crate::host_type::guard(host, crate::host_type::Capability::Apply)?;
     let source = paths.source()?;
     let plugins = plugins::load(&[source.join("plugins"), paths.config_dir.join("plugins")]);
     let dirs = plugin_dirs(&plugins);
@@ -136,15 +136,16 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
     Ok(prepared)
 }
 
-/// The Ansible run that puts berth's controller alone on a host below a
-/// workstation: berthd and box, what they read, and the record of what was
-/// installed. The SSH user is the account sessions run as.
+/// The Ansible run that puts berth's controller alone on a host that is not
+/// a workstation: berthd and box, what they read, and the record of what
+/// was installed. The SSH user is the account sessions run as.
 pub fn prepare_controller(
     paths: &Paths,
     host: &Host,
     become_password: Option<&str>,
 ) -> Result<Prepared> {
-    crate::level::guard(host, crate::level::Capability::InstallController)?;
+    crate::host_type::guard(host, crate::host_type::Capability::InstallController)?;
+    // The role calls the type managed by its older name.
     let mut vars = json!({
         "devbox_level": "controller",
         "devbox_berth_applied": {"berth": berth_api::VERSION, "plugins": []},
@@ -254,7 +255,7 @@ const CONTROLLER_PATIENCE: std::time::Duration = std::time::Duration::from_secs(
 
 /// Install berth's controller alone on a host from where berth runs, its
 /// output to `out`, and wait for it to answer: whether all went well. A
-/// reachable host becomes a controller in its profile once the controller
+/// host of the type ssh becomes managed in its profile once the controller
 /// is there.
 pub fn install_controller(
     paths: &Paths,
@@ -268,9 +269,9 @@ pub fn install_controller(
     };
     // The profile here may say less than the host is, as for a workstation
     // added by its address; the role refuses it too.
-    let intended = crate::level::of(&host.config);
+    let intended = crate::host_type::of(&host.config);
     let asked = crate::keys::refusal::now();
-    let observed = crate::level::observe(paths, host, become_password);
+    let observed = crate::host_type::observe(paths, host, become_password);
     // A host that refused the login just now would refuse Ansible's too.
     if observed.is_none()
         && let Ok(login) = crate::keys::login_of(paths, host)
@@ -279,7 +280,7 @@ pub fn install_controller(
     {
         return fail(out, &refused.sentence(&host.name, refused.at));
     }
-    if let Some(why) = crate::level::refuse_install(&host.name, intended, observed) {
+    if let Some(why) = crate::host_type::refuse_install(&host.name, intended, observed) {
         return fail(out, &why);
     }
     let prepared = match prepare_controller(paths, host, become_password) {
@@ -301,16 +302,16 @@ pub fn install_controller(
         }
         None => return fail(out, &"Installing the controller was ended by a signal"),
     }
-    if crate::level::of(&host.config) != crate::level::Level::Controller {
+    if crate::host_type::of(&host.config) != crate::host_type::HostType::Managed {
         let mut config = host.config.clone();
-        berth_api::profile::set_level(&mut config, crate::level::Level::Controller);
+        berth_api::profile::set_host_type(&mut config, crate::host_type::HostType::Managed);
         if let Err(error) = host.place.save(paths, &config) {
             return fail(
                 out,
                 &format!("The controller is installed, but the profile was not saved: {error}"),
             );
         }
-        let _ = writeln!(out, "✓ {} is a controller host now", host.name);
+        let _ = writeln!(out, "✓ {} is a managed host now", host.name);
     }
     match answers(paths, host, become_password) {
         Ok(version) => {
@@ -339,11 +340,7 @@ fn answers(paths: &Paths, host: &Host, password: Option<&str>) -> Result<String>
     let started = std::time::Instant::now();
     loop {
         let asked = runtime.block_on(async {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(15),
-                link.get::<berth_api::Version>("/v1/version"),
-            )
-            .await
+            tokio::time::timeout(std::time::Duration::from_secs(15), link.version()).await
         });
         match asked {
             Ok(Ok(version)) => return Ok(version.version),

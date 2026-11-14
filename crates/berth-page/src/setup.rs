@@ -265,10 +265,10 @@ impl Setup {
             Some(Entry::Feature(index)) => self.features[index].help.clone(),
             Some(Entry::Registry(_)) => setup::REGISTRY_HELP.into(),
             Some(Entry::Secret(_)) => setup::SECRET_HELP.into(),
-            Some(Entry::Run) => match (self.action, berth_api::profile::level(&self.config)) {
+            Some(Entry::Run) => match (self.action, berth_api::profile::host_type(&self.config)) {
                 (Action::CloudSeed, _) => "Saves the profile on the server and renders the seed. Paste it into the provider's user data field when creating the machine.".into(),
-                (Action::Ssh, berth_api::HostLevel::Reachable) => "Saves the host on the server. Nothing is installed: the server logs in to it over SSH, with a key of its own that the host takes.".into(),
-                (Action::Ssh, berth_api::HostLevel::Controller) => "Saves the profile on the server and installs berth's controller alone on the host from there.".into(),
+                (Action::Ssh, berth_api::HostType::Ssh) => "Saves the host on the server. Nothing is installed: the server logs in to it over SSH, with a key of its own that the host takes.".into(),
+                (Action::Ssh, berth_api::HostType::Managed) => "Saves the profile on the server and installs berth's controller alone on the host from there.".into(),
                 _ => "Saves the profile on the server and applies it to the host from there.".into(),
             },
             Some(Entry::Machine(pick)) => self.machine.help(pick),
@@ -429,20 +429,20 @@ impl Setup {
             return Some("Fix the listed problems first".into());
         }
         let (name, action, size) = (self.name.clone(), self.action, self.panel);
-        // Over SSH a host below a workstation gets the controller alone, or nothing.
-        let level = berth_api::profile::level(&self.config);
+        // Over SSH a host that is not a workstation gets the controller alone, or nothing.
+        let host_type = berth_api::profile::host_type(&self.config);
         let install = berth_api::Action {
             name: "install-controller".into(),
             label: "Install the controller".into(),
             ..berth_api::Action::default()
         };
         admin.save(&self.name, &self.config, move |admin| {
-            match (action, level) {
+            match (action, host_type) {
                 (Action::CloudSeed, _) => admin.seed(&name),
-                (Action::Ssh, berth_api::HostLevel::Controller) => {
+                (Action::Ssh, berth_api::HostType::Managed) => {
                     admin.act(&name, &install, &Default::default(), size)
                 }
-                (Action::Ssh, berth_api::HostLevel::Reachable) => {}
+                (Action::Ssh, berth_api::HostType::Ssh) => {}
                 _ => admin.apply(&name, None, size),
             }
         });

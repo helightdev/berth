@@ -8,8 +8,8 @@ pub const DISK_TYPES: &[&str] = &["any", "ssd", "hdd"];
 /// The ways to log in that are not a key of the ring; `key:NAME` is offered
 /// for each of those.
 pub const LOGINS: &[&str] = &["berth", "password", "ssh"];
-/// The levels a host can be meant to have, the whole profile first.
-pub const LEVELS: &[&str] = &["workstation", "controller", "reachable"];
+/// The types a host can be meant to be, the whole profile first.
+pub const TYPES: &[&str] = &["workstation", "managed", "ssh"];
 
 /// The pages of a host: its overview (`Manage`) and the tabs of the set-up
 /// flow. Each tab depends only on the ones before it.
@@ -75,7 +75,7 @@ pub const TASKS: &[(&str, &str, &str)] = &[
     (
         "install-controller",
         "Install the controller",
-        "Put berthd and box on the host and start berth's controller, so that sessions, tasks and files work there, without the rest of a workstation. The host's level becomes controller. Continues in the terminal. From the command line: `berth host install HOST`.",
+        "Put berthd and box on the host and start berth's controller, so that sessions, actions and files work there, without the rest of a workstation. The host's type becomes managed. Continues in the terminal. From the command line: `berth host install HOST`.",
     ),
     (
         "ssh",
@@ -98,7 +98,7 @@ pub enum Action {
     Docker,
     Ssh,
     /// An existing host berth only logs in to: a way offered on the Install
-    /// tab that chooses [`Action::Ssh`] at the level reachable.
+    /// tab that chooses [`Action::Ssh`] for a host of the type ssh.
     Reach,
     Manage,
 }
@@ -115,18 +115,18 @@ impl Action {
         Action::Docker,
     ];
 
-    /// The action a way of the Install tab sets, with the level it gives the
+    /// The action a way of the Install tab sets, with the type it gives the
     /// profile when it gives one.
     pub fn choose(self, config: &mut serde_json::Value) -> Action {
-        let level = berth_api::profile::level(config);
+        let host_type = berth_api::profile::host_type(config);
         match self {
             Action::Reach => {
-                berth_api::profile::set_level(config, berth_api::HostLevel::Reachable);
+                berth_api::profile::set_host_type(config, berth_api::HostType::Ssh);
                 Action::Ssh
             }
             // Installing over SSH installs something: the whole profile, unless the controller is chosen.
-            Action::Ssh if level == berth_api::HostLevel::Reachable => {
-                berth_api::profile::set_level(config, berth_api::HostLevel::Workstation);
+            Action::Ssh if host_type == berth_api::HostType::Ssh => {
+                berth_api::profile::set_host_type(config, berth_api::HostType::Workstation);
                 Action::Ssh
             }
             action => action,
@@ -269,7 +269,7 @@ pub enum Field {
     SshUser,
     SshPort,
     Login,
-    Level,
+    Type,
 }
 
 impl Field {
@@ -571,11 +571,11 @@ impl Field {
                 Choice(LOGINS),
                 "How berth logs in. berth: the installation's own key, which hosts it sets up take. key:NAME: another key of berth's key ring (the Settings tab of the home screen lists them). password: a password, kept as the secret ssh/HOST or asked for. ssh: your own SSH configuration and agent, with berth's key offered after them. A host that does not take its key yet gets it with: berth key trust HOST.",
             ),
-            Level => (
-                "Level",
-                "/level",
-                Choice(LEVELS),
-                "How much of berth the host gets. workstation: the whole profile, with the desktop, the agents and plugins. controller: berthd and box alone, for sessions, tasks and files on a machine that stays as it is. reachable: nothing is installed; berth logs in over SSH. A lower level can be raised later: install the controller, or set workstation and apply.",
+            Type => (
+                "Type",
+                "/type",
+                Choice(TYPES),
+                "What berth does with the host. workstation: the whole profile, with the desktop, the agents and plugins. managed: berthd and box alone, for sessions, actions and files on a machine that stays as it is. ssh: nothing is installed; berth logs in over SSH. The type can change later: install the controller, or set workstation and apply.",
             ),
             UsbDevice => (
                 "Then write to USB drive",

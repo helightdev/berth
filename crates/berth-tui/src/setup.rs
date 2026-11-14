@@ -536,7 +536,7 @@ impl<'a> Profile<'a> {
             .unwrap_or("");
         match (field, text) {
             (Field::Login, "") => "berth",
-            (Field::Level, "") => "workstation",
+            (Field::Type, "") => "workstation",
             _ => text,
         }
     }
@@ -820,7 +820,7 @@ impl<'a> Profile<'a> {
         if self.locked() {
             return vec![];
         }
-        vec![Level, SshHost, SshUser, SshPort, Login, AskBecomePass]
+        vec![Type, SshHost, SshUser, SshPort, Login, AskBecomePass]
     }
 
     /// The fields of the Install tab: those before the provisioner's rows,
@@ -832,11 +832,11 @@ impl<'a> Profile<'a> {
             return (vec![], vec![]);
         }
         // A host below a workstation needs only to be reached.
-        let level = berth_api::profile::level(self.config);
-        if action == Action::Ssh && level != berth_api::HostLevel::Workstation {
-            let mut after = vec![Level, SshHost, SshUser, SshPort, Login];
-            // Nothing is installed on a reachable host, so nothing asks for sudo.
-            if level == berth_api::HostLevel::Controller {
+        let host_type = berth_api::profile::host_type(self.config);
+        if action == Action::Ssh && host_type != berth_api::HostType::Workstation {
+            let mut after = vec![Type, SshHost, SshUser, SshPort, Login];
+            // Nothing is installed on a host of the type ssh, so nothing asks for sudo.
+            if host_type == berth_api::HostType::Managed {
                 after.push(AskBecomePass);
             }
             return (vec![], after);
@@ -848,7 +848,7 @@ impl<'a> Profile<'a> {
         };
         let mut after = vec![];
         if action == Action::Ssh {
-            after.extend([Level, SshHost, SshUser, SshPort, Login, AskBecomePass]);
+            after.extend([Type, SshHost, SshUser, SshPort, Login, AskBecomePass]);
         }
         if action.installer() || action.seeds() {
             after.push(Hostname);
@@ -1046,11 +1046,11 @@ impl<'a> Profile<'a> {
         rows
     }
 
-    /// The way of the Install tab the action and the profile's level are:
-    /// over SSH at the level reachable, the host is only logged in to.
+    /// The way of the Install tab the action and the profile's type are:
+    /// over SSH to a host of the type ssh, the host is only logged in to.
     pub fn way(&self) -> Action {
-        match (self.action, berth_api::profile::level(self.config)) {
-            (Action::Ssh, berth_api::HostLevel::Reachable) => Action::Reach,
+        match (self.action, berth_api::profile::host_type(self.config)) {
+            (Action::Ssh, berth_api::HostType::Ssh) => Action::Reach,
             (action, _) => action,
         }
     }
@@ -1208,7 +1208,7 @@ impl<'a> Profile<'a> {
     pub fn problems_with(&self, machine: &crate::machine::Machine) -> Vec<Problem> {
         // A host below a workstation is only reached: the workstation's settings do not apply.
         if self.action == Action::Ssh
-            && berth_api::profile::level(self.config) != berth_api::HostLevel::Workstation
+            && berth_api::profile::host_type(self.config) != berth_api::HostType::Workstation
         {
             return vec![];
         }
@@ -1842,7 +1842,7 @@ mod tests {
     fn an_existing_host_can_be_added_to_be_reached_over_ssh_alone() {
         let mut config = json!({"profile": "laptop"});
         assert_eq!(Action::Reach.choose(&mut config), Action::Ssh);
-        assert_eq!(config["level"], "reachable");
+        assert_eq!(config["type"], "ssh");
         let machine = incus();
         let profile = Profile {
             config: &config,
@@ -1885,10 +1885,10 @@ mod tests {
         );
         // Installing over SSH again means installing something.
         assert_eq!(Action::Ssh.choose(&mut config), Action::Ssh);
-        assert!(config.get("level").is_none());
-        let mut controller = json!({"level": "controller"});
-        Action::Ssh.choose(&mut controller);
-        assert_eq!(controller["level"], "controller");
+        assert!(config.get("type").is_none());
+        let mut managed = json!({"type": "managed"});
+        Action::Ssh.choose(&mut managed);
+        assert_eq!(managed["type"], "managed");
     }
 
     #[test]

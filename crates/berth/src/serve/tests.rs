@@ -3606,21 +3606,20 @@ async fn first_contact_and_keys_are_actions_of_the_server() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_host_added_by_its_address_has_a_level_and_actions_to_match() {
+async fn a_host_added_by_its_address_has_a_type_and_actions_to_match() {
     let served = served().await;
     let mut client = served.client().await;
     let client = &mut client;
-    // Its level and how it is reached are all a host below a workstation needs.
-    let reachable =
-        json!({"level": "reachable", "access": {"address": "192.0.2.8", "user": "ops"}});
-    let (status, said) = send(client, "PUT", "/v1/hosts/dock/profile", reachable).await;
+    // Its type and how it is reached are all a host that is not a workstation needs.
+    let ssh = json!({"type": "ssh", "access": {"address": "192.0.2.8", "user": "ops"}});
+    let (status, said) = send(client, "PUT", "/v1/hosts/dock/profile", ssh).await;
     assert_eq!(status, 200, "{said}");
     for (refused, why) in [
         (
-            json!({"level": "server", "access": {"address": "192.0.2.9"}}),
-            "level",
+            json!({"type": "server", "access": {"address": "192.0.2.9"}}),
+            "type",
         ),
-        (json!({"level": "controller"}), "access.address"),
+        (json!({"type": "managed"}), "access.address"),
         (json!({"access": {"address": "192.0.2.9"}}), "builder"),
     ] {
         let (status, said) = send(client, "PUT", "/v1/hosts/pier/profile", refused).await;
@@ -3631,9 +3630,9 @@ async fn a_host_added_by_its_address_has_a_level_and_actions_to_match() {
         );
     }
     let (_, dock) = send(client, "GET", "/v1/hosts/dock", Value::Null).await;
-    assert_eq!(dock["level"], "reachable", "{dock}");
+    assert_eq!(dock["type"], "ssh", "{dock}");
 
-    // berth's own actions say what the level allows, and how to raise it.
+    // berth's own actions say what the type allows, and how to change it.
     let (_, actions) = send(client, "GET", "/v1/hosts/dock/actions", Value::Null).await;
     let find = |name: &str| {
         actions
@@ -3668,7 +3667,7 @@ async fn a_host_added_by_its_address_has_a_level_and_actions_to_match() {
         said["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("Set its level to workstation")
+            .contains("Set its type to workstation")
     );
     let (status, _) = send(client, "POST", "/v1/hosts/dock/actions/seed", Value::Null).await;
     assert_eq!(status, 501);
@@ -3684,10 +3683,10 @@ async fn a_host_added_by_its_address_has_a_level_and_actions_to_match() {
         "{output}"
     );
 
-    // A controller host is offered an update of its controller, a
+    // A managed host is offered an update of its controller, a
     // workstation none, as applying installs it.
     let mut profile = said_profile(client, "dock").await;
-    profile["level"] = json!("controller");
+    profile["type"] = json!("managed");
     assert_eq!(
         send(client, "PUT", "/v1/hosts/dock/profile", profile.clone())
             .await
@@ -3703,7 +3702,7 @@ async fn a_host_added_by_its_address_has_a_level_and_actions_to_match() {
         .cloned()
         .unwrap();
     assert_eq!(install["label"], "Update the controller");
-    profile.as_object_mut().unwrap().remove("level");
+    profile.as_object_mut().unwrap().remove("type");
     profile["builder"] = json!({});
     assert_eq!(
         send(client, "PUT", "/v1/hosts/dock/profile", profile)
@@ -3743,7 +3742,7 @@ async fn a_host_seen_to_be_a_workstation_never_gets_the_controller_alone() {
         .unwrap()
         .save(
             &served.state.paths,
-            &json!({"level": "reachable", "access": {"address": "198.51.100.1", "user": "ops"}}),
+            &json!({"type": "ssh", "access": {"address": "198.51.100.1", "user": "ops"}}),
         )
         .unwrap();
     served
@@ -3761,7 +3760,7 @@ async fn a_host_seen_to_be_a_workstation_never_gets_the_controller_alone() {
     assert_eq!(install["available"], false, "{install}");
     let why = install["why"].as_str().unwrap();
     assert!(
-        why.starts_with("box is a workstation; its profile here says reachable")
+        why.starts_with("box is a workstation; its profile here says ssh")
             && why.contains("berth adopt box"),
         "{why}"
     );
@@ -3792,7 +3791,7 @@ async fn a_host_whose_controller_does_not_answer_says_why_and_keeps_berths_own_a
     let served = served().await;
     // A link that fails as ssh does for a host it cannot reach.
     let said = "ssh: connect to host 192.0.2.11 port 22: Network is unreachable";
-    let profile = json!({"level": "controller", "access": {"address": "192.0.2.11",
+    let profile = json!({"type": "managed", "access": {"address": "192.0.2.11",
         "link": ["sh", "-c", format!("echo '{said}' >&2; exit 255")]}});
     berth_core::profiles::Place::own("dock")
         .unwrap()

@@ -235,10 +235,10 @@ pub struct HostView {
     pub stats: Option<api::Stats>,
     /// What changed since the host was applied, when berth knows.
     pub behind: Option<api::Behind>,
-    /// The level the host's profile means it to have.
-    pub level: api::HostLevel,
-    /// The level the host was seen to have, once it was asked.
-    pub seen: Option<api::HostLevel>,
+    /// The type the host's profile means it to be.
+    pub host_type: api::HostType,
+    /// The type the host was seen to be, once it was asked.
+    pub seen: Option<api::HostType>,
     /// berth's own actions on the host, beside its tasks: what a berth
     /// server lists for its host, or what this berth does itself.
     pub own: Vec<api::Action>,
@@ -263,7 +263,7 @@ impl Default for HostView {
             sessions: vec![],
             stats: None,
             behind: None,
-            level: api::HostLevel::Workstation,
+            host_type: api::HostType::Workstation,
             seen: None,
             own: vec![],
             view: None,
@@ -468,7 +468,7 @@ impl HostView {
                 }
                 Event::Version(version) => {
                     // A controller without a record was installed outside berth.
-                    self.seen = Some(version.level.unwrap_or(api::HostLevel::Controller));
+                    self.seen = Some(version.host_type.unwrap_or(api::HostType::Managed));
                     self.state = State::Ready(version.version);
                 }
                 Event::Failed { message, missing } => {
@@ -480,7 +480,7 @@ impl HostView {
                         self.state = State::Password;
                         note = Some("sudo on the host did not take that password".to_owned());
                     } else if missing {
-                        self.seen = Some(api::HostLevel::Reachable);
+                        self.seen = Some(api::HostType::Ssh);
                         self.state = State::Missing;
                     } else if message.contains("a password is required") {
                         self.state = State::Password;
@@ -646,13 +646,13 @@ pub fn groups(host: &HostView, terminal_user: &str) -> Vec<(String, Vec<(String,
     groups
 }
 
-/// The line the overview shows of the host's level, with what the host
+/// The line the overview shows of the host's type, with what the host
 /// itself was seen to be when that is different.
-pub fn level_line(name: &str, host: &HostView) -> String {
-    let mut line = format!("Level · {} ({})", host.level, host.level.describe());
-    if let Some(said) = api::level_mismatch(name, host.level, host.seen) {
+pub fn type_line(name: &str, host: &HostView) -> String {
+    let mut line = format!("Type · {} ({})", host.host_type, host.host_type.describe());
+    if let Some(said) = api::type_mismatch(name, host.host_type, host.seen) {
         line += &format!(". {said}");
-    } else if let Some(seen) = host.seen.filter(|seen| *seen != host.level) {
+    } else if let Some(seen) = host.seen.filter(|seen| *seen != host.host_type) {
         line += &format!(". The host itself is {seen} now");
     }
     line
@@ -662,9 +662,9 @@ pub fn level_line(name: &str, host: &HostView) -> String {
 /// the page beside the information box.
 pub const NOTE_WIDTH: usize = 64;
 
-/// [`level_line`], wrapped to the overview's width.
-pub fn level_lines(name: &str, host: &HostView) -> Vec<String> {
-    crate::screen::wrap(&level_line(name, host), NOTE_WIDTH)
+/// [`type_line`], wrapped to the overview's width.
+pub fn type_lines(name: &str, host: &HostView) -> Vec<String> {
+    crate::screen::wrap(&type_line(name, host), NOTE_WIDTH)
 }
 
 /// What the overview says of a host whose configuration is behind.
@@ -781,32 +781,32 @@ mod tests {
     }
 
     #[test]
-    fn the_level_line_says_what_the_host_was_seen_to_be() {
+    fn the_type_line_says_what_the_host_was_seen_to_be() {
         let mut host = HostView {
-            level: api::HostLevel::Reachable,
+            host_type: api::HostType::Ssh,
             ..HostView::default()
         };
         assert_eq!(
-            level_line("studio", &host),
-            "Level · reachable (SSH only, nothing of berth installed)"
+            type_line("studio", &host),
+            "Type · ssh (SSH only, nothing of berth installed)"
         );
-        host.seen = Some(api::HostLevel::Reachable);
-        assert!(!level_line("studio", &host).contains("now"));
+        host.seen = Some(api::HostType::Ssh);
+        assert!(!type_line("studio", &host).contains("now"));
         // One seen to be more than its profile says names how to adopt it.
-        host.seen = Some(api::HostLevel::Workstation);
+        host.seen = Some(api::HostType::Workstation);
         assert!(
-            level_line("studio", &host)
-                .contains("studio is a workstation; its profile here says reachable. To adopt it"),
+            type_line("studio", &host)
+                .contains("studio is a workstation; its profile here says ssh. To adopt it"),
             "{}",
-            level_line("studio", &host)
+            type_line("studio", &host)
         );
-        host.level = api::HostLevel::Workstation;
-        host.seen = Some(api::HostLevel::Controller);
-        assert!(level_line("studio", &host).ends_with("The host itself is controller now"));
+        host.host_type = api::HostType::Workstation;
+        host.seen = Some(api::HostType::Managed);
+        assert!(type_line("studio", &host).ends_with("The host itself is managed now"));
         // Wrapped, every line fits the overview beside the information box.
-        host.level = api::HostLevel::Reachable;
-        host.seen = Some(api::HostLevel::Workstation);
-        let lines = level_lines("studio", &host);
+        host.host_type = api::HostType::Ssh;
+        host.seen = Some(api::HostType::Workstation);
+        let lines = type_lines("studio", &host);
         assert!(lines.len() > 1);
         assert!(
             lines.iter().all(|line| line.chars().count() <= NOTE_WIDTH),

@@ -3115,7 +3115,7 @@ pub fn run(
         app.update_suggestions();
         app.watch_host();
         app.watch_machine();
-        app.watch_found_level();
+        app.watch_found_type();
         // One of berth's own actions on the host runs in the normal terminal.
         if app.own_command.is_some() {
             return Ok(true);
@@ -4706,17 +4706,17 @@ mod tests {
     }
 
     #[test]
-    fn a_host_below_a_workstation_is_offered_the_controller_and_no_apply() {
+    fn a_host_that_is_not_a_workstation_is_offered_the_controller_and_no_apply() {
         use crate::remote::State;
-        let mut app = unsaved_app(br#"{"level": "reachable", "access": {"address": "192.0.2.4"}}"#);
+        let mut app = unsaved_app(br#"{"type": "ssh", "access": {"address": "192.0.2.4"}}"#);
         app.set_step(Step::Manage);
-        app.host.level = berth_api::HostLevel::Reachable;
+        app.host.host_type = berth_api::HostType::Ssh;
         app.host.state = State::Missing;
-        app.host.seen = Some(berth_api::HostLevel::Reachable);
+        app.host.seen = Some(berth_api::HostType::Ssh);
         app.host.own =
-            berth_core::level::local_actions("devbox", berth_api::HostLevel::Reachable, None);
+            berth_core::host_type::local_actions("devbox", berth_api::HostType::Ssh, None);
         let text = screen_text(&mut app);
-        assert!(text.contains("Level · reachable"), "{text}");
+        assert!(text.contains("Type · ssh"), "{text}");
         assert!(text.contains("▸ Install the controller") && text.contains("▸ Terminal over SSH"));
         assert!(!app.entries().contains(&Entry::Task("apply")));
         // Choosing it, and saying yes, runs berth host install in the normal terminal.
@@ -4747,17 +4747,17 @@ mod tests {
         );
         assert!(app.entries().contains(&Entry::HostTask(0)));
 
-        // A controller host lists berth's own beside its tasks; one it cannot
+        // A managed host lists berth's own beside its actions; one it cannot
         // run is marked, and its reason is in the information box.
         app.own_command = None;
-        app.config["level"] = json!("controller");
-        app.host.level = berth_api::HostLevel::Controller;
+        app.config["type"] = json!("managed");
+        app.host.host_type = berth_api::HostType::Managed;
         app.host.state = State::Ready(berth_api::VERSION.into());
         app.host.tasks = host_tasks();
         app.host.own = vec![
-            berth_core::level::install_controller_action(
+            berth_core::host_type::install_controller_action(
                 "devbox",
-                berth_api::HostLevel::Controller,
+                berth_api::HostType::Managed,
                 None,
             ),
             berth_api::Action {
@@ -4793,21 +4793,21 @@ mod tests {
     }
 
     #[test]
-    fn an_existing_host_is_offered_the_level_it_says_it_has() {
+    fn an_existing_host_is_offered_the_type_it_says_it_has() {
         let mut app = unsaved_app(br#"{"access": {"address": "192.0.2.4"}}"#);
-        app.offer_level(Some(berth_api::HostLevel::Controller));
-        assert_eq!(app.config["level"], "controller");
-        assert!(app.status.contains("answers as a controller host"));
+        app.offer_type(Some(berth_api::HostType::Managed));
+        assert_eq!(app.config["type"], "managed");
+        assert!(app.status.contains("answers as a host of the type managed"));
         // Nothing found, or what it is already, changes nothing.
-        app.offer_level(None);
-        app.offer_level(Some(berth_api::HostLevel::Controller));
-        assert_eq!(app.config["level"], "controller");
-        // A level chosen on its row stays; the host's answer is only told.
-        app.commit(Field::Level, "reachable");
-        app.offer_level(Some(berth_api::HostLevel::Workstation));
-        assert_eq!(app.config["level"], "reachable");
+        app.offer_type(None);
+        app.offer_type(Some(berth_api::HostType::Managed));
+        assert_eq!(app.config["type"], "managed");
+        // A type chosen on its row stays; the host's answer is only told.
+        app.commit(Field::Type, "ssh");
+        app.offer_type(Some(berth_api::HostType::Workstation));
+        assert_eq!(app.config["type"], "ssh");
         assert!(
-            app.status.contains("its Level here says reachable"),
+            app.status.contains("its Type here says ssh"),
             "{}",
             app.status
         );

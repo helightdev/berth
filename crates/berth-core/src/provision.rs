@@ -1083,13 +1083,8 @@ fn answers(paths: &Paths, host: &Host) -> bool {
     };
     let link = Link::new(spec);
     // The timer is made inside the runtime, which is what it runs on.
-    let asked = runtime.block_on(async {
-        tokio::time::timeout(
-            Duration::from_secs(20),
-            link.get::<berth_api::Version>("/v1/version"),
-        )
-        .await
-    });
+    let asked = runtime
+        .block_on(async { tokio::time::timeout(Duration::from_secs(20), link.version()).await });
     runtime.shutdown_background();
     matches!(asked, Ok(Ok(_)))
 }

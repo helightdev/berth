@@ -17,7 +17,7 @@ With a [berth server](/docs/use/server) set, by `--server` or the `server` setti
 | `berth` | The home screen |
 | `berth HOST` | Open a host in the terminal UI; a new name starts a new profile |
 | `berth list` | Saved hosts and their addresses |
-| `berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH] [--level LEVEL] [--no-contact]` | Save a machine that exists by its address, reachable unless `--level` says otherwise, and install berth's key there ([Host levels](/docs/use/levels#adding-a-machine-that-exists)) |
+| `berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH] [--type TYPE] [--no-contact]` | Save a machine that exists by its address, of the type `ssh` unless `--type` says otherwise, and install berth's key there ([Host types](/docs/use/types#adding-a-machine-that-exists)) |
 | `berth profile HOST` | The host's profile, as JSON on standard output |
 | `berth profile HOST --set FILE` | Save the profile in FILE as the host's, checked as the terminal UI reads one. `-` reads standard input. With a [berth server](/docs/use/server) set, it is saved on the server |
 | `berth credentials HOST [--show]` | The passwords berth generated for the host's accounts, an account and its password to a line. Only to a terminal unless `--show` is given. For a server's host they come from the server |
@@ -36,8 +36,8 @@ With a [berth server](/docs/use/server) set, by `--server` or the `server` setti
 | `berth iso HOST [--write /dev/sdX]` | Build the USB installer, downloading the ISO if none is set; write it to a drive after asking |
 | `berth seed HOST` | Render the cloud-init seed |
 | `berth apply HOST` | Apply the host's profile to it over SSH. With a [berth server](/docs/use/server) set, as a job there. Only a workstation is applied |
-| `berth host install HOST` | Install berth's controller alone on a host below a workstation ([Installing the controller](/docs/use/levels#installing-the-controller)) |
-| `berth host level HOST LEVEL` | Save the level the host's profile says, such as for a host with berth's controller added by its address. A workstation is adopted instead ([Adding a machine that exists](/docs/use/levels#adding-a-machine-that-exists)) |
+| `berth host install HOST` | Install berth's controller alone on a host that is not a workstation ([Installing the controller](/docs/use/types#installing-the-controller)) |
+| `berth host type HOST TYPE` | Save the type the host's profile says, such as for a host with berth's controller added by its address. A workstation is adopted instead ([Adding a machine that exists](/docs/use/types#adding-a-machine-that-exists)) |
 | `berth apply --behind [--update] [--reboot [--force]]` | Apply every host that is behind, one at a time ([Updates](/docs/use/updates#bringing-hosts-up-to-date)). `--all` takes the current ones too |
 | `berth host rename HOST NAME [--hostname]` | Give a host another name in berth, with everything berth keeps of it. The machine is left as it is. With `--hostname`, the profile's hostname changes to NAME as well, for the next apply ([Renaming a host](/docs/use/moving#renaming-a-host)) |
 | `berth remove HOST` | Forget a host. The machine itself is left as it is, and a machine berth created for the host must be deleted first |
@@ -92,7 +92,7 @@ berth run studio claude:login            # a sign-in runs in your terminal
 
 `berth run HOST TASK` runs a task and its plugin steps and leaves with the task's exit code. A task's arguments are given as `NAME=VALUE`, and `--yes` answers its confirmation. `berth manage HOST TASK` is the same command. Tasks that need a terminal, such as sign-ins, run in your terminal over `ssh -t`.
 
-`berth tasks` lists berth's own actions beside the host's tasks, such as `install-controller`, and says why one cannot run now. A host that is only reachable has no tasks yet.
+`berth tasks` lists berth's own actions beside the host's tasks, such as `install-controller`, and says why one cannot run now. A host of the type `ssh` has no tasks yet.
 
 When a [berth server](/docs/use/server) keeps the host, `berth tasks` lists the server's actions for the host: its tasks, and berth's own such as `apply` and `seed`. `berth run` runs any of them through the server, which keeps a job of each run ([Actions](/docs/extend/serve#actions)).
 

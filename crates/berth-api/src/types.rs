@@ -44,15 +44,33 @@ pub struct Version {
     /// recorded it. An older berthd does not say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied: Option<Applied>,
-    /// What was installed on the host, by that record: `controller` when
+    /// What was installed on the host, by that record: `managed` when
     /// only the controller was, `workstation` for a whole profile. Absent
     /// when the host keeps no record.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub level: Option<HostLevel>,
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub host_type: Option<HostType>,
 }
 
-/// How much of berth a host has: what its profile means it to have, or
-/// what it was seen to have. Each level can do what the ones before it can.
+impl Version {
+    /// A berthd's answer to `version`. A berthd of API 1 named the type
+    /// `level`, with the values `reachable`, `controller` and
+    /// `workstation`; its answer is read as this API's.
+    pub fn from_reply(mut reply: serde_json::Value) -> serde_json::Result<Version> {
+        if let Some(object) = reply.as_object_mut()
+            && !object.contains_key("type")
+            && let Some(level) = object.remove("level")
+        {
+            let converted = level.as_str().and_then(HostType::from_level);
+            if let Some(host_type) = converted {
+                object.insert("type".into(), serde_json::json!(host_type.name()));
+            }
+        }
+        serde_json::from_value(reply)
+    }
+}
+
+/// What berth does with a host: what its profile means it to be, or what it
+/// was seen to be. They are in the order of how much of berth each has.
 #[derive(
     Debug,
     Clone,
@@ -68,49 +86,66 @@ pub struct Version {
     ToSchema,
 )]
 #[serde(rename_all = "lowercase")]
-pub enum HostLevel {
+pub enum HostType {
     /// berth logs in over SSH. Nothing of berth is installed.
-    Reachable,
-    /// berthd and box are installed and answer: sessions, tasks and files.
-    Controller,
+    Ssh,
+    /// berthd and box are installed and answer: sessions, actions and files.
+    Managed,
     /// The whole profile is applied: desktop, agents and plugins.
     #[default]
     Workstation,
 }
 
-impl HostLevel {
-    pub const ALL: [HostLevel; 3] = [
-        HostLevel::Reachable,
-        HostLevel::Controller,
-        HostLevel::Workstation,
-    ];
+impl HostType {
+    pub const ALL: [HostType; 3] = [HostType::Ssh, HostType::Managed, HostType::Workstation];
 
     pub fn name(self) -> &'static str {
         match self {
-            HostLevel::Reachable => "reachable",
-            HostLevel::Controller => "controller",
-            HostLevel::Workstation => "workstation",
+            HostType::Ssh => "ssh",
+            HostType::Managed => "managed",
+            HostType::Workstation => "workstation",
         }
     }
 
-    pub fn parse(text: &str) -> Option<HostLevel> {
-        HostLevel::ALL
+    pub fn parse(text: &str) -> Option<HostType> {
+        HostType::ALL
             .into_iter()
-            .find(|level| level.name() == text.trim())
+            .find(|host_type| host_type.name() == text.trim())
     }
 
-    /// What a host of this level has, in a few words that fit a line
-    /// beside the level on a narrow page.
+    /// The names of the types, as a sentence says them: `a, b or c`.
+    pub fn choices() -> String {
+        let names: Vec<&str> = HostType::ALL.iter().map(|t| t.name()).collect();
+        match names.split_last() {
+            Some((last, [])) => (*last).to_owned(),
+            Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+            None => String::new(),
+        }
+    }
+
+    /// The type a value of the `level` that profiles and berthd had before
+    /// types stands for.
+    pub fn from_level(level: &str) -> Option<HostType> {
+        match level.trim() {
+            "reachable" => Some(HostType::Ssh),
+            "controller" => Some(HostType::Managed),
+            "workstation" => Some(HostType::Workstation),
+            _ => None,
+        }
+    }
+
+    /// What a host of this type has, in a few words that fit a line
+    /// beside the type on a narrow page.
     pub fn describe(self) -> &'static str {
         match self {
-            HostLevel::Reachable => "SSH only, nothing of berth installed",
-            HostLevel::Controller => "berthd alone: sessions, tasks, files",
-            HostLevel::Workstation => "the whole profile",
+            HostType::Ssh => "SSH only, nothing of berth installed",
+            HostType::Managed => "berthd alone: sessions, actions, files",
+            HostType::Workstation => "the whole profile",
         }
     }
 }
 
-impl std::fmt::Display for HostLevel {
+impl std::fmt::Display for HostType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name())
     }
@@ -118,18 +153,14 @@ impl std::fmt::Display for HostLevel {
 
 /// What to say when a host is seen to be more than its profile here says,
 /// with how to adopt it: as when a workstation is added by its address.
-pub fn level_mismatch(
-    name: &str,
-    intended: HostLevel,
-    observed: Option<HostLevel>,
-) -> Option<String> {
+pub fn type_mismatch(name: &str, intended: HostType, observed: Option<HostType>) -> Option<String> {
     let observed = observed.filter(|observed| *observed > intended)?;
     Some(match observed {
-        HostLevel::Workstation => format!(
+        HostType::Workstation => format!(
             "{name} is a workstation; its profile here says {intended}. To adopt it from the profile it keeps: berth adopt {name}"
         ),
         _ => format!(
-            "{name} has berth's controller; its profile here says {intended}. To adopt it: berth host level {name} controller"
+            "{name} has berth's controller; its profile here says {intended}. To adopt it: berth host type {name} managed"
         ),
     })
 }
@@ -1497,4 +1528,43 @@ pub struct RolloutReport {
     pub hosts: Vec<RolloutHost>,
     /// Every host is done or current.
     pub ok: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_host_type_is_named_and_parsed() {
+        for host_type in HostType::ALL {
+            assert_eq!(HostType::parse(host_type.name()), Some(host_type));
+            assert_eq!(json!(host_type), json!(host_type.name()));
+        }
+        assert_eq!(HostType::choices(), "ssh, managed or workstation");
+        assert_eq!(HostType::parse("controller"), None);
+        assert_eq!(HostType::from_level("reachable"), Some(HostType::Ssh));
+        assert_eq!(HostType::from_level("controller"), Some(HostType::Managed));
+        assert_eq!(HostType::from_level("ssh"), None);
+    }
+
+    #[test]
+    fn the_version_of_an_older_berthd_is_read_with_its_type() {
+        let old = json!({"version": "0.5.1", "api": 1, "mode": "system", "level": "controller"});
+        let version = Version::from_reply(old).unwrap();
+        assert_eq!(version.host_type, Some(HostType::Managed));
+        let new = json!({"version": "0.6.0", "api": 2, "type": "ssh"});
+        assert_eq!(
+            Version::from_reply(new).unwrap().host_type,
+            Some(HostType::Ssh)
+        );
+        let without = json!({"version": "0.5.1", "api": 1});
+        assert_eq!(Version::from_reply(without).unwrap().host_type, None);
+        // What a berthd says now is written with the name of this API.
+        let written = json!(
+            Version::from_reply(json!({"version": "1", "api": 2, "level": "workstation"})).unwrap()
+        );
+        assert_eq!(written["type"], "workstation");
+        assert!(written.get("level").is_none());
+    }
 }

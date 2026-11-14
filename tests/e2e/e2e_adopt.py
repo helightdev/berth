@@ -60,7 +60,7 @@ class Adopt(unittest.TestCase):
         link = BerthdLink(self.station, key=self.station.key)
         self.assertEqual(link.get('/v1/applied/profile'), self.kept)
         # The controller says the host is a workstation, as the file shows.
-        self.assertEqual(link.get('/v1/version')['level'], 'workstation')
+        self.assertEqual(link.get('/v1/version')['type'], 'workstation')
 
     def test_another_berth_adopts_the_host_while_berthd_is_broken(self):
         adopter = Workstation('adopter')
