@@ -468,6 +468,16 @@ pub struct Argument {
     /// is typed, nor kept, nor written to a job's output.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub secret: bool,
+    /// Why it keeps its default here and cannot be given another value,
+    /// such as destroying a machine no provisioner made. The screens show
+    /// it greyed and say this instead of changing it. Empty when it can be
+    /// changed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fixed: String,
+    /// For a yes or no: the question to answer yes to before the action
+    /// runs with it on, instead of the action's own.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub confirm: String,
 }
 
 impl Argument {

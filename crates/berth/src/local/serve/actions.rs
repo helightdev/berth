@@ -1352,12 +1352,12 @@ fn remove_action(seen: &Seen) -> Action {
     let (help, confirm) = match made(seen.machine) {
         Some(machine) => (
             format!(
-                "Forget {name}: its profile, the passwords berth generated and keeps for it, and its host keys. With destroy, {} also destroys its machine {} with its disk. Without destroy the machine is left as it is, and berth keeps it as a resource of {} with no host, which berth resource remove deletes later.",
+                "Forget {name}: its profile, the passwords berth generated and keeps for it, and its host keys. With Destroy its machine on, {} also destroys its machine {} with its disk. Off, the machine is left as it is, and berth keeps it as a resource of {} with no host, which berth resource remove deletes later.",
                 machine.provisioner, machine.external_id, machine.provisioner
             ),
             format!(
-                "Remove {name}? With destroy=yes {} destroys its machine {} and the disk it has; without, the machine is left as it is.",
-                machine.provisioner, machine.external_id
+                "Remove {name}? Its machine {} is left as it is, as a resource of {}.",
+                machine.external_id, machine.provisioner
             ),
         ),
         None => (
@@ -1367,13 +1367,26 @@ fn remove_action(seen: &Seen) -> Action {
             format!("Forget {name}? The machine is left as it is."),
         ),
     };
-    let destroy = match made(seen.machine) {
-        Some(machine) => format!(
-            "Destroy the machine {} made, {}, with its disk. It cannot be undone.",
-            machine.provisioner, machine.external_id
+    let mut destroy = match made(seen.machine) {
+        Some(machine) => {
+            let help = format!(
+                "On, {} destroys the machine it made, {}, with its disk. It cannot be undone.",
+                machine.provisioner, machine.external_id
+            );
+            let mut destroy = flag("destroy", "Destroy its machine", &help);
+            destroy.confirm = format!(
+                "Remove {name} and destroy its machine {} with {}, with its disk? It cannot be undone.",
+                machine.external_id, machine.provisioner
+            );
+            destroy
+        }
+        None => flag(
+            "destroy",
+            "Destroy its machine",
+            "On, the provisioner that made the host's machine destroys it with its disk.",
         ),
-        None => "Destroy the machine a provisioner made for the host. This host has none, so yes is refused.".into(),
     };
+    destroy.fixed = destroy_refused(name, seen.machine).unwrap_or_default();
     let action = Action {
         name: "remove".into(),
         label: "Remove".into(),
@@ -1381,7 +1394,7 @@ fn remove_action(seen: &Seen) -> Action {
         group: "Host".into(),
         role: Role::Admin,
         confirm: Some(confirm),
-        arguments: vec![flag("destroy", "Destroy its machine", &destroy)],
+        arguments: vec![destroy],
         ..Action::default()
     };
     let why = seen
@@ -2518,10 +2531,14 @@ mod tests {
         assert_eq!(remove.role, Role::Admin);
         assert_eq!(
             remove.confirm.as_deref(),
-            Some(
-                "Remove big? With destroy=yes incus destroys its machine berth-big and the disk it has; without, the machine is left as it is."
-            )
+            Some("Remove big? Its machine berth-big is left as it is, as a resource of incus.")
         );
+        // Destroying asks its own question, and can be chosen.
+        assert_eq!(
+            remove.arguments[0].confirm,
+            "Remove big and destroy its machine berth-big with incus, with its disk? It cannot be undone."
+        );
+        assert!(remove.arguments[0].fixed.is_empty());
         assert_eq!(
             (
                 remove.arguments[0].name.as_str(),
@@ -2535,6 +2552,13 @@ mod tests {
             bare.confirm.as_deref(),
             Some("Forget big? The machine is left as it is.")
         );
+        // With nothing to destroy, the switch stays off and says why.
+        assert!(
+            bare.arguments[0]
+                .fixed
+                .starts_with("No provisioner made big, so there is nothing for berth to destroy")
+        );
+        assert!(bare.arguments[0].confirm.is_empty());
         let refused = destroy_refused("big", None).unwrap();
         assert!(
             refused

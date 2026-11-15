@@ -247,7 +247,15 @@
             "description": "A command whose lines are the values to offer.",
             "type": "string"
           },
+          "confirm": {
+            "description": "For a yes or no: the question to answer yes to before the action\nruns with it on, instead of the action's own.",
+            "type": "string"
+          },
           "default": {
+            "type": "string"
+          },
+          "fixed": {
+            "description": "Why it keeps its default here and cannot be given another value,\nsuch as destroying a machine no provisioner made. The screens show\nit greyed and say this instead of changing it. Empty when it can be\nchanged.",
             "type": "string"
           },
           "help": {

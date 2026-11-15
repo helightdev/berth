@@ -4950,10 +4950,10 @@ async fn a_host_is_started_stopped_duplicated_and_removed_by_its_actions() {
     assert_eq!(status, 501, "{said}");
     let remove = host_action(client, "studio", "remove").await;
     assert!(
-        remove["confirm"]
+        remove["arguments"][0]["confirm"]
             .as_str()
             .unwrap()
-            .contains("vm destroys its machine vm-1 and the disk it has"),
+            .contains("destroy its machine vm-1 with vm, with its disk"),
         "{remove}"
     );
     let (status, acted) = send(client, "POST", &act("studio/actions/start"), Value::Null).await;

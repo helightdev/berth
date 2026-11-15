@@ -241,10 +241,11 @@ pub fn begin(actions: &[Action], index: usize, confirmed: bool) -> Begin {
 }
 
 /// The question to answer yes to before an action runs with `values`, if it
-/// has one. It names the switches that are on, such as destroying a machine.
+/// has one. A switch that is on and has a question of its own, such as
+/// destroying a machine, asks that one instead of the action's. The others
+/// that are on are named after it.
 pub fn confirmation(action: &Action, values: &BTreeMap<String, String>) -> Option<String> {
-    let question = action.confirm.as_ref()?;
-    let on: Vec<&str> = action
+    let on: Vec<&Argument> = action
         .arguments
         .iter()
         .filter(|argument| argument.is_boolean())
@@ -253,9 +254,18 @@ pub fn confirmation(action: &Action, values: &BTreeMap<String, String>) -> Optio
                 .get(&argument.name)
                 .is_some_and(|value| Argument::is_on(value))
         })
-        .map(argument_label)
         .collect();
-    Some(match on.as_slice() {
+    let own = on.iter().find(|argument| !argument.confirm.is_empty());
+    let question = match own {
+        Some(argument) => &argument.confirm,
+        None => action.confirm.as_ref()?,
+    };
+    let named: Vec<&str> = on
+        .iter()
+        .filter(|argument| argument.confirm.is_empty())
+        .map(|argument| argument_label(argument))
+        .collect();
+    Some(match named.as_slice() {
         [] => question.clone(),
         [one] => format!("{question} {one} is on."),
         [rest @ .., last] => format!("{question} {} and {last} are on.", rest.join(", ")),
@@ -572,6 +582,14 @@ mod tests {
         );
         both.confirm = None;
         assert_eq!(confirmation(&both, &given), None);
+        // A switch with a question of its own asks that one when it is on,
+        // even where the action asks none.
+        both.arguments[1].confirm = "Rename studio and its hostname?".into();
+        assert_eq!(
+            confirmation(&both, &given).as_deref(),
+            Some("Rename studio and its hostname? Force is on.")
+        );
+        assert_eq!(confirmation(&both, &values("no")), None);
     }
 
     #[test]

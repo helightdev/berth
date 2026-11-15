@@ -451,6 +451,23 @@ fn complete(
             *value = argument.read_switch(value).map_err(Fail::usage)?;
         }
     }
+    // One the action cannot take another value of here says why.
+    for argument in action
+        .arguments
+        .iter()
+        .filter(|argument| !argument.fixed.is_empty())
+    {
+        let default = match argument.is_boolean() {
+            true => argument.switched(Argument::is_on(&argument.default)),
+            false => argument.default.clone(),
+        };
+        if given
+            .get(&argument.name)
+            .is_some_and(|value| !value.is_empty() && *value != default)
+        {
+            return Err(Fail::refused(argument.fixed.clone()));
+        }
+    }
     for argument in &action.arguments {
         if !argument.required
             || given
@@ -1094,5 +1111,25 @@ mod tests {
         let mut on = given("1");
         complete(&action, &mut on, "studio").unwrap();
         assert_eq!(on["destroy"], "yes");
+    }
+
+    #[test]
+    fn a_switch_with_its_own_question_asks_it_and_a_fixed_one_says_why() {
+        let mut action = remove();
+        action.arguments[0].confirm = "Remove studio and destroy its machine?".into();
+        let refused = complete(&action, &mut given("yes"), "studio").unwrap_err();
+        assert!(
+            refused
+                .message
+                .starts_with("Remove studio and destroy its machine? Confirm with --yes"),
+            "{}",
+            refused.message
+        );
+        action.arguments[0].fixed = "No provisioner made studio".into();
+        let refused = complete(&action, &mut given("on"), "studio").unwrap_err();
+        assert_eq!(refused.message, "No provisioner made studio");
+        // Off is what it is anyway, so the action's own question comes.
+        let refused = complete(&action, &mut given("no"), "studio").unwrap_err();
+        assert!(refused.message.starts_with("Remove studio? Confirm"));
     }
 }

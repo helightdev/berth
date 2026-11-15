@@ -200,6 +200,8 @@ impl Form {
                         .is_none_or(|values| values.contains(value))
             });
             let value = match kept {
+                // One that cannot be changed here keeps its default.
+                _ if !argument.fixed.is_empty() => argument.default.clone(),
                 Some(value) => value.clone(),
                 None => {
                     self.set.remove(&argument.name);
@@ -235,6 +237,13 @@ impl Form {
     /// Whether the argument at `index` is a switch.
     fn is_switch(&self, index: usize) -> bool {
         self.argument(index).is_some_and(Argument::is_boolean)
+    }
+
+    /// Why the argument at `index` cannot be changed here, if it cannot.
+    fn fixed(&self, index: usize) -> Option<String> {
+        self.argument(index)
+            .map(|argument| argument.fixed.clone())
+            .filter(|why| !why.is_empty())
     }
 
     /// There is no action to fill it with, and why.
@@ -413,6 +422,19 @@ impl Form {
                 }
                 _ => value_line(&name, value, Kind::Text),
             };
+            // One that cannot be changed is greyed, as an action that cannot run now.
+            let line = match argument.fixed.is_empty() {
+                true => line,
+                false => {
+                    let mut spans: Vec<Span> = line
+                        .spans
+                        .into_iter()
+                        .map(|span| Span::styled(span.content, muted))
+                        .collect();
+                    spans.push(Span::styled("  · not now", muted));
+                    Line::from(spans)
+                }
+            };
             lines.push((line, Some(Row::Argument(index))));
         }
         lines.push((Line::raw(""), None));
@@ -452,7 +474,9 @@ impl Form {
                     return String::new();
                 };
                 let mut text = argument.help.clone();
-                if argument.is_boolean() {
+                if !argument.fixed.is_empty() {
+                    text += &format!("\n\nIt cannot be changed now: {}", argument.fixed);
+                } else if argument.is_boolean() {
                     text += "\n\nA switch. Enter, Space or a click turns it on or off.";
                 } else if let Some(values) = self.offered.get(&argument.name) {
                     text += &format!(
@@ -596,7 +620,11 @@ impl Form {
             draw_editor(frame, edit, title, input, secret);
         }
         let switch = matches!(selected, Some(Row::Argument(index)) if self.is_switch(index));
+        let fixed = matches!(selected, Some(Row::Argument(index)) if self.fixed(index).is_some());
         let keys = match (&self.editing, secret, self.suggested) {
+            // The question's own keys, while it is asked over the form.
+            _ if self.asking.is_some() => "y yes · n no · Esc back to the form".to_owned(),
+            (None, _, None) if fixed => "↑↓ select · Esc back".to_owned(),
             (Some(_), true, _) => "Enter accept · Esc cancel".to_owned(),
             (Some(_), false, _) => format!("Enter accept · Esc cancel · {}", screen::COPY_FIELD),
             (None, _, Some(_)) => "↑↓ select · Enter choose · Esc back to the rows".to_owned(),
@@ -770,6 +798,7 @@ impl Form {
             Code::Char('x') => {
                 if let Some(Row::Argument(index)) = selected
                     && !self.is_switch(index)
+                    && self.fixed(index).is_none()
                 {
                     self.put(index, String::new());
                 }
@@ -787,6 +816,10 @@ impl Form {
             }
             Some(Row::Maker) => Did::Stay(Some("No other provisioner makes these".into())),
             Some(Row::Argument(index)) => {
+                // One that cannot be changed says why instead.
+                if let Some(why) = self.fixed(index) {
+                    return Did::Stay(Some(why));
+                }
                 let Some(argument) = self.argument(index) else {
                     return Did::Stay(None);
                 };
@@ -821,13 +854,16 @@ impl Form {
                         .unwrap_or(self.cursor);
                     return Did::Stay(Some(format!("{label} is needed")));
                 }
-                match &self.action {
-                    Some((_, action)) if action.confirm.is_some() => {
-                        self.asking = page::confirmation(action, &self.values);
+                // The question follows the values: a switch that is on may ask its own.
+                let Some((index, action)) = &self.action else {
+                    return Did::Stay(None);
+                };
+                match page::confirmation(action, &self.values) {
+                    Some(question) => {
+                        self.asking = Some(question);
                         Did::Stay(None)
                     }
-                    Some((index, _)) => Did::Run((*index, self.values.clone())),
-                    None => Did::Stay(None),
+                    None => Did::Run((*index, self.values.clone())),
                 }
             }
             None => Did::Stay(None),
@@ -1099,6 +1135,70 @@ mod tests {
             panic!("not run");
         };
         assert_eq!(values["destroy"], "no");
+    }
+
+    fn click(form: &mut Form, place: usize) -> Did {
+        let (rect, _) = form.hits.borrow()[place];
+        let mouse = crate::event::Mouse {
+            click: crate::event::Click::Left,
+            column: rect.x + 4,
+            row: rect.y,
+        };
+        event(form, &Event::Mouse(mouse), &mut Nowhere)
+    }
+
+    #[test]
+    fn a_switch_that_cannot_be_on_is_greyed_and_says_why() {
+        let mut action = remove();
+        action.arguments[0].fixed = "No provisioner made studio".into();
+        let mut form = Form::of("studio", 2, &action, &BTreeMap::new());
+        assert_eq!(text(&form)[1], "  Destroy its machine  ○ Off  · not now");
+        let row = &form.lines()[1].0;
+        assert!(
+            row.spans
+                .iter()
+                .all(|span| span.style.fg == Some(theme::MUTED))
+        );
+        let shown = screen(&form, "");
+        let footer = shown.lines().last().unwrap();
+        assert!(
+            footer.contains("Esc back") && !footer.contains("Space"),
+            "{shown}"
+        );
+        assert!(
+            form.help()
+                .contains("It cannot be changed now: No provisioner made studio")
+        );
+        let why = Did::Stay(Some("No provisioner made studio".into()));
+        assert_eq!(press(&mut form, Code::Char(' ')), why);
+        assert_eq!(press(&mut form, Code::Enter), why);
+        assert_eq!(click(&mut form, 0), why);
+        assert_eq!(form.values["destroy"], "no");
+        // Run asks the action's own question, with nothing on.
+        press(&mut form, Code::Down);
+        press(&mut form, Code::Enter);
+        assert_eq!(form.asking(), Some("Remove studio?"));
+    }
+
+    #[test]
+    fn a_switch_that_is_on_asks_its_own_question_with_the_dialogs_keys() {
+        let mut action = remove();
+        action.arguments[0].confirm = "Remove studio and destroy its machine?".into();
+        let mut form = Form::of("studio", 2, &action, &BTreeMap::new());
+        press(&mut form, Code::Char(' '));
+        press(&mut form, Code::Down);
+        press(&mut form, Code::Enter);
+        assert_eq!(
+            form.asking(),
+            Some("Remove studio and destroy its machine?")
+        );
+        let shown = screen(&form, "");
+        let footer = shown.lines().last().unwrap();
+        assert!(
+            footer.contains("y yes") && footer.contains("Esc back to the form"),
+            "{shown}"
+        );
+        assert!(!footer.contains("x unset"), "{shown}");
     }
 
     fn screen(form: &Form, status: &str) -> String {
