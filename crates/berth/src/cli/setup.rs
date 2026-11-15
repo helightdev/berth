@@ -666,11 +666,13 @@ fn report(found: &Value) {
         for line in names(&found["lines"]) {
             println!("{line}");
         }
-        for host in found["behind"].as_array().into_iter().flatten() {
+        let behind: Vec<berth_api::HostBehind> =
+            serde_json::from_value(found["behind"].clone()).unwrap_or_default();
+        for host in &behind {
             out::warn(format!(
                 "{} needs applying: {}",
-                host["name"].as_str().unwrap_or(""),
-                host["behind"]["text"].as_str().unwrap_or("")
+                host.name,
+                host.behind.text()
             ));
         }
         if found["behind"]
@@ -748,6 +750,16 @@ pub fn plugin(client: &Client, command: Plugin) -> Result<()> {
             Ok(())
         }
         Plugin::Remove { id } => {
+            // A plugin is named by its id or by its npm name.
+            let found = client.call("plugins.list", json!({}), None)?;
+            let id = found["plugins"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|plugin| plugin["package"] == id.as_str())
+                .and_then(|plugin| plugin["id"].as_str())
+                .map(str::to_owned)
+                .unwrap_or(id);
             ask::confirm(&format!("This removes the plugin {id}."))?;
             report(&client.call("plugins.remove", json!({"id": id}), None)?);
             Ok(())

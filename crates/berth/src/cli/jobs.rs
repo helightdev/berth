@@ -77,7 +77,7 @@ pub fn command(client: &Client, command: Job) -> Result<()> {
                 job["action"].as_str().unwrap_or("job"),
                 job["host"].as_str().unwrap_or("")
             );
-            let ended = follow::job(client, &id, title.trim())?;
+            let ended = follow::job(client, &id, title.trim(), false)?;
             if out::get().json {
                 out::json(&ended.job);
             }
@@ -162,17 +162,23 @@ pub fn rollout(client: &Client, rollout: &args::Rollout) -> Result<()> {
         ..Act::default()
     };
     let acted = client.act(&Subject::Installation, "rollout", &act)?;
-    let detach = rollout.detach.detach;
-    let job = follow::acted(client, acted, "Rolling out", detach, false);
-    if let Ok(job) = &job
-        && !out::get().json
-        && job["report"].is_object()
-    {
+    let (Some(job), false) = (&acted.job, rollout.detach.detach) else {
+        follow::acted(client, acted, "Rolling out", rollout.detach.detach, false)?;
+        return Ok(());
+    };
+    // The line of each host is said whether the roll-out ended well or not.
+    let ended = follow::job(client, &job.id, "Rolling out", false)?;
+    if out::get().json {
+        out::json(&ended.job);
+    } else if ended.job["report"].is_object() {
         let report: berth_api::RolloutReport =
-            serde_json::from_value(job["report"].clone()).unwrap_or_default();
+            serde_json::from_value(ended.job["report"].clone()).unwrap_or_default();
         for line in berth_tui::plugins::summary(&report) {
             println!("{line}");
         }
     }
-    job.map(|_| ())
+    match ended.code {
+        0 => Ok(()),
+        _ => Err(Fail::exit(1)),
+    }
 }

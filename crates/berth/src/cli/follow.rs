@@ -128,12 +128,14 @@ fn exit_of(said: &Value) -> Option<i32> {
         .map(|exited| exited["exit_code"].as_i64().unwrap_or(1) as i32)
 }
 
-/// Follow the job `id` to its end, shown as `title`.
-pub fn job(client: &Client, id: &str, title: &str) -> Result<Ended> {
+/// Follow the job `id` to its end, shown as `title`. With `own` the job's
+/// output is what the command is for, such as an action of a host, and goes
+/// to standard output whole.
+pub fn job(client: &Client, id: &str, title: &str, own: bool) -> Result<Ended> {
     let mut stream = client.stream("jobs.follow", None, json!({"id": id}))?;
     let shown = out::get();
     let colour = shown.colour.1;
-    let mut inline = match shown.terminal.1 && !shown.quiet {
+    let mut inline = match shown.terminal.1 && !shown.quiet && !own {
         true => Inline::start(),
         false => None,
     };
@@ -149,7 +151,11 @@ pub fn job(client: &Client, id: &str, title: &str) -> Result<Ended> {
                 piece = stream.recv() => match piece {
                     Some(Ok(Piece::Binary(bytes))) => {
                         lines.take(&bytes);
-                        if inline.is_none() && !shown.quiet {
+                        if own {
+                            let mut stdout = std::io::stdout().lock();
+                            let _ = stdout.write_all(&bytes);
+                            let _ = stdout.flush();
+                        } else if inline.is_none() && !shown.quiet {
                             let text = String::from_utf8_lossy(&bytes);
                             let text = match colour { true => text.into_owned(), false => out::strip_ansi(&text) };
                             let mut stderr = std::io::stderr().lock();
@@ -279,7 +285,7 @@ pub fn acted(
         out::data(&serde_json::to_value(&job)?, || println!("{}", job.id));
         return Ok(Value::Null);
     }
-    let ended = self::job(client, &job.id, title)?;
+    let ended = self::job(client, &job.id, title, own)?;
     if out::get().json {
         out::json(&ended.job);
     }
