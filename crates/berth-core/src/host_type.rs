@@ -23,14 +23,16 @@ pub enum Capability {
     Secrets,
     /// Plugin features, their actions and services.
     Plugins,
-    /// Applying the profile, a roll-out over it, a seed or an installer image.
+    /// Applying the profile over SSH, and a roll-out over it.
     Apply,
+    /// A cloud seed or an installer image, which install a whole workstation.
+    Seed,
     /// The desktop: screenshots and access links.
     Desktop,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 8] = [
+    pub const ALL: [Capability; 9] = [
         Capability::Ssh,
         Capability::InstallController,
         Capability::Sessions,
@@ -38,6 +40,7 @@ impl Capability {
         Capability::Secrets,
         Capability::Plugins,
         Capability::Apply,
+        Capability::Seed,
         Capability::Desktop,
     ];
 
@@ -50,6 +53,7 @@ impl Capability {
             Capability::Secrets => "secrets",
             Capability::Plugins => "plugins",
             Capability::Apply => "apply",
+            Capability::Seed => "seed",
             Capability::Desktop => "desktop",
         }
     }
@@ -63,32 +67,32 @@ impl Capability {
             Capability::Actions => "running the controller's actions",
             Capability::Secrets => "sending secrets and registry logins",
             Capability::Plugins => "using plugin features",
-            Capability::Apply => "applying a profile, a roll-out, a seed or an installer",
+            Capability::Apply => "applying a profile or a roll-out",
+            Capability::Seed => "a cloud seed or an installer image",
             Capability::Desktop => "using the desktop",
         }
     }
 
     /// Whether a host of `host_type` has it. The controller alone is
-    /// installed on a host that is not a workstation; a workstation's comes
-    /// with applying.
+    /// installed on a host that is not applied; the controller of a node or
+    /// a workstation comes with applying.
     pub fn allowed(self, host_type: HostType) -> bool {
         use HostType::*;
         match self {
             Capability::Ssh => true,
             Capability::InstallController => matches!(host_type, Ssh | Managed),
             Capability::Sessions | Capability::Actions | Capability::Secrets => {
-                matches!(host_type, Managed | Workstation)
+                matches!(host_type, Managed | Node | Workstation)
             }
-            Capability::Plugins | Capability::Apply | Capability::Desktop => {
-                host_type == Workstation
-            }
+            Capability::Plugins | Capability::Apply => matches!(host_type, Node | Workstation),
+            Capability::Seed | Capability::Desktop => host_type == Workstation,
         }
     }
 }
 
 /// The capabilities and the types that have each, in the order of
 /// [`HostType::ALL`]: for a page that shows the table.
-pub fn table() -> Vec<(Capability, [bool; 3])> {
+pub fn table() -> Vec<(Capability, [bool; HostType::ALL.len()])> {
     Capability::ALL
         .into_iter()
         .map(|capability| {
@@ -131,7 +135,7 @@ pub fn check(
     Err(match (capability, host_type) {
         (Capability::InstallController, _) => Refusal {
             why: format!(
-                "{name} is a workstation: applying its configuration installs and updates its controller. Apply it with: berth apply {name}"
+                "{name} is a {host_type}: applying its configuration installs and updates its controller. Apply it with: berth apply {name}"
             ),
             raise: "apply",
         },
@@ -140,6 +144,18 @@ pub fn check(
                 "{name} is a host of the type ssh: berth's controller is not installed there, and {what} needs it. Install it with: berth host install {name}"
             ),
             raise: "install-controller",
+        },
+        (Capability::Desktop, HostType::Node) => Refusal {
+            why: format!(
+                "{name} is a node, a server without a desktop: {what} needs a workstation. Set its type to workstation in its set-up, then apply it"
+            ),
+            raise: "setup",
+        },
+        (_, _) if capability.allowed(HostType::Node) => Refusal {
+            why: format!(
+                "{name} is a host of the type {host_type}, neither a node nor a workstation: {what} needs berth to apply its profile. Make it a node (berth host type {name} node) or a workstation in its set-up, then apply it"
+            ),
+            raise: "setup",
         },
         _ => Refusal {
             why: format!(
@@ -194,8 +210,8 @@ pub fn refuse_install(
     observed: Option<HostType>,
 ) -> Option<String> {
     match (intended, observed) {
-        (HostType::Workstation, _) | (_, None) => None,
-        (_, Some(HostType::Workstation)) => Some(format!(
+        (HostType::Workstation | HostType::Node, _) | (_, None) => None,
+        (_, Some(HostType::Workstation | HostType::Node)) => Some(format!(
             "{} Installing the controller alone would take its controller apart, so it is not offered",
             mismatch(name, intended, observed).unwrap_or_default()
         )),
@@ -304,21 +320,23 @@ mod tests {
     #[test]
     fn each_type_can_do_what_the_ones_before_it_can() {
         use Capability::*;
-        let rows: Vec<(&str, [bool; 3])> = table()
+        let rows: Vec<(&str, [bool; 4])> = table()
             .into_iter()
             .map(|(capability, types)| (capability.name(), types))
             .collect();
+        // ssh, managed, node, workstation.
         assert_eq!(
             rows,
             [
-                (Ssh.name(), [true, true, true]),
-                (InstallController.name(), [true, true, false]),
-                (Sessions.name(), [false, true, true]),
-                (Actions.name(), [false, true, true]),
-                (Secrets.name(), [false, true, true]),
-                (Plugins.name(), [false, false, true]),
-                (Apply.name(), [false, false, true]),
-                (Desktop.name(), [false, false, true]),
+                (Ssh.name(), [true, true, true, true]),
+                (InstallController.name(), [true, true, false, false]),
+                (Sessions.name(), [false, true, true, true]),
+                (Actions.name(), [false, true, true, true]),
+                (Secrets.name(), [false, true, true, true]),
+                (Plugins.name(), [false, false, true, true]),
+                (Apply.name(), [false, false, true, true]),
+                (Seed.name(), [false, false, false, true]),
+                (Desktop.name(), [false, false, false, true]),
             ]
         );
     }
@@ -330,7 +348,11 @@ mod tests {
         assert!(refused.why.contains("berth host install studio"));
         let refused = check("studio", HostType::Ssh, Capability::Apply).unwrap_err();
         assert_eq!(refused.raise, "setup");
-        assert!(refused.why.contains("of the type ssh, not a workstation"));
+        assert!(
+            refused
+                .why
+                .contains("of the type ssh, neither a node nor a workstation")
+        );
         let refused = check("studio", HostType::Managed, Capability::Desktop).unwrap_err();
         assert_eq!(refused.raise, "setup");
         let refused = check(
@@ -344,6 +366,36 @@ mod tests {
     }
 
     #[test]
+    fn a_node_is_applied_and_has_no_desktop() {
+        assert!(check("big", HostType::Node, Capability::Apply).is_ok());
+        assert!(check("big", HostType::Node, Capability::Plugins).is_ok());
+        assert!(check("big", HostType::Node, Capability::Sessions).is_ok());
+        let refused = check("big", HostType::Node, Capability::Desktop).unwrap_err();
+        assert!(
+            refused
+                .why
+                .starts_with("big is a node, a server without a desktop")
+        );
+        let refused = check("big", HostType::Node, Capability::InstallController).unwrap_err();
+        assert_eq!(refused.raise, "apply");
+        assert!(refused.why.starts_with("big is a node: applying"));
+        let refused = check("big", HostType::Managed, Capability::Apply).unwrap_err();
+        assert!(refused.why.contains("neither a node nor a workstation"));
+        assert!(refused.why.contains("berth host type big node"));
+        // The controller alone is never put over a node's.
+        let action = install_controller_action("big", HostType::Managed, Some(HostType::Node));
+        assert!(!action.available);
+        assert!(
+            action
+                .why
+                .starts_with("big is a node; its profile here says managed")
+        );
+        assert!(!install_controller_action("big", HostType::Node, None).available);
+        let refused = check("big", HostType::Node, Capability::Seed).unwrap_err();
+        assert!(refused.why.contains("not a workstation"));
+    }
+
+    #[test]
     fn the_apply_guard_reads_the_profile() {
         let host = |config| Host {
             name: "dock".into(),
@@ -352,7 +404,11 @@ mod tests {
         };
         let ssh = host(serde_json::json!({"type": "ssh", "access": {"address": "192.0.2.4"}}));
         let refused = guard(&ssh, Capability::Apply).unwrap_err();
-        assert!(refused.to_string().contains("not a workstation"));
+        assert!(
+            refused
+                .to_string()
+                .contains("neither a node nor a workstation")
+        );
         assert!(guard(&host(serde_json::json!({"builder": {}})), Capability::Apply).is_ok());
     }
 

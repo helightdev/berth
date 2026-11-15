@@ -53,6 +53,74 @@ pub struct Feature {
     pub channels: Vec<berth_api::Topic>,
 }
 
+/// What a feature says of the hosts it is for and what it gives them,
+/// beside what [`Feature`] holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hosting {
+    pub feature: String,
+    /// The types of host it is for: a workstation unless the manifest names
+    /// others, such as `node` for what a server needs.
+    pub types: Vec<berth_api::HostType>,
+    /// The ids of the plugin's provisioners it may offer once it is applied.
+    pub offers: Vec<String>,
+    /// The berth secrets of a client certificate and its key that the host
+    /// is to trust, which berth makes when it has none.
+    pub trusts: Option<(String, String)>,
+}
+
+/// What each feature of a plugin says of the hosts it is for, read from its
+/// manifest.
+pub fn hosting(plugin: &Plugin) -> Vec<Hosting> {
+    let Some(data) = fs::read(plugin.dir.join("package.json"))
+        .ok()
+        .and_then(|data| serde_json::from_slice::<Value>(&data).ok())
+    else {
+        return vec![];
+    };
+    data["berth"]["features"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|feature| {
+            let id = feature["id"].as_str().filter(|id| valid_name(id))?;
+            let strings = |value: &Value| -> Vec<String> {
+                value
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            };
+            Some(Hosting {
+                feature: id.to_owned(),
+                types: match feature["types"].as_array() {
+                    Some(_) => strings(&feature["types"])
+                        .iter()
+                        .filter_map(|name| berth_api::HostType::parse(name))
+                        .collect(),
+                    None => vec![berth_api::HostType::Workstation],
+                },
+                offers: strings(&feature["offers"])
+                    .into_iter()
+                    .filter(|id| valid_name(id))
+                    .collect(),
+                trusts: match (
+                    feature["trusts"]["certificate"].as_str(),
+                    feature["trusts"]["key"].as_str(),
+                ) {
+                    (Some(certificate), Some(key))
+                        if valid_name(certificate) && valid_name(key) =>
+                    {
+                        Some((certificate.to_owned(), key.to_owned()))
+                    }
+                    _ => None,
+                },
+            })
+        })
+        .collect()
+}
+
 /// How a machine a provisioner created becomes the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Setup {
@@ -142,6 +210,7 @@ impl Provisioner {
             arguments: self.arguments.clone(),
             own: self.own.clone(),
             settings: Default::default(),
+            node: String::new(),
             kinds: self.kinds.clone(),
             actions: self.actions.clone(),
             problem: self.refused.clone().unwrap_or_default(),
@@ -1701,6 +1770,7 @@ mod tests {
         let before = berth_api::Applied {
             berth: berth_api::VERSION.into(),
             plugins: records(&plugins),
+            ..Default::default()
         };
         assert_eq!(behind(&before, &plugins), None);
         // What npm put beside it does not count; a task does.

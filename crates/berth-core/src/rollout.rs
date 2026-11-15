@@ -244,10 +244,10 @@ pub fn chosen(all: Vec<String>, asked: &[String]) -> Result<Vec<String>> {
 }
 
 /// The hosts a roll-out applies, and the names of those it leaves because
-/// they are not workstations: only a workstation is applied.
+/// berth does not apply them: only a node or a workstation is applied.
 pub fn workstations(hosts: Vec<Host>) -> (Vec<Host>, Vec<String>) {
     let (taken, left): (Vec<Host>, Vec<Host>) = hosts.into_iter().partition(|host| {
-        crate::host_type::of(&host.config) == crate::host_type::HostType::Workstation
+        crate::host_type::Capability::Apply.allowed(crate::host_type::of(&host.config))
     });
     (taken, left.into_iter().map(|host| host.name).collect())
 }
@@ -257,11 +257,11 @@ pub fn skipped_note(skipped: &[String]) -> Option<String> {
     match skipped.len() {
         0 => None,
         1 => Some(format!(
-            "! Skipped 1 host that is not a workstation: {}",
+            "! Skipped 1 host that is neither a node nor a workstation: {}",
             skipped[0]
         )),
         count => Some(format!(
-            "! Skipped {count} hosts that are not workstations: {}",
+            "! Skipped {count} hosts that are neither nodes nor workstations: {}",
             skipped.join(", ")
         )),
     }
@@ -359,7 +359,9 @@ impl Target for Live<'_> {
         let status = child.wait().map_err(|error| error.to_string())?;
         drop(prepared.files);
         match status.success() {
-            true => apply::settle(self.paths, &self.host).map_err(|error| error.to_string()),
+            true => {
+                apply::settle_with(self.paths, &self.host, out).map_err(|error| error.to_string())
+            }
             false => Err(format!(
                 "applying failed (ansible-playbook ended with {})",
                 status.code().unwrap_or(-1)
@@ -594,6 +596,7 @@ mod tests {
                 version: version.into(),
                 digest: version.into(),
             }],
+            ..Applied::default()
         }
     }
 
@@ -840,7 +843,7 @@ mod tests {
         assert_eq!(taken[0].name, "studio");
         assert_eq!(
             skipped_note(&skipped).unwrap(),
-            "! Skipped 2 hosts that are not workstations: dock, pier"
+            "! Skipped 2 hosts that are neither nodes nor workstations: dock, pier"
         );
         assert!(skipped_note(&[]).is_none());
     }

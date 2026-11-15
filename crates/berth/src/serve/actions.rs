@@ -57,7 +57,12 @@ pub(super) struct Seen<'a> {
 
 /// berth's own actions that run through the host's controller, so the host
 /// is asked before one of them is described.
-const THROUGH_CONTROLLER: &[&str] = &["secrets"];
+const THROUGH_CONTROLLER: &[&str] = &["secrets", UPGRADE_SERVER];
+
+/// berth's own action that upgrades the berth server in a container on a
+/// node. It is offered only where the node's controller lists it, which its
+/// role does when it found such a container.
+const UPGRADE_SERVER: &str = "upgrade-server";
 
 /// One of berth's own actions.
 pub(super) struct Builtin {
@@ -105,6 +110,11 @@ pub(super) static HOST: &[Builtin] = &[
         name: "rename",
         describe: rename_action,
         run: rename,
+    },
+    Builtin {
+        name: UPGRADE_SERVER,
+        describe: upgrade_server_action,
+        run: upgrade_server,
     },
 ];
 
@@ -174,11 +184,14 @@ async fn observed(remote: &Remote) -> Option<HostType> {
 /// A host's actions: its controller's, then berth's own. One that takes the
 /// workstation's secrets on its input is berth's to run, with the server's.
 fn host_list(seen: &Seen) -> Vec<Action> {
+    let listed = seen.host_actions.unwrap_or(&[]);
     let own: Vec<Action> = HOST
         .iter()
+        .filter(|builtin| {
+            builtin.name != UPGRADE_SERVER || listed.iter().any(|kept| kept.name == UPGRADE_SERVER)
+        })
         .map(|builtin| (builtin.describe)(seen))
         .collect();
-    let listed = seen.host_actions.unwrap_or(&[]);
     let mut actions: Vec<Action> = Action::of_host(listed)
         .into_iter()
         .filter(|action| !own.iter().any(|known| known.name == action.name))
@@ -608,7 +621,7 @@ fn apply(state: Arc<Serve>, name: String, act: Act) -> Run {
             if berth_core::runner::run_program(program, out) != Some(0) {
                 return false;
             }
-            if let Err(error) = apply::settle(&paths, &host) {
+            if let Err(error) = apply::settle_with(&paths, &host, out) {
                 let _ = writeln!(
                     out,
                     "! {name} is applied, but its profile was not updated: {error}"
@@ -633,7 +646,7 @@ fn seed_action(seen: &Seen) -> Action {
             "Render the cloud-init user data that installs the host on a new machine, for a provider's field of that name. It answers with the seed.",
         )
     };
-    host_type::fit(action, seen.name, seen.host_type, Capability::Apply)
+    host_type::fit(action, seen.name, seen.host_type, Capability::Seed)
 }
 
 fn seed(state: Arc<Serve>, name: String, _: Act) -> Run {
@@ -703,6 +716,67 @@ fn secrets(state: Arc<Serve>, name: String, act: Act) -> Run {
     })
 }
 
+fn upgrade_server_action(seen: &Seen) -> Action {
+    let kept = seen
+        .host_actions
+        .and_then(|listed| listed.iter().find(|kept| kept.name == UPGRADE_SERVER));
+    let mut action = set_up(
+        UPGRADE_SERVER,
+        "Upgrade the berth server",
+        "Run the berth server in the container on this node from the image of this berth's version, with the same data and the same options as the running container. It is refused when the container has an option it cannot carry over, and the old container is started again when the new one does not come up. A server that upgrades itself restarts during the job.",
+    );
+    action.group = "Server".into();
+    action.runs = Runs::Host;
+    action.confirm = Some(format!(
+        "Upgrade the berth server on {} to {}? It restarts, and its jobs end",
+        seen.name,
+        berth_api::VERSION
+    ));
+    action.arguments = vec![Argument {
+        name: "version".into(),
+        label: "Version".into(),
+        help: "The version of berth to run, as its image is tagged: this berth's own unless another is given.".into(),
+        default: berth_api::VERSION.into(),
+        ..Argument::default()
+    }];
+    if let Some(kept) = kept {
+        action.help = match kept.help.is_empty() {
+            true => action.help,
+            false => kept.help.clone(),
+        };
+    }
+    let why = match (seen.host_type, seen.unanswered) {
+        (HostType::Node, Some(error)) => Some(format!(
+            "The controller on {} does not answer, and the upgrade runs through it: {error}",
+            seen.name
+        )),
+        (HostType::Node, None) => None,
+        (other, _) => Some(format!(
+            "{} is a host of the type {other}: only a node's controller upgrades a berth server it runs",
+            seen.name
+        )),
+    };
+    unavailable(action, why)
+}
+
+fn upgrade_server(state: Arc<Serve>, name: String, mut act: Act) -> Run {
+    Box::pin(async move {
+        let remote = remote(&state, &name)?;
+        let version = act
+            .arguments
+            .get("version")
+            .map(|version| version.trim().to_owned())
+            .filter(|version| !version.is_empty())
+            .unwrap_or_else(|| berth_api::VERSION.to_owned());
+        act.arguments = [("version".to_owned(), version)].into();
+        let action = Action {
+            name: UPGRADE_SERVER.into(),
+            ..Action::default()
+        };
+        run_action(&state, &remote, &action, act, None).await
+    })
+}
+
 // ── The installation's ──────────────────────────────────────────────────────
 
 fn flag(name: &str, label: &str, help: &str) -> Argument {
@@ -763,9 +837,9 @@ fn rollout(state: Arc<Serve>, _: String, act: Act) -> Run {
             for (name, password) in names.iter().zip(passwords) {
                 let host = berth_core::profiles::Place::own(name)
                     .and_then(|place| Host::load_at(&paths, place));
-                // Only a workstation is applied; the others are said and left.
+                // Only a node or a workstation is applied; the others are said and left.
                 let host = match host {
-                    Ok(host) if host_type::of(&host.config) != HostType::Workstation => {
+                    Ok(host) if !Capability::Apply.allowed(host_type::of(&host.config)) => {
                         skipped.push(host.name);
                         continue;
                     }

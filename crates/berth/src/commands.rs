@@ -826,7 +826,7 @@ fn offer_found_type(paths: &Paths, name: &str, intended: host_type::HostType) ->
 /// first contact, unless told not to: berth's key is tried, and a host that
 /// refuses it is logged in to once with a password or key to install it.
 pub fn add_host(paths: &Paths, name: &str, address: &str, args: &[&str]) -> Result<()> {
-    const USAGE: &str = "Usage: berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth berth|key:NAME|password|ssh] [--type ssh|managed|workstation] [--no-contact]";
+    const USAGE: &str = "Usage: berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth berth|key:NAME|password|ssh] [--type ssh|managed|node|workstation] [--no-contact]";
     let mut access = api::profile::Access {
         address: address.to_owned(),
         ..api::profile::Access::default()
@@ -1048,7 +1048,7 @@ pub fn apply(paths: &Paths, name: &str) -> Result<()> {
         let request = runner::Request::new(runner::Subject::Host(name.to_owned()), "apply");
         let code = runner::here(paths, request, work, &mut std::io::stdout())?;
         if code == Some(0) {
-            berth_core::apply::settle(paths, &host)?;
+            berth_core::apply::settle_with(paths, &host, &mut std::io::stdout())?;
         }
         std::process::exit(code.unwrap_or(1));
     };

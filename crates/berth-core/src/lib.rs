@@ -12,6 +12,7 @@ pub mod kept;
 pub mod kept_profile;
 pub mod keys;
 pub mod link;
+pub mod node;
 pub mod paths;
 pub mod plugin_state;
 pub mod plugins;

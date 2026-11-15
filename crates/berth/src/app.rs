@@ -2182,7 +2182,7 @@ impl App {
         // Over SSH, a host below a workstation gets the controller alone, or nothing.
         if self.action == Action::Ssh {
             match host_type::of(&self.config) {
-                host_type::HostType::Workstation => {}
+                host_type::HostType::Workstation | host_type::HostType::Node => {}
                 host_type::HostType::Managed => {
                     let words = ["host", "install", &self.place.argument()].map(str::to_owned);
                     return self.run_own(&words);
