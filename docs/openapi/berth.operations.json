@@ -2489,6 +2489,10 @@
             "description": "`system` or `single`.",
             "type": "string"
           },
+          "simulated": {
+            "description": "Whether it is simulated, as `berth serve --simulate` and its hosts\nare: nothing it does reaches a real machine.",
+            "type": "boolean"
+          },
           "type": {
             "oneOf": [
               {

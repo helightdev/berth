@@ -293,6 +293,7 @@ impl App {
                         let version = said["version"].as_str().unwrap_or("");
                         let api = said["api"].as_u64().unwrap_or(0) as u32;
                         *older.borrow_mut() = berth_api::compat::older_server(&url, version, api);
+                        berth_tui::screen::mark_simulated(said["simulated"] == true);
                     }
                 });
                 // Who the token is here decides what the page offers.

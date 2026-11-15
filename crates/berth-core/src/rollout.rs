@@ -533,6 +533,7 @@ mod tests {
                 mode: "system".into(),
                 applied: self.applied.clone(),
                 host_type: None,
+                simulated: false,
             }))
         }
         fn apply(&mut self, _out: &mut dyn Write) -> std::result::Result<(), String> {

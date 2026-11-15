@@ -66,6 +66,10 @@ pub struct Version {
     /// when the host keeps no record.
     #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
     pub host_type: Option<HostType>,
+    /// Whether it is simulated, as `berth serve --simulate` and its hosts
+    /// are: nothing it does reaches a real machine.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub simulated: bool,
 }
 
 impl Version {
@@ -1014,6 +1018,10 @@ pub struct Config {
     pub systemd: Option<bool>,
     /// A wrapper that gives the agent its environment.
     pub agent_env: String,
+    /// Whether the host is simulated: in single-user mode its commands then
+    /// run through `agent_env` too, and its version says so.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub simulated: bool,
 }
 
 impl Default for Config {
@@ -1025,6 +1033,7 @@ impl Default for Config {
             units: vec![],
             systemd: None,
             agent_env: "/usr/local/bin/agent-env".into(),
+            simulated: false,
         }
     }
 }

@@ -64,6 +64,14 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
 }
 
 /// The top line: the name, the tabs and what is open. Returns the tabs' areas.
+/// Whether the server the screens use is a simulated one, which the header says.
+static SIMULATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Say in the header, from now on, whether the server is simulated.
+pub fn mark_simulated(simulated: bool) {
+    SIMULATED.store(simulated, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn draw_header(
     frame: &mut Frame,
     area: Rect,
@@ -78,6 +86,13 @@ pub fn draw_header(
         Span::styled(" berth  ", Style::new().fg(theme::TEXT).bold()),
     ];
     let mut x = area.x + 11;
+    if SIMULATED.load(std::sync::atomic::Ordering::Relaxed) {
+        spans.push(Span::styled(
+            "simulated  ",
+            Style::new().fg(theme::WARN).bold(),
+        ));
+        x += 11;
+    }
     let mut areas = vec![];
     for (index, tab) in tabs.iter().enumerate() {
         let width = tab.len() as u16 + 4;

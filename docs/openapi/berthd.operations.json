@@ -182,6 +182,11 @@
             },
             "type": "array"
           },
+          "simulated": {
+            "default": false,
+            "description": "Whether the host is simulated: in single-user mode its commands then\nrun through `agent_env` too, and its version says so.",
+            "type": "boolean"
+          },
           "systemd": {
             "default": null,
             "description": "Whether the calls that need systemd work. Off in single-user mode\nunless set.",
@@ -1524,6 +1529,10 @@
           "mode": {
             "description": "`system` or `single`.",
             "type": "string"
+          },
+          "simulated": {
+            "description": "Whether it is simulated, as `berth serve --simulate` and its hosts\nare: nothing it does reaches a real machine.",
+            "type": "boolean"
           },
           "type": {
             "oneOf": [

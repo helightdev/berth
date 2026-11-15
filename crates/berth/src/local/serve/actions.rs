@@ -172,6 +172,26 @@ pub(super) static INSTALLATION: &[Builtin] = &[
     },
 ];
 
+/// berth's own actions that a simulated server does not simulate: each logs
+/// in to a machine or works with this one's drives.
+const NOT_SIMULATED: &[&str] = &[
+    "seed",
+    "trust-key",
+    "host-key",
+    "installer",
+    "rollout",
+    "rotate-key",
+    "adopt",
+];
+
+/// The action as a simulated server offers it.
+fn simulated(action: Action) -> Action {
+    let off =
+        berth_core::simulate::active().is_some() && NOT_SIMULATED.contains(&action.name.as_str());
+    let why = format!("berth serve --simulate does not simulate {}", action.name);
+    unavailable(action, off.then_some(why))
+}
+
 fn unavailable(mut action: Action, why: Option<String>) -> Action {
     if let Some(why) = why {
         action.available = false;
@@ -274,7 +294,7 @@ fn host_list(seen: &Seen) -> Vec<Action> {
         .filter(|builtin| {
             builtin.name != UPGRADE_SERVER || listed.iter().any(|kept| kept.name == UPGRADE_SERVER)
         })
-        .map(|builtin| (builtin.describe)(seen))
+        .map(|builtin| simulated((builtin.describe)(seen)))
         .collect();
     let mut actions: Vec<Action> = Action::of_host(listed)
         .into_iter()
@@ -511,7 +531,7 @@ fn installation_list() -> Vec<Action> {
     };
     INSTALLATION
         .iter()
-        .map(|builtin| (builtin.describe)(&seen))
+        .map(|builtin| simulated((builtin.describe)(&seen)))
         .collect()
 }
 
@@ -731,9 +751,17 @@ fn install_controller(state: Arc<Serve>, name: String, act: Act) -> Run {
         request.token = act.token;
         request.secrets = password.iter().cloned().collect();
         let paths = state.paths.clone();
-        let work = Work::Function(Box::new(move |out| {
-            apply::install_controller(&paths, &host, password.as_deref(), out)
-        }));
+        let work = match berth_core::simulate::active() {
+            Some(simulation) => Work::Function(Box::new(move |out| {
+                let done = simulation.install_controller(&paths, &host, out);
+                // What it was seen to be before is not so any more.
+                *remote.seen.lock().unwrap() = None;
+                done
+            })),
+            None => Work::Function(Box::new(move |out| {
+                apply::install_controller(&paths, &host, password.as_deref(), out)
+            })),
+        };
         let job = state.runner.start(request, work).map_err(refused)?;
         Ok(Acted {
             job: Some(job_info(&state.paths, job)),
@@ -757,6 +785,21 @@ fn apply(state: Arc<Serve>, name: String, act: Act) -> Run {
                 code::NOT_AVAILABLE,
                 format!("{name} asks for a sudo password: send it as sudo_password"),
             ));
+        }
+        if let Some(simulation) = berth_core::simulate::active() {
+            let mut request = Request::new(Subject::Host(name), "apply");
+            request.token = act.token;
+            let paths = state.paths.clone();
+            let work = Work::Function(Box::new(move |out| {
+                let done = simulation.apply(&paths, &host, out);
+                *remote.seen.lock().unwrap() = None;
+                done
+            }));
+            let job = state.runner.start(request, work).map_err(refused)?;
+            return Ok(Acted {
+                job: Some(job_info(&state.paths, job)),
+                ..Acted::default()
+            });
         }
         let prepared = apply::prepare(&state.paths, &host, password.as_deref()).map_err(bad)?;
         let notes = prepared.notes;

@@ -116,6 +116,10 @@ impl Host {
     /// How to open a connection to the host's berthd. `password` is the SSH
     /// user's sudo password, for a host that asks for one.
     pub fn link(&self, paths: &Paths, password: Option<&str>) -> Result<LinkSpec> {
+        // A simulated server reaches no machine: each host is a berthd of its own.
+        if let Some(simulation) = crate::simulate::active() {
+            return simulation.link(&self.name);
+        }
         // A profile can name the command itself, as for a container:
         // ["docker", "exec", "-i", "NAME", "berthd", "connect"].
         if let Some(command) = self.access().link {

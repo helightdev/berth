@@ -49,6 +49,8 @@ pub mod layout {
     pub const CONTROLLER_PLAYBOOK: &str = "provision/ansible/controller.yml";
     /// Ansible's settings for that playbook.
     pub const ANSIBLE_CONFIG: &str = "provision/ansible.cfg";
+    /// The controller a host runs, as built into the role's files.
+    pub const BERTHD: &str = "provision/ansible/roles/devbox/files/bin/berthd";
     /// The profile a new host starts from.
     pub const EXAMPLE: &str = "provision/config/example.json";
     /// Where a source of berth 0.2 and earlier had its builder.

@@ -362,6 +362,9 @@ fn guarded_routes() -> OpenApiRouter<Arc<Serve>> {
         .routes(routes!(kv_get, kv_put, kv_delete))
 }
 
+/// The header on every answer of a simulated server.
+pub const SIMULATED: &str = "berth-simulated";
+
 /// Where a host's controller's operations are passed through: berthd's
 /// `/v1/PATH` is `/v1/hosts/NAME/controller/PATH` here.
 pub const HOST_PREFIX: &str = "/v1/hosts/{name}/controller/{*rest}";
@@ -395,6 +398,15 @@ pub fn router(state: Arc<Serve>, guarded: bool) -> Router {
     router = router.route("/", get(front));
     // Added after the guard, which they are not behind: they check their key themselves.
     router = router.merge(keyed_routes().split_for_parts().0);
+    // Every answer of a simulated server says so, refusals included.
+    if berth_core::simulate::active().is_some() {
+        router = router.layer(middleware::map_response(async |mut response: Response| {
+            response
+                .headers_mut()
+                .insert(SIMULATED, HeaderValue::from_static("1"));
+            response
+        }));
+    }
     router
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state)
@@ -659,6 +671,7 @@ async fn version() -> Json<Version> {
         mode: "serve".into(),
         applied: None,
         host_type: None,
+        simulated: berth_core::simulate::active().is_some(),
     })
 }
 
