@@ -46,13 +46,13 @@ named `berth` as it is, and starts it when it was stopped.
 
 The first run makes a setup key and prints it at the end, with the server's
 address. The key lets the first user collect the server's token. It lasts 24
-hours and ends when that user chooses Done. Whoever runs the recipe can hand on
+hours and ends once `berth login` has collected the token. Whoever runs the recipe can hand on
 the key and never sees the token.
 
 On your own machine, give berth the key when it asks:
 
 ```bash
-berth connect https://THIS-MACHINE.YOUR-TAILNET.ts.net
+berth login https://THIS-MACHINE.YOUR-TAILNET.ts.net
 ```
 
 Or open berth's screens with the key in `BERTH_SETUP_KEY`, on Linux, macOS
@@ -67,16 +67,14 @@ The screens sign in and show the token. `tailscale serve status` on
 the machine says the address. Make a new key on the machine at any time:
 
 ```bash
-sudo docker exec berth berth setup-key
+sudo docker exec berth berth server setup-key
 ```
 
-The token itself gives full control of every host. Without a key, read it on
-the machine and set it by hand:
+The token itself gives full control of every host. Without a key, pass it to
+`berth login` on standard input, on the machine itself:
 
 ```bash
-sudo cat /srv/berth/data/berth/serve.token
-berth config server https://THIS-MACHINE.YOUR-TAILNET.ts.net
-berth config server_token
+sudo cat /srv/berth/data/berth/serve.token | berth login https://THIS-MACHINE.YOUR-TAILNET.ts.net --token-stdin
 ```
 
 ## Settings

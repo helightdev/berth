@@ -28,7 +28,7 @@ Flags go before or after the names, as `--tail 50` or `--tail=50`. `--` ends the
 | 0 | done |
 | 1 | the work failed: a job failed, or a host did not answer |
 | 2 | the command line was wrong: an unknown word, a missing value, a bad flag |
-| 3 | refused: the role is too low, it is not available with this server, or a confirmation was declined |
+| 3 | refused: the role is too low, the host or this server cannot do it now, or a confirmation was declined |
 | 4 | the server could not be reached |
 
 A command run on a host, such as `berth exec`, ends with that command's own status.
@@ -71,7 +71,7 @@ berth apply NAME [--sudo-password-stdin] [--detach]
 Run a command on a host and pass its exit status through.
 
 ```text
-berth exec HOST [--user USER] [--detach] -- COMMAND…
+berth exec HOST [--user USER] [--detach] [--keep] -- COMMAND…
 ```
 
 | Argument | What it is |
@@ -79,6 +79,7 @@ berth exec HOST [--user USER] [--detach] -- COMMAND…
 | `HOST` | A host's name. |
 | `--user USER` | The account it runs as: agent, operator or root. By default `agent`. |
 | `--detach` | Start it and return; berth session logs HOST ID shows what it writes. |
+| `--keep` | Keep the session once it has ended, for berth session logs. |
 | `COMMAND…` | The command and its arguments, after --. |
 
 ## berth ssh
@@ -113,7 +114,7 @@ berth run HOST ACTION [NAME=VALUE…] [--sudo-password-stdin] [--detach]
 
 ## berth ui
 
-Open berth's screens: the hosts, or the host HOST.
+Open berth's screens: the home screen, or the page of one host.
 
 ```text
 berth ui [HOST]
@@ -592,15 +593,16 @@ berth provisioner add NAME TYPE [NAME=VALUE…]
 
 ### berth provisioner show
 
-How it is now and what it holds.
+How it is now and what it holds. NAME=VALUE gives one of its settings another value for this once.
 
 ```text
-berth provisioner show NAME
+berth provisioner show NAME [NAME=VALUE…]
 ```
 
 | Argument | What it is |
 | --- | --- |
 | `NAME` | Its name. |
+| `NAME=VALUE…` |  |
 
 ### berth provisioner set
 
@@ -922,7 +924,7 @@ berth key trust HOST [--key NAME] [--password-stdin]
 | Argument | What it is |
 | --- | --- |
 | `HOST` | A host's name. |
-| `--key NAME` | The key of the ring to install; the host's own by default. |
+| `--key NAME` | Log in once with this key of the ring, to install the one the host logs in with. |
 | `--password-stdin` | Read the password from standard input. |
 
 ## berth secret
@@ -1089,6 +1091,18 @@ The plugins and where they come from.
 ```text
 berth plugin list
 ```
+
+### berth plugin show
+
+What a plugin brings: its features with their actions, services and channels, and its provisioners.
+
+```text
+berth plugin show ID
+```
+
+| Argument | What it is |
+| --- | --- |
+| `ID` | Its id. |
 
 ### berth plugin add
 

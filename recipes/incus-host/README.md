@@ -62,12 +62,12 @@ The recipes leave a plain Ubuntu server where the account `root` takes the publi
 
 ```bash
 berth host add big 192.0.2.20 --user root --auth ssh
-berth host install big
+berth run big install-controller -y
 ```
 
 `berth host add` saves `big` with the type `ssh`. `--auth ssh` makes berth log in with your own SSH configuration and agent, so the key that works for `ssh root@192.0.2.20` works for berth. The default, `--auth berth`, uses berth's own key, which berth installs on the first contact with a password or a private key that logs in once. `--auth ssh` works with a local berth only. With a berth server set, the server logs in with its own keys.
 
-`berth host install big` puts the controller alone on the server. berth can then report its status and run commands there, and it can update and reboot the server. Sessions run as the SSH user, here `root`. berth never applies such a server as a workstation: its type stays `ssh` or `managed`, and the machines on it are created with the Incus or Docker provisioner.
+`berth run big install-controller -y` puts the controller alone on the server. berth can then report its status and run commands there, and it can update and reboot the server. Sessions run as the SSH user, here `root`. berth never applies such a server as a workstation: its type stays `ssh` or `managed`, and the machines on it are created with the Incus or Docker provisioner.
 
 ## Settings
 
@@ -117,7 +117,7 @@ address. The key lets the first user collect the server's token, for 24 hours
 or until they choose Done. On your own machine:
 
 ```bash
-berth connect https://THIS-MACHINE.YOUR-TAILNET.ts.net
+berth login https://THIS-MACHINE.YOUR-TAILNET.ts.net
 ```
 
 berth asks for the key. Its screens take it in `BERTH_SETUP_KEY` instead:
@@ -127,11 +127,11 @@ read -rs BERTH_SETUP_KEY && export BERTH_SETUP_KEY
 berth --server https://THIS-MACHINE.YOUR-TAILNET.ts.net
 ```
 
-Make a new key with `sudo docker exec berth berth setup-key`.
+Make a new key with `sudo docker exec berth berth server setup-key`.
 
-The token itself gives full control of every host. Without a key, read it with
-`sudo cat /srv/berth/data/berth/serve.token`, then set it with
-`berth config server` and `berth config server_token`.
+The token itself gives full control of every host. Without a key, pass it to
+`berth login` on standard input, on the machine itself:
+`sudo cat /srv/berth/data/berth/serve.token | berth login https://THIS-MACHINE.YOUR-TAILNET.ts.net --token-stdin`.
 
 The server's provisioners are ready. The recipe registers three of them,
 unless the server has provisioners of those names already:
@@ -165,7 +165,7 @@ machine made with `runtime=sysbox` runs without `--privileged`:
 
 ```bash
 sudo ./install.sh -e sysbox=true
-berth provision studio-2 docker host=ssh://root@192.0.2.10 runtime=sysbox
+berth host create studio-2 --provisioner docker host=ssh://root@192.0.2.10 runtime=sysbox
 ```
 
 The recipe downloads the package from the Sysbox release page on GitHub and

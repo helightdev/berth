@@ -35,7 +35,7 @@ each engine, under a name of your own:
 `host` is the provisioner's own argument. berth keeps it as a setting, which
 every machine and action uses unless it is given another:
 
-    berth provisioner build-box run settings host=ssh://ops@192.0.2.20
+    berth provisioner set build-box host=ssh://ops@192.0.2.20
 
 | Name | Default | Meaning |
 | --- | --- | --- |
@@ -100,7 +100,7 @@ An instance is one plain container from any image, such as `nginx:1.27` or
 Make one with **+ New instance** under the hosts, or the action New instance
 on the provisioner's page. Both open a form laid out like a host's set-up, with every field on a row. Or:
 
-    berth provisioner docker run new-instance name=web image=nginx:1.27 ports=8080:80
+    berth provisioner run docker new-instance name=web image=nginx:1.27 ports=8080:80
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
@@ -148,7 +148,7 @@ have them.
 | Destroy | `docker compose down`. It removes the project's named volumes too, unless `keep_volumes` is `yes`. |
 | List | The projects whose containers have berth's labels. |
 
-Make one with `berth deploy NAME --provisioner NAME --spec FILE`, or with the
+Make one with `berth resource create NAME --provisioner NAME --spec FILE`, or with the
 action `new-deployment` on the provisioner's page, which takes the Compose file
 pasted whole.
 
@@ -166,7 +166,7 @@ A deployment's page lists these actions:
 
 ## Actions
 
-The provisioner's page in berth, and `berth provisioner NAME`, list these
+The provisioner's page in berth, and `berth provisioner show NAME`, list these
 actions:
 
 | Action | What it does |
@@ -191,7 +191,7 @@ container is not root on the Docker host. With `runtime=sysbox` the plugin
 starts the container with `--runtime sysbox-runc` in place of `--privileged`
 and its cgroup and `/run` options:
 
-    berth provision studio-2 docker runtime=sysbox
+    berth host create studio-2 --provisioner docker runtime=sysbox
 
 The Docker host needs Sysbox installed. The plugin checks for the runtime
 `sysbox-runc` before it makes anything, and says what to install when it is

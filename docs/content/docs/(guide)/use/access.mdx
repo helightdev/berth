@@ -45,11 +45,11 @@ Enable tailnet HTTPS if Tailscale asks for it. The publish action also gives Coc
 
 ### Automatic enrollment keys
 
-With an API key of the control server, berth makes the keys and nobody pastes one. Store the API key as the secret `tailnet_api_key`. For Tailscale it's an API access token from the admin console. `TS_API_KEY` in the environment also works. For Headscale, make one with `headscale apikeys create`.
+With an API key of the control server, berth makes the keys and nobody pastes one. Store the API key as the secret `tailnet_api_key`. For Tailscale it's an API access token from the admin console. For Headscale, make one with `headscale apikeys create`.
 
 ```bash
 berth secret set tailnet_api_key
-berth config tailnet_tags tag:berth          # if the tailnet wants tags
+berth config set tailnet_tags tag:berth          # if the tailnet wants tags
 ```
 
 Then switch on **Automatic enrollment key** for the host. berth creates a key only at the moment it's used:
@@ -68,8 +68,8 @@ F4 on **Tailscale enrollment key** creates a key the same way, valid for 24 hour
 [Headscale](https://headscale.net/) is a control server you run yourself, for the same `tailscale` client. Point berth at it:
 
 ```bash
-berth config tailnet_login_server https://hs.example.org
-berth config tailnet_user agents              # the user new hosts belong to
+berth config set tailnet_login_server https://hs.example.org
+berth config set tailnet_user agents              # the user new hosts belong to
 berth secret set tailnet_api_key              # from: headscale apikeys create
 ```
 

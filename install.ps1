@@ -52,3 +52,4 @@ if (-not (($path -split ';') -contains $dir)) {
     Write-Host "Add $dir to your Path to run it as berth:"
     Write-Host "  [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ';$dir', 'User')"
 }
+Write-Host "Next: berth login URL, with the setup key of your berth server."

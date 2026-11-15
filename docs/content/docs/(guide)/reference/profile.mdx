@@ -7,13 +7,13 @@ icon: FileBraces
 A profile is a JSON document that describes one host. berth keeps it in its store and writes it from the set-up tabs. The fields below can also be edited by hand: write the profile to a file, change it and save it back.
 
 ```bash
-berth profile studio > studio.json
-berth profile studio --set studio.json
+berth host export studio > studio.json
+berth host import studio studio.json
 ```
 
 `--set -` reads the profile from standard input. berth checks it as the terminal UI reads a profile and saves it as it is. The profile of a berth server's host is saved on the server.
 
-A profile can also stay in a file of its own. The commands read a host given as a path, such as `berth host ./studio.json`, from that file and save it there. The screens work with saved hosts: `berth profile studio --set studio.json` saves one from a file.
+A profile can also stay in a file of its own. `berth host import studio studio.json` saves one from a file, and `berth host export studio` writes it out again.
 
 Settings of the Ansible role go under `ansible_vars`, and how berth reaches and installs the host under `builder`.
 
@@ -169,7 +169,7 @@ A profile of berth 0.5 or earlier names two fields differently:
 | `level`: `workstation` | No `type`, which means a workstation |
 | `profile` | `target` |
 
-berth converts its stored profiles once, the profiles of a berth server's hosts with them. It reads the old names wherever a profile comes from: a file such as `berth host ./studio.json`, `berth profile HOST --set FILE`, and the profile a host keeps, which [`berth adopt`](/docs/use/moving) reads. A file keeps the old names until you save it. berth writes `type` and `target` and nothing else, and the API of `berth serve` takes no other spelling.
+berth converts its stored profiles once, the profiles of a berth server's hosts with them. It reads the old names wherever a profile comes from: a file that `berth host import HOST FILE` reads, and the profile a host keeps, which [`berth host adopt`](/docs/use/moving) reads. A file keeps the old names until you save it. berth writes `type` and `target` and nothing else, and the API of `berth serve` takes no other spelling.
 
 ## Install (`builder`)
 
@@ -190,9 +190,9 @@ berth keeps more of a host in its store, beside the profile:
 
 | What | Holds | How to see it |
 | --- | --- | --- |
-| Generated passwords | The passwords F4 made for the host's accounts | `berth credentials HOST` |
-| The machine's record | The [resource](/docs/deploy/resources) of a machine berth created for the host, with its provisioner and id | `berth instance HOST` |
+| Generated passwords | The passwords F4 made for the host's accounts | `berth host credentials HOST` |
+| The machine's record | The [resource](/docs/deploy/resources) of a machine berth created for the host, with its provisioner and id | `berth host show HOST` |
 
-`berth credentials` prints an account and its password to a line, and only to a terminal unless `--show` is given. For a berth server's host it asks the server, which keeps them. `berth remove HOST` forgets the profile and both of these at once. It refuses while berth knows of a machine it created for the host.
+`berth host credentials` prints an account and its password to a line, and only to a terminal unless `--show` is given. For a berth server's host it asks the server, which keeps them. `berth host remove HOST` forgets the profile and both of these at once. It refuses while berth knows of a machine it created for the host.
 
 Secrets and registries a host gets are listed in the profile by name (`secrets`, `registries`). Their values stay in berth's store.

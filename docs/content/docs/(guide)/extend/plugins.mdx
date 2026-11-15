@@ -44,39 +44,39 @@ The **Plugins** tab of the home screen (`6`) lists both with their features. Ent
 From the command line:
 
 ```bash
-berth plugins add @acme/berth-plugin-foo     # from a registry
-berth plugins add ./foo-1.0.0.tgz            # a tarball from npm pack
-berth plugins add ~/src/berth-plugin-foo     # a folder
-berth plugins                                # what is found, and from where
-berth plugins remove @acme/berth-plugin-foo
+berth plugin add @acme/berth-plugin-foo     # from a registry
+berth plugin add ./foo-1.0.0.tgz            # a tarball from npm pack
+berth plugin add ~/src/berth-plugin-foo     # a folder
+berth plugin list                                # what is found, and from where
+berth plugin remove @acme/berth-plugin-foo
 ```
 
 `add` runs `npm install --ignore-scripts --prefix ~/.config/berth/plugins`, so registries and credentials come from your npm configuration. You can also copy a folder to `~/.config/berth/plugins/NAME/` by hand. Npm is not needed for that.
 
-After each change berth makes there, it writes the folder's `package.json`, npm's lock file, uploaded `.tgz` files and the folders you copied in to its [store](/docs/use/store). A machine restored from the store gets them back, and npm installs the rest. A folder you copy in by hand is in the store after berth's next change of the plugins. Remove a plugin with `berth plugins remove`, as one deleted by hand comes back from the store.
+After each change berth makes there, it writes the folder's `package.json`, npm's lock file, uploaded `.tgz` files and the folders you copied in to its [store](/docs/use/store). A machine restored from the store gets them back, and npm installs the rest. A folder you copy in by hand is in the store after berth's next change of the plugins. Remove a plugin with `berth plugin remove`, as one deleted by hand comes back from the store.
 
 ### Updating a plugin
 
 ```bash
-berth plugins update --check                 # which have a newer version
-berth plugins update foo                     # one, by its id or npm name
-berth plugins update                         # all of them
+berth plugin update --check                 # which have a newer version
+berth plugin update foo                     # one, by its id or npm name
+berth plugin update                         # all of them
 ```
 
 `--check` runs `npm outdated` with your npm configuration, so it asks the registry each plugin came from. `update` installs the registry's latest version and then lists the hosts that are behind. On the Plugins tab, `c` checks, `U` updates the selected plugin and `A` all of them. A plugin with a newer version says `update available: 1.0.0 → 1.1.0`.
 
 | Came from | Updated by |
 | --- | --- |
-| A registry | `berth plugins update` |
+| A registry | `berth plugin update` |
 | A `.tgz`, an `https://` address or a folder | Adding the new one again, which replaces it |
 | A folder copied by hand | Copying the new one over it |
 | berth itself | `berth update`, or a newer server image |
 
-A host keeps what it was applied with until it is applied again. After an update, `berth plugins update --apply` or `r` on the Plugins tab applies the hosts that are behind ([Updates](/docs/use/updates#bringing-hosts-up-to-date)).
+A host keeps what it was applied with until it is applied again. After an update, `berth rollout` or `r` on the Plugins tab applies the hosts that are behind ([Updates](/docs/use/updates#bringing-hosts-up-to-date)).
 
 ### On a berth server
 
-With a [berth server](/docs/use/server) set, the Plugins tab and `berth plugins` show the server's plugins and change those, which needs the role `admin` there. The server installs a package name or an `https://` address with its own npm and npm configuration. `berth plugins add` packs a `.tgz` or a folder on your machine and sends it to the server, and `u` on the tab sends a `.tgz` chosen in the file dialog.
+With a [berth server](/docs/use/server) set, the Plugins tab and `berth plugin list` show the server's plugins and change those, which needs the role `admin` there. The server installs a package name or an `https://` address with its own npm and npm configuration. `berth plugin add` packs a `.tgz` or a folder on your machine and sends it to the server, and `u` on the tab sends a `.tgz` chosen in the file dialog.
 
 The server's hosts can have a new plugin's features as soon as it is installed. Its Ansible tasks run on the server when a host is applied, so installing is part of set-up. A server with `serve_setup off` takes it only on its own socket ([Closing set-up](/docs/extend/serve#closing-set-up)).
 

@@ -59,7 +59,11 @@ case ":$PATH:" in
   *) printf 'Add %s to your PATH to run it as berth.\n' "$dir" ;;
 esac
 # The hosts are set up from Linux; elsewhere berth uses a server.
-[ "$system" = linux ] || exit 0
+if [ "$system" != linux ]; then
+  printf 'Next: berth login URL, with the setup key of your berth server.\n'
+  exit 0
+fi
+printf 'Next: berth host create NAME, or berth ui for the screens. berth login URL uses a berth server instead.\n'
 missing=
 for tool in ssh python3 ansible-playbook; do
   command -v "$tool" >/dev/null || missing="$missing $tool"

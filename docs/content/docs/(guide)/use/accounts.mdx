@@ -33,14 +33,14 @@ The operator's password is optional and only for local logins: the console, the 
 
 ## Passwords
 
-On a password hash field, F4 generates a password and stores its hash, and F5 hashes a password you type. berth keeps a generated password in its store, beside the profile, and `berth credentials NAME` shows it. For a berth server's host the server generates it and keeps it. The profile itself only stores hashes.
+On a password hash field, F4 generates a password and stores its hash, and F5 hashes a password you type. berth keeps a generated password in its store, beside the profile, and `berth host credentials NAME` shows it. For a berth server's host the server generates it and keeps it. The profile itself only stores hashes.
 
 - An empty agent password locks password login for the agent.
 - Turning off the agent's passwordless sudo requires an agent password.
 
 ## The first apply as another account
 
-An existing machine may not have the operator yet. berth then applies as an account of the machine's own, the profile's SSH user. When sudo prompts that account for a password, switch on **Ask for sudo password** on the Run tab, or set `access.sudo` to `password`. berth asks for the password when it applies and when it connects, or takes the secret `sudo/HOST` when you keep it there. `BERTH_SUDO_PASSWORD` gives it where nobody can type it.
+An existing machine may not have the operator yet. berth then applies as an account of the machine's own, the profile's SSH user. When sudo prompts that account for a password, switch on **Ask for sudo password** on the Run tab, or set `access.sudo` to `password`. berth asks for the password when it applies and when it connects, or takes the secret `sudo/HOST` when you keep it there. `--sudo-password-stdin` gives it where nobody can type it.
 
 When the SSH user is the operator, berth writes what the apply made true once it has worked: `access.sudo` becomes `none`, a login with `password` becomes one with berth's key, and a kept `sudo/HOST` or `ssh/HOST` is deleted. The operator's sudo doesn't prompt from then on, and its SSH takes keys only. Any other SSH user keeps its setting.
 
@@ -96,12 +96,12 @@ A host that berth reaches through `access.link`, such as a container, doesn't us
 
 ### Keys
 
-berth keeps SSH keys in its store, by name, sealed when the [store is encrypted](/docs/use/store#encrypt-it). The key `berth` always exists. berth writes a private half to `keys/NAME` in its data directory when ssh or Ansible needs it, and `berth inventory` names that file. Private halves never leave through the API or a command.
+berth keeps SSH keys in its store, by name, sealed when the [store is encrypted](/docs/use/store#encrypt-it). The key `berth` always exists. berth writes a private half to `keys/NAME` in its data directory when ssh or Ansible needs it, and `berth host inventory` names that file. Private halves never leave through the API or a command.
 
 ```bash
-berth key                            # the keys, the hosts that use each, and what is pending
-berth key new deploy                 # make an ed25519 key
-berth key add deploy ~/.ssh/deploy   # take in a private key; - reads standard input
+berth key list                            # the keys, the hosts that use each, and what is pending
+berth key create deploy                 # make an ed25519 key
+berth key import deploy ~/.ssh/deploy   # take in a private key; - reads standard input
 berth key show deploy                # the public half, for an authorized_keys
 berth key remove deploy              # refused while a host logs in with it
 ```
@@ -132,10 +132,10 @@ When sshd closes the connection before the login, berth says the host is turning
 berth records each host's SSH host key in its store and gives ssh a known-hosts file of its own for each host, under `known_hosts/` of the data directory, written from the store. So a restored installation knows its hosts. The first login records the key. A key that changes later is refused:
 
 ```text
-The SSH host key of studio is not the one berth recorded: the machine was set up again or replaced, or something is in between. If you know which, accept the new key with: berth key host studio --accept
+The SSH host key of studio is not the one berth recorded: the machine was set up again or replaced, or something is in between. If you know which, accept the new key with: berth host verify studio --accept
 ```
 
-`berth key host studio` shows the recorded key. When berth itself creates a host's machine again, it forgets the old key and records the new one without asking. When a profile of berth 0.4 is converted, a host keeps the key your `~/.ssh/known_hosts` has for its address.
+`berth host verify studio` shows the recorded key. When berth itself creates a host's machine again, it forgets the old key and records the new one without asking. When a profile of berth 0.4 is converted, a host keeps the key your `~/.ssh/known_hosts` has for its address.
 
 ### Rekeying
 
