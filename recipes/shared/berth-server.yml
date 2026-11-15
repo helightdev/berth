@@ -100,10 +100,10 @@
       - "berth server: {{ berth_url }}{{ berth_here }}"
       - "Setup key for the first user, valid for 24 hours: {{ berth_key }}"
       - "With berth: berth connect {{ berth_url }} and paste the setup key when asked"
-      - "With berth-remote: berth-remote --server {{ berth_url }}, with the setup key in BERTH_SETUP_KEY"
+      - "Or the screens: berth --server {{ berth_url }}, with the setup key in BERTH_SETUP_KEY"
       - "The key ends when the user chooses Done. A new one: sudo docker exec berth berth setup-key"
     without_key:
       - "berth server: {{ berth_url }}{{ berth_here }}"
       - "A setup key for a user to collect the token: sudo docker exec berth berth setup-key"
-      - "With it: berth connect {{ berth_url }}, or berth-remote --server {{ berth_url }} with it in BERTH_SETUP_KEY"
+      - "With it: berth connect {{ berth_url }}, or berth --server {{ berth_url }} with it in BERTH_SETUP_KEY"
       - "Or the token itself: sudo cat {{ berth_server_dir }}/data/berth/serve.token"

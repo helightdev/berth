@@ -166,7 +166,7 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" https://berth.example.ts.net/v1/ac
 # {"role":"operate","setup":true,"subject":"ada"}
 ```
 
-An access token is used like the server's token. It works as a bearer and as the WebSocket protocol. berth takes it as `--token` or `server_token`, and berth-remote as `BERTH_TOKEN` or when it asks.
+An access token is used like the server's token. It works as a bearer and as the WebSocket protocol. berth takes it as `--token`, `BERTH_TOKEN` or `server_token`, and the screens when they ask for it.
 
 The server says which issuer it trusts at `/.well-known/oauth-protected-resource`, without a token.
 

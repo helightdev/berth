@@ -151,7 +151,7 @@ berth provisioner docker run prune volumes=yes
 
 In a terminal, `run` prompts for a required argument you leave out. It puts the action's question first, unless `--yes` is given. An action that only reads, such as `images`, answers at once. One that changes something runs as a job and shows its output as it comes. Only one such job runs at a time for a provisioner.
 
-In the terminal UI, the **Provisioners** tab of the home screen (`2`) lists the provisioners, and `a` registers one. Enter opens a page, which lists the actions in their groups and what berth made there, by kind. Enter on an action shows its question and then a dialog for its arguments. A job's output fills a panel. An argument of several lines, such as a Compose file, keeps the line breaks of what you paste. Each shows as `⏎`. Enter on something berth made opens its [resource's page](/docs/deploy/resources#in-the-terminal-ui), and Esc comes back. [berth-remote](/docs/use/server#with-berth-remote) has the same tab.
+In the terminal UI, the **Provisioners** tab of the home screen (`2`) lists the provisioners, and `a` registers one. Enter opens a page, which lists the actions in their groups and what berth made there, by kind. Enter on an action shows its question and then a dialog for its arguments. A job's output fills a panel. An argument of several lines, such as a Compose file, keeps the line breaks of what you paste. Each shows as `⏎`. Enter on something berth made opens its [resource's page](/docs/deploy/resources#in-the-terminal-ui), and Esc comes back.
 
 ## Seed and apply
 
@@ -247,7 +247,7 @@ In the terminal UI, choose **Create a machine** under **How To Install** on the 
 | Settings | Under **Machine**, the resources it has, such as CPUs, memory and disk. Under **Provisioner Options**, its other arguments |
 | Run | **Create machine**, and every problem |
 
-The first provisioner is chosen when the list arrives. There is no **Target** row. A created machine always has the target `cloud`. berth writes that into the profile before it creates the machine, on the command line as well. Enter on an argument changes it. A missing secret is a problem of the Install tab, and a bad resource value one of the Settings tab. **Create machine** on the Run tab asks once before it saves the profile and starts, and does not start while a problem is listed. The output is shown as it runs. [berth-remote](/docs/use/server#with-berth-remote) has the same tabs.
+The first provisioner is chosen when the list arrives. There is no **Target** row. A created machine always has the target `cloud`. berth writes that into the profile before it creates the machine, on the command line as well. Enter on an argument changes it. A missing secret is a problem of the Install tab, and a bad resource value one of the Settings tab. **Create machine** on the Run tab asks once before it saves the profile and starts, and does not start while a problem is listed. The output is shown as it runs. The screens are the same with a [berth server](/docs/use/server) elsewhere.
 
 Only one thing runs at a time for a host. A second command for the same host is refused until the first ends.
 

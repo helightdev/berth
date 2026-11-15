@@ -55,15 +55,15 @@ On your own machine, give berth the key when it asks:
 berth connect https://THIS-MACHINE.YOUR-TAILNET.ts.net
 ```
 
-Or start [berth-remote](https://github.com/helightdev/berth/tree/main/crates/berth-remote)
-with the key in `BERTH_SETUP_KEY`:
+Or open berth's screens with the key in `BERTH_SETUP_KEY`, on Linux, macOS
+or Windows:
 
 ```bash
 read -rs BERTH_SETUP_KEY && export BERTH_SETUP_KEY
-berth-remote --server https://THIS-MACHINE.YOUR-TAILNET.ts.net
+berth --server https://THIS-MACHINE.YOUR-TAILNET.ts.net
 ```
 
-berth-remote signs in and shows the token. `tailscale serve status` on
+The screens sign in and show the token. `tailscale serve status` on
 the machine says the address. Make a new key on the machine at any time:
 
 ```bash
