@@ -2,6 +2,7 @@
 commands go through the server, which reaches the host. ClientApply looks at
 the apply of the shared state of berth serve (harness.served_extended())."""
 import json
+import re
 import unittest
 
 from harness import AGENT, HOST, Workstation, needs_e2e, served, served_extended
@@ -22,8 +23,12 @@ class Client(unittest.TestCase):
         self.assertEqual([(host['name'], host['address']) for host in listed], [(HOST, HOST)])
         kept = json.loads((self.station.berth_dir / 'config.json').read_text())
         self.assertEqual(kept['server'], self.serve.url)
-        # The server's settings are listed, and no token among them.
-        self.assertNotIn(self.serve.token, self.station.berth('config', 'list').stdout)
+        # The server's settings are listed, and no token among them; the
+        # client's own say which server it uses, and that it has a token.
+        shown = self.station.berth('config', 'list').stdout
+        self.assertNotIn(self.serve.token, shown)
+        self.assertRegex(shown, rf'(?m)^  server +{re.escape(self.serve.url)}$')
+        self.assertRegex(shown, r'(?m)^  server_token +\(set\)$')
 
     def test_commands_go_through_the_server(self):
         self.assertIn('secrets', self.station.berth('action', 'list', HOST).stdout)

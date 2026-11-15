@@ -159,7 +159,9 @@ class Listings(unittest.TestCase):
 
     def test_the_settings_say_where_things_are(self):
         shown = self.station.berth('config', 'list').stdout
-        self.assertIn('retention_days = (not set)', shown)
+        self.assertRegex(shown, r'(?m)^  retention_days +\(not set\)$')
+        # The client's own settings are listed apart, the token never shown.
+        self.assertRegex(shown, r'(?m)^This berth, on this machine\n  server +\(not set\)$')
         store = self.station.berth('server', 'store', 'status').stdout
         self.assertIn(f"Store      SQLite file {self.station.data / 'berth/berth.db'}", store)
 

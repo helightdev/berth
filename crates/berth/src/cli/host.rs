@@ -424,7 +424,7 @@ pub fn apply(client: &Client, apply: &args::HostApply) -> Result<()> {
     let action = match profile::host_type(&profile) {
         HostType::Ssh => {
             return Err(Fail::refused(format!(
-                "{name} is a host of the type ssh, which berth installs nothing on. Make it managed or a workstation first: berth host set {name} type=managed"
+                "{name} is a host of the type ssh, neither a node nor a workstation, and berth installs nothing on it. Make it managed for the controller alone (berth host set {name} type=managed), or a node or a workstation, and apply it"
             )));
         }
         HostType::Managed => "install-controller",
