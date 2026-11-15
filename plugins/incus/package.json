@@ -44,7 +44,7 @@
           {
             "id": "instance",
             "label": "Instance",
-            "verbs": ["start", "stop", "change", "logs"],
+            "verbs": ["start", "stop", "change", "logs", "exec"],
             "arguments": [
               {"name": "image", "label": "Image", "default": "ubuntu/24.04", "help": "The image on images.linuxcontainers.org to start from, such as debian/12 or alpine/3.20. It becomes no berth host: nothing of berth is put in it."},
               {"name": "user_data", "label": "Cloud-init user data", "kind": "text", "help": "What cloud-init does on its first boot, such as packages to install and users to add, for an image that has cloud-init. Empty leaves the image as it is."},
@@ -120,7 +120,7 @@
           {
             "id": "instance",
             "label": "Instance",
-            "verbs": ["start", "stop", "change", "logs"],
+            "verbs": ["start", "stop", "change", "logs", "exec"],
             "arguments": [
               {"name": "image", "label": "Image", "default": "ubuntu/24.04", "help": "The image on images.linuxcontainers.org to start from, such as debian/12 or alpine/3.20. It becomes no berth host: nothing of berth is put in it."},
               {"name": "user_data", "label": "Cloud-init user data", "kind": "text", "help": "What cloud-init does on its first boot, such as packages to install and users to add, for an image that has cloud-init. Empty leaves the image as it is."},

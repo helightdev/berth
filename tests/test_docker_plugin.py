@@ -127,7 +127,7 @@ class Provision(Harness):
         self.assertNotIn('secrets', entry)
         self.assertEqual([a['name'] for a in entry['arguments']], ['host'])
         machine, deployment, instance = entry['kinds']
-        self.assertEqual((instance['id'], instance['verbs']), ('instance', ['start', 'stop', 'change', 'logs']))
+        self.assertEqual((instance['id'], instance['verbs']), ('instance', ['start', 'stop', 'change', 'logs', 'exec']))
         self.assertEqual(instance['arguments'][0]['name'], 'image')
         self.assertEqual((machine['id'], machine['setup']), ('machine', 'apply'))
         self.assertEqual(machine['verbs'], ['start', 'stop', 'change', 'logs'])
@@ -225,8 +225,8 @@ class Provision(Harness):
                 self.assertEqual(self.argv('run'), [])
 
     def test_status_mapping(self):
-        cases = [(inspect(OURS), {'state': 'running', 'address': '172.17.0.2'}),
-                 (inspect(OURS, running=False), {'state': 'stopped'}),
+        cases = [(inspect(OURS), {'state': 'running', 'endpoints': [], 'address': '172.17.0.2'}),
+                 (inspect(OURS, running=False), {'state': 'stopped', 'endpoints': []}),
                  (MISSING, {'state': 'gone'})]
         for result, expected in cases:
             with self.subTest(expected=expected):
@@ -238,7 +238,7 @@ class Provision(Harness):
     def test_status_with_published_port_answers_the_publish_address(self):
         done = self.run_verb('status', {'id': 'berth-studio'}, arguments={'ssh_port': '2222', 'publish_address': '192.0.2.5'},
                              rules=[{'prefix': ['container', 'inspect'], 'results': [inspect(OURS)]}])
-        self.assertEqual(json.loads(done.stdout), {'state': 'running', 'address': '192.0.2.5'})
+        self.assertEqual(json.loads(done.stdout), {'state': 'running', 'endpoints': [], 'address': '192.0.2.5'})
 
     def test_logs_without_follow_are_the_latest_console_lines(self):
         console = ''.join(f'[  OK  ] Started unit-{n}.service.\n' for n in range(100))
@@ -384,7 +384,7 @@ class Provision(Harness):
         rules = [{'prefix': ['container', 'inspect'], 'results': [inspect(OURS)]}]
         done = self.run_verb('change', {'id': 'berth-studio'}, arguments={'cpus': '2', 'memory': '1GiB'}, rules=rules)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(json.loads(done.stdout), {'state': 'running'})
+        self.assertEqual(json.loads(done.stdout), {'state': 'running', 'endpoints': []})
         self.assertEqual(self.argv('update'), [['update', '--cpus', '2', '--memory', str(1024 ** 3),
                                                 '--memory-swap', str(2 * 1024 ** 3), 'berth-studio']])
         done = self.run_verb('change', {'id': 'berth-studio'}, rules=[
@@ -484,7 +484,7 @@ class Instance(Harness):
                                               'ports': '8080:80, 9000:9000', 'restart': 'unless-stopped',
                                               'memory': '2GiB'}, rules=rules)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(json.loads(done.stdout), {'id': 'web-1', 'state': 'running'})
+        self.assertEqual(json.loads(done.stdout), {'id': 'web-1', 'state': 'running', 'endpoints': []})
         [call] = [c for c in self.calls() if c['args'][:1] == ['run']]
         run = call['args']
         self.assertIn('berth-token=tok-web', run)
@@ -502,7 +502,7 @@ class Instance(Harness):
                   'results': [[0, 'web-1\n', '']]},
                  {'prefix': ['container', 'inspect'], 'results': [inspect(OURS)]}]
         done = self.make('create', rules=rules)
-        self.assertEqual(json.loads(done.stdout), {'id': 'web-1', 'state': 'running'})
+        self.assertEqual(json.loads(done.stdout), {'id': 'web-1', 'state': 'running', 'endpoints': []})
         self.assertEqual(self.argv('run'), [])
 
     def test_a_taken_name_or_a_bad_image_is_refused(self):
@@ -583,6 +583,61 @@ class Instance(Harness):
         self.assertEqual(done.returncode, 1)
         self.assertIn('was not made by berth as an instance', done.stderr)
 
+    def published(self):
+        """An instance of ours with ports published on every address, on one address and over UDP."""
+        info = json.loads(inspect({'berth-resource': 'r1'})[1])
+        info[0]['Config']['ExposedPorts'] = {'80/tcp': {}, '53/udp': {}}
+        info[0]['NetworkSettings']['Ports'] = {
+            '80/tcp': [{'HostIp': '0.0.0.0', 'HostPort': '8080'}, {'HostIp': '::', 'HostPort': '8080'}],
+            '5432/tcp': [{'HostIp': '192.0.2.7', 'HostPort': '15432'}],
+            '53/udp': [{'HostIp': '0.0.0.0', 'HostPort': '5353'}],
+            '9000/tcp': None,
+        }
+        return [{'prefix': ['container', 'inspect', 'web-1'], 'results': [[0, json.dumps(info), '']]}]
+
+    def test_status_reports_published_ports_and_network_addresses_as_endpoints(self):
+        done = self.make('status', rules=self.published())
+        self.assertEqual(done.returncode, 0, done.stderr)
+        local = {'protocol': 'tcp', 'local': True}
+        self.assertEqual(json.loads(done.stdout)['endpoints'], [
+            {'name': '5353-udp', 'address': '127.0.0.1', 'port': 5353, 'protocol': 'udp', 'local': True},
+            {'name': '15432', 'address': '192.0.2.7', 'port': 15432, 'hint': 'postgres', **local},
+            {'name': '8080', 'address': '127.0.0.1', 'port': 8080, 'hint': 'http', **local},
+            {'name': 'bridge-53-udp', 'address': '172.17.0.2', 'port': 53, 'protocol': 'udp', 'local': True},
+            {'name': 'bridge-80', 'address': '172.17.0.2', 'port': 80, 'hint': 'http', **local},
+        ])
+
+    def test_an_engine_elsewhere_has_its_ports_at_its_own_name_and_no_network_addresses(self):
+        done = self.make('status', rules=self.published(), arguments={'host': 'ssh://ops@192.0.2.10'})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout)['endpoints'], [
+            {'name': '5353-udp', 'address': '192.0.2.10', 'port': 5353, 'protocol': 'udp'},
+            {'name': '15432', 'address': '192.0.2.7', 'port': 15432, 'protocol': 'tcp', 'hint': 'postgres'},
+            {'name': '8080', 'address': '192.0.2.10', 'port': 8080, 'protocol': 'tcp', 'hint': 'http'},
+        ])
+
+    def test_a_command_runs_in_the_container_with_its_input_and_exit_status(self):
+        rules = [{'prefix': ['container', 'inspect', 'web-1'], 'results': [inspect({'berth-resource': 'r1'})]},
+                 {'prefix': ['exec'], 'results': [[3, 'hi from web\n', '']]}]
+        done = self.make('exec', {'command': ['sh', '-c', 'cat; exit 3'], 'stdin': 'select 1;\n'}, rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {'exit_code': 3})
+        self.assertIn('hi from web', done.stderr)
+        [call] = [c for c in self.calls() if c['args'][:1] == ['exec']]
+        self.assertEqual(call['args'], ['exec', '-i', 'web-1', 'sh', '-c', 'cat; exit 3'])
+        self.assertEqual(call['stdin'], 'select 1;\n')
+        # Without input it reads none, and a stopped container or no command is refused.
+        done = self.make('exec', {'command': ['true']}, rules=rules)
+        self.assertEqual(self.argv('exec')[-1], ['exec', 'web-1', 'true'])
+        stopped = [{'prefix': ['container', 'inspect', 'web-1'], 'results': [inspect({'berth-resource': 'r1'}, running=False)]}]
+        for extra, said in [({'command': ['true']}, 'is not running'), ({'command': 'true'}, 'list of words')]:
+            done = self.make('exec', extra, rules=stopped)
+            self.assertEqual(done.returncode, 1)
+            self.assertIn(said, done.stderr)
+        done = self.run_verb('exec', {'kind': 'deployment', 'id': 'shop', 'command': ['true']})
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('an instance does', done.stderr)
+
     def test_the_storage_actions_list_create_and_remove(self):
         rules = [{'prefix': ['volume', 'ls'], 'results': [[0, json.dumps({'Name': 'wiki-data', 'Labels': 'berth-host=studio'}) + '\n', '']]},
                  {'prefix': ['ps'], 'results': [[0, '', '']]}]
@@ -632,7 +687,7 @@ class Deployment(Harness):
                                       'labels': {'berth-resource': 'shop', 'berth-token': 'tok-9'}},
                            rules=self.create_rules())
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(json.loads(done.stdout), {'id': 'shop', 'state': 'running'})
+        self.assertEqual(json.loads(done.stdout), {'id': 'shop', 'state': 'running', 'endpoints': []})
         calls = [c for c in self.calls() if c['args'][:1] == ['compose']]
         self.assertEqual(calls[0]['args'], [*COMPOSE, '-f', '-', 'config', '--services'])
         up = calls[1]['args']
@@ -719,7 +774,7 @@ class Deployment(Harness):
     def test_change_applies_the_new_spec_and_keeps_the_labels(self):
         done = self.deploy('change', {'spec': SPEC}, rules=self.create_rules())
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(json.loads(done.stdout), {'state': 'running'})
+        self.assertEqual(json.loads(done.stdout), {'state': 'running', 'endpoints': []})
         [up] = [c for c in self.calls() if 'up' in c['args']]
         self.assertEqual(up['args'][-3:], ['up', '-d', '--remove-orphans'])
         self.assertEqual(up['stdin'], SPEC)
@@ -727,10 +782,10 @@ class Deployment(Harness):
         self.assertEqual(override['services']['web']['labels'], {'berth-resource': 'shop', 'berth-token': 'tok-9'})
 
     def test_status_reads_both_forms_of_ps(self):
-        cases = [(ps(('web', 'running'), ('db', 'running')), {'state': 'running'}),
-                 (ps(('web', 'running'), ('db', 'running'), lines=True), {'state': 'running'}),
-                 (ps(('web', 'exited'), ('db', 'exited'), lines=True), {'state': 'stopped'}),
-                 (ps(('web', 'running'), ('db', 'exited')), {'state': 'running', 'message': 'db not running'}),
+        cases = [(ps(('web', 'running'), ('db', 'running')), {'state': 'running', 'endpoints': []}),
+                 (ps(('web', 'running'), ('db', 'running'), lines=True), {'state': 'running', 'endpoints': []}),
+                 (ps(('web', 'exited'), ('db', 'exited'), lines=True), {'state': 'stopped', 'endpoints': []}),
+                 (ps(('web', 'running'), ('db', 'exited')), {'state': 'running', 'message': 'db not running', 'endpoints': []}),
                  ([0, '[]', ''], {'state': 'gone'}),
                  ([0, '', ''], {'state': 'gone'})]
         for result, expected in cases:
