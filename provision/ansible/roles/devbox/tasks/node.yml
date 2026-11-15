@@ -1,0 +1,216 @@
+---
+# A node: a server berth applies without a desktop. It gets the base system,
+# updates, SSH that takes keys, berth's controller, a firewall and the plugin
+# features its profile names, such as the engines that host machines. There
+# are no agent or operator accounts: sessions run as the SSH user, and berth
+# keeps logging in as that user with its own key.
+- name: Check the node before any changes
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Ubuntu'
+      - ansible_facts.distribution_version is version('24.04', '>=')
+      - ansible_facts.architecture == 'x86_64'
+      - devbox_profile in ['cloud', 'container']
+      - devbox_node_user is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - devbox_ssh_from == 'any' or devbox_ssh_from is match('^[0-9a-fA-F.:/]+$')
+      - devbox_berth_ssh_public_key.splitlines() | reject('match', '^(ssh-|ecdsa-|sk-)[^ ]+ [A-Za-z0-9+/=]+( .*)?$') | list | length == 0
+    fail_msg: A node is an Ubuntu 24.04 or later server on x86_64, installed on a cloud machine or in a container, that berth reaches as an account of its own.
+
+- name: Read what berth installed on the host before
+  ansible.builtin.slurp:
+    src: /etc/berth/applied.json
+  register: devbox_node_found
+  failed_when: false
+# A workstation's desktop, agent and accounts would stay behind, unlooked after.
+- name: Refuse a host that berth set up as a workstation
+  ansible.builtin.fail:
+    msg: >-
+      {{ inventory_hostname }} is a workstation that berth set up. Applying it
+      as a node would leave its desktop, its agent and its accounts behind, so
+      nothing was changed. Keep it a workstation, or install the server again
+      and apply it as a node.
+  when:
+    - "'content' in devbox_node_found"
+    - (devbox_node_found.content | b64decode | from_json).level | default('workstation') == 'workstation'
+
+- name: Find the account berth logs in as
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ devbox_node_user }}"
+# The role's other tasks and the features name the account sessions run as
+# devbox_user and its home devbox_home.
+- name: Describe the node to the role and to berthd
+  ansible.builtin.set_fact:
+    devbox_user: "{{ devbox_node_user }}"
+    devbox_operator_user: "{{ devbox_node_user }}"
+    devbox_home: "{{ ansible_facts.getent_passwd[devbox_node_user][4] }}"
+    devbox_node_home: "{{ ansible_facts.getent_passwd[devbox_node_user][4] }}"
+
+- name: Install what a node needs
+  ansible.builtin.apt:
+    name: "{{ devbox_node_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+- name: Configure the time zone, the locale and security updates
+  ansible.builtin.import_tasks: system.yml
+
+# ── SSH ─────────────────────────────────────────────────────────────────────
+
+- name: Read the SSH session this apply came in on
+  ansible.builtin.command: printenv SSH_CONNECTION
+  become: false
+  register: devbox_ssh_session
+  changed_when: false
+  failed_when: false
+- name: Note where this apply came from
+  ansible.builtin.set_fact:
+    devbox_apply_from: "{{ (devbox_ssh_session.stdout | default('') | trim).split(' ')[0] | default('') }}"
+- name: Make the SSH user's folder of keys
+  ansible.builtin.file:
+    path: "{{ devbox_node_home }}/.ssh"
+    state: directory
+    owner: "{{ devbox_node_user }}"
+    group: "{{ ansible_facts.getent_passwd[devbox_node_user][2] }}"
+    mode: '0700'
+# As for a workstation's operator: a block of its own for each berth, named
+# after its key, which no later apply removes.
+- name: Give the SSH user the keys of the berth that applies this
+  ansible.builtin.blockinfile:
+    path: "{{ devbox_node_home }}/.ssh/authorized_keys"
+    create: true
+    owner: "{{ devbox_node_user }}"
+    group: "{{ ansible_facts.getent_passwd[devbox_node_user][2] }}"
+    mode: '0600'
+    marker: "# {mark} BERTH {{ devbox_berth_ssh_public_key.split()[1] | hash('sha1') }}"
+    block: "{{ devbox_berth_ssh_public_key }}"
+  when: devbox_berth_ssh_public_key | length > 0
+- name: Check that the SSH user takes the keys of the berth that applies this
+  ansible.builtin.command:
+    argv: [grep, -qxF, --, "{{ item }}", "{{ devbox_node_home }}/.ssh/authorized_keys"]
+  loop: "{{ devbox_berth_ssh_public_key.splitlines() }}"
+  changed_when: false
+- name: See whether the SSH user has a key to log in with
+  ansible.builtin.command: grep -qE '^(ssh-|ecdsa-|sk-)' {{ (devbox_node_home ~ '/.ssh/authorized_keys') | quote }}
+  register: devbox_node_keys
+  changed_when: false
+  failed_when: false
+# Only keys log in. Root keeps its login with keys when berth logs in as root,
+# so that this berth is never locked out; any other SSH user leaves root none.
+- name: Require SSH keys, and keep root's login as berth uses it
+  ansible.builtin.copy:
+    # sshd uses the first value it reads, so this has to sort before other drop-ins.
+    dest: /etc/ssh/sshd_config.d/00-devbox.conf
+    mode: '0644'
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin {{ 'prohibit-password' if devbox_node_user == 'root' else 'no' }}
+    validate: /usr/sbin/sshd -t -f %s
+  register: devbox_node_sshd
+  when: devbox_harden_ssh and devbox_node_keys.rc == 0
+- name: Remove SSH hardening when it is switched off
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/00-devbox.conf
+    state: absent
+  register: devbox_node_sshd_relaxed
+  when: not (devbox_harden_ssh and devbox_node_keys.rc == 0)
+- name: Explain skipped SSH hardening
+  ansible.builtin.debug:
+    msg: >-
+      SSH hardening skipped: {{ devbox_node_user }} has no SSH key to log in
+      with, so turning passwords off would lock this node.
+  when: devbox_harden_ssh and devbox_node_keys.rc != 0
+- name: Apply SSH server settings
+  ansible.builtin.systemd_service:
+    name: ssh
+    state: reloaded
+  when: devbox_start_services and (devbox_node_sshd.changed or devbox_node_sshd_relaxed.changed)
+
+# ── The tailnet ─────────────────────────────────────────────────────────────
+
+- name: Install Tailscale
+  ansible.builtin.import_tasks: tailscale.yml
+  when: devbox_install_tailscale
+- name: Start Tailscale now and at boot
+  ansible.builtin.systemd_service:
+    name: tailscaled
+    enabled: true
+    state: started
+  when: devbox_install_tailscale and devbox_start_services
+- name: Join the tailnet
+  ansible.builtin.include_tasks: tailnet.yml
+  when: devbox_install_tailscale and devbox_start_services
+
+# ── Plugin features and berth's controller ──────────────────────────────────
+
+- name: Apply the features of the node
+  ansible.builtin.import_tasks: plugins.yml
+- name: See whether a berth server runs here in a container
+  ansible.builtin.command: docker container inspect --format {% raw %}'{{.Config.Image}}'{% endraw %} {{ devbox_berth_server_container | quote }}
+  register: devbox_node_server
+  changed_when: false
+  failed_when: false
+- name: Describe the node's actions and units to berthd
+  ansible.builtin.set_fact:
+    # Rebooting asks systemd, and only a node with a berth server's container can upgrade it.
+    devbox_tasks: >-
+      {{ (devbox_node_tasks
+          | rejectattr('name', 'equalto', 'reboot' if ansible_facts.service_mgr != 'systemd' else '')
+          | rejectattr('name', 'equalto', 'upgrade-server' if devbox_node_server.rc != 0 else '')
+          | list) + devbox_plugin_tasks }}
+    devbox_berthd_units: "{{ ['ssh', 'berthd', 'ufw'] + (['tailscaled'] if devbox_install_tailscale else []) + devbox_node_units + devbox_service_units }}"
+    devbox_berthd_roots: ["{{ devbox_node_home }}"]
+    devbox_berthd_systemd: "{{ ansible_facts.service_mgr == 'systemd' }}"
+- name: Install the helper that takes in secrets
+  ansible.builtin.copy:
+    src: secrets.py
+    dest: /usr/local/bin/devbox-secrets
+    mode: '0755'
+- name: Install berthd, box and what they read
+  ansible.builtin.import_tasks: berth.yml
+- name: Install the helper that upgrades a berth server's container
+  ansible.builtin.copy:
+    src: berth-server-upgrade.py
+    dest: /usr/local/lib/berth/berth-server-upgrade
+    mode: '0755'
+- name: Say who starts berthd on a node without systemd
+  ansible.builtin.debug:
+    msg: This node has no systemd, so nothing here starts berthd by itself. Something on the host has to run /usr/local/bin/berthd, as the init of a container does.
+  when: not devbox_berthd_systemd | bool
+
+# ── The firewall ────────────────────────────────────────────────────────────
+
+# Last, once the features have said what they open. The address this apply
+# came from keeps SSH, so the run never locks berth out.
+- name: Install the node's firewall helper
+  ansible.builtin.copy:
+    src: node-firewall.sh
+    dest: /usr/local/sbin/devbox-node-firewall
+    mode: '0755'
+  when: devbox_manage_firewall
+- name: Set the node's firewall
+  ansible.builtin.command: /usr/local/sbin/devbox-node-firewall
+  args:
+    stdin: "{{ devbox_node_firewall | join('\n') }}"
+  register: devbox_node_firewall_set
+  changed_when: devbox_node_firewall_set.stdout | length > 0
+  when: devbox_manage_firewall
+  vars:
+    devbox_node_firewall: >-
+      {{ ([('allow 22/tcp' if devbox_ssh_from == 'any' else 'allow from ' ~ devbox_ssh_from ~ ' to any port 22 proto tcp')]
+          + (['allow from ' ~ devbox_apply_from ~ ' to any port 22 proto tcp'] if devbox_apply_from | length > 0 and devbox_ssh_from != 'any' else [])
+          + (['allow from ' ~ devbox_bootstrap_ssh_cidr ~ ' to any port 22 proto tcp'] if devbox_bootstrap_ssh_cidr | length > 0 else [])
+          + (['allow in on tailscale0 to any port 22 proto tcp', 'allow 41641/udp'] if devbox_install_tailscale else [])
+          + devbox_firewall_rules) | unique }}
+- name: Say what the firewall changed
+  ansible.builtin.debug:
+    msg: "{{ devbox_node_firewall_set.stdout_lines }}"
+  when: devbox_node_firewall_set is changed
+
+# Last, so a run that failed leaves the host recorded as it was before.
+- name: Record what this configuration came from
+  ansible.builtin.import_tasks: applied.yml

@@ -1,0 +1,30 @@
+---
+# What every host berth applies gets: its time zone, an English locale and
+# Ubuntu's security updates without reboots. A workstation and a node share it.
+- name: Configure timezone
+  ansible.builtin.file:
+    src: "/usr/share/zoneinfo/{{ devbox_timezone }}"
+    dest: /etc/localtime
+    state: link
+    force: true
+- name: Enable English locale
+  ansible.builtin.lineinfile:
+    path: /etc/locale.gen
+    regexp: '^#?\s*en_US.UTF-8 UTF-8'
+    line: en_US.UTF-8 UTF-8
+  register: locale_config
+- name: Generate locale
+  ansible.builtin.command: locale-gen
+  when: locale_config.changed
+- name: Configure unattended security updates without reboots
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/52devbox
+    mode: '0644'
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      Unattended-Upgrade::Automatic-Reboot "false";
+      Unattended-Upgrade::Origins-Pattern {
+        "origin=Ubuntu,codename=${distro_codename},label=Ubuntu-Security";
+        "site=packages.mozilla.org";
+      };
