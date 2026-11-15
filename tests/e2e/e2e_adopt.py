@@ -42,7 +42,7 @@ class Adopt(unittest.TestCase):
     def test_the_host_keeps_its_profile_for_root_only(self):
         self.assertEqual(self.station.root_on_host(f'stat -c %a:%U:%G {KEPT}').stdout.strip(), '600:root:root')
         self.assertNotEqual(self.station.ssh(OPERATOR, f'cat {KEPT}', check=False).returncode, 0)
-        self.assertEqual((self.kept['format'], self.kept['host']), (2, HOST))
+        self.assertEqual((self.kept['format'], self.kept['host']), (3, HOST))
         self.assertRegex(self.kept['written'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
         saved = self.station.read_profile()
         kept = self.kept['profile']
@@ -60,7 +60,7 @@ class Adopt(unittest.TestCase):
         link = BerthdLink(self.station, key=self.station.key)
         self.assertEqual(link.get('/v1/applied/profile'), self.kept)
         # The controller says the host is a workstation, as the file shows.
-        self.assertEqual(link.get('/v1/version')['level'], 'workstation')
+        self.assertEqual(link.get('/v1/version')['type'], 'workstation')
 
     def test_another_berth_adopts_the_host_while_berthd_is_broken(self):
         adopter = Workstation('adopter')

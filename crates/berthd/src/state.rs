@@ -1,4 +1,4 @@
-use berth_api::{Config, Level, ServiceSpec, Task, Topic};
+use berth_api::{Config, HostAction, Level, ServiceSpec, Topic};
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
@@ -30,7 +30,7 @@ impl Caller {
 #[derive(Debug, Default)]
 pub struct Loaded {
     pub berthd: Config,
-    pub tasks: Vec<Task>,
+    pub actions: Vec<HostAction>,
     pub services: Vec<ServiceSpec>,
     pub topics: Vec<Topic>,
 }
@@ -60,7 +60,11 @@ impl Loaded {
         let mut problems = vec![];
         let loaded = Loaded {
             berthd: read(dir, "berthd.json", &mut problems),
-            tasks: read(dir, "tasks.json", &mut problems),
+            actions: match dir.join("actions.json").exists() {
+                true => read(dir, "actions.json", &mut problems),
+                // What a role of berth 0.5 wrote, until the host is applied again.
+                false => read(dir, "tasks.json", &mut problems),
+            },
             services: read(dir, "services.json", &mut problems),
             topics: read(dir, "channels.json", &mut problems),
         };

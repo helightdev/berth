@@ -1,10 +1,10 @@
 ---
 title: Plugins
-description: Optional software, tasks and guides for hosts, switched on per host.
+description: Optional software, actions and guides for hosts, switched on per host.
 icon: Blocks
 ---
 
-A plugin adds optional things to a host. Each thing is a **feature**: packages, set-up steps, a guide for the agents working there, and tasks on the host's overview. A plugin can have several features, each switched on by itself. Even the coding agents are plugins.
+A plugin adds optional things to a host. Each thing is a **feature**: packages, set-up steps, a guide for the agents working there, and actions on the host's overview. A plugin can have several features, each switched on by itself. Even the coding agents are plugins.
 
 ## Plugins that come with berth
 
@@ -78,7 +78,7 @@ A host keeps what it was applied with until it is applied again. After an update
 
 With a [berth server](/docs/use/server) set, the Plugins tab and `berth plugins` show the server's plugins and change those, which needs the role `admin` there. The server installs a package name or an `https://` address with its own npm and npm configuration. A `.tgz` or a folder on your machine is packed and sent to the server. berth-remote has the same tab, and `u` there sends a `.tgz` from its machine.
 
-The server's hosts can have a new plugin's features as soon as it is installed. Its tasks run on the server when a host is applied, so installing is part of set-up. A server with `serve_setup off` takes it only on its own socket ([Closing set-up](/docs/extend/serve#closing-set-up)).
+The server's hosts can have a new plugin's features as soon as it is installed. Its Ansible tasks run on the server when a host is applied, so installing is part of set-up. A server with `serve_setup off` takes it only on its own socket ([Closing set-up](/docs/extend/serve#closing-set-up)).
 
 A plugin of yours with the same id as a built-in one replaces it. berth reads a plugin's `package.json` and hands its tasks to Ansible. It never runs the package's npm scripts.
 

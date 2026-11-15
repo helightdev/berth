@@ -284,16 +284,24 @@ impl Link {
         self.call("GET", path, None).await
     }
 
+    /// What the host's controller says of itself, read as this API says it
+    /// also from a berthd of an older API.
+    pub async fn version(&self) -> client::Result<berth_api::Version> {
+        let reply: Value = self.get("/v1/version").await?;
+        berth_api::Version::from_reply(reply)
+            .map_err(|error| Error::Transport(format!("version: {error}")))
+    }
+
     pub async fn post<T: DeserializeOwned>(&self, path: &str, body: &Value) -> client::Result<T> {
         self.call("POST", path, Some(body)).await
     }
 
-    /// Run a task of the host, as `tasks.run` takes it, and the session it
+    /// Run an action of the host, as `actions.run` takes it, and the session it
     /// runs as. Through a berth server it is the host's action there, which
     /// the server keeps a job of and gives the server's secrets to.
-    pub async fn run_task(&self, name: &str, body: &Value) -> client::Result<berth_api::Session> {
+    pub async fn run_action(&self, name: &str, body: &Value) -> client::Result<berth_api::Session> {
         let Some((server, host)) = &self.spec.via else {
-            let path = format!("/v1/tasks/{}", client::encode(name));
+            let path = format!("/v1/actions/{}", client::encode(name));
             return self.post(&path, body).await;
         };
         let portal = self.portal(server).await?;
@@ -303,7 +311,7 @@ impl Link {
             .await?;
         serde_json::from_value(acted["session"].clone()).map_err(|_| {
             Error::Transport(format!(
-                "{name} on {host} is not a task of the host: run it with berth run {host} {name}"
+                "{name} on {host} is not an action of its controller: run it with berth run {host} {name}"
             ))
         })
     }

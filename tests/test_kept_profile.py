@@ -43,11 +43,11 @@ DOCUMENT = {
 class SeedTests(unittest.TestCase):
     def test_the_seed_builder_hands_the_kept_profile_to_the_first_boot(self):
         builder = load('builder', 'provision/bin/devbox.py')
-        c = {'profile': 'cloud', 'tailscale_auth_key': 'tskey-once', 'berth_profile': DOCUMENT}
+        c = {'target': 'cloud', 'tailscale_auth_key': 'tskey-once', 'berth_profile': DOCUMENT}
         variables = builder.deployment(c, 'a' * 64)['ansible_vars']
         self.assertEqual(variables['devbox_berth_profile'], DOCUMENT)
         # A profile written without berth keeps nothing.
-        self.assertNotIn('devbox_berth_profile', builder.deployment({'profile': 'cloud'}, 'a' * 64)['ansible_vars'])
+        self.assertNotIn('devbox_berth_profile', builder.deployment({'target': 'cloud'}, 'a' * 64)['ansible_vars'])
         # The first boot reads these variables from host.json and strips only the key.
         self.assertNotIn('tskey', json.dumps(variables['devbox_berth_profile']))
 

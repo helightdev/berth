@@ -34,7 +34,7 @@ pub struct Archive {
 pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Result<Seed> {
     let host = Host::load(paths, name)?;
     // A seed installs a whole workstation.
-    crate::level::guard(&host, crate::level::Capability::Apply)?;
+    crate::host_type::guard(&host, crate::host_type::Capability::Apply)?;
     let source = paths.source()?;
     let dirs = apply::plugin_dirs(&plugins::found(
         &source,

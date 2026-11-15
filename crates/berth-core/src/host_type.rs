@@ -1,12 +1,12 @@
-//! What a host can do at each of its levels, and the one check that every
-//! client asks before it offers or runs something: the UIs, the commands
-//! and the server's API. A host's level is what its profile says it is
-//! meant to be; what it is seen to be comes from asking it.
+//! What a host of each type can do, and the one check that every client
+//! asks before it offers or runs something: the UIs, the commands and the
+//! server's API. A host's type is what its profile says it is meant to be;
+//! what it is seen to be comes from asking it.
 
 use crate::{Result, host::Host};
 use berth_api::{Action, Version, ops::Role};
 
-pub use berth_api::HostLevel as Level;
+pub use berth_api::HostType;
 
 /// Something berth can do with a host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,11 +17,11 @@ pub enum Capability {
     InstallController,
     /// Sessions, the channel, files, units, logs and processes.
     Sessions,
-    /// The controller's tasks: status, update and reboot.
-    Tasks,
+    /// The controller's actions: status, update and reboot.
+    Actions,
     /// Secrets and registry logins sent to the host.
     Secrets,
-    /// Plugin features, their tasks and services.
+    /// Plugin features, their actions and services.
     Plugins,
     /// Applying the profile, a roll-out over it, a seed or an installer image.
     Apply,
@@ -34,7 +34,7 @@ impl Capability {
         Capability::Ssh,
         Capability::InstallController,
         Capability::Sessions,
-        Capability::Tasks,
+        Capability::Actions,
         Capability::Secrets,
         Capability::Plugins,
         Capability::Apply,
@@ -46,7 +46,7 @@ impl Capability {
             Capability::Ssh => "ssh",
             Capability::InstallController => "install-controller",
             Capability::Sessions => "sessions",
-            Capability::Tasks => "tasks",
+            Capability::Actions => "actions",
             Capability::Secrets => "secrets",
             Capability::Plugins => "plugins",
             Capability::Apply => "apply",
@@ -60,7 +60,7 @@ impl Capability {
             Capability::Ssh => "a terminal over SSH",
             Capability::InstallController => "installing the controller alone",
             Capability::Sessions => "working with sessions, the channel and files",
-            Capability::Tasks => "running the controller's tasks",
+            Capability::Actions => "running the controller's actions",
             Capability::Secrets => "sending secrets and registry logins",
             Capability::Plugins => "using plugin features",
             Capability::Apply => "applying a profile, a roll-out, a seed or an installer",
@@ -68,38 +68,40 @@ impl Capability {
         }
     }
 
-    /// Whether a host of `level` has it. The controller alone is installed
-    /// on a host below a workstation; a workstation's comes with applying.
-    pub fn allowed(self, level: Level) -> bool {
+    /// Whether a host of `host_type` has it. The controller alone is
+    /// installed on a host that is not a workstation; a workstation's comes
+    /// with applying.
+    pub fn allowed(self, host_type: HostType) -> bool {
+        use HostType::*;
         match self {
             Capability::Ssh => true,
-            Capability::InstallController => level != Level::Workstation,
-            Capability::Sessions | Capability::Tasks | Capability::Secrets => {
-                level >= Level::Controller
+            Capability::InstallController => matches!(host_type, Ssh | Managed),
+            Capability::Sessions | Capability::Actions | Capability::Secrets => {
+                matches!(host_type, Managed | Workstation)
             }
             Capability::Plugins | Capability::Apply | Capability::Desktop => {
-                level == Level::Workstation
+                host_type == Workstation
             }
         }
     }
 }
 
-/// The capabilities and the levels that have each, in the order of
-/// [`Level::ALL`]: for a page that shows the table.
+/// The capabilities and the types that have each, in the order of
+/// [`HostType::ALL`]: for a page that shows the table.
 pub fn table() -> Vec<(Capability, [bool; 3])> {
     Capability::ALL
         .into_iter()
         .map(|capability| {
             (
                 capability,
-                Level::ALL.map(|level| capability.allowed(level)),
+                HostType::ALL.map(|host_type| capability.allowed(host_type)),
             )
         })
         .collect()
 }
 
 /// Why something cannot be done with a host now, and the action that
-/// raises its level so it can.
+/// changes its type so it can.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
     pub why: String,
@@ -116,28 +118,32 @@ impl std::fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
-/// Whether the host `name` of `level` may do this, or why not.
-pub fn check(name: &str, level: Level, capability: Capability) -> std::result::Result<(), Refusal> {
-    if capability.allowed(level) {
+/// Whether the host `name` of `host_type` may do this, or why not.
+pub fn check(
+    name: &str,
+    host_type: HostType,
+    capability: Capability,
+) -> std::result::Result<(), Refusal> {
+    if capability.allowed(host_type) {
         return Ok(());
     }
     let what = capability.label();
-    Err(match (capability, level) {
+    Err(match (capability, host_type) {
         (Capability::InstallController, _) => Refusal {
             why: format!(
                 "{name} is a workstation: applying its configuration installs and updates its controller. Apply it with: berth apply {name}"
             ),
             raise: "apply",
         },
-        (_, Level::Reachable) if capability.allowed(Level::Controller) => Refusal {
+        (_, HostType::Ssh) if capability.allowed(HostType::Managed) => Refusal {
             why: format!(
-                "{name} is reachable only: berth's controller is not installed there, and {what} needs it. Install it with: berth host install {name}"
+                "{name} is a host of the type ssh: berth's controller is not installed there, and {what} needs it. Install it with: berth host install {name}"
             ),
             raise: "install-controller",
         },
         _ => Refusal {
             why: format!(
-                "{name} is a {level} host, not a workstation: {what} needs its whole profile. Set its level to workstation in its set-up, then apply it"
+                "{name} is a host of the type {host_type}, not a workstation: {what} needs its whole profile. Set its type to workstation in its set-up, then apply it"
             ),
             raise: "setup",
         },
@@ -150,15 +156,15 @@ pub fn guard(host: &Host, capability: Capability) -> Result<()> {
     Ok(())
 }
 
-/// The level a profile means its host to have.
-pub fn of(config: &serde_json::Value) -> Level {
-    berth_api::profile::level(config)
+/// The type a profile means its host to be.
+pub fn of(config: &serde_json::Value) -> HostType {
+    berth_api::profile::host_type(config)
 }
 
-/// An action as a host of `level` may run it: unavailable, with the reason,
-/// when the level rules it out.
-pub fn fit(mut action: Action, name: &str, level: Level, capability: Capability) -> Action {
-    if let Err(refusal) = check(name, level, capability) {
+/// An action as a host of `host_type` may run it: unavailable, with the
+/// reason, when the type rules it out.
+pub fn fit(mut action: Action, name: &str, host_type: HostType, capability: Capability) -> Action {
+    if let Err(refusal) = check(name, host_type, capability) {
         action.available = false;
         action.why = refusal.why;
     }
@@ -166,26 +172,30 @@ pub fn fit(mut action: Action, name: &str, level: Level, capability: Capability)
 }
 
 /// What a host was seen to be by asking its controller: what its record
-/// says when it answers, reachable when berth logged in and found no
+/// says when it answers, ssh when berth logged in and found no
 /// controller, nothing when it could not be asked.
-pub fn seen(answer: std::result::Result<&Version, bool>) -> Option<Level> {
+pub fn seen(answer: std::result::Result<&Version, bool>) -> Option<HostType> {
     match answer {
         // A controller without a record was installed outside berth.
-        Ok(version) => Some(version.level.unwrap_or(Level::Controller)),
-        Err(true) => Some(Level::Reachable),
+        Ok(version) => Some(version.host_type.unwrap_or(HostType::Managed)),
+        Err(true) => Some(HostType::Ssh),
         Err(false) => None,
     }
 }
 
-pub use berth_api::level_mismatch as mismatch;
+pub use berth_api::type_mismatch as mismatch;
 
 /// Why installing the controller alone must not run on a host seen to be a
 /// workstation, whatever its profile says: it would take the workstation's
 /// controller apart.
-pub fn refuse_install(name: &str, intended: Level, observed: Option<Level>) -> Option<String> {
+pub fn refuse_install(
+    name: &str,
+    intended: HostType,
+    observed: Option<HostType>,
+) -> Option<String> {
     match (intended, observed) {
-        (Level::Workstation, _) | (_, None) => None,
-        (_, Some(Level::Workstation)) => Some(format!(
+        (HostType::Workstation, _) | (_, None) => None,
+        (_, Some(HostType::Workstation)) => Some(format!(
             "{} Installing the controller alone would take its controller apart, so it is not offered",
             mismatch(name, intended, observed).unwrap_or_default()
         )),
@@ -195,15 +205,15 @@ pub fn refuse_install(name: &str, intended: Level, observed: Option<Level>) -> O
 
 /// What the host's controller says the host is, asked through the link
 /// once and briefly: `None` when no controller answers.
-pub fn observe(paths: &crate::paths::Paths, host: &Host, password: Option<&str>) -> Option<Level> {
+pub fn observe(
+    paths: &crate::paths::Paths,
+    host: &Host,
+    password: Option<&str>,
+) -> Option<HostType> {
     let link = crate::link::Link::new(host.link(paths, password).ok()?);
     let runtime = crate::link::runtime().ok()?;
     let asked = runtime.block_on(async {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            link.get::<Version>("/v1/version"),
-        )
-        .await
+        tokio::time::timeout(std::time::Duration::from_secs(15), link.version()).await
     });
     runtime.shutdown_background();
     match asked {
@@ -213,17 +223,21 @@ pub fn observe(paths: &crate::paths::Paths, host: &Host, password: Option<&str>)
 }
 
 /// berth's own action that puts the controller on a host, as a host of
-/// `level` sees it. `observed` is what its controller says it is, when it
-/// answered.
-pub fn install_controller_action(name: &str, level: Level, observed: Option<Level>) -> Action {
-    let (label, help) = match level {
-        Level::Controller => (
+/// `host_type` sees it. `observed` is what its controller says it is, when
+/// it answered.
+pub fn install_controller_action(
+    name: &str,
+    host_type: HostType,
+    observed: Option<HostType>,
+) -> Action {
+    let (label, help) = match host_type {
+        HostType::Managed => (
             "Update the controller",
             "Install berthd and box of this berth on the host again, and restart the controller: for example after berth was updated. Nothing else of the profile is applied.",
         ),
         _ => (
             "Install the controller",
-            "Put berthd and box on the host and start the controller, so that sessions, tasks and files work there. Nothing else of a workstation is installed: no desktop, agents or plugins. The SSH user is the account sessions run as. The host's level becomes controller.",
+            "Put berthd and box on the host and start the controller, so that sessions, actions and files work there. Nothing else of a workstation is installed: no desktop, agents or plugins. The SSH user is the account sessions run as. The host's type becomes managed.",
         ),
     };
     let action = Action {
@@ -235,15 +249,15 @@ pub fn install_controller_action(name: &str, level: Level, observed: Option<Leve
         confirm: Some(format!("Install berth's controller on {name} now?")),
         ..Action::default()
     };
-    let mut action = fit(action, name, level, Capability::InstallController);
-    if let Some(why) = refuse_install(name, level, observed) {
+    let mut action = fit(action, name, host_type, Capability::InstallController);
+    if let Some(why) = refuse_install(name, host_type, observed) {
         action.available = false;
         action.why = why;
     }
     action
 }
 
-/// berth's own action that gives a host another name, at any level: the
+/// berth's own action that gives a host another name, of any type: the
 /// machine stays as it is.
 pub fn rename_action() -> Action {
     Action {
@@ -275,10 +289,10 @@ pub fn rename_action() -> Action {
 }
 
 /// berth's own actions on a host of this machine, which need no server:
-/// those that change the host's level, and renaming it.
-pub fn local_actions(name: &str, level: Level, observed: Option<Level>) -> Vec<Action> {
+/// those that change the host's type, and renaming it.
+pub fn local_actions(name: &str, host_type: HostType, observed: Option<HostType>) -> Vec<Action> {
     vec![
-        install_controller_action(name, level, observed),
+        install_controller_action(name, host_type, observed),
         rename_action(),
     ]
 }
@@ -288,11 +302,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn each_level_can_do_what_the_ones_below_it_can() {
+    fn each_type_can_do_what_the_ones_before_it_can() {
         use Capability::*;
         let rows: Vec<(&str, [bool; 3])> = table()
             .into_iter()
-            .map(|(capability, levels)| (capability.name(), levels))
+            .map(|(capability, types)| (capability.name(), types))
             .collect();
         assert_eq!(
             rows,
@@ -300,7 +314,7 @@ mod tests {
                 (Ssh.name(), [true, true, true]),
                 (InstallController.name(), [true, true, false]),
                 (Sessions.name(), [false, true, true]),
-                (Tasks.name(), [false, true, true]),
+                (Actions.name(), [false, true, true]),
                 (Secrets.name(), [false, true, true]),
                 (Plugins.name(), [false, false, true]),
                 (Apply.name(), [false, false, true]),
@@ -310,19 +324,23 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_names_the_action_that_raises_the_level() {
-        let refused = check("studio", Level::Reachable, Capability::Sessions).unwrap_err();
+    fn a_refusal_names_the_action_that_changes_the_type() {
+        let refused = check("studio", HostType::Ssh, Capability::Sessions).unwrap_err();
         assert_eq!(refused.raise, "install-controller");
         assert!(refused.why.contains("berth host install studio"));
-        let refused = check("studio", Level::Reachable, Capability::Apply).unwrap_err();
+        let refused = check("studio", HostType::Ssh, Capability::Apply).unwrap_err();
         assert_eq!(refused.raise, "setup");
-        assert!(refused.why.contains("a reachable host, not a workstation"));
-        let refused = check("studio", Level::Controller, Capability::Desktop).unwrap_err();
+        assert!(refused.why.contains("of the type ssh, not a workstation"));
+        let refused = check("studio", HostType::Managed, Capability::Desktop).unwrap_err();
         assert_eq!(refused.raise, "setup");
-        let refused =
-            check("studio", Level::Workstation, Capability::InstallController).unwrap_err();
+        let refused = check(
+            "studio",
+            HostType::Workstation,
+            Capability::InstallController,
+        )
+        .unwrap_err();
         assert_eq!(refused.raise, "apply");
-        assert!(check("studio", Level::Workstation, Capability::Apply).is_ok());
+        assert!(check("studio", HostType::Workstation, Capability::Apply).is_ok());
     }
 
     #[test]
@@ -332,50 +350,49 @@ mod tests {
             place: crate::profiles::Place::File("/dock.json".into()),
             config,
         };
-        let reachable =
-            host(serde_json::json!({"level": "reachable", "access": {"address": "192.0.2.4"}}));
-        let refused = guard(&reachable, Capability::Apply).unwrap_err();
+        let ssh = host(serde_json::json!({"type": "ssh", "access": {"address": "192.0.2.4"}}));
+        let refused = guard(&ssh, Capability::Apply).unwrap_err();
         assert!(refused.to_string().contains("not a workstation"));
         assert!(guard(&host(serde_json::json!({"builder": {}})), Capability::Apply).is_ok());
     }
 
     #[test]
     fn what_a_host_is_seen_to_be_comes_from_its_controller() {
-        let version = |level| Version {
+        let version = |host_type| Version {
             version: "1".into(),
-            api: 1,
+            api: 2,
             mode: "system".into(),
             applied: None,
-            level,
+            host_type,
         };
-        assert_eq!(seen(Ok(&version(None))), Some(Level::Controller));
+        assert_eq!(seen(Ok(&version(None))), Some(HostType::Managed));
         assert_eq!(
-            seen(Ok(&version(Some(Level::Workstation)))),
-            Some(Level::Workstation)
+            seen(Ok(&version(Some(HostType::Workstation)))),
+            Some(HostType::Workstation)
         );
-        assert_eq!(seen(Err(true)), Some(Level::Reachable));
+        assert_eq!(seen(Err(true)), Some(HostType::Ssh));
         assert_eq!(seen(Err(false)), None);
     }
 
     #[test]
-    fn installing_the_controller_is_offered_below_a_workstation() {
-        let action = install_controller_action("dock", Level::Reachable, None);
+    fn installing_the_controller_is_offered_to_a_host_that_is_not_a_workstation() {
+        let action = install_controller_action("dock", HostType::Ssh, None);
         assert!(action.available && action.label == "Install the controller");
         assert_eq!(
-            install_controller_action("dock", Level::Controller, None).label,
+            install_controller_action("dock", HostType::Managed, None).label,
             "Update the controller"
         );
-        let action = install_controller_action("dock", Level::Workstation, None);
+        let action = install_controller_action("dock", HostType::Workstation, None);
         assert!(!action.available && action.why.contains("berth apply dock"));
         // A controller seen to be one is updated as its profile says.
-        let action = install_controller_action("dock", Level::Reachable, Some(Level::Controller));
+        let action = install_controller_action("dock", HostType::Ssh, Some(HostType::Managed));
         assert!(action.available);
     }
 
     #[test]
     fn a_host_seen_to_be_a_workstation_never_gets_the_controller_alone() {
-        for intended in [Level::Reachable, Level::Controller] {
-            let action = install_controller_action("dock", intended, Some(Level::Workstation));
+        for intended in [HostType::Ssh, HostType::Managed] {
+            let action = install_controller_action("dock", intended, Some(HostType::Workstation));
             assert!(!action.available);
             assert!(
                 action.why.starts_with(&format!(
@@ -387,10 +404,10 @@ mod tests {
             assert!(action.why.contains("berth adopt dock"));
         }
         assert_eq!(
-            mismatch("dock", Level::Reachable, Some(Level::Controller)).unwrap(),
-            "dock has berth's controller; its profile here says reachable. To adopt it: berth host level dock controller"
+            mismatch("dock", HostType::Ssh, Some(HostType::Managed)).unwrap(),
+            "dock has berth's controller; its profile here says ssh. To adopt it: berth host type dock managed"
         );
-        assert!(mismatch("dock", Level::Workstation, Some(Level::Controller)).is_none());
-        assert!(mismatch("dock", Level::Controller, None).is_none());
+        assert!(mismatch("dock", HostType::Workstation, Some(HostType::Managed)).is_none());
+        assert!(mismatch("dock", HostType::Managed, None).is_none());
     }
 }

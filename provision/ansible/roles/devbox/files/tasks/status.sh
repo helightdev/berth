@@ -3,7 +3,7 @@
 # A host with berth's controller alone has no desktop, agents or tailnet of berth's.
 if [[ ${1:-} == controller ]]; then
   echo "Host        $(hostname), up since $(uptime -s)"
-  echo "Level       controller: berthd and box, nothing of a workstation"
+  echo "Type        managed: berthd and box, nothing of a workstation"
   for unit in ssh berthd; do
     systemctl cat "$unit" >/dev/null 2>&1 && printf '%-11s %s\n' "$unit" "$(systemctl is-active "$unit" || true)"
   done

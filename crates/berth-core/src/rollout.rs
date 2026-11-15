@@ -22,8 +22,8 @@ pub trait Target {
     fn version(&mut self) -> std::result::Result<Option<Version>, String>;
     /// Apply its configuration, its output going to `out`.
     fn apply(&mut self, out: &mut dyn Write) -> std::result::Result<(), String>;
-    /// Run one of its tasks to the end, with its output to `out`: the exit code.
-    fn task(&mut self, name: &str, out: &mut dyn Write) -> std::result::Result<i32, String>;
+    /// Run one of its actions to the end, with its output to `out`: the exit code.
+    fn run_action(&mut self, name: &str, out: &mut dyn Write) -> std::result::Result<i32, String>;
     /// Seconds it has been up, and whether it says it needs a reboot.
     fn uptime(&mut self) -> std::result::Result<(u64, bool), String>;
     /// How many sessions run there.
@@ -159,7 +159,7 @@ fn one(
     target.apply(out)?;
     if options.update {
         say(out, &format!("▸ {name}: update"));
-        match target.task("update", out) {
+        match target.run_action("update", out) {
             Ok(0) => {}
             Ok(code) => host.warnings.push(format!("update ended with {code}")),
             Err(error) => host.warnings.push(format!("update did not run: {error}")),
@@ -200,9 +200,9 @@ fn one(
             return Err(format!("still behind after applying: {}", behind.text()));
         }
     }
-    match target.task("status", out)? {
+    match target.run_action("status", out)? {
         0 => {}
-        code => return Err(format!("its status task ended with {code}")),
+        code => return Err(format!("its status action ended with {code}")),
     }
     host.state = RolloutState::Done;
     say(out, &format!("✓ {name} is up to date"));
@@ -246,9 +246,9 @@ pub fn chosen(all: Vec<String>, asked: &[String]) -> Result<Vec<String>> {
 /// The hosts a roll-out applies, and the names of those it leaves because
 /// they are not workstations: only a workstation is applied.
 pub fn workstations(hosts: Vec<Host>) -> (Vec<Host>, Vec<String>) {
-    let (taken, left): (Vec<Host>, Vec<Host>) = hosts
-        .into_iter()
-        .partition(|host| crate::level::of(&host.config) == crate::level::Level::Workstation);
+    let (taken, left): (Vec<Host>, Vec<Host>) = hosts.into_iter().partition(|host| {
+        crate::host_type::of(&host.config) == crate::host_type::HostType::Workstation
+    });
     (taken, left.into_iter().map(|host| host.name).collect())
 }
 
@@ -325,10 +325,7 @@ impl Target for Live<'_> {
     }
 
     fn version(&mut self) -> std::result::Result<Option<Version>, String> {
-        match self
-            .runtime
-            .block_on(self.link.get::<Version>("/v1/version"))
-        {
+        match self.runtime.block_on(self.link.version()) {
             Ok(version) => Ok(Some(version)),
             Err(error) if Link::missing(&error) => Ok(None),
             Err(error) => Err(error.to_string()),
@@ -370,12 +367,12 @@ impl Target for Live<'_> {
         }
     }
 
-    fn task(&mut self, name: &str, out: &mut dyn Write) -> std::result::Result<i32, String> {
-        let path = format!("/v1/tasks/{}?wait=10m", api::client::encode(name));
+    fn run_action(&mut self, name: &str, out: &mut dyn Write) -> std::result::Result<i32, String> {
+        let path = format!("/v1/actions/{}?wait=10m", api::client::encode(name));
         let started: api::Started = self.post(&path, &json!({}))?;
         let id = started.session.id.clone();
         let mut session = started.session;
-        // A task that takes longer than the wait is asked after again.
+        // An action that takes longer than the wait is asked after again.
         while session.running() {
             self.pause(REBOOT_EVERY);
             session = self.get(&format!("/v1/sessions/{id}"))?;
@@ -471,13 +468,10 @@ pub fn survey(paths: &Paths) -> Vec<api::HostBehind> {
             if link.refused().is_some() {
                 return None;
             }
-            let version = tokio::time::timeout(
-                std::time::Duration::from_secs(20),
-                link.get::<Version>("/v1/version"),
-            )
-            .await
-            .ok()?
-            .ok()?;
+            let version = tokio::time::timeout(std::time::Duration::from_secs(20), link.version())
+                .await
+                .ok()?
+                .ok()?;
             Some((host.name.clone(), version))
         },
     )));
@@ -529,7 +523,7 @@ mod tests {
                 api: api::API,
                 mode: "system".into(),
                 applied: self.applied.clone(),
-                level: None,
+                host_type: None,
             }))
         }
         fn apply(&mut self, _out: &mut dyn Write) -> std::result::Result<(), String> {
@@ -542,7 +536,11 @@ mod tests {
                 }
             }
         }
-        fn task(&mut self, name: &str, _out: &mut dyn Write) -> std::result::Result<i32, String> {
+        fn run_action(
+            &mut self,
+            name: &str,
+            _out: &mut dyn Write,
+        ) -> std::result::Result<i32, String> {
             self.log.borrow_mut().push(format!("{} {name}", self.name));
             Ok(match name {
                 "update" => self.update_code,
@@ -815,7 +813,7 @@ mod tests {
         let log = Default::default();
         let mut targets: Vec<Box<dyn Target>> = vec![Box::new(make(&log, 0, true, 3))];
         let report = run(&mut targets, &reboot, &now, &mut vec![]);
-        assert_eq!(report.hosts[0].error, "its status task ended with 3");
+        assert_eq!(report.hosts[0].error, "its status action ended with 3");
     }
 
     #[test]
@@ -835,8 +833,8 @@ mod tests {
         };
         let (taken, skipped) = workstations(vec![
             host("studio", json!({"builder": {}})),
-            host("dock", json!({"level": "controller"})),
-            host("pier", json!({"level": "reachable"})),
+            host("dock", json!({"type": "managed"})),
+            host("pier", json!({"type": "ssh"})),
         ]);
         assert_eq!(taken.len(), 1);
         assert_eq!(taken[0].name, "studio");

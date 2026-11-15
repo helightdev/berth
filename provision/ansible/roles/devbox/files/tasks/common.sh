@@ -1,5 +1,6 @@
-# Shared by berth's task scripts. Sourced, not run. The tasks run on the host
-# as root, started by berthd; `berth run HOST TASK` or the overview runs them.
+# Shared by the scripts of berth's own actions. Sourced, not run. They run on
+# the host as root, started by berthd; `berth run HOST ACTION` or the overview
+# runs them.
 set -euo pipefail
 agent=$(. /etc/devbox/environment 2>/dev/null; echo "${DEVBOX_USER:-agent}")
 operator=$(jq -r '.operator // empty' /etc/berth/berthd.json 2>/dev/null || true)
@@ -25,7 +26,7 @@ access() {
     echo "Desktop   https://$name/vnc.html${password:+#autoconnect=1&password=$encoded}"
     echo "T3        https://$name:8443/"
   else
-    echo 'Desktop and T3 are not published on the tailnet yet (task: publish).'
+    echo 'Desktop and T3 are not published on the tailnet yet (action: publish).'
   fi
   if systemctl is-active -q cockpit.socket && own_control; then
     echo "Cockpit   https://$address:9090  (its own certificate; log in as the operator)"

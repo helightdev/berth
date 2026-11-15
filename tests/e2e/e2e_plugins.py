@@ -23,17 +23,17 @@ class Plugin(unittest.TestCase):
         listed = self.station.berth('plugins').stdout
         self.assertRegex(listed, rf'(?m)^e2e  {PACKAGE} 1\.0\.0  ')
         self.assertIn('e2e/hello  Hello (Testing)', listed)
-        self.assertIn('task     e2e:hello  Say hello (as agent; the agent may run it; asks name)', listed)
+        self.assertIn('action   e2e:hello  Say hello (as agent; the agent may run it; asks name)', listed)
         self.assertIn('service  e2e/echo  as agent: say', listed)
         self.assertIn('channel  e2e/notes', listed)
 
     def test_its_task_runs_with_an_argument(self):
-        self.assertRegex(self.station.berth('tasks', HOST).stdout, r'e2e:hello\s+Say hello\s+name=…')
+        self.assertRegex(self.station.berth('actions', HOST).stdout, r'e2e:hello\s+Say hello\s+name=…')
         done = self.station.berth('run', HOST, 'e2e:hello', 'name=ada')
         self.assertEqual(done.stdout.strip(), f'hello ada from {AGENT}')
         missing = self.station.berth('run', HOST, 'e2e:hello', check=False)
         self.assertIn('e2e:hello needs name=VALUE', missing.stderr)
-        choices = self.link.get('/v1/tasks/e2e:hello/choices/name')
+        choices = self.link.get('/v1/actions/e2e:hello/choices/name')
         self.assertEqual(choices['choices'], ['ada', 'grace'])
         # The agent may run it too.
         done = self.station.berth('exec', HOST, '--', 'box', 'run', 'e2e:hello', 'name=grace')
@@ -86,6 +86,6 @@ class PluginRemoved(unittest.TestCase):
 
     def test_its_tasks_are_gone_from_berth_and_the_host(self):
         self.assertNotIn('e2e/hello', self.station.berth('plugins').stdout)
-        self.assertNotIn('e2e:hello', self.station.berth('tasks', HOST).stdout)
+        self.assertNotIn('e2e:hello', self.station.berth('actions', HOST).stdout)
         services = json.loads(self.station.root_on_host('cat /etc/berth/services.json').stdout)
         self.assertEqual(services, [])

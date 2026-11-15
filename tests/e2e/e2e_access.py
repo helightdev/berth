@@ -171,7 +171,7 @@ class Access(unittest.TestCase):
         self.assertNotEqual(refused.returncode, 0)
         self.assertRegex(refused.stderr, r'HOST IDENTIFICATION HAS CHANGED|Host key verification failed')
         # berth's own logins say what happened and what to do.
-        said = self.berth('tasks', HOST, check=False)
+        said = self.berth('actions', HOST, check=False)
         self.assertNotEqual(said.returncode, 0)
         self.assertIn(f'berth key host {HOST} --accept', said.stderr)
         self.assertEqual(self.berth('key', 'host', HOST).stdout, recorded)

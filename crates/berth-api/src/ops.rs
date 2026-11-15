@@ -82,7 +82,7 @@ pub enum Body {
 pub enum Role {
     /// Look: hosts, sessions and their output, logs, the inbox, the store.
     View,
-    /// Use the hosts: run tasks and commands, write files, control units.
+    /// Use the hosts: run actions and commands, write files, control units.
     Operate,
     /// Set up: profiles, secrets, registries, plugins, and applying them to hosts.
     Admin,
@@ -198,12 +198,12 @@ pub static HOST: &[Op] = &[
     call("sessions.input", "POST", "/v1/sessions/{id}/input"),
     call("sessions.resize", "POST", "/v1/sessions/{id}/resize"),
     call("sessions.signal", "POST", "/v1/sessions/{id}/signal"),
-    call("tasks.list", "GET", "/v1/tasks"),
-    call("tasks.run", "POST", "/v1/tasks/{name}"),
+    call("actions.list", "GET", "/v1/actions"),
+    call("actions.run", "POST", "/v1/actions/{action}"),
     call(
-        "tasks.choices",
+        "actions.choices",
         "GET",
-        "/v1/tasks/{name}/choices/{argument}",
+        "/v1/actions/{action}/choices/{argument}",
     ),
     call("system.stats", "GET", "/v1/stats"),
     call("system.power", "POST", "/v1/power/{verb}"),
@@ -259,9 +259,13 @@ pub static SERVE: &[Op] = &[
         call("hosts.act", "POST", "/v1/hosts/{name}/actions/{action}"),
         Role::View,
     ),
-    call("actions.list", "GET", "/v1/actions"),
+    call("installation.actions", "GET", "/v1/installation/actions"),
     role(
-        call("actions.act", "POST", "/v1/actions/{action}"),
+        call(
+            "installation.act",
+            "POST",
+            "/v1/installation/actions/{action}",
+        ),
         Role::View,
     ),
     admin(call("secrets.list", "GET", "/v1/secrets")),

@@ -68,9 +68,9 @@ pub async fn profile(State(state): App, Path(name): Path<String>) -> Answer<Json
     Ok(Json(saved_profile(&state, &name)?.1))
 }
 
-#[utoipa::path(put, path = "/v1/hosts/{name}/profile", summary = "Save a host's profile: a new host, or a changed one. A host below a workstation needs only its level and access.", tag = "set-up",
+#[utoipa::path(put, path = "/v1/hosts/{name}/profile", summary = "Save a host's profile: a new host, or a changed one. A host that is not a workstation needs only its type and access.", tag = "set-up",
     params(("name" = String, Path, description = "The name to save it under: letters, digits, `-`, `_` and `.`")),
-    request_body(content = Value, description = "The whole profile. A workstation's has a builder object; a reachable or controller host's needs only level and access"),
+    request_body(content = Value, description = "The whole profile. A workstation's has a builder object; a host of the type ssh or managed needs only type and access"),
     responses((status = 200, description = "Saved", body = Done),
               (status = 400, description = "Not a profile, or not a name", body = ErrorBody)))]
 pub async fn save_profile(
@@ -87,8 +87,8 @@ pub async fn save_profile(
     if let Some(builder) = profile["builder"].as_object_mut() {
         builder.remove("ssh_key");
     }
-    berth_core::import::convert_profile(&state.paths, &name, &mut profile);
-    // A workstation's has its set-up's part; a host below that, only how it is reached.
+    berth_core::import::convert_layout(&state.paths, &name, &mut profile);
+    // A workstation's has its set-up's part; a host of another type, only how it is reached.
     let problems = berth_api::profile::problems(&profile);
     if !problems.is_empty() {
         return Err(bad(problems.join("; ")));

@@ -97,6 +97,7 @@ on_each_backend!(
     resealing_keeps_the_times,
     resealing_refuses_a_table_that_changed,
     the_old_files_go_into_an_empty_store,
+    sealed_profiles_of_an_older_berth_take_the_names_of_now,
     a_copy_takes_every_table_as_it_is_and_back,
     a_copy_into_a_store_that_has_rows_keeps_them,
 );
@@ -1220,6 +1221,60 @@ fn the_old_files_go_into_an_empty_store(place: &Place) {
         std::fs::read_to_string(paths.settings_file()).unwrap(),
         "{}\n"
     );
+}
+
+/// Profiles of berth 0.5, sealed and in any scope, are given the names of now
+/// once, with nothing else changed.
+fn sealed_profiles_of_an_older_berth_take_the_names_of_now(place: &Place) {
+    let store = place.open().with_keys(Some(keys()), None);
+    let old = |level: &str| {
+        json!({"level": level, "profile": "cloud", "access": {"address": "192.0.2.4"}}).to_string()
+    };
+    store
+        .write(kind::PROFILE, OWN, "dock", old("reachable").as_bytes())
+        .unwrap();
+    store
+        .write(kind::PROFILE, OWN, "studio", old("workstation").as_bytes())
+        .unwrap();
+    store
+        .write(
+            kind::PROFILE,
+            "served:http://192.0.2.7:7777",
+            "yard",
+            old("controller").as_bytes(),
+        )
+        .unwrap();
+    let now = br#"{"type":"ssh","target":"laptop"}"#;
+    store.write(kind::PROFILE, OWN, "pier", now).unwrap();
+    let before = stored_row(&store, kind::PROFILE, OWN, "pier");
+    assert_eq!(crate::import::take_in_names(&store).unwrap(), 3);
+    let read = |scope: &str, name: &str| {
+        store
+            .read_json(kind::PROFILE, scope, name)
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(
+        read(OWN, "dock"),
+        json!({"type": "ssh", "target": "cloud", "access": {"address": "192.0.2.4"}})
+    );
+    assert_eq!(
+        read(OWN, "studio"),
+        json!({"target": "cloud", "access": {"address": "192.0.2.4"}})
+    );
+    assert_eq!(
+        read("served:http://192.0.2.7:7777", "yard")["type"],
+        "managed"
+    );
+    assert!(stored_row(&store, kind::PROFILE, OWN, "dock").sealed);
+    assert_eq!(stored_row(&store, kind::PROFILE, OWN, "pier"), before);
+    assert!(
+        store
+            .names(kind::META, OWN)
+            .unwrap()
+            .contains(&crate::import::NAMES_MARKER.to_owned())
+    );
+    assert_eq!(crate::import::take_in_names(&store).unwrap(), 0);
 }
 
 /// A store with something in every table: messages, a cursor, values at a

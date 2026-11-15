@@ -8,7 +8,7 @@ berth sets up and looks after agent workstations. These are Ubuntu machines with
 | --- | --- |
 | `crates/berth/` | The `berth` program: terminal UI, commands and `berth serve` (`crates/berth/src/serve/`). In `serve/`, `actions.rs` has the actions of hosts and of the installation, `keys.rs` the key ring's routes, `provisioners.rs` and `resources.rs` those of provisioners and resources |
 | `crates/berth-api/` | Types and the operations table shared by every program (`ops.rs` names each operation, its HTTP route and its role) |
-| `crates/berth-core/` | Hosts, profiles, links to hosts, registries and secrets, and plugins. The store is in `store/`. `kept.rs` and `plugin_state.rs` write files from it, and `import.rs` takes in the files of older versions. `kept_profile.rs` is the profile a host keeps of itself and `berth adopt`. `runner.rs` runs every action as a job. `keys/` is the key ring and how berth logs in to hosts. `level.rs` says what a host can do at each level. `provisioner.rs` and `resource.rs` are the provisioners of plugins and what they made |
+| `crates/berth-core/` | Hosts, profiles, links to hosts, registries and secrets, and plugins. The store is in `store/`. `kept.rs` and `plugin_state.rs` write files from it, and `import.rs` takes in the files of older versions. `kept_profile.rs` is the profile a host keeps of itself and `berth adopt`. `runner.rs` runs every action as a job. `keys/` is the key ring and how berth logs in to hosts. `host_type.rs` says what a host of each type can do. `provisioner.rs` and `resource.rs` are the provisioners of plugins and what they made |
 | `crates/berth-tui/` | The parts of the UI that `berth` and `berth-remote` share |
 | `crates/berth-pty/` | Terminals for sessions |
 | `crates/berthd/`, `crates/box/` | The controller on each host and the agent's own tool there |
@@ -93,11 +93,11 @@ CI builds berth once and runs the tests of each test host as a shard, in a job o
 
 ### Actions
 
-Give a new thing a host, the installation, a provisioner or a resource can do an action in the matching registry. It does not get a route of its own. The routes `hosts.act`, `actions.act`, `provisioners.act` and `resources.act` run it, and each action says whether it can run now and what role it needs.
+Give a new thing a host, the installation, a provisioner or a resource can do an action in the matching registry. It does not get a route of its own. The routes `hosts.act`, `installation.act`, `provisioners.act` and `resources.act` run it, and each action says whether it can run now and what role it needs.
 
 | Subject | Where its actions are |
 | --- | --- |
-| A host | `HOST` in `crates/berth/src/serve/actions.rs`, besides the tasks its controller lists |
+| A host | `HOST` in `crates/berth/src/serve/actions.rs`, besides the actions its controller lists |
 | The installation | `INSTALLATION` in the same file |
 | A provisioner | `provisioner::actions` in `crates/berth-core/src/provisioner.rs`: its plugin's actions and berth's own |
 | A resource | `resource::actions` in `crates/berth-core/src/resource.rs`: those of its kind and its plugin's |

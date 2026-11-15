@@ -10,8 +10,10 @@
 //!    the token and the plugin directory stay where they are, as they are
 //!    used as files; only `serve.setup-key` goes.
 //!
-//! Two more change rows the store has already: how hosts are reached moves
-//! into `access`, and the records of hosts' machines become resources.
+//! More change rows the store has already: how hosts are reached moves into
+//! `access`, the records of hosts' machines become resources, provisioners
+//! get names of their own, and profiles take the names their fields have
+//! now ([`take_in_names`]).
 //!
 //! The rows of an import go into the store in one change with its marker, so
 //! they are all there or none of them are. Only then are the old files put
@@ -44,6 +46,9 @@ pub const RESOURCES_MARKER: &str = "import:resources";
 /// The marker of the sixth, which registers each provisioner that has
 /// settings or made something under a name of its own.
 pub const PROVISIONERS_MARKER: &str = "import:provisioners";
+/// The marker of the seventh, which gives every stored profile the names its
+/// fields have now: `type` for `level` and `target` for `profile`.
+pub const NAMES_MARKER: &str = "import:names";
 
 /// What a row of the import is.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -74,6 +79,7 @@ pub fn run(paths: &Paths, installation: &Installation, store: &Store) -> Result<
         && marked(store, ACCESS_MARKER)?
         && marked(store, RESOURCES_MARKER)?
         && marked(store, PROVISIONERS_MARKER)?
+        && marked(store, NAMES_MARKER)?
     {
         return Ok(());
     }
@@ -151,7 +157,52 @@ pub fn run(paths: &Paths, installation: &Installation, store: &Store) -> Result<
             );
         }
     }
+    if !marked(store, NAMES_MARKER)? {
+        let renamed = take_in_names(store)?;
+        if renamed > 0 {
+            let (noun, verb) = match renamed {
+                1 => ("profile", "says"),
+                _ => ("profiles", "say"),
+            };
+            eprintln!("berth: {renamed} {noun} {verb} type for level and target for profile now");
+        }
+    }
     Ok(())
+}
+
+/// The seventh import, in one change with its marker: every stored profile,
+/// of every scope, takes the names of now ([`berth_api::profile::take_old_names`]).
+/// The values may be sealed, so this is done here rather than by a migration
+/// of the database. Returns how many profiles changed.
+pub(crate) fn take_in_names(store: &Store) -> Result<usize> {
+    let mut scopes = std::collections::BTreeSet::new();
+    if let crate::store::Rows::State(rows) = store.export(crate::store::Table::State)? {
+        for row in rows.into_iter().filter(|row| row.kind == kind::PROFILE) {
+            scopes.insert(row.scope);
+        }
+    }
+    let mut writes: Vec<(String, String, Vec<u8>)> = vec![];
+    for scope in scopes {
+        for (name, value) in store.entries(kind::PROFILE, &scope)? {
+            let Ok(mut config) = serde_json::from_slice::<Value>(&value) else {
+                continue;
+            };
+            if berth_api::profile::take_old_names(&mut config) {
+                writes.push((scope.clone(), name, config.to_string().into_bytes()));
+            }
+        }
+    }
+    let renamed = writes.len();
+    let marker =
+        json!({"version": berth_api::VERSION, "at": berth_api::rfc3339(berth_api::unix_now())});
+    let marker = marker.to_string().into_bytes();
+    let mut rows: Vec<(&str, &str, &str, Vec<u8>)> = writes
+        .iter()
+        .map(|(scope, name, value)| (kind::PROFILE, scope.as_str(), name.as_str(), value.clone()))
+        .collect();
+    rows.push((kind::META, OWN, NAMES_MARKER, marker));
+    store.change(&rows, &[])?;
+    Ok(renamed)
 }
 
 /// The sixth import, in one change with its marker: each type of provisioner
@@ -545,10 +596,17 @@ pub(crate) fn take_in_access(
     Ok(converted.notices)
 }
 
-/// A profile of an older layout as it is read or given: of the access
-/// layout, its key file taken into the ring. A file is written only when the
-/// user saves it.
+/// A profile of an older layout as it is read or given: with the names its
+/// fields have now, and of the access layout, its key file taken into the
+/// ring. A file is written only when the user saves it.
 pub fn convert_profile(paths: &Paths, title: &str, config: &mut Value) {
+    berth_api::profile::take_old_names(config);
+    convert_layout(paths, title, config);
+}
+
+/// A profile of the layout before `access`, in the access layout, its key
+/// file taken into the ring.
+pub fn convert_layout(paths: &Paths, title: &str, config: &mut Value) {
     use crate::keys::ring::{Halves, blob};
     if config["builder"].as_object().is_none_or(|builder| {
         ![
@@ -1208,6 +1266,8 @@ mod tests {
             json!({"address": "192.0.2.10", "user": "admin", "auth": "ssh", "sudo": "password"})
         );
         assert!(berth_api::profile::asks_become_pass(&studio));
+        assert_eq!(studio["target"], "cloud");
+        assert!(studio.get("profile").is_none());
         assert_eq!(machine_of(&store, "studio").unwrap().external_id, "vm-1");
         let mut applied = studio.clone();
         applied["access"]["user"] = json!("ops");
@@ -1289,17 +1349,86 @@ mod tests {
     }
 
     #[test]
+    fn an_installation_of_berth_05_gives_its_profiles_the_names_of_now() {
+        let (_dir, paths) = scratch();
+        // berth 0.5 had run every import but the last, and saved hosts of each level.
+        let store = open(&paths);
+        store
+            .change(&[], &[(kind::META, OWN, NAMES_MARKER)])
+            .unwrap();
+        for (name, level) in [("dock", "reachable"), ("pier", "controller")] {
+            let old =
+                json!({"level": level, "profile": "cloud", "access": {"address": "192.0.2.4"}});
+            store
+                .write(kind::PROFILE, OWN, name, old.to_string().as_bytes())
+                .unwrap();
+        }
+        let studio = json!({"hostname": "studio", "profile": "laptop", "builder": {}});
+        store
+            .write(kind::PROFILE, OWN, "studio", studio.to_string().as_bytes())
+            .unwrap();
+        let found = installation(&paths);
+        run(&paths, &found, &store).unwrap();
+        assert!(read(&store, kind::META, NAMES_MARKER).is_some());
+        let dock = json_row(&store, kind::PROFILE, "dock").unwrap();
+        assert_eq!(
+            (&dock["type"], &dock["target"]),
+            (&json!("ssh"), &json!("cloud"))
+        );
+        assert_eq!(
+            json_row(&store, kind::PROFILE, "pier").unwrap()["type"],
+            "managed"
+        );
+        assert_eq!(
+            json_row(&store, kind::PROFILE, "studio").unwrap(),
+            json!({"hostname": "studio", "target": "laptop", "builder": {}})
+        );
+        // A row an older berth writes later is read with the names of now.
+        let late = json!({"level": "controller", "access": {"address": "192.0.2.5"}});
+        store
+            .write(kind::PROFILE, OWN, "late", late.to_string().as_bytes())
+            .unwrap();
+        let place = crate::profiles::Place::own("late").unwrap();
+        assert_eq!(place.load(&paths).unwrap().unwrap()["type"], "managed");
+        let listed = crate::profiles::list(&paths, OWN).unwrap();
+        let (_, listed) = listed.iter().find(|(name, _)| name == "late").unwrap();
+        assert!(listed.get("level").is_none());
+    }
+
+    #[test]
+    fn a_profile_given_in_a_file_is_read_with_the_names_of_now() {
+        let (dir, paths) = scratch();
+        let file = dir.path().join("dock.json");
+        fs::write(
+            &file,
+            r#"{"level": "reachable", "profile": "cloud", "access": {"address": "192.0.2.4"}}"#,
+        )
+        .unwrap();
+        let place = crate::profiles::Place::File(file.clone());
+        let read = place.load(&paths).unwrap().unwrap();
+        assert_eq!(
+            read,
+            json!({"type": "ssh", "target": "cloud", "access": {"address": "192.0.2.4"}})
+        );
+        // The file keeps what it said until it is saved.
+        assert!(fs::read_to_string(&file).unwrap().contains("reachable"));
+        place.save(&paths, &read).unwrap();
+        assert!(!fs::read_to_string(&file).unwrap().contains("level"));
+    }
+
+    #[test]
     fn a_new_installation_gets_only_the_marker() {
         let (_dir, paths) = scratch();
         let store = open(&paths);
         let report = store.seal_report().unwrap();
-        assert_eq!((report.sealed, report.plain), (0, 6));
+        assert_eq!((report.sealed, report.plain), (0, 7));
         assert!(read(&store, kind::META, MARKER).is_some());
         assert!(read(&store, kind::META, PROVISIONERS_MARKER).is_some());
         assert!(read(&store, kind::META, PROFILES_MARKER).is_some());
         assert!(read(&store, kind::META, KEYS_MARKER).is_some());
         assert!(read(&store, kind::META, ACCESS_MARKER).is_some());
         assert!(read(&store, kind::META, RESOURCES_MARKER).is_some());
+        assert!(read(&store, kind::META, NAMES_MARKER).is_some());
         assert!(!paths.config_dir.join("migrated").exists());
         assert!(!paths.settings_file().exists());
     }
@@ -1313,8 +1442,8 @@ mod tests {
         let store = open(&paths);
         assert!(store.encrypted());
         let report = store.seal_report().unwrap();
-        // Two secrets, a registry, two settings and the six markers.
-        assert_eq!((report.sealed, report.plain), (11, 0));
+        // Two secrets, a registry, two settings and the seven markers.
+        assert_eq!((report.sealed, report.plain), (12, 0));
         assert_eq!(read(&store, kind::SECRET, "github").unwrap(), "ghp-made-up");
     }
 

@@ -18,10 +18,10 @@ pub fn openapi() -> Value {
     api.info.version = berth_api::VERSION.into();
     api.info.description = Some(
         "One API over all hosts, with the inbox and a key-value store. Everything under \
-         /v1/hosts/{name}/ that is not named here is that host's own API, passed through unchanged; \
-         only the `secrets` task is refused, which the host's `secrets` action stands in for. \
+         /v1/hosts/{name}/controller/ is that host's own API, passed through unchanged; \
+         only the controller's own `secrets` action is refused, which the server's `secrets` action of the host stands in for. \
          What can be done to a host or to the installation is listed at /v1/hosts/{name}/actions and \
-         /v1/actions, and run by POST to an action's name there. Over TCP every request \
+         /v1/installation/actions, and run by POST to an action's name there. Over TCP every request \
          carries the server's token or an OAuth 2.0 access token as a bearer, and needs the role its operation names. \
          The routes of the setup key take that key as the bearer instead."
             .into(),
@@ -68,7 +68,8 @@ fn upgrade(stream: &Stream, id: &str) -> Value {
     })
 }
 
-/// Put a host's paths under `/v1/hosts/{name}` and its schemas beside ours.
+/// Put a host's paths under `/v1/hosts/{name}/controller` and its schemas
+/// beside ours.
 fn merge_host(document: &mut Value, host: &Value) {
     let name = json!({"name": "name", "in": "path", "required": true, "description": NAME, "schema": {"type": "string"}});
     for (path, item) in host["paths"].as_object().into_iter().flatten() {
@@ -99,11 +100,12 @@ fn merge_host(document: &mut Value, host: &Value) {
                 .collect();
             operation["tags"] = json!(tags);
         }
-        let target = format!("/v1/hosts/{{name}}{rest}");
-        // What berth serve answers itself is not the host's.
-        if document["paths"].get(&target).is_none() {
-            document["paths"][target] = item;
-        }
+        let target = format!("/v1/hosts/{{name}}/controller{rest}");
+        assert!(
+            document["paths"].get(&target).is_none(),
+            "{target} is a route of berth serve and of the host"
+        );
+        document["paths"][target] = item;
     }
     for (name, schema) in host["components"]["schemas"]
         .as_object()
@@ -123,7 +125,7 @@ pub fn operations() -> Value {
     let own = serde_json::to_value(own).expect("the document is JSON");
     let mut document = berthd::http::operations_of(
         "berth serve",
-        "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME. Only the `secrets` task is refused; the host's `secrets` action sends the server's own. An action's own role is asked when it runs. Each operation names the least role a caller over TCP needs: view, operate or admin.",
+        "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME/controller. Only the controller's own `secrets` action is refused; the server's `secrets` action of the host sends the server's secrets. An action's own role is asked when it runs. Each operation names the least role a caller over TCP needs: view, operate or admin.",
         berth_api::ops::SERVE,
         &own,
         &|op| streams::SERVE.iter().find(|stream| stream.path == op.path),
@@ -139,7 +141,7 @@ pub fn asyncapi() -> Value {
         .map(|stream| Stream {
             id: keep(format!("host.{}", stream.id)),
             path: keep(format!(
-                "/v1/hosts/{{name}}{}",
+                "/v1/hosts/{{name}}/controller{}",
                 stream.path.trim_start_matches("/v1")
             )),
             summary: stream.summary,
@@ -153,7 +155,7 @@ pub fn asyncapi() -> Value {
     let all: Vec<&Stream> = streams::SERVE.iter().chain(&hosted).collect();
     streams::asyncapi(
         "berth serve",
-        "The WebSockets of berth serve: its own, and each host's under /v1/hosts/{name}. \
+        "The WebSockets of berth serve: its own, and each host's under /v1/hosts/{name}/controller. \
          Text frames are JSON, one message each; binary frames carry only session and job bytes.",
         &all,
     )
@@ -169,13 +171,13 @@ mod tests {
         let paths = [
             "/v1/hosts",
             "/v1/hosts/{name}/actions/{action}",
-            "/v1/actions",
+            "/v1/installation/actions",
             "/v1/jobs/{id}/output",
             "/v1/inbox/{host}/{id}/done",
             "/v1/kv/{namespace}/{key}",
             // The host's own, under its name.
-            "/v1/hosts/{name}/sessions/{id}/output",
-            "/v1/hosts/{name}/tasks",
+            "/v1/hosts/{name}/controller/sessions/{id}/output",
+            "/v1/hosts/{name}/controller/actions",
         ];
         for path in paths {
             assert!(document["paths"].get(path).is_some(), "{path}");
@@ -222,7 +224,7 @@ mod tests {
         let streams = asyncapi();
         assert_eq!(
             streams["channels"]["host.session"]["address"],
-            "/v1/hosts/{name}/sessions/{id}"
+            "/v1/hosts/{name}/controller/sessions/{id}"
         );
         assert_eq!(streams["channels"]["events"]["address"], "/v1/events");
     }
@@ -238,15 +240,20 @@ mod tests {
             "components": {"schemas": {"Done": {"ours": false}, "Session": {}}},
         });
         merge_host(&mut document, &host);
-        let get = &document["paths"]["/v1/hosts/{name}/sessions/{id}"]["get"];
+        let get = &document["paths"]["/v1/hosts/{name}/controller/sessions/{id}"]["get"];
         assert_eq!(get["operationId"], "host_session");
         assert_eq!(get["parameters"][0]["name"], "name");
         assert_eq!(get["parameters"][1]["name"], "id");
         assert_eq!(get["tags"][0], "host: sessions");
+        // The host's actions and the server's own of the host are apart.
         assert!(
             document["paths"]["/v1/hosts/{name}/actions"]["post"]
                 .get("operationId")
                 .is_none()
+        );
+        assert_eq!(
+            document["paths"]["/v1/hosts/{name}/controller/actions"]["post"]["operationId"],
+            "host_theirs"
         );
         assert_eq!(document["components"]["schemas"]["Done"]["ours"], true);
         assert!(document["components"]["schemas"].get("Session").is_some());

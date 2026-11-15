@@ -210,11 +210,14 @@ pub fn operation(method: &str, path: &str, stream: bool) -> Result<Option<&'stat
     if let Some((op, _)) = ops::recognise(ops::SERVE, kind, method, path) {
         return Ok(Some(op));
     }
-    let Some((_, rest)) = path
+    let Some((_, below)) = path
         .strip_prefix("/v1/hosts/")
         .and_then(|below| below.split_once('/'))
     else {
         return Ok(None);
+    };
+    let Some(rest) = below.strip_prefix("controller/") else {
+        return Err(());
     };
     match ops::recognise(ops::HOST, kind, method, &format!("/v1/{rest}")) {
         Some((op, _)) => Ok(Some(op)),
@@ -454,13 +457,32 @@ mod tests {
             "hosts.act"
         );
         assert_eq!(name("GET", "/v1/hosts/a/actions", false), "hosts.actions");
-        assert_eq!(name("POST", "/v1/actions/rollout", false), "actions.act");
-        assert_eq!(name("GET", "/v1/hosts/a/sessions", false), "sessions.list");
         assert_eq!(
-            name("GET", "/v1/hosts/a/sessions/x", true),
+            name("POST", "/v1/installation/actions/rollout", false),
+            "installation.act"
+        );
+        assert_eq!(
+            name("GET", "/v1/hosts/a/controller/sessions", false),
+            "sessions.list"
+        );
+        assert_eq!(
+            name("GET", "/v1/hosts/a/controller/sessions/x", true),
             "sessions.attach"
         );
-        assert_eq!(name("GET", "/v1/hosts/a/ports/8080", true), "ports.connect");
+        assert_eq!(
+            name("GET", "/v1/hosts/a/controller/ports/8080", true),
+            "ports.connect"
+        );
+        // The host's actions and the server's view of them do not meet.
+        assert_eq!(
+            name("GET", "/v1/hosts/a/controller/actions", false),
+            "actions.list"
+        );
+        assert_eq!(
+            name("POST", "/v1/hosts/a/controller/actions/x", false),
+            "actions.run"
+        );
+        assert!(operation("GET", "/v1/hosts/a/sessions", false).is_err());
         assert_eq!(
             name("PUT", "/v1/secrets/registry%2Fmain", false),
             "secrets.set"
@@ -482,7 +504,7 @@ mod tests {
         };
         let admin = Access::local();
         let apply = ops::find(ops::SERVE, "hosts.save").unwrap();
-        let run = ops::find(ops::HOST, "tasks.run").unwrap();
+        let run = ops::find(ops::HOST, "actions.run").unwrap();
         assert_eq!(auth.role(&admin), Role::Operate);
         assert!(auth.allows(&admin, run).is_ok());
         assert!(auth.allows(&admin, apply).unwrap_err().1.contains("set-up"));

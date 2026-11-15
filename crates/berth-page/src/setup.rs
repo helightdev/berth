@@ -83,7 +83,7 @@ impl Setup {
     /// The set-up of a new host, from the server's starting profile.
     pub fn new(name: &str, template: Value, admin: &Admin) -> Setup {
         let mut setup = Setup::with(name, template, Value::Null);
-        setup::fit_profile(&mut setup.config, setup.action);
+        setup::fit_target(&mut setup.config, setup.action);
         setup.ask_machine(admin);
         setup
     }
@@ -144,7 +144,7 @@ impl Setup {
                     self.action = Action::Ssh;
                 }
                 // A profile saved with another kind opens as the machine's.
-                setup::fit_profile(&mut self.config, self.action);
+                setup::fit_target(&mut self.config, self.action);
             }
             Err(error) => self.failed = Some(error),
         }
@@ -265,10 +265,10 @@ impl Setup {
             Some(Entry::Feature(index)) => self.features[index].help.clone(),
             Some(Entry::Registry(_)) => setup::REGISTRY_HELP.into(),
             Some(Entry::Secret(_)) => setup::SECRET_HELP.into(),
-            Some(Entry::Run) => match (self.action, berth_api::profile::level(&self.config)) {
+            Some(Entry::Run) => match (self.action, berth_api::profile::host_type(&self.config)) {
                 (Action::CloudSeed, _) => "Saves the profile on the server and renders the seed. Paste it into the provider's user data field when creating the machine.".into(),
-                (Action::Ssh, berth_api::HostLevel::Reachable) => "Saves the host on the server. Nothing is installed: the server logs in to it over SSH, with a key of its own that the host takes.".into(),
-                (Action::Ssh, berth_api::HostLevel::Controller) => "Saves the profile on the server and installs berth's controller alone on the host from there.".into(),
+                (Action::Ssh, berth_api::HostType::Ssh) => "Saves the host on the server. Nothing is installed: the server logs in to it over SSH, with a key of its own that the host takes.".into(),
+                (Action::Ssh, berth_api::HostType::Managed) => "Saves the profile on the server and installs berth's controller alone on the host from there.".into(),
                 _ => "Saves the profile on the server and applies it to the host from there.".into(),
             },
             Some(Entry::Machine(pick)) => self.machine.help(pick),
@@ -429,20 +429,20 @@ impl Setup {
             return Some("Fix the listed problems first".into());
         }
         let (name, action, size) = (self.name.clone(), self.action, self.panel);
-        // Over SSH a host below a workstation gets the controller alone, or nothing.
-        let level = berth_api::profile::level(&self.config);
+        // Over SSH a host that is not a workstation gets the controller alone, or nothing.
+        let host_type = berth_api::profile::host_type(&self.config);
         let install = berth_api::Action {
             name: "install-controller".into(),
             label: "Install the controller".into(),
             ..berth_api::Action::default()
         };
         admin.save(&self.name, &self.config, move |admin| {
-            match (action, level) {
+            match (action, host_type) {
                 (Action::CloudSeed, _) => admin.seed(&name),
-                (Action::Ssh, berth_api::HostLevel::Controller) => {
+                (Action::Ssh, berth_api::HostType::Managed) => {
                     admin.act(&name, &install, &Default::default(), size)
                 }
-                (Action::Ssh, berth_api::HostLevel::Reachable) => {}
+                (Action::Ssh, berth_api::HostType::Ssh) => {}
                 _ => admin.apply(&name, None, size),
             }
         });
@@ -453,7 +453,7 @@ impl Setup {
         match entry {
             Entry::Action(action) => {
                 self.action = action.choose(&mut self.config);
-                setup::fit_profile(&mut self.config, self.action);
+                setup::fit_target(&mut self.config, self.action);
             }
             Entry::Field(field) => return self.activate(field),
             Entry::Registry(index) => {
@@ -472,7 +472,7 @@ impl Setup {
                 // The machine is made from the profile, which has to be whole
                 // first, and of the kind a created machine is.
                 if pick == machine::Pick::Create {
-                    setup::fit_profile(&mut self.config, Action::Machine);
+                    setup::fit_target(&mut self.config, Action::Machine);
                 }
                 if pick == machine::Pick::Create && !self.problems().is_empty() {
                     return Some("Fix the listed problems first".into());

@@ -1,13 +1,13 @@
 //! Plugins: npm-format packages whose `package.json` has a `berth` section.
-//! Each contributes features to the groups of the Features page, and tasks to
-//! the overview of a host. The role does the installing from the same manifest.
+//! Each contributes features to the groups of the Features page, and actions
+//! to the overview of a host. The role does the installing from the same manifest.
 //! A plugin can also bring provisioners, programs that create the machine a
 //! profile describes; berth runs those itself (see [`crate::provision`]).
 
 use crate::{Result, paths::Paths, server::Server};
 use berth_api::{
-    AppliedPlugin, PluginFeature, PluginInfo, PluginList as Listing, PluginOrigin,
-    PluginReport as Report, PluginService, PluginTask, PluginUpdate, PluginUpdates,
+    AppliedPlugin, PluginAction as ListedAction, PluginFeature, PluginInfo, PluginList as Listing,
+    PluginOrigin, PluginReport as Report, PluginService, PluginUpdate, PluginUpdates,
     ProvisionerInfo,
 };
 use serde_json::{Value, json};
@@ -19,7 +19,7 @@ pub struct PluginAction {
     pub label: String,
     pub help: &'static str,
     /// Shell command the host runs. berth does not run it from here: the
-    /// role writes it into the host's task list.
+    /// role writes it into the host's list of actions.
     pub run: String,
     /// `agent`, `operator` or `root`.
     pub user: String,
@@ -27,7 +27,7 @@ pub struct PluginAction {
     pub terminal: bool,
     /// The group of the overview it is listed in; the plugin's own when empty.
     pub group: String,
-    /// Tasks of berth it is part of, such as `status`. It runs after them and
+    /// Actions of berth it is part of, such as `status`. It runs after them and
     /// has no row of its own.
     pub extends: Vec<String>,
     /// The agent may run it with `box run`.
@@ -272,10 +272,10 @@ fn read(dir: &Path) -> Option<Plugin> {
                     terminal: action["terminal"].as_bool().unwrap_or(false),
                     group: text(action, "group"),
                     extends: match &action["extends"] {
-                        Value::String(task) => vec![task.clone()],
-                        tasks => list(tasks)
+                        Value::String(name) => vec![name.clone()],
+                        names => list(names)
                             .iter()
-                            .filter_map(|task| task.as_str().map(str::to_owned))
+                            .filter_map(|name| name.as_str().map(str::to_owned))
                             .collect(),
                     },
                     agent: action["agent"].as_bool().unwrap_or(false),
@@ -286,7 +286,7 @@ fn read(dir: &Path) -> Option<Plugin> {
                         })
                         .filter(|argument| valid_name(&argument.name))
                         // Only a provisioner's arguments size a machine or are a
-                        // list of values; a task's offers them with `choices`.
+                        // list of values; another action offers them with `choices`.
                         .map(|argument| berth_api::Argument {
                             kind: String::new(),
                             values: vec![],
@@ -570,10 +570,10 @@ impl Plugin {
                     label: feature.label.clone(),
                     group: feature.group.clone(),
                     help: feature.help.to_owned(),
-                    tasks: feature
+                    actions: feature
                         .actions
                         .iter()
-                        .map(|action| PluginTask {
+                        .map(|action| ListedAction {
                             name: action.name.clone(),
                             label: action.label.clone(),
                             user: action.user.clone(),
@@ -628,22 +628,22 @@ pub fn describe(plugins: &[PluginInfo]) -> String {
                 "  {}/{}  {} ({})\n",
                 plugin.id, feature.id, feature.label, feature.group
             );
-            for task in &feature.tasks {
-                let mut notes = vec![format!("as {}", task.user)];
-                if task.agent {
+            for action in &feature.actions {
+                let mut notes = vec![format!("as {}", action.user)];
+                if action.agent {
                     notes.push("the agent may run it".into());
                 }
-                if !task.extends.is_empty() {
-                    notes.push(format!("part of {}", task.extends.join(", ")));
+                if !action.extends.is_empty() {
+                    notes.push(format!("part of {}", action.extends.join(", ")));
                 }
-                for argument in &task.arguments {
+                for argument in &action.arguments {
                     notes.push(format!("asks {argument}"));
                 }
                 text += &format!(
-                    "    task     {}:{}  {} ({})\n",
+                    "    action   {}:{}  {} ({})\n",
                     plugin.id,
-                    task.name,
-                    task.label,
+                    action.name,
+                    action.label,
                     notes.join("; ")
                 );
             }
@@ -1585,8 +1585,8 @@ mod tests {
         assert_eq!(linked.len(), 1);
         assert_eq!(linked[0].origin(&own), PluginOrigin::Npm);
         let info = linked[0].info(&own);
-        assert_eq!(info.features[0].tasks[0].name, "go");
-        assert!(describe(&[info]).contains("    task     x:go"));
+        assert_eq!(info.features[0].actions[0].name, "go");
+        assert!(describe(&[info]).contains("    action   x:go"));
         assert!(remove(&paths, &shipped[0]).is_err());
         fs::remove_file(own.join("node_modules/berth-plugin-x")).unwrap();
         write(&own.join("x"));

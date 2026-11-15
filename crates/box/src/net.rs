@@ -2,7 +2,7 @@
 
 use crate::{assignments, json_or_string, serve, take_flag};
 use berth_api::client::{self, Client, Frame, encode, encode_path};
-use berth_api::{Service, Session, SessionKind, Task};
+use berth_api::{HostAction, Service, Session, SessionKind};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::io::{IsTerminal, Read, Write};
@@ -41,10 +41,10 @@ fn e(error: impl std::fmt::Display) -> String {
 async fn verb_async(verb: &str, mut args: Vec<String>) -> Result<i32, String> {
     let usage = |text: &str| Err(format!("usage: box {text}"));
     match (verb, args.len()) {
-        ("tasks", 0) | ("services", 0) => {}
+        ("actions", 0) | ("services", 0) => {}
         ("run", 1..) | ("publish", 1..) | ("listen", 1..) | ("call", 2..) | ("serve", 3..) => {}
-        ("tasks" | "services", _) => return usage(verb),
-        ("run", _) => return usage("run TASK [NAME=VALUE…]"),
+        ("actions" | "services", _) => return usage(verb),
+        ("run", _) => return usage("run ACTION [NAME=VALUE…]"),
         ("publish", _) => return usage("publish TOPIC [JSON] [--keep none|last|log]"),
         ("listen", _) => return usage("listen TOPIC-PREFIX [--since ID]"),
         ("call", _) => return usage("call SERVICE METHOD [JSON]"),
@@ -57,12 +57,12 @@ async fn verb_async(verb: &str, mut args: Vec<String>) -> Result<i32, String> {
     let sock = socket()?;
     let mut api = Client::unix(&sock).await.map_err(e)?;
     match verb {
-        "tasks" => {
-            let tasks: Vec<Task> = api.get("/v1/tasks").await.map_err(e)?;
-            for task in tasks.iter().filter(|t| t.extends.is_empty()) {
-                let mut line = format!("{}\t{}", task.name, task.label);
-                if !task.arguments.is_empty() {
-                    let names: Vec<String> = task
+        "actions" => {
+            let actions: Vec<HostAction> = api.get("/v1/actions").await.map_err(e)?;
+            for action in actions.iter().filter(|a| a.extends.is_empty()) {
+                let mut line = format!("{}\t{}", action.name, action.label);
+                if !action.arguments.is_empty() {
+                    let names: Vec<String> = action
                         .arguments
                         .iter()
                         .map(|a| format!("{}{}", a.name, if a.required { "*" } else { "" }))
@@ -84,8 +84,8 @@ async fn verb_async(verb: &str, mut args: Vec<String>) -> Result<i32, String> {
             }
         }
         "run" => {
-            let task = args.remove(0);
-            return run_task(&sock, &mut api, &task, &args).await;
+            let action = args.remove(0);
+            return run_action(&sock, &mut api, &action, &args).await;
         }
         "publish" => {
             let keep = take_flag(&mut args, "--keep")?;
@@ -205,10 +205,10 @@ fn exit_status(code: Option<i64>) -> i32 {
     code.map_or(1, |n| (n & 0xff) as i32)
 }
 
-async fn run_task(
+async fn run_action(
     sock: &std::path::Path,
     api: &mut Client,
-    task: &str,
+    action: &str,
     words: &[String],
 ) -> Result<i32, String> {
     let mut body = json!({"arguments": assignments(words)?});
@@ -218,7 +218,7 @@ async fn run_task(
         body["cols"] = cols.into();
     }
     let session: Session = api
-        .post(&format!("/v1/tasks/{}", encode(task)), &body)
+        .post(&format!("/v1/actions/{}", encode(action)), &body)
         .await
         .map_err(e)?;
     let mut ws = client::websocket_unix(

@@ -3,7 +3,7 @@
 use crate::{
     Result, credentials,
     discovery::{self, Choices, expand_path},
-    fields::{Action, Field, Kind, Step, TASKS},
+    fields::{Action, Field, Kind, OFFERS, Step},
     job::{Job, Stage},
     picker::Picker,
     plugins::{self, Plugin},
@@ -13,7 +13,7 @@ use crate::{
 use berth_core::{
     apply,
     host::Host,
-    level,
+    host_type,
     paths::{Paths, layout},
     profiles::Place,
 };
@@ -32,13 +32,13 @@ pub enum Entry {
     Action(Action),
     Field(Field),
     /// Something the overview of a host offers, by name.
-    Task(&'static str),
+    Offer(&'static str),
     /// The heading of a group on the Features page.
     Group(usize),
     /// A plugin's feature, switched on or off for this host: its index among them.
     Feature(usize),
-    /// A task of the host, by index into what it listed.
-    HostTask(usize),
+    /// An action of the host, by index into what it listed.
+    HostAction(usize),
     /// A session on the host, by index into what it listed.
     HostSession(usize),
     /// A registry this host can be given, by index into `App::registry_names`.
@@ -190,9 +190,9 @@ pub struct App {
     pub renamed: Option<String>,
     /// What the host's controller says the host is, asked in the background
     /// once its address is given on the set-up's Install tab.
-    found_level: Option<mpsc::Receiver<Option<level::Level>>>,
-    /// The level was chosen on the Level row, so what the host says is only told.
-    level_chosen: bool,
+    found_type: Option<mpsc::Receiver<Option<host_type::HostType>>>,
+    /// The type was chosen on the Type row, so what the host says is only told.
+    type_chosen: bool,
 }
 
 /// What the provisioners there are, and the host's machine, came back as.
@@ -309,8 +309,8 @@ impl App {
             own_answers: None,
             own_command: None,
             renamed: None,
-            found_level: None,
-            level_chosen: false,
+            found_type: None,
+            type_chosen: false,
         };
         app.saved = app.config.clone();
         app
@@ -512,7 +512,7 @@ impl App {
             "/access/port",
             "/access/user",
             "/access/auth",
-            "/profile",
+            "/target",
         ] {
             let kept = profile.pointer(pointer).cloned().unwrap_or(Value::Null);
             if self.config.pointer(pointer) != Some(&kept) && !kept.is_null() {
@@ -621,7 +621,7 @@ impl App {
                     rows.push(Row::info(""));
                 }
                 rows.push(heading("Connection"));
-                for line in berth_tui::host::level_lines(&self.name(), &self.host) {
+                for line in berth_tui::host::type_lines(&self.name(), &self.host) {
                     rows.push(Row::info(Line::styled(
                         format!("  {line}"),
                         Style::new().fg(theme::MUTED),
@@ -653,11 +653,11 @@ impl App {
                     // A host without its controller offers Apply above already;
                     // only a workstation is applied.
                     if !matches!(self.host.state, State::Missing | State::Old(_))
-                        && self.host.level == level::Level::Workstation
+                        && self.host.host_type == host_type::HostType::Workstation
                     {
                         setup.push(Row::entry(
                             "  ▸ Apply this configuration",
-                            Entry::Task("apply"),
+                            Entry::Offer("apply"),
                         ));
                     }
                     match groups.iter_mut().find(|(title, _)| title == "Set-Up") {
@@ -682,18 +682,18 @@ impl App {
     }
 
     /// The groups of the overview under the connection, as the host lists its
-    /// tasks: each in the group it names, with the terminal among the first and
+    /// actions: each in the group it names, with the terminal among the first and
     /// the host's sessions after them. A host that cannot be asked says why.
     fn overview_groups(&self) -> Vec<(String, Vec<Row>)> {
         let note = |text: String, colour| {
             Row::info(Line::styled(format!("  {text}"), Style::new().fg(colour)))
         };
         let fixed = |name: &'static str| {
-            let label = TASKS
+            let label = OFFERS
                 .iter()
-                .find(|(task, ..)| *task == name)
+                .find(|(offer, ..)| *offer == name)
                 .map_or(name, |(_, label, _)| label);
-            Row::entry(format!("  ▸ {label}"), Entry::Task(name))
+            Row::entry(format!("  ▸ {label}"), Entry::Offer(name))
         };
         // A host that cannot be worked with yet still has berth's own
         // actions, such as first contact and installing the controller.
@@ -721,9 +721,9 @@ impl App {
                 ]);
             }
             // Below a workstation the controller is installed alone.
-            State::Missing if self.host.level != level::Level::Workstation => {
+            State::Missing if self.host.host_type != host_type::HostType::Workstation => {
                 let rows = vec![
-                    note("berth's controller is not on this host. Install it for sessions, tasks and files here; berth reaches the host over SSH meanwhile.".into(), theme::MUTED),
+                    note("berth's controller is not on this host. Install it for sessions, actions and files here; berth reaches the host over SSH meanwhile.".into(), theme::MUTED),
                     fixed("ssh"),
                 ];
                 return host(rows);
@@ -735,14 +735,14 @@ impl App {
                 ]);
             }
             State::Old(version) => {
-                let raise = match self.host.level {
-                    level::Level::Workstation => "apply",
+                let raise = match self.host.host_type {
+                    host_type::HostType::Workstation => "apply",
                     _ => "install-controller",
                 };
                 let mut rows = vec![note(
                     format!(
                         "The host's tools ({version}) are older than this berth needs. {} brings them up to date.",
-                        TASKS
+                        OFFERS
                             .iter()
                             .find(|(name, ..)| *name == raise)
                             .map_or(raise, |(_, label, _)| label)
@@ -783,8 +783,8 @@ impl App {
             true => self.agent_label().to_owned(),
             false => self.operator_label(),
         };
-        let raise = match self.host.level {
-            level::Level::Workstation => "apply",
+        let raise = match self.host.host_type {
+            host_type::HostType::Workstation => "apply",
             _ => "install-controller",
         };
         let behind = berth_tui::host::behind_note(&self.host).map(|text| {
@@ -803,8 +803,8 @@ impl App {
                             .into_iter()
                             .map(|(line, pick)| {
                                 let entry = match pick {
-                                    Pick::Task(index) => Entry::HostTask(index),
-                                    Pick::Terminal => Entry::Task("terminal"),
+                                    Pick::Action(index) => Entry::HostAction(index),
+                                    Pick::Terminal => Entry::Offer("terminal"),
                                     Pick::Session(index) => Entry::HostSession(index),
                                 };
                                 Row::entry(line, entry)
@@ -816,7 +816,7 @@ impl App {
             .collect()
     }
 
-    /// berth's own actions on the host in their groups, without its tasks.
+    /// berth's own actions on the host in their groups, without its controller's.
     fn own_groups(&self) -> Vec<(String, Vec<Row>)> {
         berth_tui::page::groups(&self.host.actions(), |index| index)
             .into_iter()
@@ -825,7 +825,7 @@ impl App {
                     .rows
                     .into_iter()
                     .filter(|(_, index)| self.host.is_own(*index))
-                    .map(|(line, index)| Row::entry(line, Entry::HostTask(index)))
+                    .map(|(line, index)| Row::entry(line, Entry::HostAction(index)))
                     .collect();
                 (group.title, rows)
             })
@@ -867,12 +867,12 @@ impl App {
         }
     }
 
-    /// The information box for the selected row, as Markdown. A task that has
+    /// The information box for the selected row, as Markdown. An action that has
     /// steps from plugins lists what each of them adds.
     pub fn help(&self) -> String {
         match self.selected_entry() {
             Some(Entry::Feature(index)) => self.catalogue[index].help.clone(),
-            Some(Entry::HostTask(index)) => berth_tui::host::task_help(&self.host, index),
+            Some(Entry::HostAction(index)) => berth_tui::host::action_help(&self.host, index),
             Some(Entry::HostSession(index)) => berth_tui::host::session_help(&self.host, index),
             Some(Entry::Machine(pick)) => self.machine.help(pick),
             _ => self.entry_help().to_owned(),
@@ -883,13 +883,13 @@ impl App {
         match self.selected_entry() {
             Some(Entry::Action(action)) => action.help(),
             Some(Entry::Field(field)) => field.spec().help,
-            Some(Entry::Task(name)) => TASKS
+            Some(Entry::Offer(name)) => OFFERS
                 .iter()
-                .find(|(task, ..)| *task == name)
+                .find(|(offer, ..)| *offer == name)
                 .map_or("", |(.., help)| help),
             Some(Entry::Group(_)) => setup::GROUP_HELP,
             Some(Entry::Feature(_)) => "",
-            Some(Entry::HostTask(_) | Entry::HostSession(_) | Entry::Machine(_)) => "",
+            Some(Entry::HostAction(_) | Entry::HostSession(_) | Entry::Machine(_)) => "",
             Some(Entry::HostRegistry(_)) => {
                 "Give this host the login of this registry. Its npm repositories become the agent's npm registry with the login in ~/.npmrc, and its Docker addresses get the login in ~/.docker/config.json. Registries are set up on the Registries tab of the home screen."
             }
@@ -970,7 +970,7 @@ impl App {
             && !self.methods().contains(&self.action)
         {
             self.action = self.methods()[0];
-            setup::fit_profile(&mut self.config, self.action);
+            setup::fit_target(&mut self.config, self.action);
         }
         // The Manage tab acts on the running host; the others on the install method.
         if step == Step::Manage {
@@ -983,12 +983,12 @@ impl App {
         }
         // A profile saved with another kind opens as the machine's.
         if step != Step::Manage && self.action == Action::Machine {
-            setup::fit_profile(&mut self.config, self.action);
+            setup::fit_target(&mut self.config, self.action);
         }
-        // A host with an address opens on its tasks rather than the address.
-        let task = |entry: &Entry| matches!(entry, Entry::Task(_) | Entry::HostTask(_));
+        // A host with an address opens on its actions rather than the address.
+        let offered = |entry: &Entry| matches!(entry, Entry::Offer(_) | Entry::HostAction(_));
         let first = match self.text(Field::SshHost).is_empty() {
-            false if step == Step::Manage => self.entries().iter().position(task),
+            false if step == Step::Manage => self.entries().iter().position(offered),
             _ => None,
         };
         if step == Step::Settings {
@@ -1360,8 +1360,8 @@ impl App {
         if field == Field::SshHost && !value.is_empty() {
             self.fill_from_ssh_config(value);
         }
-        if field == Field::Level {
-            self.level_chosen = true;
+        if field == Field::Type {
+            self.type_chosen = true;
         }
         // An existing host over SSH is asked what it is, as berth host add does.
         if matches!(
@@ -1371,7 +1371,7 @@ impl App {
             && self.step != Step::Manage
             && !self.text(Field::SshHost).is_empty()
         {
-            self.ask_found_level();
+            self.ask_found_type();
         }
         if field == Field::WifiSsid
             && let Some(password) = self.saved_wifi_password().map(str::to_owned)
@@ -1399,41 +1399,43 @@ impl App {
     }
 
     /// Ask the host's controller, in the background, what the host is.
-    fn ask_found_level(&mut self) {
+    fn ask_found_type(&mut self) {
         let (paths, host) = (self.paths.clone(), self.host_profile());
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = sender.send(level::observe(&paths, &host, None));
+            let _ = sender.send(host_type::observe(&paths, &host, None));
         });
-        self.found_level = Some(receiver);
+        self.found_type = Some(receiver);
     }
 
     /// Take in what the host said it is, when it has. Called between events.
-    pub fn watch_found_level(&mut self) {
-        let Some(answer) = &self.found_level else {
+    pub fn watch_found_type(&mut self) {
+        let Some(answer) = &self.found_type else {
             return;
         };
         if let Ok(found) = answer.try_recv() {
-            self.found_level = None;
-            self.offer_level(found);
+            self.found_type = None;
+            self.offer_type(found);
         }
     }
 
-    /// Offer the level the host was found to have: it is taken unless a
-    /// level was chosen on the Level row, which is only told of it.
-    pub fn offer_level(&mut self, found: Option<level::Level>) {
-        let current = level::of(&self.config);
+    /// Offer the type the host was found to be: it is taken unless a
+    /// type was chosen on the Type row, which is only told of it.
+    pub fn offer_type(&mut self, found: Option<host_type::HostType>) {
+        let current = host_type::of(&self.config);
         let Some(found) = found.filter(|found| *found != current) else {
             return;
         };
         let name = self.name();
-        if self.level_chosen {
-            self.status =
-                format!("{name} answers as a {found} host; its Level here says {current}");
+        if self.type_chosen {
+            self.status = format!(
+                "{name} answers as a host of the type {found}; its Type here says {current}"
+            );
             return;
         }
-        berth_api::profile::set_level(&mut self.config, found);
-        self.status = format!("{name} answers as a {found} host, so its Level is {found} now");
+        berth_api::profile::set_host_type(&mut self.config, found);
+        self.status =
+            format!("{name} answers as a host of the type {found}, so its Type is {found} now");
     }
 
     /// Record the checksum of the chosen ISO so the build can detect a changed file.
@@ -1607,7 +1609,8 @@ impl App {
                 .collect();
         }
         // A host below a workstation needs only to be reached.
-        if action == Action::Ssh && level::of(&self.config) != level::Level::Workstation {
+        if action == Action::Ssh && host_type::of(&self.config) != host_type::HostType::Workstation
+        {
             let access = self.host_profile().access();
             return berth_core::keys::check(&access.address, &access.port)
                 .err()
@@ -1698,7 +1701,7 @@ impl App {
     /// password gets the dialog first, once.
     pub fn connect_host(&mut self) {
         let host = self.host_profile();
-        self.host.level = level::of(&self.config);
+        self.host.host_type = host_type::of(&self.config);
         self.ask_own_actions();
         let own_link = host.access().link.is_some() || host.served(&self.paths).is_some();
         if host.asks_password() && !own_link && self.host.password.is_none() {
@@ -1731,7 +1734,8 @@ impl App {
     fn ask_own_actions(&mut self) {
         let host = self.host_profile();
         let Some(server) = host.served(&self.paths) else {
-            self.host.own = level::local_actions(&host.name, self.host.level, self.host.seen);
+            self.host.own =
+                host_type::local_actions(&host.name, self.host.host_type, self.host.seen);
             return;
         };
         let (sender, receiver) = mpsc::channel();
@@ -1747,7 +1751,7 @@ impl App {
     }
 
     /// Of what a server lists, berth's own that the overview has no row of:
-    /// applying and the seed are on the set-up, sending secrets is a task.
+    /// applying and the seed are on the set-up, sending secrets is an action.
     fn take_own_actions(&mut self) {
         let Some(answers) = &self.own_answers else {
             return;
@@ -1828,30 +1832,30 @@ impl App {
         }
     }
 
-    /// Run a task of the host: after its question and its arguments, if it has any.
-    pub fn begin_task(&mut self, index: usize, confirmed: bool) {
+    /// Run an action of the host: after its question and its arguments, if it has any.
+    pub fn begin_action(&mut self, index: usize, confirmed: bool) {
         if let Some(action) = self.host.actions().get(index)
             && !action.available
         {
             self.status = format!("{} cannot run now: {}", action.title(), action.why);
             return;
         }
-        if let Some((index, values)) = self.host.begin_task(index, confirmed) {
-            self.launch_task(index, values);
+        if let Some((index, values)) = self.host.begin_action(index, confirmed) {
+            self.launch_action(index, values);
         }
     }
 
     /// Take the value typed for the argument being asked and go on to the
-    /// next, or run the task after the last.
+    /// next, or run the action after the last.
     pub fn accept_argument(&mut self) {
         match self.host.accept_argument() {
-            Ok(Some((index, values))) => self.launch_task(index, values),
+            Ok(Some((index, values))) => self.launch_action(index, values),
             Ok(None) => {}
             Err(missing) => self.status = missing,
         }
     }
 
-    fn launch_task(&mut self, index: usize, values: std::collections::BTreeMap<String, String>) {
+    fn launch_action(&mut self, index: usize, values: std::collections::BTreeMap<String, String>) {
         let Some(action) = self.host.actions().get(index).cloned() else {
             return;
         };
@@ -1860,13 +1864,13 @@ impl App {
             self.own_command = Some(own_command(&self.place.argument(), &action, &values));
             return;
         }
-        let mut body = self.host.task_body(&action, &values);
-        // Secrets are built here and travel on the task's standard input. A
+        let mut body = self.host.action_body(&action, &values);
+        // Secrets are built here and travel on the action's standard input. A
         // server's host is given the server's own, which its action sends.
         let secrets = self
             .host
-            .task(&action)
-            .and_then(|task| task.input.as_deref());
+            .host_action(&action)
+            .and_then(|kept| kept.input.as_deref());
         if secrets == Some("secrets") && self.served().is_none() {
             let payload = self
                 .access()
@@ -1969,7 +1973,7 @@ impl App {
         let profile = seeded.as_ref().map(|file| file.path().to_owned());
         let mut command;
         match action {
-            // Reach is only a way to choose, which sets Ssh at the level reachable.
+            // Reach is only a way to choose, which sets Ssh for a host of the type ssh.
             Action::Save | Action::Manage | Action::Machine | Action::Reach => {
                 return Err("Nothing to run".into());
             }
@@ -2177,15 +2181,15 @@ impl App {
         }
         // Over SSH, a host below a workstation gets the controller alone, or nothing.
         if self.action == Action::Ssh {
-            match level::of(&self.config) {
-                level::Level::Workstation => {}
-                level::Level::Controller => {
+            match host_type::of(&self.config) {
+                host_type::HostType::Workstation => {}
+                host_type::HostType::Managed => {
                     let words = ["host", "install", &self.place.argument()].map(str::to_owned);
                     return self.run_own(&words);
                 }
-                level::Level::Reachable => {
+                host_type::HostType::Ssh => {
                     println!(
-                        "Nothing is installed on a reachable host. If it does not take berth's key yet: berth key trust {}",
+                        "Nothing is installed on a host of the type ssh. If it does not take berth's key yet: berth key trust {}",
                         self.place.argument()
                     );
                     return Ok(());
@@ -2245,7 +2249,7 @@ impl App {
     /// Run the chosen action inside the UI. Writing a USB drive first asks for
     /// confirmation and for administrator rights.
     pub fn run(&mut self, confirmed: bool) {
-        // The overview has no action of its own: its rows are the host's tasks.
+        // The overview has no action of its own: its rows are the host's actions.
         if self.action == Action::Manage {
             return;
         }
@@ -2471,7 +2475,7 @@ impl App {
         // The machine is made from the profile, which has to be whole first,
         // and of the kind a created machine is.
         if pick == machine::Pick::Create {
-            setup::fit_profile(&mut self.config, Action::Machine);
+            setup::fit_target(&mut self.config, Action::Machine);
         }
         if pick == machine::Pick::Create && !self.problems().is_empty() {
             self.status = "Fix the listed problems first".into();
@@ -2604,6 +2608,7 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
     if !config.is_object() {
         return Err("Configuration must be a JSON object".into());
     }
+    berth_api::profile::take_old_names(&mut config);
     berth_api::profile::retire_qemu(&mut config);
     for field in ["wifi", "ansible_vars", "builder"] {
         if !config[field].is_null() && !config[field].is_object() {
@@ -2616,7 +2621,7 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
         }
     }
     for (key, value) in [
-        ("profile", json!("laptop")),
+        ("target", json!("laptop")),
         ("keyboard", json!("de")),
         ("operator_username", json!("ops")),
         ("agent_username", json!("agent")),
@@ -2704,7 +2709,7 @@ pub fn parse_config(data: &[u8]) -> Result<Value> {
     if config["agent_privileges"].is_null() && config["agent_passwordless_sudo"] == true {
         config["agent_privileges"] = json!("full");
     }
-    // The task last run from the overview was kept once; the host lists its own now.
+    // The action last run from the overview was kept once; the host lists its own now.
     if let Some(builder) = config["builder"].as_object_mut() {
         builder.remove("manage_task");
     }

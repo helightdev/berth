@@ -20,7 +20,7 @@ Settings of the Ansible role go under `ansible_vars`, and how berth reaches and 
 ```json title="studio's profile (excerpt)"
 {
   "hostname": "studio",
-  "profile": "laptop",
+  "target": "laptop",
   "operator_username": "ops",
   "operator_ssh_public_keys": ["ssh-ed25519 AAAA... you@workstation"],
   "agent_username": "agent",
@@ -39,7 +39,7 @@ Settings of the Ansible role go under `ansible_vars`, and how berth reaches and 
 <TypeTable
   type={{
     hostname: { type: 'string', description: 'Hostname of the installed machine: lower-case letters, digits and hyphens, starting with a letter. F4 generates one. A cloud seed or a created machine without one takes the name of the host.' },
-    profile: { type: '"laptop" | "cloud"', default: '"laptop"', description: 'Provisioning defaults. Only laptop adds a physical login and power settings. A created machine is always cloud. A profile that still says qemu is read as cloud with the recovery SSH CIDR 10.0.2.2/32.' },
+    target: { type: '"laptop" | "cloud"', default: '"laptop"', description: 'What the host is installed on, with its provisioning defaults. Only laptop adds a physical login and power settings. A created machine is always cloud. A profile that still says qemu is read as cloud with the recovery SSH CIDR 10.0.2.2/32.' },
     keyboard: { type: 'string', description: 'Keyboard layout of the installer, such as de or us.' },
     tailscale_auth_key: { type: 'string', description: 'Optional enrollment key; prefer a short-lived, one-use key.' },
     tailscale_auto_key: { type: 'boolean', default: 'false', description: 'berth creates a one-use enrollment key whenever the host joins the tailnet. A pasted key wins. See Access.' },
@@ -112,19 +112,19 @@ Any `devbox_` setting of the role. The ones the terminal UI edits:
 
 Others, such as `devbox_tailscale_serve`, the agent versions and the backup settings, are described where they are used. All defaults are in [`defaults/main.yml`](https://github.com/helightdev/berth/blob/main/ansible/roles/devbox/defaults/main.yml).
 
-## Level
+## Type
 
 <TypeTable
   type={{
-    level: { type: '"reachable" | "controller" | "workstation"', default: '"workstation"', description: 'How much of berth the host is meant to have: nothing, berthd and box alone, or the whole profile. Only a workstation is applied.' },
+    type: { type: '"ssh" | "managed" | "workstation"', default: '"workstation"', description: 'What berth does with the host: only log in over SSH, run berthd and box alone, or apply the whole profile. Only a workstation is applied.' },
   }}
 />
 
-A host below a workstation needs only its level and `access`. The other fields are for a workstation. See [Host levels](/docs/use/levels).
+A host that is not a workstation needs only its type and `access`. The other fields are for a workstation. See [Host types](/docs/use/types).
 
 ```json title="dock's profile"
 {
-  "level": "reachable",
+  "type": "ssh",
   "access": { "address": "192.0.2.4", "user": "ops", "auth": "berth" }
 }
 ```
@@ -157,6 +157,19 @@ A profile of berth 0.4 kept these under `builder`:
 | `link` | `link` |
 
  berth converts stored profiles once, and reads a profile in a file in the new layout. The file keeps the old layout until you save it. A key file that `ssh_key` named becomes a key of the key ring, and the host logs in with it. If berth cannot read the file, the host logs in with `ssh`, and berth says so. A host without a key file logs in with `ssh`, which is what it did before.
+
+## Older profiles
+
+A profile of berth 0.5 or earlier names two fields differently:
+
+| berth 0.5 | Now |
+| --- | --- |
+| `level`: `reachable` | `type`: `ssh` |
+| `level`: `controller` | `type`: `managed` |
+| `level`: `workstation` | No `type`, which means a workstation |
+| `profile` | `target` |
+
+berth converts its stored profiles once, the profiles of a berth server's hosts with them. It reads the old names wherever a profile comes from: a file such as `berth ./studio.json`, `berth profile HOST --set FILE`, and the profile a host keeps, which [`berth adopt`](/docs/use/moving) reads. A file keeps the old names until you save it. berth writes `type` and `target` and nothing else, and the API of `berth serve` takes no other spelling.
 
 ## Install (`builder`)
 

@@ -25,7 +25,7 @@ class Client(unittest.TestCase):
         self.assertNotIn(self.serve.token, shown)
 
     def test_commands_go_through_the_server(self):
-        self.assertIn('secrets', self.station.berth('tasks', HOST).stdout)
+        self.assertIn('secrets', self.station.berth('actions', HOST).stdout)
         self.assertEqual(self.station.berth('exec', HOST, '--', 'id', '-un').stdout.strip(), AGENT)
         done = self.station.berth('exec', HOST, '--', 'sh', '-c', 'cat; exit 5', input='piped\n', check=False)
         self.assertEqual((done.returncode, done.stdout), (5, 'piped\n'))

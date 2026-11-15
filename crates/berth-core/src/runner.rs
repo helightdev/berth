@@ -6,7 +6,7 @@
 //!
 //! What a job runs is one of three executors: a function of berth (applying
 //! a host's profile, a roll-out, a provisioning), a program (ansible, or a
-//! plugin's provisioner), or a task of a host's controller. A task runs as
+//! plugin's provisioner), or an action of a host's controller. An action runs as
 //! a session on the host, and its job copies the session's output while it
 //! runs, so the job stays readable when the host is not and after the host
 //! has forgotten the session.
@@ -292,7 +292,7 @@ pub enum Work {
     /// whether it went well.
     Function(Box<dyn FnOnce(&mut Output) -> bool + Send>),
     Program(Box<Program>),
-    /// A session a task of a host's controller runs, by its id there,
+    /// A session an action of a host's controller runs, by its id there,
     /// followed until it ends.
     Session {
         controller: Box<dyn Controller>,
@@ -904,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn a_task_of_a_host_is_a_job_that_copies_its_session() {
+    fn an_action_of_a_host_is_a_job_that_copies_its_session() {
         let world = world();
         let asked = Arc::new(Mutex::new(vec![]));
         let controller = Box::new(Fake {
@@ -913,7 +913,7 @@ mod tests {
             failures: 1,
         });
         let mut request = Request::new(Subject::Host("studio".into()), "status");
-        // A task runs beside the host's other sessions, without the lock.
+        // An action runs beside the host's other sessions, without the lock.
         request.changes = false;
         let work = Work::Session {
             controller,

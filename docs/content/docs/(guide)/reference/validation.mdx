@@ -16,7 +16,7 @@ CI runs these on every push, without network access to hosts:
 | `ansible-playbook --syntax-check` | The role |
 | `cargo fmt`, `cargo clippy` | Formatting and lints |
 | `vale` | The prose of the README, these docs and the plugin guides |
-| `tests/e2e` | berth against a test host in a container. A profile is applied over SSH, and a second time without changes. Then the tests use the host with SSH keys, tasks, terminals, files, secrets and a plugin from a folder. `berth serve` is tested with its roles, its set-up and its page, and with a restore of the installation from its database and key file. They use a development build of berth |
+| `tests/e2e` | berth against a test host in a container. A profile is applied over SSH, and a second time without changes. Then the tests use the host with SSH keys, actions, terminals, files, secrets and a plugin from a folder. `berth serve` is tested with its roles, its set-up and its page, and with a restore of the installation from its database and key file. They use a development build of berth |
 
 See [Building and releasing](/docs/reference/building#in-containers) for running them locally.
 
@@ -33,7 +33,7 @@ After the first boot, berth reaches the host over SSH and checks:
 
 - berthd and a plugin's service run as systemd units, and berthd starts, stops and restarts units and reads the journal
 - the firewall lets in SSH and nothing else, and SSH takes keys only and refuses root
-- the status task ends without failed units, and a second apply in a row doesn't change anything
+- the status action ends without failed units, and a second apply in a row doesn't change anything
 - `berth apply --all --reboot` refuses while a session runs, then reboots the host, waits for it and checks it
 - the end-to-end tests of commands, berthd's API and secrets
 

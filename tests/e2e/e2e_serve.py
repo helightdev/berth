@@ -36,18 +36,18 @@ class Routes(unittest.TestCase):
             self.assertEqual(answer['error']['code'], 'unauthorized')
 
     def test_a_hosts_operations_go_through(self):
-        started = self.serve.call('POST', f'/v1/hosts/{HOST}/sessions?wait=30s',
+        started = self.serve.call('POST', f'/v1/hosts/{HOST}/controller/sessions?wait=30s',
                                   {'kind': 'process', 'command': ['id', '-un']})
         self.assertEqual((started['exit_code'], text_of(started)), (0, f'{AGENT}\n'))
-        tasks = self.serve.call('GET', f'/v1/hosts/{HOST}/tasks')
+        tasks = self.serve.call('GET', f'/v1/hosts/{HOST}/controller/actions')
         self.assertIn('secrets', [task['name'] for task in tasks])
-        path = f'/v1/hosts/{HOST}/files?path=/home/{AGENT}/through-serve.txt&overwrite=true'
+        path = f'/v1/hosts/{HOST}/controller/files?path=/home/{AGENT}/through-serve.txt&overwrite=true'
         status, _ = self.serve.request('PUT', path, b'written through berth serve',
                                        headers={'Content-Type': 'application/octet-stream'})
         self.assertEqual(status, 200)
         status, read, _ = self.serve.request('GET', path.split('&')[0], raw=True)
         self.assertEqual((status, read), (200, b'written through berth serve'))
-        status, _ = self.serve.request('GET', '/v1/hosts/nowhere/sessions')
+        status, _ = self.serve.request('GET', '/v1/hosts/nowhere/controller/sessions')
         self.assertEqual(status, 404)
 
     def test_the_key_value_store(self):
@@ -67,7 +67,7 @@ class Routes(unittest.TestCase):
 
     def test_the_inbox_takes_in_what_the_host_keeps(self):
         body = {'note': random_text('inbox')}
-        self.serve.call('POST', f'/v1/hosts/{HOST}/sessions?wait=30s', {
+        self.serve.call('POST', f'/v1/hosts/{HOST}/controller/sessions?wait=30s', {
             'kind': 'process', 'command': ['box', 'publish', 'e2e/inbox', json.dumps(body), '--keep', 'log']})
 
         def arrived():
@@ -134,9 +134,9 @@ class Roles(unittest.TestCase):
         process = {'kind': 'process', 'command': ['true']}
         asked = [
             ('GET', '/v1/hosts', None, 'view'),
-            ('GET', f'/v1/hosts/{HOST}/sessions', None, 'view'),
-            ('POST', f'/v1/hosts/{HOST}/sessions?wait=10s', process, 'operate'),
-            ('GET', f'/v1/hosts/{HOST}/files?path=/home/{AGENT}', None, 'operate'),
+            ('GET', f'/v1/hosts/{HOST}/controller/sessions', None, 'view'),
+            ('POST', f'/v1/hosts/{HOST}/controller/sessions?wait=10s', process, 'operate'),
+            ('GET', f'/v1/hosts/{HOST}/controller/files?path=/home/{AGENT}', None, 'operate'),
             ('GET', '/v1/secrets', None, 'admin'),
             ('GET', f'/v1/hosts/{HOST}/profile', None, 'admin'),
         ]
@@ -238,8 +238,8 @@ class SetUp(unittest.TestCase):
         self.serve.call('PUT', f'/v1/hosts/{HOST}/profile', profile)
         try:
             session = self.serve.call('POST', f'/v1/hosts/{HOST}/actions/secrets', expect=202)['session']
-            wait_for('the secrets task to end', lambda: self.serve.call(
-                'GET', f'/v1/hosts/{HOST}/sessions/{session["id"]}').get('exit_code') == 0)
+            wait_for('the secrets action to end', lambda: self.serve.call(
+                'GET', f'/v1/hosts/{HOST}/controller/sessions/{session["id"]}').get('exit_code') == 0)
             env = provisioned().root_on_host(f'cat /home/{AGENT}/.config/devbox/secrets.env').stdout
             self.assertIn(f'export SERVER_TOKEN={value}', env)
         finally:

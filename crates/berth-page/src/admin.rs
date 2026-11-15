@@ -348,7 +348,7 @@ impl Admin {
         let body = json!({"arguments": options.arguments()});
         let asked = json!({"action": "rollout"});
         self.portal
-            .call("actions.act", None, asked, body, move |result| {
+            .call("installation.act", None, asked, body, move |result| {
                 let job = match result {
                     Ok(acted) => acted["job"].clone(),
                     Err(error) => {
@@ -577,7 +577,7 @@ impl Admin {
         self.job("apply", name, body, title, size, |_| {});
     }
 
-    /// What the server lists as the host's actions: its tasks and berth's own.
+    /// What the server lists as the host's actions: its controller's and berth's own.
     pub fn actions(&self, name: &str) {
         let admin = self.clone();
         let host = name.to_owned();

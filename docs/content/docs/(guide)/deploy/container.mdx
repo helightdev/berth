@@ -42,7 +42,7 @@ Ports are published on host loopback only. If Docker runs on another machine, tu
 
 ## Reaching it from berth
 
-The container runs `berthd` for the agent account, without systemd and without root. Sessions, tasks that run as the agent, the channel and files work. Calls that need systemd or another user are refused. A profile connects to it with a `link` command in its `builder` section:
+The container runs `berthd` for the agent account, without systemd and without root. Sessions, actions that run as the agent, the channel and files work. Calls that need systemd or another user are refused. A profile connects to it with a `link` command in its `builder` section:
 
 ```json title="In the host's profile"
 { "builder": { "link": ["docker", "exec", "-i", "CONTAINER", "berthd", "connect"] } }

@@ -23,7 +23,7 @@ from harness import (AGENT, HOST, OPERATOR, SEED, SRC, BerthdLink, Serve, Workst
 def bare_profile(template):
     """A profile for the test host as a new host starts, with no SSH key in it."""
     profile = json.loads(json.dumps(template))
-    profile.update({'hostname': HOST, 'profile': 'cloud', 'keyboard': 'us', 'ansible_vars': light_vars()})
+    profile.update({'hostname': HOST, 'target': 'cloud', 'keyboard': 'us', 'ansible_vars': light_vars()})
     profile['builder'] = {'shipped_plugins': True}
     profile['access'] = {'address': HOST, 'user': OPERATOR, 'auth': 'berth'}
     return profile
@@ -85,7 +85,7 @@ class OwnKeyOnly:
         self.assertEqual(changed_tasks(self.second_apply.stdout), [])
 
     def test_tasks_are_listed_and_run(self):
-        self.assertRegex(self.berth('tasks', HOST).stdout, r'(?m)^  secrets\s+')
+        self.assertRegex(self.berth('actions', HOST).stdout, r'(?m)^  secrets\s+')
         self.assertEqual(self.berth('run', HOST, 'sign-in:status').returncode, 0)
 
     def test_commands_run_as_each_account(self):
@@ -225,7 +225,7 @@ class Served(OwnKeyOnly, unittest.TestCase):
         self.assertEqual(catalogue['template']['operator_ssh_public_keys'], [])
 
     def test_the_agents_files_through_the_server(self):
-        path = f'/v1/hosts/{HOST}/files?path=/home/{AGENT}/own-key-served.txt'
+        path = f'/v1/hosts/{HOST}/controller/files?path=/home/{AGENT}/own-key-served.txt'
         content = random_text('served').encode()
         status, _ = self.serve.request('PUT', path + '&overwrite=true', content,
                                        headers={'Content-Type': 'application/octet-stream'})

@@ -14,7 +14,7 @@ Ubuntu security updates and Firefox's vendor updates install automatically. The 
 | --- | --- |
 | **Update** on the overview, or `berth run HOST update` | `apt` update and `dist-upgrade`, then Claude Code, Codex, Pi, T3 Code and the Unity CLI to their latest versions, through their plugins |
 | **Reboot**, or `berth run HOST reboot` | Restarts the host to finish updates |
-| **Apply this configuration** | Runs the role again, which brings new or changed features and settings, berthd and box, and plugin tasks and services |
+| **Apply this configuration** | Runs the role again, which brings new or changed features and settings, berthd and box, and plugin actions and services |
 | `berth plugins update` | Your plugins, to the latest version of their registry ([Updating a plugin](/docs/extend/plugins#updating-a-plugin)) |
 
 The versions in the defaults (`devbox_claude_version`, `devbox_codex_version`, `devbox_pi_version`, `devbox_t3_version`) are the least ones, so applying the configuration again does not go back to them after an update. Claude Code's own self-update is off.
@@ -26,7 +26,9 @@ berth update --check     # is there a newer release?
 berth update             # download it, check its SHA-256 and replace this program
 ```
 
-`berth update` takes the same archive as the install script. It offers only full releases, not pre-releases such as `0.4.0-rc.1`, and moves from a pre-release to its release. A container is updated by pulling a newer image. `berthd` and `box` travel inside `berth`. A host gets the new ones when you apply its configuration. Its overview says when its tools are of another version than your berth. `BERTH_RELEASES` names a mirror of the releases page.
+`berth update` takes the same archive as the install script. It offers only full releases, not pre-releases such as `0.4.0-rc.1`, and moves from a pre-release to its release. A container is updated by pulling a newer image. `berthd` and `box` travel inside `berth`. A host gets the new ones when you apply its configuration. Its overview says when its tools are of another version than your berth.
+
+A berthd of berth 0.5 says the host's type by its older name, and berth reads it. For sessions, actions and files berth needs the berthd of API 2, and until then the overview offers to install the controller or apply the configuration, which brings berthd up to date. An older berth that meets a newer berthd is out of date: update it. It refuses the profile a newer berth left on the host rather than misread it. `BERTH_RELEASES` names a mirror of the releases page.
 
 ## Hosts that are behind
 
@@ -42,11 +44,11 @@ berth apply --behind --update --reboot   # and run Update, and reboot where need
 berth plugins update --apply             # update the plugins, then the same
 ```
 
-The hosts are taken one at a time, by name. Each is applied and then checked. Its berthd has to answer with this berth's version and the host must no longer be behind. Its Status task has to end well too. Hosts that are current are skipped. The first host that fails stops the roll-out, and the hosts after it are not touched.
+The hosts are taken one at a time, by name. Each is applied and then checked. Its berthd has to answer with this berth's version and the host must no longer be behind. Its Status action has to end well too. Hosts that are current are skipped. The first host that fails stops the roll-out, and the hosts after it are not touched.
 
 | Option | Does |
 | --- | --- |
-| `--update` | Runs the host's Update task after applying. If it ends badly, that host is finished and the roll-out stops after it |
+| `--update` | Runs the host's Update action after applying. If it ends badly, that host is finished and the roll-out stops after it |
 | `--reboot` | Reboots a host that says it needs it, waits up to ten minutes for it to answer again, then checks it. A host with running sessions is not rebooted, and the roll-out stops there |
 | `--force` | Reboots also while sessions run, which ends them |
 | `--all` | Applies the hosts that are current too |
@@ -63,7 +65,7 @@ A task, service or channel topic a plugin no longer has is gone after applying. 
 
 Applying does not restart desktops that are already running or turns an agent is in the middle of. After changing versions, a service's environment or unit files, restart the agent's user services in a quiet moment, or reboot.
 
-Applying restarts berthd only when its program or unit changed, because a restart ends the sessions it holds. New tasks, services and channel topics only need a reload, which applying does.
+Applying restarts berthd only when its program or unit changed, because a restart ends the sessions it holds. New actions, services and channel topics only need a reload, which applying does.
 
 ## What berth does not do
 

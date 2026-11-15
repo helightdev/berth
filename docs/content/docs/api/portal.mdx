@@ -43,11 +43,11 @@ An unknown operation is `404`, and a missing argument is `400`.
 On the portal of `berth serve`, `host` names the host and the rest of the frame is the host's operation, exactly as berthd takes it:
 
 ```js
-→ {"id": 9, "host": "studio", "op": "tasks.run", "args": {"name": "status"}}
+→ {"id": 9, "host": "studio", "op": "actions.run", "args": {"action": "status"}}
 ← {"id": 9, "result": {"id": "a81kq0wd3m5c"}}
 ```
 
-`berth serve` refuses the `secrets` task, because the secrets stay on the machine that runs it.
+`berth serve` refuses the controller's own `secrets` action, because the secrets stay on the machine that runs it.
 
 ## A stream
 

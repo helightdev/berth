@@ -65,9 +65,9 @@ berth host add big 192.0.2.20 --user root --auth ssh
 berth host install big
 ```
 
-`berth host add` saves `big` as a reachable host. `--auth ssh` makes berth log in with your own SSH configuration and agent, so the key that works for `ssh root@192.0.2.20` works for berth. The default, `--auth berth`, uses berth's own key, which berth installs on the first contact with a password or a private key that logs in once. `--auth ssh` works with a local berth only. With a berth server set, the server logs in with its own keys.
+`berth host add` saves `big` with the type `ssh`. `--auth ssh` makes berth log in with your own SSH configuration and agent, so the key that works for `ssh root@192.0.2.20` works for berth. The default, `--auth berth`, uses berth's own key, which berth installs on the first contact with a password or a private key that logs in once. `--auth ssh` works with a local berth only. With a berth server set, the server logs in with its own keys.
 
-`berth host install big` puts the controller alone on the server. berth can then report its status and run commands there, and it can update and reboot the server. Sessions run as the SSH user, here `root`. berth never applies such a server as a workstation: it stays a reachable or controller host, and the machines on it are created with the Incus or Docker provisioner.
+`berth host install big` puts the controller alone on the server. berth can then report its status and run commands there, and it can update and reboot the server. Sessions run as the SSH user, here `root`. berth never applies such a server as a workstation: its type stays `ssh` or `managed`, and the machines on it are created with the Incus or Docker provisioner.
 
 ## Settings
 

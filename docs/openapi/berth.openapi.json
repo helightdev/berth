@@ -720,6 +720,66 @@
         ],
         "type": "object"
       },
+      "HostAction": {
+        "description": "An action of the host's controller: an entry of `/etc/berth/actions.json`.\nListed without `run`.",
+        "properties": {
+          "agent": {
+            "description": "The agent may run it.",
+            "type": "boolean"
+          },
+          "arguments": {
+            "items": {
+              "$ref": "#/components/schemas/Argument"
+            },
+            "type": "array"
+          },
+          "confirm": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extends": {
+            "description": "Actions it is a step of; it then has no row of its own.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "group": {
+            "type": "string"
+          },
+          "help": {
+            "type": "string"
+          },
+          "input": {
+            "description": "What the workstation sends on standard input: `secrets`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          },
+          "terminal": {
+            "type": "boolean"
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
       "HostBehind": {
         "allOf": [
           {
@@ -778,10 +838,6 @@
               "null"
             ]
           },
-          "level": {
-            "$ref": "#/components/schemas/HostLevel",
-            "description": "The level its profile means it to have."
-          },
           "name": {
             "type": "string"
           },
@@ -795,13 +851,17 @@
           "seen": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/HostLevel",
-                "description": "The level it was seen to have: what its controller's record says,\n`reachable` when berth logged in and found no controller. Absent\nwhen it could not be asked."
+                "$ref": "#/components/schemas/HostType",
+                "description": "The type it was seen to be: what its controller's record says, `ssh`\nwhen berth logged in and found no controller. Absent when it could\nnot be asked."
               },
               {
                 "type": "null"
               }
             ]
+          },
+          "type": {
+            "$ref": "#/components/schemas/HostType",
+            "description": "The type its profile means it to be."
           },
           "version": {
             "description": "The version of its berthd.",
@@ -815,15 +875,15 @@
           "name",
           "address",
           "reachable",
-          "level"
+          "type"
         ],
         "type": "object"
       },
-      "HostLevel": {
-        "description": "How much of berth a host has: what its profile means it to have, or\nwhat it was seen to have. Each level can do what the ones before it can.",
+      "HostType": {
+        "description": "What berth does with a host: what its profile means it to be, or what it\nwas seen to be. They are in the order of how much of berth each has.",
         "enum": [
-          "reachable",
-          "controller",
+          "ssh",
+          "managed",
           "workstation"
         ],
         "type": "string"
@@ -1421,9 +1481,55 @@
         ],
         "type": "object"
       },
+      "PluginAction": {
+        "description": "An action a feature adds to a host.",
+        "properties": {
+          "agent": {
+            "description": "The agent may run it with `box run`.",
+            "type": "boolean"
+          },
+          "arguments": {
+            "description": "The names of the arguments it asks for.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "extends": {
+            "description": "Actions of berth it runs after, with no row of its own.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "description": "The action is `PLUGIN:NAME` on the host.",
+            "type": "string"
+          },
+          "user": {
+            "description": "`agent`, `operator` or `root`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "user"
+        ],
+        "type": "object"
+      },
       "PluginFeature": {
         "description": "Something a plugin installs, switched on per host.",
         "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/PluginAction"
+            },
+            "type": "array"
+          },
           "channels": {
             "description": "Channel topics, without the plugin's id.",
             "items": {
@@ -1448,12 +1554,6 @@
           "services": {
             "items": {
               "$ref": "#/components/schemas/PluginService"
-            },
-            "type": "array"
-          },
-          "tasks": {
-            "items": {
-              "$ref": "#/components/schemas/PluginTask"
             },
             "type": "array"
           }
@@ -1599,46 +1699,6 @@
         },
         "required": [
           "spec"
-        ],
-        "type": "object"
-      },
-      "PluginTask": {
-        "description": "A task a feature adds to a host's overview.",
-        "properties": {
-          "agent": {
-            "description": "The agent may run it with `box run`.",
-            "type": "boolean"
-          },
-          "arguments": {
-            "description": "The names of the arguments it asks for.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "extends": {
-            "description": "Tasks of berth it runs after, with no row of its own.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "label": {
-            "type": "string"
-          },
-          "name": {
-            "description": "The task is `PLUGIN:NAME` on the host.",
-            "type": "string"
-          },
-          "user": {
-            "description": "`agent`, `operator` or `root`.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "label",
-          "user"
         ],
         "type": "object"
       },
@@ -2238,7 +2298,7 @@
         ],
         "type": "string"
       },
-      "RunTask": {
+      "RunAction": {
         "properties": {
           "arguments": {
             "additionalProperties": {
@@ -2452,6 +2512,13 @@
       },
       "Session": {
         "properties": {
+          "action": {
+            "description": "The action it was started for, if any. The sessions an older\nberthd kept on the host say `task`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "cols": {
             "format": "int32",
             "minimum": 0,
@@ -2519,13 +2586,6 @@
               "$ref": "#/components/schemas/Step"
             },
             "type": "array"
-          },
-          "task": {
-            "description": "The task it was started for, if any.",
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "title": {
             "type": "string"
@@ -2877,66 +2937,6 @@
         ],
         "type": "object"
       },
-      "Task": {
-        "description": "An entry of `/etc/berth/tasks.json`. Listed without `run`.",
-        "properties": {
-          "agent": {
-            "description": "The agent may run it.",
-            "type": "boolean"
-          },
-          "arguments": {
-            "items": {
-              "$ref": "#/components/schemas/Argument"
-            },
-            "type": "array"
-          },
-          "confirm": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "extends": {
-            "description": "Tasks it is a step of; it then has no row of its own.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "group": {
-            "type": "string"
-          },
-          "help": {
-            "type": "string"
-          },
-          "input": {
-            "description": "What the workstation sends on standard input: `secrets`.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "label": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "run": {
-            "type": "string"
-          },
-          "terminal": {
-            "type": "boolean"
-          },
-          "user": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "type": "object"
-      },
       "Topic": {
         "description": "An entry of `/etc/berth/channels.json`.",
         "properties": {
@@ -3035,20 +3035,20 @@
               }
             ]
           },
-          "level": {
+          "mode": {
+            "description": "`system` or `single`.",
+            "type": "string"
+          },
+          "type": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/HostLevel",
-                "description": "What was installed on the host, by that record: `controller` when\nonly the controller was, `workstation` for a whole profile. Absent\nwhen the host keeps no record."
+                "$ref": "#/components/schemas/HostType",
+                "description": "What was installed on the host, by that record: `managed` when\nonly the controller was, `workstation` for a whole profile. Absent\nwhen the host keeps no record."
               },
               {
                 "type": "null"
               }
             ]
-          },
-          "mode": {
-            "description": "`system` or `single`.",
-            "type": "string"
           },
           "version": {
             "type": "string"
@@ -3063,7 +3063,7 @@
     }
   },
   "info": {
-    "description": "One API over all hosts, with the inbox and a key-value store. Everything under /v1/hosts/{name}/ that is not named here is that host's own API, passed through unchanged; only the `secrets` task is refused, which the host's `secrets` action stands in for. What can be done to a host or to the installation is listed at /v1/hosts/{name}/actions and /v1/actions, and run by POST to an action's name there. Over TCP every request carries the server's token or an OAuth 2.0 access token as a bearer, and needs the role its operation names. The routes of the setup key take that key as the bearer instead.",
+    "description": "One API over all hosts, with the inbox and a key-value store. Everything under /v1/hosts/{name}/controller/ is that host's own API, passed through unchanged; only the controller's own `secrets` action is refused, which the server's `secrets` action of the host stands in for. What can be done to a host or to the installation is listed at /v1/hosts/{name}/actions and /v1/installation/actions, and run by POST to an action's name there. Over TCP every request carries the server's token or an OAuth 2.0 access token as a bearer, and needs the role its operation names. The routes of the setup key take that key as the bearer instead.",
     "title": "berth serve",
     "version": "0.5.2"
   },
@@ -3087,119 +3087,6 @@
         "summary": "What the caller may do here.",
         "tags": [
           "serve"
-        ]
-      }
-    },
-    "/v1/actions": {
-      "get": {
-        "operationId": "list",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/Action"
-                  },
-                  "type": "array"
-                }
-              }
-            },
-            "description": "The actions"
-          }
-        },
-        "summary": "What can be done to the installation as a whole, such as a roll-out over its hosts.",
-        "tags": [
-          "hosts"
-        ]
-      }
-    },
-    "/v1/actions/{action}": {
-      "post": {
-        "operationId": "act",
-        "parameters": [
-          {
-            "description": "The action, as actions.list names it",
-            "in": "path",
-            "name": "action",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "oneOf": [
-                  {
-                    "$ref": "#/components/schemas/Act"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            }
-          },
-          "description": "Its arguments, and a token that makes asking again safe"
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Acted"
-                }
-              }
-            },
-            "description": "Started as a job"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "An argument is wrong, or the body is not one"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "The caller's role is below the action's"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "No such action, or a host it names"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Another one is running"
-          }
-        },
-        "summary": "Run one of the installation's actions, as a job.",
-        "tags": [
-          "hosts"
         ]
       }
     },
@@ -3373,7 +3260,7 @@
             "description": "No such host"
           }
         },
-        "summary": "What can be done to a host: the tasks its controller lists, and berth's own actions.",
+        "summary": "What can be done to a host: the actions its controller lists, and berth's own.",
         "tags": [
           "hosts"
         ]
@@ -3438,7 +3325,7 @@
                 }
               }
             },
-            "description": "Started as a job; a task of the host also says its session"
+            "description": "Started as a job; an action of its controller also says its session"
           },
           "400": {
             "content": {
@@ -3501,13 +3388,186 @@
             "description": "The host could not be reached"
           }
         },
-        "summary": "Run one of a host's actions. One of berth's that changes something is a job; a task of the host is a session there, which a job follows unless it needs a terminal.",
+        "summary": "Run one of a host's actions. One of berth's that changes something is a job; an action of the host's controller is a session there, which a job follows unless it needs a terminal.",
         "tags": [
           "hosts"
         ]
       }
     },
-    "/v1/hosts/{name}/applied/profile": {
+    "/v1/hosts/{name}/controller/actions": {
+      "get": {
+        "description": "Host and agent level.",
+        "operationId": "host_get_v1_actions",
+        "parameters": [
+          {
+            "description": "A saved host",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/HostAction"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "The actions the caller may run, in the order of the file.",
+        "tags": [
+          "host: actions"
+        ]
+      }
+    },
+    "/v1/hosts/{name}/controller/actions/{action}": {
+      "post": {
+        "description": "Host and agent level.",
+        "operationId": "host_post_v1_actions__action_",
+        "parameters": [
+          {
+            "description": "A saved host",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "action",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A duration such as 30s, at most 10m: answer when the command has ended, with what it wrote.",
+            "in": "query",
+            "name": "wait",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Started"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Run an action. It and what extends it are the steps of one session.",
+        "tags": [
+          "host: actions"
+        ]
+      }
+    },
+    "/v1/hosts/{name}/controller/actions/{action}/choices/{argument}": {
+      "get": {
+        "description": "Host and agent level.",
+        "operationId": "host_get_v1_actions__action__choices__argument_",
+        "parameters": [
+          {
+            "description": "A saved host",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "action",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "argument",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Choices"
+                }
+              }
+            },
+            "description": "Done."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "The values to offer for an argument.",
+        "tags": [
+          "host: actions"
+        ]
+      }
+    },
+    "/v1/hosts/{name}/controller/applied/profile": {
       "get": {
         "description": "Host level only.",
         "operationId": "host_get_v1_applied_profile",
@@ -3550,7 +3610,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/channel": {
+    "/v1/hosts/{name}/controller/channel": {
       "get": {
         "description": "Host and agent level.",
         "operationId": "host_get_v1_channel",
@@ -3620,7 +3680,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/channel/{topic}": {
+    "/v1/hosts/{name}/controller/channel/{topic}": {
       "post": {
         "description": "Host and agent level.",
         "operationId": "host_post_v1_channel___topic_",
@@ -3680,49 +3740,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/credentials": {
-      "get": {
-        "operationId": "credentials",
-        "parameters": [
-          {
-            "description": "A saved host",
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Credentials"
-                }
-              }
-            },
-            "description": "The passwords by account; none when none were generated"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "No such host"
-          }
-        },
-        "summary": "The passwords the server generated for a host's accounts.",
-        "tags": [
-          "set-up"
-        ]
-      }
-    },
-    "/v1/hosts/{name}/files": {
+    "/v1/hosts/{name}/controller/files": {
       "delete": {
         "description": "Host level only.",
         "operationId": "host_delete_v1_files",
@@ -3898,7 +3916,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/logs": {
+    "/v1/hosts/{name}/controller/logs": {
       "get": {
         "description": "Host level only.",
         "operationId": "host_get_v1_logs",
@@ -3971,7 +3989,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/ports/{port}": {
+    "/v1/hosts/{name}/controller/ports/{port}": {
       "get": {
         "description": "Host level only.",
         "operationId": "host_get_v1_ports__port_",
@@ -4015,7 +4033,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/power/{verb}": {
+    "/v1/hosts/{name}/controller/power/{verb}": {
       "post": {
         "description": "Host level only.",
         "operationId": "host_post_v1_power__verb_",
@@ -4074,7 +4092,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/processes": {
+    "/v1/hosts/{name}/controller/processes": {
       "get": {
         "description": "Host level only.",
         "operationId": "host_get_v1_processes",
@@ -4120,7 +4138,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/processes/{pid}/signal": {
+    "/v1/hosts/{name}/controller/processes/{pid}/signal": {
       "post": {
         "description": "Host level only.",
         "operationId": "host_post_v1_processes__pid__signal",
@@ -4180,96 +4198,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/profile": {
-      "get": {
-        "operationId": "profile",
-        "parameters": [
-          {
-            "description": "A saved host",
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "The profile, with the passwords and keys in it"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "No such host"
-          }
-        },
-        "summary": "A host's profile, as it is saved.",
-        "tags": [
-          "set-up"
-        ]
-      },
-      "put": {
-        "operationId": "save_profile",
-        "parameters": [
-          {
-            "description": "The name to save it under: letters, digits, `-`, `_` and `.`",
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {}
-            }
-          },
-          "description": "The whole profile. A workstation's has a builder object; a reachable or controller host's needs only level and access",
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Done"
-                }
-              }
-            },
-            "description": "Saved"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Not a profile, or not a name"
-          }
-        },
-        "summary": "Save a host's profile: a new host, or a changed one. A host below a workstation needs only its level and access.",
-        "tags": [
-          "set-up"
-        ]
-      }
-    },
-    "/v1/hosts/{name}/reload": {
+    "/v1/hosts/{name}/controller/reload": {
       "post": {
         "description": "Host level only.",
         "operationId": "host_post_v1_reload",
@@ -4312,7 +4241,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/screenshot": {
+    "/v1/hosts/{name}/controller/screenshot": {
       "get": {
         "description": "Host level only.",
         "operationId": "host_get_v1_screenshot",
@@ -4356,7 +4285,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/services": {
+    "/v1/hosts/{name}/controller/services": {
       "get": {
         "description": "Host and agent level.",
         "operationId": "host_get_v1_services",
@@ -4402,7 +4331,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/services/{plugin}/{name}/serve": {
+    "/v1/hosts/{name}/controller/services/{plugin}/{name}/serve": {
       "get": {
         "description": "Host and agent level.",
         "operationId": "host_get_v1_services__plugin___name__serve",
@@ -4454,7 +4383,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/services/{plugin}/{name}/{method}": {
+    "/v1/hosts/{name}/controller/services/{plugin}/{name}/{method}": {
       "post": {
         "description": "Host and agent level.",
         "operationId": "host_post_v1_services__plugin___name___method_",
@@ -4526,7 +4455,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/sessions": {
+    "/v1/hosts/{name}/controller/sessions": {
       "get": {
         "description": "Host level only.",
         "operationId": "host_get_v1_sessions",
@@ -4630,7 +4559,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/sessions/{id}": {
+    "/v1/hosts/{name}/controller/sessions/{id}": {
       "delete": {
         "description": "Host level only.",
         "operationId": "host_delete_v1_sessions__id_",
@@ -4727,13 +4656,13 @@
             "description": "An error."
           }
         },
-        "summary": "One session's state. The agent sees those it started through a task.",
+        "summary": "One session's state. The agent sees those it started through an action.",
         "tags": [
           "host: sessions"
         ]
       }
     },
-    "/v1/hosts/{name}/sessions/{id}/input": {
+    "/v1/hosts/{name}/controller/sessions/{id}/input": {
       "post": {
         "description": "Host level only.",
         "operationId": "host_post_v1_sessions__id__input",
@@ -4793,7 +4722,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/sessions/{id}/output": {
+    "/v1/hosts/{name}/controller/sessions/{id}/output": {
       "get": {
         "description": "Host and agent level.",
         "operationId": "host_get_v1_sessions__id__output",
@@ -4892,7 +4821,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/sessions/{id}/resize": {
+    "/v1/hosts/{name}/controller/sessions/{id}/resize": {
       "post": {
         "description": "Host level only.",
         "operationId": "host_post_v1_sessions__id__resize",
@@ -4952,7 +4881,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/sessions/{id}/screen": {
+    "/v1/hosts/{name}/controller/sessions/{id}/screen": {
       "get": {
         "description": "Host and agent level.",
         "operationId": "host_get_v1_sessions__id__screen",
@@ -5019,7 +4948,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/sessions/{id}/signal": {
+    "/v1/hosts/{name}/controller/sessions/{id}/signal": {
       "post": {
         "description": "Host level only.",
         "operationId": "host_post_v1_sessions__id__signal",
@@ -5079,7 +5008,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/stats": {
+    "/v1/hosts/{name}/controller/stats": {
       "get": {
         "description": "Host level only.",
         "operationId": "host_get_v1_stats",
@@ -5122,180 +5051,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/tasks": {
-      "get": {
-        "description": "Host and agent level.",
-        "operationId": "host_get_v1_tasks",
-        "parameters": [
-          {
-            "description": "A saved host",
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/Task"
-                  },
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Done."
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "An error."
-          }
-        },
-        "summary": "The tasks the caller may run, in the order of the file.",
-        "tags": [
-          "host: tasks"
-        ]
-      }
-    },
-    "/v1/hosts/{name}/tasks/{name}": {
-      "post": {
-        "description": "Host and agent level.",
-        "operationId": "host_post_v1_tasks__name_",
-        "parameters": [
-          {
-            "description": "A saved host",
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "A duration such as 30s, at most 10m: answer when the command has ended, with what it wrote.",
-            "in": "query",
-            "name": "wait",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RunTask"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Started"
-                }
-              }
-            },
-            "description": "Done."
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "An error."
-          }
-        },
-        "summary": "Run a task. It and what extends it are the steps of one session.",
-        "tags": [
-          "host: tasks"
-        ]
-      }
-    },
-    "/v1/hosts/{name}/tasks/{name}/choices/{argument}": {
-      "get": {
-        "description": "Host and agent level.",
-        "operationId": "host_get_v1_tasks__name__choices__argument_",
-        "parameters": [
-          {
-            "description": "A saved host",
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "argument",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Choices"
-                }
-              }
-            },
-            "description": "Done."
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "An error."
-          }
-        },
-        "summary": "The values to offer for an argument.",
-        "tags": [
-          "host: tasks"
-        ]
-      }
-    },
-    "/v1/hosts/{name}/units": {
+    "/v1/hosts/{name}/controller/units": {
       "get": {
         "description": "Host level only.",
         "operationId": "host_get_v1_units",
@@ -5341,7 +5097,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/units/{unit}": {
+    "/v1/hosts/{name}/controller/units/{unit}": {
       "get": {
         "description": "Host level only.",
         "operationId": "host_get_v1_units__unit_",
@@ -5395,7 +5151,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/units/{unit}/{verb}": {
+    "/v1/hosts/{name}/controller/units/{unit}/{verb}": {
       "post": {
         "description": "Host level only.",
         "operationId": "host_post_v1_units__unit___verb_",
@@ -5454,7 +5210,7 @@
         ]
       }
     },
-    "/v1/hosts/{name}/version": {
+    "/v1/hosts/{name}/controller/version": {
       "get": {
         "description": "Host and agent level.",
         "operationId": "host_get_v1_version",
@@ -5494,6 +5250,137 @@
         "summary": "The version of berthd and of its API.",
         "tags": [
           "host: version"
+        ]
+      }
+    },
+    "/v1/hosts/{name}/credentials": {
+      "get": {
+        "operationId": "credentials",
+        "parameters": [
+          {
+            "description": "A saved host",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Credentials"
+                }
+              }
+            },
+            "description": "The passwords by account; none when none were generated"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such host"
+          }
+        },
+        "summary": "The passwords the server generated for a host's accounts.",
+        "tags": [
+          "set-up"
+        ]
+      }
+    },
+    "/v1/hosts/{name}/profile": {
+      "get": {
+        "operationId": "profile",
+        "parameters": [
+          {
+            "description": "A saved host",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "The profile, with the passwords and keys in it"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such host"
+          }
+        },
+        "summary": "A host's profile, as it is saved.",
+        "tags": [
+          "set-up"
+        ]
+      },
+      "put": {
+        "operationId": "save_profile",
+        "parameters": [
+          {
+            "description": "The name to save it under: letters, digits, `-`, `_` and `.`",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "description": "The whole profile. A workstation's has a builder object; a host of the type ssh or managed needs only type and access",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Done"
+                }
+              }
+            },
+            "description": "Saved"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not a profile, or not a name"
+          }
+        },
+        "summary": "Save a host's profile: a new host, or a changed one. A host that is not a workstation needs only its type and access.",
+        "tags": [
+          "set-up"
         ]
       }
     },
@@ -5671,6 +5558,119 @@
         "summary": "Mark a message as done.",
         "tags": [
           "inbox"
+        ]
+      }
+    },
+    "/v1/installation/actions": {
+      "get": {
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Action"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "The actions"
+          }
+        },
+        "summary": "What can be done to the installation as a whole, such as a roll-out over its hosts.",
+        "tags": [
+          "hosts"
+        ]
+      }
+    },
+    "/v1/installation/actions/{action}": {
+      "post": {
+        "operationId": "act",
+        "parameters": [
+          {
+            "description": "The action, as installation.actions names it",
+            "in": "path",
+            "name": "action",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Act"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "Its arguments, and a token that makes asking again safe"
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Acted"
+                }
+              }
+            },
+            "description": "Started as a job"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An argument is wrong, or the body is not one"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller's role is below the action's"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such action, or a host it names"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Another one is running"
+          }
+        },
+        "summary": "Run one of the installation's actions, as a job.",
+        "tags": [
+          "hosts"
         ]
       }
     },

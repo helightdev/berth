@@ -1,4 +1,4 @@
-//! The commands that talk to a host's controller: sessions, tasks, the
+//! The commands that talk to a host's controller: sessions, actions, the
 //! channel and services. Each is a plain program that waits on a runtime.
 
 use crate::{
@@ -11,7 +11,7 @@ use berth_api::{
 };
 use berth_core::{
     host::Host,
-    level,
+    host_type,
     link::{self, Link},
     paths::Paths,
     profiles::Place,
@@ -62,11 +62,11 @@ fn reach(paths: &Paths, name: &str) -> Result<Reach> {
     })
 }
 
-/// The way to a host's controller, for what needs one: a host meant to be
-/// only reachable is refused with the action that installs it.
+/// The way to a host's controller, for what needs one: a host of the type
+/// ssh is refused with the action that installs it.
 fn controlled(paths: &Paths, name: &str) -> Result<Reach> {
     let reach = reach(paths, name)?;
-    level::guard(&reach.host, level::Capability::Sessions)?;
+    host_type::guard(&reach.host, host_type::Capability::Sessions)?;
     Ok(reach)
 }
 
@@ -512,51 +512,46 @@ pub fn output(paths: &Paths, name: &str, id: &str, args: &[&str]) -> Result<()> 
     std::process::exit(code);
 }
 
-fn host_tasks(reach: &Reach) -> Result<Vec<api::Task>> {
+fn controller_actions(reach: &Reach) -> Result<Vec<api::HostAction>> {
     reach
-        .wait(reach.link.get::<Value>("/v1/tasks"))
-        .map(|value| list(value, "tasks"))
+        .wait(reach.link.get::<Value>("/v1/actions"))
+        .map(|value| list(value, "actions"))
         .map_err(|error| explain(error, &reach.host.name))
 }
 
-/// What a host can do, with the tasks its controller lists for a host of
+/// What a host can do, with the actions its controller lists for a host of
 /// this machine. A berth server's host has the server's list of its
-/// actions, which has berth's own beside its tasks.
-fn host_actions(paths: &Paths, reach: &Reach) -> Result<(Vec<api::Action>, Vec<api::Task>)> {
+/// actions, which has berth's own beside its controller's.
+fn host_actions(paths: &Paths, reach: &Reach) -> Result<(Vec<api::Action>, Vec<api::HostAction>)> {
     match reach.host.served(paths) {
         Some(server) => {
             let listed = server.call("hosts.actions", json!({"name": reach.host.name}), None)?;
             Ok((serde_json::from_value(listed)?, vec![]))
         }
         None => {
-            // A host that is only reachable has no controller to ask.
-            let host_level = level::of(&reach.host.config);
-            let tasks = match host_level {
-                level::Level::Reachable => vec![],
-                _ => host_tasks(reach)?,
+            // A host of the type ssh has no controller to ask.
+            let host_type = host_type::of(&reach.host.config);
+            let listed = match host_type {
+                host_type::HostType::Ssh => vec![],
+                _ => controller_actions(reach)?,
             };
-            let mut actions = api::Action::of_tasks(&tasks);
-            let own = level::local_actions(&reach.host.name, host_level, observed(reach));
+            let mut actions = api::Action::of_host(&listed);
+            let own = host_type::local_actions(&reach.host.name, host_type, observed(reach));
             actions.retain(|action| !own.iter().any(|known| known.name == action.name));
             actions.extend(own);
-            Ok((actions, tasks))
+            Ok((actions, listed))
         }
     }
 }
 
 /// What the host's controller says the host is, when one answers in time.
-/// Only a host whose profile says less than a workstation is asked.
-fn observed(reach: &Reach) -> Option<level::Level> {
-    if level::of(&reach.host.config) == level::Level::Workstation {
+/// Only a host whose profile says it is not a workstation is asked.
+fn observed(reach: &Reach) -> Option<host_type::HostType> {
+    if host_type::of(&reach.host.config) == host_type::HostType::Workstation {
         return None;
     }
     let asked = reach.wait(async {
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            reach.link.get::<api::Version>("/v1/version"),
-        )
-        .await
-        {
+        match tokio::time::timeout(std::time::Duration::from_secs(15), reach.link.version()).await {
             Ok(Ok(version)) => Ok(version),
             _ => Err(()),
         }
@@ -564,14 +559,16 @@ fn observed(reach: &Reach) -> Option<level::Level> {
     asked
         .ok()
         .as_ref()
-        .and_then(|version| level::seen(Ok(version)))
+        .and_then(|version| host_type::seen(Ok(version)))
 }
 
-/// `berth tasks HOST`: what the host can do, by group.
-pub fn tasks(paths: &Paths, name: &str) -> Result<()> {
+/// `berth actions HOST`: what the host can do, by group.
+pub fn actions(paths: &Paths, name: &str) -> Result<()> {
     let reach = reach(paths, name)?;
     let (actions, _) = host_actions(paths, &reach)?;
-    if let Some(said) = level::mismatch(name, level::of(&reach.host.config), observed(&reach)) {
+    if let Some(said) =
+        host_type::mismatch(name, host_type::of(&reach.host.config), observed(&reach))
+    {
         println!("! {said}\n");
     }
     let mut groups: Vec<(&str, Vec<&api::Action>)> = vec![];
@@ -638,7 +635,11 @@ pub(crate) fn ready(
 ) -> Result<(api::Action, BTreeMap<String, String>)> {
     let Some(found) = actions.iter().find(|known| known.name == name) else {
         let names: Vec<&str> = actions.iter().map(|known| known.name.as_str()).collect();
-        return Err(format!("{subject} has no task {name}. Tasks: {}", names.join(", ")).into());
+        return Err(format!(
+            "{subject} has no action {name}. Actions: {}",
+            names.join(", ")
+        )
+        .into());
     };
     if !found.available {
         return Err(format!("{name} cannot run now: {}", found.why).into());
@@ -670,13 +671,13 @@ pub(crate) fn ready(
     Ok((found.clone(), values))
 }
 
-/// `berth run HOST TASK [NAME=VALUE…] [--yes]`: run one of the host's
+/// `berth run HOST ACTION [NAME=VALUE…] [--yes]`: run one of the host's
 /// actions and leave with its exit code.
-pub fn run(paths: &Paths, name: &str, task: &str, args: &[&str]) -> Result<()> {
+pub fn run(paths: &Paths, name: &str, wanted: &str, args: &[&str]) -> Result<()> {
     let (values, yes) = parse_arguments(args)?;
     let reach = reach(paths, name)?;
-    let (actions, tasks) = host_actions(paths, &reach)?;
-    let (action, values) = ready(name, &actions, task, values, yes)?;
+    let (actions, listed) = host_actions(paths, &reach)?;
+    let (action, values) = ready(name, &actions, wanted, values, yes)?;
     let mut act = api::Act {
         arguments: values,
         ..api::Act::default()
@@ -693,7 +694,7 @@ pub fn run(paths: &Paths, name: &str, task: &str, args: &[&str]) -> Result<()> {
             follow_acted(&server, Some(&reach), acted, &mut std::io::stdout())?
         }
         None if action.runs == api::Runs::Berth => run_own(paths, &reach.host, &action.name)?,
-        None => run_here(paths, &reach, &tasks, &action, act)?,
+        None => run_here(paths, &reach, &listed, &action, act)?,
     };
     std::process::exit(code);
 }
@@ -726,7 +727,7 @@ pub fn install_controller(paths: &Paths, name: &str) -> Result<()> {
 /// Install the controller from here, holding the host's lock as an apply
 /// does: the exit code.
 fn install_controller_here(paths: &Paths, host: &Host) -> Result<i32> {
-    level::guard(host, level::Capability::InstallController)?;
+    host_type::guard(host, host_type::Capability::InstallController)?;
     let password = host.sudo_password(paths)?;
     let request = runner::Request {
         secrets: password.iter().cloned().collect(),
@@ -748,16 +749,16 @@ fn install_controller_here(paths: &Paths, host: &Host) -> Result<i32> {
     Ok(code.unwrap_or(1))
 }
 
-/// `berth host level HOST LEVEL`: save the level the host's profile says,
+/// `berth host type HOST TYPE`: save the type the host's profile says,
 /// such as for a workstation added by its address. Nothing on the host
 /// changes; a workstation's set-up then fills in the rest before an apply.
-pub fn set_level(paths: &Paths, name: &str, given: &str) -> Result<()> {
-    let wanted = level::Level::parse(given)
-        .ok_or_else(|| format!("A level is reachable, controller or workstation, not {given}"))?;
+pub fn set_type(paths: &Paths, name: &str, given: &str) -> Result<()> {
+    let wanted = host_type::HostType::parse(given)
+        .ok_or_else(|| format!("A type is {}, not {given}", host_type::HostType::choices()))?;
     let host = Host::load(paths, name)?;
     let mut profile = host.config.clone();
-    api::profile::set_level(&mut profile, wanted);
-    if wanted == level::Level::Workstation && !profile["builder"].is_object() {
+    api::profile::set_host_type(&mut profile, wanted);
+    if wanted == host_type::HostType::Workstation && !profile["builder"].is_object() {
         profile["builder"] = json!({});
     }
     match host.served(paths) {
@@ -767,40 +768,39 @@ pub fn set_level(paths: &Paths, name: &str, given: &str) -> Result<()> {
         }
         None => host.place.save(paths, &profile)?,
     }
-    println!("{} is a {wanted} host now in its profile", host.name);
-    if wanted == level::Level::Workstation {
+    println!(
+        "{} is a host of the type {wanted} now in its profile",
+        host.name
+    );
+    if wanted == host_type::HostType::Workstation {
         println!("Check its set-up, then apply it: berth apply {}", host.name);
     }
     Ok(())
 }
 
-/// Offer to save the level a host just added was found to have, when it is
+/// Offer to save the type a host just added was found to be, when it is
 /// more than its profile says: a workstation added by its address is not
 /// to be treated as a bare machine.
-fn offer_found_level(paths: &Paths, name: &str, intended: level::Level) -> Result<()> {
+fn offer_found_type(paths: &Paths, name: &str, intended: host_type::HostType) -> Result<()> {
     let Ok(reach) = reach(paths, name) else {
         return Ok(());
     };
     let found = {
         let asked = reach.wait(async {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(15),
-                reach.link.get::<api::Version>("/v1/version"),
-            )
-            .await
+            tokio::time::timeout(std::time::Duration::from_secs(15), reach.link.version()).await
         });
         match asked {
-            Ok(Ok(version)) => level::seen(Ok(&version)),
+            Ok(Ok(version)) => host_type::seen(Ok(&version)),
             _ => None,
         }
     };
     drop(reach);
-    let (Some(found), Some(said)) = (found, level::mismatch(name, intended, found)) else {
+    let (Some(found), Some(said)) = (found, host_type::mismatch(name, intended, found)) else {
         return Ok(());
     };
     println!("! {said}");
-    // A workstation keeps its profile, which says more than a level would.
-    if found == level::Level::Workstation {
+    // A workstation keeps its profile, which says more than a type would.
+    if found == host_type::HostType::Workstation {
         if std::io::stdin().is_terminal()
             && !ask(&format!("Adopt {name} from the profile it keeps? [Y/n]"))?
                 .eq_ignore_ascii_case("n")
@@ -811,26 +811,27 @@ fn offer_found_level(paths: &Paths, name: &str, intended: level::Level) -> Resul
         return Ok(());
     }
     if std::io::stdin().is_terminal()
-        && !ask(&format!("Save {name} as a {found} host? [Y/n]"))?.eq_ignore_ascii_case("n")
+        && !ask(&format!("Save {name} as a host of the type {found}? [Y/n]"))?
+            .eq_ignore_ascii_case("n")
     {
-        return set_level(paths, name, found.name());
+        return set_type(paths, name, found.name());
     }
-    println!("Save it with: berth host level {name} {found}");
+    println!("Save it with: berth host type {name} {found}");
     Ok(())
 }
 
 /// `berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH]
-/// [--level LEVEL] [--no-contact]`: save a host that exists already, by
+/// [--type TYPE] [--no-contact]`: save a host that exists already, by
 /// where it is and how berth logs in, with nothing of a workstation. Then
 /// first contact, unless told not to: berth's key is tried, and a host that
 /// refuses it is logged in to once with a password or key to install it.
 pub fn add_host(paths: &Paths, name: &str, address: &str, args: &[&str]) -> Result<()> {
-    const USAGE: &str = "Usage: berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth berth|key:NAME|password|ssh] [--level reachable|controller|workstation] [--no-contact]";
+    const USAGE: &str = "Usage: berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth berth|key:NAME|password|ssh] [--type ssh|managed|workstation] [--no-contact]";
     let mut access = api::profile::Access {
         address: address.to_owned(),
         ..api::profile::Access::default()
     };
-    let (mut host_level, mut contact) = (level::Level::Reachable, true);
+    let (mut host_type, mut contact) = (host_type::HostType::Ssh, true);
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let mut value = || rest.next().copied().ok_or(USAGE);
@@ -843,10 +844,10 @@ pub fn add_host(paths: &Paths, name: &str, address: &str, args: &[&str]) -> Resu
                     format!("--auth is berth, key:NAME, password or ssh, not {given}")
                 })?;
             }
-            "--level" => {
+            "--type" => {
                 let given = value()?;
-                host_level = level::Level::parse(given).ok_or_else(|| {
-                    format!("--level is reachable, controller or workstation, not {given}")
+                host_type = host_type::HostType::parse(given).ok_or_else(|| {
+                    format!("--type is {}, not {given}", host_type::HostType::choices())
                 })?;
             }
             "--no-contact" => contact = false,
@@ -858,9 +859,9 @@ pub fn add_host(paths: &Paths, name: &str, address: &str, args: &[&str]) -> Resu
             format!("{name} cannot be a host's name: letters, digits, -, _ and . only").into(),
         );
     }
-    let mut profile = api::profile::minimal(host_level, &access);
+    let mut profile = api::profile::minimal(host_type, &access);
     // A workstation keeps what its set-up fills in; it starts empty.
-    if host_level == level::Level::Workstation {
+    if host_type == host_type::HostType::Workstation {
         profile["builder"] = json!({});
     }
     let problems = api::profile::problems(&profile);
@@ -895,7 +896,10 @@ pub fn add_host(paths: &Paths, name: &str, address: &str, args: &[&str]) -> Resu
                 }
             }
             place.save(paths, &profile)?;
-            println!("Added {name} as a {host_level} host: {}", place.describe());
+            println!(
+                "Added {name} as a host of the type {host_type}: {}",
+                place.describe()
+            );
             seed_host_key(paths, &place, &access)?;
         }
     }
@@ -905,7 +909,7 @@ pub fn add_host(paths: &Paths, name: &str, address: &str, args: &[&str]) -> Resu
     crate::key_command::trust(paths, name, &[]).map_err(|error| -> Box<dyn std::error::Error> {
         format!("{name} is saved, but logging in to it did not work yet: {error}. Try again with: berth key trust {name}").into()
     })?;
-    offer_found_level(paths, name, host_level)
+    offer_found_type(paths, name, host_type)
 }
 
 /// Take the host key of a host just added from the user's own
@@ -933,11 +937,11 @@ fn seed_host_key(paths: &Paths, place: &Place, access: &api::profile::Access) ->
     Ok(())
 }
 
-/// Run a task of a host of this machine as a session there and follow it.
+/// Run an action of a host of this machine as a session there and follow it.
 fn run_here(
     paths: &Paths,
     reach: &Reach,
-    tasks: &[api::Task],
+    listed: &[api::HostAction],
     action: &api::Action,
     act: api::Act,
 ) -> Result<i32> {
@@ -945,14 +949,14 @@ fn run_here(
     if let (Some(rows), Some(cols)) = (act.rows, act.cols) {
         (body["rows"], body["cols"]) = (json!(rows), json!(cols));
     }
-    // Secrets are built here and travel on the task's standard input.
-    let task = tasks.iter().find(|task| task.name == action.name);
-    if task.and_then(|task| task.input.as_deref()) == Some("secrets") {
+    // Secrets are built here and travel on the action's standard input.
+    let kept = listed.iter().find(|kept| kept.name == action.name);
+    if kept.and_then(|kept| kept.input.as_deref()) == Some("secrets") {
         let payload = registry::Store::new(paths)?.host_payload(&reach.host.config)?;
         body["input_b64"] = json!(api::b64(format!("{payload}\n").as_bytes()));
     }
     reach.wait(async {
-        let path = format!("/v1/tasks/{}", encode(&action.name));
+        let path = format!("/v1/actions/{}", encode(&action.name));
         let session: api::Session = reach.link.post(&path, &body).await?;
         let ended = follow_session(&reach.link, &session).await?;
         Ok::<i32, Box<dyn std::error::Error>>(finish(reach, &session.id, ended, true).await)
@@ -1068,7 +1072,7 @@ pub(crate) fn act_on(
 ) -> Result<api::Acted> {
     let (op, args) = match host {
         Some(name) => ("hosts.act", json!({"name": name, "action": action})),
-        None => ("actions.act", json!({"action": action})),
+        None => ("installation.act", json!({"action": action})),
     };
     let acted = server.call(op, args, Some(serde_json::to_value(act)?))?;
     Ok(serde_json::from_value(acted)?)
@@ -1529,7 +1533,7 @@ pub fn adopt(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
         // A host saved below a workstation says less than the host keeps;
         // adopting it by its own address is what replacing it means.
         (Some(profile), "") => {
-            if level::of(profile) == level::Level::Workstation && !asked.force {
+            if host_type::of(profile) == host_type::HostType::Workstation && !asked.force {
                 return Err(format!(
                     "{name} is saved as a workstation already. Replace its profile with the one it keeps with --force"
                 )
@@ -1814,7 +1818,7 @@ mod tests {
     }
 
     #[test]
-    fn task_arguments_are_names_with_values() {
+    fn action_arguments_are_names_with_values() {
         let (values, yes) = parse_arguments(&["folder=~/my project", "--yes", "empty="]).unwrap();
         assert!(yes);
         assert_eq!(values["folder"], "~/my project");
@@ -1840,18 +1844,18 @@ mod tests {
             .unwrap();
         assert_eq!(
             saved,
-            json!({"level": "reachable", "access": {"address": "192.0.2.4", "user": "ops", "port": "2222", "auth": "berth"}})
+            json!({"type": "ssh", "access": {"address": "192.0.2.4", "user": "ops", "port": "2222", "auth": "berth"}})
         );
         let said = |result: Result<()>| result.unwrap_err().to_string();
         assert!(said(add("dock", &["--no-contact"])).contains("already"));
-        assert!(said(add("pier", &["--level", "server", "--no-contact"])).contains("--level"));
+        assert!(said(add("pier", &["--type", "server", "--no-contact"])).contains("--type"));
         assert!(said(add("pier", &["--auth", "key:none", "--no-contact"])).contains("no key none"));
         assert!(said(add("../pier", &["--no-contact"])).contains("name"));
         // A workstation starts with the part its set-up fills in.
-        add("studio", &["--level", "workstation", "--no-contact"]).unwrap();
+        add("studio", &["--type", "workstation", "--no-contact"]).unwrap();
         let studio = Host::load(&paths, "studio").unwrap();
         assert!(studio.config["builder"].is_object());
-        // Applying is refused below a workstation, before anything runs.
+        // Applying is refused to a host that is not a workstation, before anything runs.
         let dock = Host::load(&paths, "dock").unwrap();
         let refused = berth_core::apply::prepare(&paths, &dock, None);
         assert!(said(refused.map(|_| ())).contains("not a workstation"));
@@ -1958,6 +1962,21 @@ mod tests {
         let place = Place::own("studio").unwrap();
         let kept = place.load(&paths).unwrap().unwrap();
         assert_eq!(kept["access"]["address"], "192.0.2.20");
+        // One exported by berth 0.5 is saved with the names of now.
+        let store = berth_core::store::shared(&paths).unwrap();
+        let raw = |store: &berth_core::store::Store| -> Value {
+            serde_json::from_slice(&store.read("profile", "", "dock").unwrap().unwrap()).unwrap()
+        };
+        std::fs::write(
+            &file,
+            r#"{"level": "controller", "profile": "cloud", "access": {"address": "192.0.2.21"}}"#,
+        )
+        .unwrap();
+        set_profile(&paths, "dock", file.to_str().unwrap()).unwrap();
+        assert_eq!(
+            raw(&store),
+            json!({"type": "managed", "target": "cloud", "access": {"address": "192.0.2.21"}})
+        );
         // What is not a profile is refused, and the one kept stays.
         std::fs::write(&file, r#"{"builder": []}"#).unwrap();
         assert!(set_profile(&paths, "studio", file.to_str().unwrap()).is_err());

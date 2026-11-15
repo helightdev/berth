@@ -337,11 +337,71 @@
         ],
         "type": "object"
       },
-      "HostLevel": {
-        "description": "How much of berth a host has: what its profile means it to have, or\nwhat it was seen to have. Each level can do what the ones before it can.",
+      "HostAction": {
+        "description": "An action of the host's controller: an entry of `/etc/berth/actions.json`.\nListed without `run`.",
+        "properties": {
+          "agent": {
+            "description": "The agent may run it.",
+            "type": "boolean"
+          },
+          "arguments": {
+            "items": {
+              "$ref": "#/components/schemas/Argument"
+            },
+            "type": "array"
+          },
+          "confirm": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extends": {
+            "description": "Actions it is a step of; it then has no row of its own.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "group": {
+            "type": "string"
+          },
+          "help": {
+            "type": "string"
+          },
+          "input": {
+            "description": "What the workstation sends on standard input: `secrets`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          },
+          "terminal": {
+            "type": "boolean"
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "HostType": {
+        "description": "What berth does with a host: what its profile means it to be, or what it\nwas seen to be. They are in the order of how much of berth each has.",
         "enum": [
-          "reachable",
-          "controller",
+          "ssh",
+          "managed",
           "workstation"
         ],
         "type": "string"
@@ -762,7 +822,7 @@
         ],
         "type": "object"
       },
-      "RunTask": {
+      "RunAction": {
         "properties": {
           "arguments": {
             "additionalProperties": {
@@ -918,6 +978,13 @@
       },
       "Session": {
         "properties": {
+          "action": {
+            "description": "The action it was started for, if any. The sessions an older\nberthd kept on the host say `task`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "cols": {
             "format": "int32",
             "minimum": 0,
@@ -985,13 +1052,6 @@
               "$ref": "#/components/schemas/Step"
             },
             "type": "array"
-          },
-          "task": {
-            "description": "The task it was started for, if any.",
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "title": {
             "type": "string"
@@ -1255,66 +1315,6 @@
         ],
         "type": "object"
       },
-      "Task": {
-        "description": "An entry of `/etc/berth/tasks.json`. Listed without `run`.",
-        "properties": {
-          "agent": {
-            "description": "The agent may run it.",
-            "type": "boolean"
-          },
-          "arguments": {
-            "items": {
-              "$ref": "#/components/schemas/Argument"
-            },
-            "type": "array"
-          },
-          "confirm": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "extends": {
-            "description": "Tasks it is a step of; it then has no row of its own.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "group": {
-            "type": "string"
-          },
-          "help": {
-            "type": "string"
-          },
-          "input": {
-            "description": "What the workstation sends on standard input: `secrets`.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "label": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "run": {
-            "type": "string"
-          },
-          "terminal": {
-            "type": "boolean"
-          },
-          "user": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "type": "object"
-      },
       "Topic": {
         "description": "An entry of `/etc/berth/channels.json`.",
         "properties": {
@@ -1413,20 +1413,20 @@
               }
             ]
           },
-          "level": {
+          "mode": {
+            "description": "`system` or `single`.",
+            "type": "string"
+          },
+          "type": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/HostLevel",
-                "description": "What was installed on the host, by that record: `controller` when\nonly the controller was, `workstation` for a whole profile. Absent\nwhen the host keeps no record."
+                "$ref": "#/components/schemas/HostType",
+                "description": "What was installed on the host, by that record: `managed` when\nonly the controller was, `workstation` for a whole profile. Absent\nwhen the host keeps no record."
               },
               {
                 "type": "null"
               }
             ]
-          },
-          "mode": {
-            "description": "`system` or `single`.",
-            "type": "string"
           },
           "version": {
             "type": "string"
@@ -1578,7 +1578,7 @@
         }
       },
       "role": "view",
-      "summary": "One session's state. The agent sees those it started through a task."
+      "summary": "One session's state. The agent sees those it started through an action."
     },
     {
       "args": [
@@ -1903,32 +1903,32 @@
     },
     {
       "args": [],
-      "group": "tasks",
+      "group": "actions",
       "http": {
         "method": "GET",
-        "path": "/v1/tasks"
+        "path": "/v1/actions"
       },
       "kind": "call",
       "level": "Host and agent level.",
-      "name": "tasks.list",
+      "name": "actions.list",
       "portal": true,
       "result": {
         "schema": {
           "items": {
-            "$ref": "#/components/schemas/Task"
+            "$ref": "#/components/schemas/HostAction"
           },
           "type": "array"
         }
       },
       "role": "view",
-      "summary": "The tasks the caller may run, in the order of the file."
+      "summary": "The actions the caller may run, in the order of the file."
     },
     {
       "args": [
         {
-          "description": "A task's name, as the list gives it.",
+          "description": "An action's name, as the list gives it.",
           "in": "path",
-          "name": "name",
+          "name": "action",
           "required": true
         },
         {
@@ -1942,17 +1942,17 @@
       "data": {
         "description": null,
         "schema": {
-          "$ref": "#/components/schemas/RunTask"
+          "$ref": "#/components/schemas/RunAction"
         }
       },
-      "group": "tasks",
+      "group": "actions",
       "http": {
         "method": "POST",
-        "path": "/v1/tasks/{name}"
+        "path": "/v1/actions/{action}"
       },
       "kind": "call",
       "level": "Host and agent level.",
-      "name": "tasks.run",
+      "name": "actions.run",
       "portal": true,
       "result": {
         "schema": {
@@ -1960,31 +1960,31 @@
         }
       },
       "role": "operate",
-      "summary": "Run a task. It and what extends it are the steps of one session."
+      "summary": "Run an action. It and what extends it are the steps of one session."
     },
     {
       "args": [
         {
-          "description": "A task's name, as the list gives it.",
+          "description": "An action's name, as the list gives it.",
           "in": "path",
-          "name": "name",
+          "name": "action",
           "required": true
         },
         {
-          "description": "The name of one of the task's arguments.",
+          "description": "The name of one of the action's arguments.",
           "in": "path",
           "name": "argument",
           "required": true
         }
       ],
-      "group": "tasks",
+      "group": "actions",
       "http": {
         "method": "GET",
-        "path": "/v1/tasks/{name}/choices/{argument}"
+        "path": "/v1/actions/{action}/choices/{argument}"
       },
       "kind": "call",
       "level": "Host and agent level.",
-      "name": "tasks.choices",
+      "name": "actions.choices",
       "portal": true,
       "result": {
         "schema": {

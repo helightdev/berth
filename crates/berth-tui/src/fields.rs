@@ -1,6 +1,7 @@
 //! The settings the UI can edit, and the wizard steps and actions around them.
 
-pub const PROFILES: &[&str] = &["laptop", "cloud"];
+/// What a host can be installed on, as its profile's `target` says.
+pub const TARGETS: &[&str] = &["laptop", "cloud"];
 pub const DISK_MODES: &[&str] = &[
     "auto", "serial", "model", "path", "largest", "smallest", "ssd", "hdd",
 ];
@@ -8,8 +9,8 @@ pub const DISK_TYPES: &[&str] = &["any", "ssd", "hdd"];
 /// The ways to log in that are not a key of the ring; `key:NAME` is offered
 /// for each of those.
 pub const LOGINS: &[&str] = &["berth", "password", "ssh"];
-/// The levels a host can be meant to have, the whole profile first.
-pub const LEVELS: &[&str] = &["workstation", "controller", "reachable"];
+/// The types a host can be meant to be, the whole profile first.
+pub const TYPES: &[&str] = &["workstation", "managed", "ssh"];
 
 /// The pages of a host: its overview (`Manage`) and the tabs of the set-up
 /// flow. Each tab depends only on the ones before it.
@@ -50,8 +51,8 @@ impl Step {
 }
 
 /// The rows of a host's overview that are berth's own: name, label and help.
-/// Everything else there is a task the host lists itself.
-pub const TASKS: &[(&str, &str, &str)] = &[
+/// Everything else there is an action the host lists itself.
+pub const OFFERS: &[(&str, &str, &str)] = &[
     (
         "terminal",
         "Terminal",
@@ -75,7 +76,7 @@ pub const TASKS: &[(&str, &str, &str)] = &[
     (
         "install-controller",
         "Install the controller",
-        "Put berthd and box on the host and start berth's controller, so that sessions, tasks and files work there, without the rest of a workstation. The host's level becomes controller. Continues in the terminal. From the command line: `berth host install HOST`.",
+        "Put berthd and box on the host and start berth's controller, so that sessions, actions and files work there, without the rest of a workstation. The host's type becomes managed. Continues in the terminal. From the command line: `berth host install HOST`.",
     ),
     (
         "ssh",
@@ -98,7 +99,7 @@ pub enum Action {
     Docker,
     Ssh,
     /// An existing host berth only logs in to: a way offered on the Install
-    /// tab that chooses [`Action::Ssh`] at the level reachable.
+    /// tab that chooses [`Action::Ssh`] for a host of the type ssh.
     Reach,
     Manage,
 }
@@ -115,18 +116,18 @@ impl Action {
         Action::Docker,
     ];
 
-    /// The action a way of the Install tab sets, with the level it gives the
+    /// The action a way of the Install tab sets, with the type it gives the
     /// profile when it gives one.
     pub fn choose(self, config: &mut serde_json::Value) -> Action {
-        let level = berth_api::profile::level(config);
+        let host_type = berth_api::profile::host_type(config);
         match self {
             Action::Reach => {
-                berth_api::profile::set_level(config, berth_api::HostLevel::Reachable);
+                berth_api::profile::set_host_type(config, berth_api::HostType::Ssh);
                 Action::Ssh
             }
             // Installing over SSH installs something: the whole profile, unless the controller is chosen.
-            Action::Ssh if level == berth_api::HostLevel::Reachable => {
-                berth_api::profile::set_level(config, berth_api::HostLevel::Workstation);
+            Action::Ssh if host_type == berth_api::HostType::Ssh => {
+                berth_api::profile::set_host_type(config, berth_api::HostType::Workstation);
                 Action::Ssh
             }
             action => action,
@@ -172,13 +173,13 @@ impl Action {
                 "Build the desktop image using Docker Compose. Start it afterwards with docker compose."
             }
             Action::Manage => {
-                "Look after a host that is already set up, over SSH: show its status and access links, publish the desktop on the tailnet, run the smoke test, install updates or reboot. Pick the task on the overview."
+                "Look after a host that is already set up, over SSH: show its status and access links, publish the desktop on the tailnet, run the smoke test, install updates or reboot. Pick the action on the overview."
             }
             Action::Ssh => {
                 "Install on an existing Ubuntu host over SSH. Enter a hostname, IP address or SSH config alias, and how berth logs in: its own key by default. A host that does not take that key yet gets it with berth key trust HOST and a password used once. Sudo prompts use the normal terminal."
             }
             Action::Reach => {
-                "Add a host berth only logs in to over SSH, such as a server that stays as it is: nothing is installed on it. Enter a hostname, IP address or SSH config alias, and how berth logs in. Run saves it; a host that does not take berth's key yet gets it with berth key trust HOST. Its page can install the controller later, for sessions, tasks and files."
+                "Add a host berth only logs in to over SSH, such as a server that stays as it is: nothing is installed on it. Enter a hostname, IP address or SSH config alias, and how berth logs in. Run saves it; a host that does not take berth's key yet gets it with berth key trust HOST. Its page can install the controller later, for sessions, actions and files."
             }
         }
     }
@@ -219,7 +220,7 @@ pub struct Spec {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Field {
-    Profile,
+    Target,
     Hostname,
     Keyboard,
     Geometry,
@@ -269,7 +270,7 @@ pub enum Field {
     SshUser,
     SshPort,
     Login,
-    Level,
+    Type,
 }
 
 impl Field {
@@ -277,11 +278,11 @@ impl Field {
         use Field::*;
         use Kind::*;
         let (label, pointer, kind, help) = match self {
-            Profile => (
-                "Host profile",
-                "/profile",
-                Choice(PROFILES),
-                "Choose laptop or cloud provisioning defaults. Only laptop adds a physical login and power settings. Cloud leaves SSH open to any address when no recovery SSH CIDR is set; for a QEMU guest, set that to 10.0.2.2/32.",
+            Target => (
+                "Target",
+                "/target",
+                Choice(TARGETS),
+                "What the host is installed on: laptop or cloud, with their provisioning defaults. Only laptop adds a physical login and power settings. Cloud leaves SSH open to any address when no recovery SSH CIDR is set; for a QEMU guest, set that to 10.0.2.2/32.",
             ),
             Hostname => (
                 "Hostname",
@@ -571,11 +572,11 @@ impl Field {
                 Choice(LOGINS),
                 "How berth logs in. berth: the installation's own key, which hosts it sets up take. key:NAME: another key of berth's key ring (the Settings tab of the home screen lists them). password: a password, kept as the secret ssh/HOST or asked for. ssh: your own SSH configuration and agent, with berth's key offered after them. A host that does not take its key yet gets it with: berth key trust HOST.",
             ),
-            Level => (
-                "Level",
-                "/level",
-                Choice(LEVELS),
-                "How much of berth the host gets. workstation: the whole profile, with the desktop, the agents and plugins. controller: berthd and box alone, for sessions, tasks and files on a machine that stays as it is. reachable: nothing is installed; berth logs in over SSH. A lower level can be raised later: install the controller, or set workstation and apply.",
+            Type => (
+                "Type",
+                "/type",
+                Choice(TYPES),
+                "What berth does with the host. workstation: the whole profile, with the desktop, the agents and plugins. managed: berthd and box alone, for sessions, actions and files on a machine that stays as it is. ssh: nothing is installed; berth logs in over SSH. The type can change later: install the controller, or set workstation and apply.",
             ),
             UsbDevice => (
                 "Then write to USB drive",

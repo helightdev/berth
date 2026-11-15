@@ -60,8 +60,8 @@ pub fn operator(config: &Value) -> &str {
 /// keep what they say. Says whether it changed the profile.
 pub fn settle_after_apply(config: &mut Value) -> bool {
     let mut access = Access::of(config);
-    if config["profile"] == "container"
-        || level(config) != crate::HostLevel::Workstation
+    if config["target"] == "container"
+        || host_type(config) != crate::HostType::Workstation
         || access.link.is_some()
         || access.user.is_empty()
         || access.user != operator(config)
@@ -295,67 +295,104 @@ impl Access {
     }
 }
 
-/// The level a profile means its host to have: `level`, a workstation when
-/// it does not say, so profiles from before levels keep their meaning.
-pub fn level(config: &Value) -> crate::HostLevel {
-    config["level"]
+/// The type a profile means its host to be: `type`, a workstation when it
+/// does not say, so profiles from before types keep their meaning.
+pub fn host_type(config: &Value) -> crate::HostType {
+    config["type"]
         .as_str()
-        .and_then(crate::HostLevel::parse)
+        .and_then(crate::HostType::parse)
         .unwrap_or_default()
 }
 
-/// Set the level a profile means its host to have. A workstation is left
-/// unsaid, as profiles from before levels are.
-pub fn set_level(config: &mut Value, level: crate::HostLevel) {
+/// Set the type a profile means its host to be. A workstation is left
+/// unsaid, as profiles from before types are.
+pub fn set_host_type(config: &mut Value, host_type: crate::HostType) {
     if !config.is_object() {
         *config = json!({});
     }
-    match level {
-        crate::HostLevel::Workstation => {
+    match host_type {
+        crate::HostType::Workstation => {
             if let Some(profile) = config.as_object_mut() {
-                profile.remove("level");
+                profile.remove("type");
             }
         }
-        other => config["level"] = json!(other.name()),
+        other => config["type"] = json!(other.name()),
     }
 }
 
-/// The profile of a host berth only reaches or only controls: its level and
-/// how it is reached, nothing of a workstation.
-pub fn minimal(level: crate::HostLevel, access: &Access) -> Value {
+/// The profile of a host berth only logs in to or only manages: its type
+/// and how it is reached, nothing of a workstation.
+pub fn minimal(host_type: crate::HostType, access: &Access) -> Value {
     let mut config = json!({});
-    set_level(&mut config, level);
+    set_host_type(&mut config, host_type);
     access.write(&mut config);
     config
 }
 
-/// What is wrong with a profile as a whole, in sentences: its level, its
+/// Give a profile of berth 0.5 or earlier the names fields have now:
+/// `level` (`reachable`, `controller`, `workstation`) becomes `type`
+/// (`ssh`, `managed`, a workstation left unsaid), and `profile`, what the
+/// host is installed on, becomes `target`. What a later berth wrote stays.
+/// Says whether it changed the profile.
+pub fn take_old_names(config: &mut Value) -> bool {
+    let Some(profile) = config.as_object_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    if let Some(level) = profile.remove("level") {
+        changed = true;
+        if !profile.contains_key("type") {
+            match level
+                .as_str()
+                .map(|text| (text, crate::HostType::from_level(text)))
+            {
+                Some((_, Some(crate::HostType::Workstation))) => {}
+                Some((_, Some(host_type))) => {
+                    profile.insert("type".into(), json!(host_type.name()));
+                }
+                // One berth never wrote is kept, so that problems() names it.
+                _ => {
+                    profile.insert("type".into(), level);
+                }
+            }
+        }
+    }
+    if profile.get("profile").is_some_and(Value::is_string) {
+        let target = profile.remove("profile").unwrap_or_default();
+        changed = true;
+        profile.entry("target").or_insert(target);
+    }
+    changed
+}
+
+/// What is wrong with a profile as a whole, in sentences: its type, its
 /// `access`, and for a workstation the `builder` its set-up keeps. A host
-/// of a lower level needs only to be reachable.
+/// of another type needs only to be reachable.
 pub fn problems(config: &Value) -> Vec<String> {
     if !config.is_object() {
         return vec!["A profile is an object".into()];
     }
     let mut problems = vec![];
-    let level = match &config["level"] {
-        Value::Null => Some(crate::HostLevel::Workstation),
-        Value::String(text) => crate::HostLevel::parse(text),
+    let host_type = match &config["type"] {
+        Value::Null => Some(crate::HostType::Workstation),
+        Value::String(text) => crate::HostType::parse(text),
         _ => None,
     };
-    let Some(level) = level else {
+    let Some(host_type) = host_type else {
         return vec![format!(
-            "level is reachable, controller or workstation, not {}",
-            config["level"]
+            "type is {}, not {}",
+            crate::HostType::choices(),
+            config["type"]
         )];
     };
     problems.extend(Access::problems(config));
-    match level {
-        crate::HostLevel::Workstation if !config["builder"].is_object() => {
+    match host_type {
+        crate::HostType::Workstation if !config["builder"].is_object() => {
             problems.push("A workstation's profile has a builder object".into())
         }
-        crate::HostLevel::Workstation => {}
+        crate::HostType::Workstation => {}
         _ if !Access::of(config).reachable() => problems.push(format!(
-            "A {level} host needs access.address, where berth reaches it"
+            "A host of the type {host_type} needs access.address, where berth reaches it"
         )),
         _ => {}
     }
@@ -472,14 +509,14 @@ pub fn joins_automatically(config: &Value) -> bool {
 /// Where a QEMU guest on the user-mode network sees the machine it runs on.
 pub const QEMU_HOST: &str = "10.0.2.2/32";
 
-/// Make a profile of the `qemu` kind there once was a `cloud` one. That kind
-/// let SSH in only from the QEMU host when no recovery network was named, so
+/// Make a profile of the `qemu` target there once was a `cloud` one. That
+/// target let SSH in only from the QEMU host when no recovery network was named, so
 /// it gets that network rather than SSH open to every address.
 pub fn retire_qemu(config: &mut Value) {
-    if config["profile"] != "qemu" {
+    if config["target"] != "qemu" {
         return;
     }
-    config["profile"] = json!("cloud");
+    config["target"] = json!("cloud");
     if !config["ansible_vars"].is_object() {
         config["ansible_vars"] = json!({});
     }
@@ -505,7 +542,7 @@ mod tests {
         for bad in ["-oProxyCommand=touch /tmp/x;#", "a b", "a@b", "a\tb"] {
             assert!(!valid_user(bad), "{bad}");
         }
-        let problems = |access: Value| problems(&json!({"level": "reachable", "access": access}));
+        let problems = |access: Value| problems(&json!({"type": "ssh", "access": access}));
         assert!(problems(json!({"address": "192.0.2.10", "user": "ops"})).is_empty());
         assert_eq!(problems(json!({"address": "-oProxyCommand=x"})).len(), 1);
         assert_eq!(
@@ -580,12 +617,12 @@ mod tests {
         let mut named = json!({"operator_username": "admin", "builder": {}, "access": {"user": "admin", "sudo": "password"}});
         assert!(settle_after_apply(&mut named));
         assert!(!asks_become_pass(&named));
-        // A container has no operator, and a host below a workstation was not set up by berth.
+        // A container has no operator, and a host of another type was not set up by berth.
         let mut container =
-            json!({"profile": "container", "access": {"user": "ops", "sudo": "password"}});
+            json!({"target": "container", "access": {"user": "ops", "sudo": "password"}});
         assert!(!settle_after_apply(&mut container));
-        let mut controller = json!({"level": "controller", "access": {"address": "192.0.2.4", "user": "ops", "sudo": "password"}});
-        assert!(!settle_after_apply(&mut controller));
+        let mut managed = json!({"type": "managed", "access": {"address": "192.0.2.4", "user": "ops", "sudo": "password"}});
+        assert!(!settle_after_apply(&mut managed));
     }
 
     #[test]
@@ -652,55 +689,85 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_without_a_level_is_a_workstation() {
-        use crate::HostLevel;
-        assert_eq!(level(&json!({"builder": {}})), HostLevel::Workstation);
-        assert_eq!(
-            level(&json!({"level": "controller"})),
-            HostLevel::Controller
-        );
+    fn a_profile_without_a_type_is_a_workstation() {
+        use crate::HostType;
+        assert_eq!(host_type(&json!({"builder": {}})), HostType::Workstation);
+        assert_eq!(host_type(&json!({"type": "managed"})), HostType::Managed);
         // One berth does not know reads as the default, and is named a problem.
-        assert_eq!(level(&json!({"level": "server"})), HostLevel::Workstation);
-        assert!(problems(&json!({"level": "server"}))[0].contains("not \"server\""));
+        assert_eq!(host_type(&json!({"type": "server"})), HostType::Workstation);
+        assert_eq!(
+            problems(&json!({"type": "server"})),
+            ["type is ssh, managed or workstation, not \"server\""]
+        );
         let access = Access {
             address: "192.0.2.10".into(),
             user: "ops".into(),
             ..Access::default()
         };
-        let reachable = minimal(HostLevel::Reachable, &access);
+        let ssh = minimal(HostType::Ssh, &access);
         assert_eq!(
-            reachable,
-            json!({"level": "reachable", "access": {"address": "192.0.2.10", "user": "ops", "auth": "berth"}})
+            ssh,
+            json!({"type": "ssh", "access": {"address": "192.0.2.10", "user": "ops", "auth": "berth"}})
         );
-        assert!(problems(&reachable).is_empty());
-        // Only a workstation needs the set-up's part; a lower level needs an address.
+        assert!(problems(&ssh).is_empty());
+        // Only a workstation needs the set-up's part; another type needs an address.
         assert_eq!(
             problems(&json!({"access": {"address": "studio"}})),
             ["A workstation's profile has a builder object"]
         );
-        assert!(problems(&json!({"level": "controller"}))[0].contains("access.address"));
-        let mut changed = reachable.clone();
-        set_level(&mut changed, HostLevel::Workstation);
-        assert!(changed.get("level").is_none());
+        assert!(problems(&json!({"type": "managed"}))[0].contains("access.address"));
+        let mut changed = ssh.clone();
+        set_host_type(&mut changed, HostType::Workstation);
+        assert!(changed.get("type").is_none());
+    }
+
+    #[test]
+    fn a_profile_of_berth_05_takes_the_names_of_now() {
+        for (level, written) in [
+            ("reachable", json!("ssh")),
+            ("controller", json!("managed")),
+            ("workstation", Value::Null),
+            ("server", json!("server")),
+        ] {
+            let mut old =
+                json!({"level": level, "profile": "cloud", "access": {"address": "192.0.2.4"}});
+            assert!(take_old_names(&mut old), "{level}");
+            assert_eq!(old["type"], written, "{level}");
+            assert_eq!(old["target"], "cloud");
+            assert!(old.get("level").is_none() && old.get("profile").is_none());
+            assert!(!take_old_names(&mut old), "{level}");
+        }
+        // What a later berth wrote wins, and the old field goes.
+        let mut both = json!({"type": "managed", "level": "reachable", "target": "laptop", "profile": "cloud"});
+        assert!(take_old_names(&mut both));
+        assert_eq!(both, json!({"type": "managed", "target": "laptop"}));
+        // A profile of now is left as it is.
+        let mut now = json!({"type": "ssh", "target": "cloud", "builder": {}});
+        assert!(!take_old_names(&mut now));
+        assert_eq!(
+            now,
+            json!({"type": "ssh", "target": "cloud", "builder": {}})
+        );
+        assert!(!take_old_names(&mut json!([])));
     }
 
     #[test]
     fn a_qemu_profile_is_a_cloud_one_reached_from_the_qemu_host() {
-        let mut old = json!({"profile": "qemu"});
+        let mut old = json!({"target": "qemu"});
         retire_qemu(&mut old);
         assert_eq!(
             old,
-            json!({"profile": "cloud", "ansible_vars": {"devbox_bootstrap_ssh_cidr": "10.0.2.2/32"}})
+            json!({"target": "cloud", "ansible_vars": {"devbox_bootstrap_ssh_cidr": "10.0.2.2/32"}})
         );
         // A network it names stays, and other kinds are left as they are.
-        let mut named = json!({"profile": "qemu", "ansible_vars": {"devbox_bootstrap_ssh_cidr": "192.0.2.0/24"}});
+        let mut named = json!({"target": "qemu", "ansible_vars": {"devbox_bootstrap_ssh_cidr": "192.0.2.0/24"}});
         retire_qemu(&mut named);
-        assert_eq!(named["profile"], "cloud");
+        assert_eq!(named["target"], "cloud");
         assert_eq!(
             named["ansible_vars"]["devbox_bootstrap_ssh_cidr"],
             "192.0.2.0/24"
         );
-        for kept in [json!({"profile": "laptop"}), json!({"profile": "cloud"})] {
+        for kept in [json!({"target": "laptop"}), json!({"target": "cloud"})] {
             let mut profile = kept.clone();
             retire_qemu(&mut profile);
             assert_eq!(profile, kept);

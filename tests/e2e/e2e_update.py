@@ -119,7 +119,7 @@ class Update(unittest.TestCase):
         # What changed is there, and what went is gone.
         self.assertEqual(station.berth('run', HOST, 'up:hello').stdout.strip(), 'hello from 2.0.0')
         self.assertEqual(station.berth('run', HOST, 'up:added').stdout.strip(), 'added task')
-        tasks = station.berth('tasks', HOST).stdout
+        tasks = station.berth('actions', HOST).stdout
         self.assertNotIn('up:old', tasks)
         services = json.loads(station.root_on_host('cat /etc/berth/services.json').stdout)
         ours = [service['run'] for service in services if 'box serve up/echo' in service['run']]

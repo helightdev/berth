@@ -13,8 +13,8 @@ output is at `/v1/sessions/{id}`, the channel at `/v1/channel`, and a service's
 serving connection at `/v1/services/{service}/serve`. Open it with a `GET` and
 the usual upgrade headers, on the same unix socket as the plain requests.
 
-`berth serve` passes a host's streams through under `/v1/hosts/{name}`, so the
-session above is at `/v1/hosts/{name}/sessions/{id}` there, with the same
+`berth serve` passes a host's streams through under `/v1/hosts/{name}/controller`,
+so the session above is at `/v1/hosts/{name}/controller/sessions/{id}` there, with the same
 frames. Over TCP the token from `serve.token` goes in an
 `Authorization: Bearer` header. A browser cannot set a header on a WebSocket, so
 the token is also accepted as the `Sec-WebSocket-Protocol` value.
@@ -65,7 +65,7 @@ that the last viewer to resize it asked for.
 
 [`ports.connect`](/docs/api/host/ports) is a TCP connection to a port on the
 host's loopback, `127.0.0.1`. It is at `/v1/ports/{port}`, and through
-`berth serve` at `/v1/hosts/{name}/ports/{port}`. berthd connects to the port
+`berth serve` at `/v1/hosts/{name}/controller/ports/{port}`. berthd connects to the port
 before the handshake, so a port that nothing listens on gives the error `503
 not_served`. It needs the role `operate` and the host
 level.

@@ -11,7 +11,7 @@ berthd and `berth serve` answer the same kind of API. Each of their *operations*
 | berthd | every host, as root | unix sockets in `/run/berth` | [berthd](/docs/api/host) |
 | `berth serve` | your machine, or a server | a unix socket of your user, and optionally TCP | [berth serve](/docs/api/serve) |
 
-`berth serve` passes berthd's operations through to the host it names, so a program that talks to `berth serve` reaches all hosts. It also lists what can be done to each host and to the installation as [actions](/docs/extend/serve#actions), and runs one as a job it keeps.
+`berth serve` passes berthd's operations through to the host it names, under `/v1/hosts/NAME/controller`, so a program that talks to `berth serve` reaches all hosts. It also lists what can be done to each host and to the installation as [actions](/docs/extend/serve#actions), and runs one as a job it keeps.
 
 ## Ways to call an operation
 
@@ -34,7 +34,21 @@ A *call* takes arguments and input and gives back a result. After it opens, a *s
 | `api` | Added |
 | --- | --- |
 | 1 | The API as first released |
-| 2 | `ports.connect` with windows on the portal's streams, roles from the keys of an object claim, the `dropped` frame of `events.follow`, `inbox.follow` and `kv.follow`, and host and resource changes on `events.follow` |
+| 2 | `ports.connect` with windows on the portal's streams, roles from the keys of an object claim, the `dropped` frame of `events.follow`, `inbox.follow` and `kv.follow`, and host and resource changes on `events.follow`. It also renames, and breaks what a client of number 1 calls: see below |
+
+What number 2 renames, with no old name kept:
+
+| Number 1 | Number 2 |
+| --- | --- |
+| `tasks.list`, `tasks.run`, `tasks.choices` at `/v1/tasks…` | `actions.list`, `actions.run`, `actions.choices` at `/v1/actions…`, with the action's name as `action` |
+| The schemas `Task`, `RunTask`, `PluginTask` and a feature's `tasks` | `HostAction`, `RunAction`, `PluginAction` and `actions` |
+| A session's `task` | `action` |
+| `actions.list`, `actions.act` of `berth serve` at `/v1/actions…` | `installation.actions`, `installation.act` at `/v1/installation/actions…` |
+| A host's operations through `berth serve` at `/v1/hosts/NAME/…` | `/v1/hosts/NAME/controller/…`, so that none meets the server's own routes of a host |
+| `level` of `version` and `hosts.get`, with `reachable`, `controller`, `workstation` | `type`, with `ssh`, `managed`, `workstation` |
+| `level` and `profile` in a profile that `hosts.save` takes | `type` and `target` |
+
+berth reads what a berthd of number 1 says of the host's type. It needs number 2 for everything else, and says to update the controller or apply the host until it has it.
 
 ## Who may call
 

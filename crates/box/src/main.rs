@@ -11,8 +11,8 @@ const USAGE: &str = "usage:
   box desktop screenshot [--output PATH|-] | click X Y [BUTTON] | type TEXT | key CHORD | scroll up|down [STEPS] | clipboard | pause | resume
   box mcp                               the desktop tools as an MCP server on stdio
   box exec [COMMAND...]                 run a command, or a shell, with the desktop's environment
-  box tasks                             the tasks this user may run
-  box run TASK [NAME=VALUE...]          run one; output here, its exit code as box's
+  box actions                           the actions this user may run
+  box run ACTION [NAME=VALUE...]        run one; output here, its exit code as box's
   box publish TOPIC [JSON] [--keep none|last|log]
   box listen TOPIC-PREFIX [--since ID]  one JSON message per line
   box services                          what can be called, and whether it is up

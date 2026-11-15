@@ -565,16 +565,16 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) ->
     })
 }
 
-/// Make the host's profile a `cloud` one before the machine is made from it:
+/// Make the host's target `cloud` before the machine is made from it:
 /// a created machine has no laptop's physical login or power settings, and
 /// the seed is rendered from, or the role applied with, what is saved.
-fn cloud_profile(paths: &Paths, host: &str) -> Result<()> {
+fn cloud_target(paths: &Paths, host: &str) -> Result<()> {
     let place = Place::resolve(paths, host)?;
     let mut profile = place
         .load(paths)?
         .ok_or_else(|| format!("No host {host}"))?;
-    if profile["profile"] != "cloud" && profile.is_object() {
-        profile["profile"] = json!("cloud");
+    if profile["target"] != "cloud" && profile.is_object() {
+        profile["target"] = json!("cloud");
         place.save(paths, &profile)?;
     }
     Ok(())
@@ -630,7 +630,7 @@ impl Prepared {
     ) -> Result<()> {
         let (host, name) = (self.host.clone(), self.name.clone());
         say(out, &format!("▸ {host}: creating its machine with {name}"));
-        cloud_profile(paths, &host)?;
+        cloud_target(paths, &host)?;
         let profile = Host::load(paths, &host)?;
         let mut request = resource::request(
             "create",
@@ -1083,13 +1083,8 @@ fn answers(paths: &Paths, host: &Host) -> bool {
     };
     let link = Link::new(spec);
     // The timer is made inside the runtime, which is what it runs on.
-    let asked = runtime.block_on(async {
-        tokio::time::timeout(
-            Duration::from_secs(20),
-            link.get::<berth_api::Version>("/v1/version"),
-        )
-        .await
-    });
+    let asked = runtime
+        .block_on(async { tokio::time::timeout(Duration::from_secs(20), link.version()).await });
     runtime.shutdown_background();
     matches!(asked, Ok(Ok(_)))
 }
@@ -1262,7 +1257,7 @@ out = build / config['hostname'] / 'cloud'
 out.mkdir(parents=True, exist_ok=True)
 (build / 'devbox-release.tar.gz').write_bytes(b'release')
 (out / 'user-data').write_text('#cloud-config\n# delivered=' + os.environ.get('BERTH_RELEASE_DELIVERED', '') + '\n'
-                               + '# profile=' + config.get('profile', '') + '\n')
+                               + '# target=' + config.get('target', '') + '\n')
 print(build / 'devbox-release.tar.gz')
 print(out)
 "#;
@@ -1420,7 +1415,7 @@ print(out)
                     &format!(
                         "finished {} as {}",
                         host.address(),
-                        host.config["profile"].as_str().unwrap_or("")
+                        host.config["target"].as_str().unwrap_or("")
                     ),
                 );
                 Ok(())
@@ -1828,10 +1823,10 @@ print(out)
         // A created machine is a cloud host, whatever the profile said before.
         assert_eq!(
             create["seed"]["user_data"],
-            "#cloud-config\n# delivered=1\n# profile=cloud\n"
+            "#cloud-config\n# delivered=1\n# target=cloud\n"
         );
         let host = Host::load(&world.paths, "studio").unwrap();
-        assert_eq!(host.config["profile"], "cloud");
+        assert_eq!(host.config["target"], "cloud");
         assert_eq!(
             create["seed"]["meta_data"],
             format!("instance-id: {token}\nlocal-hostname: studio\n")
@@ -2032,7 +2027,7 @@ print(out)
 
     #[test]
     fn the_secrets_a_seed_carries_are_found_in_it() {
-        let deployment = json!({"profile": "cloud", "ansible_vars": {
+        let deployment = json!({"target": "cloud", "ansible_vars": {
             "devbox_tailscale_auth_key": "tskey-auth-kAbc123-xyz",
             "devbox_operator_password_hash": "$6$salt$hashhashhash",
             "devbox_operator_ssh_public_key": "ssh-ed25519 AAAAexample",

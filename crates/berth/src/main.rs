@@ -33,12 +33,12 @@ Usage:
   berth HOST                 open a host (a saved name, or a path to a profile)
   berth list                 saved hosts
   berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH]
-          [--level reachable|controller|workstation] [--no-contact]
+          [--type ssh|managed|workstation] [--no-contact]
                              save a machine that exists already, by its address, and
-                             install berth's key there; it is reachable unless told
-  berth host install HOST    install berth's controller alone on a host below a
-                             workstation: sessions, tasks and files, no desktop
-  berth host level HOST reachable|controller|workstation
+                             install berth's key there; its type is ssh unless told
+  berth host install HOST    install berth's controller alone on a host that is not
+                             a workstation: sessions, actions and files, no desktop
+  berth host type HOST ssh|managed|workstation
                              say what the host is, as for one added by its address
                              that berth set up before; nothing on the host changes
   berth host rename HOST NAME [--hostname]
@@ -52,7 +52,7 @@ Usage:
   berth apply --behind [--update] [--reboot [--force]]
                              apply every host that is behind, one at a time, stopping
                              at the first that fails; --all takes current ones too,
-                             --update runs their update task, --reboot reboots those
+                             --update runs their update action, --reboot reboots those
                              that need it unless sessions run (--force: even then)
   berth connect URL          use the berth server at URL: give it the setup key made
                              there with berth setup-key, on standard input
@@ -100,10 +100,11 @@ Usage:
                              delete the machine; the profile stays
   berth key                  this berth's own SSH public key, which the operator of a
                              host it sets up takes
-  berth tasks HOST           what the host can do: its tasks and those of its plugins
-  berth run HOST TASK [NAME=VALUE…] [--yes]
+  berth actions HOST         what the host can do: its controller's actions, those of
+                             its plugins and berth's own
+  berth run HOST ACTION [NAME=VALUE…] [--yes]
                              run one of them and leave with its exit code
-                             (berth manage HOST TASK is the same)
+                             (berth manage HOST ACTION is the same)
   berth exec HOST [--user agent|operator|root] [--keep] -- COMMAND…
                              run a command on the host; its exit code is berth's
   berth attach HOST [ID]     this terminal onto a terminal session of the host, or onto
@@ -399,7 +400,10 @@ fn open(paths: &Paths, host: &str) -> Result<App> {
 /// Stop with the list of problems when the profile cannot run the action.
 fn require_ready(app: &App) -> Result<()> {
     // A seed and an installer make a whole workstation.
-    berth_core::level::guard(&app.host_profile(), berth_core::level::Capability::Apply)?;
+    berth_core::host_type::guard(
+        &app.host_profile(),
+        berth_core::host_type::Capability::Apply,
+    )?;
     let problems = app.problems();
     if problems.is_empty() {
         return Ok(());
@@ -688,7 +692,7 @@ fn run() -> Result<()> {
             return commands::add_host(&paths, name, address, rest);
         }
         ["host", "install", host] => return commands::install_controller(&paths, host),
-        ["host", "level", host, level] => return commands::set_level(&paths, host, level),
+        ["host", "type", host, given] => return commands::set_type(&paths, host, given),
         ["host", "rename", host, name] => return commands::rename(&paths, host, name, false),
         ["host", "rename", host, name, "--hostname"]
         | ["host", "rename", host, "--hostname", name] => {
@@ -799,9 +803,9 @@ fn run() -> Result<()> {
             require_ready(&app)?;
             return app.execute();
         }
-        ["tasks", host] => return commands::tasks(&paths, host),
-        ["run" | "manage", host, task, ref rest @ ..] => {
-            return commands::run(&paths, host, task, rest);
+        ["actions", host] => return commands::actions(&paths, host),
+        ["run" | "manage", host, action, ref rest @ ..] => {
+            return commands::run(&paths, host, action, rest);
         }
         ["exec", host, ref rest @ ..] => return commands::exec(&paths, host, rest),
         ["attach", host] => return commands::attach(&paths, host, None),
@@ -887,7 +891,7 @@ mod tests {
     fn only_the_screen_opens_before_the_mirror_is_made() {
         assert!(opens_screen(&[]) && opens_screen(&["studio"]));
         assert!(!opens_screen(&["list"]) && !opens_screen(&["--version"]));
-        assert!(!opens_screen(&["run", "studio", "task"]));
+        assert!(!opens_screen(&["run", "studio", "status"]));
     }
 
     use super::*;
@@ -986,7 +990,7 @@ mod tests {
         assert!(
             !app.entries()
                 .iter()
-                .any(|entry| matches!(entry, Entry::HostTask(_)))
+                .any(|entry| matches!(entry, Entry::HostAction(_)))
         );
         app.set_item(Item::Feature(0), false);
         assert_eq!(
@@ -1110,14 +1114,14 @@ mod tests {
         assert_eq!(legacy["target_disk_mode"], "serial");
         assert_eq!(legacy["wifi_enabled"], true);
         assert_eq!(legacy["release_url"], "");
-        // A profile of the qemu kind there once was shows as cloud, reached from the QEMU host.
-        let qemu = parse_config(br#"{"profile": "qemu"}"#).unwrap();
-        assert_eq!(qemu["profile"], "cloud");
+        // A profile of the qemu target there once was shows as cloud, reached from the QEMU host.
+        let qemu = parse_config(br#"{"target": "qemu"}"#).unwrap();
+        assert_eq!(qemu["target"], "cloud");
         assert_eq!(
             qemu["ansible_vars"]["devbox_bootstrap_ssh_cidr"],
             "10.0.2.2/32"
         );
-        let app = app(r#"{"profile": "qemu"}"#);
+        let app = app(r#"{"target": "qemu"}"#);
         assert_eq!(app.text(Field::RecoveryCidr), "10.0.2.2/32");
     }
 
@@ -1176,10 +1180,10 @@ mod tests {
         app.activate(Field::ToolsJvm);
         assert_eq!(app.config["ansible_vars"]["devbox_tools_jvm"], true);
 
-        app.activate(Field::Profile);
-        assert_eq!(app.text(Field::Profile), "cloud");
-        app.commit(Field::Profile, "desktop");
-        assert_eq!(app.text(Field::Profile), "cloud");
+        app.activate(Field::Target);
+        assert_eq!(app.text(Field::Target), "cloud");
+        app.commit(Field::Target, "desktop");
+        assert_eq!(app.text(Field::Target), "cloud");
         assert!(app.unsaved());
     }
 

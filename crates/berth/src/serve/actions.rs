@@ -1,5 +1,5 @@
 //! The actions of a host and of the installation: what can be done to each,
-//! and running one. A host's actions are the tasks its controller lists and
+//! and running one. A host's actions are the actions its controller lists and
 //! berth's own from [`HOST`]; the installation's are [`INSTALLATION`]. An
 //! action that changes something runs as a job; one the host runs is a
 //! session there, which a job follows unless it needs a terminal.
@@ -18,14 +18,14 @@ use axum::{
 };
 use berth_api::profile::{self, Auth};
 use berth_api::{
-    Act, Acted, Action, Argument, ErrorBody, Rollout, RolloutReport, Runs, Session, Task, b64,
-    client, code, ops::Role,
+    Act, Acted, Action, Argument, ErrorBody, HostAction, Rollout, RolloutReport, Runs, Session,
+    b64, client, code, ops::Role,
 };
 use berth_core::{
     apply,
     host::Host,
+    host_type::{self, Capability, HostType},
     keys::{self, Once, contact, ring},
-    level::{self, Capability, Level},
     profiles::Place,
     registry::Store,
     rollout,
@@ -44,13 +44,13 @@ pub(super) struct Seen<'a> {
     /// The host's profile; null for the installation.
     pub profile: &'a Value,
     /// What the host's controller lists; `None` when it did not answer.
-    pub tasks: Option<&'a [Task]>,
+    pub host_actions: Option<&'a [HostAction]>,
     /// The names of the secrets the server keeps.
     pub secrets: &'a [String],
-    /// The level the host's profile means it to have.
-    pub level: Level,
+    /// The type the host's profile means it to be.
+    pub host_type: HostType,
     /// What its controller says it is, when it answered.
-    pub observed: Option<Level>,
+    pub observed: Option<HostType>,
     /// Why its controller did not answer, when it was asked and did not.
     pub unanswered: Option<&'a str>,
 }
@@ -148,43 +148,43 @@ pub(super) fn answer(acted: Acted) -> (StatusCode, Json<Acted>) {
     (status, Json(acted))
 }
 
-/// The tasks a host's controller lists, asked for with a time limit.
-async fn host_tasks(remote: &Remote) -> Result<Vec<Task>, String> {
+/// The actions a host's controller lists, asked for with a time limit.
+async fn controller_actions(remote: &Remote) -> Result<Vec<HostAction>, String> {
     let link = remote
         .link
         .as_ref()
         .ok_or_else(|| remote.problem.clone().unwrap_or_else(|| "no link".into()))?;
-    match tokio::time::timeout(Duration::from_secs(15), link.get::<Value>("/v1/tasks")).await {
-        Ok(Ok(tasks)) => Ok(berth_tui::host::list(tasks, "tasks")),
+    match tokio::time::timeout(Duration::from_secs(15), link.get::<Value>("/v1/actions")).await {
+        Ok(Ok(listed)) => Ok(berth_tui::host::list(listed, "actions")),
         Ok(Err(error)) => Err(error.to_string()),
         Err(_) => Err("no answer in time".into()),
     }
 }
 
 /// What a host's controller says the host is, when it answers.
-async fn observed(remote: &Remote) -> Option<Level> {
+async fn observed(remote: &Remote) -> Option<HostType> {
     remote
         .version()
         .await
         .ok()
         .as_ref()
-        .and_then(|version| level::seen(Ok(version)))
+        .and_then(|version| host_type::seen(Ok(version)))
 }
 
-/// A host's actions: its tasks, then berth's own. A task that takes the
+/// A host's actions: its controller's, then berth's own. One that takes the
 /// workstation's secrets on its input is berth's to run, with the server's.
 fn host_list(seen: &Seen) -> Vec<Action> {
     let own: Vec<Action> = HOST
         .iter()
         .map(|builtin| (builtin.describe)(seen))
         .collect();
-    let tasks = seen.tasks.unwrap_or(&[]);
-    let mut actions: Vec<Action> = Action::of_tasks(tasks)
+    let listed = seen.host_actions.unwrap_or(&[]);
+    let mut actions: Vec<Action> = Action::of_host(listed)
         .into_iter()
         .filter(|action| !own.iter().any(|known| known.name == action.name))
         .filter(|action| {
-            let task = tasks.iter().find(|task| task.name == action.name);
-            task.is_none_or(|task| task.input.is_none())
+            let kept = listed.iter().find(|kept| kept.name == action.name);
+            kept.is_none_or(|kept| kept.input.is_none())
         })
         .collect();
     actions.extend(own);
@@ -239,7 +239,7 @@ fn no_action(subject: &str, action: &str, actions: &[Action]) -> Fail {
     )
 }
 
-#[utoipa::path(get, path = "/v1/hosts/{name}/actions", summary = "What can be done to a host: the tasks its controller lists, and berth's own actions.", tag = "hosts",
+#[utoipa::path(get, path = "/v1/hosts/{name}/actions", summary = "What can be done to a host: the actions its controller lists, and berth's own.", tag = "hosts",
     params(("name" = String, Path, description = "A saved host")),
     responses((status = 200, description = "The actions, each saying whether it can run now", body = Vec<Action>),
               (status = 404, description = "No such host", body = ErrorBody)))]
@@ -250,13 +250,13 @@ pub async fn host_actions(
     state.refresh(false);
     let remote = remote(&state, &name)?;
     let profile = profile_of(&state, &name);
-    // A host that is only reachable has no controller to ask.
-    let asked = match level::of(&profile) {
-        Level::Reachable => None,
-        _ => Some(host_tasks(&remote).await),
+    // A host of the type ssh has no controller to ask.
+    let asked = match host_type::of(&profile) {
+        HostType::Ssh => None,
+        _ => Some(controller_actions(&remote).await),
     };
-    let (tasks, unanswered) = match &asked {
-        Some(Ok(tasks)) => (Some(tasks.as_slice()), None),
+    let (listed, unanswered) = match &asked {
+        Some(Ok(listed)) => (Some(listed.as_slice()), None),
         Some(Err(error)) => (None, Some(error.as_str())),
         None => (None, None),
     };
@@ -265,19 +265,19 @@ pub async fn host_actions(
     Ok(Json(host_list(&Seen {
         name: &name,
         profile: &profile,
-        tasks,
+        host_actions: listed,
         secrets: &secrets,
-        level: level::of(&profile),
+        host_type: host_type::of(&profile),
         observed,
         unanswered,
     })))
 }
 
-#[utoipa::path(post, path = "/v1/hosts/{name}/actions/{action}", summary = "Run one of a host's actions. One of berth's that changes something is a job; a task of the host is a session there, which a job follows unless it needs a terminal.", tag = "hosts",
+#[utoipa::path(post, path = "/v1/hosts/{name}/actions/{action}", summary = "Run one of a host's actions. One of berth's that changes something is a job; an action of the host's controller is a session there, which a job follows unless it needs a terminal.", tag = "hosts",
     params(("name" = String, Path, description = "A saved host"),
            ("action" = String, Path, description = "The action, as hosts.actions names it")),
     request_body(content = Option<Act>, description = "Its arguments, and a token that makes asking again safe"),
-    responses((status = 202, description = "Started as a job; a task of the host also says its session", body = Acted),
+    responses((status = 202, description = "Started as a job; an action of its controller also says its session", body = Acted),
               (status = 200, description = "Answered at once: the result, or the terminal session to attach to", body = Acted),
               (status = 400, description = "An argument is missing, or the body is not one", body = ErrorBody),
               (status = 403, description = "The caller's role is below the action's", body = ErrorBody),
@@ -297,21 +297,21 @@ pub async fn host_act(
     let profile = profile_of(&state, &name);
     // berth's own are described without asking the host, which they do themselves.
     let builtin = HOST.iter().find(|builtin| builtin.name == action);
-    let reachable_only = level::of(&profile) == Level::Reachable;
+    let ssh_only = host_type::of(&profile) == HostType::Ssh;
     let mut unanswered = None;
-    let tasks = match builtin {
-        Some(_) if reachable_only || !THROUGH_CONTROLLER.contains(&action.as_str()) => None,
+    let listed = match builtin {
+        Some(_) if ssh_only || !THROUGH_CONTROLLER.contains(&action.as_str()) => None,
         // One that runs through the controller is described as the host answers.
-        Some(_) => match host_tasks(&remote).await {
-            Ok(tasks) => Some(tasks),
+        Some(_) => match controller_actions(&remote).await {
+            Ok(listed) => Some(listed),
             Err(error) => {
                 unanswered = Some(error);
                 None
             }
         },
-        None if reachable_only => Some(vec![]),
+        None if ssh_only => Some(vec![]),
         None => Some(
-            host_tasks(&remote)
+            controller_actions(&remote)
                 .await
                 .map_err(|error| Fail::new(code::UNREACHABLE, error))?,
         ),
@@ -321,9 +321,9 @@ pub async fn host_act(
     let actions = host_list(&Seen {
         name: &name,
         profile: &profile,
-        tasks: tasks.as_deref(),
+        host_actions: listed.as_deref(),
         secrets: &secrets,
-        level: level::of(&profile),
+        host_type: host_type::of(&profile),
         observed,
         unanswered: unanswered.as_deref(),
     });
@@ -334,12 +334,12 @@ pub async fn host_act(
     admit(&state, &caller(access), found, &act)?;
     let acted = match builtin {
         Some(builtin) => (builtin.run)(state, name, act).await?,
-        None => run_task(&state, &remote, found, act, None).await?,
+        None => run_action(&state, &remote, found, act, None).await?,
     };
     Ok(answer(acted))
 }
 
-#[utoipa::path(get, path = "/v1/actions", summary = "What can be done to the installation as a whole, such as a roll-out over its hosts.", tag = "hosts",
+#[utoipa::path(get, path = "/v1/installation/actions", summary = "What can be done to the installation as a whole, such as a roll-out over its hosts.", tag = "hosts",
     responses((status = 200, description = "The actions", body = Vec<Action>)))]
 pub async fn list() -> Json<Vec<Action>> {
     Json(installation_list())
@@ -349,9 +349,9 @@ fn installation_list() -> Vec<Action> {
     let seen = Seen {
         name: "",
         profile: &Value::Null,
-        tasks: None,
+        host_actions: None,
         secrets: &[],
-        level: Level::Workstation,
+        host_type: HostType::Workstation,
         observed: None,
         unanswered: None,
     };
@@ -361,8 +361,8 @@ fn installation_list() -> Vec<Action> {
         .collect()
 }
 
-#[utoipa::path(post, path = "/v1/actions/{action}", summary = "Run one of the installation's actions, as a job.", tag = "hosts",
-    params(("action" = String, Path, description = "The action, as actions.list names it")),
+#[utoipa::path(post, path = "/v1/installation/actions/{action}", summary = "Run one of the installation's actions, as a job.", tag = "hosts",
+    params(("action" = String, Path, description = "The action, as installation.actions names it")),
     request_body(content = Option<Act>, description = "Its arguments, and a token that makes asking again safe"),
     responses((status = 202, description = "Started as a job", body = Acted),
               (status = 400, description = "An argument is wrong, or the body is not one", body = ErrorBody),
@@ -398,7 +398,7 @@ pub(super) fn refused(error: Box<dyn std::error::Error>) -> Fail {
     }
 }
 
-// ── Tasks of a host ─────────────────────────────────────────────────────────
+// ── Actions of a host ─────────────────────────────────────────────────────────
 
 /// The host's controller through the server's link to it, for a job that
 /// waits on it from a thread of its own.
@@ -416,9 +416,9 @@ impl Controller for Through {
     }
 }
 
-/// Run a task of the host as a session there, with `input` on its standard
+/// Run an action of the host as a session there, with `input` on its standard
 /// input. A job follows one that needs no terminal, copying its output.
-async fn run_task(
+async fn run_action(
     state: &Arc<Serve>,
     remote: &Arc<Remote>,
     action: &Action,
@@ -437,7 +437,7 @@ async fn run_task(
     if let Some(input) = input {
         body["input_b64"] = json!(b64(format!("{input}\n").as_bytes()));
     }
-    let path = format!("/v1/tasks/{}", client::encode(&action.name));
+    let path = format!("/v1/actions/{}", client::encode(&action.name));
     // One to attach to is the session alone, with no job to find again.
     if action.terminal {
         let session: Session = link.post(&path, &body).await?;
@@ -448,7 +448,7 @@ async fn run_task(
     }
     let mut request = Request::new(Subject::Host(remote.name.clone()), &action.name);
     request.token = act.token;
-    // A task is the host's own session, and runs beside the others there.
+    // An action is the host's own session, and runs beside the others there.
     request.changes = false;
     // The job is written first, so that of the callers with one token only
     // the one that wrote it starts a session; the others find its job.
@@ -509,7 +509,7 @@ fn apply_action(seen: &Seen) -> Action {
             "Run the installer role against the host again, from the server, with the settings of its profile: for example after changing what is installed. It also installs or updates berth's own tools on the host. It runs as a job of the server.",
         )
     };
-    let action = level::fit(action, seen.name, seen.level, Capability::Apply);
+    let action = host_type::fit(action, seen.name, seen.host_type, Capability::Apply);
     logs_in_alone(seen, action)
 }
 
@@ -534,7 +534,7 @@ fn logs_in_alone(seen: &Seen, action: Action) -> Action {
 }
 
 fn install_controller_action(seen: &Seen) -> Action {
-    let action = level::install_controller_action(seen.name, seen.level, seen.observed);
+    let action = host_type::install_controller_action(seen.name, seen.host_type, seen.observed);
     let action = match seen.profile.is_null() {
         true => unavailable(
             action,
@@ -633,7 +633,7 @@ fn seed_action(seen: &Seen) -> Action {
             "Render the cloud-init user data that installs the host on a new machine, for a provider's field of that name. It answers with the seed.",
         )
     };
-    level::fit(action, seen.name, seen.level, Capability::Apply)
+    host_type::fit(action, seen.name, seen.host_type, Capability::Apply)
 }
 
 fn seed(state: Arc<Serve>, name: String, _: Act) -> Run {
@@ -655,30 +655,30 @@ fn seed(state: Arc<Serve>, name: String, _: Act) -> Run {
 }
 
 fn secrets_action(seen: &Seen) -> Action {
-    let task = seen
-        .tasks
-        .and_then(|tasks| tasks.iter().find(|task| task.name == "secrets"));
+    let kept = seen
+        .host_actions
+        .and_then(|listed| listed.iter().find(|kept| kept.name == "secrets"));
     let mut action = set_up(
         "secrets",
         "Send secrets",
         "Send the host the secrets and registry logins its profile names, from the server's own.",
     );
     action.runs = Runs::Host;
-    if let Some(task) = task {
-        action.label = task.label.clone();
-        action.help = task.help.clone();
-        action.group = task.group.clone();
+    if let Some(kept) = kept {
+        action.label = kept.label.clone();
+        action.help = kept.help.clone();
+        action.group = kept.group.clone();
     }
-    if let Err(refusal) = level::check(seen.name, seen.level, Capability::Secrets) {
+    if let Err(refusal) = host_type::check(seen.name, seen.host_type, Capability::Secrets) {
         return unavailable(action, Some(refusal.why));
     }
-    let why = match (seen.tasks, task, seen.unanswered) {
+    let why = match (seen.host_actions, kept, seen.unanswered) {
         (_, _, Some(error)) => Some(format!(
             "The controller on {} does not answer, and the secrets go through it: {error}",
             seen.name
         )),
         (Some(_), None, _) => Some(format!(
-            "The controller on {} has no secrets task yet: apply its configuration",
+            "The controller on {} has no secrets action yet: apply its configuration",
             seen.name
         )),
         _ => None,
@@ -699,7 +699,7 @@ fn secrets(state: Arc<Serve>, name: String, act: Act) -> Run {
             name: "secrets".into(),
             ..Action::default()
         };
-        run_task(&state, &remote, &action, act, Some(payload.to_string())).await
+        run_action(&state, &remote, &action, act, Some(payload.to_string())).await
     })
 }
 
@@ -731,7 +731,7 @@ fn rollout_action(_: &Seen) -> Action {
                 ..Argument::default()
             },
             flag("all", "Also current hosts", "Apply the hosts that are current too."),
-            flag("update", "Update", "Run each host's update task after applying."),
+            flag("update", "Update", "Run each host's update action after applying."),
             flag("reboot", "Reboot", "Reboot a host that says it needs it, and wait for it to come back."),
             flag("force", "Force", "Reboot although sessions run, which ends them."),
         ],
@@ -765,7 +765,7 @@ fn rollout(state: Arc<Serve>, _: String, act: Act) -> Run {
                     .and_then(|place| Host::load_at(&paths, place));
                 // Only a workstation is applied; the others are said and left.
                 let host = match host {
-                    Ok(host) if level::of(&host.config) != Level::Workstation => {
+                    Ok(host) if host_type::of(&host.config) != HostType::Workstation => {
                         skipped.push(host.name);
                         continue;
                     }
@@ -971,7 +971,7 @@ fn host_key(state: Arc<Serve>, name: String, act: Act) -> Run {
 // ── Its name ────────────────────────────────────────────────────────────────
 
 fn rename_action(seen: &Seen) -> Action {
-    let action = level::rename_action();
+    let action = host_type::rename_action();
     let why = seen
         .profile
         .is_null()

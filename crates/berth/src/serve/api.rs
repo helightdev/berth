@@ -20,7 +20,7 @@ use axum::{
     routing::{any, get},
 };
 use berth_api::{
-    Applied, Behind, Done, ErrorBody, ErrorDetail, HostBehind, HostLevel, JobInfo, Message, Output,
+    Applied, Behind, Done, ErrorBody, ErrorDetail, HostBehind, HostType, JobInfo, Message, Output,
     Version, b64, client, code,
     ops::{self, Role},
     streams,
@@ -115,13 +115,14 @@ pub struct HostInfo {
     /// What changed since then, when the server would apply something else now.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub behind: Option<Behind>,
-    /// The level its profile means it to have.
-    pub level: HostLevel,
-    /// The level it was seen to have: what its controller's record says,
-    /// `reachable` when berth logged in and found no controller. Absent
-    /// when it could not be asked.
+    /// The type its profile means it to be.
+    #[serde(rename = "type")]
+    pub host_type: HostType,
+    /// The type it was seen to be: what its controller's record says, `ssh`
+    /// when berth logged in and found no controller. Absent when it could
+    /// not be asked.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub seen: Option<HostLevel>,
+    pub seen: Option<HostType>,
     /// A rotation of a key it logs in with is not done on it yet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub rotating: bool,
@@ -268,6 +269,10 @@ fn guarded_routes() -> OpenApiRouter<Arc<Serve>> {
         .routes(routes!(kv_get, kv_put, kv_delete))
 }
 
+/// Where a host's controller's operations are passed through: berthd's
+/// `/v1/PATH` is `/v1/hosts/NAME/controller/PATH` here.
+pub const HOST_PREFIX: &str = "/v1/hosts/{name}/controller/{*rest}";
+
 pub fn router(state: Arc<Serve>, guarded: bool) -> Router {
     let (mut router, _) = guarded_routes().split_for_parts();
     // Every stream of the table gets its route here, so none can exist undescribed.
@@ -279,7 +284,8 @@ pub fn router(state: Arc<Serve>, guarded: bool) -> Router {
             other => panic!("no handler for the stream {other}"),
         };
     }
-    router = router.route("/v1/hosts/{name}/{*rest}", any(proxy));
+    // Under a prefix of its own, so that no route of ours can hide one of the host's.
+    router = router.route(HOST_PREFIX, any(proxy));
     router = router.route(ops::PORTAL, get(portal));
     if guarded {
         router = router.layer(middleware::from_fn_with_state(state.clone(), guard));
@@ -366,7 +372,8 @@ pub fn caller(access: Option<Extension<Access>>) -> Access {
 }
 
 /// The portal: every operation over one WebSocket. With `host` an operation
-/// is that host's, and goes the way a request under `/v1/hosts/NAME` does.
+/// is that host's, and goes the way a request under
+/// `/v1/hosts/NAME/controller` does.
 async fn portal(
     State(state): App,
     access: Option<Extension<Access>>,
@@ -383,7 +390,10 @@ async fn portal(
     let asked = state.clone();
     let resolve: berthd::portal::Resolve = Arc::new(move |name, host| {
         let (table, prefix) = match host {
-            Some(host) => (ops::HOST, format!("/hosts/{}", client::encode(host))),
+            Some(host) => (
+                ops::HOST,
+                format!("/hosts/{}/controller", client::encode(host)),
+            ),
             None => (ops::SERVE, String::new()),
         };
         let op = ops::find(table, name)
@@ -426,13 +436,13 @@ pub(super) fn compare(state: &Serve) -> Compare {
     Arc::new(rollout::comparer(&state.paths))
 }
 
-/// What the server knows of a host apart from asking it: the level of its
+/// What the server knows of a host apart from asking it: the type of its
 /// profile, and whether a key it logs in with is being rotated.
-pub(super) fn known(state: &Serve, name: &str) -> (HostLevel, bool) {
+pub(super) fn known(state: &Serve, name: &str) -> (HostType, bool) {
     let profile = super::setup::saved_profile(state, name).map(|(_, profile)| profile);
-    let level = profile
+    let host_type = profile
         .as_ref()
-        .map_or(HostLevel::Workstation, berth_api::profile::level);
+        .map_or(HostType::Workstation, berth_api::profile::host_type);
     let rotating = profile.is_ok_and(|profile| {
         let place = berth_core::profiles::Place::own(name);
         let store = berth_core::store::shared(&state.paths);
@@ -442,16 +452,16 @@ pub(super) fn known(state: &Serve, name: &str) -> (HostLevel, bool) {
             _ => false,
         }
     });
-    (level, rotating)
+    (host_type, rotating)
 }
 
-async fn info(remote: Arc<Remote>, compare: Compare, known: (HostLevel, bool)) -> HostInfo {
+async fn info(remote: Arc<Remote>, compare: Compare, known: (HostType, bool)) -> HostInfo {
     let seen = remote.version().await;
     let applied = seen
         .as_ref()
         .ok()
         .and_then(|version| version.applied.clone());
-    let observed = berth_core::level::seen(
+    let observed = berth_core::host_type::seen(
         seen.as_ref()
             .map_err(|error| error.starts_with(super::NO_BERTHD)),
     );
@@ -464,7 +474,7 @@ async fn info(remote: Arc<Remote>, compare: Compare, known: (HostLevel, bool)) -
         error: seen.err(),
         behind: applied.as_ref().and_then(|applied| compare(applied)),
         applied: applied.map(|applied| applied.berth),
-        level: known.0,
+        host_type: known.0,
         seen: observed,
         rotating: known.1,
     }
@@ -505,7 +515,7 @@ async fn version() -> Json<Version> {
         api: berth_api::API,
         mode: "serve".into(),
         applied: None,
-        level: None,
+        host_type: None,
     })
 }
 
@@ -1074,10 +1084,10 @@ async fn proxy(
 ) -> Answer<Response> {
     let remote = remote(&state, &name)?;
     // The secrets a host gets are the server's own: a caller cannot hand it others.
-    if method == Method::POST && rest.trim_end_matches('/') == "tasks/secrets" {
+    if method == Method::POST && rest.trim_end_matches('/') == "actions/secrets" {
         return Err(Fail::new(
             code::FORBIDDEN,
-            "The secrets task takes the server's secrets: run the host's secrets action (POST /v1/hosts/NAME/actions/secrets)",
+            "The controller's secrets action takes the server's secrets: run the server's secrets action of the host (POST /v1/hosts/NAME/actions/secrets)",
         ));
     }
     let Some(link) = &remote.link else {

@@ -161,12 +161,12 @@ pub fn host_secrets(mut names: Vec<String>) -> Vec<String> {
     names
 }
 
-/// Give the profile the host profile the way of installing it takes. A
-/// seed would give a laptop's physical login and power settings to a server,
-/// and a created machine has none, so both make the profile `cloud`.
-pub fn fit_profile(config: &mut Value, action: Action) {
-    if action.seeds() && config["profile"] != "cloud" && config.is_object() {
-        config["profile"] = json!("cloud");
+/// Give the profile the target the way of installing it takes. A seed would
+/// give a laptop's physical login and power settings to a server, and a
+/// created machine has none, so both make the target `cloud`.
+pub fn fit_target(config: &mut Value, action: Action) {
+    if action.seeds() && config["target"] != "cloud" && config.is_object() {
+        config["target"] = json!("cloud");
     }
 }
 
@@ -536,7 +536,7 @@ impl<'a> Profile<'a> {
             .unwrap_or("");
         match (field, text) {
             (Field::Login, "") => "berth",
-            (Field::Level, "") => "workstation",
+            (Field::Type, "") => "workstation",
             _ => text,
         }
     }
@@ -820,7 +820,7 @@ impl<'a> Profile<'a> {
         if self.locked() {
             return vec![];
         }
-        vec![Level, SshHost, SshUser, SshPort, Login, AskBecomePass]
+        vec![Type, SshHost, SshUser, SshPort, Login, AskBecomePass]
     }
 
     /// The fields of the Install tab: those before the provisioner's rows,
@@ -832,23 +832,23 @@ impl<'a> Profile<'a> {
             return (vec![], vec![]);
         }
         // A host below a workstation needs only to be reached.
-        let level = berth_api::profile::level(self.config);
-        if action == Action::Ssh && level != berth_api::HostLevel::Workstation {
-            let mut after = vec![Level, SshHost, SshUser, SshPort, Login];
-            // Nothing is installed on a reachable host, so nothing asks for sudo.
-            if level == berth_api::HostLevel::Controller {
+        let host_type = berth_api::profile::host_type(self.config);
+        if action == Action::Ssh && host_type != berth_api::HostType::Workstation {
+            let mut after = vec![Type, SshHost, SshUser, SshPort, Login];
+            // Nothing is installed on a host of the type ssh, so nothing asks for sudo.
+            if host_type == berth_api::HostType::Managed {
                 after.push(AskBecomePass);
             }
             return (vec![], after);
         }
-        // A created machine is always a cloud host, so there is no profile to choose.
+        // A created machine is always a cloud host, so there is no target to choose.
         let before = match action {
             Action::Machine => vec![],
-            _ => vec![Profile],
+            _ => vec![Target],
         };
         let mut after = vec![];
         if action == Action::Ssh {
-            after.extend([Level, SshHost, SshUser, SshPort, Login, AskBecomePass]);
+            after.extend([Type, SshHost, SshUser, SshPort, Login, AskBecomePass]);
         }
         if action.installer() || action.seeds() {
             after.push(Hostname);
@@ -1046,11 +1046,11 @@ impl<'a> Profile<'a> {
         rows
     }
 
-    /// The way of the Install tab the action and the profile's level are:
-    /// over SSH at the level reachable, the host is only logged in to.
+    /// The way of the Install tab the action and the profile's type are:
+    /// over SSH to a host of the type ssh, the host is only logged in to.
     pub fn way(&self) -> Action {
-        match (self.action, berth_api::profile::level(self.config)) {
-            (Action::Ssh, berth_api::HostLevel::Reachable) => Action::Reach,
+        match (self.action, berth_api::profile::host_type(self.config)) {
+            (Action::Ssh, berth_api::HostType::Ssh) => Action::Reach,
             (action, _) => action,
         }
     }
@@ -1185,7 +1185,7 @@ impl<'a> Profile<'a> {
         if matches!(self.action, Action::Machine | Action::Docker) {
             return None;
         }
-        let cloud = self.action == Action::CloudSeed || self.text(Field::Profile) == "cloud";
+        let cloud = self.action == Action::CloudSeed || self.text(Field::Target) == "cloud";
         (cloud && self.text(Field::RecoveryCidr).is_empty()).then(|| {
             if self.enabled(Field::HardenSsh) {
                 "! No recovery SSH CIDR: SSH is reachable from any address (keys only)"
@@ -1208,7 +1208,7 @@ impl<'a> Profile<'a> {
     pub fn problems_with(&self, machine: &crate::machine::Machine) -> Vec<Problem> {
         // A host below a workstation is only reached: the workstation's settings do not apply.
         if self.action == Action::Ssh
-            && berth_api::profile::level(self.config) != berth_api::HostLevel::Workstation
+            && berth_api::profile::host_type(self.config) != berth_api::HostType::Workstation
         {
             return vec![];
         }
@@ -1625,9 +1625,9 @@ mod tests {
                 "{pair:?}"
             );
         }
-        // A created machine is always a cloud host: there is no profile to choose.
+        // A created machine is always a cloud host: there is no target to choose.
         for elsewhere in [
-            "Host profile",
+            "Target",
             "cpus",
             "Operator username",
             "Desktop size",
@@ -1692,7 +1692,7 @@ mod tests {
             "agent_passwordless_sudo": true});
         let machine = crate::machine::Machine::default();
         let install = tab(&config, Action::CloudSeed, Step::Install, &machine);
-        assert!(place(&install, "Host profile") < place(&install, "Hostname  studio"));
+        assert!(place(&install, "Target") < place(&install, "Hostname  studio"));
         assert!(
             !install
                 .iter()
@@ -1840,9 +1840,9 @@ mod tests {
 
     #[test]
     fn an_existing_host_can_be_added_to_be_reached_over_ssh_alone() {
-        let mut config = json!({"profile": "laptop"});
+        let mut config = json!({"target": "laptop"});
         assert_eq!(Action::Reach.choose(&mut config), Action::Ssh);
-        assert_eq!(config["level"], "reachable");
+        assert_eq!(config["type"], "ssh");
         let machine = incus();
         let profile = Profile {
             config: &config,
@@ -1879,16 +1879,13 @@ mod tests {
             "{rows:?}"
         );
         assert!(!rows.iter().any(|row| row.contains("sudo")), "{rows:?}");
-        assert!(
-            !rows.iter().any(|row| row.contains("Host profile")),
-            "{rows:?}"
-        );
+        assert!(!rows.iter().any(|row| row.contains("Target")), "{rows:?}");
         // Installing over SSH again means installing something.
         assert_eq!(Action::Ssh.choose(&mut config), Action::Ssh);
-        assert!(config.get("level").is_none());
-        let mut controller = json!({"level": "controller"});
-        Action::Ssh.choose(&mut controller);
-        assert_eq!(controller["level"], "controller");
+        assert!(config.get("type").is_none());
+        let mut managed = json!({"type": "managed"});
+        Action::Ssh.choose(&mut managed);
+        assert_eq!(managed["type"], "managed");
     }
 
     #[test]
@@ -1899,9 +1896,9 @@ mod tests {
             (Action::Iso, "laptop", "laptop"),
             (Action::Ssh, "laptop", "laptop"),
         ] {
-            let mut config = json!({"profile": before});
-            fit_profile(&mut config, action);
-            assert_eq!(config["profile"], after, "{action:?}");
+            let mut config = json!({"target": before});
+            fit_target(&mut config, action);
+            assert_eq!(config["target"], after, "{action:?}");
         }
     }
 }

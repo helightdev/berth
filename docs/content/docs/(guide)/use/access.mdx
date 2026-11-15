@@ -19,7 +19,7 @@ berth run studio access
 
 In the panel, **Alt+R** shows the links as QR codes. Scan one with a phone to open it there. The pairing link of **Use T3 from another device** works the same way.
 
-The desktop link printed by the task includes the password after `#` and signs in by itself, so treat it like the password. The names are the ones `tailscale status` reports for the host, such as `HOST.TAILNET.ts.net` on Tailscale. They need the tailnet's DNS on the machine you browse from, while the tailnet address works without it. berth configures no Funnel or public proxy for them.
+The desktop link printed by the action includes the password after `#` and signs in by itself, so treat it like the password. The names are the ones `tailscale status` reports for the host, such as `HOST.TAILNET.ts.net` on Tailscale. They need the tailnet's DNS on the machine you browse from, while the tailnet address works without it. berth configures no Funnel or public proxy for them.
 
 ## Joining the tailnet
 
@@ -41,7 +41,7 @@ sudo tailscale serve --bg --https=443 http://127.0.0.1:6080
 sudo tailscale serve --bg --https=8443 http://127.0.0.1:3773
 ```
 
-Enable tailnet HTTPS if Tailscale asks for it. The publish task also gives Cockpit the tailnet's trusted certificate in place of its self-signed one.
+Enable tailnet HTTPS if Tailscale asks for it. The publish action also gives Cockpit the tailnet's trusted certificate in place of its self-signed one.
 
 ### Automatic enrollment keys
 
@@ -78,7 +78,7 @@ Hosts then join with `tailscale up --login-server https://hs.example.org`. Heads
 | | On Headscale |
 | --- | --- |
 | Names | Those of Headscale's MagicDNS, `HOST.BASE_DOMAIN`. berth shows what `tailscale status` reports |
-| `tailscale serve`, Funnel | Headscale doesn't offer them, so the desktop and T3 aren't published. The access task shows SSH tunnels for them instead |
+| `tailscale serve`, Funnel | Headscale doesn't offer them, so the desktop and T3 aren't published. The access action shows SSH tunnels for them instead |
 | HTTPS certificates | Headscale doesn't issue them. Cockpit stays on its self-signed certificate, at `https://TAILNET-ADDRESS:9090` |
 
 ## The desktop

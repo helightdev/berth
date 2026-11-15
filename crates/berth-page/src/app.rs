@@ -449,7 +449,7 @@ impl App {
                         setup.machine.found(found);
                     }
                 }
-                // berth's own actions are beside the host's tasks; applying
+                // berth's own actions are beside the controller's; applying
                 // and the seed have rows of their own.
                 Arrived::Actions(name, listed) if name == self.name => {
                     self.host.own = listed
@@ -545,13 +545,13 @@ impl App {
             self.address,
             device::shown(&self.server)
         )));
-        for line in host::level_lines(&self.name, &self.host) {
+        for line in host::type_lines(&self.name, &self.host) {
             rows.push(Row::info(Line::styled(
                 format!("  {line}"),
                 Style::new().fg(theme::MUTED),
             )));
         }
-        let workstation = self.host.level == berth_api::HostLevel::Workstation;
+        let workstation = self.host.host_type == berth_api::HostType::Workstation;
         let said = match &self.host.state {
             State::Ready(_) => {
                 if let Some(text) = host::behind_note(&self.host) {
@@ -587,10 +587,10 @@ impl App {
             State::Idle | State::Connecting | State::Password => {
                 vec![note("Asking the host what it can do…".into(), theme::MUTED)]
             }
-            // Below a workstation the controller is installed alone, by berth's own action.
+            // On a host that is not a workstation the controller is installed alone, by berth's own action.
             State::Missing if !workstation => vec![
                 note(
-                    "berth's controller is not on this host. Install it for sessions, tasks and files here.".into(),
+                    "berth's controller is not on this host. Install it for sessions, actions and files here.".into(),
                     theme::MUTED,
                 ),
                 again(),
@@ -625,14 +625,14 @@ impl App {
         // A host that cannot be worked with yet still has berth's own
         // actions, such as first contact and installing the controller.
         let actions = self.host.actions();
-        let mut groups: Vec<(String, Vec<Row>)> = berth_tui::page::groups(&actions, Pick::Task)
+        let mut groups: Vec<(String, Vec<Row>)> = berth_tui::page::groups(&actions, Pick::Action)
             .into_iter()
             .map(|group| {
                 let picks = group
                     .rows
                     .into_iter()
                     .filter(
-                        |(_, pick)| matches!(pick, Pick::Task(index) if self.host.is_own(*index)),
+                        |(_, pick)| matches!(pick, Pick::Action(index) if self.host.is_own(*index)),
                     )
                     .map(|(line, pick)| Row {
                         line: line.into(),
@@ -704,7 +704,7 @@ impl App {
 
     fn help(&self) -> String {
         match self.selected() {
-            Some(Entry::Pick(Pick::Task(index))) => host::task_help(&self.host, index),
+            Some(Entry::Pick(Pick::Action(index))) => host::action_help(&self.host, index),
             Some(Entry::Pick(Pick::Session(index))) => host::session_help(&self.host, index),
             Some(Entry::Pick(Pick::Terminal)) => format!(
                 "A shell on the host, as one of its sessions. Space switches between the agent and the SSH user.\n\nLeaving the shell closes it; {LEAVE} leaves it running, to be opened again from Sessions."
@@ -722,12 +722,10 @@ impl App {
         self.host.disconnect();
         let listed = self.hosts.borrow();
         let found = listed.list.iter().find(|host| host["name"] == name);
-        let level = |key: &str| {
-            found
-                .and_then(|host| host[key].as_str())
-                .and_then(berth_api::HostLevel::parse)
-        };
-        self.host.level = level("level").unwrap_or_default();
+        self.host.host_type = found
+            .and_then(|host| host["type"].as_str())
+            .and_then(berth_api::HostType::parse)
+            .unwrap_or_default();
         drop(listed);
         self.host.own.clear();
         if let Some(admin) = &self.admin {
@@ -751,21 +749,21 @@ impl App {
             }
             return;
         }
-        let body = self.host.task_body(&action, &values);
+        let body = self.host.action_body(&action, &values);
         self.status = format!("Starting {}…", action.title());
         self.host.run(&action.name, body);
     }
 
     fn choose(&mut self, entry: Entry) {
         match entry {
-            Entry::Pick(Pick::Task(index)) => {
+            Entry::Pick(Pick::Action(index)) => {
                 if let Some(action) = self.host.actions().get(index)
                     && !action.available
                 {
                     self.status = format!("{} cannot run now: {}", action.title(), action.why);
                     return;
                 }
-                if let Some((index, values)) = self.host.begin_task(index, false) {
+                if let Some((index, values)) = self.host.begin_action(index, false) {
                     self.launch(index, values);
                 }
             }
@@ -875,7 +873,7 @@ impl App {
             match key.code {
                 Code::Char('y' | 'Y') => match self.host.question.take() {
                     Some((_, Pending::Action(index))) => {
-                        if let Some((index, values)) = self.host.begin_task(index, true) {
+                        if let Some((index, values)) = self.host.begin_action(index, true) {
                             self.launch(index, values);
                         }
                     }
@@ -1356,11 +1354,11 @@ impl App {
             if host["behind"].is_object() {
                 line.push(Span::styled("  behind", Style::new().fg(theme::WARN)));
             }
-            if let Some(level) = host["level"]
+            if let Some(host_type) = host["type"]
                 .as_str()
-                .filter(|level| *level != "workstation")
+                .filter(|host_type| *host_type != "workstation")
             {
-                line.push(Span::styled(format!("  {level}"), muted));
+                line.push(Span::styled(format!("  {host_type}"), muted));
             }
             if host["rotating"] == true {
                 line.push(Span::styled(

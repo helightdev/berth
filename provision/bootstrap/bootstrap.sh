@@ -90,7 +90,8 @@ import json, os
 from pathlib import Path
 d=json.loads(Path('/opt/devbox-bootstrap/deployment.json').read_text())
 p=Path('/etc/devbox'); p.mkdir(parents=True,exist_ok=True)
-v=d['ansible_vars']; v['devbox_profile']=d['profile']
+# The role names the target by its older name, as did the seeds of berth 0.5.
+v=d['ansible_vars']; v['devbox_profile']=d.get('target', d.get('profile'))
 # A seed of the qemu kind there once was is a cloud host that SSH reaches only from the QEMU host.
 if v['devbox_profile']=='qemu':
     v['devbox_profile']='cloud'
