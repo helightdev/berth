@@ -4540,3 +4540,34 @@ async fn an_admin_over_the_network_does_not_reach_a_hosts_stream_for_the_server(
         .unwrap();
     assert_eq!(refused.status(), 403, "{refused}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_that_claims_to_be_a_stream_needs_its_role_all_the_same() {
+    let issuer = Issuer::new();
+    let (_dir, address) = trusting(&issuer, true).await;
+    let viewer = issuer.token(json!({"scope": "berth:view"}));
+    let bearer = format!("Bearer {viewer}");
+    for (method, path, body) in [
+        ("PUT", "/v1/secrets/main", r#"{"value": "x"}"#),
+        ("GET", "/v1/secrets", ""),
+        ("PUT", "/v1/kv/ui/x", "1"),
+        ("PUT", "/v1/provisioners/vm", r#"{"type": "fake/vm"}"#),
+        ("POST", "/v1/plugins/package", ""),
+    ] {
+        let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        let mut client = Client::over(stream).await.unwrap();
+        let headers = [
+            ("authorization", bearer.as_str()),
+            ("content-type", "application/json"),
+            ("upgrade", "websocket"),
+            ("connection", "upgrade"),
+        ];
+        let answer = client
+            .send(method, path, &headers, body.to_owned().into())
+            .await
+            .unwrap();
+        assert_eq!(answer.status, 403, "{method} {path}");
+    }
+    let (status, _) = as_bearer(address, &viewer, "HEAD", "/v1/secrets", Value::Null).await;
+    assert_eq!(status, 403);
+}
