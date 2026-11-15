@@ -37,6 +37,14 @@ for anything larger than an obvious fix. Say what you want to do and why. The
 scope should be small enough to review in one sitting. Several small issues are
 better than one large one.
 
+Choose the form that fits:
+
+| Form | For |
+| --- | --- |
+| Feature | Something berth can't do at all yet |
+| Improvement | Something berth does already, but could do more easily, faster or more clearly |
+| Integration | An agent, tool, provider or service, as a new plugin or in one that exists |
+
 You don't have to wait for an answer before you start. Once the issue is
 there, you can begin on the pull request straight away if you like. The order
 is what matters, since the issue is where we find out whether the change
@@ -54,6 +62,22 @@ A few rules follow from that:
 
 Typo fixes, broken links and small documentation corrections can go straight
 to a pull request.
+
+## How issues are handled
+
+An issue's type, such as Bug, Feature or Improvement, says what kind it is.
+Labels say the rest:
+
+| Labels | Say |
+| --- | --- |
+| `area: …` | The task it's about, such as `area: deploy` or `area: access` |
+| `needs triage`, `needs info`, `accepted`, `blocked` | Where the issue stands |
+| `duplicate`, `out of scope`, `plugin candidate` | Why it was closed |
+
+A new issue starts with `needs triage`. When it belongs in berth, it gets
+`accepted`, and a pull request is welcome from then on. An idea that would
+work better as a plugin is closed with `plugin candidate`, and one that
+doesn't fit what berth is with `out of scope`.
 
 ## Using language models
 

@@ -1,0 +1,40 @@
+name: Improvement
+description: Something berth does already, but that could be easier, faster or clearer
+type: Improvement
+labels: [needs triage]
+body:
+  - type: textarea
+    id: now
+    attributes:
+      label: What berth does now
+      description: What you did and what got in the way, in your own words.
+    validations:
+      required: true
+  - type: textarea
+    id: better
+    attributes:
+      label: What would be better
+      description: How it would work instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: What you were doing
+      options:
+        - Not sure
+        - Getting a new host running
+        - Choosing what a host gets, or applying it
+        - Looking after a running host
+        - Reaching a host (terminal, SSH, tunnels, desktop)
+        - Sign-ins, secrets, keys or registries
+        - Making hosts or resources on a node
+        - Using an agent or tool on a host
+        - Running a berth server for others
+        - Writing a plugin or using the API
+  - type: checkboxes
+    id: work
+    attributes:
+      label: Who does it
+      options:
+        - label: I'd like to write this myself

@@ -1,0 +1,38 @@
+name: Integration
+description: Support for an agent, tool, provider or service, as a new plugin or in one that exists
+type: Integration
+labels: [needs triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Most integrations are plugins, and a plugin can live in a repository of its own. [Writing plugins](https://berth.helight.dev/docs/extend/writing-plugins/) says how.
+  - type: input
+    id: tool
+    attributes:
+      label: Which agent, tool or service
+      description: Its name and a link.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What berth should do with it
+      description: What it should install, set up or sign in to, and what you do by hand today.
+    validations:
+      required: true
+  - type: dropdown
+    id: plugin
+    attributes:
+      label: Plugin
+      options:
+        - A new plugin
+        - More from a plugin that comes with berth
+        - Not sure
+  - type: checkboxes
+    id: work
+    attributes:
+      label: Who does it
+      options:
+        - label: I'd like to write this myself
+        - label: I'd keep it working after it's merged

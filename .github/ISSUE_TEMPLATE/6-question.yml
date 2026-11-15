@@ -1,0 +1,20 @@
+name: Question
+description: How do I…? Or you're not sure whether something is a bug
+type: Question
+labels: [needs triage]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What you're trying to do
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you tried
+      description: Commands, docs pages, output. Take addresses, tokens and passwords out first.
+  - type: input
+    id: version
+    attributes:
+      label: berth --version
