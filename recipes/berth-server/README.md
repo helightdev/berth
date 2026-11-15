@@ -177,6 +177,47 @@ berth of the new version:
 berth run big upgrade-server version=0.6.0
 ```
 
+### From your own berth
+
+A berth for Linux can run the server from itself, without a release. The
+machine builds the image `berth:VERSION` from the berth that sends it, and
+the container runs from it with its data and options. On a node:
+
+```bash
+berth run big upgrade-server source=here
+```
+
+On any machine with Docker that your own `ssh` reaches:
+
+```bash
+berth server deploy root@192.0.2.10
+```
+
+| Command | Where it builds |
+| --- | --- |
+| `berth run NODE upgrade-server source=here` | On the node, by its controller |
+| `berth server deploy [USER@]HOST` | On `HOST`, over `ssh`. It needs `python3` there for the helper |
+| `berth server image` | On this machine, with no container changed |
+
+`deploy` takes `--container NAME` when the container is not `berth`. With
+no container of that name it makes one, at `127.0.0.1:7777` or the
+`--port` given, with its data in two volumes. It then says how to get a
+setup key.
+
+Only a static Linux program for the machine's CPU goes into the image, as
+a release is. berth says which release to use when it is not one.
+
+Back to the published image:
+
+```bash
+berth run big upgrade-server version=0.7.0
+berth server deploy root@192.0.2.10 --release 0.7.0
+```
+
+A server that runs a self-built image goes back to
+`ghcr.io/helightdev/berth`. A version older than the running one is still
+refused.
+
 Do not remove the container by hand to update it. A new one from the recipe
 has only the recipe's options, and loses those passed by hand.
 

@@ -146,6 +146,45 @@ The `berth-server` recipe installs berth's server in a container named `berth`. 
 
 When the server upgrades its own container, it restarts during the job. The output stays in the node's session.
 
+### Run the server from this berth
+
+With `source=here`, the node builds the server's image from the berth that runs the action, so a build of your own runs there without a release:
+
+```bash
+berth run big upgrade-server source=here
+```
+
+| Step | What happens |
+| --- | --- |
+| Check | berth asks the node for its CPU and checks that it is a static Linux program for it |
+| Send | It sends its build context with the request: the Dockerfile CI builds the published image from, `requirements.txt` and the program itself |
+| Build | The node's controller runs `docker build -t berth:VERSION -` with the context on standard input. The node reads it as a stream and does not write it to disk |
+| Swap | The container runs from `berth:VERSION`, as for a release |
+| Report | berth follows the node's session. When the server replaced is the one it talks to, it waits for the server to answer again and reads how the session ended |
+
+The checks refuse a berth that cannot run in the image:
+
+| berth | Use instead |
+| --- | --- |
+| A release for Linux | It qualifies |
+| berth for macOS or Windows | berth for Linux of the same release |
+| A build of your own with the system's C library | A static build: `cargo build --release --target x86_64-unknown-linux-musl -p berth` |
+| A build for another CPU | The build for the node's CPU |
+
+The tag `berth:VERSION` is local to the node, so a self-built image never passes for a published one. Its labels give its version, the source `self-built` and the repository of the published images. When an image of that tag already has the same program, the build is skipped. Once the container runs, the helper removes the unused self-built images, except the two newest.
+
+The action needs the admin role. Its version is that of the berth sent.
+
+### Back to a release
+
+`source=release`, the default, pulls the published image again. A server that runs a self-built image goes back to `ghcr.io/helightdev/berth`, the repository its image names:
+
+```bash
+berth run big upgrade-server version=0.7.0
+```
+
+It still refuses an older version than the one running.
+
 The action needs the machine to be a node, which needs a server of this berth. So the recipe makes the first update of a server of berth 0.5, as [Upgrading from 0.5](/docs/use/upgrading) shows.
 
 ## What berth does not do
