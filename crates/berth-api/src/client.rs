@@ -68,6 +68,20 @@ fn transport(error: impl std::fmt::Display) -> Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// A connection to a server, whatever carries it: TCP, TLS, a unix socket,
+/// or a pipe to a server in the same process.
+pub trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
+pub type Stream = Box<dyn Io>;
+
+/// How a client reaches its server: each call opens a new connection, for a
+/// request or for a WebSocket.
+pub type Dial = std::sync::Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Stream>> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// A raw answer: status, headers and body.
 pub struct Response {
     pub status: u16,
@@ -238,12 +252,26 @@ where
         Ok((stream, _)) => Ok(stream),
         Err(tungstenite::Error::Http(response)) => {
             let body = response.body().clone().unwrap_or_default();
-            Err(Response {
-                status: response.status().as_u16(),
-                headers: Default::default(),
-                body: body.into(),
+            let status = response.status().as_u16();
+            // The body may still be on its way when the head is read, and
+            // then only the header says which error it was.
+            let named = response
+                .headers()
+                .get(crate::ERROR_HEADER)
+                .and_then(|code| code.to_str().ok());
+            match (serde_json::from_slice::<crate::ErrorBody>(&body), named) {
+                (Err(_), Some(code)) => Err(Error::Api {
+                    status,
+                    code: code.to_owned(),
+                    message: format!("HTTP {status}: {code}"),
+                }),
+                _ => Err(Response {
+                    status,
+                    headers: Default::default(),
+                    body: body.into(),
+                }
+                .error()),
             }
-            .error())
         }
         Err(error) => Err(transport(error)),
     }

@@ -317,19 +317,18 @@ pub fn words(line: &str) -> Vec<(u16, String)> {
 }
 
 /// Draw a session of the host: the same panel, with what leaving it means
-/// there. `leave` is the key that leaves a running one: `Ctrl+Q`, or `Alt+Q`
-/// where Ctrl+Q is not the page's to take.
-pub fn draw_view(frame: &mut Frame, view: &View, note: &str, leave: &str) -> (Spots, Spots) {
+/// there. Ctrl+Q leaves a running one.
+pub fn draw_view(frame: &mut Frame, view: &View, note: &str) -> (Spots, Spots) {
     let running = match view.terminal {
-        true => format!(
-            " Ctrl+V paste · {leave} leave it running · Click opens a link · Right-click copies · Wheel scrolls "
-        ),
-        false => format!(
-            " {leave} leave it running · Click opens a link · Right-click copies · Wheel scrolls "
-        ),
+        true => {
+            " Ctrl+V paste · Ctrl+Q leave it running · Click opens a link · Right-click copies · Wheel scrolls "
+        }
+        false => {
+            " Ctrl+Q leave it running · Click opens a link · Right-click copies · Wheel scrolls "
+        }
     };
     let keys = match (view.outcome(), view.ours) {
-        (None, _) => running.as_str(),
+        (None, _) => running,
         (Some(true), true) => " ✓ Done · Enter close · k keep it in Sessions ",
         (Some(false), true) => " ✗ It did not finish · Enter close · k keep it in Sessions ",
         (Some(true), false) => " ✓ Done · Enter close · d forget it ",
@@ -660,7 +659,7 @@ pub fn view_event(
             return Some(pasted(text));
         }
         Event::Key(key) => {
-            if key.is_ctrl('q') || (key.alt && key.code == Code::Char('q')) {
+            if key.is_ctrl('q') {
                 let running = view.running();
                 host.close(false);
                 return running.then(|| "It runs on; open it again from Sessions".into());

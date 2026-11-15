@@ -185,7 +185,7 @@ pub struct Provisioner {
 pub const OPTIONAL_VERBS: &[&str] = &["start", "stop", "list"];
 
 /// The verbs a kind may answer besides `create`, `status` and `destroy`.
-pub const KIND_VERBS: &[&str] = &["start", "stop", "change", "logs"];
+pub const KIND_VERBS: &[&str] = &["start", "stop", "change", "logs", "exec"];
 
 /// The kind of the machines a provisioner makes for hosts.
 pub const MACHINE: &str = "machine";

@@ -19,7 +19,7 @@ use std::{
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -291,6 +291,9 @@ pub enum Work {
     /// A function of berth: its output goes to the writer, and it says
     /// whether it went well.
     Function(Box<dyn FnOnce(&mut Output) -> bool + Send>),
+    /// A function of berth that ends with an exit code of its own, such as
+    /// that of a command it ran.
+    Coded(Box<dyn FnOnce(&mut Output) -> i32 + Send>),
     Program(Box<Program>),
     /// A session an action of a host's controller runs, by its id there,
     /// followed until it ends.
@@ -352,6 +355,7 @@ const PATIENCE: Duration = Duration::from_secs(300);
 fn execute(work: Work, out: &mut Output) -> Option<i32> {
     match work {
         Work::Function(function) => Some(if function(out) { 0 } else { 1 }),
+        Work::Coded(function) => Some(function(out)),
         Work::Program(program) => run_program(*program, out),
         Work::Session { controller, id } => follow(controller, &id, out),
     }
@@ -460,6 +464,8 @@ pub struct Runner {
     store: Arc<store::Store>,
     jobs_dir: PathBuf,
     notify: Notify,
+    /// The jobs this process runs now, which end with it.
+    running: Arc<Mutex<Vec<store::Job>>>,
 }
 
 /// Where an installation keeps the output of the jobs it runs.
@@ -510,7 +516,13 @@ impl Runner {
             store,
             jobs_dir,
             notify,
+            running: Arc::default(),
         }
+    }
+
+    /// The jobs that run in this process now, as they started.
+    pub fn running(&self) -> Vec<store::Job> {
+        self.running.lock().unwrap().clone()
     }
 
     /// Start the work as a job, in a thread of its own, and say which job it
@@ -605,6 +617,7 @@ impl Ticket {
     /// Run the work in a thread of its own: the job as it started.
     pub fn run(self, work: Work) -> store::Job {
         let job = self.job.clone();
+        self.runner.running.lock().unwrap().push(job.clone());
         std::thread::spawn(move || {
             let Ticket {
                 runner,
@@ -621,6 +634,11 @@ impl Ticket {
             };
             drop(lock);
             runner.end(&job.id, exit_code);
+            runner
+                .running
+                .lock()
+                .unwrap()
+                .retain(|running| running.id != job.id);
         });
         job
     }

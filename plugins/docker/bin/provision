@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parent.parent
@@ -26,6 +27,9 @@ RUNTIMES = ('privileged', 'sysbox')
 ROWS = 60
 # How many of the latest lines `logs` gives when the request does not say.
 LOG_LINES = 100
+# What usually speaks on a port of a container, as a hint for people.
+HINTS = {22: 'ssh', 80: 'http', 443: 'https', 3000: 'http', 3306: 'mysql', 5432: 'postgres', 6379: 'redis',
+         8000: 'http', 8080: 'http', 8443: 'https', 9000: 'http', 27017: 'mongodb'}
 
 # Runs inside the container with the public keys on stdin. It does not depend on
 # the image, so a custom one needs only sh, useradd, sudo and sshd.
@@ -156,6 +160,20 @@ class Docker:
     def where(self):
         return self.env.get('DOCKER_HOST') or 'the local Docker'
 
+    def engine_host(self):
+        """The machine the engine runs on, as berth reaches it, or None when it is this one."""
+        if not hasattr(self, '_engine_host'):
+            endpoint = self.env.get('DOCKER_HOST') or ''
+            if not endpoint:
+                # A context of the docker CLI can name an engine elsewhere too.
+                done = self.run('context', 'inspect', '--format', '{{.Endpoints.docker.Host}}', check=False)
+                endpoint = done.stdout.strip() if done.returncode == 0 else ''
+            if not endpoint or endpoint.startswith(('unix://', 'npipe://')):
+                self._engine_host = None
+            else:
+                self._engine_host = urllib.parse.urlsplit(endpoint).hostname or ''
+        return self._engine_host
+
 
 def valid_name(host):
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', host or ''):
@@ -219,6 +237,81 @@ def where(cfg, info):
     if cfg['port']:
         return cfg['address'], int(cfg['port'])
     return container_address(info), 22
+
+
+def slug(text):
+    return re.sub(r'[^a-z0-9_.-]+', '-', (text or '').lower()).strip('-._')
+
+
+def endpoints_of(docker, info, prefix=''):
+    """Where a container is reached: each published port, at the engine's machine, and on an engine
+    of this machine also each exposed port at each of its network addresses, which only this
+    machine routes to."""
+    host = docker.engine_host()
+    local = host is None
+    found = []
+
+    def add(name, address, port, protocol, target):
+        name = slug(prefix + name)[:63].strip('-._')
+        if not name or not address or any(known['name'] == name for known in found):
+            return
+        entry = {'name': name, 'address': address, 'port': int(port), 'protocol': protocol}
+        if protocol == 'tcp' and int(target) in HINTS:
+            entry['hint'] = HINTS[int(target)]
+        if local:
+            entry['local'] = True
+        found.append(entry)
+
+    settings_of = (info or {}).get('NetworkSettings') or {}
+    for key, bindings in sorted((settings_of.get('Ports') or {}).items()):
+        target, _, protocol = key.partition('/')
+        for binding in bindings or []:
+            published = binding.get('HostPort') or ''
+            if not published.isdigit() or not target.isdigit():
+                continue
+            address = binding.get('HostIp') or ''
+            # Published on every address: this machine's loopback, or the engine's machine by name.
+            if address in ('', '0.0.0.0', '::'):
+                address = '127.0.0.1' if local else host
+            add(published + ('' if protocol == 'tcp' else f'-{protocol}'), address, published, protocol, target)
+    if local:
+        exposed = sorted(((info or {}).get('Config') or {}).get('ExposedPorts') or {})
+        for network, attached in sorted((settings_of.get('Networks') or {}).items()):
+            address = (attached or {}).get('IPAddress') or ''
+            for key in exposed:
+                target, _, protocol = key.partition('/')
+                if target.isdigit():
+                    add(f'{network}-{target}' + ('' if protocol == 'tcp' else f'-{protocol}'), address, target,
+                        protocol, target)
+    return found
+
+
+def run_in(docker, name, request):
+    """Run the request's command in a running container, its output on standard error, which berth
+    shows as the job's: the command's exit status."""
+    command = request.get('command')
+    if not isinstance(command, list) or not command or not all(isinstance(word, str) for word in command):
+        raise Failure('the request carries no command as a list of words')
+    info = docker.inspect(name)
+    if info is None:
+        raise Failure(f'{name} does not exist')
+    if not info.get('State', {}).get('Running'):
+        raise Failure(f'{name} is not running: start it first')
+    stdin = request.get('stdin')
+    stdin = stdin if isinstance(stdin, str) and stdin else None
+    argv = ['docker', 'exec', *(['-i'] if stdin is not None else []), name, *command]
+    try:
+        process = subprocess.Popen(argv, env=docker.env,
+                                   stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except FileNotFoundError:
+        raise Failure('docker is not installed or not on the PATH')
+    if stdin is not None:
+        threading.Thread(target=feed, args=(process.stdin, stdin.encode()), daemon=True).start()
+    for chunk in iter(lambda: process.stdout.read1(65536), b''):
+        sys.stderr.buffer.write(chunk)
+        sys.stderr.flush()
+    return {'exit_code': process.wait()}
 
 
 def package_version():
@@ -396,12 +489,12 @@ def status(request):
     if info is None:
         return {'state': 'gone'}
     if info.get('State', {}).get('Running'):
-        answer = {'state': 'running'}
+        answer = {'state': 'running', 'endpoints': endpoints_of(cfg['docker'], info)}
         address, _ = where(cfg, info)
         if address:
             answer['address'] = address
         return answer
-    return {'state': 'stopped'}
+    return {'state': 'stopped', 'endpoints': []}
 
 
 def ours(docker, name):
@@ -491,8 +584,9 @@ def change(request):
     if args:
         say(f'Changing the limits of {name}.')
         docker.run('update', *args, name)
-    running = (docker.inspect(name) or {}).get('State', {}).get('Running')
-    return {'state': 'running' if running else 'stopped'}
+    info = docker.inspect(name) or {}
+    running = info.get('State', {}).get('Running')
+    return {'state': 'running' if running else 'stopped', 'endpoints': endpoints_of(docker, info)}
 
 
 def logs(request):
@@ -701,7 +795,7 @@ def instance_create(request):
         if not (docker.inspect(name) or {}).get('State', {}).get('Running'):
             say(f'Starting {name}.')
             docker.run('start', name)
-        return {'id': name, 'state': 'running'}
+        return {'id': name, 'state': 'running', 'endpoints': endpoints_of(docker, docker.inspect(name))}
     name = instance_name(request)
     if docker.inspect(name) is not None:
         raise Failure(f'{docker.where()} already has a container named {name}. Choose another name.')
@@ -740,14 +834,16 @@ def instance_create(request):
         for made in docker.names(f'label=berth-token={token}'):
             docker.run('rm', '--force', made, check=False)
         raise failure('docker run', done.stderr or done.stdout)
-    return {'id': name, 'state': 'running'}
+    return {'id': name, 'state': 'running', 'endpoints': endpoints_of(docker, docker.inspect(name))}
 
 
 def instance_status(request):
-    info = settings(request)['docker'].inspect(identify(request))
+    docker = settings(request)['docker']
+    info = docker.inspect(identify(request))
     if info is None:
         return {'state': 'gone'}
-    return {'state': 'running' if info.get('State', {}).get('Running') else 'stopped'}
+    return {'state': 'running' if info.get('State', {}).get('Running') else 'stopped',
+            'endpoints': endpoints_of(docker, info)}
 
 
 def instance_start(request):
@@ -756,7 +852,7 @@ def instance_start(request):
     if instance_ours(docker, name) is None:
         raise Failure(f'{name} does not exist')
     docker.run('start', name)
-    return {}
+    return {'endpoints': endpoints_of(docker, docker.inspect(name))}
 
 
 def instance_stop(request):
@@ -765,7 +861,7 @@ def instance_stop(request):
     if instance_ours(docker, name) is None:
         raise Failure(f'{name} does not exist')
     docker.run('stop', '--time', '30', name)
-    return {}
+    return {'endpoints': []}
 
 
 def instance_destroy(request):
@@ -794,8 +890,9 @@ def instance_change(request):
     if args:
         say(f'Changing the limits of {name}.')
         docker.run('update', *args, name)
-    running = (docker.inspect(name) or {}).get('State', {}).get('Running')
-    return {'state': 'running' if running else 'stopped'}
+    info = docker.inspect(name) or {}
+    running = info.get('State', {}).get('Running')
+    return {'state': 'running' if running else 'stopped', 'endpoints': endpoints_of(docker, info)}
 
 
 def instance_logs(request):
@@ -814,6 +911,14 @@ def instance_logs(request):
     return None
 
 
+def instance_exec(request):
+    docker = settings(request)['docker']
+    name = identify(request)
+    if instance_ours(docker, name) is None:
+        raise Failure(f'{name} does not exist')
+    return run_in(docker, name, request)
+
+
 def instances(docker):
     resources = []
     for name in docker.names('label=berth-resource'):
@@ -828,7 +933,7 @@ def instances(docker):
 
 INSTANCE_VERBS = {'create': instance_create, 'status': instance_status, 'start': instance_start,
                   'stop': instance_stop, 'destroy': instance_destroy, 'change': instance_change,
-                  'logs': instance_logs}
+                  'logs': instance_logs, 'exec': instance_exec}
 
 
 # Deployments: one Compose project each, named after the deployment.
@@ -977,7 +1082,25 @@ class Compose:
                     if line.strip()]
         say(f'Bringing up {self.project} at {self.where()}.')
         self.run('up', '-d', '--remove-orphans', spec=spec, labels=labels, services=services, progress=True)
-        return project_state(self.containers())
+        return self.state(self.containers())
+
+    def state(self, rows):
+        """The project's state, with where each of its containers is reached by its service's name."""
+        answer = project_state(rows)
+        if answer['state'] != 'gone':
+            endpoints = []
+            for row in rows:
+                if not running(row) or not row.get('Name'):
+                    continue
+                service = slug(row.get('Service') or row['Name'])
+                # Where one container is reached is not worth failing its project's state over.
+                try:
+                    info = self.docker.inspect(row['Name'])
+                except (Failure, ValueError, IndexError):
+                    continue
+                endpoints += endpoints_of(self.docker, info, f'{service}-')
+            answer['endpoints'] = endpoints
+        return answer
 
 
 def running(row):
@@ -1030,7 +1153,8 @@ def deployment_change(request):
 
 
 def deployment_status(request):
-    return project_state(Compose(request, deployment_id(request)).containers())
+    compose = Compose(request, deployment_id(request))
+    return compose.state(compose.containers())
 
 
 def deployment_destroy(request):
@@ -1132,8 +1256,13 @@ def act(request):
     return ACTIONS[name](settings(request), arguments)
 
 
+def exec_elsewhere(request):
+    raise Failure(f'a {request.get("kind") or "machine"} runs no commands here; an instance does')
+
+
 VERBS = {'create': create, 'status': status, 'start': start, 'stop': stop,
-         'destroy': destroy, 'list': list_all, 'change': change, 'logs': logs, 'act': act}
+         'destroy': destroy, 'list': list_all, 'change': change, 'logs': logs, 'act': act,
+         'exec': exec_elsewhere}
 
 
 def handler(verb, request):

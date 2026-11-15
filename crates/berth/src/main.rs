@@ -1,36 +1,30 @@
-mod app;
-mod commands;
-mod fields;
-mod key_command;
-mod keys;
-mod mirror;
-mod picker;
-mod provisioner_command;
-mod provisioner_tab;
-mod remote;
-mod resource_command;
-mod serve;
-mod session;
-mod store_command;
-mod ui;
+//! berth: set up and look after agent workstations. On Linux the program
+//! has its installation in it: `berth serve`, the commands and a server for
+//! the screens. Elsewhere it is a client of a `berth serve` on another
+//! machine, with the same screens.
+
+mod connect;
+#[cfg(target_os = "linux")]
+mod local;
+#[cfg(not(target_os = "linux"))]
+#[path = "client_only.rs"]
+mod local;
 mod update;
 
-use app::{App, parse_config};
-use berth_core::{credentials, discovery, job, paths, plugins, registry};
-pub(crate) use berth_tui::{markdown, theme};
-use crossterm::{cursor::SetCursorStyle, event};
-use fields::{Action, Field, Step};
-use paths::{Paths, layout};
-use serde_json::json;
-use std::{error::Error, fs, io::Write, process::Command};
+use std::error::Error;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
+
+/// A server on this machine for the screens, and what to do once they close.
+type Local = (String, Box<dyn FnOnce()>);
 
 const USAGE: &str = "berth: set up and look after agent workstations.
 
 Usage:
-  berth                      choose a host, or create one
-  berth HOST                 open a host (a saved name, or a path to a profile)
+  berth [HOST]               berth's screens: the hosts, and the host HOST
+  berth ui [HOST]            the same: of the server this berth uses, of a berth
+                             serve of yours on this machine, or of one that runs in
+                             berth itself until the screens close
   berth list                 saved hosts
   berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH]
           [--type ssh|managed|node|workstation] [--no-contact]
@@ -182,341 +176,6 @@ Usage:
   berth openapi | asyncapi | operations
                              the API documents of berth serve";
 
-fn show_config(paths: &Paths) -> Result<()> {
-    // The settings of the file are shown when the store does not open.
-    let (settings, unopened) = match paths.settings() {
-        Ok(settings) => (settings, None),
-        Err(error) => (paths.local_settings()?, Some(error)),
-    };
-    println!(
-        "Settings   {}, and the store",
-        paths.settings_file().display()
-    );
-    let store = berth_core::store::Installation::of(paths).target.describe();
-    match &unopened {
-        None => println!("Store      {store}: settings, hosts, registries and secrets"),
-        Some(error) => println!("Store      {store}, which does not open: {error}"),
-    }
-    match berth_core::server::Server::configured(paths) {
-        Some(server) => println!(
-            "Hosts      on the berth server at {}, with a copy in the store",
-            server.url
-        ),
-        None => println!("Hosts      in the store, with their passwords and machines"),
-    }
-    println!("Builds     {}", paths.build_dir().display());
-    match paths.source() {
-        Ok(source) => println!("Source     {}", source.display()),
-        Err(error) => println!("Source     {error}"),
-    }
-    println!();
-    for (key, help) in paths::SETTINGS {
-        // What lets someone in is not for a screen.
-        let value = match settings.get(*key).and_then(|value| value.as_str()) {
-            Some(_) if paths::is_secret(key) => Some("(set)"),
-            value => value,
-        };
-        let value = match (&unopened, paths::is_local(key)) {
-            (Some(_), false) => Some("(in the store, which does not open)"),
-            _ => value,
-        };
-        println!("{key} = {}\n    {help}", value.unwrap_or("(not set)"));
-    }
-    Ok(())
-}
-
-/// `berth config KEY VALUE`: the tailnet settings of a berth server this
-/// berth uses are the server's, and change there.
-fn change_setting(paths: &Paths, key: &str, value: &str) -> Result<()> {
-    match berth_core::server::Server::configured(paths) {
-        Some(server) if berth_core::tailnet::SETTINGS.contains(&key) => {
-            server.call(
-                "settings.set",
-                json!({"key": key}),
-                Some(json!({"value": value})),
-            )?;
-            println!("Changed {key} on the berth server at {}", server.url);
-            Ok(())
-        }
-        _ => paths.set(key, value),
-    }
-}
-
-fn enter() -> Result<ratatui::DefaultTerminal> {
-    let terminal = ratatui::init();
-    crossterm::execute!(
-        std::io::stdout(),
-        event::EnableBracketedPaste,
-        event::EnableMouseCapture,
-        SetCursorStyle::BlinkingBar
-    )?;
-    Ok(terminal)
-}
-
-fn leave() {
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        event::DisableBracketedPaste,
-        event::DisableMouseCapture,
-        SetCursorStyle::DefaultUserShape
-    );
-    ratatui::restore();
-}
-
-/// Load a host's profile, starting from the example for a new one.
-/// Whether these arguments open the terminal screen: none, or a host's name.
-fn opens_screen(args: &[&str]) -> bool {
-    // The commands that are one word.
-    const ALONE: &[&str] = &[
-        "list",
-        "registry",
-        "secret",
-        "plugins",
-        "provisioners",
-        "provisioner",
-        "resource",
-        "inventory",
-        "inbox",
-        "kv",
-        "store",
-        "help",
-    ];
-    match args {
-        [] => true,
-        [one] => !one.starts_with('-') && !ALONE.contains(one),
-        _ => false,
-    }
-}
-
-/// Whether a command reads this machine's own plugins: the screen, and the
-/// commands that apply, build or provision with them or list them.
-fn loads_plugins(args: &[&str]) -> bool {
-    const VERBS: &[&str] = &[
-        "apply",
-        "plugins",
-        "provisioners",
-        "provisioner",
-        "provision",
-        "instance",
-        "resource",
-        "deploy",
-        "seed",
-        "iso",
-        "publish",
-        "host",
-    ];
-    opens_screen(args) || args.first().is_some_and(|verb| VERBS.contains(verb))
-}
-
-/// Put back the plugins berth's store has and this machine's plugin
-/// directory lacks, as on a machine restored from the store, and say so on
-/// standard error.
-pub(crate) fn restore_plugins(paths: &Paths) {
-    match berth_core::plugin_state::restore(paths) {
-        Ok(notices) => notices.iter().for_each(|notice| eprintln!("{notice}")),
-        Err(error) => eprintln!("berth: the plugins in berth's store were not checked: {error}"),
-    }
-}
-
-fn open(paths: &Paths, host: &str) -> Result<App> {
-    let place = berth_core::profiles::Place::resolve(paths, host)?;
-    paths.prepare()?;
-    // Actions call the builder scripts and playbook by relative path.
-    std::env::set_current_dir(paths.source()?)?;
-    let (data, existing) = match place.load(paths)? {
-        Some(profile) => (profile.to_string().into_bytes(), true),
-        None => (fs::read(layout::EXAMPLE)?, false),
-    };
-    let served = place.server_url().is_some();
-    let mut app = App::new(paths.clone(), place, parse_config(&data)?);
-    // With a server set, a new host is one of the server's.
-    if let (false, true, Some(server)) = (
-        existing,
-        served,
-        berth_core::server::Server::configured(paths),
-    ) {
-        if !server.admin(paths) {
-            return Err(format!(
-                "No host {host} on the berth server at {}. Adding one needs the role admin there.",
-                server.url
-            )
-            .into());
-        }
-        app.config["builder"]["served"] = json!(server.url);
-    }
-    app.build_dir = paths.build_dir();
-    app.iso_dir = paths.iso_dir();
-    app.load_plugins(paths.config_dir.join("plugins"));
-    // A host is reached without the store; what needs it says why it is missing.
-    app.access = registry::Store::new(paths)
-        .map_err(|error| format!("berth's store does not open: {error}"));
-    // A server's host is set up from the server, with the server's plugins.
-    if app.served().is_some() {
-        let known = app
-            .host_profile()
-            .served(paths)
-            .and_then(|server| server.call("setup.catalogue", json!({}), None).ok());
-        // The server's plugins are what its hosts can have.
-        if let Some(features) = known
-            .as_ref()
-            .and_then(|found| found["features"].as_array())
-        {
-            let text = |feature: &serde_json::Value, key: &str| {
-                feature[key].as_str().unwrap_or("").to_owned()
-            };
-            app.set_features(
-                features
-                    .iter()
-                    .map(|feature| berth_tui::setup::Feature {
-                        key: text(feature, "key"),
-                        label: text(feature, "label"),
-                        group: text(feature, "group"),
-                        help: text(feature, "help"),
-                    })
-                    .collect(),
-            );
-        }
-    }
-    // The keys of the ring that logs in to the host: the server's for its hosts.
-    let ring = match app.host_profile().served(paths) {
-        Some(server) => key_command::listed(&server).unwrap_or_default(),
-        None => key_command::local(paths).unwrap_or_default(),
-    };
-    app.own_public = ring
-        .iter()
-        .find(|key| key.name == berth_api::profile::BERTH_KEY)
-        .map(|key| key.public.clone())
-        .unwrap_or_default();
-    app.ring_keys = ring.into_iter().map(|key| key.name).collect();
-    app.load_access();
-    app.detect();
-    // A host that is installed opens on its maintenance tab.
-    if existing && !app.text(Field::SshHost).is_empty() {
-        app.set_step(Step::Manage);
-    }
-    Ok(app)
-}
-
-/// Stop with the list of problems when the profile cannot run the action.
-fn require_ready(app: &App) -> Result<()> {
-    // A seed and an installer make a whole workstation.
-    berth_core::host_type::guard(
-        &app.host_profile(),
-        berth_core::host_type::Capability::Apply,
-    )?;
-    let problems = app.problems();
-    if problems.is_empty() {
-        return Ok(());
-    }
-    Err(format!("Not ready:\n  {}", problems.join("\n  ")).into())
-}
-
-fn succeed(mut command: Command) -> Result<()> {
-    let status = command.status()?;
-    if !status.success() {
-        let program = command.get_program().to_string_lossy().into_owned();
-        return Err(format!("{program} failed ({status})").into());
-    }
-    Ok(())
-}
-
-/// `berth iso HOST [--write DEVICE]`: build the installer without the UI.
-fn build_installer(paths: &Paths, host: &str, device: Option<&str>) -> Result<()> {
-    let mut app = open(paths, host)?;
-    app.action = Action::Iso;
-    if app.text(Field::Iso).is_empty() {
-        let output = Command::new("python3")
-            .args([layout::BUILDER, "fetch-iso", "--dir"])
-            .arg(&app.iso_dir)
-            .stderr(std::process::Stdio::inherit())
-            .output()?;
-        if !output.status.success() {
-            return Err("Downloading the Ubuntu installer failed".into());
-        }
-        app.commit(Field::Iso, String::from_utf8(output.stdout)?.trim());
-    }
-    require_ready(&app)?;
-    app.execute()?;
-    let Some(device) = device else {
-        return Ok(());
-    };
-    let name = format!("{}-autoinstall.iso", app.text(Field::Hostname));
-    print!("Erase {device} and write the installer to it? [y/N] ");
-    std::io::stdout().flush()?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
-    if !answer.trim().eq_ignore_ascii_case("y") {
-        return Err("Not written".into());
-    }
-    let mut write = Command::new("sudo");
-    write
-        .args(["bash", layout::WRITE_USB])
-        .arg(app.build_dir.join(name))
-        .arg(device);
-    succeed(write)
-}
-
-/// `berth host HOST ...`: the secrets and registries a host is given.
-fn host_command(paths: &Paths, host: &str, args: &[&str]) -> Result<()> {
-    let mut app = open(paths, host)?;
-    let list = |value: &serde_json::Value| value.as_array().cloned().unwrap_or_default();
-    match *args {
-        [] => {
-            for secret in list(&app.config["secrets"]) {
-                let place = match (secret["env"].as_str(), secret["file"].as_str()) {
-                    (Some(variable), _) => format!("env {variable}"),
-                    (_, Some(path)) => format!("file {path}"),
-                    _ => String::new(),
-                };
-                println!(
-                    "secret    {}  {place}",
-                    secret["name"].as_str().unwrap_or("")
-                );
-            }
-            for name in list(&app.config["registries"]) {
-                println!("registry  {}", name.as_str().unwrap_or(""));
-            }
-            println!("Send them with: berth run {host} secrets");
-            return Ok(());
-        }
-        ["secret", name, ref how @ ..] => {
-            let mut secrets = list(&app.config["secrets"]);
-            secrets.retain(|known| known["name"] != name);
-            match *how {
-                ["env", variable] => secrets.push(json!({"name": name, "env": variable})),
-                ["file", path] => secrets.push(json!({"name": name, "file": path})),
-                ["file", path, mode] => {
-                    secrets.push(json!({"name": name, "file": path, "mode": mode}))
-                }
-                ["off"] => {}
-                _ => {
-                    return Err(
-                        "Usage: berth host HOST secret NAME env VARIABLE | file PATH [MODE] | off"
-                            .into(),
-                    );
-                }
-            }
-            app.config["secrets"] = json!(secrets);
-        }
-        ["registry", name, switch @ ("on" | "off")] => {
-            let mut registries = list(&app.config["registries"]);
-            registries.retain(|known| known != name);
-            if switch == "on" {
-                if !registry::Store::new(paths)?
-                    .registries()?
-                    .contains_key(name)
-                {
-                    return Err(format!("No registry {name}. See: berth registry").into());
-                }
-                registries.push(json!(name));
-            }
-            app.config["registries"] = json!(registries);
-        }
-        _ => return Err("Usage: berth host HOST [secret NAME ... | registry NAME on|off]".into()),
-    }
-    app.save()
-}
-
 /// End quietly when what reads berth's output has gone, as `head` does after
 /// its lines: printing then panics, which is no fault of berth's to report.
 fn end_quietly_on_a_closed_pipe() {
@@ -530,17 +189,78 @@ fn end_quietly_on_a_closed_pipe() {
     }));
 }
 
-/// What to say instead of opening berth's screens where there is no terminal
-/// for them, as in a script or over ssh without one. `word` is what was
-/// given for a host, which may have been meant as a command.
-fn no_terminal(paths: &Paths, word: Option<&str>) -> String {
-    let known = |word: &str| paths.hosts().iter().any(|(name, _)| name == word);
-    match word {
-        Some(word) if !known(word) => format!(
-            "there is no command `{word}`, and no terminal to set up a host of that name in. `berth help` lists the commands"
-        ),
-        _ => "berth's screens need a terminal, and there is none here. `berth help` lists the commands that need none".into(),
+/// Whether these arguments open the screens: none, `ui`, or one word that is
+/// no command, taken as the host to open.
+fn opens_screens<'a>(args: &[&'a str]) -> Option<Option<&'a str>> {
+    match args {
+        [] | ["ui"] => Some(None),
+        ["ui", host] => Some(Some(host)),
+        [host] if !host.starts_with('-') && !COMMANDS.contains(host) => Some(Some(host)),
+        _ => None,
     }
+}
+
+/// The commands that are one word, which no host name can stand for.
+const COMMANDS: &[&str] = &[
+    "list",
+    "registry",
+    "secret",
+    "plugins",
+    "provisioners",
+    "provisioner",
+    "resource",
+    "inventory",
+    "inbox",
+    "kv",
+    "store",
+    "help",
+    "config",
+    "serve",
+    "version",
+    "openapi",
+    "asyncapi",
+    "operations",
+    "update",
+    "key",
+    "setup-key",
+];
+
+/// `berth [ui] [HOST]`: the screens of a server: the one this berth is set
+/// to use, a `berth serve` of this user on this machine, or else one in
+/// this process for as long as they are open, which waits for the jobs it
+/// runs before berth ends.
+fn screens(host: Option<&str>) -> Result<()> {
+    use berth_page::settings::{self, Settings};
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        let said = match host {
+            Some(word) => format!(
+                "there is no command `{word}`, and no terminal for the screens of host {word}. `berth help` lists the commands"
+            ),
+            None => "berth's screens need a terminal, and there is none here. `berth help` lists the commands that need none".into(),
+        };
+        return Err(said.into());
+    }
+    let var = |name: &str| std::env::var(name).ok();
+    let settings = Settings::new(settings::folder(var));
+    match settings.take_in(settings::old_folder(var).as_deref()) {
+        Ok(Some(server)) => eprintln!("berth: berth-remote's server is berth's now: {server}"),
+        Ok(None) => {}
+        Err(error) => eprintln!("berth: berth-remote's settings were not taken in: {error}"),
+    }
+    let mut linked = berth_page::device::Linked::from(var);
+    let mut finish: Box<dyn FnOnce()> = Box::new(|| {});
+    // Without a server here, the screens ask for one and its token.
+    if linked.local(&settings)
+        && let Some((server, then)) = local::server()?
+    {
+        linked.server = Some(server);
+        finish = then;
+    }
+    berth_page::device::install(linked, settings);
+    let shown = berth_page::screens::run(host.map(str::to_owned));
+    finish();
+    Ok(shown?)
 }
 
 fn main() {
@@ -554,20 +274,8 @@ fn main() {
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut args: Vec<&str> = args.iter().map(String::as_str).collect();
-    // ssh runs berth as its askpass helper, the program of SSH_ASKPASS, with
-    // the prompt as its one argument and the variable that says where the
-    // password is; the answer is all that may go to standard output.
-    if let Ok(source) = std::env::var(berth_core::keys::askpass::SOURCE) {
-        let prompt = match args[..] {
-            ["askpass", ref prompt @ ..] => Some(prompt.join(" ")),
-            [prompt] => Some(prompt.to_owned()),
-            _ => None,
-        };
-        if let Some(prompt) = prompt {
-            let answer = berth_core::keys::askpass::answer(&prompt, &source, None)?;
-            println!("{answer}");
-            return Ok(());
-        }
+    if local::askpass(&args)? {
+        return Ok(());
     }
     // `--server URL [--token TOKEN]` first: this run only, through that berth serve.
     while let [flag @ ("--server" | "--token"), value, ..] = args[..] {
@@ -580,736 +288,37 @@ fn run() -> Result<()> {
         unsafe { std::env::set_var(variable, value) };
         args.drain(..2);
     }
-    let paths = Paths::locate()?;
-    // The first open of the store takes in the files of an older berth and
-    // says so on standard error, which the screen would hide. A store that
-    // does not open is reported where it is needed.
-    if opens_screen(&args) {
-        let _ = berth_core::store::shared(&paths);
+    if let Some(host) = opens_screens(&args) {
+        return screens(host);
     }
-    if loads_plugins(&args) && berth_core::server::Server::configured(&paths).is_none() {
-        restore_plugins(&paths);
-    }
-    // With a server set, the hosts are the server's: fetch them before anything looks.
-    let local = [
-        "config",
-        "serve",
-        "--version",
-        "-V",
-        "version",
-        "openapi",
-        "asyncapi",
-        "operations",
-        "update",
-        "key",
-        "askpass",
-        "tailnet-key",
-        "credentials",
-        "connect",
-        "setup-key",
-        "store",
-    ];
-    // The screen opens at once on what the last mirror left; the commands
-    // that print are given current data.
-    let mut mirroring = None;
-    if let Some(server) = berth_core::server::Server::configured(&paths)
-        && !args.first().is_some_and(|verb| local.contains(verb))
-    {
-        if opens_screen(&args) {
-            // A host the last mirror does not have cannot be opened without one.
-            if let [name] = args[..]
-                && !paths.hosts().iter().any(|(known, _)| known == name)
-            {
-                server
-                    .mirror(&paths)
-                    .map_err(|error| format!("the berth server at {}: {error}", server.url))?;
-            }
-            mirroring = Some(mirror::Mirroring::of(&paths, server));
-        } else {
-            server
-                .mirror(&paths)
-                .map_err(|error| format!("the berth server at {}: {error}", server.url))?;
-        }
-    }
-    let host = match args[..] {
-        ["list"] => {
-            for (name, address) in paths.hosts() {
-                println!("{name:<24} {address}");
-            }
-            return Ok(());
-        }
-        ["registry", ref rest @ ..] => return registry::registry_command(&paths, rest),
-        ["secret", ref rest @ ..] => return registry::secret_command(&paths, rest),
-        ["image", "push", destination, ref rest @ ..] => {
-            let image =
-                registry::push_image(&paths, destination, rest.first().unwrap_or(&"latest"))?;
-            println!("Pushed {image}");
-            return Ok(());
-        }
-        ["publish", destination, ref rest @ ..] => {
-            std::env::set_current_dir(paths.source()?)?;
-            let url = registry::publish(&paths, destination)?;
-            println!("Published {url}");
-            let (host, login) =
-                match *rest {
-                    [] => (None, None),
-                    [host] => (Some(host), None),
-                    [host, "--login"] => (Some(host), destination.split('/').next()),
-                    [host, "--login", registry] => (Some(host), Some(registry)),
-                    _ => return Err(
-                        "Usage: berth publish REGISTRY[/REPOSITORY] [HOST [--login [REGISTRY]]]"
-                            .into(),
-                    ),
-                };
-            if let Some(host) = host {
-                let mut app = open(&paths, host)?;
-                app.config["release_url"] = json!(url);
-                app.config["release_store"] = json!(destination);
-                app.config["release_private"] = json!(login.is_some());
-                match login {
-                    Some(name) => {
-                        if registry::Store::new(&paths)?.curl_login(name)?.is_none() {
-                            return Err(format!("Registry {name} has no stored login").into());
-                        }
-                        app.config["release_login"] = json!(name);
-                        println!("{host} downloads it from there with the login of {name}");
-                    }
-                    None => {
-                        if let Some(profile) = app.config.as_object_mut() {
-                            profile.remove("release_login");
-                        }
-                        println!("{host} downloads it from there without a login");
-                    }
-                }
-                app.save()?;
-            }
-            return Ok(());
-        }
-        // A host's own subcommands start with secret or registry.
-        ["host", "add", name, address, ref rest @ ..]
-            if !["secret", "registry"].contains(&name) =>
-        {
-            return commands::add_host(&paths, name, address, rest);
-        }
-        ["host", "install", host] => return commands::install_controller(&paths, host),
-        ["host", "type", host, given] => return commands::set_type(&paths, host, given),
-        ["host", "rename", host, name] => return commands::rename(&paths, host, name, false),
-        ["host", "rename", host, name, "--hostname"]
-        | ["host", "rename", host, "--hostname", name] => {
-            return commands::rename(&paths, host, name, true);
-        }
-        ["host", host, ref rest @ ..] => return host_command(&paths, host, rest),
+    match args[..] {
         ["--version" | "-V" | "version"] => {
             println!("berth {}", berth_api::VERSION);
-            return Ok(());
+            Ok(())
         }
-        ["update", ref rest @ ..] => return update::command(rest),
-        ["serve", ref rest @ ..] => return serve::command(&paths, rest),
-        ["setup-key", ref rest @ ..] => return serve::setup_key::command(&paths, rest),
-        ["connect", url] => return commands::connect(&paths, url),
-        ["inbox", ref rest @ ..] => return serve::inbox_command(&paths, rest),
-        ["kv", ref rest @ ..] => return serve::kv_command(&paths, rest),
-        ["store", ref rest @ ..] => return store_command::command(&paths, rest),
-        ["openapi"] => {
-            println!("{}", serde_json::to_string_pretty(&serve::openapi())?);
-            return Ok(());
-        }
-        ["operations"] => {
-            println!("{}", serde_json::to_string_pretty(&serve::operations())?);
-            return Ok(());
-        }
-        ["asyncapi"] => {
-            println!("{}", serde_json::to_string_pretty(&serve::asyncapi())?);
-            return Ok(());
-        }
-        ["plugins"] => {
-            let listing = plugins::Manager::new(&paths).list()?;
-            print!("{}", plugins::describe(&listing.plugins));
-            return Ok(());
-        }
-        ["plugins", "add", spec] => {
-            for line in plugins::Manager::new(&paths).add(spec)? {
-                println!("{line}");
-            }
-            return Ok(());
-        }
-        ["plugins", "update", ref rest @ ..] => return commands::update_plugins(&paths, rest),
-        ["plugins", "remove", name] => {
-            let manager = plugins::Manager::new(&paths);
-            // A name npm knows that berth does not, such as a broken package.
-            let known = manager
-                .list()?
-                .plugins
-                .iter()
-                .any(|plugin| plugin.id == *name || plugin.package == *name);
-            if !known && manager.server().is_none() {
-                let mut npm = Command::new("npm");
-                npm.args([
-                    "uninstall",
-                    "--ignore-scripts",
-                    "--no-audit",
-                    "--no-fund",
-                    "--prefix",
-                ])
-                .arg(plugins::own_dir(&paths.config_dir))
-                .arg(name);
-                let done = succeed(npm);
-                if let Some(line) = plugins::remembered(&paths) {
-                    eprintln!("{line}");
-                }
-                return done;
-            }
-            for line in manager.remove(name)? {
-                println!("{line}");
-            }
-            return Ok(());
-        }
-        ["config"] => return show_config(&paths),
-        ["config", key] => return change_setting(&paths, key, ""),
-        ["config", key, value] => return change_setting(&paths, key, value),
-        ["tailnet-key", host] => {
-            // An apply runs this on the machine that runs berth, for a host
-            // not on the tailnet yet; the key goes to the role on stdout.
-            println!("{}", berth_core::tailnet::key_for(&paths, host)?);
-            return Ok(());
-        }
-        ["profile", host] => return commands::show_profile(&paths, host),
-        ["profile", host, "--set", file] => return commands::set_profile(&paths, host, file),
-        ["credentials", host] => return commands::credentials(&paths, host, false),
-        ["credentials", host, "--show"] | ["credentials", "--show", host] => {
-            return commands::credentials(&paths, host, true);
-        }
-        ["iso", host] => return build_installer(&paths, host, None),
-        ["iso", host, "--write", device] => return build_installer(&paths, host, Some(device)),
-        ["key", ref rest @ ..] => return key_command::command(&paths, rest),
-        ["apply", "--behind" | "--all", ..] => return commands::apply_hosts(&paths, &args[1..]),
-        ["apply", host] => return commands::apply(&paths, host),
-        ["remove", host] => return commands::remove(&paths, host),
-        ["adopt", host, ref rest @ ..] => return commands::adopt(&paths, host, rest),
-        ["provisioners"] => return commands::provisioners(&paths),
-        ["provisioner", ref rest @ ..] => return provisioner_command::command(&paths, rest),
-        ["provision", host, provisioner, ref rest @ ..] => {
-            return resource_command::provision(&paths, host, provisioner, rest);
-        }
-        ["instance", host, ref rest @ ..] => return resource_command::instance(&paths, host, rest),
-        ["resource", ref rest @ ..] => return resource_command::command(&paths, rest),
-        ["deploy", name, ref rest @ ..] => return resource_command::deploy(&paths, name, rest),
-        ["seed", host] if berth_core::server::Server::configured(&paths).is_some() => {
-            return commands::seed(&paths, host);
-        }
-        ["seed", host] => {
-            let mut app = open(&paths, host)?;
-            app.action = Action::CloudSeed;
-            require_ready(&app)?;
-            return app.execute();
-        }
-        ["actions", host] => return commands::actions(&paths, host),
-        ["run" | "manage", host, action, ref rest @ ..] => {
-            return commands::run(&paths, host, action, rest);
-        }
-        ["exec", host, ref rest @ ..] => return commands::exec(&paths, host, rest),
-        ["attach", host] => return commands::attach(&paths, host, None),
-        ["attach", host, id] => return commands::attach(&paths, host, Some(id)),
-        ["sessions", host] => return commands::sessions(&paths, host),
-        ["output", host, id, ref rest @ ..] => return commands::output(&paths, host, id, rest),
-        ["channel", host, ref rest @ ..] => return commands::channel(&paths, host, rest),
-        ["call", host, service, method] => {
-            return commands::call(&paths, host, service, method, None);
-        }
-        ["call", host, service, method, body] => {
-            return commands::call(&paths, host, service, method, Some(body));
-        }
-        ["inventory", ref hosts @ ..] => return commands::inventory(&paths, hosts),
-        ["ssh", host, "--agent"] | ["ssh", "--agent", host] => {
-            let status = open(&paths, host)?.agent_terminal()?.status()?;
-            std::process::exit(status.code().unwrap_or(1));
-        }
-        ["ssh", host, ref remote @ ..] => {
-            let status = open(&paths, host)?.terminal(remote)?.status()?;
-            std::process::exit(status.code().unwrap_or(1));
-        }
-        [] => None,
-        [host] if !host.starts_with('-') && host != "help" => Some(host.to_owned()),
-        _ => {
-            println!("{USAGE}");
-            return Ok(());
-        }
-    };
-    {
-        use std::io::IsTerminal;
-        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-            return Err(no_terminal(&paths, host.as_deref()).into());
-        }
+        ["update", ref rest @ ..] => update::command(rest),
+        ["connect", url] => connect::command(url),
+        _ => local::command(&args),
     }
-    // Find the source before the screen is taken over, so the error is readable.
-    paths.source()?;
-    if let Some(running) = &mut mirroring {
-        running.start();
-    }
-    let mut terminal = enter()?;
-    let outcome = (|| -> Result<()> {
-        loop {
-            let name = match &host {
-                Some(host) => host.clone(),
-                None => match ui::home(&mut terminal, &paths, &mut mirroring)? {
-                    Some(name) => name,
-                    None => return Ok(()),
-                },
-            };
-            let mut app = open(&paths, &name)?;
-            app.start();
-            // Terminal actions (Ansible) suspend the UI and come back to it.
-            while ui::run(&mut terminal, &mut app, &mut mirroring)? {
-                leave();
-                match app.execute() {
-                    Ok(()) => println!("\nDone."),
-                    Err(error) => println!("\n{error}"),
-                }
-                println!("Press Enter to return to berth.");
-                let _ = std::io::stdin().read_line(&mut String::new());
-                terminal = enter()?;
-                // A host renamed meanwhile is opened again under its new name.
-                if let Some(new) = app.renamed.take() {
-                    app = open(&paths, &new)?;
-                    app.start();
-                }
-            }
-            if host.is_some() {
-                return Ok(());
-            }
-        }
-    })();
-    leave();
-    outcome
 }
 
 #[cfg(test)]
 mod tests {
-    use super::opens_screen;
+    use super::opens_screens;
 
     #[test]
-    fn only_the_screen_opens_before_the_mirror_is_made() {
-        assert!(opens_screen(&[]) && opens_screen(&["studio"]));
-        assert!(!opens_screen(&["list"]) && !opens_screen(&["--version"]));
-        assert!(!opens_screen(&["run", "studio", "status"]));
-    }
-
-    use super::*;
-    use crate::fields::{Action, Field, Step};
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    use tui_input::{Input, backend::crossterm::EventHandler};
-
-    /// Paths of a folder that is never made, for an app that saves nothing.
-    fn nowhere() -> Paths {
-        Paths {
-            config_dir: "/nonexistent/berth-test/config".into(),
-            data_dir: "/nonexistent/berth-test/data".into(),
-        }
-    }
-
-    /// An app of a new profile that is never saved, in a file whose name is
-    /// no host name, so that the profile needs a hostname of its own.
-    fn app(config: &str) -> App {
-        App::new(
-            nowhere(),
-            berth_core::profiles::Place::File("/nonexistent/berth-test/new profile.json".into()),
-            parse_config(config.as_bytes()).unwrap(),
-        )
-    }
-
-    fn selectable(app: &App) -> Vec<usize> {
-        app.rows()
-            .iter()
-            .enumerate()
-            .filter_map(|(position, row)| row.entry.map(|_| position))
-            .collect()
-    }
-
-    fn demo_plugin() -> plugins::Plugin {
-        let feature = |id: &str, group: &str, action: &str| plugins::Feature {
-            id: id.into(),
-            group: group.into(),
-            label: id.into(),
-            help: "",
-            actions: vec![plugins::PluginAction {
-                name: action.into(),
-                label: "Say hello".into(),
-                help: "",
-                run: "echo 'hi'".into(),
-                user: "agent".into(),
-                terminal: false,
-                group: String::new(),
-                extends: vec![],
-                agent: false,
-                arguments: vec![],
-                confirm: None,
-            }],
-            services: vec![],
-            channels: vec![],
-        };
-        plugins::Plugin {
-            id: "demo".into(),
-            label: "Demo".into(),
-            package: "berth-plugin-demo".into(),
-            version: "1.0.0".into(),
-            description: String::new(),
-            dir: "/plugins/demo".into(),
-            found: "/plugins/demo".into(),
-            features: vec![
-                feature("one", "development tools", "hello"),
-                feature("two", "Games", "other"),
-            ],
-            provisioners: vec![],
-        }
-    }
-
-    #[test]
-    fn plugin_features_join_groups() {
-        use app::{Entry, Item};
-        let mut app = app(r#"{"access":{"address":"box"},"builder":{"shipped_plugins":true}}"#);
-        app.set_plugins(vec![demo_plugin()]);
-        app.step = Step::Features;
-        let groups = app.feature_groups();
-        // One feature joins a built-in group, the other brings its own. The
-        // groups of the coding agents are not shown without their plugins.
-        assert_eq!(groups[0].title, "Development Tools");
-        assert_eq!(groups[0].items.last(), Some(&Item::Feature(0)));
-        assert_eq!(groups.last().unwrap().title, "Games");
-        assert_eq!(groups.last().unwrap().items, [Item::Feature(1)]);
-
-        // Chosen out of order, stored in the plugin's order.
-        app.set_item(Item::Feature(1), true);
-        app.set_item(Item::Feature(0), true);
-        assert_eq!(
-            app.config["ansible_vars"]["devbox_plugin_features"],
-            json!(["demo/one", "demo/two"])
-        );
-        // What the features can do on the host is the host's to say: the
-        // overview has no rows for them until it has been asked.
-        app.set_step(Step::Manage);
-        assert!(
-            !app.entries()
-                .iter()
-                .any(|entry| matches!(entry, Entry::HostAction(_)))
-        );
-        app.set_item(Item::Feature(0), false);
-        assert_eq!(
-            app.config["ansible_vars"]["devbox_plugin_features"],
-            json!(["demo/two"])
-        );
-    }
-
-    #[test]
-    fn old_agent_switches_become_plugin_features() {
-        // Everything was on unless switched off; T3 followed the agents.
-        let features = |config: &str| app(config).config["ansible_vars"].clone();
-        assert_eq!(
-            features("{}")["devbox_plugin_features"],
-            json!([
-                "claude/cli",
-                "codex/cli",
-                "github/cli",
-                "pi/cli",
-                "t3/server"
-            ])
-        );
-        let old = features(
-            r#"{"ansible_vars": {"devbox_agent_codex": false, "devbox_install_t3": false,
-                "devbox_plugin_features": ["unity/cli"], "devbox_tools_web": true}}"#,
-        );
-        assert_eq!(
-            old,
-            json!({"devbox_tools_web": true,
-                   "devbox_plugin_features": ["claude/cli", "github/cli", "pi/cli", "unity/cli"]})
-        );
-        let none = features(r#"{"ansible_vars": {"devbox_install_agents": false}}"#);
-        assert_eq!(none["devbox_plugin_features"], json!(["github/cli"]));
-        // Done once: what is switched off afterwards stays off.
-        let kept = features(
-            r#"{"builder": {"shipped_plugins": true}, "ansible_vars": {"devbox_plugin_features": []}}"#,
-        );
-        assert_eq!(kept["devbox_plugin_features"], json!([]));
-    }
-
-    #[test]
-    fn groups_are_selectable_and_switch_everything_in_them() {
-        use app::Entry;
-        let mut app = app(r#"{"builder":{"shipped_plugins":true}}"#);
-        app.set_plugins(vec![demo_plugin()]);
-        app.step = Step::Features;
-        let rows = app.rows();
-        assert!(
-            rows[0]
-                .line
-                .to_string()
-                .starts_with("Development Tools  6 of 7")
-        );
-        assert_eq!(rows[0].entry, Some(Entry::Group(0)));
-        assert!(rows[7].line.to_string().starts_with("  └─ one"));
-
-        // Not everything is on, so the group is switched on first, then off.
-        assert!(!app.group_all_on(0));
-        app.toggle_group(0);
-        assert!(app.group_all_on(0));
-        assert_eq!(
-            app.config["ansible_vars"]["devbox_plugin_features"],
-            json!(["demo/one"])
-        );
-        app.toggle_group(0);
-        assert!(!app.enabled(Field::ToolsWeb) && !app.enabled(Field::ToolsScientific));
-        assert_eq!(
-            app.config["ansible_vars"]["devbox_plugin_features"],
-            json!([])
-        );
-
-        // The accounts on the Settings tab start with a heading.
-        app.step = Step::Settings;
-        assert_eq!(selectable(&app)[0], 1);
-        app.action = Action::Docker;
-        assert_eq!(app.fields(), [Field::AgentUser]);
-    }
-
-    #[test]
-    fn settings_follow_the_action_and_disk_mode() {
-        let mut app = app("{}");
-        app.step = Step::Install;
-        app.action = Action::Docker;
-        assert!(app.fields().is_empty());
-        // What an installer picks the disk and network with has defaults.
-        app.action = Action::UsbSeed;
-        assert!(!app.fields().contains(&Field::DiskMode));
-        app.step = Step::Settings;
-        assert!(app.fields().contains(&Field::DiskType));
-        assert!(!app.fields().contains(&Field::DiskSerial));
-        assert!(!app.fields().contains(&Field::WifiSsid));
-        app.commit(Field::DiskMode, "serial");
-        app.activate(Field::Wifi);
-        let fields = app.fields();
-        assert!(fields.contains(&Field::DiskSerial) && !fields.contains(&Field::DiskType));
-        assert!(fields.contains(&Field::WifiSsid));
-        app.step = Step::Install;
-        app.action = Action::Ssh;
-        assert!(app.fields().contains(&Field::SshHost));
-        assert!(!app.fields().contains(&Field::Hostname));
-    }
-
-    #[test]
-    fn new_profiles_default_to_auto_with_wifi_off() {
-        let config = parse_config(br#"{}"#).unwrap();
-        assert_eq!(config["target_disk_mode"], "auto");
-        assert_eq!(config["wifi_enabled"], false);
-        assert!(config.get("operator_passwordless_sudo").is_none());
-        assert!(config["access"]["sudo"].is_null());
-        // The switches of a profile from before are dropped, whatever they said.
-        let old = parse_config(br#"{"operator_passwordless_sudo": false, "berth_ssh_key": false}"#)
-            .unwrap();
-        assert!(
-            old.get("operator_passwordless_sudo").is_none() && old.get("berth_ssh_key").is_none()
-        );
-        let legacy = parse_config(
-            br#"{"target_disk_serial":"OLD_SSD","wifi":{"ssid":"saved"},
-                "release_url":"https://REPLACE.example/x"}"#,
-        )
-        .unwrap();
-        assert_eq!(legacy["target_disk_mode"], "serial");
-        assert_eq!(legacy["wifi_enabled"], true);
-        assert_eq!(legacy["release_url"], "");
-        // A profile of the qemu target there once was shows as cloud, reached from the QEMU host.
-        let qemu = parse_config(br#"{"target": "qemu"}"#).unwrap();
-        assert_eq!(qemu["target"], "cloud");
-        assert_eq!(
-            qemu["ansible_vars"]["devbox_bootstrap_ssh_cidr"],
-            "10.0.2.2/32"
-        );
-        let app = app(r#"{"target": "qemu"}"#);
-        assert_eq!(app.text(Field::RecoveryCidr), "10.0.2.2/32");
-    }
-
-    #[test]
-    fn asking_for_the_sudo_password_is_off_until_chosen() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("studio.json");
-        let profile = r#"{"access":{"address":"192.0.2.10","user":"ops"}}"#;
-        let paths = Paths {
-            config_dir: directory.path().join("config"),
-            data_dir: directory.path().join("data"),
-        };
-        let mut app = App::new(
-            paths,
-            berth_core::profiles::Place::File(path.clone()),
-            parse_config(profile.as_bytes()).unwrap(),
-        );
-        // An edit elsewhere leaves it unset.
-        app.commit(Field::Hostname, "studio");
-        app.save().unwrap();
-        let host = |path: &std::path::Path| berth_core::host::Host {
-            name: "studio".into(),
-            place: berth_core::profiles::Place::File(path.to_owned()),
-            config: serde_json::from_slice(&fs::read(path).unwrap()).unwrap(),
-        };
-        assert!(!app.enabled(Field::AskBecomePass));
-        assert!(!host(&path).asks_password());
-        assert!(app.config["builder"]["ask_become_pass"].is_null());
-        // A first apply as an account whose sudo asks for a password.
-        app.activate(Field::AskBecomePass);
-        app.save().unwrap();
-        assert!(app.enabled(Field::AskBecomePass) && host(&path).asks_password());
-        // Once chosen, the choice stays.
-        app.activate(Field::AskBecomePass);
-        app.save().unwrap();
-        assert!(!app.enabled(Field::AskBecomePass) && !host(&path).asks_password());
-        assert_eq!(app.config["access"]["sudo"], "none");
-    }
-
-    #[test]
-    fn edits_land_in_the_profile() {
-        let mut app = app(r#"{"ansible_vars":{"devbox_install_dev_tools":false}}"#);
-        app.commit(Field::WifiSsid, " home ");
-        assert_eq!(app.config["wifi"]["ssid"], "home");
-        app.commit(Field::WifiSsid, "");
-        assert!(app.config["wifi"].is_null());
-
-        app.commit(Field::Geometry, "1920x1080");
-        assert_eq!(app.config["ansible_vars"]["devbox_geometry"], "1920x1080");
-        app.commit(Field::Geometry, "");
-        assert!(app.config["ansible_vars"].get("devbox_geometry").is_none());
-
-        // Tool categories inherit the older single switch until set themselves.
-        assert!(!app.enabled(Field::ToolsJvm));
-        assert!(app.enabled(Field::Docker));
-        app.activate(Field::ToolsJvm);
-        assert_eq!(app.config["ansible_vars"]["devbox_tools_jvm"], true);
-
-        app.activate(Field::Target);
-        assert_eq!(app.text(Field::Target), "cloud");
-        app.commit(Field::Target, "desktop");
-        assert_eq!(app.text(Field::Target), "cloud");
-        assert!(app.unsaved());
-    }
-
-    #[test]
-    fn review_reports_what_would_fail() {
-        let mut app = app("{}");
-        app.action = Action::Save;
-        assert!(app.problems().is_empty());
-        app.action = Action::UsbSeed;
-        let problems = app.problems().join("\n");
-        assert!(problems.contains("Hostname"));
-        assert!(problems.contains("Operator needs an SSH key"));
-        assert!(problems.contains("Operator password is required"));
-        // The key of this berth is one, which an older profile cannot turn down.
-        app.own_public = "ssh-ed25519 AAAA berth@here".into();
-        assert!(!app.problems().join("\n").contains("SSH key"));
-        app.config["berth_ssh_key"] = json!(false);
-        assert!(!app.problems().join("\n").contains("SSH key"));
-        app.config.as_object_mut().unwrap().remove("berth_ssh_key");
-        app.own_public.clear();
-
-        app.config["hostname"] = json!("devbox-1");
-        app.config["operator_ssh_public_key"] = json!("ssh-ed25519 AAAA me");
-        app.config["operator_password_hash"] = json!(format!("$6$salt${}", "a".repeat(86)));
-        assert_eq!(app.problems(), Vec::<String>::new());
-
-        // An agent without a privilege level types a password for sudo, so it needs one.
-        app.commit(Field::AgentPrivileges, "limited");
-        app.activate(Field::AgentSudo);
-        assert_eq!(app.problems(), Vec::<String>::new());
-        app.config["agent_privileges"] = json!(null);
-        assert_eq!(app.problems().len(), 1);
-        app.activate(Field::AgentSudo);
-        app.commit(Field::AgentUser, "ops");
-        assert_eq!(app.problems().len(), 1);
-        // Ubuntu already has a system group with this name, so the account cannot be created.
-        app.commit(Field::AgentUser, "operator");
-        assert_eq!(app.problems().len(), 1);
-        app.commit(Field::AgentUser, "agent");
-
-        // Only the USB installer insists on an operator password.
-        let hash = app.config["operator_password_hash"].take();
-        assert_eq!(app.problems(), ["Operator password is required (F4 or F5)"]);
-        app.action = Action::CloudSeed;
-        assert!(!app.problems().join("\n").contains("password"));
-        app.action = Action::UsbSeed;
-        app.config["operator_password_hash"] = hash;
-
-        // A cloud seed needs somewhere to get the release from, but no SSH network.
-        app.action = Action::CloudSeed;
-        assert_eq!(app.problems().len(), 1);
-        let step = std::mem::replace(&mut app.step, Step::Settings);
-        assert!(app.fields().contains(&Field::ReleaseUrl));
-        app.config["release_store"] = json!("nexus/releases");
-        assert!(app.problems().is_empty());
-        assert!(app.fields().contains(&Field::ReleasePrivate));
-        assert!(!app.fields().contains(&Field::ReleaseUrl));
-        app.step = step;
-        app.action = Action::Ssh;
-        assert_eq!(app.problems().len(), 1);
-        app.commit(Field::SshPort, "22");
-        app.config["access"]["address"] = json!("devbox.example");
-        assert!(app.problems().is_empty());
-    }
-
-    #[test]
-    fn choosing_an_iso_records_its_checksum() {
-        let directory = tempfile::tempdir().unwrap();
-        let iso = directory.path().join("ubuntu.iso");
-        fs::write(&iso, "abc").unwrap();
-        let mut app = app("{}");
-        app.commit(Field::Iso, iso.to_str().unwrap());
-        assert_eq!(
-            app.text(Field::IsoSha),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-    }
-
-    #[test]
-    fn wifi_logins_come_from_and_are_checked_against_this_machine() {
-        let mut app = app("{}");
-        app.wifi_networks = vec![("home".into(), "secret".into()), ("cafe".into(), "".into())];
-        app.commit(Field::WifiSsid, "cafe");
-        assert_eq!(app.text(Field::WifiPassword), "");
-        assert_eq!(app.wifi_password_matches(), None);
-        app.commit(Field::WifiSsid, "home");
-        assert_eq!(app.text(Field::WifiPassword), "secret");
-        assert_eq!(app.wifi_password_matches(), Some(true));
-        app.commit(Field::WifiPassword, "typo");
-        assert_eq!(app.wifi_password_matches(), Some(false));
-        assert!(app.status.contains("Differs"));
-    }
-
-    #[test]
-    fn input_widget_inserts_and_deletes_at_cursor() {
-        let mut input = Input::new("abde".into());
-        for code in [
-            KeyCode::Home,
-            KeyCode::Right,
-            KeyCode::Right,
-            KeyCode::Char('c'),
-            KeyCode::Delete,
-            KeyCode::End,
-            KeyCode::Backspace,
+    fn the_screens_open_with_no_command_or_a_host() {
+        assert_eq!(opens_screens(&[]), Some(None));
+        assert_eq!(opens_screens(&["ui"]), Some(None));
+        assert_eq!(opens_screens(&["studio"]), Some(Some("studio")));
+        assert_eq!(opens_screens(&["ui", "dock"]), Some(Some("dock")));
+        for command in [
+            &["list"][..],
+            &["--version"],
+            &["run", "studio", "status"],
+            &["help"],
         ] {
-            input.handle_event(&Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+            assert_eq!(opens_screens(command), None, "{command:?}");
         }
-        assert_eq!(input.value(), "abc");
-        assert_eq!(input.cursor(), 3);
-    }
-
-    #[test]
-    fn discovers_custom_public_key_names_and_config_includes() {
-        let directory = tempfile::tempdir().unwrap();
-        let write = |name: &str, content: &str| {
-            fs::write(directory.path().join(name), content).unwrap();
-        };
-        write("storage.pub", "ssh-ed25519 AAAATEST storage\n");
-        write("rsa.pub", "ssh-rsa AAAATEST laptop\n");
-        write("invalid.pub", "not a key");
-        write("config", "Include config.d/*\nHost main * !excluded\n");
-        fs::create_dir(directory.path().join("config.d")).unwrap();
-        write("config.d/cloud", "Host cloud-server\n  User operator\n");
-        let (public, _) = discovery::keys(directory.path());
-        assert_eq!(public.len(), 2);
-        assert!(public.iter().any(|(_, key)| key.ends_with("storage")));
-        assert_eq!(discovery::hosts(&directory.path().join("config")).len(), 2);
     }
 }

@@ -88,7 +88,7 @@
           {
             "id": "instance",
             "label": "Instance",
-            "verbs": ["start", "stop", "change", "logs"],
+            "verbs": ["start", "stop", "change", "logs", "exec"],
             "arguments": [
               {"name": "image", "label": "Image", "default": "", "help": "The image to start from, such as debian:12 or any image reference. It becomes no berth host: nothing of berth is put in it."},
               {"name": "command", "label": "Command", "default": "", "help": "The command to run in the container, such as sleep infinity. Empty runs the image's own command."},

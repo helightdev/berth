@@ -28,6 +28,10 @@ pub struct ErrorDetail {
     pub message: String,
 }
 
+/// The header that repeats an error's code, for a caller that is not given
+/// the body: a WebSocket handshake that was refused shows only its head.
+pub const ERROR_HEADER: &str = "berth-error";
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ErrorBody {
     pub error: ErrorDetail,
@@ -1213,6 +1217,81 @@ impl ResourceSecret {
     }
 }
 
+/// Where a resource can be reached: an address and a port, as its
+/// provisioner reports it. The address is as seen from the machine the
+/// provisioner's engine runs on, such as a Docker engine or an Incus server.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Endpoint {
+    /// Unique among the resource's endpoints: lowercase letters, digits, `-`, `_` and `.`.
+    pub name: String,
+    /// An IP address or a DNS name.
+    pub address: String,
+    pub port: u16,
+    /// `tcp` or `udp`.
+    pub protocol: String,
+    /// What speaks there, for people, such as `http` or `postgres`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hint: String,
+    /// The engine runs on the server's own machine, so the address is one
+    /// the server reaches as it is, a loopback address among them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local: bool,
+}
+
+impl Endpoint {
+    pub const TCP: &'static str = "tcp";
+    pub const UDP: &'static str = "udp";
+
+    /// Whether a text can be an endpoint's name.
+    pub fn valid_name(name: &str) -> bool {
+        !name.is_empty()
+            && name.len() <= 63
+            && name.starts_with(|ch: char| ch.is_ascii_alphanumeric())
+            && name
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || "-_.".contains(ch))
+    }
+
+    /// One endpoint of a provisioner's answer, or why it is none.
+    pub fn from_answer(value: &Value) -> Result<Endpoint, String> {
+        let text = |key: &str| value[key].as_str().unwrap_or("").trim().to_owned();
+        let name = text("name");
+        if !Endpoint::valid_name(&name) {
+            return Err(format!("{name:?} cannot name an endpoint"));
+        }
+        let address = text("address");
+        let usable = !address.is_empty()
+            && address.len() <= 253
+            && (address.parse::<std::net::IpAddr>().is_ok()
+                || address
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || "-.".contains(ch)));
+        if !usable {
+            return Err(format!("the endpoint {name} has no address berth can use"));
+        }
+        let port = value["port"]
+            .as_u64()
+            .or_else(|| value["port"].as_str().and_then(|port| port.parse().ok()))
+            .and_then(|port| u16::try_from(port).ok())
+            .filter(|port| *port > 0)
+            .ok_or_else(|| format!("the endpoint {name} has no port from 1 to 65535"))?;
+        let protocol = match text("protocol").to_ascii_lowercase().as_str() {
+            "" | Endpoint::TCP => Endpoint::TCP.to_owned(),
+            Endpoint::UDP => Endpoint::UDP.to_owned(),
+            other => return Err(format!("the endpoint {name} has the protocol {other:?}")),
+        };
+        let hint: String = text("hint").chars().take(32).collect();
+        Ok(Endpoint {
+            name,
+            address,
+            port,
+            protocol,
+            hint,
+            local: value["local"] == true,
+        })
+    }
+}
+
 /// Something a provisioner made for berth: a machine, which may be a
 /// host's, or a kind its plugin names, such as a deployment.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -1235,6 +1314,10 @@ pub struct Resource {
     pub host: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub address: String,
+    /// Where it can be reached, as its provisioner last said: when it was
+    /// made, changed or checked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endpoints: Vec<Endpoint>,
     #[serde(default)]
     pub arguments: BTreeMap<String, String>,
     /// The berth secrets it is given, by name; never their values.
@@ -1250,7 +1333,7 @@ pub struct Resource {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub checked: String,
     /// What can be done to it besides being removed: `start`, `stop`,
-    /// `change`, `logs`, as its kind declares.
+    /// `change`, `logs`, `exec`, as its kind declares.
     #[serde(default)]
     pub verbs: Vec<String>,
     /// Why its state is `unknown`, or what is wrong with it.

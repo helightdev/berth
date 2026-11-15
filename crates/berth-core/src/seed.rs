@@ -157,3 +157,98 @@ pub fn named(mut config: Value, name: &str) -> Value {
     }
     config
 }
+
+/// The unattended installer of a saved host: an ISO built from Ubuntu's
+/// installer with the host's seed in it, ready to write to a USB drive.
+pub struct Installer {
+    /// The builder, run in the provisioning source.
+    pub command: Command,
+    /// The private copy of the profile it reads, removed once it has run.
+    pub profile: tempfile::NamedTempFile,
+    /// The ISO it writes.
+    pub iso: PathBuf,
+}
+
+/// The builder of `name`'s installer from Ubuntu's ISO at `ubuntu`, which
+/// is checked against the profile's `iso_sha256` when it has one.
+pub fn installer(paths: &Paths, name: &str, ubuntu: &std::path::Path) -> Result<Installer> {
+    let host = Host::load(paths, name)?;
+    crate::host_type::guard(&host, crate::host_type::Capability::Apply)?;
+    let source = paths.source()?;
+    let dirs = apply::plugin_dirs(&plugins::found(
+        &source,
+        &plugins::own_dir(&paths.config_dir),
+    ));
+    let saved = host.config.clone();
+    let mut config = named(tailnet::seed_profile(paths, &saved, name)?, name);
+    crate::kept_profile::for_seed(&mut config, &host.place.title(), &saved);
+    let hostname = config["hostname"].as_str().unwrap_or(name).to_owned();
+    let profile = tailnet::profile_file(&config)?;
+    let own = crate::keys::operator_keys(paths, &saved)?;
+    let build = paths.build_dir();
+    let mut command = Command::new("python3");
+    command
+        .current_dir(&source)
+        .args([layout::BUILDER, "iso", "--config"])
+        .arg(profile.path())
+        .arg("--iso")
+        .arg(ubuntu)
+        .arg("--overwrite")
+        .env("DEVBOX_BUILD_DIR", &build)
+        .env("BERTH_PLUGINS", dirs.to_string())
+        .env("BERTH_SSH_PUBLIC_KEY", own.join("\n"))
+        .stdin(std::process::Stdio::null());
+    if let Some(sha) = saved["builder"]["iso_sha256"]
+        .as_str()
+        .filter(|sha| !sha.is_empty())
+    {
+        command.args(["--sha256", sha]);
+    }
+    Ok(Installer {
+        command,
+        profile,
+        iso: build.join(format!("{hostname}-autoinstall.iso")),
+    })
+}
+
+/// Ubuntu's installer ISO a host's installer is built from: the one its
+/// profile names, or none yet.
+pub fn ubuntu_iso(config: &Value) -> Option<PathBuf> {
+    config["builder"]["iso"]
+        .as_str()
+        .filter(|iso| !iso.is_empty())
+        .map(crate::discovery::expand_path)
+}
+
+/// The builder that downloads Ubuntu's current installer ISO into the ISO
+/// folder and checks it, printing its path last.
+pub fn fetch_iso(paths: &Paths) -> Result<Command> {
+    let mut command = Command::new("python3");
+    command
+        .current_dir(paths.source()?)
+        .args([layout::BUILDER, "fetch-iso", "--dir"])
+        .arg(paths.iso_dir())
+        .stdin(std::process::Stdio::null());
+    Ok(command)
+}
+
+/// `sudo` writing the ISO to a whole USB drive, which it erases. With a
+/// password it is read from standard input, and else sudo must need none.
+pub fn write_usb(
+    paths: &Paths,
+    iso: &std::path::Path,
+    device: &str,
+    password: bool,
+) -> Result<Command> {
+    let mut command = Command::new("sudo");
+    match password {
+        true => command.args(["-S", "-p", ""]),
+        false => command.arg("-n"),
+    };
+    command
+        .current_dir(paths.source()?)
+        .args(["bash", layout::WRITE_USB])
+        .arg(iso)
+        .arg(device);
+    Ok(command)
+}

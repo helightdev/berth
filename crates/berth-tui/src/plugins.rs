@@ -1,8 +1,7 @@
 //! The Plugins tab of the home screen: the plugins there are with their
 //! features, installing, updating and removing one, and bringing the hosts
-//! that are behind up to date afterwards. berth shows those of this
-//! machine or of its berth server, berth-remote those of the server it is
-//! signed in to. What the tab asks for, each of them does its own way.
+//! that are behind up to date afterwards: those of the server the screens
+//! use. What the tab asks for goes to the server.
 
 use crate::event::{self, Code, Key};
 use crate::theme;
@@ -19,7 +18,7 @@ pub enum Place<'a> {
     Here,
     /// The server's at this address, for berth in a terminal.
     Server(&'a str),
-    /// The server's, for berth-remote.
+    /// The server's, for the screens.
     Page,
 }
 

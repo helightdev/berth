@@ -62,8 +62,8 @@ The set-up of a host has four tabs. Each tab depends only on the tabs before it.
 
 A setting shows only when the method and features it belongs to are chosen. Each of the first three tabs lists its own problems at the bottom. **Run** lists all of them under the name of their tab, and does not start while one is listed. Warnings, such as SSH being open to any address, are listed too but do not stop it. **Save** on Run, or Ctrl+S anywhere, saves the profile.
 
-Builds run inside berth with their output and a progress bar. Esc cancels and Enter returns. Installing over SSH and *This machine or an inventory* continue in the normal terminal, where Ansible and SSH can ask for passwords, and return to berth when they finish.
+What Run starts is a job of the server, whose output fills a panel. Esc hides the panel and the job goes on. It stays in the server's list. A password the job needs, such as a sudo password, is asked for in a dialog first. To provision this machine or an inventory, run the role [with Ansible directly](/docs/deploy/ansible).
 
 <Callout type="warn" title="Use dedicated machines">
-  The role installs services, changes the firewall and grants the agent sudo. With a blank inventory, *This machine or an inventory* provisions **the machine you are sitting at**. Only do that on a dedicated box.
+  The role installs services, changes the firewall and grants the agent sudo. Applied to `localhost`, it provisions **the machine you are sitting at**. Only do that on a dedicated box.
 </Callout>

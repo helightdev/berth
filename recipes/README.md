@@ -18,7 +18,7 @@ earlier `incus-host` recipe set up is taken in as a node in the same way.
 
 The recipes that set up a berth server end with a setup key. With it the
 first user collects the server's token, with `berth connect URL` or with
-`berth-remote`, so the token never has to be read out or passed on.
+berth's screens, so the token never has to be read out or passed on.
 
 ## Get the recipes
 

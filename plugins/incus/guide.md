@@ -164,6 +164,22 @@ instance for it.
 | `network` | | Network for the instance. Left empty, it uses the network of the `default` profile. |
 | `nesting` | `yes` | Lets a container run containers of its own, such as Docker's. |
 
+### Endpoints and commands
+
+The plugin reports each proxy device of an instance or a machine as an
+endpoint, named after the device. A proxy device is a port of the Incus server
+that leads into the instance, such as `listen: tcp:0.0.0.0:8080`. A device that
+listens on every address is reported at the server's host name from `server`.
+An instance's own address is its address; Incus does not say which of its
+ports serve anything, so those are no endpoints. berth opens a tunnel to an
+endpoint with `resources.connect`.
+
+An instance also takes the action `exec`. Incus runs the command and records
+its output, which the plugin then gives as the job's and removes from the
+server. The job ends with the command's exit status. The instance has to be
+running. Incus runs it without standard input, and the plugin refuses a command that
+comes with some.
+
 ## Actions
 
 The provisioner's page in berth, and `berth provisioner NAME`, list these

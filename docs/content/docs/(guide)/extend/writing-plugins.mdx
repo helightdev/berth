@@ -284,7 +284,7 @@ A kind:
     label: { type: 'string', default: 'the id', description: 'Name in berth.' },
     setup: { type: '"seed" | "apply"', description: 'For machine. seed: the machine sets itself up from berth\'s cloud seed. apply: berth applies the profile over SSH once the machine answers.' },
     archive: { type: 'boolean', default: 'false', description: 'For a seed machine. The provisioner puts the release archive into the machine itself, so the profile needs no release_url.' },
-    verbs: { type: 'string[]', description: 'Of start, stop, change and logs, the ones it answers for one of these. create, status and destroy are always required.' },
+    verbs: { type: 'string[]', description: 'Of start, stop, change, logs and exec, the ones it answers for one of these. create, status and destroy are always required.' },
     arguments: { type: 'Argument[]', description: 'What making one takes, such as its CPUs and image.' },
     spec: { type: 'object', description: 'For a kind made from a specification: its format and label, such as {"format": "compose", "label": "Compose file"}.' },
     actions: { type: 'Action[]', description: "What it can do to one of these, each run with the verb act. They are listed on the resource's page." },
@@ -381,7 +381,7 @@ When the command ends, berth ends everything it started in the process group. Do
 | --- | --- |
 | `status`, `list`, an `act` that only reads | 30 seconds |
 | `start`, `stop`, `destroy`, `change` | 5 minutes |
-| `create`, an `act` that changes something | 15 minutes |
+| `create`, `exec`, an `act` that changes something | 15 minutes |
 | `logs` | Until it ends, or the one who asked stops reading |
 
 A command that takes longer is killed with its group.
@@ -414,11 +414,13 @@ Each verb adds to it and answers like this:
 
 | Verb | Request adds | Answer |
 | --- | --- | --- |
-| `create` | `token`. For a machine, `seed` or `access`. For another kind, `environment`, and `spec` when the kind has one | `id`, and optionally `address` and `port` |
-| `status` | `id` | `state`, which is `running`, `stopped` or `gone`, and optionally `address`. berth shows `gone` as `missing` |
+| `create` | `token`. For a machine, `seed` or `access`. For another kind, `environment`, and `spec` when the kind has one | `id`, and optionally `address`, `port` and `endpoints` |
+| `status` | `id` | `state`, which is `running`, `stopped` or `gone`, and optionally `address` and `endpoints`. berth shows `gone` as `missing` |
 | `status` | nothing | The provisioner itself: `state` (`ready` unless it says otherwise), `message`, `details`, `values` |
-| `destroy`, `start`, `stop` | `id` | `{}` |
-| `change` | `id`, the new values in `arguments`, `changed` with the names of the arguments whose value is new, and `environment`. For a kind with a specification, `spec`: the new one, or the one berth has | `state` |
+| `destroy` | `id` | `{}` |
+| `start`, `stop` | `id` | `{}`, and optionally `state` and `endpoints` |
+| `change` | `id`, the new values in `arguments`, `changed` with the names of the arguments whose value is new, and `environment`. For a kind with a specification, `spec`: the new one, or the one berth has | `state`, and optionally `endpoints` |
+| `exec` | `id`, `command` as a list of words, and `stdin` when there is input | `exit_code`, the command's exit status. Its output goes to standard error |
 | `logs` | `id`, `tail` and `follow` | The log on standard output, a line at a time, until it ends |
 | `list` | nothing | `resources`, a list of `id`, `kind`, `name`, `host` and `state`, of every kind |
 | `act` | `action`: its `name` and its `arguments`. For an action of a kind, also `environment`, and `spec` when the kind has one | `message`, and optionally `details` |
@@ -430,6 +432,31 @@ Each verb adds to it and answers like this:
 For `logs`, `tail` is how many of the last lines to give, and `follow` whether to go on with what comes after them. Give a machine's console, or its boot output when the console has none. An empty log is no failure.
 
 While berth waits for a new machine, it asks `logs` of the machine kind with each `status`, until SSH answers, with `tail` at 100 and `follow` false. It shows the lines it has not shown before. berth removes escape sequences and control characters, shortens long lines and shows at most six lines at a time. It hides the provisioner's secrets and those of the seed. A kind without `logs` is waited for without them.
+
+### Endpoints
+
+An answer about one resource may report where it is reached, as `endpoints`. berth keeps the list with the resource's record, and an answer with `endpoints` replaces it whole. An answer without them leaves the list as it was, and a resource that is gone has none. Report them from `create`, `status` and `change`, so they follow what is there, and from `start` and an `act` that makes it anew when those know.
+
+```json title="Answer of status"
+{"state": "running",
+ "endpoints": [{"name": "8080", "address": "127.0.0.1", "port": 8080, "hint": "http", "local": true},
+               {"name": "bridge-80", "address": "172.17.0.2", "port": 80, "hint": "http", "local": true}]}
+```
+
+| Field | Value |
+| --- | --- |
+| `name` | Unique within the resource. Lowercase letters, digits, `-`, `_` and `.`, up to 63, starting with a letter or a digit |
+| `address` | An IP address or a DNS name, as seen from the machine your engine runs on |
+| `port` | 1 to 65535 |
+| `protocol` | `tcp`, the default, or `udp` |
+| `hint` | What speaks there, such as `http` or `postgres`. berth shows it to people and doesn't read it |
+| `local` | `true` when your engine runs on the machine berth runs on |
+
+berth leaves out an endpoint that does not fit, and the first of two with the same name stands. `resources.connect` dials only what you report, from the server. Report `local` only for an engine on the server's own machine, as a loopback address is then the server's. For an engine elsewhere, report addresses that other machines can connect to, such as a port published on the engine's own name. Leave out the addresses only its machine routes to.
+
+### Commands
+
+A kind with `exec` among its verbs gets berth's action `exec` ([Run a command in it](/docs/deploy/resources#run-a-command-in-it)). berth sends the command as a list of words in `command`, never as one line for a shell. Run it as it is, with `stdin` on its standard input when the request has it. Write its output to standard error as it comes. Answer with its `exit_code`. Exit with 0 even when the command fails; exit with another code only when you could not run it, such as when the resource is not running. berth records the command line in the job, and not the input.
 
 `details` is a list of rows, each `{"label": …, "value": …}`, which berth shows as they are, such as a pool and how full it is. `values` names, by argument, the values an argument takes here, such as `{"pool": ["default", "fast"]}`. berth offers those in place of what the manifest says.
 

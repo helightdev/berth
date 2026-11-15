@@ -153,6 +153,29 @@ to another argument is refused, so make a new instance for it. The values of
 `environment` reach Docker in its environment, not on its command line.
 Removing an instance removes its anonymous volumes and keeps named ones.
 
+### Endpoints and commands
+
+The plugin reports where a container is reached as its endpoints, each time
+berth makes, changes, starts or checks it. Each published port is one, named
+after the port it is published on, such as `8080`. On the local engine, each
+port the image exposes is one too, at each of the container's network
+addresses, such as `bridge-80`. A deployment reports those of each running
+container, named after its service, such as `web-8080`.
+
+| Engine | Address of a published port | Network addresses |
+| --- | --- | --- |
+| On this machine | `127.0.0.1`, or the address it is published on | Reported, as this machine routes to them |
+| Elsewhere, by `host` or a context | The engine's host name from its address, or the address it is published on | Left out, as only the engine's machine routes to them |
+
+berth opens a tunnel to an endpoint with `resources.connect`. A port published
+on the loopback of an engine elsewhere is reported too, and the server refuses
+to dial it.
+
+An instance also takes the action `exec`. It runs `docker exec` with the
+command, and `-i` with its standard input when it has some. The container has
+to be running. The command's output is the job's, and the job ends with the
+command's exit status.
+
 ## Deployments
 
 A deployment is a Compose project. Its spec is a Compose file, and its name is

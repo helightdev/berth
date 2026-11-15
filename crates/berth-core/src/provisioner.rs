@@ -722,6 +722,8 @@ enum Doing {
 pub struct Answered {
     pub message: String,
     pub details: Vec<Detail>,
+    /// The exit status of a command it ran, which its job ends with.
+    pub exit_code: Option<i32>,
 }
 
 impl Answered {
@@ -734,7 +736,11 @@ impl Answered {
     pub fn lines(&self) -> Vec<String> {
         let mut lines = vec![];
         if !self.message.is_empty() {
-            lines.push(format!("✓ {}", self.message));
+            let mark = match self.exit_code {
+                Some(code) if code != 0 => "✗",
+                _ => "✓",
+            };
+            lines.push(format!("{mark} {}", self.message));
         }
         let width = self
             .details
@@ -941,6 +947,7 @@ impl Acting {
                         false => format!("{} uses {}", self.name, shown.join(" ")),
                     },
                     details: vec![],
+                    exit_code: None,
                 })
             }
             Doing::Secrets(values, store) => {
@@ -969,6 +976,7 @@ impl Acting {
                         false => format!("{}'s secrets", self.name),
                     },
                     details,
+                    exit_code: None,
                 })
             }
             Doing::Remove(store) => {
@@ -976,6 +984,7 @@ impl Acting {
                 Ok(Answered {
                     message: format!("{} is removed", self.name),
                     details: vec![],
+                    exit_code: None,
                 })
             }
             Doing::Create(creating, store) => {
@@ -985,6 +994,7 @@ impl Acting {
                 Ok(Answered {
                     message: format!("{title} is made. Its page: berth resource {id}"),
                     details: vec![],
+                    exit_code: None,
                 })
             }
             Doing::Program {
@@ -1000,6 +1010,7 @@ impl Acting {
                 Ok(Answered {
                     message: answer["message"].as_str().unwrap_or("").to_owned(),
                     details: details(&answer),
+                    exit_code: None,
                 })
             }
         }

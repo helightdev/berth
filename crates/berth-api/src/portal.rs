@@ -341,6 +341,23 @@ impl Portal {
             .await?;
         Ok(crate::tunnel::Tunnel::new(stream))
     }
+
+    /// A TCP connection to an endpoint a resource's provisioner reported, by
+    /// its name or its port, through `resources.connect`.
+    pub async fn connect_endpoint(
+        &self,
+        id: &str,
+        endpoint: &str,
+    ) -> Result<crate::tunnel::Tunnel<PortalStream>> {
+        let stream = self
+            .open(
+                "resources.connect",
+                None,
+                json!({"id": id, "endpoint": endpoint}),
+            )
+            .await?;
+        Ok(crate::tunnel::Tunnel::new(stream))
+    }
 }
 
 impl Shared {

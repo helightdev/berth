@@ -50,7 +50,7 @@ class FakeIncus(ThreadingHTTPServer):
 
 
 def public(instance):
-    return {k: v for k, v in instance.items() if k not in ('files', 'request', 'console')}
+    return {k: v for k, v in instance.items() if k not in ('files', 'request', 'console', 'logs')}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -185,6 +185,20 @@ class Handler(BaseHTTPRequestHandler):
             server.events.append((action['action'], instance['name'], action.get('force', False)))
             instance['status'] = {'start': 'Running', 'stop': 'Stopped'}[action['action']]
             return self.answer(202, server.operation(), 'async')
+        if rest == ['exec'] and self.command == 'POST':
+            server.events.append(('exec', instance['name'], json.loads(body)))
+            base = f'/1.0/instances/{instance["name"]}/logs'
+            instance['logs'] = {'exec_1.stdout': b'hi from web\n', 'exec_1.stderr': b'one warning\n'}
+            key = server.operation()
+            server.operations[key]['metadata'] = {'return': 2, 'output': {'1': f'{base}/exec_1.stdout',
+                                                                         '2': f'{base}/exec_1.stderr'}}
+            return self.answer(202, key, 'async')
+        if rest[:1] == ['logs'] and len(rest) == 2:
+            if self.command == 'DELETE':
+                server.events.append(('log-delete', rest[1]))
+                instance.get('logs', {}).pop(rest[1], None)
+                return self.answer(200, {})
+            return self.raw(instance.get('logs', {}).get(rest[1], b''))
         if rest == ['console'] and self.command == 'GET':
             server.events.append(('console', query.get('type')))
             return self.raw(instance.get('console', b''))
@@ -268,7 +282,7 @@ class IncusPluginTests(unittest.TestCase):
     def test_container_takes_the_release_before_its_first_start(self):
         code, answer, err = self.create()
         self.assertEqual(code, 0, err)
-        self.assertEqual(answer, {'id': 'berth-studio-2', 'address': '192.0.2.50'})
+        self.assertEqual(answer, {'id': 'berth-studio-2', 'endpoints': [], 'address': '192.0.2.50'})
         self.assertEqual(self.actions(), [
             ('create', 'berth-studio-2', 'container'),
             ('push', '/opt/devbox-bootstrap', 'directory', 'Stopped', '0700'),
@@ -327,10 +341,10 @@ class IncusPluginTests(unittest.TestCase):
 
     def test_status_follows_the_instance(self):
         self.create()
-        self.assertEqual(self.run_verb('status', id='berth-studio-2')[1], {'state': 'running', 'address': '192.0.2.50'})
+        self.assertEqual(self.run_verb('status', id='berth-studio-2')[1], {'state': 'running', 'endpoints': [], 'address': '192.0.2.50'})
         self.assertEqual(self.run_verb('stop', id='berth-studio-2')[:2], (0, {}))
         self.assertIn(('stop', 'berth-studio-2', True), self.server.events)
-        self.assertEqual(self.run_verb('status', id='berth-studio-2')[1], {'state': 'stopped'})
+        self.assertEqual(self.run_verb('status', id='berth-studio-2')[1], {'state': 'stopped', 'endpoints': []})
         self.assertEqual(self.run_verb('start', id='berth-studio-2')[:2], (0, {}))
         self.assertEqual(self.run_verb('status', id='berth-studio-2')[1]['state'], 'running')
         self.assertEqual(self.run_verb('status', id='berth-gone')[1], {'state': 'gone'})
@@ -406,7 +420,7 @@ class IncusPluginTests(unittest.TestCase):
                                             **arguments})
         code, answer, err = make()
         self.assertEqual(code, 0, err)
-        self.assertEqual(answer, {'id': 'web-1', 'state': 'running', 'address': '192.0.2.50'})
+        self.assertEqual(answer, {'id': 'web-1', 'state': 'running', 'endpoints': [], 'address': '192.0.2.50'})
         made = self.server.instances['web-1']['request']
         self.assertTrue(made['start'])
         self.assertEqual(made['source']['alias'], 'debian/12')
@@ -493,7 +507,7 @@ class IncusPluginTests(unittest.TestCase):
         code, answer, err = self.run_verb('change', id='berth-studio-2',
                                           arguments={'cpus': '2', 'memory': '4GiB', 'disk': '80GiB'})
         self.assertEqual(code, 0, err)
-        self.assertEqual(answer, {'state': 'running'})
+        self.assertEqual(answer, {'state': 'running', 'endpoints': []})
         [patch] = [e for e in self.server.events if e[0] == 'patch']
         self.assertEqual(patch[2]['config'], {'limits.cpu': '2', 'limits.memory': '4GiB'})
         self.assertEqual(patch[2]['devices']['root']['size'], '80GiB')
@@ -502,6 +516,37 @@ class IncusPluginTests(unittest.TestCase):
         code, _, err = self.run_verb('change', id='web', arguments={'cpus': '1'})
         self.assertEqual(code, 1)
         self.assertIn('not made by berth', err)
+
+    def test_proxy_devices_are_endpoints_on_the_server(self):
+        self.create()
+        self.server.instances['berth-studio-2']['expanded_devices'] = {
+            'root': {'type': 'disk', 'path': '/', 'pool': 'default'},
+            'web': {'type': 'proxy', 'listen': 'tcp:0.0.0.0:8080', 'connect': 'tcp:127.0.0.1:80'},
+            'dns': {'type': 'proxy', 'listen': 'udp:192.0.2.1:5353', 'connect': 'udp:127.0.0.1:53'},
+            'Socket': {'type': 'proxy', 'listen': 'unix:/run/web.sock', 'connect': 'tcp:127.0.0.1:80'},
+        }
+        code, answer, err = self.run_verb('status', id='berth-studio-2')
+        self.assertEqual(code, 0, err)
+        # The fake answers on this machine's loopback, so its addresses are this machine's.
+        self.assertEqual(answer['endpoints'], [
+            {'name': 'dns', 'address': '192.0.2.1', 'port': 5353, 'protocol': 'udp', 'local': True},
+            {'name': 'web', 'address': '127.0.0.1', 'port': 8080, 'protocol': 'tcp', 'hint': 'http', 'local': True},
+        ])
+
+    def test_a_command_runs_in_the_instance_with_its_output_and_exit_status(self):
+        self.create()
+        code, answer, err = self.run_verb('exec', id='berth-studio-2', command=['sh', '-c', 'echo hi; exit 2'])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(answer, {'exit_code': 2})
+        self.assertIn('hi from web\none warning\n', err)
+        [exec_] = [e for e in self.server.events if e[0] == 'exec']
+        self.assertEqual(exec_[2]['command'], ['sh', '-c', 'echo hi; exit 2'])
+        self.assertEqual((exec_[2]['record-output'], exec_[2]['interactive']), (True, False))
+        self.assertEqual({e[1] for e in self.server.events if e[0] == 'log-delete'}, {'exec_1.stdout', 'exec_1.stderr'})
+        for fields, said in [({'stdin': 'x'}, 'without standard input'), ({'command': 'ls'}, 'list of words')]:
+            code, _, err = self.run_verb('exec', id='berth-studio-2', **{'command': ['ls'], **fields})
+            self.assertEqual(code, 1)
+            self.assertIn(said, err)
 
     def test_logs_are_the_last_lines_of_the_console(self):
         self.create()
