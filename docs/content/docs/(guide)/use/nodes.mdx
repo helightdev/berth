@@ -78,6 +78,18 @@ At the end of an apply the role records what each feature offers in `/etc/berth/
 
 berth makes its Incus client certificate and key once, as the secrets `incus_client_cert` and `incus_client_key`. Only the certificate goes to the node, which trusts it. The key stays in berth's store.
 
+### Reach what runs on a node
+
+The endpoints of a resource on a node's provisioner are dialled by the node's controller, not by the server ([Reach an endpoint](/docs/deploy/resources#reach-an-endpoint)). So `resources.connect` reaches a container on `incusbr0` or `docker0`, and a port published on the node's `127.0.0.1`, also when the server has no route to them. Each request to the provisioner has the node's name in `node`, and the Docker and Incus plugins then report addresses as the node sees them.
+
+| Address of the endpoint | The node's controller |
+| --- | --- |
+| `127.0.0.1` | Connects to that port of its loopback |
+| On a network of one of the node's interfaces, such as `10.77.0.57` | Connects to it |
+| Any other, a link-local or a metadata address | Refuses it |
+
+The node's firewall allows outgoing connections. The controller's connections to its bridges pass.
+
 An apply with the same features doesn't change them. A feature taken out of the profile takes its provisioners with it at the next apply. While one of them still holds machines or deployments, berth refuses to apply the node without the feature, and it refuses to remove the node. Remove those resources first, or keep the feature.
 
 ## Take in a server that exists
