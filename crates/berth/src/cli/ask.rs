@@ -426,7 +426,7 @@ mod tests {
         );
         let shown = lines(&question, &state);
         assert!(
-            shown[2].to_string().contains("› USB installer"),
+            shown[2].to_string().contains("▌ USB installer"),
             "{shown:?}"
         );
         let answer = key(&question, &mut state, press(KeyCode::Enter)).unwrap();
