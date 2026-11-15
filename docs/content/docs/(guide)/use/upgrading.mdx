@@ -92,6 +92,15 @@ berth host add big node --user root --type node \
 berth apply big
 ```
 
+The apply makes the recipe's Incus provisioners the node's. It says so for each, and names any it left alone. The provisioner of the server's local Docker engine is one of those, as berth cannot tell that it is the node's engine. Make it the node's by hand, and apply once more:
+
+```bash
+berth provisioner run docker adopt node=big
+berth apply big
+```
+
+Use the name `berth provisioner list` shows for it.
+
 From then on, `berth run big upgrade-server version=0.7.0` updates the server.
 
 ## What is converted, and when

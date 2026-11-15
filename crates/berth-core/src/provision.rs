@@ -1203,6 +1203,9 @@ fn finish(paths: &Paths, host: &Host, setup: Setup, out: &mut dyn Write) -> Resu
             }
             say(out, &format!("▸ {}: applying", host.name));
             let mut prepared = apply::prepare(paths, host, password.as_deref())?;
+            for note in &prepared.notes {
+                say(out, note);
+            }
             let (reader, writer) = std::io::pipe()?;
             let copy = writer.try_clone()?;
             crate::runner::own_group(&mut prepared.command);

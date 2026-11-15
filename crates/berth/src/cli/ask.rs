@@ -6,11 +6,12 @@
 use super::fail::{Fail, Result};
 use super::out;
 use berth_tui::flow::{Answer, Asked, Asker, Choice, Question};
+use berth_tui::theme::{self, Role};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Terminal, TerminalOptions, Viewport,
     backend::CrosstermBackend,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
 };
@@ -29,11 +30,11 @@ struct State {
 }
 
 fn accent() -> Style {
-    Style::new().fg(Color::Cyan)
+    out::look(Role::Accent)
 }
 
 fn dim() -> Style {
-    Style::new().add_modifier(Modifier::DIM)
+    out::look(Role::Muted)
 }
 
 /// The first sentence of a help text, which is what fits under a question.
@@ -94,7 +95,7 @@ fn lines(question: &Question, state: &State) -> Vec<Line<'static>> {
             let first = state.cursor.saturating_sub(ROWS - 1);
             for (index, option) in options.iter().enumerate().skip(first).take(ROWS) {
                 let here = index == state.cursor;
-                let pointer = if here { "› " } else { "  " };
+                let pointer = if here { theme::CURSOR } else { "  " };
                 let tick = match (many, state.ticked.get(index)) {
                     (true, Some(true)) => "◉ ",
                     (true, _) => "○ ",
@@ -115,7 +116,7 @@ fn lines(question: &Question, state: &State) -> Vec<Line<'static>> {
         }
     }
     if let Some(said) = &state.said {
-        lines.push(Line::styled(said.clone(), Style::new().fg(Color::Red)));
+        lines.push(Line::styled(said.clone(), out::look(Role::Bad)));
     }
     lines
 }
@@ -425,7 +426,7 @@ mod tests {
         );
         let shown = lines(&question, &state);
         assert!(
-            shown[2].to_string().contains("› USB installer"),
+            shown[2].to_string().contains("▌ USB installer"),
             "{shown:?}"
         );
         let answer = key(&question, &mut state, press(KeyCode::Enter)).unwrap();

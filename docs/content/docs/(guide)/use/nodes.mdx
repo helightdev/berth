@@ -84,6 +84,17 @@ The endpoints of a resource on a node's provisioner are dialled by the node's co
 
 The node's firewall allows outgoing connections. The controller's connections to its bridges pass.
 
+berth takes from a node's report only what is the node's own, as the node is a machine it manages:
+
+| Part of the report | Taken when |
+| --- | --- |
+| A feature | The node's profile names it |
+| A provisioner | The feature's manifest lists it in `offers` |
+| A setting | It is one of the provisioner's own arguments. A URL in it has to point at the node's address, or berth leaves the provisioner out |
+| A secret | It is one the provisioner declares |
+
+The node's provisioners are those berth registered for it or made its own. A node's report never changes or removes any other provisioner.
+
 An apply with the same features doesn't change them. A feature taken out of the profile takes its provisioners with it at the next apply. While one of them still holds machines or deployments, berth refuses to apply the node without the feature, and it refuses to remove the node. Remove those resources first, or keep the feature.
 
 ## Take in a server that exists
@@ -94,12 +105,17 @@ A server that the `incus-host` recipe of berth 0.5 set up, or that has Incus or 
 - An installed Docker engine stays, with its containers and volumes, also one from Docker's own packages.
 - A firewall rule made by hand that lets SSH in from some addresses only stays, and the node does not open SSH to every address. The address the apply comes from is let in too. Delete the rule by hand to open SSH wider.
 - Root keeps a login with keys it had, such as the one the berth server in its container uses. The node never opens root to passwords.
+- A provisioner registered by hand for the node's server becomes the node's instead of a second one, with its settings as they were. That happens only when berth itself can tell: the server it names is on the node's address, the same name or a name that berth's server finds at the same address. The recipe's `https://incus-host:8444` passes when the server reaches the node as `node`, as both resolve to the gateway of the server's container.
+- berth leaves a provisioner as it is when only the node says it's the same, and also one of another node. The node's word may be the provisioner's certificate, which is public. It may also be the provisioner's server among the aliases. The apply says so in a line and doesn't register a second one. If you know it reaches the node, make it the node's and apply again:
+
+  ```bash
+  berth provisioner run incus-vm adopt node=big
+  berth apply big
+  ```
+
+  This is also the way for the provisioner of the local Docker engine of a berth server in a container on the node.
 
 Apply the node from the berth server that holds the provisioners registered for this machine, such as the server of the recipe. Those provisioners are that server's. A berth elsewhere doesn't see them, and registers new ones beside them.
-
-berth links a provisioner registered by hand to the node only when it can tell that both reach the same server. Its settings then stay as they were. When berth cannot tell, it leaves the provisioner as it is, and the node gets one of its own. A provisioner left that way can be attached to the node by hand, with the command for that if your berth has one: `berth provisioner --help` lists it.
-
-When the apply comes from a berth server in a container on the node, its provisioner of the local Docker engine becomes the node's.
 
 Then check the node and its provisioners:
 

@@ -32,6 +32,8 @@ pub const SETTINGS: &str = "settings";
 pub const SECRETS: &str = "secrets";
 /// berth's own action that forgets a registered provisioner.
 pub const REMOVE: &str = "remove";
+/// berth's own action that makes a provisioner registered by hand a node's.
+pub const ADOPT: &str = "adopt";
 /// The start of berth's own action that makes a resource of a kind, such as
 /// `new-deployment`.
 pub const NEW: &str = "new-";
@@ -546,6 +548,9 @@ pub fn actions(paths: &Paths, store: &Store, name: &str) -> Result<Vec<Action>> 
         if !provisioner.secrets.is_empty() {
             actions.push(secrets_action(name, &provisioner));
         }
+        if entry(paths, name)?.is_some_and(|kept| kept.node.is_empty()) {
+            actions.push(adopt_action(name));
+        }
         actions.push(remove_action(paths, name));
     }
     Ok(actions)
@@ -656,6 +661,29 @@ fn secrets_action(name: &str, provisioner: &Provisioner) -> Action {
     }
 }
 
+/// berth's own action that makes a provisioner registered by hand the one a
+/// node offers, for a server the node's report alone cannot vouch for.
+fn adopt_action(name: &str) -> Action {
+    Action {
+        name: ADOPT.into(),
+        label: "Make it a node's".into(),
+        help: format!(
+            "Make {name} the provisioner a node offers, when you know it reaches that node's server, such as one registered for a server that is now applied as a node. The next apply of the node brings its settings and the certificate it pins up to date."
+        ),
+        group: "Set-Up".into(),
+        arguments: vec![Argument {
+            name: "node".into(),
+            label: "Node".into(),
+            required: true,
+            help: "The node, by its name among berth's hosts".into(),
+            ..Argument::default()
+        }],
+        confirm: Some(format!("Make {name} the node's?")),
+        role: Role::Admin,
+        ..Action::default()
+    }
+}
+
 /// berth's own action that forgets a registered provisioner, which it does
 /// only when it holds nothing.
 fn remove_action(paths: &Paths, name: &str) -> Action {
@@ -714,6 +742,7 @@ enum Doing {
     Settings(BTreeMap<String, String>),
     Secrets(BTreeMap<String, String>, Store),
     Remove(Store),
+    Adopt(String),
     Create(Box<crate::resource::Creating>, Store),
     Program {
         dir: PathBuf,
@@ -821,6 +850,15 @@ pub fn prepare(
             hidden: vec![],
             action: found,
             work: Doing::Remove(store.clone()),
+        });
+    }
+    if action == ADOPT {
+        let values = values_of(name, &found.arguments, given, &BTreeMap::new())?;
+        return Ok(Acting {
+            name: name.to_owned(),
+            hidden: vec![],
+            action: found,
+            work: Doing::Adopt(values.get("node").cloned().unwrap_or_default()),
         });
     }
     if let Some(kind) = action
@@ -992,6 +1030,11 @@ impl Acting {
                     exit_code: None,
                 })
             }
+            Doing::Adopt(node) => Ok(Answered {
+                message: crate::node::adopt(paths, &self.name, &node)?,
+                details: vec![],
+                exit_code: None,
+            }),
             Doing::Create(creating, store) => {
                 let id = creating.kept().record.id.clone();
                 let title = creating.kept().title();

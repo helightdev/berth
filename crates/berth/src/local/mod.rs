@@ -26,6 +26,13 @@ pub fn server(ask: bool) -> Result<Option<crate::Local>> {
     Ok(Some((server, Box::new(move || serve::here::finish(here)))))
 }
 
+/// Give the server in this process a host's sudo password for this run, as
+/// `berth serve` takes one on its terminal at the start. Whether there is
+/// such a server.
+pub fn give_sudo_password(name: &str, password: &str) -> bool {
+    serve::here::give_sudo_password(name, password)
+}
+
 /// ssh runs berth as its askpass helper, the program of SSH_ASKPASS, with
 /// the prompt as its one argument and the variable that says where the
 /// password is; the answer is all that may go to standard output. Whether
@@ -123,8 +130,8 @@ pub fn merge_inventory(hosts: &[(String, Value)]) -> Value {
 
 /// `berth host inventory [NAME…]`: the hosts as an Ansible inventory, with
 /// the installation's key as a file of this machine.
-pub fn inventory(names: &[String]) -> Done<()> {
-    let paths = here_only(&Global::default(), "berth host inventory")?;
+pub fn inventory(global: &Global, names: &[String]) -> Done<()> {
+    let paths = here_only(global, "berth host inventory")?;
     let hosts = match names {
         [] => Host::all(&paths)
             .into_iter()

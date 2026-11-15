@@ -16,6 +16,9 @@ use std::{io::Write, process::Command};
 pub struct Prepared {
     pub command: Command,
     pub files: Vec<tempfile::NamedTempFile>,
+    /// Lines for the output before the command's own, such as what of the
+    /// profile was left out.
+    pub notes: Vec<String>,
 }
 
 /// Where each plugin is on this machine, by id.
@@ -44,6 +47,17 @@ pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: &[String]) -> Valu
     if let Some(vars) = vars.as_object_mut() {
         for berths in crate::tailnet::ROLE_VARS {
             vars.remove(*berths);
+        }
+        // Ansible's own variables would say how and where commands run, which
+        // berth says from `access`; a profile saved before this was checked
+        // may still hold them.
+        vars.retain(|name, _| berth_api::profile::role_variable(name));
+        if let Some(Value::Array(features)) = vars.get_mut("devbox_plugin_features") {
+            features.retain(|feature| {
+                feature
+                    .as_str()
+                    .is_some_and(berth_api::profile::feature_name)
+            });
         }
     }
     for (source, dest) in [
@@ -152,6 +166,16 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
     vars["devbox_client_certificates"] =
         crate::node::client_certificates(&plugins, &store, &host.config)?;
     let mut prepared = run(paths, host, layout::PLAYBOOK, vars, become_password)?;
+    let left = berth_api::profile::left_out(&host.config);
+    if !left.is_empty() {
+        prepared.notes.push(format!(
+            "! {}'s ansible_vars hold {}, which the role does not take: it is applied without {}. Remove {} from the profile",
+            host.name,
+            left.join(", "),
+            if left.len() == 1 { "it" } else { "them" },
+            if left.len() == 1 { "it" } else { "them" },
+        ));
+    }
     prepared.command.env("BERTH_PLUGINS", dirs.to_string());
     prepared.command.env("BERTH_SSH_PUBLIC_KEY", own.join("\n"));
     Ok(prepared)
@@ -212,10 +236,10 @@ fn run(
     }
     // Secrets go to private files rather than argv.
     let mut extra = tempfile::NamedTempFile::new()?;
-    serde_json::to_writer(&mut extra, &vars)?;
+    extra.write_all(untemplated(&vars).as_bytes())?;
     extra.flush()?;
     let mut inventory = tempfile::NamedTempFile::new()?;
-    serde_json::to_writer(&mut inventory, &login.inventory()?)?;
+    inventory.write_all(untemplated(&login.inventory()?).as_bytes())?;
     inventory.flush()?;
     let mut command = playbook(&source);
     command
@@ -240,7 +264,77 @@ fn run(
     Ok(Prepared {
         command,
         files: vec![extra, inventory],
+        notes: vec![],
     })
+}
+
+/// `value` as YAML that Ansible reads with every text marked `!unsafe`, so
+/// that none of it is a template: Ansible renders `{{ … }}` in variables
+/// and inventories, and a lookup in one would run on this machine.
+pub fn untemplated(value: &Value) -> String {
+    let mut out = String::new();
+    write_untemplated(value, &mut out);
+    out
+}
+
+fn write_untemplated(value: &Value, out: &mut String) {
+    match value {
+        // Ansible reads an empty text marked unsafe as null, and an empty one is no template.
+        Value::String(text) if text.is_empty() => out.push_str("\"\""),
+        Value::String(text) => {
+            out.push_str("!unsafe ");
+            quoted(text, out);
+        }
+        // YAML 1.1 reads a number such as 1e5 as text unless it is told otherwise.
+        Value::Number(number) if number.is_f64() => {
+            out.push_str("!!float ");
+            out.push_str(&number.to_string());
+        }
+        Value::Number(_) | Value::Bool(_) | Value::Null => out.push_str(&value.to_string()),
+        Value::Array(items) => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                write_untemplated(item, out);
+            }
+            out.push(']');
+        }
+        Value::Object(fields) => {
+            out.push('{');
+            for (index, (key, item)) in fields.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                quoted(key, out);
+                out.push_str(": ");
+                write_untemplated(item, out);
+            }
+            out.push('}');
+        }
+    }
+}
+
+/// A text in YAML's double quotes, with everything but printable ASCII
+/// escaped, as YAML refuses some characters even in quotes.
+fn quoted(text: &str, out: &mut String) {
+    use std::fmt::Write as _;
+    out.push('"');
+    for ch in text.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            ' '..='~' => out.push(ch),
+            ch if (ch as u32) <= 0xffff => {
+                let _ = write!(out, "\\u{:04x}", ch as u32);
+            }
+            ch => {
+                let _ = write!(out, "\\U{:08x}", ch as u32);
+            }
+        }
+    }
+    out.push('"');
 }
 
 /// After a successful apply of a workstation that berth reaches as its
@@ -512,11 +606,9 @@ mod tests {
             .and_then(|(_, value)| value);
         let wanted = paths.source().unwrap().join(layout::ANSIBLE_CONFIG);
         assert_eq!(config, Some(wanted.as_os_str()));
-        let extra: Value =
-            serde_json::from_slice(&std::fs::read(prepared.files[0].path()).unwrap()).unwrap();
+        let extra = read_back(prepared.files[0].path());
         assert_eq!(extra["ansible_become_password"], "hunter2");
-        let inventory: Value =
-            serde_json::from_slice(&std::fs::read(prepared.files[1].path()).unwrap()).unwrap();
+        let inventory = read_back(prepared.files[1].path());
         assert_eq!(
             inventory["all"]["hosts"]["devbox_target"]["ansible_user"],
             "ops"
@@ -591,5 +683,58 @@ mod tests {
             secrets.secret("sudo/studio").unwrap().as_deref(),
             Some("hunter2")
         );
+    }
+
+    #[test]
+    fn a_profile_says_nothing_of_how_ansible_runs() {
+        let config = json!({"builder": {}, "ansible_vars": {
+            "devbox_geometry": "1x1",
+            "ansible_connection": "local",
+            "ansible_ssh_common_args": "-o ProxyCommand=\"sh -c id\"",
+            "ansible_python_interpreter": "/tmp/x",
+            "devbox_plugin_features": ["claude/cli", "../../tmp/x", 7]}});
+        let vars = ansible_vars(&config, &json!({}), &[]);
+        assert_eq!(vars["devbox_geometry"], "1x1");
+        for gone in [
+            "ansible_connection",
+            "ansible_ssh_common_args",
+            "ansible_python_interpreter",
+        ] {
+            assert!(vars.get(gone).is_none(), "{gone}");
+        }
+        assert_eq!(vars["devbox_plugin_features"], json!(["claude/cli"]));
+        assert_eq!(
+            berth_api::profile::left_out(&config),
+            [
+                "ansible_connection",
+                "ansible_python_interpreter",
+                "ansible_ssh_common_args",
+                "the feature \"../../tmp/x\"",
+                "the feature 7"
+            ]
+        );
+    }
+
+    /// A file [`untemplated`] wrote, without its tags, of texts without any.
+    fn read_back(path: &std::path::Path) -> Value {
+        let text = std::fs::read_to_string(path).unwrap();
+        serde_json::from_str(&text.replace("!unsafe ", "").replace("!!float ", "")).unwrap()
+    }
+
+    #[test]
+    fn what_goes_to_ansible_is_never_a_template() {
+        let value = json!({"devbox_x": "{{ lookup('pipe', 'id') }}", "n": 3, "f": 1e20, "b": true,
+            "z": null, "e": "", "l": ["a\"b\\c", "é\u{7f}\u{1F600}"], "d": {"{{ k }}": "v"}});
+        assert_eq!(
+            untemplated(&value),
+            r#"{"b": true, "d": {"{{ k }}": !unsafe "v"}, "devbox_x": !unsafe "{{ lookup('pipe', 'id') }}", "e": "", "f": !!float 1e+20, "l": [!unsafe "a\"b\\c", !unsafe "\u00e9\u007f\U0001f600"], "n": 3, "z": null}"#
+        );
+        if let Ok(dir) = std::env::var("BERTH_UNTEMPLATED_TO") {
+            std::fs::write(format!("{dir}/vars.yml"), untemplated(&value)).unwrap();
+            let inventory = json!({"all": {"hosts": {"devbox_target": {
+                "ansible_host": "{{ lookup('pipe', 'echo RAN') }}", "ansible_connection": "local",
+                "ansible_ssh_common_args": "-o ControlMaster=auto"}}}});
+            std::fs::write(format!("{dir}/inventory"), untemplated(&inventory)).unwrap();
+        }
     }
 }

@@ -81,7 +81,7 @@ Over HTTP an error is a status code with a JSON body; on the portal the same obj
 { "error": { "code": "not_found", "message": "No session k3v9qz2m8w1x", "status": 404 } }
 ```
 
-Over HTTP the header `berth-error` repeats the code. A WebSocket client that is refused during the handshake often sees only the head of the answer, so it reads the code there.
+Over HTTP the header `berth-error` repeats the code, and `berth-error-message` the start of the message, percent-encoded. A WebSocket client that is refused during the handshake often sees only the head of the answer, so it reads both there.
 
 | Status | Code | Means |
 | --- | --- | --- |

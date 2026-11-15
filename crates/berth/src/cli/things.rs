@@ -374,13 +374,14 @@ fn logs(client: &Client, host: &str, id: &str, follow: bool, tail: Option<u64>) 
 
 // ── actions ─────────────────────────────────────────────────────────────────
 
-pub fn action_table(actions: &[berth_api::Action]) -> Table {
-    // Why one cannot run can be long, so it comes last and widens nothing else.
+/// A subject's actions as a table, and under it why each that cannot run
+/// now cannot, which is too long for a column.
+pub fn print_actions(actions: &[berth_api::Action]) {
     let mut table = Table::new(&["action", "group", "label", "available"]);
     for action in actions {
         let available = match action.available {
             true => styled("yes", Style::Good),
-            false => styled(&format!("no: {}", action.why), Style::Dim),
+            false => styled("no", Style::Warn),
         };
         table.row(vec![
             action.name.clone(),
@@ -389,7 +390,21 @@ pub fn action_table(actions: &[berth_api::Action]) -> Table {
             available,
         ]);
     }
-    table
+    table.print("Nothing to do");
+    let refused: Vec<&berth_api::Action> = actions
+        .iter()
+        .filter(|action| !action.available && !action.why.is_empty())
+        .collect();
+    if !refused.is_empty() {
+        println!();
+    }
+    for action in refused {
+        println!(
+            "{} {}",
+            styled(&format!("{}:", action.name), Style::Bold),
+            styled(&action.why, Style::Dim)
+        );
+    }
 }
 
 pub fn actions(client: &Client, host: Option<&str>) -> Result<()> {
@@ -399,7 +414,7 @@ pub fn actions(client: &Client, host: Option<&str>) -> Result<()> {
     };
     let actions = client.actions(&subject)?;
     out::data(&serde_json::to_value(&actions)?, || {
-        action_table(&actions).print("Nothing to do");
+        print_actions(&actions);
         if let Some(host) = host {
             out::hint(format!(
                 "Run one with: berth run {host} ACTION [NAME=VALUE…]"
@@ -516,8 +531,8 @@ fn run_on(
 }
 
 pub fn run_action(client: &Client, run: &args::RunAction) -> Result<()> {
-    let sudo = match run.sudo.sudo_password_stdin {
-        true => host::sudo_password(client, &run.host, &run.sudo)?,
+    let sudo = match out::get().sudo_stdin {
+        true => host::sudo_password(client, &run.host)?,
         false => None,
     };
     run_on(
@@ -629,7 +644,7 @@ pub fn provisioner(client: &Client, command: Provisioner) -> Result<()> {
         Provisioner::Actions { name } => {
             let actions = client.actions(&Subject::Provisioner(name.clone()))?;
             out::data(&serde_json::to_value(&actions)?, || {
-                action_table(&actions).print("Nothing to do");
+                print_actions(&actions);
                 out::hint(format!(
                     "Run one with: berth provisioner run {name} ACTION [NAME=VALUE…]"
                 ));
@@ -934,7 +949,7 @@ pub fn resource(client: &Client, command: Resource) -> Result<()> {
             let id = resource_id(client, &id)?;
             let actions = client.actions(&Subject::Resource(id.clone()))?;
             out::data(&serde_json::to_value(&actions)?, || {
-                action_table(&actions).print("Nothing to do");
+                print_actions(&actions);
                 out::hint(format!(
                     "Run one with: berth resource run {id} ACTION [NAME=VALUE…]"
                 ));

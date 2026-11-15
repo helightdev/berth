@@ -1132,6 +1132,9 @@ pub struct Acting {
     work: Doing,
     lock: Option<Lock>,
     hidden: Vec<String>,
+    /// What its job's record shows: the command of `exec`, or the
+    /// arguments that are no secret.
+    shown: Vec<String>,
 }
 
 enum Doing {
@@ -1232,6 +1235,7 @@ pub fn prepare_action(
             work: Doing::Forget,
             lock,
             hidden: vec![],
+            shown: vec![],
         });
     }
     let called = Box::new(Called::load(paths, store, kept.clone())?);
@@ -1358,18 +1362,29 @@ pub fn prepare_action(
             }
         }
     };
+    let shown = match &work {
+        Doing::Exec { command, .. } => command.clone(),
+        _ => Argument::shown(&found.arguments, &given.arguments),
+    };
     Ok(Acting {
         kept,
         action: found,
         work,
         lock,
         hidden,
+        shown,
     })
 }
 
 impl Acting {
     pub fn action(&self) -> &Action {
         &self.action
+    }
+
+    /// What its job's record shows: the command of `exec`, or the
+    /// arguments that are no secret.
+    pub fn shown(&self) -> Vec<String> {
+        self.shown.clone()
     }
 
     pub fn kept(&self) -> &Kept {

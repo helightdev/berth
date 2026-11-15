@@ -41,7 +41,7 @@ pub fn command(global: &Global, command: Host) -> Result<()> {
         Host::Start(power) => self::power(&open()?, &power, "start"),
         Host::Stop(power) => self::power(&open()?, &power, "stop"),
         #[cfg(target_os = "linux")]
-        Host::Inventory { names } => crate::local::inventory(&names),
+        Host::Inventory { names } => crate::local::inventory(global, &names),
     }
 }
 
@@ -90,11 +90,7 @@ pub fn show(client: &Client, name: &str) -> Result<()> {
     // The profile needs the role admin, and the actions a host that answers: each is left out without.
     let given = profile_of(client, name).ok();
     let actions = client.actions(&Subject::Host(name.to_owned())).ok();
-    let mut shown = host.clone();
-    if let Some(machine) = &machine {
-        shown["resource"] = machine.clone();
-    }
-    out::data(&shown, || {
+    out::data(&host, || {
         let text = |key: &str| host[key].as_str().unwrap_or("").to_owned();
         let behind = match &host["behind"] {
             Value::Null => String::new(),
@@ -154,7 +150,7 @@ pub fn show(client: &Client, name: &str) -> Result<()> {
         out::fields(&pairs);
         if let Some(actions) = &actions {
             println!();
-            super::things::action_table(actions).print("Nothing to do");
+            super::things::print_actions(actions);
         }
         out::hint(format!(
             "Run an action with berth run {name} ACTION. Its profile: berth host export {name}"
@@ -393,11 +389,27 @@ fn import(client: &Client, name: &str, file: &str) -> Result<()> {
     Ok(())
 }
 
+/// The sudo password `--sudo-password-stdin` gave, read once for the run.
+pub fn sudo_from_stdin() -> Result<String> {
+    static READ: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(read) = READ.get() {
+        return Ok(read.clone());
+    }
+    let read = ask::secret_from("Sudo password", None, true, "--sudo-password-stdin")?;
+    Ok(READ.get_or_init(|| read).clone())
+}
+
 /// The sudo password an action of a host needs, when its SSH user's sudo
-/// asks for one and the server keeps none: from standard input, or asked.
-pub fn sudo_password(client: &Client, name: &str, sudo: &args::Sudo) -> Result<Option<String>> {
-    if sudo.sudo_password_stdin {
-        return ask::secret_from("Sudo password", None, true, "--sudo-password-stdin").map(Some);
+/// asks for one and the server keeps none: from standard input, or asked
+/// on the terminal once in a run.
+pub fn sudo_password(client: &Client, name: &str) -> Result<Option<String>> {
+    static ASKED: std::sync::Mutex<BTreeMap<String, String>> =
+        std::sync::Mutex::new(BTreeMap::new());
+    if out::get().sudo_stdin {
+        return sudo_from_stdin().map(Some);
+    }
+    if let Some(asked) = ASKED.lock().unwrap().get(name) {
+        return Ok(Some(asked.clone()));
     }
     let profile = profile_of(client, name)?;
     if !profile::asks_become_pass(&profile) || profile["access"]["link"].is_array() {
@@ -412,11 +424,14 @@ pub fn sudo_password(client: &Client, name: &str, sudo: &args::Sudo) -> Result<O
         return Ok(None);
     }
     match out::get().ask {
-        true => ask::secret(
-            &format!("Sudo password of the SSH user of {name}"),
-            "--sudo-password-stdin",
-        )
-        .map(Some),
+        true => {
+            let asked = ask::secret(
+                &format!("Sudo password of the SSH user of {name}"),
+                "--sudo-password-stdin",
+            )?;
+            ASKED.lock().unwrap().insert(name.to_owned(), asked.clone());
+            Ok(Some(asked))
+        }
         // Without one sudo says so itself, when it does want it.
         false => Ok(None),
     }
@@ -435,7 +450,7 @@ pub fn apply(client: &Client, apply: &args::HostApply) -> Result<()> {
         _ => "apply",
     };
     let act = Act {
-        sudo_password: sudo_password(client, name, &apply.sudo)?,
+        sudo_password: sudo_password(client, name)?,
         rows: Some(24),
         cols: Some(100),
         ..Act::default()
@@ -614,13 +629,8 @@ fn adopt(client: &Client, adopt: &args::HostAdopt) -> Result<()> {
     if adopt.force {
         arguments.insert("force".into(), "yes".into());
     }
-    let sudo_password = match adopt.sudo.sudo_password_stdin {
-        true => Some(ask::secret_from(
-            "Sudo password",
-            None,
-            true,
-            "--sudo-password-stdin",
-        )?),
+    let sudo_password = match out::get().sudo_stdin {
+        true => Some(sudo_from_stdin()?),
         false => None,
     };
     let act = Act {
@@ -633,7 +643,7 @@ fn adopt(client: &Client, adopt: &args::HostAdopt) -> Result<()> {
         client,
         acted,
         &format!("Adopting {}", adopt.name),
-        false,
+        adopt.detach.detach,
         false,
     )?;
     Ok(())

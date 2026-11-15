@@ -1042,6 +1042,13 @@
             "description": "The action it runs, such as `apply`, `rollout` or `provision`.",
             "type": "string"
           },
+          "arguments": {
+            "description": "What it was started with, as people may see it: the command of a\nresource's `exec`, or an action's arguments as `NAME=VALUE`. Never a\nsecret argument, a password or standard input.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "ended": {
             "type": [
               "string",
@@ -1496,7 +1503,7 @@
               },
               "type": "array"
             },
-            "description": "Other values of a setting that reach the same server, such as the\nname a berth server on the host gives it: a provisioner registered by\nhand with one of them is the host's.",
+            "description": "Other values of a setting that reach the same server, such as the\nname a berth server on the host gives it: a provisioner registered by\nhand with one of them is named to its owner, who can make it the\nhost's.",
             "propertyNames": {
               "type": "string"
             },

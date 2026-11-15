@@ -258,6 +258,13 @@ pub struct Serve {
     /// Whether the hosts' channels are taken in, which only `berth serve`
     /// does, holding its lock.
     pub follows: bool,
+    /// Whether it serves the process it runs in alone, for a command or the
+    /// screens, rather than as `berth serve`.
+    pub here: bool,
+    /// The known-hosts file of the user the server runs as, which a first
+    /// login from a caller on this machine takes a host's key from. Tests
+    /// leave it out or name one of their own.
+    pub known_hosts: Mutex<Option<PathBuf>>,
     watch: Arc<Watch>,
 }
 
@@ -297,6 +304,12 @@ impl Serve {
             passwords: Mutex::new(BTreeMap::new()),
             provision: Default::default,
             follows: true,
+            here: false,
+            known_hosts: Mutex::new(match cfg!(test) {
+                true => None,
+                false => std::env::var_os("HOME")
+                    .map(|home| PathBuf::from(home).join(".ssh/known_hosts")),
+            }),
             watch,
         })
     }
@@ -407,11 +420,15 @@ impl Serve {
                     .cloned()
                     .or_else(|| host.kept_sudo_password(&self.paths))
                     .map(Some)
-                    .ok_or_else(|| {
-                        format!(
+                    .ok_or_else(|| match self.here {
+                        true => format!(
+                            "{name}'s SSH user's sudo asks for a password, and berth was given none. Give it with --sudo-password-stdin, or keep it with berth secret set sudo/{name}; on a terminal berth asks for it",
+                            name = host.name
+                        ),
+                        false => format!(
                             "{name}'s SSH user's sudo asks for a password, which this server was not given. Keep it with berth secret set sudo/{name}, or run berth serve on a terminal, which asks for it",
                             name = host.name
-                        )
+                        ),
                     }),
             };
             if let Ok(Some(password)) = &password {

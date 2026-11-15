@@ -254,16 +254,17 @@ where
             let body = response.body().clone().unwrap_or_default();
             let status = response.status().as_u16();
             // The body may still be on its way when the head is read, and
-            // then only the header says which error it was.
-            let named = response
-                .headers()
-                .get(crate::ERROR_HEADER)
-                .and_then(|code| code.to_str().ok());
+            // then only the headers say which error it was.
+            let header = |name: &str| response.headers().get(name)?.to_str().ok();
+            let named = header(crate::ERROR_HEADER);
+            let said = header(crate::ERROR_MESSAGE_HEADER)
+                .map(decode)
+                .filter(|said| !said.is_empty());
             match (serde_json::from_slice::<crate::ErrorBody>(&body), named) {
                 (Err(_), Some(code)) => Err(Error::Api {
                     status,
                     code: code.to_owned(),
-                    message: format!("HTTP {status}: {code}"),
+                    message: said.unwrap_or_else(|| format!("HTTP {status}: {code}")),
                 }),
                 _ => Err(Response {
                     status,
@@ -289,3 +290,31 @@ pub async fn websocket_unix(
 }
 
 pub use crate::escape::{decode, encode, encode_path};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn a_refused_stream_says_why_from_the_head_alone() {
+        let (ours, mut theirs) = tokio::io::duplex(4096);
+        let server = tokio::spawn(async move {
+            let mut asked = [0; 1024];
+            let _ = theirs.read(&mut asked).await;
+            let said = crate::error_message_header("Nothing answers at db: né");
+            // The head alone: the body it promises never comes.
+            let head = format!(
+                "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 80\r\n{}: unreachable\r\n{}: {said}\r\n\r\n",
+                crate::ERROR_HEADER,
+                crate::ERROR_MESSAGE_HEADER,
+            );
+            theirs.write_all(head.as_bytes()).await.unwrap();
+            theirs
+        });
+        let refused = websocket(ours, "/v1/sessions/1", "").await.err().unwrap();
+        assert_eq!(refused.status(), 503);
+        assert_eq!(refused.to_string(), "Nothing answers at db: né");
+        drop(server.await);
+    }
+}

@@ -96,7 +96,9 @@ then registers the provisioners. Check with `berth run big status` and
 The features never erase a disk. They make an Incus storage pool in a folder,
 or use one the user names in `devbox_incus_pool`. A server with Incus or Docker
 already keeps its pools, networks, trusted clients, containers and guests, and
-a provisioner registered for it by hand becomes the node's.
+a provisioner registered for it by hand becomes the node's when it names the
+node's address. The apply names any it left alone, with the command that makes
+it the node's: `berth provisioner run NAME adopt node=big`.
 
 Virtual machines need KVM. On a rented virtual server without it, set
 `devbox_incus_virtual_machines` to `false` in `ansible_vars`. For Sysbox beside

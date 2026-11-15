@@ -167,14 +167,16 @@ On a [node](/docs/use/nodes) there is no agent: `devbox_user` and `devbox_home` 
 
 ### Offering provisioners
 
-A feature that lists `offers` sets `devbox_offer` with `set_fact` at the end of its tasks. The role keeps it in the host's `/etc/berth/applied.json`, and berth registers a provisioner of each type after the apply, with the node it is on. The record is readable on the node, so it holds public values only.
+A feature that lists `offers` sets `devbox_offer` with `set_fact` at the end of its tasks. The role keeps it in the host's `/etc/berth/applied.json`, and berth registers a provisioner of each type after the apply, with the node it is on. The record is readable on the node, so it holds public values only. berth takes the provisioners the feature lists in `offers`, with their own arguments and secrets. It ignores any other provisioner, setting or secret in the record.
+
+A provisioner registered by hand becomes the node's when berth finds the server it names on the node's address and port. The node's word alone, its aliases or the certificate it reports, never changes another provisioner. The apply then names it, and `berth provisioner run NAME adopt node=NODE` makes it the node's.
 
 | Field | Meaning |
 | --- | --- |
 | `provisioners` | The ids it offers now, out of `offers`. All of them when it is left out |
-| `settings` | Values of the provisioners' own arguments. `{address}`, `{user}` and `{port}` become where berth reaches the node and as whom |
+| `settings` | Values of the provisioners' own arguments. `{address}`, `{user}` and `{port}` become where berth reaches the node and as whom. A URL has to name the node's address |
 | `secrets` | Values of the provisioners' secrets, such as a server's certificate, kept as each provisioner's own |
-| `aliases` | Other values of a setting that reach the same server. A provisioner registered by hand with one becomes the node's |
+| `aliases` | Other values of a setting that reach the same server. A provisioner registered by hand with one is named in the apply's output, and its owner can make it the node's |
 | `fingerprint` | What identifies the server, for the apply's output |
 
 ```yaml

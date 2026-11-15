@@ -20,6 +20,9 @@ pub struct Client {
     pub url: String,
     portal: Portal,
     finish: Option<Finish>,
+    /// The hosts whose sudo password the server in this process was given
+    /// or found it needs none, in this run.
+    sudo_ready: std::cell::RefCell<std::collections::BTreeSet<String>>,
 }
 
 /// The settings of this user that `berth login` keeps.
@@ -129,6 +132,7 @@ impl Client {
             portal: connect(&url, &token)?,
             url,
             finish,
+            sudo_ready: Default::default(),
         };
         // One in this process is this berth; any other may be older.
         if !in_process {
@@ -149,6 +153,7 @@ impl Client {
             portal: connect(&url, &token)?,
             url,
             finish: None,
+            sudo_ready: Default::default(),
         })
     }
 
@@ -175,14 +180,32 @@ impl Client {
             .map_err(Fail::from)
     }
 
+    /// Before the server in this process reaches `host`, give it the host's
+    /// sudo password when its sudo asks for one and no secret `sudo/HOST`
+    /// keeps it: from `--sudo-password-stdin`, or asked once on the terminal.
+    /// A server elsewhere has its own.
+    fn sudo_for(&self, host: &str) -> Result<()> {
+        if !self.in_process() || !self.sudo_ready.borrow_mut().insert(host.to_owned()) {
+            return Ok(());
+        }
+        if let Some(password) = super::host::sudo_password(self, host)? {
+            crate::local::give_sudo_password(host, &password);
+        }
+        Ok(())
+    }
+
     /// One operation of a host's controller, through the server.
     pub fn on(&self, host: &str, op: &str, args: Value, data: Option<Value>) -> Result<Value> {
+        self.sudo_for(host)?;
         self.wait(self.portal.call(op, Some(host), args, data))
             .map_err(Fail::from)
     }
 
     /// Open a stream of the server, or of a host's controller.
     pub fn stream(&self, op: &str, host: Option<&str>, args: Value) -> Result<PortalStream> {
+        if let Some(host) = host {
+            self.sudo_for(host)?;
+        }
         self.wait(self.portal.open(op, host, args))
             .map_err(Fail::from)
     }
@@ -199,6 +222,9 @@ impl Client {
         action: &str,
         act: &berth_api::Act,
     ) -> Result<berth_api::Acted> {
+        if let Subject::Host(name) = subject {
+            self.sudo_for(name)?;
+        }
         let (op, args) = match subject {
             Subject::Host(name) => ("hosts.act", json!({"name": name, "action": action})),
             Subject::Provisioner(name) => {
@@ -213,6 +239,9 @@ impl Client {
 
     /// The actions of a subject.
     pub fn actions(&self, subject: &Subject) -> Result<Vec<berth_api::Action>> {
+        if let Subject::Host(name) = subject {
+            self.sudo_for(name)?;
+        }
         let (op, args) = match subject {
             Subject::Host(name) => ("hosts.actions", json!({"name": name})),
             Subject::Provisioner(name) => ("provisioners.actions", json!({"name": name})),

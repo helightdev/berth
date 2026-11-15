@@ -166,7 +166,7 @@ class Provisioners(unittest.TestCase):
             self.assertEqual(page['values'], {'shelf': ['top', 'bottom']})
             actions = serve.call('GET', '/v1/provisioners/box/actions')
             self.assertEqual([action['name'] for action in actions],
-                             ['new-deployment', 'settings', 'look', 'sweep', 'remove'])
+                             ['new-deployment', 'settings', 'look', 'sweep', 'adopt', 'remove'])
             looked = serve.call('POST', '/v1/provisioners/box/actions/look')
             self.assertEqual(looked['result']['message'], 'Looked around attic')
             acted = serve.call('POST', '/v1/provisioners/box/actions/sweep',

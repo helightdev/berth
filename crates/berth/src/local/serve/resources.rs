@@ -262,6 +262,7 @@ async fn run_action(
     request.token = token;
     request.held = acting.take_lock();
     request.secrets = acting.secrets();
+    request.arguments = acting.shown();
     // A command leaves berth's record as it is, so it holds no lock of the resource.
     let exec = action == resource::EXEC;
     request.changes = !exec;

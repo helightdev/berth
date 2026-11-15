@@ -55,18 +55,20 @@ docker run -d --name berth -p 127.0.0.1:7777:7777 \
   ghcr.io/helightdev/berth
 ```
 
-Any other command goes after the image name, and the terminal UI needs the default command cleared:
+Any other command goes after the image name, such as `ls`, or `ui` for the screens:
 
 ```bash
 docker run --rm -it -v berth-config:/config -v berth-data:/data ghcr.io/helightdev/berth ls
-docker run --rm -it --entrypoint berth -v berth-config:/config -v berth-data:/data \
-  -v ~/.ssh:/home/berth/.ssh:ro ghcr.io/helightdev/berth
+docker run --rm -it -v berth-config:/config -v berth-data:/data \
+  -v ~/.ssh:/home/berth/.ssh:ro ghcr.io/helightdev/berth ui
 ```
 
-See [berth serve](/docs/extend/serve#in-a-container) for the volumes and the token. A berth installed on your machine can use the container's hosts with its token:
+See [berth serve](/docs/extend/serve#in-a-container) for the volumes and the token. A berth installed on your machine uses the container's hosts once it has logged in with a setup key made there:
 
 ```bash
-berth --server http://127.0.0.1:7777 --token "$(docker exec berth cat /data/berth/serve.token)" list
+docker exec berth berth server setup-key
+berth login http://127.0.0.1:7777
+berth ls
 ```
 
 See [A berth server](/docs/use/server).

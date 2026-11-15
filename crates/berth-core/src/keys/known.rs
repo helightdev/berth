@@ -175,6 +175,33 @@ pub fn seed_from(
     Ok(false)
 }
 
+/// Record the host keys that `known_hosts`, the known-hosts file of the user
+/// berth runs as, has for a host berth has none of yet, under its address
+/// or `[ADDRESS]:PORT`, so that a first login asks no question that user
+/// has answered already. Returns the keys taken.
+pub fn take_from_user(
+    paths: &Paths,
+    store: &Store,
+    place: &Place,
+    config: &serde_json::Value,
+    known_hosts: &std::path::Path,
+) -> Result<Vec<String>> {
+    let access = berth_api::profile::Access::of(config);
+    if access.address.is_empty() {
+        return Ok(vec![]);
+    }
+    let names = match access.port.as_str() {
+        "" | "22" => vec![access.address.clone()],
+        port => vec![format!("[{}]:{port}", access.address)],
+    };
+    if !seed_from(store, place, known_hosts, &names)? {
+        return Ok(vec![]);
+    }
+    let record = Record::load(store, place)?;
+    write(paths, place, &record)?;
+    Ok(record.host_keys)
+}
+
 /// The host keys, `TYPE BASE64` each, that the text of a known-hosts file
 /// such as `~/.ssh/known_hosts` has for `name`, an address or
 /// `[ADDRESS]:PORT`, as `ssh-keygen -F` finds them: in plain and hashed
@@ -248,6 +275,42 @@ pub fn changed_key(name: &str, said: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_first_login_takes_the_key_the_users_known_hosts_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: dir.path().join("config"),
+            data_dir: dir.path().join("data"),
+        };
+        let store = Store::open(&dir.path().join("berth.db")).unwrap();
+        let place = Place::own("studio").unwrap();
+        let known_hosts = dir.path().join("known_hosts");
+        std::fs::write(
+            &known_hosts,
+            "192.0.2.10 ssh-ed25519 AAAAstudio\n[192.0.2.11]:2222 ssh-ed25519 AAAAdock\n",
+        )
+        .unwrap();
+        let config = serde_json::json!({"access": {"address": "192.0.2.10"}});
+        let taken = take_from_user(&paths, &store, &place, &config, &known_hosts).unwrap();
+        assert_eq!(taken, ["ssh-ed25519 AAAAstudio"]);
+        assert_eq!(Record::load(&store, &place).unwrap().host_keys, taken);
+        let written = std::fs::read_to_string(file(&paths, &place)).unwrap();
+        assert!(written.contains("ssh-ed25519 AAAAstudio"), "{written}");
+        // Once berth has a key, the file is not asked again.
+        std::fs::write(&known_hosts, "192.0.2.10 ssh-ed25519 AAAAother\n").unwrap();
+        assert!(
+            take_from_user(&paths, &store, &place, &config, &known_hosts)
+                .unwrap()
+                .is_empty()
+        );
+        // A port of its own is looked up as ssh writes it.
+        let dock = Place::own("dock").unwrap();
+        let config = serde_json::json!({"access": {"address": "192.0.2.11", "port": "2222"}});
+        std::fs::write(&known_hosts, "[192.0.2.11]:2222 ssh-ed25519 AAAAdock\n").unwrap();
+        let taken = take_from_user(&paths, &store, &dock, &config, &known_hosts).unwrap();
+        assert_eq!(taken, ["ssh-ed25519 AAAAdock"]);
+    }
 
     #[test]
     fn a_known_hosts_file_is_searched_as_ssh_keygen_does() {
