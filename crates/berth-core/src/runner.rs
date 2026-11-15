@@ -669,12 +669,14 @@ impl Runner {
     /// Stop a job this process runs, as `by` asks: its programs end, a
     /// session of a host ends there, and its record says who stopped it.
     pub fn stop(&self, id: &str, by: &str) -> Result<Stopping> {
+        // The record is asked first: a job that has just ended is still
+        // known here for a moment.
+        if self.store.job(id)?.is_some_and(|job| job.ended.is_some()) {
+            return Ok(Stopping::Ended);
+        }
         let found = self.stops.lock().unwrap().get(id).cloned();
         let Some((_, stop)) = found else {
-            return Ok(match self.store.job(id)? {
-                Some(job) if job.ended.is_some() => Stopping::Ended,
-                _ => Stopping::NotHere,
-            });
+            return Ok(Stopping::NotHere);
         };
         if let Some(before) = stop.asked() {
             return Ok(Stopping::AskedBefore(before));

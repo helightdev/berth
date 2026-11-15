@@ -346,7 +346,7 @@ async fn guard(State(state): App, mut request: Request, next: Next) -> Response 
         .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"));
     let allowed = match auth::operation(request.method().as_str(), request.uri().path(), stream) {
         Ok(Some(op)) => state.auth.allows(&access, op),
-        // The portal and the documents: each operation on the portal is asked about there.
+        // The portal, where each operation is asked about as it comes.
         Ok(None) => Ok(()),
         Err(()) if state.auth.role(&access) == Role::Admin => Ok(()),
         Err(()) => Err((
