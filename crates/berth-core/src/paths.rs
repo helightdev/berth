@@ -458,7 +458,12 @@ impl Paths {
         crate::profiles::list(self, &crate::profiles::scope(self))
             .unwrap_or_default()
             .into_iter()
-            .map(|(name, profile)| (name, berth_api::profile::Access::of(&profile).address))
+            .map(|(place, profile)| {
+                (
+                    place.argument(),
+                    berth_api::profile::Access::of(&profile).address,
+                )
+            })
             .collect()
     }
 }
@@ -512,11 +517,11 @@ mod tests {
             data_dir: home.path().join("data"),
         };
         paths.prepare().unwrap();
-        crate::profiles::Place::own("laptop")
+        crate::profiles::Place::own(&paths, "laptop")
             .unwrap()
             .save(&paths, &json!({"access": {"address": "100.64.0.1"}}))
             .unwrap();
-        crate::profiles::Place::own("attic")
+        crate::profiles::Place::own(&paths, "attic")
             .unwrap()
             .save(&paths, &json!({}))
             .unwrap();

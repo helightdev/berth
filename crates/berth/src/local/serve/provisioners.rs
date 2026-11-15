@@ -51,7 +51,7 @@ async fn blocking<T: Send + 'static>(
 fn known(state: &Serve, store: &Store, name: &str) -> Answer<ProvisionerInfo> {
     provision::list(&state.paths, store)
         .into_iter()
-        .find(|known| known.id == name)
+        .find(|known| known.name == name || known.id == name)
         .ok_or_else(|| {
             missing(format!(
                 "No provisioner {name}. See: berth provisioner list"
@@ -72,7 +72,7 @@ pub async fn types(State(state): App) -> Answer<Json<Vec<ProvisionerInfo>>> {
 }
 
 #[utoipa::path(put, path = "/v1/provisioners/{name}", summary = "Register a provisioner under a name of its own, of a type a plugin brings, or change the settings of one that is registered. A registered one keeps its type.", tag = "set-up",
-    params(("name" = String, Path, description = "Its name: lowercase letters, digits, - and _, starting with a letter")),
+    params(("name" = String, Path, description = "Its name: lowercase letters, digits, - and _, starting with a letter, and not in the shape of an id; or the id of a registered one")),
     request_body = SavedProvisioner,
     responses((status = 200, description = "Registered, as it is listed", body = ProvisionerInfo),
               (status = 400, description = "The name, the type or a setting does not fit; the message says which", body = ErrorBody)))]
@@ -88,7 +88,7 @@ pub async fn save(
 }
 
 #[utoipa::path(delete, path = "/v1/provisioners/{name}", summary = "Forget a registered provisioner, with its settings and the secrets it keeps of its own. It is kept while it holds resources.", tag = "set-up",
-    params(("name" = String, Path, description = "Its name")),
+    params(("name" = String, Path, description = "Its name or its id (bare or as `prov_ID`)")),
     responses((status = 204, description = "Forgotten"),
               (status = 404, description = "No such provisioner", body = ErrorBody),
               (status = 409, description = "It still holds resources; the message names them", body = ErrorBody)))]
@@ -101,7 +101,7 @@ pub async fn remove(State(state): App, Path(name): Path<String>) -> Answer<Statu
 }
 
 #[utoipa::path(get, path = "/v1/provisioners/{name}", summary = "A provisioner's page: what it says of itself now, such as whether its engine answers, and what it holds: berth's resources, with what its own list says.", tag = "set-up",
-    params(("name" = String, Path, description = "The provisioner's name"),
+    params(("name" = String, Path, description = "The provisioner, by its name or its id (bare or as `prov_ID`)"),
            ("arguments" = Option<BTreeMap<String, String>>, Query, style = Form, explode, description = "Values of the provisioner's own arguments as `NAME=VALUE` for this once, such as another server to ask; the others are its settings")),
     responses((status = 200, description = "What it said. A state of `unreachable` or `unusable` comes with why as its message", body = ProvisionerState),
               (status = 404, description = "No such provisioner", body = ErrorBody)))]
@@ -120,7 +120,7 @@ pub async fn provisioner(
 }
 
 #[utoipa::path(get, path = "/v1/provisioners/{name}/actions", summary = "What can be done to a provisioner: its plugin's actions, and berth's own settings of it.", tag = "set-up",
-    params(("name" = String, Path, description = "The provisioner's name")),
+    params(("name" = String, Path, description = "The provisioner, by its name or its id (bare or as `prov_ID`)")),
     responses((status = 200, description = "The actions, each saying whether it can run here now", body = Vec<Action>),
               (status = 404, description = "No such provisioner", body = ErrorBody)))]
 pub async fn provisioner_actions(
@@ -135,7 +135,7 @@ pub async fn provisioner_actions(
 }
 
 #[utoipa::path(post, path = "/v1/provisioners/{name}/actions/{action}", summary = "Run one of a provisioner's actions. One that changes something is a job, which holds the provisioner's lock; one that only reads answers at once.", tag = "set-up",
-    params(("name" = String, Path, description = "The provisioner's name"),
+    params(("name" = String, Path, description = "The provisioner, by its name or its id (bare or as `prov_ID`)"),
            ("action" = String, Path, description = "The action, as provisioners.actions names it")),
     request_body(content = Option<Act>, description = "Its arguments, which may also give the provisioner's own for this once, and a token that makes asking again safe"),
     responses((status = 202, description = "Started as a job", body = Acted),

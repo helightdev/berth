@@ -43,7 +43,7 @@ berth provisioner list
 
 ```text
 docker  Docker container (docker/container)
-ovh-incus  Incus virtual machine (incus/vm)  · not usable: ovh-incus needs the secrets incus_client_cert, incus_client_key: berth secret set NAME
+ovh-incus  Incus virtual machine (incus/vm)  · not usable: ovh-incus needs the secrets incus_client_cert, incus_client_key: berth provisioner run ovh-incus secrets incus_client_cert=VALUE incus_client_key=VALUE
 ```
 
 One that cannot be used says what to change, such as a [secret](#secrets) to set or a plugin to update. `berth provisioner list` lists the same with what each asks for:
@@ -63,7 +63,7 @@ The listing is shortened here. A secret marked *not set* is required and has no 
 
 In the terminal UI, `a` on the **Provisioners** tab adds one. It asks for the name and then the type.
 
-`berth provisioner rename NAME NEW` gives a provisioner another name. Its settings, its own secrets, the resources and machines it made or plans, and its jobs go with it, and what it made is not touched. The action `rename` on its page does the same.
+`berth provisioner rename NAME NEW` gives a provisioner another name. It keeps its [id](/docs/reference/ids). Its settings, its secrets, the resources and machines it made or plans, and its jobs stay with it, and what it made is not touched. The action `rename` on its page does the same.
 
 `berth provisioner remove NAME` forgets a provisioner, with its settings and its own secrets. berth refuses while it holds anything, so remove what it made first. The action `remove` on its page does the same. The action `adopt` makes one you registered the provisioner of a [node](/docs/use/nodes#take-in-a-server-that-exists) that reaches the same server.
 
@@ -139,13 +139,13 @@ Every call to the provisioner uses them, and so does each machine made with it u
 
 ### Secrets
 
-The plugin declares the secrets its provisioners need, such as `incus_client_cert`. berth gives each provisioner the secret of that name, which every provisioner of the type shares. One with secrets of its own is given those instead. Each is kept as the secret `provisioner/NAME/SECRET`, and `berth secret set` reads it from standard input:
+The plugin declares the secrets its provisioners need, such as `incus_client_cert`. Each provisioner has its own, which belong to it: they keep with it through a rename and go when it is removed. berth gives a provisioner its own secrets alone, never a secret of the same name that is not its own. Each is set as the secret `provisioner/NAME/SECRET`, where NAME is the provisioner's name or id, and `berth secret set` reads it from standard input:
 
 ```bash
 berth secret set provisioner/ovh-incus/incus_server_cert < server.crt
 ```
 
-The action `secrets` on the provisioner's page takes each in a hidden field. An empty value keeps what it has, and `-` forgets it. The Secrets tab of the terminal UI leaves them out. This way an Incus server that trusts another certificate of berth gets its own.
+The action `secrets` on the provisioner's page takes each in a hidden field. An empty value keeps what it has, and `-` forgets it. The Secrets tab of the terminal UI leaves them out. A provisioner a node offers gets the client certificate the node trusts as its own, at each apply of the node.
 
 ### Actions
 
@@ -220,11 +220,11 @@ Make the profile as for any host. The provisioner works from the saved profile.
 
 ### Store the secrets
 
-A provisioner that needs provider credentials lists them as secrets. Store them once:
+A provisioner that needs provider credentials lists them as secrets. Store them as the provisioner's own:
 
 ```bash
-berth secret set incus_client_cert < berth.crt
-berth secret set incus_client_key < berth.key
+berth secret set provisioner/ovh-incus/incus_client_cert < berth.crt
+berth secret set provisioner/ovh-incus/incus_client_key < berth.key
 ```
 
 berth refuses to start while a required secret has no value.
@@ -365,7 +365,7 @@ berth host create studio-2 --provisioner docker runtime=sysbox
 
 A provisioner of the type `incus/vm` makes a virtual machine, and one of `incus/container` a system container, on an Incus server. Both are set up from the cloud seed, and the plugin puts the release archive into the machine. The profile does without a `release_url`. They offer `start`, `stop`, `change`, `logs` and `list`. In a container Chromium uses its setuid sandbox helper, and in a virtual machine a user namespace, as the [self-test](/docs/reference/on-the-host#the-self-test) describes.
 
-berth talks to the Incus API over HTTPS. `server` is required, as a setting or for each machine. Incus must trust a certificate of berth, which you store as the secrets `incus_client_cert` and `incus_client_key`. A provisioner may have its own instead. The secret `incus_server_cert` is optional and pins the server's own certificate. `plugins/incus/guide.md` shows how to make and trust the certificate.
+berth talks to the Incus API over HTTPS. `server` is required, as a setting or for each machine. Incus must trust a certificate of berth, which you store as the provisioner's own secrets `incus_client_cert` and `incus_client_key`. The secret `incus_server_cert` is optional and pins the server's own certificate. `plugins/incus/guide.md` shows how to make and trust the certificate.
 
 The page offers the server's pools, networks and instances for the arguments `pool`, `network` and `instance`.
 

@@ -1400,6 +1400,7 @@ async fn the_server_is_set_up_through_the_api() {
         .0,
         200
     );
+    // A registry's login belongs to the registry, which is there first.
     assert_eq!(
         send(
             client,
@@ -1409,7 +1410,7 @@ async fn the_server_is_set_up_through_the_api() {
         )
         .await
         .0,
-        200
+        404
     );
     assert_eq!(
         send(
@@ -1423,7 +1424,51 @@ async fn the_server_is_set_up_through_the_api() {
         400
     );
     let (_, secrets) = send(client, "GET", "/v1/secrets", Value::Null).await;
-    assert_eq!(secrets, json!({"names": ["github", "registry/main"]}));
+    assert_eq!(secrets["names"], json!(["github"]));
+    let github = secrets["secrets"][0]["id"].as_str().unwrap().to_owned();
+    assert!(berth_api::ids::is_id(&github));
+    assert_eq!(secrets["secrets"][0]["name"], "github");
+    // By id, bare or with its prefix; a prefix of another kind is refused.
+    let (status, _) = send(
+        client,
+        "POST",
+        &format!("/v1/secrets/sec_{github}/rename"),
+        json!({"name": "gh"}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (status, _) = send(
+        client,
+        "POST",
+        &format!("/v1/secrets/{github}/rename"),
+        json!({"name": "github"}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (status, said) = send(
+        client,
+        "PUT",
+        &format!("/v1/secrets/host_{github}"),
+        json!({"value": "x"}),
+    )
+    .await;
+    assert_eq!(status, 400, "{said}");
+    let (status, _) = send(
+        client,
+        "PUT",
+        "/v1/secrets/sec_01972c4e8f3a7b219d4e5a6b7c8d9eff",
+        json!({"value": "x"}),
+    )
+    .await;
+    assert_eq!(status, 404);
+    let (status, said) = send(
+        client,
+        "PUT",
+        "/v1/secrets/01972c4e8f3a7b219d4e5a6b7c8d9eff",
+        json!({"value": "x"}),
+    )
+    .await;
+    assert_eq!(status, 400, "{said}");
     assert_eq!(
         send(client, "DELETE", "/v1/secrets/github", Value::Null)
             .await
@@ -1457,7 +1502,51 @@ async fn the_server_is_set_up_through_the_api() {
         400
     );
     let (_, registries) = send(client, "GET", "/v1/registries", Value::Null).await;
-    assert_eq!(registries["registries"]["main"], registry);
+    let main = registries["registries"]["main"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut listed = registries["registries"]["main"].clone();
+    listed.as_object_mut().unwrap().remove("id");
+    assert_eq!(listed, registry);
+    assert_eq!(
+        send(
+            client,
+            "PUT",
+            "/v1/secrets/registry%2Fmain",
+            json!({"value": "pw"})
+        )
+        .await
+        .0,
+        200
+    );
+    // Renamed by its id, the login goes with it.
+    let (status, said) = send(
+        client,
+        "POST",
+        &format!("/v1/registries/reg_{main}/rename"),
+        json!({"name": "npm"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{said}");
+    let (status, said) = send(
+        client,
+        "POST",
+        "/v1/registries/npm/rename",
+        json!({"name": "npm"}),
+    )
+    .await;
+    assert_eq!(status, 400, "{said}");
+    let (_, secrets) = send(client, "GET", "/v1/secrets", Value::Null).await;
+    assert_eq!(secrets["names"], json!(["registry/npm"]));
+    let (status, said) = send(
+        client,
+        "POST",
+        "/v1/registries/npm/rename",
+        json!({"name": "main"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{said}");
     assert_eq!(
         send(client, "DELETE", "/v1/registries/main", Value::Null)
             .await
@@ -1465,8 +1554,8 @@ async fn the_server_is_set_up_through_the_api() {
         200
     );
     assert_eq!(
-        send(client, "GET", "/v1/secrets", Value::Null).await.1,
-        json!({"names": []})
+        send(client, "GET", "/v1/secrets", Value::Null).await.1["names"],
+        json!([])
     );
 
     // Sending secrets needs their values and the host.
@@ -2285,7 +2374,7 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
             .as_array()
             .unwrap()
             .iter()
-            .find(|known| known["id"] == id)
+            .find(|known| known["name"] == id)
             .unwrap()
             .clone()
     };
@@ -2319,7 +2408,7 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
     send(
         client,
         "PUT",
-        "/v1/secrets/api_token",
+        "/v1/secrets/provisioner%2Fvm%2Fapi_token",
         json!({"value": "tok-s3cret"}),
     )
     .await;
@@ -2380,7 +2469,7 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
     .await;
     assert_eq!(status, 202, "{acted}");
     assert_eq!(
-        (&acted["job"]["subject"], &acted["job"]["action"]),
+        (&acted["job"]["subject_name"], &acted["job"]["action"]),
         (&json!("provisioner:vm"), &json!("settings"))
     );
     let (output, code) = job_ended(&served.socket, acted["job"]["id"].as_str().unwrap()).await;
@@ -2443,7 +2532,7 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
         Value::Null,
     )
     .await;
-    assert_eq!(job["subject"], "provisioner:vm");
+    assert_eq!(job["subject_name"], "provisioner:vm");
     // One that fails says why, in the job or as the answer.
     std::fs::write(fake.join("code.act"), "1").unwrap();
     std::fs::write(fake.join("say.act"), "engine gone\n").unwrap();
@@ -2585,7 +2674,7 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|known| known["id"].as_str().unwrap())
+        .map(|known| known["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["vm"]);
     // A registered one keeps its type, and a type has to be one a plugin brings.
@@ -2637,9 +2726,19 @@ async fn a_provisioner_is_renamed_with_everything_that_names_it() {
     job_ended(&served.socket, &before).await;
     let own = berth_core::provisioner::secret_name("vm", "api_token");
     registries.set_secret(&own, Some("tok-own")).unwrap();
-    // One left by a provisioner of the new name before is not taken over.
-    let stale = berth_core::provisioner::secret_name("lab", "other");
-    registries.set_secret(&stale, Some("tok-stale")).unwrap();
+    let id_of = |name: &str| {
+        berth_core::provisioner::id_of(paths, name)
+            .unwrap()
+            .unwrap()
+    };
+    let (vm, old) = (id_of("vm"), id_of("old"));
+    let studio = berth_core::profiles::Place::own(paths, "studio").unwrap();
+    studio
+        .save(
+            paths,
+            &json!({"builder": {}, "access": {"address": "192.0.2.10"}}),
+        )
+        .unwrap();
     let record = |id: &str, kind: &str, provisioner: &str, host: &str, state: &str| Kept {
         scope: String::new(),
         record: Record {
@@ -2652,26 +2751,32 @@ async fn a_provisioner_is_renamed_with_everything_that_names_it() {
             ..Record::default()
         },
     };
-    record("r-wiki", "deployment", "vm", "", "running")
+    let (wiki, plan, other) = (
+        berth_core::store::new_id(),
+        berth_core::store::new_id(),
+        berth_core::store::new_id(),
+    );
+    record(&wiki, "deployment", &vm, "", "running")
         .save(paths)
         .unwrap();
     record(
-        "r-plan",
+        &plan,
         "machine",
-        "vm",
-        "studio",
+        &vm,
+        &studio.key(),
         berth_core::resource::PLANNED,
     )
     .save(paths)
     .unwrap();
-    record("r-other", "deployment", "old", "", "running")
+    record(&other, "deployment", &old, "", "running")
         .save(paths)
         .unwrap();
     // A node's provisioner stays the node's.
+    let dock = berth_core::store::new_id();
     let mut offered = berth_core::provisioner::entry(paths, "vm")
         .unwrap()
         .unwrap();
-    offered.node = "dock".into();
+    offered.node = dock.clone();
     berth_core::provisioner::save_entry(paths, "vm", &offered).unwrap();
 
     // A name that is taken or no name is refused before anything starts.
@@ -2679,6 +2784,7 @@ async fn a_provisioner_is_renamed_with_everything_that_names_it() {
         ("old", "There is a provisioner old already"),
         ("Not A Name", "is not a name for a provisioner"),
         ("vm", "vm has that name already"),
+        (vm.as_str(), "is not a name for a provisioner"),
     ] {
         let (status, refused) = send(
             client,
@@ -2691,10 +2797,11 @@ async fn a_provisioner_is_renamed_with_everything_that_names_it() {
         assert!(message(&refused).contains(said), "{refused}");
     }
 
+    // By its id with its prefix, as by its name.
     let (status, acted) = send(
         client,
         "POST",
-        "/v1/provisioners/vm/actions/rename",
+        &format!("/v1/provisioners/prov_{vm}/actions/rename"),
         json!({"arguments": {"name": "lab"}}),
     )
     .await;
@@ -2710,12 +2817,13 @@ async fn a_provisioner_is_renamed_with_everything_that_names_it() {
             .0,
         404
     );
+    // The id is the same, and everything that is the provisioner's or refers to it stays.
     let entry = berth_core::provisioner::entry(paths, "lab")
         .unwrap()
         .unwrap();
     assert_eq!(
-        (entry.kind.as_str(), entry.node.as_str()),
-        ("fake/vm", "dock")
+        (entry.id.as_str(), entry.kind.as_str(), entry.node.as_str()),
+        (vm.as_str(), "fake/vm", dock.as_str())
     );
     assert_eq!(entry.settings["server"], "https://192.0.2.10:8443");
     assert_eq!(
@@ -2726,7 +2834,6 @@ async fn a_provisioner_is_renamed_with_everything_that_names_it() {
         Some("tok-own")
     );
     assert_eq!(registries.secret(&own).unwrap(), None);
-    assert_eq!(registries.secret(&stale).unwrap(), None);
     let by: std::collections::BTreeMap<String, String> = berth_core::resource::list(paths)
         .unwrap()
         .into_iter()
@@ -2735,15 +2842,27 @@ async fn a_provisioner_is_renamed_with_everything_that_names_it() {
     assert_eq!(
         by,
         std::collections::BTreeMap::from([
-            ("r-other".to_owned(), "old".to_owned()),
-            ("r-plan".to_owned(), "lab".to_owned()),
-            ("r-wiki".to_owned(), "lab".to_owned()),
+            (other.clone(), old.clone()),
+            (plan.clone(), vm.clone()),
+            (wiki.clone(), vm.clone()),
         ])
     );
-    // Its jobs are the renamed one's, the rename among them.
+    let (_, shown) = send(
+        client,
+        "GET",
+        &format!("/v1/resources/res_{wiki}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        (&shown["provisioner"], &shown["provisioner_id"]),
+        (&json!("lab"), &json!(vm))
+    );
+    // Its jobs are the renamed one's, the rename among them, by its id and its name now.
     for job in [&before, &id] {
         let (_, found) = send(client, "GET", &format!("/v1/jobs/{job}"), Value::Null).await;
-        assert_eq!(found["subject"], "provisioner:lab", "{found}");
+        assert_eq!(found["subject"], format!("provisioner:{vm}"), "{found}");
+        assert_eq!(found["subject_name"], "provisioner:lab", "{found}");
     }
     // They are listed by their subject, a page at a time.
     let listed = |found: &Value| -> Vec<String> {
@@ -2801,7 +2920,7 @@ async fn machines_are_created_and_deleted_through_the_api() {
     let paths = &served.state.paths;
     paths.prepare().unwrap();
     // How the server reaches it is its own; the address comes from the provisioner.
-    berth_core::profiles::Place::own("studio")
+    berth_core::profiles::Place::own(paths, "studio")
         .unwrap()
         .save(
             paths,
@@ -2818,9 +2937,10 @@ async fn machines_are_created_and_deleted_through_the_api() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|known| known["id"] == "vm")
+        .find(|known| known["name"] == "vm")
         .unwrap()
         .clone();
+    assert!(berth_api::ids::is_id(vm["id"].as_str().unwrap()), "{vm}");
     assert_eq!(vm["missing_secrets"], json!(["api_token"]));
     assert_eq!(vm["kinds"][1]["actions"][1]["role"], "admin");
 
@@ -2832,7 +2952,13 @@ async fn machines_are_created_and_deleted_through_the_api() {
     assert_eq!(status, 412, "{said}");
     assert!(message(&said).contains("api_token"), "{said}");
     let secret = json!({"value": "tok-s3cret"});
-    send(client, "PUT", "/v1/secrets/api_token", secret).await;
+    send(
+        client,
+        "PUT",
+        "/v1/secrets/provisioner%2Fvm%2Fapi_token",
+        secret,
+    )
+    .await;
     for (body, wanted) in [
         (json!({"provisioner": "vm", "host": "nobody"}), 404),
         (json!({"provisioner": "none", "host": "studio"}), 404),
@@ -3048,7 +3174,7 @@ async fn a_deployment_keeps_its_spec_and_gets_its_secrets_only_on_standard_input
     send(
         client,
         "PUT",
-        "/v1/secrets/api_token",
+        "/v1/secrets/provisioner%2Fvm%2Fapi_token",
         json!({"value": "tok-s3cret"}),
     )
     .await;
@@ -3453,9 +3579,9 @@ async fn a_host_is_renamed_as_a_job_with_what_the_server_keeps_of_it() {
     let client = &mut client;
     let paths = &served.state.paths;
     let profile = json!({"hostname": "test", "builder": {}, "access": {"address": "192.0.2.7", "link": ["sh", "-c", "exit 1"]}});
-    let test = berth_core::profiles::Place::own("test").unwrap();
+    let test = berth_core::profiles::Place::own(paths, "test").unwrap();
     test.save(paths, &profile).unwrap();
-    berth_core::profiles::Place::own("lab")
+    berth_core::profiles::Place::own(paths, "lab")
         .unwrap()
         .save(paths, &profile)
         .unwrap();
@@ -3471,7 +3597,8 @@ async fn a_host_is_renamed_as_a_job_with_what_the_server_keeps_of_it() {
         },
         time: berth_api::rfc3339(berth_api::unix_now()),
     };
-    served.state.store.take_in("test", &message).unwrap();
+    // Its messages are kept by its id.
+    served.state.store.take_in(&test.key(), &message).unwrap();
     let (status, listed) = send(client, "GET", "/v1/hosts/test/actions", Value::Null).await;
     assert_eq!(status, 200, "{listed}");
     let rename = listed
@@ -3504,8 +3631,9 @@ async fn a_host_is_renamed_as_a_job_with_what_the_server_keeps_of_it() {
     let id = acted["job"]["id"].as_str().unwrap().to_owned();
     let job = job_done(client, &id).await;
     assert_eq!(job["exit_code"], 0, "{job}");
-    // The job is the renamed host's now, as its messages are.
-    assert_eq!(job["subject"], "host:studio");
+    // The job is the renamed host's still, by its id, as its messages are.
+    assert_eq!(job["subject"], format!("host:{}", test.key()));
+    assert_eq!(job["subject_name"], "host:studio");
     // The server knows it by its new name without being asked for its hosts.
     assert!(served.state.host("studio").is_some());
     assert!(served.state.host("test").is_none());
@@ -3555,7 +3683,7 @@ async fn hosts_and_resources_that_change_are_told_on_the_events_stream() {
 
     // Saved by another berth beside the server: told when the server looks.
     let profile = json!({"hostname": "studio", "builder": {}, "access": {"address": "192.0.2.7", "link": ["sh", "-c", "exit 1"]}});
-    berth_core::profiles::Place::own("studio")
+    berth_core::profiles::Place::own(paths, "studio")
         .unwrap()
         .save(paths, &profile)
         .unwrap();
@@ -3590,7 +3718,7 @@ async fn hosts_and_resources_that_change_are_told_on_the_events_stream() {
     send(
         client,
         "PUT",
-        "/v1/secrets/api_token",
+        "/v1/secrets/provisioner%2Fvm%2Fapi_token",
         json!({"value": "tok-made-up"}),
     )
     .await;
@@ -3605,9 +3733,13 @@ async fn hosts_and_resources_that_change_are_told_on_the_events_stream() {
     let (status, created) = send(client, "POST", "/v1/resources", asked).await;
     assert_eq!(status, 202, "{created}");
     let id = created["resource"]["id"].as_str().unwrap().to_owned();
+    let vm = berth_core::provisioner::id_of(paths, "vm")
+        .unwrap()
+        .unwrap();
     assert_eq!(
         change_of(&mut events, "resource", "created").await,
-        json!({"source": "resource", "resource": id, "provisioner": "vm", "kind": "deployment", "change": "created"})
+        json!({"source": "resource", "resource": id, "provisioner": "vm", "provisioner_id": vm,
+               "kind": "deployment", "change": "created"})
     );
     let (_, code) = job_ended(&served.socket, created["job"]["id"].as_str().unwrap()).await;
     assert_eq!(code, 0);
@@ -3635,7 +3767,7 @@ async fn hosts_and_resources_that_change_are_told_on_the_events_stream() {
         .unwrap();
     let follow = json!({"kv": ["ui"]}).to_string();
     quiet.send(Frame::Text(follow.into())).await.unwrap();
-    berth_core::profiles::Place::own("pier")
+    berth_core::profiles::Place::own(paths, "pier")
         .unwrap()
         .save(paths, &profile)
         .unwrap();
@@ -3688,7 +3820,7 @@ fn generated_passwords_are_kept_where_the_host_is_and_shown_to_an_admin() {
         (status, &kept["credentials"]["ops"]),
         (200, &json!(password))
     );
-    let own = Place::own("studio").unwrap();
+    let own = Place::own(&served.state.paths, "studio").unwrap();
     assert_eq!(
         credentials::load(&served.state.paths, &own).unwrap()["ops"],
         json!(password)
@@ -3747,7 +3879,7 @@ async fn a_server_in_the_process_names_both_ways_to_give_a_sudo_password() {
     let mut state = state_in(dir.path(), None);
     Arc::get_mut(&mut state).unwrap().here = true;
     let profile = json!({"builder": {}, "access": {"address": "192.0.2.9", "user": "ops", "sudo": "password"}});
-    berth_core::profiles::Place::own("studio")
+    berth_core::profiles::Place::own(&state.paths, "studio")
         .unwrap()
         .save(&state.paths, &profile)
         .unwrap();
@@ -3780,7 +3912,7 @@ async fn a_server_in_the_process_names_both_ways_to_give_a_sudo_password() {
     // berth serve says what it says to its own user.
     let other = tempfile::tempdir().unwrap();
     let served = state_in(other.path(), None);
-    berth_core::profiles::Place::own("studio")
+    berth_core::profiles::Place::own(&served.paths, "studio")
         .unwrap()
         .save(&served.paths, &profile)
         .unwrap();
@@ -3805,7 +3937,7 @@ async fn a_caller_on_this_machine_takes_the_host_key_its_user_knows() {
     std::fs::write(&known_hosts, "192.0.2.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEdockdockdockdockdockdockdockdockdockdockdo\n").unwrap();
     *state.known_hosts.lock().unwrap() = Some(known_hosts);
     for name in ["dock", "studio"] {
-        berth_core::profiles::Place::own(name)
+        berth_core::profiles::Place::own(&state.paths, name)
             .unwrap()
             .save(
                 &state.paths,
@@ -3867,7 +3999,7 @@ async fn first_contact_and_keys_are_actions_of_the_server() {
     // A host that is reached by a command that fails at once, so that what
     // needs no controller is told apart from what does, without waiting.
     let profile = json!({"builder": {}, "access": {"address": "192.0.2.7", "auth": "password", "link": ["sh", "-c", "exit 1"]}});
-    berth_core::profiles::Place::own("studio")
+    berth_core::profiles::Place::own(&served.state.paths, "studio")
         .unwrap()
         .save(&served.state.paths, &profile)
         .unwrap();
@@ -3932,7 +4064,7 @@ async fn first_contact_and_keys_are_actions_of_the_server() {
     );
     let (_, job) = send(client, "GET", &format!("/v1/jobs/{id}"), Value::Null).await;
     assert_eq!(
-        (&job["subject"], &job["action"]),
+        (&job["subject_name"], &job["action"]),
         (&json!("host:studio"), &json!("trust-key"))
     );
     assert!(!job.to_string().contains("made-up-once-pw") && !output.contains("made-up-once-pw"));
@@ -4131,7 +4263,7 @@ async fn a_host_seen_to_be_a_workstation_never_gets_the_controller_alone() {
     )
     .unwrap();
     let served = served().await;
-    berth_core::profiles::Place::own("box")
+    berth_core::profiles::Place::own(&served.state.paths, "box")
         .unwrap()
         .save(
             &served.state.paths,
@@ -4186,7 +4318,7 @@ async fn a_host_whose_controller_does_not_answer_says_why_and_keeps_berths_own_a
     let said = "ssh: connect to host 192.0.2.11 port 22: Network is unreachable";
     let profile = json!({"type": "managed", "access": {"address": "192.0.2.11",
         "link": ["sh", "-c", format!("echo '{said}' >&2; exit 255")]}});
-    berth_core::profiles::Place::own("dock")
+    berth_core::profiles::Place::own(&served.state.paths, "dock")
         .unwrap()
         .save(&served.state.paths, &profile)
         .unwrap();
@@ -4264,7 +4396,7 @@ async fn a_host_removed_or_changed_in_the_store_by_another_process_is_not_listed
     let served = served().await;
     let mut client = served.client().await;
     let client = &mut client;
-    let place = berth_core::profiles::Place::own("studio").unwrap();
+    let place = berth_core::profiles::Place::own(&served.state.paths, "studio").unwrap();
     let paths = &served.state.paths;
     // A host whose machine is still being made has no address.
     place.save(paths, &json!({"builder": {}})).unwrap();
@@ -4297,7 +4429,7 @@ async fn the_installer_and_every_setting_are_for_the_user_here() {
     let dir = tempfile::tempdir().unwrap();
     let state = state_in(dir.path(), Some("s3cret-token"));
     let profile = json!({"hostname": "studio", "builder": {}, "access": {"address": "192.0.2.7", "link": ["sh", "-c", "exit 1"]}});
-    berth_core::profiles::Place::own("studio")
+    berth_core::profiles::Place::own(&state.paths, "studio")
         .unwrap()
         .save(&state.paths, &profile)
         .unwrap();
@@ -4416,7 +4548,7 @@ async fn made_box(served: &Served, fake: &std::path::Path, answer: Value) -> Str
     send(
         client,
         "PUT",
-        "/v1/secrets/api_token",
+        "/v1/secrets/provisioner%2Fvm%2Fapi_token",
         json!({"value": "tok-made-up"}),
     )
     .await;
@@ -4992,7 +5124,7 @@ async fn a_profile_does_not_say_how_ansible_reaches_the_host() {
     // A profile saved before still lists and reads.
     let paths = &served.state.paths;
     paths.prepare().unwrap();
-    berth_core::profiles::Place::own("dock")
+    berth_core::profiles::Place::own(paths, "dock")
         .unwrap()
         .save(
             paths,
@@ -5036,13 +5168,13 @@ async fn a_host_is_started_stopped_duplicated_and_removed_by_its_actions() {
     send(
         client,
         "PUT",
-        "/v1/secrets/api_token",
+        "/v1/secrets/provisioner%2Fvm%2Fapi_token",
         json!({"value": "tok-s3cret"}),
     )
     .await;
     let paths = &served.state.paths;
     paths.prepare().unwrap();
-    berth_core::profiles::Place::own("studio")
+    berth_core::profiles::Place::own(paths, "studio")
         .unwrap()
         .save(
             paths,
@@ -5179,7 +5311,7 @@ async fn a_host_is_started_stopped_duplicated_and_removed_by_its_actions() {
     let planned = machine("lab").unwrap().record;
     assert_eq!(
         (
-            planned.provisioner.as_str(),
+            berth_core::provisioner::label(paths, &planned.provisioner).as_str(),
             planned.state.as_str(),
             planned.external_id.as_str()
         ),
@@ -5310,7 +5442,7 @@ async fn a_host_that_declares_its_controller_stops_it_asks_the_controller() {
     .await;
     assert_eq!(status, 400, "{said}");
     assert!(
-        berth_core::profiles::Place::own("yard")
+        berth_core::profiles::Place::own(paths, "yard")
             .unwrap()
             .load(paths)
             .unwrap()
@@ -5408,7 +5540,7 @@ async fn destroying_a_host_removes_its_device_from_the_tailnet_and_forgetting_it
     send(
         client,
         "PUT",
-        "/v1/secrets/api_token",
+        "/v1/secrets/provisioner%2Fvm%2Fapi_token",
         json!({"value": "tok-s3cret"}),
     )
     .await;
@@ -5426,7 +5558,7 @@ async fn destroying_a_host_removes_its_device_from_the_tailnet_and_forgetting_it
         ("studio", "vm-1", "192.0.2.20"),
         ("attic", "vm-2", "192.0.2.21"),
     ] {
-        let place = berth_core::profiles::Place::own(name).unwrap();
+        let place = berth_core::profiles::Place::own(paths, name).unwrap();
         place
             .save(paths, &json!({"hostname": name, "builder": {}, "access": {"user": "ops", "link": ["sh", "-c", "exit 1"]}}))
             .unwrap();
@@ -5444,9 +5576,11 @@ async fn destroying_a_host_removes_its_device_from_the_tailnet_and_forgetting_it
             if name == "studio" { "12" } else { "13" },
             &format!("{name}.hs.example.org"),
         );
+        // Kept by the host's id.
+        let id = berth_core::profiles::Place::own(paths, name).unwrap().key();
         store::shared(paths)
             .unwrap()
-            .write_json(kind::TAILNET, store::OWN, name, &json!({"device": device}))
+            .write_json(kind::TAILNET, store::OWN, &id, &json!({"device": device}))
             .unwrap();
     }
     asked.lock().unwrap().clear();
@@ -5514,7 +5648,7 @@ async fn an_apply_records_the_device_its_host_reports_on_the_tailnet() {
     let link = host.link();
     let mut command = vec![link.program.clone()];
     command.extend(link.args.clone());
-    let place = berth_core::profiles::Place::own("studio").unwrap();
+    let place = berth_core::profiles::Place::own(&paths, "studio").unwrap();
     let config =
         json!({"hostname": "studio", "builder": {}, "access": {"user": "ops", "link": command}});
     place.save(&paths, &config).unwrap();

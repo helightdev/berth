@@ -162,7 +162,7 @@ fn secret(store: &Store, name: &str) -> Option<String> {
 
 /// The secrets of the provisioner registered as `name`, under the names its
 /// plugin declares, and the required ones without a value. Each entry keeps
-/// its own, as `provisioner/NAME/SECRET`.
+/// its own, and is given no secret of another.
 pub(crate) fn secrets(
     store: &Store,
     name: &str,
@@ -170,9 +170,7 @@ pub(crate) fn secrets(
 ) -> (Map<String, Value>, Vec<String>) {
     let (mut given, mut missing) = (Map::new(), vec![]);
     for wanted in &provisioner.secrets {
-        match secret(store, &format!("provisioner/{name}/{}", wanted.name))
-            .or_else(|| secret(store, &wanted.name))
-        {
+        match secret(store, &crate::provisioner::secret_name(name, &wanted.name)) {
             Some(value) => {
                 given.insert(wanted.name.clone(), json!(value));
             }
@@ -187,9 +185,14 @@ pub(crate) fn needs_secrets(name: &str, missing: &[String]) -> Result<()> {
     match missing {
         [] => Ok(()),
         missing => Err(crate::Refused(format!(
-            "{name} needs the secret{} {}: berth secret set NAME",
+            "{name} needs the secret{} {}: berth provisioner run {name} secrets {}",
             if missing.len() == 1 { "" } else { "s" },
-            missing.join(", ")
+            missing.join(", "),
+            missing
+                .iter()
+                .map(|secret| format!("{secret}=VALUE"))
+                .collect::<Vec<_>>()
+                .join(" ")
         ))
         .into()),
     }
@@ -286,7 +289,8 @@ pub fn list(paths: &Paths, store: &Store) -> Vec<ProvisionerInfo> {
             }
             // Its plugin was removed: it stays listed, to add the plugin again or remove it.
             Err(_) => ProvisionerInfo {
-                id: name,
+                id: entry.id.clone(),
+                name,
                 label: entry.kind.clone(),
                 problem: format!(
                     "No plugin brings {} any more: add its plugin again",
@@ -485,23 +489,28 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) ->
     let profile = Host::load(paths, host).map_err(|_| format!("No host {host}"))?;
     let lock = lock(paths, host)?;
     let kept = resource::of_place(paths, &profile.place)?;
+    let reference = crate::provisioner::for_use(paths, &asked.provisioner)?;
     if let Some(kept) = kept
         .as_ref()
         .filter(|kept| !kept.record.external_id.is_empty())
     {
         return Err(format!(
             "{host} has a machine already, {} of {}. See it with: berth resource show {}; delete it with: berth resource remove {}",
-            kept.record.external_id, kept.record.provisioner, kept.record.id, kept.record.id
+            kept.record.external_id,
+            crate::provisioner::label(paths, &kept.record.provisioner),
+            kept.record.id,
+            kept.record.id
         )
         .into());
     }
     if let Some(kept) = kept
         .as_ref()
-        .filter(|kept| kept.record.provisioner != asked.provisioner)
+        .filter(|kept| kept.record.provisioner != reference)
     {
         return Err(format!(
             "A machine for {host} was asked of {}, which did not say it made one. Forget it with: berth resource remove {}",
-            kept.record.provisioner, kept.record.id
+            crate::provisioner::label(paths, &kept.record.provisioner),
+            kept.record.id
         )
         .into());
     }
@@ -512,20 +521,16 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) ->
         return Err("A machine is given no secrets of its own; its profile names them".into());
     }
     let plugins = found(paths);
-    let (plugin, provisioner) = resolve(paths, &plugins, &asked.provisioner)?;
+    let (plugin, provisioner) = resolve(paths, &plugins, &reference)?;
     runnable(provisioner)?;
+    let name = crate::provisioner::label(paths, &reference);
     if provisioner.machine().is_none() {
-        return Err(format!("{} makes no machines for hosts", asked.provisioner).into());
+        return Err(format!("{name} makes no machines for hosts").into());
     }
-    let settings = crate::provisioner::settings(paths, &asked.provisioner)?;
-    let arguments = values_of(
-        &asked.provisioner,
-        &provisioner.arguments,
-        &asked.arguments,
-        &settings,
-    )?;
-    let (secrets, missing) = secrets(store, &asked.provisioner, provisioner);
-    needs_secrets(&asked.provisioner, &missing)?;
+    let settings = crate::provisioner::settings(paths, &reference)?;
+    let arguments = values_of(&name, &provisioner.arguments, &asked.arguments, &settings)?;
+    let (secrets, missing) = secrets(store, &reference, provisioner);
+    needs_secrets(&name, &missing)?;
     if provisioner.setup == Setup::Apply && profile.access().user.is_empty() {
         return Err(format!(
             "{} creates the machine with an account berth reaches over SSH: the profile of {host} needs access.user",
@@ -552,7 +557,7 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) ->
             scope,
             record: resource::Record {
                 id: resource::new_id()?,
-                provisioner: asked.provisioner.clone(),
+                provisioner: reference,
                 kind: crate::plugins::MACHINE.into(),
                 name: profile.place.title(),
                 host: side,
@@ -568,7 +573,7 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) ->
     kept.save(paths)?;
     Ok(Prepared {
         host: host.to_owned(),
-        name: asked.provisioner.clone(),
+        name,
         dir: plugin.dir.clone(),
         provisioner: provisioner.clone(),
         hidden: hidden(&secrets),
@@ -592,7 +597,7 @@ pub fn plan(
         scope,
         record: resource::Record {
             id: resource::new_id()?,
-            provisioner: provisioner.to_owned(),
+            provisioner: crate::provisioner::reference(paths, provisioner)?,
             kind: crate::plugins::MACHINE.into(),
             name: place.title(),
             host: side,
@@ -1372,7 +1377,7 @@ print(out)
         }
 
         fn profile(&self, name: &str, profile: Value) {
-            Place::own(name)
+            Place::own(&self.paths, name)
                 .unwrap()
                 .save(&self.paths, &profile)
                 .unwrap();
@@ -1380,6 +1385,11 @@ print(out)
 
         fn store(&self) -> Store {
             Store::new(&self.paths).unwrap()
+        }
+
+        /// The id of the host studio.
+        fn studio(&self) -> String {
+            Place::own(&self.paths, "studio").unwrap().key()
         }
 
         fn file(&self, name: &str, text: &str) {
@@ -1485,10 +1495,13 @@ print(out)
         .unwrap();
     }
 
+    /// The provisioner fake-vm, which a machine of the type fake/vm is made
+    /// with, with its secret: a provisioner is given its own secrets alone.
     fn with_secret(world: &World) {
+        register(world, "fake-vm", "fake/vm");
         world
             .store()
-            .set_secret("api_token", Some("tok-s3cret-value"))
+            .set_secret("provisioner/fake-vm/api_token", Some("tok-s3cret-value"))
             .unwrap();
     }
 
@@ -1505,7 +1518,7 @@ print(out)
         assert!(kept.external_id.is_empty() && kept.token.len() == 32);
         assert_eq!(
             (kept.kind.as_str(), kept.host.as_str()),
-            ("machine", "studio")
+            ("machine", world.studio().as_str())
         );
         // The record is a resource in the store, and no file is beside anything.
         let store = store::shared(&world.paths).unwrap();
@@ -1589,17 +1602,26 @@ print(out)
             said.contains("version 1") && said.contains("\"protocol\": 2"),
             "{said}"
         );
-        assert!(refused("fake/vm", &[("server", "x")]).contains("api_token"));
         // Only registered ones are listed, by their names.
         assert!(list(&world.paths, &world.store()).is_empty());
         register(&world, "vm", "fake/vm");
+        // The type names the one provisioner of it, which is given its own secrets alone.
+        world
+            .store()
+            .set_secret("api_token", Some("shared"))
+            .unwrap();
+        assert!(refused("fake/vm", &[("server", "x")]).contains("vm needs the secret api_token"));
         let listed = list(&world.paths, &world.store());
         assert_eq!(
-            (listed[0].id.as_str(), listed[0].kind.as_str()),
+            (listed[0].name.as_str(), listed[0].kind.as_str()),
             ("vm", "fake/vm")
         );
+        assert!(berth_api::ids::is_id(&listed[0].id));
         assert_eq!(listed[0].missing_secrets, ["api_token"]);
-        with_secret(&world);
+        world
+            .store()
+            .set_secret("provisioner/vm/api_token", Some("tok-made-up"))
+            .unwrap();
         assert!(
             list(&world.paths, &world.store())[0]
                 .missing_secrets
@@ -1687,9 +1709,10 @@ print(out)
     #[test]
     fn a_host_that_joins_the_tailnet_gets_no_machine_without_berths_api_key() {
         let world = World::new();
+        register(&world, "fake-vm", "fake/vm");
         world
             .store()
-            .set_secret("api_token", Some("tok-made-up"))
+            .set_secret("provisioner/fake-vm/api_token", Some("tok-made-up"))
             .unwrap();
         world.file("answer.create", r#"{"id": "vm-1"}"#);
         world.profile(
@@ -1704,7 +1727,7 @@ print(out)
         assert!(said.contains("berth secret set tailnet_api_key"), "{said}");
         // Nothing was asked of the provisioner, and no record was kept.
         assert!(world.requests().iter().all(|(verb, _)| verb != "create"));
-        let place = crate::profiles::Place::own("studio").unwrap();
+        let place = crate::profiles::Place::own(&world.paths, "studio").unwrap();
         assert!(
             crate::resource::of_place(&world.paths, &place)
                 .unwrap()
@@ -1715,13 +1738,17 @@ print(out)
     #[test]
     fn secrets_go_on_standard_input_and_never_into_the_output() {
         let world = World::new();
+        register(&world, "fake-vm", "fake/vm");
         world
             .store()
-            .set_secret("api_token", Some("tok-s3cret-value\nsecond-line-of-it"))
+            .set_secret(
+                "provisioner/fake-vm/api_token",
+                Some("tok-s3cret-value\nsecond-line-of-it"),
+            )
             .unwrap();
         world
             .store()
-            .set_secret("extra", Some("optional-one"))
+            .set_secret("provisioner/fake-vm/extra", Some("optional-one"))
             .unwrap();
         world.file("leak", "");
         world.file("say.create", "using tok-s3cret-value\n");
@@ -1891,7 +1918,7 @@ print(out)
         .unwrap_err()
         .to_string();
         assert!(
-            said.contains("gone") && said.contains("berth resource remove r-"),
+            said.contains("gone") && said.contains("berth resource remove "),
             "{said}"
         );
         assert_eq!(world.record().unwrap().external_id, "seeded-1");
@@ -2047,7 +2074,7 @@ print(out)
         let said = done.unwrap_err().to_string();
         assert!(started.elapsed() < Duration::from_secs(20));
         assert!(said.contains("studio's first boot failed"), "{said}");
-        assert!(said.contains("berth resource remove r-"), "{said}");
+        assert!(said.contains("berth resource remove "), "{said}");
         let end = out
             .split_once("! studio: its first boot failed. The end of its log:\n")
             .unwrap()
@@ -2172,7 +2199,7 @@ print(out)
         };
         for place in [
             Place::File(home.path().join("studio.json")),
-            Place::own("studio").unwrap(),
+            Place::own(&paths, "studio").unwrap(),
         ] {
             let taken = |profile: Value| {
                 place.save(&paths, &profile).unwrap();
@@ -2229,7 +2256,7 @@ print(out)
             .unwrap()
             .unwrap();
         assert_eq!(found.record.token, "t");
-        assert_eq!(found.title(), "studio's machine");
+        assert_eq!(found.title(&world.paths), "studio's machine");
     }
 
     #[test]
@@ -2278,7 +2305,7 @@ print(out)
             r#"{"id": "vm-1", "address": "192.0.2.20"}"#,
         );
         register(&world, "lab", "fake/vm");
-        // A secret of its own wins over the one all share.
+        // It is given its own secret.
         world
             .store()
             .set_secret("provisioner/lab/api_token", Some("tok-lab"))
@@ -2293,15 +2320,21 @@ print(out)
         let (_, create) = world.requests().pop().unwrap();
         assert_eq!(create["arguments"]["server"], "https://192.0.2.10:8443");
         assert_eq!(create["secrets"]["api_token"], "tok-lab");
-        assert_eq!(world.record().unwrap().provisioner, "lab");
+        assert_eq!(
+            world.record().unwrap().provisioner,
+            crate::provisioner::id_of(&world.paths, "lab")
+                .unwrap()
+                .unwrap()
+        );
         // The record keeps where it was made, whatever the setting says later.
         assert_eq!(
             world.record().unwrap().arguments["server"],
             "https://192.0.2.10:8443"
         );
         let listed = list(&world.paths, &world.store());
-        assert_eq!(listed[0].settings["server"], "https://192.0.2.10:8443");
-        assert!(listed[0].problem.is_empty(), "{}", listed[0].problem);
+        let lab = listed.iter().position(|info| info.name == "lab").unwrap();
+        assert_eq!(listed[lab].settings["server"], "https://192.0.2.10:8443");
+        assert!(listed[lab].problem.is_empty(), "{}", listed[lab].problem);
         // An empty value is forgotten.
         crate::provisioner::save_settings(
             &world.paths,
@@ -2310,13 +2343,13 @@ print(out)
         )
         .unwrap();
         let listed = list(&world.paths, &world.store());
-        assert!(listed[0].settings.is_empty());
+        assert!(listed[lab].settings.is_empty());
         assert!(
-            listed[0]
+            listed[lab]
                 .problem
                 .contains("berth provisioner set lab server=VALUE"),
             "{}",
-            listed[0].problem
+            listed[lab].problem
         );
     }
 

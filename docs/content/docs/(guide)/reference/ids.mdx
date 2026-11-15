@@ -1,0 +1,95 @@
+---
+title: IDs and names
+description: How berth tells hosts, provisioners, registries, secrets and keys apart, and what a name or an id finds in the API and on the command line.
+icon: Fingerprint
+---
+
+Each host, provisioner, resource, registry, secret and key that berth keeps has an id beside its name. berth gives the id when the thing is made. It stays the same for as long as the thing exists, and berth gives it to nothing else afterwards. You can change the name, and berth finds the thing by either.
+
+## What has an id
+
+| Kind | Prefix | Example name |
+| --- | --- | --- |
+| Host | `host_` | `studio` |
+| Provisioner | `prov_` | `incus-vm` |
+| Resource | `res_` | `berth-studio` |
+| Registry | `reg_` | `nexus` |
+| Secret | `sec_` | `github_token` |
+| Key | `key_` | `berth` |
+
+A plugin is known by its package name, such as `claude`. That name is already permanent, and profiles refer to a plugin's features by it on every installation, so a plugin has no id of its own.
+
+## The form of an id
+
+An id is a UUID, version 7, written as 32 lowercase hex characters without hyphens:
+
+```text
+01972c4e8f3a7b219d4e5a6b7c8d9e0f
+```
+
+berth replies with this bare form, and keeps and logs it so. Wherever it takes an id, it also takes the id with the prefix of its kind, such as `prov_01972c4e8f3a7b219d4e5a6b7c8d9e0f`, and drops the prefix. A prefix of another kind is refused, so `host_…` given for a provisioner is an error. The hyphenated form of a UUID is taken too.
+
+A resource's id is berth's own, and is not the id its provisioner gives it, which a reply calls `external_id`.
+
+## Finding a thing by name or id
+
+An argument that refers to a host, provisioner, resource, registry, secret or key takes the name or the id. This is so in the paths of the API, in query parameters and in the fields of a request body. The command line and the screens take both too. berth reads a value in this order:
+
+1. A value with a prefix is an id of that kind. If there is no such thing, the reply is "not found", and berth does not try it as a name.
+2. A value in the form of an id is that id, if there is a thing with it.
+3. Anything else is a name.
+
+A name cannot be in the form of an id, so the two never meet. berth refuses a name of 32 hex characters in either case, with or without a prefix. It does so when a thing is made and when it is renamed. Names are unique among the things of one kind. A secret's name is unique among the global secrets, and among the secrets of its owner.
+
+## Replies
+
+A reply that describes a thing has `id` beside `name`. Where a reply refers to another thing by name, a field with that thing's id comes beside it:
+
+| Reply | Field | Added |
+| --- | --- | --- |
+| A host | `name` | `id` |
+| A provisioner | `node` | `name`, `node_id` |
+| A resource | `provisioner`, `host` | `provisioner_id`, `host_id` |
+| A registry | `name` | `id` |
+| `secrets.list` | `names` | `secrets`, a list of `{id, name}` |
+| A key | `name` | `id` |
+| A job | `host` | `subject_name`, `host_id` |
+| A message of the inbox | `host` | `host_id` |
+
+A provisioner's `id` was its name before berth had ids, and is its id now. Its name is in `name`.
+
+A job's `subject` is what it is about by id, such as `provisioner:ID`, which stays the same through renames. Its `subject_name` says the same as it is called now, such as `provisioner:incus-vm`. A job about a thing that is gone gives its id in both. The filters of `jobs.list` take either.
+
+## Renaming and removing
+
+A rename changes the label alone. Everything that belongs to the thing stays with it, and everything that refers to it goes on finding it:
+
+| Rename | How | What stays attached |
+| --- | --- | --- |
+| A host | its action `rename` | its machine, passwords, SSH keys, messages, jobs and tailnet device |
+| A provisioner | its action `rename` | its settings, secrets, node and resources, and its jobs |
+| A registry | `registries.rename`, `berth registry rename` | its login, and the hosts that use it |
+| A secret | `secrets.rename`, `berth secret rename` | the profiles that hand it to hosts |
+
+Removing a thing removes everything it owns. berth still refuses to remove what something else needs, such as a provisioner that holds resources.
+
+## Global and owned secrets
+
+A secret is either global or owned.
+
+- A **global** secret has no owner, such as `tailnet_api_key` or a secret a profile hands to its host. `secrets.list` lists these.
+- An **owned** secret belongs to one thing, such as a provisioner's server certificate or a registry's login. It follows its owner through a rename and goes when its owner is removed. You set it through its owner, such as the provisioner's action `secrets`.
+
+A provisioner uses its own secrets alone. It is never given a global secret that has the same name as one of its own.
+
+## Profiles
+
+In a profile you see or edit, registries and secrets and keys are given by name. That is so in `berth host edit` and `berth host export`, in `hosts.profile`, in profile files and in the profile a host keeps of itself. berth keeps their ids, and turns names into ids when a profile is saved. A list in a profile that is saved may also give an id in place of a name.
+
+The profile a host keeps of itself carries the host's id. `berth host adopt` gives the host that id again when no other host here has it, so jobs and messages of the host find it once more.
+
+## After an upgrade
+
+The first start of a berth with ids converts the store once, after the copy of the store berth makes before converting it. It gives every thing an id, and moves the secrets that belong to a provisioner, a registry or a host under their owners.
+
+A provisioner that had no certificate of its own and used a global secret of the same name gets a copy of that secret as its own. The global one goes when nothing else uses it. An older berth cannot read the converted store, so going back needs that copy.

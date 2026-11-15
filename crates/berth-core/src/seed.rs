@@ -65,7 +65,12 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
         .ok_or_else(|| format!("No host {name}"))?;
     let key = tailnet::seed_key(paths, &saved, name)?;
     let mut config = named(saved.clone(), name);
-    crate::kept_profile::for_seed(&mut config, &host.place.title(), &saved);
+    crate::kept_profile::for_seed(
+        &mut config,
+        &host.place.title(),
+        host.place.id().unwrap_or(""),
+        &saved,
+    );
     let seeded = tailnet::profile_file(&config)?;
     // The machine's operator takes these keys, so that berth can always reach it.
     let own = crate::keys::operator_keys(paths, &saved)?;
@@ -198,7 +203,12 @@ pub fn installer(paths: &Paths, name: &str, ubuntu: &std::path::Path) -> Result<
     let saved = host.config.clone();
     let key = tailnet::seed_key(paths, &saved, name)?;
     let mut config = named(saved.clone(), name);
-    crate::kept_profile::for_seed(&mut config, &host.place.title(), &saved);
+    crate::kept_profile::for_seed(
+        &mut config,
+        &host.place.title(),
+        host.place.id().unwrap_or(""),
+        &saved,
+    );
     let hostname = config["hostname"].as_str().unwrap_or(name).to_owned();
     let profile = tailnet::profile_file(&config)?;
     let own = crate::keys::operator_keys(paths, &saved)?;

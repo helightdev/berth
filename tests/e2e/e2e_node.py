@@ -138,7 +138,7 @@ class Node(unittest.TestCase):
         listed = json.loads(self.berth('provisioner', 'list', '-o', 'json').stdout)
         if isinstance(listed, dict):
             listed = listed['provisioners']
-        return [provisioner['id'] for provisioner in listed]
+        return [provisioner['name'] for provisioner in listed]
 
     def test_1_a_feature_for_a_workstation_is_refused_before_anything_runs(self):
         added = self.station.read_profile()

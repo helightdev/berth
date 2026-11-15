@@ -248,9 +248,12 @@ async fn a_host_lives_its_whole_life_on_a_simulated_server() {
     );
     let provisioners = server.call("GET", "/v1/provisioners", None).await;
     assert_eq!(
-        (&provisioners[0]["id"], &provisioners[0]["type"]),
+        (&provisioners[0]["name"], &provisioners[0]["type"]),
         (&json!("sim"), &json!("sim/cloud"))
     );
+    assert!(berth_api::ids::is_id(
+        provisioners[0]["id"].as_str().unwrap_or("")
+    ));
     let shown = server.call("GET", "/v1/provisioners/sim", None).await;
     assert!(
         shown.to_string().contains("ubuntu-26.04"),

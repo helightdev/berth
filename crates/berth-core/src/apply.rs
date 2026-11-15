@@ -616,7 +616,7 @@ mod tests {
         paths.set("source", source.to_str().unwrap()).unwrap();
         let host = Host {
             name: "box".into(),
-            place: Place::own("box").unwrap(),
+            place: Place::own(&paths, "box").unwrap(),
             config: json!({"target": "cloud", "access": {"address": "box", "user": "ops", "sudo": "password"}}),
         };
         let prepared = prepare(&paths, &host, Some("hunter2")).unwrap();
@@ -677,7 +677,7 @@ mod tests {
         };
         paths.prepare().unwrap();
         paths.give_own_key();
-        let place = Place::own("studio").unwrap();
+        let place = Place::own(&paths, "studio").unwrap();
         let host = |config: Value| {
             place.save(&paths, &config).unwrap();
             Host {
@@ -687,6 +687,7 @@ mod tests {
             }
         };
         let saved = || place.load(&paths).unwrap().unwrap();
+        place.save(&paths, &json!({})).unwrap();
         let secrets = crate::registry::Store::own(crate::store::shared(&paths).unwrap());
         secrets.set_secret("sudo/studio", Some("hunter2")).unwrap();
         secrets.set_secret("ssh/studio", Some("hunter2")).unwrap();

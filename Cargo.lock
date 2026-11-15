@@ -277,6 +277,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tower",
  "tui-input",
  "utoipa",
  "utoipa-axum",

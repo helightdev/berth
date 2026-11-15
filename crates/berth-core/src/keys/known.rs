@@ -59,10 +59,14 @@ impl Record {
 }
 
 /// The name ssh files the host's key under: berth's own for the host, the
-/// same whatever its address or port.
+/// same whatever its address or port. A saved host's is its name, which
+/// people see in what ssh says; a rename writes the file anew.
 pub fn alias(place: &Place) -> String {
     use sha2::{Digest, Sha256};
-    let (scope, name) = place.side();
+    let (scope, name) = match place {
+        Place::Stored { scope, name, .. } => (scope.clone(), name.clone()),
+        Place::File(_) => place.side(),
+    };
     let short = |text: &str| -> String {
         Sha256::digest(text.as_bytes())
             .iter()
@@ -284,7 +288,7 @@ mod tests {
             data_dir: dir.path().join("data"),
         };
         let store = Store::open(&dir.path().join("berth.db")).unwrap();
-        let place = Place::own("studio").unwrap();
+        let place = Place::own(&paths, "studio").unwrap();
         let known_hosts = dir.path().join("known_hosts");
         std::fs::write(
             &known_hosts,
@@ -305,7 +309,7 @@ mod tests {
                 .is_empty()
         );
         // A port of its own is looked up as ssh writes it.
-        let dock = Place::own("dock").unwrap();
+        let dock = Place::own(&paths, "dock").unwrap();
         let config = serde_json::json!({"access": {"address": "192.0.2.11", "port": "2222"}});
         std::fs::write(&known_hosts, "[192.0.2.11]:2222 ssh-ed25519 AAAAdock\n").unwrap();
         let taken = take_from_user(&paths, &store, &dock, &config, &known_hosts).unwrap();
@@ -342,8 +346,12 @@ mod tests {
 
     #[test]
     fn aliases_are_one_word_per_place() {
-        let own = Place::own("studio").unwrap();
-        let served = Place::stored("served:http://192.0.2.7:7777", "studio").unwrap();
+        let own = Place::at("", "0197000000007000800000000000000a", "studio");
+        let served = Place::at(
+            "served:http://192.0.2.7:7777",
+            "0197000000007000800000000000000b",
+            "studio",
+        );
         let file = Place::File("/profiles/studio.json".into());
         let names = [alias(&own), alias(&served), alias(&file)];
         assert_eq!(names[0], "berth.studio");
@@ -359,7 +367,7 @@ mod tests {
             data_dir: dir.path().join("data"),
         };
         let store = Store::open(&dir.path().join("berth.db")).unwrap();
-        let place = Place::own("studio").unwrap();
+        let place = Place::own(&paths, "studio").unwrap();
         let path = prepare(&paths, &store, &place).unwrap();
         assert!(!path.exists() && path.parent().unwrap().is_dir());
         // What ssh writes there at first contact.

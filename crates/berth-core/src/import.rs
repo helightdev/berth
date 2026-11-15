@@ -53,6 +53,10 @@ pub const NAMES_MARKER: &str = "import:names";
 /// older berths kept of joining the tailnet without a key berth makes.
 pub const TAILNET_MARKER: &str = "import:tailnet";
 
+/// The marker of the ninth, which gives everything berth keeps under a name
+/// an id, and has what refers to it, and what belongs to it, use the id.
+pub const IDS_MARKER: &str = "import:ids";
+
 /// Every import's marker: a store that lacks one is taken in by this berth.
 pub const MARKERS: &[&str] = &[
     MARKER,
@@ -63,6 +67,7 @@ pub const MARKERS: &[&str] = &[
     PROVISIONERS_MARKER,
     NAMES_MARKER,
     TAILNET_MARKER,
+    IDS_MARKER,
 ];
 
 /// What a row of the import is.
@@ -96,6 +101,7 @@ pub fn run(paths: &Paths, installation: &Installation, store: &Store) -> Result<
         && marked(store, PROVISIONERS_MARKER)?
         && marked(store, NAMES_MARKER)?
         && marked(store, TAILNET_MARKER)?
+        && marked(store, IDS_MARKER)?
     {
         return Ok(());
     }
@@ -190,7 +196,456 @@ pub fn run(paths: &Paths, installation: &Installation, store: &Store) -> Result<
             eprintln!("berth: {renamed} {noun} {verb} type for level and target for profile now");
         }
     }
+    // Last, as every import before keeps things by name.
+    if !marked(store, IDS_MARKER)? {
+        let plugins = crate::provision::found(paths);
+        let taken = take_in_ids(store, &plugins)?;
+        for said in taken.said() {
+            eprintln!("berth: {said}");
+        }
+    }
     Ok(())
+}
+
+/// What the import of ids did.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct TakenIds {
+    /// How many things were given an id.
+    pub given: usize,
+    /// The provisioners that were given a copy of a secret that all shared,
+    /// as `PROVISIONER: SECRET`.
+    pub copied: Vec<String>,
+    /// The secrets all shared that went once each provisioner had its own.
+    pub dropped: Vec<String>,
+}
+
+impl TakenIds {
+    fn said(&self) -> Vec<String> {
+        let mut said = vec![];
+        if self.given > 0 {
+            said.push(format!(
+                "gave {} hosts, provisioners, resources, registries, secrets and keys ids of their own; their names can change now",
+                self.given
+            ));
+        }
+        if !self.copied.is_empty() {
+            said.push(format!(
+                "each provisioner has its own copy of the secrets it took from those all share: {}",
+                self.copied.join(", ")
+            ));
+        }
+        if !self.dropped.is_empty() {
+            said.push(format!(
+                "removed the secrets {} that all shared and nothing else uses",
+                self.dropped.join(", ")
+            ));
+        }
+        said
+    }
+}
+
+/// The ninth import, in one change with its marker. Each host, provisioner,
+/// resource, registry, global secret and key gets an id, and its name
+/// becomes its label. What belongs to one is kept by its id: a host's
+/// generated passwords, what berth knows of its SSH, its passwords for
+/// logging in, a registry's login, a provisioner's secrets, a resource's
+/// specification and a key's successor. Records, profiles, jobs, messages
+/// and cursors refer to them by id. A provisioner that took a secret of the
+/// name it declares from those all share gets its own copy, and a shared one
+/// that nothing else uses then goes. A row that has a label already was
+/// converted before and is left as it is.
+pub(crate) fn take_in_ids(store: &Store, plugins: &[crate::plugins::Plugin]) -> Result<TakenIds> {
+    use crate::store::{Batch, Rows, Table, new_id};
+    use std::collections::{BTreeMap, BTreeSet};
+    let rows = match store.export(Table::State)? {
+        Rows::State(rows) => rows,
+        _ => vec![],
+    };
+    // A row by name: one without a label, which no thing owns and which is
+    // no resource of an id of the new shape.
+    let converted = |name: &str| {
+        berth_api::ids::is_id(name)
+            || name
+                .split_once('/')
+                .is_some_and(|(owner, _)| berth_api::ids::is_id(owner))
+    };
+    let legacy = |kind: &str| -> Vec<(String, String)> {
+        rows.iter()
+            .filter(|row| row.kind == kind && row.label.is_none() && !converted(&row.name))
+            .map(|row| (row.scope.clone(), row.name.clone()))
+            .collect()
+    };
+    let labelled = |kind: &str| -> Vec<(String, String, String)> {
+        rows.iter()
+            .filter(|row| row.kind == kind)
+            .filter_map(|row| Some((row.scope.clone(), row.name.clone(), row.label.clone()?)))
+            .collect()
+    };
+    let mut batch = Batch::default();
+    let mut taken = TakenIds::default();
+    // (kind, scope, name) → id, for those converted now and before.
+    let mut ids: BTreeMap<(&str, String, String), String> = BTreeMap::new();
+    for (scope, id, label) in labelled(kind::PROFILE) {
+        ids.insert((kind::PROFILE, scope, label), id);
+    }
+    for kind in [
+        kind::PROVISIONER_ENTRY,
+        kind::REGISTRY,
+        kind::KEY,
+        kind::SECRET,
+    ] {
+        for (scope, id, label) in labelled(kind) {
+            ids.insert((kind, scope, label), id);
+        }
+    }
+    // The things themselves.
+    let mut values: Vec<(&str, String, String, String, Vec<u8>)> = vec![];
+    for kind in [kind::PROFILE, kind::PROVISIONER_ENTRY, kind::REGISTRY] {
+        for (scope, name) in legacy(kind) {
+            let Some(value) = store.read(kind, &scope, &name)? else {
+                continue;
+            };
+            let id = new_id();
+            ids.insert((kind, scope.clone(), name.clone()), id.clone());
+            batch.remove(kind, &scope, &name);
+            values.push((kind, scope, id, name, value));
+        }
+    }
+    for (scope, name) in legacy(kind::KEY) {
+        if name.ends_with(crate::keys::ring::PENDING) {
+            continue;
+        }
+        let Some(value) = store.read(kind::KEY, &scope, &name)? else {
+            continue;
+        };
+        let id = new_id();
+        ids.insert((kind::KEY, scope.clone(), name.clone()), id.clone());
+        batch.remove(kind::KEY, &scope, &name);
+        values.push((kind::KEY, scope, id, name, value));
+    }
+    for (scope, name) in legacy(kind::KEY) {
+        let Some(key) = name.strip_suffix(crate::keys::ring::PENDING) else {
+            continue;
+        };
+        batch.remove(kind::KEY, &scope, &name);
+        if let (Some(id), Some(value)) = (
+            ids.get(&(kind::KEY, scope.clone(), key.to_owned())),
+            store.read(kind::KEY, &scope, &name)?,
+        ) {
+            batch.write(kind::KEY, &scope, &format!("{id}/pending"), value);
+        }
+    }
+    let id_of =
+        |ids: &BTreeMap<(&str, String, String), String>,
+         kind: &'static str,
+         scope: &str,
+         name: &str| { ids.get(&(kind, scope.to_owned(), name.to_owned())).cloned() };
+    // Secrets: what belongs to a registry, a host or a provisioner goes
+    // under its owner; one whose owner is gone goes with it.
+    for (scope, name) in legacy(kind::SECRET) {
+        let owner_row =
+            |owner: Option<String>, label: &str| owner.map(|id| format!("{id}/{label}"));
+        let moved = if let Some(registry) = name.strip_prefix("registry/") {
+            Some(owner_row(
+                id_of(&ids, kind::REGISTRY, &scope, registry),
+                "login",
+            ))
+        } else if let Some((label, host)) = name
+            .strip_prefix("ssh/")
+            .map(|host| ("ssh", host))
+            .or_else(|| name.strip_prefix("sudo/").map(|host| ("sudo", host)))
+        {
+            // A profile in a file keeps its passwords by its path.
+            match host.contains('/') || host.ends_with(".json") {
+                true => continue,
+                false => Some(owner_row(id_of(&ids, kind::PROFILE, &scope, host), label)),
+            }
+        } else if let Some((provisioner, secret)) = name
+            .strip_prefix("provisioner/")
+            .and_then(|rest| rest.split_once('/'))
+        {
+            Some(owner_row(
+                id_of(&ids, kind::PROVISIONER_ENTRY, &scope, provisioner),
+                secret,
+            ))
+        } else {
+            None
+        };
+        let Some(value) = store.read(kind::SECRET, &scope, &name)? else {
+            continue;
+        };
+        batch.remove(kind::SECRET, &scope, &name);
+        match moved {
+            Some(Some(row)) => {
+                batch.write(kind::SECRET, &scope, &row, value);
+            }
+            Some(None) => {}
+            None => {
+                let id = new_id();
+                ids.insert((kind::SECRET, scope.clone(), name.clone()), id.clone());
+                values.push((kind::SECRET, scope, id, name, value));
+            }
+        }
+    }
+    taken.given = values.len();
+    // What hangs off a host by its name: by its id now.
+    for kind in [kind::CREDENTIALS, kind::ACCESS, kind::TAILNET] {
+        for (scope, name) in legacy(kind) {
+            let Some(id) = id_of(&ids, kind::PROFILE, &scope, &name) else {
+                continue;
+            };
+            if let Some(value) = store.read(kind, &scope, &name)? {
+                batch
+                    .remove(kind, &scope, &name)
+                    .write(kind, &scope, &id, value);
+            }
+        }
+    }
+    // Resources: an id of the new shape, their provisioner and host by id,
+    // and their specification beside them.
+    let mut resources: BTreeMap<String, String> = BTreeMap::new();
+    // Every record, as the imports before make ids of the new shape too.
+    let records: Vec<(String, String)> = rows
+        .iter()
+        .filter(|row| row.kind == kind::RESOURCE)
+        .map(|row| (row.scope.clone(), row.name.clone()))
+        .collect();
+    for (scope, old) in records {
+        let Some(value) = store.read(kind::RESOURCE, &scope, &old)? else {
+            continue;
+        };
+        let Ok(mut record) = serde_json::from_slice::<crate::resource::Record>(&value) else {
+            continue;
+        };
+        let before = record.clone();
+        let id = match berth_api::ids::is_id(&old) {
+            true => old.clone(),
+            false => new_id(),
+        };
+        record.id = id.clone();
+        if let Some(provisioner) = id_of(&ids, kind::PROVISIONER_ENTRY, OWN, &record.provisioner) {
+            record.provisioner = provisioner;
+        }
+        if scope != crate::profiles::FILE_SCOPE
+            && let Some(host) = id_of(&ids, kind::PROFILE, &scope, &record.host)
+        {
+            record.host = host;
+        }
+        if record == before && id == old {
+            continue;
+        }
+        batch.remove(kind::RESOURCE, &scope, &old);
+        if let Some(spec) = store.read(kind::SPEC, &scope, &old)? {
+            batch
+                .remove(kind::SPEC, &scope, &old)
+                .write(kind::SPEC, &scope, &id, spec);
+        }
+        resources.insert(old, id.clone());
+        values.push((
+            kind::RESOURCE,
+            scope,
+            id,
+            String::new(),
+            serde_json::to_vec(&record)?,
+        ));
+        taken.given += 1;
+    }
+    // A provisioner's node by its id, and the secrets of the names its type
+    // declares that it took from those all share: its own copies now.
+    let mut copied_from: BTreeSet<String> = BTreeSet::new();
+    let owned_secrets: BTreeSet<String> = rows
+        .iter()
+        .filter(|row| row.kind == kind::SECRET)
+        .map(|row| row.name.clone())
+        .collect();
+    let global = |ids: &BTreeMap<(&str, String, String), String>, name: &str| {
+        id_of(ids, kind::SECRET, OWN, name)
+    };
+    let mut provisioner_values = vec![];
+    for (kind, scope, id, name, value) in values.iter_mut() {
+        if *kind != kind::PROVISIONER_ENTRY {
+            continue;
+        }
+        let Ok(mut entry) = serde_json::from_slice::<crate::provisioner::Entry>(value) else {
+            continue;
+        };
+        if let Some(node) = id_of(&ids, kind::PROFILE, scope, &entry.node) {
+            entry.node = node;
+        }
+        *value = serde_json::to_vec(&entry)?;
+        provisioner_values.push((id.clone(), name.clone(), entry.kind.clone(), scope.clone()));
+    }
+    for (_, id, label) in labelled(kind::PROVISIONER_ENTRY) {
+        if let Some(value) = store.read(kind::PROVISIONER_ENTRY, OWN, &id)?
+            && let Ok(entry) = serde_json::from_slice::<crate::provisioner::Entry>(&value)
+        {
+            provisioner_values.push((id, label, entry.kind, OWN.to_owned()));
+        }
+    }
+    for (id, name, kind_of, scope) in &provisioner_values {
+        let Ok((_, declared)) = crate::provision::find(plugins, kind_of) else {
+            continue;
+        };
+        for secret in &declared.secrets {
+            let own = format!("{id}/{}", secret.name);
+            let had = owned_secrets.contains(&format!("provisioner/{name}/{}", secret.name))
+                || owned_secrets.contains(&own);
+            if had {
+                continue;
+            }
+            let Some(value) = store.read(kind::SECRET, scope, &secret.name)?.or(
+                match global(&ids, &secret.name) {
+                    Some(global) => store.read(kind::SECRET, scope, &global)?,
+                    None => None,
+                },
+            ) else {
+                continue;
+            };
+            batch.write(kind::SECRET, scope, &own, value);
+            taken.copied.push(format!("{name}: {}", secret.name));
+            copied_from.insert(secret.name.clone());
+        }
+    }
+    // Profiles refer to registries, secrets and keys by id.
+    let mut profiles: Vec<(String, String, Value)> = vec![];
+    for (kind, scope, id, _, value) in &values {
+        if *kind == kind::PROFILE
+            && let Ok(profile) = serde_json::from_slice::<Value>(value)
+        {
+            profiles.push((scope.clone(), id.clone(), profile));
+        }
+    }
+    for (scope, id, _) in labelled(kind::PROFILE) {
+        if let Some(profile) = store.read_json(kind::PROFILE, &scope, &id)? {
+            profiles.push((scope, id, profile));
+        }
+    }
+    let mut handed: BTreeSet<String> = BTreeSet::new();
+    let mut converted_profiles: BTreeMap<(String, String), Value> = BTreeMap::new();
+    for (scope, id, mut profile) in profiles {
+        for entry in profile["secrets"].as_array().into_iter().flatten() {
+            if let Some(name) = entry["name"].as_str() {
+                handed.insert(name.to_owned());
+            }
+        }
+        let mut changed = false;
+        if let Some(secrets) = profile.get_mut("secrets").and_then(Value::as_array_mut) {
+            for entry in secrets {
+                if let Some(name) = entry["name"].as_str()
+                    && let Some(found) = id_of(&ids, kind::SECRET, OWN, name)
+                {
+                    entry["name"] = json!(found);
+                    changed = true;
+                }
+            }
+        }
+        if let Some(registries) = profile.get_mut("registries").and_then(Value::as_array_mut) {
+            for name in registries {
+                if let Some(found) = name
+                    .as_str()
+                    .and_then(|name| id_of(&ids, kind::REGISTRY, OWN, name))
+                {
+                    *name = json!(found);
+                    changed = true;
+                }
+            }
+        }
+        if let Some(auth) = profile.pointer_mut("/access/auth")
+            && let Some(key) = auth.as_str().and_then(|text| text.strip_prefix("key:"))
+            && let Some(found) = id_of(&ids, kind::KEY, OWN, key)
+        {
+            *auth = json!(format!("key:{found}"));
+            changed = true;
+        }
+        if changed {
+            converted_profiles.insert((scope, id), profile);
+        }
+    }
+    for (kind, scope, id, _, value) in values.iter_mut() {
+        if *kind == kind::PROFILE
+            && let Some(profile) = converted_profiles.remove(&(scope.clone(), id.clone()))
+        {
+            *value = profile.to_string().into_bytes();
+        }
+    }
+    for ((scope, id), profile) in converted_profiles {
+        batch.write(kind::PROFILE, &scope, &id, profile.to_string().into_bytes());
+    }
+    // A shared secret a provisioner had through the name it declares goes
+    // when nothing else uses it: no profile hands it to a host, and no
+    // feature makes nodes trust it.
+    let trusted: BTreeSet<String> = plugins
+        .iter()
+        .flat_map(crate::plugins::hosting)
+        .filter_map(|hosting| hosting.trusts)
+        .flat_map(|(cert, key)| [cert, key])
+        .collect();
+    for name in &copied_from {
+        if handed.contains(name) || trusted.contains(name) {
+            continue;
+        }
+        if let Some(index) = values.iter().position(|(kind, scope, _, label, _)| {
+            *kind == kind::SECRET && scope == OWN && label == name
+        }) {
+            values.remove(index);
+            taken.given -= 1;
+        } else if let Some(id) = global(&ids, name) {
+            batch.remove(kind::SECRET, OWN, &id);
+        }
+        taken.dropped.push(name.clone());
+    }
+    for (kind, scope, id, label, value) in values {
+        match label.is_empty() {
+            true => batch.write(kind, &scope, &id, value),
+            false => batch.write_labelled(kind, &scope, &id, &label, value),
+        };
+    }
+    // Jobs, messages and cursors, by the ids of what they are about.
+    let host_id = |name: &str| id_of(&ids, kind::PROFILE, OWN, name);
+    if let Rows::Jobs(jobs) = store.export(Table::Jobs)? {
+        for job in jobs {
+            let subject = match crate::runner::Subject::parse(&job.subject) {
+                Some(crate::runner::Subject::Host(name)) => {
+                    host_id(&name).map(|id| format!("host:{id}"))
+                }
+                Some(crate::runner::Subject::Provisioner(name)) => {
+                    id_of(&ids, kind::PROVISIONER_ENTRY, OWN, &name)
+                        .map(|id| format!("provisioner:{id}"))
+                }
+                Some(crate::runner::Subject::Resource(old)) => {
+                    resources.get(&old).map(|id| format!("resource:{id}"))
+                }
+                _ => None,
+            };
+            let hosts: Vec<String> = job
+                .host
+                .split(", ")
+                .filter(|host| !host.is_empty())
+                .map(|host| host_id(host).unwrap_or_else(|| host.to_owned()))
+                .collect();
+            let hosts = hosts.join(", ");
+            if subject.is_some() || hosts != job.host {
+                batch.set_job(&job.id, &hosts, &subject.unwrap_or(job.subject));
+            }
+        }
+    }
+    let mut seen_hosts = BTreeSet::new();
+    if let Rows::Messages(messages) = store.export(Table::Messages)? {
+        seen_hosts.extend(messages.into_iter().map(|message| message.host));
+    }
+    if let Rows::Cursors(cursors) = store.export(Table::Cursors)? {
+        seen_hosts.extend(cursors.into_iter().map(|cursor| cursor.host));
+    }
+    for host in seen_hosts {
+        if let Some(id) = host_id(&host) {
+            batch.move_host(&host, &id);
+        }
+    }
+    let marker =
+        json!({"version": berth_api::VERSION, "at": berth_api::rfc3339(berth_api::unix_now())});
+    batch.write(kind::META, OWN, IDS_MARKER, marker.to_string().into_bytes());
+    store.apply(&batch)?;
+    Ok(taken)
 }
 
 /// The seventh import, in one change with its marker: every stored profile,
@@ -1279,8 +1734,21 @@ mod tests {
         store
     }
 
+    /// A value by the name of what it is: a thing by its name, which the
+    /// store keeps as its label; a secret also by the address of one that
+    /// belongs to something, such as `registry/NAME`.
     fn read(store: &Store, kind: &str, name: &str) -> Option<String> {
-        let value = store.read(kind, OWN, name).unwrap()?;
+        // A row by name, as before the import of ids, is read as it is.
+        if kind == kind::SECRET
+            && let Some(value) = crate::registry::read_secret_in(store, OWN, name).unwrap()
+        {
+            return Some(value);
+        }
+        let row = store
+            .id_of(kind, OWN, name)
+            .unwrap()
+            .unwrap_or(name.to_owned());
+        let value = store.read(kind, OWN, &row).unwrap()?;
         Some(String::from_utf8(value).unwrap())
     }
 
@@ -1532,15 +2000,24 @@ mod tests {
             json_row(&store, kind::PROFILE, "studio").unwrap(),
             json!({"hostname": "studio", "target": "laptop", "builder": {}})
         );
-        // A row an older berth writes later is read with the names of now.
+        // A row a berth server of an older version writes later is read with the names of now.
         let late = json!({"level": "controller", "access": {"address": "192.0.2.5"}});
         store
-            .write(kind::PROFILE, OWN, "late", late.to_string().as_bytes())
+            .write_labelled(
+                kind::PROFILE,
+                OWN,
+                &crate::store::new_id(),
+                "late",
+                late.to_string().as_bytes(),
+            )
             .unwrap();
-        let place = crate::profiles::Place::own("late").unwrap();
+        let place = crate::profiles::Place::own(&paths, "late").unwrap();
         assert_eq!(place.load(&paths).unwrap().unwrap()["type"], "managed");
         let listed = crate::profiles::list(&paths, OWN).unwrap();
-        let (_, listed) = listed.iter().find(|(name, _)| name == "late").unwrap();
+        let (_, listed) = listed
+            .iter()
+            .find(|(place, _)| place.argument() == "late")
+            .unwrap();
         assert!(listed.get("level").is_none());
     }
 
@@ -1681,7 +2158,7 @@ mod tests {
         let (_dir, paths) = scratch();
         let store = open(&paths);
         let report = store.seal_report().unwrap();
-        assert_eq!((report.sealed, report.plain), (0, 8));
+        assert_eq!((report.sealed, report.plain), (0, 9));
         assert!(read(&store, kind::META, MARKER).is_some());
         assert!(read(&store, kind::META, PROVISIONERS_MARKER).is_some());
         assert!(read(&store, kind::META, PROFILES_MARKER).is_some());
@@ -1703,8 +2180,8 @@ mod tests {
         let store = open(&paths);
         assert!(store.encrypted());
         let report = store.seal_report().unwrap();
-        // Two secrets, a registry, two settings and the eight markers.
-        assert_eq!((report.sealed, report.plain), (13, 0));
+        // Two secrets, a registry, two settings and the nine markers.
+        assert_eq!((report.sealed, report.plain), (14, 0));
         assert_eq!(read(&store, kind::SECRET, "github").unwrap(), "ghp-made-up");
     }
 
@@ -1803,12 +2280,25 @@ mod tests {
         assert!(read(&store, kind::META, PROVISIONERS_MARKER).is_some());
     }
 
+    /// A row by the name of what it is, or of the host it belongs to.
     fn json_row(store: &Store, kind: &str, name: &str) -> Option<Value> {
-        store.read_json(kind, OWN, name).unwrap()
+        let of = match kind {
+            kind::CREDENTIALS | kind::ACCESS => kind::PROFILE,
+            kind => kind,
+        };
+        let row = store
+            .id_of(of, OWN, name)
+            .unwrap()
+            .unwrap_or(name.to_owned());
+        store.read_json(kind, OWN, &row).unwrap()
     }
 
     /// The resource that is the machine of a host of this installation.
     fn machine_of(store: &Store, host: &str) -> Option<crate::resource::Record> {
+        let host = store
+            .id_of(kind::PROFILE, OWN, host)
+            .unwrap()
+            .unwrap_or(host.to_owned());
         store
             .entries(kind::RESOURCE, OWN)
             .unwrap()
@@ -1841,7 +2331,7 @@ mod tests {
                 record.external_id.as_str(),
                 record.token.as_str(),
                 record.kind.as_str(),
-                record.provisioner.as_str(),
+                crate::provisioner::label(&paths, &record.provisioner).as_str(),
                 record.name.as_str()
             ),
             ("vm-1", "t0k", "machine", "cloud-vm", "studio")
@@ -1853,10 +2343,13 @@ mod tests {
         );
         assert!(crate::resource::valid_id(&record.id), "{}", record.id);
         assert!(json_row(&store, kind::INSTANCE, "studio").is_none());
-        assert_eq!(
-            store.names(kind::PROFILE, OWN).unwrap(),
-            ["attic", "studio"]
-        );
+        let hosts: Vec<String> = store
+            .labels(kind::PROFILE, OWN)
+            .unwrap()
+            .into_iter()
+            .map(|found| found.name)
+            .collect();
+        assert_eq!(hosts, ["attic", "studio"]);
         // The folder went to migrated/ whole, the lock with it; the mirror's is gone.
         let moved = paths.config_dir.join("migrated/hosts");
         assert!(!paths.config_dir.join("hosts").exists());
@@ -2005,10 +2498,14 @@ mod tests {
         // Mended, it goes through.
         fs::write(&broken, "{}").unwrap();
         run(&paths, &found, &store).unwrap();
-        assert_eq!(
-            store.names(kind::CREDENTIALS, OWN).unwrap(),
-            ["attic", "studio"]
-        );
+        let mut hosts: Vec<String> = store
+            .names(kind::CREDENTIALS, OWN)
+            .unwrap()
+            .iter()
+            .map(|id| store.label_of(kind::PROFILE, OWN, id).unwrap().unwrap())
+            .collect();
+        hosts.sort();
+        assert_eq!(hosts, ["attic", "studio"]);
     }
 
     #[test]
@@ -2188,17 +2685,17 @@ mod tests {
             notices.iter().any(|notice| notice.contains("/nowhere/key")),
             "{notices:?}"
         );
-        // The key file is a key of the ring, once; berth's key moved.
-        let keys = crate::keys::ring::names(&store).unwrap();
+        // The key file is a key of the ring, once; berth's key moved. The
+        // rows are by name until the import of ids.
+        let keys = store.names(kind::KEY, OWN).unwrap();
         assert_eq!(keys, ["berth", "deploy_key"]);
-        let berth = crate::keys::ring::read(&store, "berth", false)
-            .unwrap()
-            .unwrap();
+        let berth: crate::keys::ring::Halves =
+            serde_json::from_slice(&store.read(kind::KEY, OWN, "berth").unwrap().unwrap()).unwrap();
         assert_eq!(berth.private, "made-up private");
         assert!(store.read(kind::KEY, OWN, "ssh.pub").unwrap().is_none());
         let record = crate::keys::known::Record::load(
             &store,
-            &crate::profiles::Place::own("studio").unwrap(),
+            &crate::profiles::Place::at(OWN, "studio", "studio"),
         )
         .unwrap();
         assert_eq!(record.host_keys, ["ssh-ed25519 AAAAhostkey"]);
@@ -2225,7 +2722,7 @@ mod tests {
             .map(|(scope, name, _)| access(scope, name))
             .collect();
         assert_eq!(before, after);
-        assert_eq!(crate::keys::ring::names(&store).unwrap().len(), 2);
+        assert_eq!(store.names(kind::KEY, OWN).unwrap().len(), 2);
     }
 
     #[test]

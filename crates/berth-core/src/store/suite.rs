@@ -92,8 +92,12 @@ on_each_backend!(
     state_rows_are_kept_listed_and_removed,
     replacing_states_leaves_other_scopes_and_kinds_alone,
     changes_are_all_or_nothing,
-    a_renamed_host_takes_its_rows_messages_and_jobs,
-    a_renamed_subject_takes_its_rows_and_jobs,
+    things_are_kept_by_id_and_found_by_name_or_id,
+    a_rename_changes_the_label_alone,
+    what_belongs_to_a_thing_goes_with_it,
+    a_change_moves_messages_cursors_and_jobs,
+    a_store_of_names_takes_ids_once,
+    renames_keep_what_belongs_and_refers,
     sealed_values_round_trip,
     a_sealed_store_without_its_key_says_so,
     plain_rows_are_read_with_a_key_loaded,
@@ -814,51 +818,236 @@ fn changes_are_all_or_nothing(place: &Place) {
     assert_eq!(all_names(&store), before);
 }
 
-fn a_renamed_host_takes_its_rows_messages_and_jobs(place: &Place) {
-    let store = place.open().with_keys(Some(keys()), None);
-    store.write("profile", OWN, "test", b"p").unwrap();
-    store.write("profile", OWN, "lab", b"l").unwrap();
-    store.take_in("test", &message(1, "a", Keep::Log)).unwrap();
-    store.take_in("test", &message(2, "b", Keep::Log)).unwrap();
-    store.take_in("lab", &message(1, "a", Keep::Log)).unwrap();
-    // A removed host of the new name left a message and a cursor.
-    store
-        .take_in("studio", &message(1, "old", Keep::Log))
-        .unwrap();
-    let job = |id: &str, host: &str, subject: &str, token: Option<&str>| Job {
-        id: id.into(),
-        host: host.into(),
-        what: "apply".into(),
-        started: rfc3339(unix_now()),
-        output_path: format!("/tmp/{id}.log"),
-        subject: subject.into(),
-        action: "apply".into(),
-        token: token.map(str::to_owned),
-        ..Job::default()
-    };
-    store
-        .add_job(&job("j1", "test", "host:test", Some("t")))
-        .unwrap();
-    store
-        .add_job(&job("j2", "studio", "host:studio", Some("t")))
-        .unwrap();
-    store
-        .add_job(&job("j3", "test, lab", "installation", None))
-        .unwrap();
+const STUDIO: &str = "01972c4e8f3a7b219d4e5a6b7c8d9e0f";
+const LAB: &str = "01972c4e8f3a7b219d4e5a6b7c8d9e1f";
 
+fn things_are_kept_by_id_and_found_by_name_or_id(place: &Place) {
+    let store = place.open().with_keys(Some(keys()), None);
     store
-        .rename_host(
-            "test",
+        .write_labelled(kind::PROFILE, OWN, STUDIO, "studio", b"p")
+        .unwrap();
+    store
+        .write_labelled(
+            kind::PROFILE,
+            "served:http://192.0.2.7:7777",
+            LAB,
             "studio",
-            &[("profile", OWN, "studio", b"p".to_vec())],
-            &[("profile", OWN, "test")],
+            b"s",
         )
         .unwrap();
+    let found = |given: &str| store.find(kind::PROFILE, OWN, given).unwrap();
+    let studio = Some(Found {
+        id: STUDIO.into(),
+        name: "studio".into(),
+    });
+    assert_eq!(found("studio"), studio);
+    assert_eq!(found(STUDIO), studio);
+    assert_eq!(found(&format!("host_{STUDIO}")), studio);
+    assert_eq!(found(&format!("HOST_{}", STUDIO.to_uppercase())), studio);
+    assert_eq!(found("01972c4e-8f3a-7b21-9d4e-5a6b7c8d9e0f"), studio);
+    // An id with its prefix is that id alone; a bare one no thing has is a name.
+    assert_eq!(found(&format!("host_{LAB}")), None);
+    assert_eq!(found(LAB), None);
+    // A prefix of another kind is refused.
+    let wrong = store
+        .find(kind::PROFILE, OWN, &format!("prov_{STUDIO}"))
+        .unwrap_err();
+    assert!(matches!(wrong, Error::Given(_)), "{wrong}");
     assert_eq!(
-        all_names(&store),
-        owned(&[("profile", "", "lab"), ("profile", "", "studio")])
+        store.read(kind::PROFILE, OWN, STUDIO).unwrap().unwrap(),
+        b"p"
     );
-    assert_eq!(store.read("profile", OWN, "studio").unwrap().unwrap(), b"p");
+    assert_eq!(
+        store
+            .id_of(kind::PROFILE, OWN, "studio")
+            .unwrap()
+            .as_deref(),
+        Some(STUDIO)
+    );
+    assert_eq!(
+        store
+            .label_of(kind::PROFILE, OWN, STUDIO)
+            .unwrap()
+            .as_deref(),
+        Some("studio")
+    );
+    assert_eq!(
+        store.labels(kind::PROFILE, OWN).unwrap(),
+        vec![studio.clone().unwrap()]
+    );
+    // A write without a label keeps the one the row has.
+    store.write(kind::PROFILE, OWN, STUDIO, b"q").unwrap();
+    assert_eq!(found("studio").unwrap().id, STUDIO);
+    let (thing, value) = store
+        .labelled_entries(kind::PROFILE, OWN)
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        (thing.name.as_str(), value.as_slice()),
+        ("studio", &b"q"[..])
+    );
+    // A name is unique in its kind and scope, and never in the shape of an id.
+    let taken = store
+        .write_labelled(kind::PROFILE, OWN, LAB, "studio", b"x")
+        .unwrap_err();
+    assert!(
+        matches!(&taken, Error::Taken { label, .. } if label == "studio"),
+        "{taken}"
+    );
+    assert_eq!(taken.to_string(), "There is a host studio already");
+    for shaped in [LAB.to_owned(), format!("reg_{LAB}")] {
+        let refused = store
+            .write_labelled(kind::REGISTRY, OWN, LAB, &shaped, b"x")
+            .unwrap_err();
+        assert!(matches!(refused, Error::Given(_)), "{refused}");
+    }
+    assert_eq!(store.labels(kind::PROFILE, OWN).unwrap().len(), 1);
+    // A copy of the store keeps the labels.
+    let Rows::State(rows) = store.export(Table::State).unwrap() else {
+        panic!("state rows")
+    };
+    assert!(
+        rows.iter()
+            .all(|row| row.label.as_deref() == Some("studio"))
+    );
+}
+
+fn a_rename_changes_the_label_alone(place: &Place) {
+    let store = place.open().with_keys(Some(keys()), None);
+    store
+        .write_labelled(kind::PROVISIONER_ENTRY, OWN, STUDIO, "vm", b"e")
+        .unwrap();
+    store
+        .write_labelled(kind::PROVISIONER_ENTRY, OWN, LAB, "lab", b"l")
+        .unwrap();
+    let before = store
+        .backend()
+        .state(kind::PROVISIONER_ENTRY, OWN, STUDIO)
+        .unwrap()
+        .unwrap();
+    assert!(
+        store
+            .relabel(kind::PROVISIONER_ENTRY, OWN, STUDIO, "big")
+            .unwrap()
+    );
+    let after = store
+        .backend()
+        .state(kind::PROVISIONER_ENTRY, OWN, STUDIO)
+        .unwrap()
+        .unwrap();
+    // The sealed value is the one it had, and opens under the id as before.
+    assert_eq!(
+        (after.value, after.label.as_deref()),
+        (before.value, Some("big"))
+    );
+    assert_eq!(
+        store
+            .read(kind::PROVISIONER_ENTRY, OWN, STUDIO)
+            .unwrap()
+            .unwrap(),
+        b"e"
+    );
+    assert_eq!(
+        store.id_of(kind::PROVISIONER_ENTRY, OWN, "vm").unwrap(),
+        None
+    );
+    let taken = store
+        .relabel(kind::PROVISIONER_ENTRY, OWN, STUDIO, "lab")
+        .unwrap_err();
+    assert_eq!(taken.to_string(), "There is a provisioner lab already");
+    assert!(matches!(
+        store.relabel(kind::PROVISIONER_ENTRY, OWN, STUDIO, LAB),
+        Err(Error::Given(_))
+    ));
+    assert!(
+        !store
+            .relabel(
+                kind::PROVISIONER_ENTRY,
+                OWN,
+                "01972c4e8f3a7b219d4e5a6b7c8d9eff",
+                "x"
+            )
+            .unwrap()
+    );
+}
+
+fn what_belongs_to_a_thing_goes_with_it(place: &Place) {
+    let store = place.open().with_keys(Some(keys()), None);
+    store
+        .write_labelled(kind::PROVISIONER_ENTRY, OWN, STUDIO, "vm", b"e")
+        .unwrap();
+    store
+        .write_labelled(kind::PROVISIONER_ENTRY, OWN, LAB, "lab", b"l")
+        .unwrap();
+    for (owner, label) in [
+        (STUDIO, "server_cert"),
+        (STUDIO, "client_key"),
+        (LAB, "server_cert"),
+    ] {
+        store
+            .write(
+                kind::SECRET,
+                OWN,
+                &format!("{owner}/{label}"),
+                label.as_bytes(),
+            )
+            .unwrap();
+    }
+    store.write(kind::ACCESS, OWN, STUDIO, b"a").unwrap();
+    // A global secret whose name starts as the id does belongs to nothing.
+    store
+        .write_labelled(kind::SECRET, OWN, LAB, &format!("{}x", &STUDIO[..8]), b"g")
+        .unwrap();
+    let mut batch = Batch::default();
+    batch
+        .remove(kind::PROVISIONER_ENTRY, OWN, STUDIO)
+        .forget_owned(OWN, STUDIO);
+    store.apply(&batch).unwrap();
+    let mut left: Vec<String> = all_names(&store)
+        .into_iter()
+        .map(|(kind, _, name)| format!("{kind} {name}"))
+        .collect();
+    left.sort();
+    assert_eq!(
+        left,
+        [
+            format!("provisioner-entry {LAB}"),
+            format!("secret {LAB}"),
+            format!("secret {LAB}/server_cert"),
+        ]
+    );
+    assert!(owned_by(&format!("{STUDIO}/x"), STUDIO) && owned_by(STUDIO, STUDIO));
+    assert!(!owned_by(&format!("{STUDIO}x"), STUDIO));
+}
+
+fn a_change_moves_messages_cursors_and_jobs(place: &Place) {
+    let store = place.open();
+    store
+        .take_in("studio", &message(1, "a", Keep::Log))
+        .unwrap();
+    store
+        .take_in("studio", &message(2, "b", Keep::Log))
+        .unwrap();
+    store.take_in("lab", &message(1, "a", Keep::Log)).unwrap();
+    let job = Job {
+        id: "j1".into(),
+        host: "studio, lab".into(),
+        what: "apply".into(),
+        started: rfc3339(unix_now()),
+        output_path: "/tmp/j1.log".into(),
+        subject: "host:studio".into(),
+        action: "apply".into(),
+        token: Some("t".into()),
+        ..Job::default()
+    };
+    store.add_job(&job).unwrap();
+    let mut batch = Batch::default();
+    batch.move_host("studio", STUDIO).set_job(
+        "j1",
+        &format!("{STUDIO}, lab"),
+        &format!("host:{STUDIO}"),
+    );
+    store.apply(&batch).unwrap();
     let topics = |host: &str| -> Vec<String> {
         all(&store)
             .into_iter()
@@ -866,84 +1055,382 @@ fn a_renamed_host_takes_its_rows_messages_and_jobs(place: &Place) {
             .map(|stored| stored.message.topic)
             .collect()
     };
-    assert_eq!(topics("studio"), ["b", "a"]);
-    assert!(topics("test").is_empty());
+    assert_eq!(topics(STUDIO), ["b", "a"]);
+    assert!(topics("studio").is_empty());
     assert_eq!(topics("lab"), ["a"]);
-    assert_eq!(store.cursor("studio").unwrap(), 2);
-    assert_eq!(store.cursor("test").unwrap(), 0);
+    assert_eq!(store.cursor(STUDIO).unwrap(), 2);
     // The cursor goes on from where it was: nothing is taken in twice.
     assert!(
         store
-            .take_in("studio", &message(2, "b", Keep::Log))
+            .take_in(STUDIO, &message(2, "b", Keep::Log))
             .unwrap()
             .is_none()
     );
-
-    let renamed = store.job("j1").unwrap().unwrap();
+    let moved = store.job("j1").unwrap().unwrap();
     assert_eq!(
-        (renamed.host.as_str(), renamed.subject.as_str()),
-        ("studio", "host:studio")
-    );
-    let found = store.job_by_token("host:studio", "apply", "t").unwrap();
-    assert_eq!(found.map(|job| job.id), Some("j1".into()));
-    assert_eq!(store.job("j3").unwrap().unwrap().host, "test, lab");
-}
-
-fn a_renamed_subject_takes_its_rows_and_jobs(place: &Place) {
-    let store = place.open().with_keys(Some(keys()), None);
-    store.write("provisioner-entry", OWN, "vm", b"e").unwrap();
-    let job = |id: &str, subject: &str, token: Option<&str>| Job {
-        id: id.into(),
-        what: "settings".into(),
-        started: rfc3339(unix_now()),
-        output_path: format!("/tmp/{id}.log"),
-        subject: subject.into(),
-        action: "settings".into(),
-        token: token.map(str::to_owned),
-        ..Job::default()
-    };
-    store
-        .add_job(&job("j1", "provisioner:vm", Some("t")))
-        .unwrap();
-    // A provisioner of the new name that was removed left a job.
-    store
-        .add_job(&job("j2", "provisioner:lab", Some("t")))
-        .unwrap();
-    store
-        .add_job(&job("j3", "provisioner:other", None))
-        .unwrap();
-    store
-        .rename_subject(
-            "provisioner:vm",
-            "provisioner:lab",
-            &[("provisioner-entry", OWN, "lab", b"e".to_vec())],
-            &[("provisioner-entry", OWN, "vm")],
-        )
-        .unwrap();
-    assert_eq!(
-        all_names(&store),
-        owned(&[("provisioner-entry", "", "lab")])
-    );
-    assert_eq!(
-        store
-            .read("provisioner-entry", OWN, "lab")
-            .unwrap()
-            .unwrap(),
-        b"e"
-    );
-    let subject = |id: &str| store.job(id).unwrap().unwrap().subject;
-    assert_eq!(
-        (subject("j1"), subject("j2"), subject("j3")),
+        (moved.host.as_str(), moved.subject.as_str()),
         (
-            "provisioner:lab".to_owned(),
-            "provisioner:lab".to_owned(),
-            "provisioner:other".to_owned()
+            format!("{STUDIO}, lab").as_str(),
+            format!("host:{STUDIO}").as_str()
         )
     );
     let found = store
-        .job_by_token("provisioner:lab", "settings", "t")
+        .job_by_token(&format!("host:{STUDIO}"), "apply", "t")
         .unwrap();
     assert_eq!(found.map(|job| job.id), Some("j1".into()));
+}
+
+/// A store as berth kept it before ids: a host with its passwords and its
+/// machine, a node's provisioner with a certificate of its own, a registry
+/// with its login, secrets all share, a job and a message.
+fn store_of_names(store: &Store) {
+    let json = |value: Value| value.to_string().into_bytes();
+    let rows: Vec<(&str, &str, Vec<u8>)> = vec![
+        (
+            kind::PROFILE,
+            "studio",
+            json(
+                json!({"access": {"address": "192.0.2.10", "auth": "key:deploy"},
+            "registries": ["nexus"], "secrets": [{"name": "github", "env": "GH_TOKEN"}]}),
+            ),
+        ),
+        (
+            kind::PROFILE,
+            "dock",
+            json(json!({"type": "node", "access": {"address": "192.0.2.20"}})),
+        ),
+        (kind::CREDENTIALS, "studio", json(json!({"ops": "made-up"}))),
+        (
+            kind::PROVISIONER_ENTRY,
+            "lab",
+            json(json!({"type": "fake/vm", "node": "dock"})),
+        ),
+        (
+            kind::REGISTRY,
+            "nexus",
+            json(json!({"type": "nexus", "url": "https://nexus.example"})),
+        ),
+        (
+            kind::KEY,
+            "deploy",
+            json(json!({"private": "x", "public": "ssh-ed25519 AAAA"})),
+        ),
+        (
+            kind::KEY,
+            "deploy.pending",
+            json(json!({"private": "y", "public": "ssh-ed25519 BBBB"})),
+        ),
+        (kind::SECRET, "github", b"ghp".to_vec()),
+        (kind::SECRET, "api_token", b"shared".to_vec()),
+        (kind::SECRET, "registry/nexus", b"pw".to_vec()),
+        (kind::SECRET, "sudo/studio", b"sudo".to_vec()),
+        (
+            kind::SECRET,
+            "provisioner/lab/server_cert",
+            b"lab-cert".to_vec(),
+        ),
+        (kind::SECRET, "registry/gone", b"orphan".to_vec()),
+        (
+            kind::RESOURCE,
+            "r-k3x9p2qa",
+            json(json!({"id": "r-k3x9p2qa", "provisioner": "lab",
+            "kind": "machine", "name": "studio", "host": "studio", "token": "t"})),
+        ),
+        (kind::SPEC, "r-k3x9p2qa", b"spec".to_vec()),
+    ];
+    for (kind, name, value) in rows {
+        store.write(kind, OWN, name, &value).unwrap();
+    }
+    store
+        .add_job(&Job {
+            id: "j1".into(),
+            host: "studio, dock".into(),
+            what: "settings".into(),
+            started: rfc3339(unix_now()),
+            output_path: "/tmp/j1.log".into(),
+            subject: "provisioner:lab".into(),
+            action: "settings".into(),
+            ..Job::default()
+        })
+        .unwrap();
+    store
+        .take_in("studio", &message(1, "a", Keep::Log))
+        .unwrap();
+}
+
+fn a_store_of_names_takes_ids_once(place: &Place) {
+    let store = place.open().with_keys(Some(keys()), None);
+    store_of_names(&store);
+    // The plugin's provisioner takes api_token, which lab had from those all share.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("fake")).unwrap();
+    std::fs::write(
+        dir.path().join("fake/package.json"),
+        r#"{"name": "berth-plugin-fake", "berth": {"provisioners": [
+            {"id": "vm", "label": "Fake VM", "command": "bin/provision", "protocol": 2,
+             "secrets": ["api_token", "server_cert"],
+             "kinds": [{"id": "machine", "setup": "apply"}]}]}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir(dir.path().join("fake/bin")).unwrap();
+    std::fs::write(dir.path().join("fake/bin/provision"), "").unwrap();
+    let plugins = crate::plugins::load(&[dir.path().to_owned()]);
+    assert_eq!(plugins.len(), 1);
+    let taken = crate::import::take_in_ids(&store, &plugins).unwrap();
+    assert_eq!(taken.copied, ["lab: api_token"]);
+    assert_eq!(taken.dropped, ["api_token"]);
+    let id = |kind: &str, name: &str| store.id_of(kind, OWN, name).unwrap().unwrap();
+    let (studio, dock, lab) = (
+        id(kind::PROFILE, "studio"),
+        id(kind::PROFILE, "dock"),
+        id(kind::PROVISIONER_ENTRY, "lab"),
+    );
+    let (nexus, github, deploy) = (
+        id(kind::REGISTRY, "nexus"),
+        id(kind::SECRET, "github"),
+        id(kind::KEY, "deploy"),
+    );
+    let read = |kind: &str, name: &str| store.read(kind, OWN, name).unwrap();
+    let json = |kind: &str, name: &str| store.read_json(kind, OWN, name).unwrap().unwrap();
+    let profile = json(kind::PROFILE, &studio);
+    assert_eq!(profile["registries"], json!([nexus]));
+    assert_eq!(profile["secrets"][0]["name"], github.as_str());
+    assert_eq!(profile["access"]["auth"], format!("key:{deploy}"));
+    assert_eq!(json(kind::PROVISIONER_ENTRY, &lab)["node"], dock.as_str());
+    assert_eq!(json(kind::CREDENTIALS, &studio)["ops"], "made-up");
+    // Owned secrets are under their owners; the one all shared went once lab had a copy.
+    assert_eq!(
+        read(kind::SECRET, &format!("{nexus}/login")).unwrap(),
+        b"pw"
+    );
+    assert_eq!(
+        read(kind::SECRET, &format!("{studio}/sudo")).unwrap(),
+        b"sudo"
+    );
+    assert_eq!(
+        read(kind::SECRET, &format!("{lab}/server_cert")).unwrap(),
+        b"lab-cert"
+    );
+    assert_eq!(
+        read(kind::SECRET, &format!("{lab}/api_token")).unwrap(),
+        b"shared"
+    );
+    assert_eq!(store.id_of(kind::SECRET, OWN, "api_token").unwrap(), None);
+    assert_eq!(
+        read(kind::KEY, &format!("{deploy}/pending")).unwrap(),
+        br#"{"private":"y","public":"ssh-ed25519 BBBB"}"#
+    );
+    let labels: Vec<String> = store
+        .labels(kind::SECRET, OWN)
+        .unwrap()
+        .into_iter()
+        .map(|found| found.name)
+        .collect();
+    assert_eq!(labels, ["github"]);
+    // The resource has an id of the new shape and refers by id.
+    let resources = store.entries(kind::RESOURCE, OWN).unwrap();
+    let (resource, value) = &resources[0];
+    assert!(ids::is_id(resource));
+    let record: Value = serde_json::from_slice(value).unwrap();
+    assert_eq!(
+        (record["provisioner"].as_str(), record["host"].as_str()),
+        (Some(lab.as_str()), Some(studio.as_str()))
+    );
+    assert_eq!(read(kind::SPEC, resource).unwrap(), b"spec");
+    let job = store.job("j1").unwrap().unwrap();
+    assert_eq!(job.subject, format!("provisioner:{lab}"));
+    assert_eq!(job.host, format!("{studio}, {dock}"));
+    assert_eq!(all(&store)[0].host, studio);
+    // Nothing is left under a name, and every row of a thing has its label.
+    let left: Vec<_> = all_names(&store)
+        .into_iter()
+        .filter(|(kind, _, name)| {
+            kind != "meta"
+                && ["studio", "dock", "lab", "nexus", "github", "deploy"].contains(&name.as_str())
+        })
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+
+    // Again, with its marker gone, it changes nothing.
+    let before = store.export(Table::State).unwrap();
+    store
+        .forget(kind::META, OWN, crate::import::IDS_MARKER)
+        .unwrap();
+    let again = crate::import::take_in_ids(&store, &plugins).unwrap();
+    assert_eq!((again.given, again.copied.len()), (0, 0));
+    let Rows::State(mut after) = store.export(Table::State).unwrap() else {
+        panic!()
+    };
+    let Rows::State(mut before) = before else {
+        panic!()
+    };
+    for rows in [&mut before, &mut after] {
+        rows.retain(|row| row.kind != "meta");
+        for row in rows.iter_mut() {
+            row.updated.clear();
+        }
+    }
+    assert_eq!(after, before);
+}
+
+fn renames_keep_what_belongs_and_refers(place: &Place) {
+    let home = tempfile::tempdir().unwrap();
+    let paths = crate::paths::Paths {
+        config_dir: home.path().join("config"),
+        data_dir: home.path().join("data"),
+    };
+    let store_setting = match place.target() {
+        Target::Sqlite(file) => file.to_string_lossy().into_owned(),
+        Target::Postgres(url) => url,
+    };
+    paths.set("store", &store_setting).unwrap();
+    let store = shared(&paths).unwrap();
+    let secrets = crate::registry::Store::own(store.clone());
+    // A registry with its login, and a host that uses it and a secret.
+    let mut registries = serde_json::Map::new();
+    registries.insert(
+        "nexus".into(),
+        json!({"type": "nexus", "url": "https://nexus.example"}),
+    );
+    secrets.save_registries(registries).unwrap();
+    secrets.set_secret("registry/nexus", Some("pw")).unwrap();
+    secrets.set_secret("github", Some("ghp")).unwrap();
+    let studio = crate::profiles::Place::own(&paths, "studio").unwrap();
+    studio
+        .save(
+            &paths,
+            &json!({"access": {"address": "192.0.2.10"}, "registries": ["nexus"],
+            "secrets": [{"name": "github", "env": "GH_TOKEN"}]}),
+        )
+        .unwrap();
+    // The registry and the secret go by other names; the host goes on naming them.
+    let nexus = secrets.find_registry("nexus").unwrap().unwrap().id;
+    assert!(secrets.rename_registry("nexus", "mirror").unwrap());
+    secrets.rename_secret("github", "gh").unwrap();
+    let profile = studio.load(&paths).unwrap().unwrap();
+    assert_eq!(profile["registries"], json!(["mirror"]));
+    assert_eq!(profile["secrets"][0]["name"], "gh");
+    assert_eq!(
+        secrets.secret("registry/mirror").unwrap().as_deref(),
+        Some("pw")
+    );
+    assert_eq!(
+        secrets
+            .secret(&format!("registry/reg_{nexus}"))
+            .unwrap()
+            .as_deref(),
+        Some("pw")
+    );
+    assert_eq!(secrets.secret("gh").unwrap().as_deref(), Some("ghp"));
+    let payload = secrets.host_payload(&profile).unwrap();
+    assert_eq!(payload["env"]["GH_TOKEN"], "ghp");
+    // A secret named in a profile before it is set is taken by its id once it is.
+    studio
+        .save(
+            &paths,
+            &json!({"secrets": [{"name": "later", "env": "LATER"}]}),
+        )
+        .unwrap();
+    secrets.set_secret("later", Some("now")).unwrap();
+    secrets.rename_secret("later", "sooner").unwrap();
+    assert_eq!(
+        studio.load(&paths).unwrap().unwrap()["secrets"][0]["name"],
+        "sooner"
+    );
+    // A secret that is removed is named by the profiles again.
+    secrets.set_secret("sooner", None).unwrap();
+    assert_eq!(
+        studio.load(&paths).unwrap().unwrap()["secrets"][0]["name"],
+        "sooner"
+    );
+    // Names that are taken or in the shape of an id are refused.
+    assert!(secrets.rename_secret("gh", STUDIO).is_err());
+    secrets.set_secret("other", Some("x")).unwrap();
+    assert_eq!(
+        secrets
+            .rename_secret("gh", "other")
+            .unwrap_err()
+            .to_string(),
+        "There is a secret other already"
+    );
+
+    // A provisioner of a node, with its secret and a resource.
+    crate::profiles::Place::own(&paths, "dock")
+        .unwrap()
+        .save(
+            &paths,
+            &json!({"type": "node", "access": {"address": "192.0.2.20"}}),
+        )
+        .unwrap();
+    let dock = crate::profiles::Place::own(&paths, "dock").unwrap();
+    let entry = crate::provisioner::Entry {
+        kind: "fake/vm".into(),
+        node: dock.key(),
+        ..Default::default()
+    };
+    let lab = crate::provisioner::save_entry(&paths, "lab", &entry).unwrap();
+    secrets
+        .set_secret("provisioner/lab/server_cert", Some("cert"))
+        .unwrap();
+    crate::resource::Kept {
+        scope: OWN.into(),
+        record: crate::resource::Record {
+            id: new_id(),
+            provisioner: lab.clone(),
+            kind: "deployment".into(),
+            name: "web".into(),
+            ..Default::default()
+        },
+    }
+    .save(&paths)
+    .unwrap();
+    crate::provisioner::rename(&paths, &secrets, "lab", "big").unwrap();
+    assert_eq!(
+        crate::provisioner::id_of(&paths, "big").unwrap().as_deref(),
+        Some(lab.as_str())
+    );
+    assert_eq!(
+        secrets
+            .secret("provisioner/big/server_cert")
+            .unwrap()
+            .as_deref(),
+        Some("cert")
+    );
+    assert_eq!(
+        crate::provisioner::entry(&paths, &format!("prov_{lab}"))
+            .unwrap()
+            .unwrap()
+            .node,
+        dock.key()
+    );
+    let held = crate::provisioner::remove_entry(&paths, &secrets, "big").unwrap_err();
+    assert!(held.to_string().contains("still holds"), "{held}");
+    // A host renamed keeps being the node.
+    let pier = crate::profiles::rename(&paths, &dock, "pier", false).unwrap();
+    assert_eq!(crate::provisioner::node_of(&paths, "big"), "pier");
+    assert_eq!(pier.key(), dock.key());
+
+    // Removed, the provisioner takes what belongs to it along.
+    for kept in crate::resource::list(&paths).unwrap() {
+        kept.forget(&paths).unwrap();
+    }
+    crate::provisioner::remove_entry(&paths, &secrets, "big").unwrap();
+    assert!(
+        !all_names(&store)
+            .iter()
+            .any(|(_, _, name)| name.starts_with(&lab))
+    );
+    // So does a registry, with its login.
+    secrets.save_registries(serde_json::Map::new()).unwrap();
+    assert!(
+        !all_names(&store)
+            .iter()
+            .any(|(_, _, name)| name.starts_with(&nexus))
+    );
+    assert_eq!(
+        studio.load(&paths).unwrap().unwrap()["registries"],
+        Value::Null
+    );
 }
 
 fn sealed_values_round_trip(place: &Place) {
@@ -1380,11 +1867,19 @@ fn the_old_files_go_into_an_empty_store(place: &Place) {
     };
     let store = place.open();
     crate::import::run(&paths, &installation, &store).unwrap();
+    // Each has an id of its own, and its name as its label.
+    let github = store.id_of(kind::SECRET, OWN, "github").unwrap().unwrap();
     assert_eq!(
-        store.read(kind::SECRET, OWN, "github").unwrap().unwrap(),
+        store.read(kind::SECRET, OWN, &github).unwrap().unwrap(),
         b"ghp-made-up"
     );
-    assert_eq!(store.names(kind::REGISTRY, OWN).unwrap(), ["hub"]);
+    let registries: Vec<String> = store
+        .labels(kind::REGISTRY, OWN)
+        .unwrap()
+        .into_iter()
+        .map(|found| found.name)
+        .collect();
+    assert_eq!(registries, ["hub"]);
     assert_eq!(
         store
             .read(kind::SETTING, OWN, "default_host")

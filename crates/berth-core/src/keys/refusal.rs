@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn a_refused_login_waits_for_the_back_off_and_another_login_does_not() {
         let (_dir, paths) = scratch();
-        let place = Place::own("studio").unwrap();
+        let place = Place::own(&paths, "studio").unwrap();
         let guard = Guard {
             paths: paths.clone(),
             place: place.clone(),
@@ -273,9 +273,10 @@ mod tests {
     #[test]
     fn a_penalty_is_explained_and_waits_a_short_while() {
         let (_dir, paths) = scratch();
+        let place = Place::own(&paths, "studio").unwrap();
         let guard = Guard {
             paths,
-            place: Place::own("studio").unwrap(),
+            place,
             login: "one".into(),
             name: "studio".into(),
         };

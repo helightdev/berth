@@ -198,6 +198,7 @@ impl Provisioner {
     pub fn info(&self, plugin: &str, missing_secrets: Vec<String>) -> ProvisionerInfo {
         ProvisionerInfo {
             id: format!("{plugin}/{}", self.id),
+            name: format!("{plugin}/{}", self.id),
             kind: format!("{plugin}/{}", self.id),
             label: self.label.clone(),
             description: self.description.clone(),
@@ -213,6 +214,7 @@ impl Provisioner {
             own: self.own.clone(),
             settings: Default::default(),
             node: String::new(),
+            node_id: String::new(),
             kinds: self.kinds.clone(),
             actions: self.actions.clone(),
             collections: self.collections.clone(),

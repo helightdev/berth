@@ -17,7 +17,7 @@ pub use postgres::PostgresBackend;
 pub use sqlite::SqliteBackend;
 
 use crate::seal;
-use berth_api::{Keep, Message, rfc3339, unix_now};
+use berth_api::{Keep, Message, ids, rfc3339, unix_now};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -53,6 +53,64 @@ pub mod kind {
     pub const META: &str = "meta";
 }
 
+/// What people call a thing of a kind of `state`.
+pub fn noun(kind: &str) -> &str {
+    match id_kind(kind) {
+        Some(kind) => kind.noun(),
+        None => kind,
+    }
+}
+
+/// The kind of id the things of a kind of `state` have, if they have one.
+pub fn id_kind(kind: &str) -> Option<ids::Kind> {
+    Some(match kind {
+        kind::PROFILE => ids::Kind::Host,
+        kind::PROVISIONER_ENTRY => ids::Kind::Provisioner,
+        kind::RESOURCE => ids::Kind::Resource,
+        kind::REGISTRY => ids::Kind::Registry,
+        kind::SECRET => ids::Kind::Secret,
+        kind::KEY => ids::Kind::Key,
+        _ => return None,
+    })
+}
+
+/// A new id: a UUID of version 7 as [`berth_api::ids`] writes it.
+pub fn new_id() -> String {
+    use std::io::Read;
+    let mut random = [0u8; 10];
+    // The kernel's random source does not fail once the system has booted.
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut random))
+        .expect("reading /dev/urandom");
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or_default();
+    ids::from_parts(millis, random)
+}
+
+/// Whether a text may be the label of a thing: not empty, and not in the
+/// shape of an id.
+pub fn check_label(kind: &str, label: &str) -> Result<()> {
+    if label.trim().is_empty() {
+        return Err(Error::Given(format!("A {} needs a name", noun(kind))));
+    }
+    if ids::looks_like_id(label) {
+        return Err(Error::Given(format!(
+            "{label} is in the shape of an id, which no name of a {} may be",
+            noun(kind)
+        )));
+    }
+    Ok(())
+}
+
+/// A thing found by its name or id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    pub id: String,
+    pub name: String,
+}
+
 /// The scope of this installation's own state; a mirror of a berth server uses another.
 pub const OWN: &str = "";
 
@@ -76,6 +134,14 @@ pub enum Error {
     },
     /// A sealed value that does not open with its key, or a key that cannot be used.
     Sealing(String),
+    /// Another thing of the kind has the label already.
+    Taken {
+        kind: String,
+        label: String,
+    },
+    /// A value given for a thing that cannot be one, such as the id of
+    /// another kind.
+    Given(String),
 }
 
 impl std::fmt::Display for Error {
@@ -100,6 +166,8 @@ impl std::fmt::Display for Error {
                 }
             }
             Error::Sealing(message) => f.write_str(message),
+            Error::Taken { kind, label } => write!(f, "There is a {} {label} already", noun(kind)),
+            Error::Given(message) => f.write_str(message),
         }
     }
 }
@@ -229,6 +297,35 @@ pub struct StateRow {
     pub value: Vec<u8>,
     pub sealed: bool,
     pub updated: String,
+    /// The name of a thing with an id, which `name` holds; none for any
+    /// other row. Unique within its kind and scope.
+    pub label: Option<String>,
+}
+
+/// A change of `state` and of the hosts and subjects other tables name,
+/// made in one transaction in this order: the removals, the rows of owners,
+/// the writes, then the moves of messages, cursors and jobs.
+#[derive(Debug, Clone, Default)]
+pub struct Change {
+    /// (kind, scope, name)
+    pub removals: Vec<(String, String, String)>,
+    /// (scope, owner id): the rows that belong to the owner, as
+    /// [`owned_by`] tells them.
+    pub owners: Vec<(String, String)>,
+    pub writes: Vec<StateRow>,
+    /// (old, new) host of messages and cursors.
+    pub hosts: Vec<(String, String)>,
+    /// (job id, host, subject) to set.
+    pub jobs: Vec<(String, String, String)>,
+}
+
+/// Whether a row without a label belongs to the thing with the id `owner`:
+/// its name is the id, or starts with the id and a `/`.
+pub fn owned_by(row_name: &str, owner: &str) -> bool {
+    row_name == owner
+        || row_name
+            .strip_prefix(owner)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// The tables of the store, in the order a copy writes them.
@@ -429,35 +526,19 @@ pub trait Backend: Send {
     fn replace_states(&mut self, scope: &str, kinds: &[&str], rows: &[StateRow]) -> Result<()>;
     /// Every row of the table.
     fn all_states(&mut self) -> Result<Vec<StateRow>>;
-    /// In one transaction: insert or replace each of `writes`, and delete
-    /// the rows with the keys (kind, scope, name) in `removals`.
-    fn change_states(
+    /// The row of a kind and scope with this label.
+    fn labelled(&mut self, kind: &str, scope: &str, label: &str) -> Result<Option<StateRow>>;
+    /// Give a row another label. False when there is no such row.
+    fn relabel(
         &mut self,
-        writes: &[StateRow],
-        removals: &[(String, String, String)],
-    ) -> Result<()>;
-    /// In one transaction: the change of [`Backend::change_states`], and the
-    /// messages, channel cursor and jobs of the host `old` given to `new`.
-    /// What a host of the name `new` left before, which nothing would tell
-    /// from the renamed host's, goes: its messages, cursor and job tokens.
-    fn rename_host(
-        &mut self,
-        old: &str,
-        new: &str,
-        writes: &[StateRow],
-        removals: &[(String, String, String)],
-    ) -> Result<()>;
-    /// In one transaction: the change of [`Backend::change_states`], and the
-    /// jobs of the subject `old`, such as `provisioner:NAME`, given to `new`.
-    /// The tokens of jobs `new` had before go, so that asking again does not
-    /// find them.
-    fn rename_subject(
-        &mut self,
-        old: &str,
-        new: &str,
-        writes: &[StateRow],
-        removals: &[(String, String, String)],
-    ) -> Result<()>;
+        kind: &str,
+        scope: &str,
+        name: &str,
+        label: &str,
+        updated: &str,
+    ) -> Result<bool>;
+    /// Make a change in one transaction, in the order [`Change`] lists.
+    fn change_states(&mut self, change: &Change) -> Result<()>;
     /// In one transaction, while nobody else writes to the table: give each
     /// row the value and `sealed` of its new version, leaving `updated` as
     /// it is. False, with nothing changed, when the table no longer holds
@@ -725,6 +806,7 @@ impl Store {
             value,
             sealed,
             updated: updated.to_owned(),
+            label: None,
         })
     }
 
@@ -821,66 +903,143 @@ impl Store {
         writes: &[(&str, &str, &str, Vec<u8>)],
         removals: &[(&str, &str, &str)],
     ) -> Result<()> {
-        let updated = now();
-        let rows = writes
-            .iter()
-            .map(|(kind, scope, name, value)| self.row(kind, scope, name, value, &updated))
-            .collect::<Result<Vec<_>>>()?;
-        let removals: Vec<_> = removals
-            .iter()
-            .map(|(kind, scope, name)| {
-                ((*kind).to_owned(), (*scope).to_owned(), (*name).to_owned())
-            })
-            .collect();
-        self.backend().change_states(&rows, &removals)
+        let mut batch = Batch::default();
+        for (kind, scope, name, value) in writes {
+            batch.write(kind, scope, name, value.clone());
+        }
+        for (kind, scope, name) in removals {
+            batch.remove(kind, scope, name);
+        }
+        self.apply(&batch)
     }
 
-    /// A change as [`Store::change`] makes it, in the same transaction as
-    /// moving the messages, channel cursor and jobs of the host `old` to
-    /// `new`: what renames a host of this installation's own.
-    pub fn rename_host(
-        &self,
-        old: &str,
-        new: &str,
-        writes: &[(&str, &str, &str, Vec<u8>)],
-        removals: &[(&str, &str, &str)],
-    ) -> Result<()> {
+    /// Make the changes of a batch in one transaction.
+    pub fn apply(&self, batch: &Batch) -> Result<()> {
         let updated = now();
-        let rows = writes
-            .iter()
-            .map(|(kind, scope, name, value)| self.row(kind, scope, name, value, &updated))
-            .collect::<Result<Vec<_>>>()?;
-        let removals: Vec<_> = removals
-            .iter()
-            .map(|(kind, scope, name)| {
-                ((*kind).to_owned(), (*scope).to_owned(), (*name).to_owned())
-            })
-            .collect();
-        self.backend().rename_host(old, new, &rows, &removals)
+        let mut change = Change {
+            removals: batch.removals.clone(),
+            owners: batch.owners.clone(),
+            hosts: batch.hosts.clone(),
+            jobs: batch.jobs.clone(),
+            ..Change::default()
+        };
+        for (kind, scope, name, label, value) in &batch.writes {
+            if let Some(label) = label {
+                check_label(kind, label)?;
+            }
+            let mut row = self.row(kind, scope, name, value, &updated)?;
+            row.label = label.clone();
+            change.writes.push(row);
+        }
+        let result = self.backend().change_states(&change);
+        result.map_err(|error| taken(error, &batch.writes))
     }
 
-    /// A change as [`Store::change`] makes it, in the same transaction as
-    /// giving the jobs of the subject `old` to `new`, both as
-    /// [`crate::runner::Subject::key`] says them.
-    pub fn rename_subject(
-        &self,
-        old: &str,
-        new: &str,
-        writes: &[(&str, &str, &str, Vec<u8>)],
-        removals: &[(&str, &str, &str)],
-    ) -> Result<()> {
-        let updated = now();
-        let rows = writes
-            .iter()
-            .map(|(kind, scope, name, value)| self.row(kind, scope, name, value, &updated))
-            .collect::<Result<Vec<_>>>()?;
-        let removals: Vec<_> = removals
-            .iter()
-            .map(|(kind, scope, name)| {
-                ((*kind).to_owned(), (*scope).to_owned(), (*name).to_owned())
+    // ── Things with ids ─────────────────────────────────────────────────────
+
+    /// The id of the thing of a kind with this name.
+    pub fn id_of(&self, kind: &str, scope: &str, label: &str) -> Result<Option<String>> {
+        Ok(self
+            .backend()
+            .labelled(kind, scope, label)?
+            .map(|row| row.name))
+    }
+
+    /// The name of the thing of a kind with this id. Nothing is unsealed.
+    pub fn label_of(&self, kind: &str, scope: &str, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .backend()
+            .state(kind, scope, id)?
+            .and_then(|row| row.label))
+    }
+
+    /// The thing of a kind that a name or id gives: an id with the prefix
+    /// of its kind is that id alone; a bare id is that id when a thing has
+    /// it; anything else is a name. A prefix of another kind is refused.
+    pub fn find(&self, kind: &str, scope: &str, given: &str) -> Result<Option<Found>> {
+        let found = |row: StateRow| {
+            row.label.clone().map(|name| Found {
+                id: row.name.clone(),
+                name,
+            })
+        };
+        let Some(id_kind) = id_kind(kind) else {
+            return Ok(self.backend().labelled(kind, scope, given)?.and_then(found));
+        };
+        match ids::read(id_kind, given).map_err(Error::Given)? {
+            ids::Given::Prefixed(id) => Ok(self.backend().state(kind, scope, &id)?.and_then(found)),
+            ids::Given::Bare(id) => {
+                // The lock is let go before the name is looked up.
+                let row = self.backend().state(kind, scope, &id)?;
+                match row {
+                    Some(row) if row.label.is_some() => Ok(found(row)),
+                    _ => Ok(self.backend().labelled(kind, scope, given)?.and_then(found)),
+                }
+            }
+            ids::Given::Name(name) => {
+                Ok(self.backend().labelled(kind, scope, &name)?.and_then(found))
+            }
+        }
+    }
+
+    /// The things of a kind in a scope, by name.
+    pub fn labels(&self, kind: &str, scope: &str) -> Result<Vec<Found>> {
+        let mut found: Vec<Found> = self
+            .backend()
+            .states(kind, scope)?
+            .into_iter()
+            .filter_map(|row| {
+                Some(Found {
+                    name: row.label?,
+                    id: row.name,
+                })
             })
             .collect();
-        self.backend().rename_subject(old, new, &rows, &removals)
+        found.sort_by(|one, other| one.name.cmp(&other.name));
+        Ok(found)
+    }
+
+    /// The things of a kind in a scope with their values, unsealed, by name.
+    pub fn labelled_entries(&self, kind: &str, scope: &str) -> Result<Vec<(Found, Vec<u8>)>> {
+        let mut found = vec![];
+        for row in self.backend().states(kind, scope)? {
+            let Some(name) = row.label.clone() else {
+                continue;
+            };
+            let id = row.name.clone();
+            found.push((Found { id, name }, self.opened(row)?));
+        }
+        found.sort_by(|(one, _), (other, _)| one.name.cmp(&other.name));
+        Ok(found)
+    }
+
+    /// Insert or replace the value of a thing with an id, under its name.
+    pub fn write_labelled(
+        &self,
+        kind: &str,
+        scope: &str,
+        id: &str,
+        label: &str,
+        value: &[u8],
+    ) -> Result<()> {
+        let mut batch = Batch::default();
+        batch.write_labelled(kind, scope, id, label, value.to_vec());
+        self.apply(&batch)
+    }
+
+    /// Give a thing another name, which no other thing of its kind has.
+    /// False when there is no thing with the id.
+    pub fn relabel(&self, kind: &str, scope: &str, id: &str, label: &str) -> Result<bool> {
+        check_label(kind, label)?;
+        self.backend()
+            .relabel(kind, scope, id, label, &now())
+            .map_err(|error| match is_taken(&error) {
+                true => Error::Taken {
+                    kind: kind.to_owned(),
+                    label: label.to_owned(),
+                },
+                false => error,
+            })
     }
 
     /// The ids of the keys the sealed rows of `state` were made with.
@@ -956,6 +1115,96 @@ impl Store {
 
     pub fn count(&self, table: Table) -> Result<u64> {
         self.backend().count(table)
+    }
+}
+
+/// A write of a batch: (kind, scope, name, label, plain value).
+type Write = (String, String, String, Option<String>, Vec<u8>);
+
+/// Several changes to `state` to make in one transaction, with
+/// [`Store::apply`].
+#[derive(Debug, Clone, Default)]
+pub struct Batch {
+    writes: Vec<Write>,
+    removals: Vec<(String, String, String)>,
+    owners: Vec<(String, String)>,
+    hosts: Vec<(String, String)>,
+    jobs: Vec<(String, String, String)>,
+}
+
+impl Batch {
+    /// Insert or replace a value; a row with a label keeps it.
+    pub fn write(&mut self, kind: &str, scope: &str, name: &str, value: Vec<u8>) -> &mut Self {
+        let key = (kind.to_owned(), scope.to_owned(), name.to_owned());
+        self.writes.push((key.0, key.1, key.2, None, value));
+        self
+    }
+
+    /// Insert or replace the value of a thing with an id, under its name.
+    pub fn write_labelled(
+        &mut self,
+        kind: &str,
+        scope: &str,
+        id: &str,
+        label: &str,
+        value: Vec<u8>,
+    ) -> &mut Self {
+        let key = (kind.to_owned(), scope.to_owned(), id.to_owned());
+        self.writes
+            .push((key.0, key.1, key.2, Some(label.to_owned()), value));
+        self
+    }
+
+    pub fn remove(&mut self, kind: &str, scope: &str, name: &str) -> &mut Self {
+        self.removals
+            .push((kind.to_owned(), scope.to_owned(), name.to_owned()));
+        self
+    }
+
+    /// Remove every row that belongs to the thing with the id `owner`.
+    pub fn forget_owned(&mut self, scope: &str, owner: &str) -> &mut Self {
+        self.owners.push((scope.to_owned(), owner.to_owned()));
+        self
+    }
+
+    /// Give the messages and the channel cursor of the host `old` to `new`.
+    pub fn move_host(&mut self, old: &str, new: &str) -> &mut Self {
+        self.hosts.push((old.to_owned(), new.to_owned()));
+        self
+    }
+
+    /// Set the hosts and the subject of a job.
+    pub fn set_job(&mut self, id: &str, host: &str, subject: &str) -> &mut Self {
+        self.jobs
+            .push((id.to_owned(), host.to_owned(), subject.to_owned()));
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.writes.is_empty()
+            && self.removals.is_empty()
+            && self.owners.is_empty()
+            && self.hosts.is_empty()
+            && self.jobs.is_empty()
+    }
+}
+
+/// Whether an error of a backend is a label taken by another row.
+fn is_taken(error: &Error) -> bool {
+    matches!(error, Error::Database(message) if message.contains("state_label") || message.contains("state.label"))
+}
+
+/// The error of a change, with a label that was taken said as such.
+fn taken(error: Error, writes: &[Write]) -> Error {
+    if !is_taken(&error) {
+        return error;
+    }
+    match writes.iter().find(|write| write.3.is_some()) {
+        Some((kind, _, _, Some(label), _)) => Error::Taken {
+            kind: kind.clone(),
+            label: label.clone(),
+        },
+        _ => error,
     }
 }
 

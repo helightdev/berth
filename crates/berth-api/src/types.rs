@@ -820,16 +820,24 @@ pub struct Acted {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct JobInfo {
     pub id: String,
-    /// What it was done to: `host:NAME`, `provisioner:NAME`,
+    /// What it was done to, by id: `host:ID`, `provisioner:ID`,
     /// `resource:ID` or `installation`. Empty for a job from before 0.5.
     #[serde(default)]
     pub subject: String,
+    /// What it was done to, by name as it is called now: `host:NAME`,
+    /// `provisioner:NAME`, `resource:ID` or `installation`; by id for one
+    /// that is gone.
+    #[serde(default)]
+    pub subject_name: String,
     /// The action it runs, such as `apply`, `rollout` or `provision`.
     #[serde(default)]
     pub action: String,
     /// The hosts it is about, for a reader: a name, or several with commas.
     #[serde(default)]
     pub host: String,
+    /// The ids of those hosts, as `host` lists them; a host in a file by its path.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub host_id: String,
     pub started: String,
     pub ended: Option<String>,
     pub exit_code: Option<i32>,
@@ -1246,14 +1254,32 @@ pub struct PluginUpdateSpec {
     pub id: Option<String>,
 }
 
+/// A thing berth keeps, by its id and its name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Named {
+    /// Its id, which stays when it is renamed.
+    pub id: String,
+    pub name: String,
+}
+
+/// A new name for a thing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Rename {
+    pub name: String,
+}
+
 // ── Provisioners ────────────────────────────────────────────────────────────
 
 /// Something a plugin creates machines with, for a saved host's profile.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ProvisionerInfo {
+    /// Its id, which stays when it is renamed. In the list of types, the
+    /// type itself.
+    pub id: String,
     /// The name it is registered under, such as `ovh-incus`. In the list of
     /// types, the type itself.
-    pub id: String,
+    #[serde(default)]
+    pub name: String,
     /// The plugin's provisioner it is, as `PLUGIN/ID`, such as `incus/vm`.
     #[serde(rename = "type", default)]
     pub kind: String,
@@ -1284,9 +1310,12 @@ pub struct ProvisionerInfo {
     /// The values of its own arguments that are kept, by name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub settings: BTreeMap<String, String>,
-    /// The node it lives on, when a feature of that host offered it.
+    /// The node it lives on, when a feature of that host offered it, by name.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub node: String,
+    /// The id of that node.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub node_id: String,
     /// What it can make: `machine`, and kinds its plugin names.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kinds: Vec<ProvisionerKind>,
@@ -1301,6 +1330,17 @@ pub struct ProvisionerInfo {
     /// Empty when it can.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub problem: String,
+}
+
+impl ProvisionerInfo {
+    /// What it is called: its name, or for a server from before ids, which
+    /// said none, the name it gave as its id.
+    pub fn named(&self) -> &str {
+        match self.name.is_empty() {
+            true => &self.id,
+            false => &self.name,
+        }
+    }
 }
 
 /// A provisioner to register, or the type and settings of one that is.
@@ -1616,6 +1656,9 @@ pub struct Resource {
     pub id: String,
     /// The name of the provisioner that made it.
     pub provisioner: String,
+    /// The id of that provisioner, when it is registered.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provisioner_id: String,
     /// `machine`, or a kind the plugin declares.
     pub kind: String,
     /// Unique per provisioner and kind.
@@ -1627,9 +1670,13 @@ pub struct Resource {
     /// The provisioner's id of it; empty until `create` said it.
     #[serde(default)]
     pub external_id: String,
-    /// The host a machine belongs to, if any.
+    /// The host a machine belongs to, if any, by name; a profile in a file
+    /// by its path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    /// The id of that host, when it is a saved host.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub host_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub address: String,
     /// Where it can be reached, as its provisioner last said: when it was
@@ -1662,7 +1709,7 @@ pub struct Resource {
 /// What to create a resource with.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct NewResource {
-    /// The provisioner's name.
+    /// The provisioner, by name or id.
     pub provisioner: String,
     /// `machine` when empty.
     #[serde(default)]

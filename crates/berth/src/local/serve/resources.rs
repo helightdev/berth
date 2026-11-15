@@ -81,7 +81,7 @@ fn described(state: &Serve, kept: &resource::Kept) -> Resource {
 
 /// How a host is reached, to tell whether making its machine changed it.
 fn reached(paths: &Paths, host: &str) -> Value {
-    berth_core::profiles::Place::own(host)
+    berth_core::profiles::Place::own(paths, host)
         .and_then(|place| Host::load_at(paths, place))
         .map(|host| host.config["access"].clone())
         .unwrap_or_default()
@@ -113,7 +113,7 @@ pub async fn list(State(state): App, Query(filter): Query<Filter>) -> Answer<Jso
 }
 
 #[utoipa::path(get, path = "/v1/resources/{id}", summary = "One resource, as its provisioner says it is now. One it no longer finds is `missing`, and its record stays.", tag = "resources",
-    params(("id" = String, Path, description = "berth's id of the resource")),
+    params(("id" = String, Path, description = "berth's id of the resource, bare or as `res_ID`")),
     responses((status = 200, description = "The resource; a state of `unknown` comes with the problem", body = Resource),
               (status = 404, description = "No such resource", body = ErrorBody)))]
 pub async fn get(State(state): App, Path(id): Path<String>) -> Answer<Json<Resource>> {
@@ -208,7 +208,7 @@ pub async fn create(State(state): App, body: Bytes) -> Answer<(StatusCode, Json<
 }
 
 #[utoipa::path(get, path = "/v1/resources/{id}/actions", summary = "What can be done to a resource: start, stop and change as its kind can, its plugin's actions of the kind, and removing it.", tag = "resources",
-    params(("id" = String, Path, description = "berth's id of the resource")),
+    params(("id" = String, Path, description = "berth's id of the resource, bare or as `res_ID`")),
     responses((status = 200, description = "The actions, each saying whether it can run now", body = Vec<Action>),
               (status = 404, description = "No such resource", body = ErrorBody)))]
 pub async fn actions(State(state): App, Path(id): Path<String>) -> Answer<Json<Vec<Action>>> {
@@ -320,7 +320,7 @@ fn admitted(state: &Serve, access: &Access, id: &str, action: &str, act: &Act) -
 }
 
 #[utoipa::path(post, path = "/v1/resources/{id}/actions/{action}", summary = "Run one of a resource's actions. One that changes something is a job of the resource, which holds its lock; one that only reads answers at once.", tag = "resources",
-    params(("id" = String, Path, description = "berth's id of the resource"),
+    params(("id" = String, Path, description = "berth's id of the resource, bare or as `res_ID`"),
            ("action" = String, Path, description = "The action, as resources.actions names it")),
     request_body(content = Option<Act>, description = "Its arguments, and a token that makes asking again safe"),
     responses((status = 202, description = "Started as a job", body = Acted),
@@ -349,7 +349,7 @@ pub async fn act(
 }
 
 #[utoipa::path(put, path = "/v1/resources/{id}", summary = "Change a resource, as a job: other values of its kind's arguments, a new specification, other secrets. What is not given stays.", tag = "resources",
-    params(("id" = String, Path, description = "berth's id of the resource")),
+    params(("id" = String, Path, description = "berth's id of the resource, bare or as `res_ID`")),
     request_body(content = ResourceChange, description = "What changes, and a token that makes asking again safe"),
     responses((status = 202, description = "Started as a job", body = Acted),
               (status = 400, description = "An argument, a secret or the specification does not fit", body = ErrorBody),
@@ -383,7 +383,7 @@ pub struct Token {
 }
 
 #[utoipa::path(delete, path = "/v1/resources/{id}", summary = "Remove a resource with its provisioner, as a job, and forget it. A host's profile stays.", tag = "resources",
-    params(("id" = String, Path, description = "berth's id of the resource"), Token),
+    params(("id" = String, Path, description = "berth's id of the resource, bare or as `res_ID`"), Token),
     responses((status = 202, description = "Started as a job", body = Acted),
               (status = 404, description = "No such resource", body = ErrorBody),
               (status = 409, description = "Something else is being done to it", body = ErrorBody),
@@ -426,7 +426,7 @@ const FOLLOW_FOR: Duration = Duration::from_secs(60 * 60);
 const READ_FOR: Duration = Duration::from_secs(60);
 
 #[utoipa::path(get, path = "/v1/resources/{id}/logs", summary = "What a resource wrote, as its provisioner gives it, with secrets masked: the last lines as text, or as a WebSocket those and what follows.", tag = "resources",
-    params(("id" = String, Path, description = "berth's id of the resource"), LogQuery),
+    params(("id" = String, Path, description = "berth's id of the resource, bare or as `res_ID`"), LogQuery),
     responses((status = 200, description = "The last lines", content_type = "text/plain", body = String),
               (status = 101, description = "As a WebSocket: the lines as they come"),
               (status = 404, description = "No such resource", body = ErrorBody),

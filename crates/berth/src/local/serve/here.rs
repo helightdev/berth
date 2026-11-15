@@ -195,7 +195,7 @@ mod tests {
     fn a_client_in_the_process_calls_streams_and_runs_a_job_to_its_end() {
         let (_dir, paths) = scratch();
         let profile = json!({"hostname": "dock", "builder": {}, "access": {"address": "192.0.2.7", "link": ["sh", "-c", "exit 1"]}});
-        berth_core::profiles::Place::own("dock")
+        berth_core::profiles::Place::own(&paths, "dock")
             .unwrap()
             .save(&paths, &profile)
             .unwrap();
@@ -264,7 +264,7 @@ mod tests {
         here.wait_for_jobs(|_| {});
         assert!(here.running().is_empty());
         assert!(
-            berth_core::profiles::Place::own("studio")
+            berth_core::profiles::Place::own(&paths, "studio")
                 .unwrap()
                 .load(&paths)
                 .unwrap()
@@ -292,7 +292,7 @@ mod tests {
         let (dir, paths) = scratch();
         for (name, address) in [("studio", "192.0.2.10"), ("dock", "192.0.2.11")] {
             let profile = json!({"hostname": name, "builder": {}, "access": {"address": address, "link": ["sh", "-c", "exit 1"]}});
-            berth_core::profiles::Place::own(name)
+            berth_core::profiles::Place::own(&paths, name)
                 .unwrap()
                 .save(&paths, &profile)
                 .unwrap();

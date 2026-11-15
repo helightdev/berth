@@ -67,7 +67,10 @@ pub enum Event {
     /// A resource was created, removed, or its record changed.
     Resource {
         id: String,
+        /// The id of its provisioner, or a type no provisioner is registered of.
         provisioner: String,
+        /// The provisioner's name.
+        provisioner_name: String,
         kind: String,
         change: &'static str,
     },
@@ -111,7 +114,12 @@ impl Watch {
     fn hosts(&self) -> Option<BTreeMap<String, Value>> {
         berth_core::profiles::list(&self.paths, store::OWN)
             .ok()
-            .map(|saved| saved.into_iter().collect())
+            .map(|saved| {
+                saved
+                    .into_iter()
+                    .map(|(place, profile)| (place.argument(), profile))
+                    .collect()
+            })
     }
 
     fn resources(&self) -> Option<BTreeMap<String, berth_core::resource::Record>> {
@@ -155,9 +163,11 @@ impl Watch {
                         "added" => "created",
                         other => other,
                     };
+                    let provisioner = record.map(|r| r.provisioner.clone()).unwrap_or_default();
                     let _ = self.events.send(Event::Resource {
                         id: id.to_owned(),
-                        provisioner: record.map(|r| r.provisioner.clone()).unwrap_or_default(),
+                        provisioner_name: berth_core::provisioner::label(&self.paths, &provisioner),
+                        provisioner,
                         kind: record.map(|r| r.kind.clone()).unwrap_or_default(),
                         change,
                     });
@@ -186,6 +196,9 @@ impl Watch {
 /// A host as `berth serve` knows it.
 pub struct Remote {
     pub name: String,
+    /// The saved host's id, which its messages are kept by; empty for one
+    /// that is not saved.
+    pub id: String,
     pub address: String,
     pub link: Option<Link>,
     /// The SSH user's sudo password, for a host that asks for one.
@@ -199,9 +212,19 @@ pub struct Remote {
 }
 
 impl Remote {
+    /// What its messages and channel cursor are kept by: its id, or its
+    /// name when it has none.
+    pub fn key(&self) -> &str {
+        match self.id.is_empty() {
+            true => &self.name,
+            false => &self.id,
+        }
+    }
+
     pub fn new(name: &str, address: &str, spec: LinkSpec) -> Remote {
         Remote {
             name: name.to_owned(),
+            id: String::new(),
             address: address.to_owned(),
             link: Some(Link::new(spec)),
             password: None,
@@ -388,9 +411,9 @@ impl Serve {
                 .values()
                 .filter(|remote| {
                     remote.profile.as_ref().is_some_and(|taken| {
-                        !saved
-                            .iter()
-                            .any(|(name, config)| *name == remote.name && config == taken)
+                        !saved.iter().any(|(place, config)| {
+                            place.argument() == remote.name && config == taken
+                        })
                     })
                 })
                 .map(|remote| remote.name.clone())
@@ -399,13 +422,11 @@ impl Serve {
         for name in stale {
             self.forget(&name);
         }
-        for (name, config) in saved {
+        for (place, config) in saved {
+            let name = place.argument();
             if self.host(&name).is_some() {
                 continue;
             }
-            let Ok(place) = berth_core::profiles::Place::own(&name) else {
-                continue;
-            };
             let host = Host {
                 name,
                 place,
@@ -452,6 +473,7 @@ impl Serve {
                 Ok(spec) => Remote::new(&host.name, &host.address(), spec),
                 Err(problem) => Remote {
                     name: host.name.clone(),
+                    id: String::new(),
                     address: host.address(),
                     link: None,
                     password: None,
@@ -461,6 +483,7 @@ impl Serve {
                 },
             };
             self.add(Remote {
+                id: host.place.key(),
                 password: password.ok().flatten(),
                 profile: Some(host.config.clone()),
                 ..remote
@@ -468,9 +491,11 @@ impl Serve {
         }
     }
 
-    /// A message from a host: store what is kept and tell whoever listens.
+    /// A message from a host: store what is kept, by the host's id, and tell
+    /// whoever listens.
     fn accept(&self, host: &str, message: Message) {
-        let taken = self.store.take_in(host, &message);
+        let key = api::host_key(&self.paths, host);
+        let taken = self.store.take_in(&key, &message);
         let _ = self.events.send(Event::Channel {
             host: host.to_owned(),
             message,
@@ -519,7 +544,7 @@ async fn take_in(state: Arc<Serve>, remote: Arc<Remote>) {
             tokio::time::sleep(Duration::from_secs(60)).await;
             continue;
         }
-        let since = state.store.cursor(&remote.name).unwrap_or(0);
+        let since = state.store.cursor(remote.key()).unwrap_or(0);
         if let Ok(mut stream) = link.stream(&format!("/v1/channel?since={since}")).await {
             wait = 1;
             while let Some(Ok(frame)) = stream.next().await {

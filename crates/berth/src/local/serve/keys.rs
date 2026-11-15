@@ -21,6 +21,9 @@ use utoipa::ToSchema;
 /// A key of the ring, by its public half.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct KeyInfo {
+    /// Its id; empty for the key that replaces another while it rotates.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub name: String,
     /// The public half, a line of `authorized_keys`.
     pub public: String,
@@ -40,13 +43,15 @@ pub struct KeyList {
     pub keys: Vec<KeyInfo>,
 }
 
-fn info(key: ring::Public, hosts: Vec<String>) -> KeyInfo {
+fn info(id: String, key: ring::Public, hosts: Vec<String>) -> KeyInfo {
     KeyInfo {
+        id,
         name: key.name,
         public: key.public,
         fingerprint: key.fingerprint,
         pending: key.pending.map(|next| {
             Box::new(KeyInfo {
+                id: String::new(),
                 name: next.name,
                 public: next.public,
                 fingerprint: next.fingerprint,
@@ -64,7 +69,10 @@ pub fn listing(paths: &berth_core::paths::Paths) -> berth_core::Result<KeyList> 
     let mut keys = vec![];
     for key in ring::list(paths, &store)? {
         let hosts = keys::users(&store, &key.name)?;
-        keys.push(info(key, hosts));
+        let id = store
+            .id_of(store::kind::KEY, store::OWN, &key.name)?
+            .unwrap_or_default();
+        keys.push(info(id, key, hosts));
     }
     Ok(KeyList { keys })
 }
@@ -103,7 +111,7 @@ pub async fn list(State(state): App) -> Answer<Json<KeyList>> {
 }
 
 #[utoipa::path(put, path = "/v1/keys/{name}", summary = "Add a key to the ring: a new ed25519 key without a body, or the OpenSSH private key in the body, which may have no passphrase. The answer has its public half only.", tag = "set-up",
-    params(("name" = String, Path, description = "The key's name: letters, digits, - and _")),
+    params(("name" = String, Path, description = "The key's name: letters, digits, - and _, and not in the shape of an id")),
     request_body(content = Vec<u8>, content_type = "application/octet-stream", description = "An OpenSSH private key, or nothing"),
     responses((status = 200, description = "Added", body = KeyInfo),
               (status = 400, description = "Not a name, not a private key, or a key with a passphrase", body = ErrorBody),
@@ -118,14 +126,17 @@ pub async fn add(
         let store = store::shared(&paths)?;
         let private = (!body.is_empty()).then_some(&body[..]);
         let key = ring::add(&paths, &store, &name, private)?;
-        Ok(info(key, vec![]))
+        let id = store
+            .id_of(store::kind::KEY, store::OWN, &key.name)?
+            .unwrap_or_default();
+        Ok(info(id, key, vec![]))
     })
     .await
     .map(Json)
 }
 
 #[utoipa::path(delete, path = "/v1/keys/{name}", summary = "Remove a key from the ring. Refused for the key berth, while a host logs in with the key, and while it rotates.", tag = "set-up",
-    params(("name" = String, Path, description = "The key")),
+    params(("name" = String, Path, description = "The key, by its name or its id (bare or as `key_ID`)")),
     responses((status = 200, description = "Removed", body = Done),
               (status = 404, description = "No such key", body = ErrorBody),
               (status = 409, description = "It is berth's, in use or rotating", body = ErrorBody)))]
@@ -140,7 +151,7 @@ pub async fn remove(State(state): App, Path(name): Path<String>) -> Answer<Json<
 }
 
 #[utoipa::path(post, path = "/v1/keys/{name}/rotate", summary = "Replace a key on every host that takes it, as a job: a new key beside it, and on each host the new one added, a login with it checked, and the old one removed. A host that does not answer stays pending; running it again goes on from there. When none is pending the old key is deleted.", tag = "set-up",
-    params(("name" = String, Path, description = "The key")),
+    params(("name" = String, Path, description = "The key, by its name or its id (bare or as `key_ID`)")),
     responses((status = 200, description = "The job", body = Acted),
               (status = 404, description = "No such key", body = ErrorBody),
               (status = 409, description = "A rotation runs already", body = ErrorBody)))]

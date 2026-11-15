@@ -175,6 +175,42 @@ impl Subject {
         }
     }
 
+    /// The subject with the id of the host, provisioner or resource it
+    /// names by name or id. A host in a file stays its path, and a
+    /// provisioner of a type no provisioner is registered for its type.
+    pub fn by_id(&self, paths: &Paths) -> Subject {
+        match self {
+            Subject::Host(given) => Subject::Host(host_key(paths, given)),
+            Subject::Provisioner(given) => Subject::Provisioner(
+                crate::provisioner::reference(paths, given).unwrap_or_else(|_| given.clone()),
+            ),
+            Subject::Resource(given) => Subject::Resource(
+                berth_api::ids::id_in(berth_api::ids::Kind::Resource, given)
+                    .unwrap_or_else(|| given.clone()),
+            ),
+            Subject::Installation => Subject::Installation,
+        }
+    }
+
+    /// The subject as people call it: the name of its host or provisioner
+    /// now, or its id when it has none any more.
+    pub fn named(&self, paths: &Paths) -> Subject {
+        let store = crate::store::shared(paths).ok();
+        let label = |kind: &str, id: &str| {
+            store
+                .as_ref()
+                .and_then(|store| store.label_of(kind, crate::store::OWN, id).ok().flatten())
+                .unwrap_or_else(|| id.to_owned())
+        };
+        match self {
+            Subject::Host(id) => Subject::Host(label(crate::store::kind::PROFILE, id)),
+            Subject::Provisioner(id) => {
+                Subject::Provisioner(label(crate::store::kind::PROVISIONER_ENTRY, id))
+            }
+            other => other.clone(),
+        }
+    }
+
     /// The file whose lock is held while something changes it. A host's is
     /// the one its machine's provisioning holds, so that the two exclude
     /// each other too.
@@ -218,6 +254,50 @@ impl std::fmt::Display for Subject {
             Subject::Installation => write!(f, "this installation"),
         }
     }
+}
+
+/// A job's hosts, as `studio, lab`, by their ids.
+pub fn hosts_by_id(paths: &Paths, hosts: &str) -> String {
+    each_host(hosts, |host| host_key(paths, host))
+}
+
+/// The id of a saved host a name or id gives, or what was given: the path
+/// of a profile in a file, or a host that is not saved.
+fn host_key(paths: &Paths, given: &str) -> String {
+    if given.contains('/') || given.ends_with(".json") {
+        return Place::resolve(paths, given).map_or_else(|_| given.to_owned(), |place| place.key());
+    }
+    Place::find(paths, &crate::profiles::scope(paths), given)
+        .ok()
+        .flatten()
+        .map_or_else(|| given.to_owned(), |place| place.key())
+}
+
+/// A job's hosts, kept by their ids, by their names now.
+pub fn hosts_named(paths: &Paths, hosts: &str) -> String {
+    let store = crate::store::shared(paths).ok();
+    each_host(hosts, |host| {
+        store
+            .as_ref()
+            .and_then(|store| {
+                store
+                    .label_of(crate::store::kind::PROFILE, crate::store::OWN, host)
+                    .ok()
+                    .flatten()
+            })
+            .unwrap_or_else(|| host.to_owned())
+    })
+}
+
+fn each_host(hosts: &str, map: impl Fn(&str) -> String) -> String {
+    if hosts.trim().is_empty() {
+        return String::new();
+    }
+    hosts
+        .split(", ")
+        .map(|host| map(host.trim()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 // ── Locks ───────────────────────────────────────────────────────────────────
@@ -275,7 +355,8 @@ pub fn lock_at(path: &Path, doing: &str, refused: impl FnOnce(&str) -> String) -
 /// Take the subject's lock for what `doing` names, or say what else changes
 /// it now.
 pub fn lock(paths: &Paths, subject: &Subject, doing: &str) -> Result<Lock> {
-    lock_at(&subject.lock_file(paths)?, doing, |holder| {
+    // By id, so that a rename does not give the subject a second lock.
+    lock_at(&subject.by_id(paths).lock_file(paths)?, doing, |holder| {
         format!("Something else is being done to {subject}{holder}. Try again when it has ended")
     })
 }
@@ -729,6 +810,9 @@ impl Runner {
     /// callers with the same token one gets the ticket to run it; the others
     /// find that job.
     pub fn reserve(&self, mut request: Request) -> Result<Reserved> {
+        // A job keeps its subject and its hosts by their ids, which a rename leaves as they are.
+        request.subject = request.subject.by_id(&self.paths);
+        request.host = hosts_by_id(&self.paths, &request.host);
         let (subject, action) = (request.subject.key(), request.action.clone());
         if let Some(token) = &request.token
             && let Some(job) = self.store.job_by_token(&subject, &action, token)?

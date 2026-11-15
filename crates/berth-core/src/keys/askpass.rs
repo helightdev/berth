@@ -62,6 +62,10 @@ mod tests {
             data_dir: dir.path().join("data"),
         };
         let store = crate::store::shared(&paths).unwrap();
+        crate::profiles::Place::own(&paths, "studio")
+            .unwrap()
+            .save(&paths, &serde_json::json!({}))
+            .unwrap();
         crate::registry::Store::own(store)
             .set_secret("ssh/studio", Some("kept-pw"))
             .unwrap();

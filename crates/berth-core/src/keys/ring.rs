@@ -79,9 +79,22 @@ pub fn blob(public: &str) -> String {
         .join(" ")
 }
 
+/// The row the store keeps a key in, or its pending successor: the key's
+/// id, or `ID/pending`. `None` for a key there is not.
+fn stored_row(store: &Store, name: &str, pending: bool) -> Result<Option<String>> {
+    row(name, pending)?;
+    Ok(store.id_of(kind::KEY, OWN, name)?.map(|id| match pending {
+        true => format!("{id}/pending"),
+        false => id,
+    }))
+}
+
 /// The halves of a key, or of its pending successor.
 pub fn read(store: &Store, name: &str, pending: bool) -> Result<Option<Halves>> {
-    let Some(value) = store.read(kind::KEY, OWN, &row(name, pending)?)? else {
+    let Some(stored) = stored_row(store, name, pending)? else {
+        return Ok(None);
+    };
+    let Some(value) = store.read(kind::KEY, OWN, &stored)? else {
         return Ok(None);
     };
     serde_json::from_slice(&value)
@@ -89,13 +102,23 @@ pub fn read(store: &Store, name: &str, pending: bool) -> Result<Option<Halves>> 
         .map_err(|_| format!("The key {name} in berth's store is not readable").into())
 }
 
+/// Keep a key under its name, with an id of its own when it is new; or the
+/// pending successor of a key there is.
 fn write(store: &Store, name: &str, pending: bool, halves: &Halves) -> Result<()> {
-    Ok(store.write(
-        kind::KEY,
-        OWN,
-        &row(name, pending)?,
-        &serde_json::to_vec(halves)?,
-    )?)
+    let value = serde_json::to_vec(halves)?;
+    match (stored_row(store, name, pending)?, pending) {
+        (Some(stored), true) => Ok(store.write(kind::KEY, OWN, &stored, &value)?),
+        (None, true) => Err(no_key(name)),
+        (Some(id), false) => Ok(store.write_labelled(kind::KEY, OWN, &id, name, &value)?),
+        (None, false) => {
+            Ok(store.write_labelled(kind::KEY, OWN, &crate::store::new_id(), name, &value)?)
+        }
+    }
+}
+
+/// The keys' names and ids, by name.
+pub fn ids(store: &Store) -> Result<Vec<crate::store::Found>> {
+    Ok(store.labels(kind::KEY, OWN)?)
 }
 
 /// Put a key that is not a real one under `name`, for a test that needs a
@@ -114,9 +137,10 @@ pub fn give_test_key(store: &Store, name: &str) {
 /// The names of the keys, without the pending ones. Nothing is unsealed.
 pub fn names(store: &Store) -> Result<Vec<String>> {
     Ok(store
-        .names(kind::KEY, OWN)?
+        .labels(kind::KEY, OWN)?
         .into_iter()
-        .filter(|name| !name.ends_with(PENDING) && valid_key_name(name))
+        .map(|found| found.name)
+        .filter(|name| valid_key_name(name))
         .collect())
 }
 
@@ -270,11 +294,10 @@ pub(crate) fn scratch_dir(paths: &Paths) -> Result<tempfile::TempDir> {
 /// Add a key: a new one when `private` is `None`, else that private key.
 pub fn add(paths: &Paths, store: &Store, name: &str, private: Option<&[u8]>) -> Result<Public> {
     row(name, false)?;
-    if store
-        .names(kind::KEY, OWN)?
-        .iter()
-        .any(|known| known == name)
-    {
+    if berth_api::ids::looks_like_id(name) {
+        return Err(format!("{name} is in the shape of an id, which no key's name may be").into());
+    }
+    if store.id_of(kind::KEY, OWN, name)?.is_some() {
         return Err(format!(
             "There is a key {name} already. Remove it first, or rotate it: berth key rotate {name}"
         )
@@ -311,7 +334,11 @@ pub fn remove(paths: &Paths, store: &Store, name: &str) -> Result<()> {
         )
         .into());
     }
-    store.change(&[], &[(kind::KEY, OWN, name)])?;
+    if let Some(id) = stored_row(store, name, false)? {
+        let mut batch = crate::store::Batch::default();
+        batch.remove(kind::KEY, OWN, &id).forget_owned(OWN, &id);
+        store.apply(&batch)?;
+    }
     for file in [
         file_path(paths, name, false)?,
         file_path(paths, name, true)?,
@@ -382,9 +409,14 @@ pub fn finish_rotation(paths: &Paths, store: &Store, name: &str) -> Result<()> {
     let Some(next) = read(store, name, true)? else {
         return Ok(());
     };
-    let pending = row(name, true)?;
+    let (Some(id), Some(pending)) = (
+        stored_row(store, name, false)?,
+        stored_row(store, name, true)?,
+    ) else {
+        return Ok(());
+    };
     store.change(
-        &[(kind::KEY, OWN, name, serde_json::to_vec(&next)?)],
+        &[(kind::KEY, OWN, id.as_str(), serde_json::to_vec(&next)?)],
         &[(kind::KEY, OWN, pending.as_str())],
     )?;
     let old = file_path(paths, name, false)?;

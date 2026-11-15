@@ -94,26 +94,12 @@ fn scopes(paths: &Paths) -> Vec<String> {
 
 /// A new id for a resource.
 pub fn new_id() -> Result<String> {
-    let mut bytes = [0u8; 8];
-    use std::io::Read;
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    let letters = b"abcdefghijklmnopqrstuvwxyz234567";
-    Ok(format!(
-        "r-{}",
-        bytes
-            .iter()
-            .map(|byte| letters[(byte & 31) as usize] as char)
-            .collect::<String>()
-    ))
+    Ok(store::new_id())
 }
 
-/// Whether a text can be a resource's id: one word of berth's own making.
+/// Whether a text can be a resource's id: one of berth's own making.
 pub fn valid_id(id: &str) -> bool {
-    id.starts_with("r-")
-        && id.len() <= 40
-        && id[2..]
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    berth_api::ids::is_id(id)
 }
 
 /// Every resource berth keeps here.
@@ -141,11 +127,20 @@ pub fn list(paths: &Paths) -> Result<Vec<Kept>> {
     Ok(kept)
 }
 
-/// A resource by its id, or by its name when only one has it.
+/// A resource by its id, bare or as `res_ID`, or by its name when only one
+/// has it.
 pub fn find_by(paths: &Paths, given: &str) -> Result<Kept> {
     let all = list(paths)?;
-    if let Some(found) = all.iter().find(|kept| kept.record.id == given) {
-        return Ok(found.clone());
+    match berth_api::ids::read(berth_api::ids::Kind::Resource, given)
+        .map_err(store::Error::Given)?
+    {
+        berth_api::ids::Given::Prefixed(id) => return find(paths, &id),
+        berth_api::ids::Given::Bare(id) => {
+            if let Some(found) = all.iter().find(|kept| kept.record.id == id) {
+                return Ok(found.clone());
+            }
+        }
+        berth_api::ids::Given::Name(_) => {}
     }
     let named: Vec<&Kept> = all
         .iter()
@@ -200,13 +195,19 @@ impl Kept {
     }
 
     /// The place of the host it belongs to.
-    pub fn place(&self) -> Option<Place> {
+    pub fn place(&self, paths: &Paths) -> Option<Place> {
         if self.record.host.is_empty() {
             return None;
         }
         match self.scope.as_str() {
             FILE_SCOPE => Some(Place::File(PathBuf::from(&self.record.host))),
-            scope => Place::stored(scope, &self.record.host).ok(),
+            scope => {
+                let store = store::shared(paths).ok()?;
+                let name = store
+                    .label_of(kind::PROFILE, scope, &self.record.host)
+                    .ok()??;
+                Some(Place::at(scope, &self.record.host, &name))
+            }
         }
     }
 
@@ -282,9 +283,9 @@ impl Kept {
     /// host's lock, so that applying and changing the machine exclude each
     /// other.
     pub fn lock(&self, paths: &Paths) -> Result<Lock> {
-        match self.place() {
+        match self.place(paths) {
             Some(place) if self.record.kind == plugins::MACHINE => {
-                let host = place.argument();
+                let host = place.title();
                 crate::runner::lock_at(&place.lock_file(paths), "work on the machine", |holder| {
                     format!(
                         "Something else is being done to {host}'s machine{holder}. Try again when it has ended"
@@ -301,8 +302,8 @@ impl Kept {
     }
 
     /// What it is called for people: its name, and its host's for a machine.
-    pub fn title(&self) -> String {
-        match self.place() {
+    pub fn title(&self, paths: &Paths) -> String {
+        match self.place(paths) {
             Some(place) => format!("{}'s machine", place.title()),
             None => self.record.name.clone(),
         }
@@ -367,14 +368,28 @@ pub fn info(paths: &Paths, kept: &Kept, plugins: &[Plugin], busy: bool) -> Resou
         (false, _) if record.state.is_empty() => ("unknown".to_owned(), String::new()),
         (false, _) => (record.state.clone(), String::new()),
     };
+    let provisioner_id = crate::provisioner::id_of(paths, &record.provisioner)
+        .ok()
+        .flatten()
+        .filter(|id| *id == record.provisioner)
+        .unwrap_or_default();
+    let (host, host_id) = match kept.place(paths) {
+        Some(place @ Place::Stored { .. }) => (Some(place.title()), place.key()),
+        _ => (
+            (!record.host.is_empty()).then(|| record.host.clone()),
+            String::new(),
+        ),
+    };
     Resource {
         id: record.id.clone(),
-        provisioner: record.provisioner.clone(),
+        provisioner: crate::provisioner::label(paths, &record.provisioner),
+        provisioner_id,
         kind: record.kind.clone(),
         name: record.name.clone(),
         state,
         external_id: record.external_id.clone(),
-        host: (!record.host.is_empty()).then(|| record.host.clone()),
+        host,
+        host_id,
         address: record.address.clone(),
         endpoints: record.endpoints.clone(),
         arguments: record.arguments.clone(),
@@ -396,11 +411,30 @@ pub fn listed(
     host: Option<&str>,
 ) -> Result<Vec<Resource>> {
     let plugins = found(paths);
+    // Records keep both by id; either is given by name or id.
+    let provisioner = provisioner
+        .map(|given| crate::provisioner::reference(paths, given))
+        .transpose()?;
+    let host = match host {
+        Some(given) if given.contains('/') || given.ends_with(".json") => Some(given.to_owned()),
+        Some(given) => Some(
+            Place::find(paths, &crate::profiles::scope(paths), given)?
+                .map_or_else(|| given.to_owned(), |place| place.key()),
+        ),
+        None => None,
+    };
     Ok(list(paths)?
         .into_iter()
-        .filter(|kept| provisioner.is_none_or(|wanted| kept.record.provisioner == wanted))
+        .filter(|kept| {
+            provisioner
+                .as_ref()
+                .is_none_or(|wanted| kept.record.provisioner == *wanted)
+        })
         .filter(|kept| kind.is_none_or(|wanted| kept.record.kind == wanted))
-        .filter(|kept| host.is_none_or(|wanted| kept.record.host == wanted))
+        .filter(|kept| {
+            host.as_ref()
+                .is_none_or(|wanted| kept.record.host == *wanted)
+        })
         .map(|kept| {
             let busy = kept.record.external_id.is_empty() && kept.busy(paths);
             info(paths, &kept, &plugins, busy)
@@ -427,13 +461,16 @@ impl Called {
             .map_err(|_| {
                 format!(
                     "No provisioner {} any more, which made {}: add its plugin again",
-                    kept.record.provisioner,
-                    kept.title()
+                    crate::provisioner::label(paths, &kept.record.provisioner),
+                    kept.title(paths)
                 )
             })?;
         runnable(provisioner)?;
         let (secrets, missing) = secrets(store, &kept.record.provisioner, provisioner);
-        needs_secrets(&kept.record.provisioner, &missing)?;
+        needs_secrets(
+            &crate::provisioner::label(paths, &kept.record.provisioner),
+            &missing,
+        )?;
         Ok(Called {
             dir: plugin.dir.clone(),
             provisioner: provisioner.clone(),
@@ -582,16 +619,16 @@ fn take_endpoints(record: &mut Record, answer: &Value, out: &mut dyn Write) {
             Ok(endpoint) if endpoints.iter().any(|known| known.name == endpoint.name) => say(
                 out,
                 &format!(
-                    "! {} reported the endpoint {} twice; the first stands",
-                    record.provisioner, endpoint.name
+                    "! The provisioner of {} reported the endpoint {} twice; the first stands",
+                    record.name, endpoint.name
                 ),
             ),
             Ok(endpoint) => endpoints.push(endpoint),
             Err(why) => say(
                 out,
                 &format!(
-                    "! {} reported an endpoint berth leaves out: {why}",
-                    record.provisioner
+                    "! The provisioner of {} reported an endpoint berth leaves out: {why}",
+                    record.name
                 ),
             ),
         }
@@ -643,7 +680,12 @@ pub fn status(paths: &Paths, store: &Store, id: &str, options: &Options) -> Resu
                     kept.save(paths)?;
                 }
             }
-            None => problem = format!("{} status said no state", kept.record.provisioner),
+            None => {
+                problem = format!(
+                    "{} status said no state",
+                    crate::provisioner::label(paths, &kept.record.provisioner)
+                )
+            }
         },
         Err(error) => problem = error.to_string(),
     }
@@ -691,10 +733,11 @@ pub fn prepare(paths: &Paths, store: &Store, asked: &berth_api::NewResource) -> 
         "" => plugins::MACHINE.to_owned(),
         kind => kind.to_owned(),
     };
+    let reference = crate::provisioner::reference(paths, &asked.provisioner)?;
     if let Some(token) = asked.token.as_deref().filter(|token| !token.is_empty())
         && let Some(again) = list(paths)?.into_iter().find(|kept| {
             kept.record.asked == token
-                && kept.record.provisioner == asked.provisioner
+                && kept.record.provisioner == reference
                 && kept.record.kind == kind
         })
     {
@@ -733,8 +776,10 @@ pub fn prepare(paths: &Paths, store: &Store, asked: &berth_api::NewResource) -> 
         )
         .into());
     }
+    let reference = crate::provisioner::for_use(paths, &asked.provisioner)?;
+    let label = crate::provisioner::label(paths, &reference);
     let plugins = found(paths);
-    let (plugin, provisioner) = provisioner_of(paths, &plugins, &asked.provisioner)?;
+    let (plugin, provisioner) = provisioner_of(paths, &plugins, &reference)?;
     runnable(provisioner)?;
     let declared_kind = kind_of(provisioner, &kind).ok_or_else(|| {
         let kinds: Vec<&str> = provisioner
@@ -743,8 +788,7 @@ pub fn prepare(paths: &Paths, store: &Store, asked: &berth_api::NewResource) -> 
             .map(|kind| kind.id.as_str())
             .collect();
         format!(
-            "{} makes no {kind}. It makes: {}",
-            asked.provisioner,
+            "{label} makes no {kind}. It makes: {}",
             match kinds.is_empty() {
                 true => "nothing".to_owned(),
                 false => kinds.join(", "),
@@ -769,29 +813,27 @@ pub fn prepare(paths: &Paths, store: &Store, asked: &berth_api::NewResource) -> 
     }
     check_secrets(&asked.secrets)?;
     let existing = list(paths)?.into_iter().find(|kept| {
-        kept.record.provisioner == asked.provisioner
-            && kept.record.kind == kind
-            && kept.record.name == name
+        kept.record.provisioner == reference && kept.record.kind == kind && kept.record.name == name
     });
     if let Some(existing) = existing
         .as_ref()
         .filter(|kept| !kept.record.external_id.is_empty())
     {
         return Err(format!(
-            "There is a {kind} {name} of {} already, {}. Change it with: berth resource set {}, or remove it first",
-            asked.provisioner, existing.record.id, existing.record.id
+            "There is a {kind} {name} of {label} already, {}. Change it with: berth resource set {}, or remove it first",
+            existing.record.id, existing.record.id
         )
         .into());
     }
-    let settings = crate::provisioner::settings(paths, &asked.provisioner)?;
+    let settings = crate::provisioner::settings(paths, &reference)?;
     let arguments = values_of(
-        &asked.provisioner,
+        &label,
         &declared(provisioner, &kind),
         &asked.arguments,
         &settings,
     )?;
-    let (secrets, missing) = secrets(store, &asked.provisioner, provisioner);
-    needs_secrets(&asked.provisioner, &missing)?;
+    let (secrets, missing) = secrets(store, &reference, provisioner);
+    needs_secrets(&label, &missing)?;
     let environment = environment(store, &asked.secrets)?;
     // Asked again after a failure, the provisioner finds it by its token.
     let mut kept = match existing {
@@ -805,7 +847,7 @@ pub fn prepare(paths: &Paths, store: &Store, asked: &berth_api::NewResource) -> 
             scope: OWN.to_owned(),
             record: Record {
                 id: new_id()?,
-                provisioner: asked.provisioner.clone(),
+                provisioner: reference.clone(),
                 kind: kind.clone(),
                 name: name.to_owned(),
                 token: provision::new_token()?,
@@ -824,7 +866,7 @@ pub fn prepare(paths: &Paths, store: &Store, asked: &berth_api::NewResource) -> 
         &kept.record,
         &kept.record.arguments,
         &secrets,
-        &crate::provisioner::node_of(paths, &asked.provisioner),
+        &crate::provisioner::node_of(paths, &reference),
     );
     request["token"] = json!(kept.record.token);
     if let Some(spec) = spec {
@@ -892,7 +934,9 @@ impl Creating {
                     out,
                     &format!(
                         "▸ Creating the {} {} with {}",
-                        kept.record.kind, kept.record.name, kept.record.provisioner
+                        kept.record.kind,
+                        kept.record.name,
+                        crate::provisioner::label(paths, &kept.record.provisioner)
                     ),
                 );
                 let answer = call(
@@ -907,7 +951,7 @@ impl Creating {
                 if external.is_empty() {
                     return Err(format!(
                         "{} create said no id. Asking again finds the same one",
-                        kept.record.provisioner
+                        crate::provisioner::label(paths, &kept.record.provisioner)
                     )
                     .into());
                 }
@@ -923,7 +967,8 @@ impl Creating {
                     out,
                     &format!(
                         "✓ {} created {external}: {}",
-                        kept.record.provisioner, kept.record.state
+                        crate::provisioner::label(paths, &kept.record.provisioner),
+                        kept.record.state
                     ),
                 );
                 Ok(())
@@ -982,7 +1027,7 @@ pub fn actions(paths: &Paths, store: &Store, kept: &Kept) -> Vec<Action> {
     let why = match provisioner {
         None => Some(format!(
             "No provisioner {} any more: add its plugin again",
-            record.provisioner
+            crate::provisioner::label(paths, &record.provisioner)
         )),
         Some(found) => runnable(found)
             .and_then(|()| {
@@ -993,7 +1038,7 @@ pub fn actions(paths: &Paths, store: &Store, kept: &Kept) -> Vec<Action> {
             })
             .err()
             .map(|error| error.to_string())
-            .or_else(|| (!made).then(|| format!("{} is not made yet", kept.title()))),
+            .or_else(|| (!made).then(|| format!("{} is not made yet", kept.title(paths)))),
     };
     let limit = |mut action: Action| {
         if let Some(why) = &why {
@@ -1013,7 +1058,7 @@ pub fn actions(paths: &Paths, store: &Store, kept: &Kept) -> Vec<Action> {
     if can("stop") {
         actions.push(limit(Action {
             group: "Power".into(),
-            confirm: Some(format!("Stop {}?", kept.title())),
+            confirm: Some(format!("Stop {}?", kept.title(paths))),
             ..own(
                 "stop",
                 "Stop",
@@ -1101,8 +1146,10 @@ pub fn actions(paths: &Paths, store: &Store, kept: &Kept) -> Vec<Action> {
         ),
     };
     let remove = Action {
-        confirm: Some(match kept.place() {
-            Some(_) if machine => format!("Delete {}? The host's profile stays.", kept.title()),
+        confirm: Some(match kept.place(paths) {
+            Some(_) if machine => {
+                format!("Delete {}? The host's profile stays.", kept.title(paths))
+            }
             _ => format!(
                 "Remove the {} {} with what it holds?",
                 record.kind, record.name
@@ -1450,8 +1497,8 @@ impl Acting {
                 kept.forget(paths)?;
                 Ok(done(format!(
                     "Forgot {}, whose making did not end. One {} made anyway is not removed",
-                    kept.title(),
-                    kept.record.provisioner
+                    kept.title(paths),
+                    crate::provisioner::label(paths, &kept.record.provisioner)
                 )))
             }
             Doing::Remove(called) => {
@@ -1459,9 +1506,9 @@ impl Acting {
                     out,
                     &format!(
                         "▸ Removing {} ({}) with {}",
-                        kept.title(),
+                        kept.title(paths),
                         kept.record.external_id,
-                        kept.record.provisioner
+                        crate::provisioner::label(paths, &kept.record.provisioner)
                     ),
                 );
                 let request = called.request("destroy", &called.arguments());
@@ -1492,10 +1539,10 @@ impl Acting {
                     }
                 }
                 kept.forget(paths)?;
-                Ok(done(match kept.place() {
+                Ok(done(match kept.place(paths) {
                     Some(place) if kept.record.kind == plugins::MACHINE => format!(
                         "Deleted {}'s machine. The profile stays, and so does its node on the tailnet: remove that there",
-                        place.argument()
+                        place.title()
                     ),
                     _ => format!("Removed the {} {}", kept.record.kind, kept.record.name),
                 }))
@@ -1534,9 +1581,9 @@ impl Acting {
                     None => kept.save(paths)?,
                 }
                 Ok(done(match verb.as_str() {
-                    "start" => format!("Started {}", kept.title()),
-                    "stop" => format!("Stopped {}", kept.title()),
-                    _ => format!("Changed {}: {}", kept.title(), kept.record.state),
+                    "start" => format!("Started {}", kept.title(paths)),
+                    "stop" => format!("Stopped {}", kept.title(paths)),
+                    _ => format!("Changed {}: {}", kept.title(paths), kept.record.state),
                 }))
             }
             Doing::Exec {
@@ -1557,7 +1604,10 @@ impl Acting {
                     .as_i64()
                     .and_then(|code| i32::try_from(code).ok())
                     .ok_or_else(|| {
-                        format!("{} exec said no exit status", kept.record.provisioner)
+                        format!(
+                            "{} exec said no exit status",
+                            crate::provisioner::label(paths, &kept.record.provisioner)
+                        )
                     })?;
                 Ok(crate::provisioner::Answered {
                     message: format!("{} exited with {code}", command[0]),
@@ -1629,13 +1679,14 @@ pub fn logs(
 ) -> Result<()> {
     let kept = find(paths, id)?;
     if kept.record.external_id.is_empty() {
-        return Err(format!("{} is not made yet", kept.title()).into());
+        return Err(format!("{} is not made yet", kept.title(paths)).into());
     }
     let called = Called::load(paths, store, kept)?;
     if !called.can("logs") {
         return Err(format!(
             "{} gives no logs of a {}",
-            called.kept.record.provisioner, called.kept.record.kind
+            crate::provisioner::label(paths, &called.kept.record.provisioner),
+            called.kept.record.kind
         )
         .into());
     }
@@ -1657,10 +1708,12 @@ pub fn logs(
 /// What a provisioner's own list says of what it holds, joined with
 /// berth's records of it.
 pub(crate) fn merge(
+    paths: &Paths,
     records: &[Kept],
     provisioner: &str,
     listed: Vec<berth_api::ListedResource>,
 ) -> Vec<berth_api::ListedResource> {
+    let provisioner = crate::provisioner::reference(paths, provisioner).unwrap_or_default();
     let mut joined: Vec<berth_api::ListedResource> = records
         .iter()
         .filter(|kept| kept.record.provisioner == provisioner)
@@ -1668,7 +1721,11 @@ pub(crate) fn merge(
             id: kept.record.external_id.clone(),
             kind: kept.record.kind.clone(),
             name: kept.record.name.clone(),
-            host: kept.record.host.clone(),
+            // A host by its name, as the provisioner's own list says it.
+            host: match kept.place(paths) {
+                Some(place) => place.title(),
+                None => kept.record.host.clone(),
+            },
             state: String::new(),
             resource: kept.record.id.clone(),
         })

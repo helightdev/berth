@@ -11,8 +11,10 @@ use crate::{
     host::Host,
     paths::Paths,
     plugins::{self, Plugin},
+    profiles::Place,
     provisioner::{self, Entry},
     registry::Store,
+    store::kind,
 };
 use berth_api::{HostType, Offer};
 use serde_json::{Value, json};
@@ -282,13 +284,7 @@ fn reaches_node(
 /// Why the node says the provisioner `entry` reaches the server it offers,
 /// which berth cannot check: it pins the certificate the node reports, which
 /// is public, or names a server the node gives as its own.
-fn said_same(
-    store: &Store,
-    name: &str,
-    entry: &Entry,
-    offer: &Offer,
-    host: &Host,
-) -> Option<&'static str> {
+fn said_same(store: &Store, entry: &Entry, offer: &Offer, host: &Host) -> Option<&'static str> {
     let pins = |secret: &str, value: &str| {
         store
             .secret(secret)
@@ -296,15 +292,10 @@ fn said_same(
             .flatten()
             .is_some_and(|kept| !kept.trim().is_empty() && kept.trim() == value.trim())
     };
-    let pinned = offer.secrets.iter().any(|(secret, value)| {
-        pins(&provisioner::secret_name(name, secret), value)
-            || (store
-                .secret(&provisioner::secret_name(name, secret))
-                .ok()
-                .flatten()
-                .is_none()
-                && pins(secret, value))
-    });
+    let pinned = offer
+        .secrets
+        .iter()
+        .any(|(secret, value)| pins(&provisioner::secret_name(&entry.id, secret), value));
     if pinned {
         return Some("it pins the certificate the node reports");
     }
@@ -361,6 +352,7 @@ fn register_by(
 ) -> Result<Vec<String>> {
     let plugins = provision_plugins(paths);
     let wanted = features(&host.config);
+    let node = host.place.key();
     let mut said = vec![];
     let mut kept: Vec<String> = vec![];
     for offer in offers {
@@ -412,7 +404,7 @@ fn register_by(
             let registered = provisioner::entries(paths)?;
             let ours = registered
                 .iter()
-                .find(|(_, entry)| entry.node == host.name && entry.kind == kind);
+                .find(|(_, entry)| entry.node == node && entry.kind == kind);
             let by_hand = || {
                 registered.iter().find(|(_, entry)| {
                     entry.node.is_empty()
@@ -424,17 +416,16 @@ fn register_by(
             if found.is_none() {
                 // One the node only says is the same is left to its owner, and no second one is made beside it.
                 let doubt = registered.iter().find_map(|(name, entry)| {
-                    (entry.kind == kind && entry.node != host.name)
-                        .then(|| {
-                            said_same(store, name, entry, offer, host).map(|why| (name, entry, why))
-                        })
+                    (entry.kind == kind && entry.node != node)
+                        .then(|| said_same(store, entry, offer, host).map(|why| (name, entry, why)))
                         .flatten()
                 });
                 match doubt {
                     Some((name, entry, _)) if !entry.node.is_empty() => {
                         said.push(format!(
                             "! {} offers {kind}, and says it is the server of {name}, which is {}'s; both are left as they are",
-                            host.name, entry.node
+                            host.name,
+                            node_name(paths, &entry.node)
                         ));
                         continue;
                     }
@@ -465,15 +456,26 @@ fn register_by(
             let entry = Entry {
                 kind: kind.clone(),
                 settings: values,
-                node: host.name.clone(),
+                node: node.clone(),
                 feature: offer.feature.clone(),
+                ..before.clone().unwrap_or_default()
             };
-            provisioner::save_entry(paths, &name, &entry)?;
-            for (secret, value) in &offer.secrets {
+            let id = provisioner::save_entry(paths, &name, &entry)?;
+            // The provisioner is given its own secrets alone: those the node
+            // reports, and the client certificate its feature makes the node trust.
+            let mut given: Vec<(String, String)> = offer.secrets.clone().into_iter().collect();
+            if let Some((cert, key)) = &hosting.trusts {
+                for secret in [cert, key] {
+                    if let Some(value) = store.secret(secret)? {
+                        given.push((secret.clone(), value));
+                    }
+                }
+            }
+            for (secret, value) in &given {
                 if !declared.secrets.iter().any(|known| &known.name == secret) {
                     continue;
                 }
-                let own = provisioner::secret_name(&name, secret);
+                let own = provisioner::secret_name(&id, secret);
                 if store.secret(&own)?.as_deref() != Some(value.as_str()) {
                     store.set_secret(&own, Some(value))?;
                 }
@@ -503,7 +505,7 @@ fn register_by(
         }
     }
     for (name, entry) in provisioner::entries(paths)? {
-        if entry.node != host.name || kept.contains(&name) {
+        if entry.node != node || kept.contains(&name) {
             continue;
         }
         match provisioner::remove_entry(paths, store, &name) {
@@ -526,13 +528,21 @@ fn register_by(
 pub fn adopt(paths: &Paths, name: &str, node: &str) -> Result<String> {
     let mut entry = provisioner::entry(paths, name)?
         .ok_or_else(|| format!("No provisioner {name} is registered"))?;
+    let name = entry.name.clone();
     if !entry.node.is_empty() {
-        return Err(format!("{name} is the node {}'s already", entry.node).into());
+        return Err(format!(
+            "{name} is the node {}'s already",
+            node_name(paths, &entry.node)
+        )
+        .into());
     }
+    let found = Place::find(paths, crate::store::OWN, node)?;
     let host = Host::all(paths)
         .into_iter()
-        .find(|host| host.name == node)
+        .find(|host| Some(&host.place) == found.as_ref())
         .ok_or_else(|| format!("No host {node}"))?;
+    let node = host.name.clone();
+    let node_id = host.place.key();
     if crate::host_type::of(&host.config) != HostType::Node {
         return Err(format!("{node} is not a node").into());
     }
@@ -557,7 +567,7 @@ pub fn adopt(paths: &Paths, name: &str, node: &str) -> Result<String> {
     };
     if let Some((other, _)) = provisioner::entries(paths)?
         .into_iter()
-        .find(|(_, known)| known.node == node && known.kind == entry.kind)
+        .find(|(_, known)| known.node == node_id && known.kind == entry.kind)
     {
         return Err(format!(
             "{node} has the provisioner {other} of the type {} already. Remove it first: berth provisioner run {other} remove",
@@ -565,9 +575,9 @@ pub fn adopt(paths: &Paths, name: &str, node: &str) -> Result<String> {
         )
         .into());
     }
-    entry.node = node.to_owned();
+    entry.node = node_id;
     entry.feature = offering;
-    provisioner::save_entry(paths, name, &entry)?;
+    provisioner::save_entry(paths, &entry.id.clone(), &entry)?;
     Ok(format!(
         "{name} is {node}'s now. The next apply of {node} brings its settings and the certificate it pins up to date: berth apply {node}"
     ))
@@ -584,10 +594,10 @@ pub fn check_removal(paths: &Paths, host: &Host) -> Result<()> {
     let wanted = features(&host.config);
     let applied = crate::host_type::Capability::Plugins.allowed(crate::host_type::of(&host.config));
     for (name, entry) in provisioner::entries(paths)? {
-        if entry.node != host.name || (applied && wanted.contains(&entry.feature)) {
+        if entry.node != host.place.key() || (applied && wanted.contains(&entry.feature)) {
             continue;
         }
-        let held = holds(paths, &name)?;
+        let held = holds(paths, &entry.id)?;
         if !held.is_empty() {
             return Err(format!(
                 "{} offers the provisioner {name} through {}, which still holds {}. Remove {} first (berth resource ID remove), or keep {} among the features of {}",
@@ -604,28 +614,31 @@ pub fn check_removal(paths: &Paths, host: &Host) -> Result<()> {
     Ok(())
 }
 
-/// The resources a registered provisioner holds, by id.
-fn holds(paths: &Paths, name: &str) -> Result<Vec<String>> {
+/// The resources the registered provisioner with the id holds, by id.
+fn holds(paths: &Paths, id: &str) -> Result<Vec<String>> {
     Ok(crate::resource::list(paths)?
         .into_iter()
-        .filter(|kept| kept.record.provisioner == name)
+        .filter(|kept| kept.record.provisioner == id)
         .map(|kept| kept.record.id)
         .collect())
 }
 
-/// Forget the provisioners of the node `name` before the host goes: refused
-/// while one still holds resources, as these would have no provisioner.
-pub fn forget(paths: &Paths, store: &Store, name: &str) -> Result<()> {
-    let ours: Vec<String> = provisioner::entries(paths)?
+/// Forget the provisioners of the node with the id `node` before the host
+/// goes: refused while one still holds resources, as these would have no
+/// provisioner.
+pub fn forget(paths: &Paths, store: &Store, node: &str) -> Result<()> {
+    let ours: Vec<Entry> = provisioner::entries(paths)?
         .into_iter()
-        .filter(|(_, entry)| entry.node == name)
-        .map(|(provisioner, _)| provisioner)
+        .filter(|(_, entry)| entry.node == node)
+        .map(|(_, entry)| entry)
         .collect();
     for provisioner in &ours {
-        let held = holds(paths, provisioner)?;
+        let held = holds(paths, &provisioner.id)?;
         if !held.is_empty() {
             return Err(format!(
-                "{name} is the node of the provisioner {provisioner}, which still holds {}. Remove {} first: berth resource ID remove",
+                "{} is the node of the provisioner {}, which still holds {}. Remove {} first: berth resource ID remove",
+                node_name(paths, node),
+                provisioner.name,
                 held.join(", "),
                 if held.len() == 1 { "it" } else { "them" }
             )
@@ -633,20 +646,22 @@ pub fn forget(paths: &Paths, store: &Store, name: &str) -> Result<()> {
         }
     }
     for provisioner in ours {
-        provisioner::remove_entry(paths, store, &provisioner)?;
+        provisioner::remove_entry(paths, store, &provisioner.id)?;
     }
     Ok(())
 }
 
-/// Give the provisioners of the node `old` its new name.
-pub fn rename(paths: &Paths, old: &str, new: &str) -> Result<()> {
-    for (name, mut entry) in provisioner::entries(paths)? {
-        if entry.node == old {
-            entry.node = new.to_owned();
-            provisioner::save_entry(paths, &name, &entry)?;
-        }
-    }
-    Ok(())
+/// The name of the host with the id, or the id when there is none.
+pub fn node_name(paths: &Paths, id: &str) -> String {
+    crate::store::shared(paths)
+        .ok()
+        .and_then(|store| {
+            store
+                .label_of(kind::PROFILE, crate::store::OWN, id)
+                .ok()
+                .flatten()
+        })
+        .unwrap_or_else(|| id.to_owned())
 }
 
 /// What the node `host` reported at the end of its last apply, asked of its
@@ -735,7 +750,7 @@ mod tests {
             let config = json!({"type": "node",
                 "access": {"address": "192.0.2.20", "user": "root"},
                 "ansible_vars": {"devbox_plugin_features": features}});
-            let place = Place::own("big").unwrap();
+            let place = Place::own(&self.paths, "big").unwrap();
             place.save(&self.paths, &config).unwrap();
             Host {
                 name: "big".into(),
@@ -753,7 +768,7 @@ mod tests {
                 scope: crate::store::OWN.into(),
                 record: crate::resource::Record {
                     id: "r1".into(),
-                    provisioner: provisioner.into(),
+                    provisioner: provisioner::reference(&self.paths, provisioner).unwrap(),
                     kind: "machine".into(),
                     name: "studio-2".into(),
                     ..Default::default()
@@ -791,8 +806,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             (entry.node.as_str(), entry.feature.as_str()),
-            ("big", "fake/engine")
+            (host.place.key().as_str(), "fake/engine")
         );
+        assert_eq!(node_name(&world.paths, &entry.node), "big");
         assert_eq!(entry.settings["server"], "https://192.0.2.20:8444");
         assert_eq!(
             world
@@ -855,6 +871,7 @@ mod tests {
         let host = world.host(&["fake/engine"]);
         // As the recipe registered it: its own name and setting, the shared certificate.
         hand(&world, "incus-vm", "https://incus-host:8444");
+        // A secret all share of the name is never the provisioner's.
         world.store.set_secret("server_cert", Some("CERT")).unwrap();
         hand(&world, "elsewhere", "https://192.0.2.99:8444");
         let said = register_by(&world.paths, &world.store, &host, &[offer()], &lookup).unwrap();
@@ -869,7 +886,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             (taken.node.as_str(), taken.feature.as_str()),
-            ("big", "fake/engine")
+            (host.place.key().as_str(), "fake/engine")
         );
         // Its setting reaches the server already, and stays.
         assert_eq!(taken.settings["server"], "https://incus-host:8444");
@@ -894,7 +911,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .node,
-            "big"
+            host.place.key()
         );
 
         // Another port of the same machine is another server.
@@ -912,6 +929,7 @@ mod tests {
         let mut host = world.host(&["fake/engine"]);
         host.config["access"]["address"] = json!("big.example.org");
         hand(&world, "incus-vm", "https://incus-host:8444");
+        // A secret all share of the name is never the provisioner's.
         world.store.set_secret("server_cert", Some("CERT")).unwrap();
         let mut aliased = offer();
         aliased
@@ -927,7 +945,7 @@ mod tests {
         .unwrap();
         assert!(
             said.iter().any(|line| line
-                == "! big offers fake/vm, and incus-vm may reach the same server (it pins the certificate the node reports), which berth cannot check; both are left as they are. To make incus-vm big's: berth provisioner run incus-vm adopt node=big"),
+                == "! big offers fake/vm, and incus-vm may reach the same server (it names a server the node gives as its own), which berth cannot check; both are left as they are. To make incus-vm big's: berth provisioner run incus-vm adopt node=big"),
             "{said:?}"
         );
         // Nothing changed, and there is no second one beside it.
@@ -952,7 +970,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             (adopted.node.as_str(), adopted.feature.as_str()),
-            ("big", "fake/engine")
+            (host.place.key().as_str(), "fake/engine")
         );
         let said = register_by(&world.paths, &world.store, &host, &[aliased], &lookup).unwrap();
         assert!(
@@ -1085,6 +1103,7 @@ mod tests {
                 settings: [("server".into(), "https://192.0.2.40:8444".into())].into(),
                 node: "dock".into(),
                 feature: "fake/engine".into(),
+                ..Entry::default()
             },
         )
         .unwrap();
@@ -1271,13 +1290,12 @@ mod tests {
             "{refused}"
         );
         let renamed = crate::profiles::rename(&world.paths, &host.place, "huge", false).unwrap();
-        assert_eq!(
-            provisioner::entry(&world.paths, "big-fake-vm")
-                .unwrap()
-                .unwrap()
-                .node,
-            "huge"
-        );
+        let node = provisioner::entry(&world.paths, "big-fake-vm")
+            .unwrap()
+            .unwrap()
+            .node;
+        assert_eq!(node, host.place.key());
+        assert_eq!(node_name(&world.paths, &node), "huge");
         crate::profiles::rename(&world.paths, &renamed, "big", false).unwrap();
         // Once the machine is gone, so is the provisioner.
         crate::store::shared(&world.paths)
@@ -1378,7 +1396,7 @@ mod tests {
     fn offered_values_name_where_berth_reaches_the_node() {
         let host = |access: Value| Host {
             name: "big".into(),
-            place: Place::own("big").unwrap(),
+            place: Place::at("", "0197000000007000800000000000000c", "big"),
             config: json!({"type": "node", "access": access}),
         };
         let root = host(json!({"address": "192.0.2.20", "user": "root"}));

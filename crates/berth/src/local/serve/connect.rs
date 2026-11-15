@@ -42,9 +42,10 @@ pub enum Dialler {
 impl Dialler {
     /// The dialler for the provisioner that made a resource.
     pub fn of(paths: &Paths, kept: &Kept) -> Dialler {
-        match berth_core::provisioner::entry(paths, &kept.record.provisioner) {
-            Ok(Some(entry)) if !entry.node.is_empty() => Dialler::Node(entry.node),
-            _ => Dialler::Server,
+        // The server's hosts are known by name.
+        match berth_core::provisioner::node_of(paths, &kept.record.provisioner) {
+            node if node.is_empty() => Dialler::Server,
+            node => Dialler::Node(node),
         }
     }
 
@@ -326,10 +327,10 @@ pub async fn connect(
         Fail::new(
             code::NOT_FOUND,
             match names.is_empty() {
-                true => format!("{} reports no endpoints", kept.title()),
+                true => format!("{} reports no endpoints", kept.title(&state.paths)),
                 false => format!(
                     "{} has no endpoint {given}. Its endpoints: {}",
-                    kept.title(),
+                    kept.title(&state.paths),
                     names.join(", ")
                 ),
             },
@@ -350,7 +351,7 @@ pub async fn connect(
             format!(
                 "berth serve --simulate dials no endpoint: {} of {} leads nowhere",
                 endpoint.name,
-                kept.title()
+                kept.title(&state.paths)
             ),
         ));
     }

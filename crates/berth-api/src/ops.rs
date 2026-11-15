@@ -289,6 +289,7 @@ pub static SERVE: &[Op] = &[
     admin(call("secrets.list", "GET", "/v1/secrets")),
     admin(call("secrets.set", "PUT", "/v1/secrets/{name}")),
     admin(call("secrets.remove", "DELETE", "/v1/secrets/{name}")),
+    admin(call("secrets.rename", "POST", "/v1/secrets/{name}/rename")),
     admin(call("keys.list", "GET", "/v1/keys")),
     admin(bytes(call("keys.add", "PUT", "/v1/keys/{name}"))),
     admin(call("keys.remove", "DELETE", "/v1/keys/{name}")),
@@ -296,6 +297,11 @@ pub static SERVE: &[Op] = &[
     admin(call("registries.list", "GET", "/v1/registries")),
     admin(call("registries.save", "PUT", "/v1/registries/{name}")),
     admin(call("registries.remove", "DELETE", "/v1/registries/{name}")),
+    admin(call(
+        "registries.rename",
+        "POST",
+        "/v1/registries/{name}/rename",
+    )),
     admin(call(
         "registries.check",
         "POST",
