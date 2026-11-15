@@ -165,11 +165,14 @@ container, named after its service, such as `web-8080`.
 | Engine | Address of a published port | Network addresses |
 | --- | --- | --- |
 | On this machine | `127.0.0.1`, or the address it is published on | Reported, as this machine routes to them |
+| On a node, through the node's provisioner | `127.0.0.1` of the node, or the address it is published on | Reported, as the node's controller dials them |
 | Elsewhere, by `host` or a context | The engine's host name from its address, or the address it is published on | Left out, as only the engine's machine routes to them |
 
 berth opens a tunnel to an endpoint with `resources.connect`. A port published
 on the loopback of an engine elsewhere is reported too, and the server refuses
-to dial it.
+to dial it. For the provisioner a node registers, berth names the node in each
+request, and the node's controller dials the endpoints, so its loopback and
+its bridges are reached.
 
 An instance also takes the action `exec`. It runs `docker exec` with the
 command, and `-i` with its standard input when it has some. The container has

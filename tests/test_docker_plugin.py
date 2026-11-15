@@ -618,6 +618,19 @@ class Instance(Harness):
             {'name': '8080', 'address': '192.0.2.10', 'port': 8080, 'protocol': 'tcp', 'hint': 'http'},
         ])
 
+    def test_an_engine_on_a_node_reports_its_endpoints_as_the_node_sees_them(self):
+        done = self.make('status', {'node': 'big'}, rules=self.published(),
+                         arguments={'host': 'ssh://ops@192.0.2.10'})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        local = {'protocol': 'tcp', 'local': True}
+        self.assertEqual(json.loads(done.stdout)['endpoints'], [
+            {'name': '5353-udp', 'address': '127.0.0.1', 'port': 5353, 'protocol': 'udp', 'local': True},
+            {'name': '15432', 'address': '192.0.2.7', 'port': 15432, 'hint': 'postgres', **local},
+            {'name': '8080', 'address': '127.0.0.1', 'port': 8080, 'hint': 'http', **local},
+            {'name': 'bridge-53-udp', 'address': '172.17.0.2', 'port': 53, 'protocol': 'udp', 'local': True},
+            {'name': 'bridge-80', 'address': '172.17.0.2', 'port': 80, 'hint': 'http', **local},
+        ])
+
     def test_a_command_runs_in_the_container_with_its_input_and_exit_status(self):
         rules = [{'prefix': ['container', 'inspect', 'web-1'], 'results': [inspect({'berth-resource': 'r1'})]},
                  {'prefix': ['exec'], 'results': [[3, 'hi from web\n', '']]}]
