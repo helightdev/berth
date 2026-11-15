@@ -1652,6 +1652,38 @@ pub struct Applied {
     pub plugins: Vec<AppliedPlugin>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub offers: Vec<Offer>,
+    /// The host's device on the tailnet, as its Tailscale client saw it at
+    /// the end of the apply, when it is on one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tailnet: Option<TailnetDevice>,
+}
+
+/// A host's device on the tailnet, from `tailscale status --json`. It
+/// holds public values only, which the control server's API finds it by.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TailnetDevice {
+    /// The device's stable id: Tailscale's `nodeId`, or the number of
+    /// Headscale's node.
+    pub id: String,
+    /// Its MagicDNS name, such as `studio.example.ts.net`, without the final dot.
+    #[serde(default)]
+    pub dns_name: String,
+    /// The machine's own hostname, as the client reports it.
+    #[serde(default)]
+    pub host_name: String,
+    /// Its addresses on the tailnet.
+    #[serde(default)]
+    pub addresses: Vec<String>,
+    /// The tailnet's name, when the client knows it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tailnet: String,
+}
+
+impl TailnetDevice {
+    /// The first label of its MagicDNS name: its name on the tailnet.
+    pub fn name(&self) -> &str {
+        self.dns_name.split('.').next().unwrap_or_default()
+    }
 }
 
 /// Provisioners a feature of a host offers, as its tasks found them: berth

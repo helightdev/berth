@@ -196,8 +196,9 @@ pub fn list(paths: &Paths, scope: &str) -> Result<Vec<(String, Value)>> {
 }
 
 /// Forget a host: its profile, its generated passwords, the record of a
-/// machine of it that was never made, what berth knows of its SSH and the passwords it keeps for
-/// logging in, in one change. A profile in a file is removed with the file.
+/// machine of it that was never made, what berth knows of its SSH and of its
+/// device on the tailnet, and the passwords it keeps for logging in, in one
+/// change. The device stays on the tailnet. A profile in a file is removed with the file.
 pub fn remove(paths: &Paths, place: &Place) -> Result<()> {
     let (scope, name) = place.side();
     // The provisioners a node offers go with it, unless they still hold resources.
@@ -215,6 +216,7 @@ pub fn remove(paths: &Paths, place: &Place) -> Result<()> {
     let mut removals = vec![
         (kind::CREDENTIALS, scope.as_str(), name.as_str()),
         (kind::ACCESS, scope.as_str(), name.as_str()),
+        (kind::TAILNET, scope.as_str(), name.as_str()),
     ];
     if !machine.is_empty() {
         removals.push((kind::RESOURCE, scope.as_str(), machine.as_str()));
@@ -255,10 +257,11 @@ pub fn hostname_allowed(name: &str, profile: &Value) -> Result<()> {
 
 /// Give a saved host another name in its scope: its profile, its generated
 /// passwords, what berth knows of its SSH, the passwords it keeps for logging
-/// in and the resources that belong to it, in one change. A host of this
-/// installation's own takes its messages and jobs along. The machine stays as
-/// it is, and so does its hostname unless `hostname` asks for the profile's to
-/// be the new name, which an apply then gives the machine. Returns the new place.
+/// in, its device on the tailnet and the resources that belong to it, in one
+/// change. A host of this installation's own takes its messages and jobs
+/// along. The machine stays as it is, and so does its hostname unless
+/// `hostname` asks for the profile's to be the new name, which an apply then
+/// gives the machine and its device on the tailnet. Returns the new place.
 pub fn rename(paths: &Paths, from: &Place, to: &str, hostname: bool) -> Result<Place> {
     let Place::Stored { scope, name: old } = from else {
         return Err("A profile in a file is renamed by moving the file".into());
@@ -294,6 +297,7 @@ pub fn rename(paths: &Paths, from: &Place, to: &str, hostname: bool) -> Result<P
     let mut moved = vec![
         (kind::CREDENTIALS, scope.clone(), old.clone(), to.to_owned()),
         (kind::ACCESS, scope.clone(), old.clone(), to.to_owned()),
+        (kind::TAILNET, scope.clone(), old.clone(), to.to_owned()),
     ];
     if scope == OWN {
         for secret in [crate::keys::password_secret, crate::keys::sudo_secret] {
@@ -305,6 +309,19 @@ pub fn rename(paths: &Paths, from: &Place, to: &str, hostname: bool) -> Result<P
             writes.push((kind, scope.as_str(), new.as_str(), value));
             removals.push((kind, scope.as_str(), old.as_str()));
         }
+    }
+    // The device on the tailnet takes the new hostname at the next apply,
+    // when the machine has it too.
+    if hostname && berth_api::profile::joins_tailnet(&profile) {
+        let mut kept = crate::tailnet::Kept::read(&store, scope, old)?;
+        kept.rename = Some(to.to_owned());
+        writes.retain(|(kind, ..)| *kind != kind::TAILNET);
+        writes.push((
+            kind::TAILNET,
+            scope.as_str(),
+            to,
+            serde_json::to_vec(&kept)?,
+        ));
     }
     // A resource keeps its id and its name at the provisioner; only the host
     // it belongs to is named anew.

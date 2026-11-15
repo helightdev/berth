@@ -1395,7 +1395,7 @@ fn remove_action(seen: &Seen) -> Action {
     let (help, confirm) = match made(seen.machine) {
         Some(machine) => (
             format!(
-                "Forget {name}: its profile, the passwords berth generated and keeps for it, and its host keys. With destroy, {} also destroys its machine {} with its disk. Without destroy the machine is left as it is, and berth keeps it as a resource of {} with no host, which berth resource remove deletes later.",
+                "Forget {name}: its profile, the passwords berth generated and keeps for it, and its host keys. With destroy, {} also destroys its machine {} with its disk, and berth removes its device from the tailnet. Without destroy the machine and its device are left as they are, and berth keeps it as a resource of {} with no host, which berth resource remove deletes later.",
                 machine.provisioner, machine.external_id, machine.provisioner
             ),
             format!(
@@ -1412,7 +1412,7 @@ fn remove_action(seen: &Seen) -> Action {
     };
     let destroy = match made(seen.machine) {
         Some(machine) => format!(
-            "Destroy the machine {} made, {}, with its disk. It cannot be undone.",
+            "Destroy the machine {} made, {}, with its disk, and remove its device from the tailnet. It cannot be undone.",
             machine.provisioner, machine.external_id
         ),
         None => "Destroy the machine a provisioner made for the host. This host has none, so yes is refused.".into(),
@@ -1451,7 +1451,7 @@ fn remove(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let destroy = yes(&act, "destroy")?;
         let place = own_place(&name)?;
-        saved_profile(&state, &name)?;
+        let (_, profile) = saved_profile(&state, &name)?;
         let machine = machine_of(&state, &name);
         if destroy && let Some(why) = destroy_refused(&name, machine.as_ref()) {
             return Err(Fail::new(code::NOT_AVAILABLE, why));
@@ -1497,10 +1497,14 @@ fn remove(state: Arc<Serve>, name: String, act: Act) -> Run {
                 match acting.run(paths, &(serve.provision)(), out) {
                     // What it says of the profile staying is not so here.
                     Ok(_) => {
-                        let _ = writeln!(
-                            out,
-                            "✓ {provisioner} destroyed {id}. A node of {name} on a tailnet stays: remove it there"
-                        );
+                        let _ = writeln!(out, "✓ {provisioner} destroyed {id}");
+                        // The machine is gone, so its device on the tailnet goes too; a
+                        // device berth cannot remove is named, and the host is forgotten all the same.
+                        if let Some(line) =
+                            berth_core::tailnet::remove_device(paths, &place, &profile)
+                        {
+                            let _ = writeln!(out, "{line}");
+                        }
                     }
                     Err(error) => {
                         let _ = writeln!(out, "✗ {error}");
@@ -2039,6 +2043,7 @@ fn rename(state: Arc<Serve>, name: String, act: Act) -> Run {
             return Err(bad(problem));
         }
         let from = own_place(&name)?;
+        let joins = profile::joins_tailnet(&profile_of(&state, &name));
         if hostname {
             berth_core::profiles::hostname_allowed(&name, &profile_of(&state, &name))
                 .map_err(|error| bad(error.to_string()))?;
@@ -2069,9 +2074,13 @@ fn rename(state: Arc<Serve>, name: String, act: Act) -> Run {
                 Ok(_) => {
                     let _ = writeln!(out, "✓ {name} is called {new} now");
                     if hostname {
+                        let also = match joins {
+                            true => ", and its device on the tailnet is renamed then",
+                            false => "",
+                        };
                         let _ = writeln!(
                             out,
-                            "Its profile's hostname is {new}; the machine takes it at its next apply"
+                            "Its profile's hostname is {new}; the machine takes it at its next apply{also}"
                         );
                     }
                     true

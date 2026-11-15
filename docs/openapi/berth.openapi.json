@@ -209,6 +209,17 @@
               "$ref": "#/components/schemas/AppliedPlugin"
             },
             "type": "array"
+          },
+          "tailnet": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TailnetDevice",
+                "description": "The host's device on the tailnet, as its Tailscale client saw it at\nthe end of the apply, when it is on one."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -3358,6 +3369,38 @@
         ],
         "type": "object"
       },
+      "TailnetDevice": {
+        "description": "A host's device on the tailnet, from `tailscale status --json`. It\nholds public values only, which the control server's API finds it by.",
+        "properties": {
+          "addresses": {
+            "description": "Its addresses on the tailnet.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "dns_name": {
+            "description": "Its MagicDNS name, such as `studio.example.ts.net`, without the final dot.",
+            "type": "string"
+          },
+          "host_name": {
+            "description": "The machine's own hostname, as the client reports it.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The device's stable id: Tailscale's `nodeId`, or the number of\nHeadscale's node.",
+            "type": "string"
+          },
+          "tailnet": {
+            "description": "The tailnet's name, when the client knows it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
       "Topic": {
         "description": "An entry of `/etc/berth/channels.json`.",
         "properties": {
@@ -6104,6 +6147,42 @@
         "operationId": "jobs",
         "parameters": [
           {
+            "description": "Only the jobs of this subject: `host:NAME`, `provisioner:NAME`, `resource:ID` or `installation`.",
+            "in": "query",
+            "name": "subject",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the jobs about this host, alone or among others, as a roll-out is.",
+            "in": "query",
+            "name": "host",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the jobs that have not ended, or with `false` only those that have.",
+            "in": "query",
+            "name": "running",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Only the jobs that started before the job of this id: the next page after it.",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "At most this many (default 100, at most 1,000).",
             "in": "query",
             "name": "limit",
@@ -6127,6 +6206,16 @@
               }
             },
             "description": "Jobs, newest first"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`before` names no job"
           }
         },
         "summary": "The jobs, newest first.",

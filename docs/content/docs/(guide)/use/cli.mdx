@@ -90,6 +90,8 @@ What changes a host runs as a job of the server, such as an apply or a roll-out.
 | --- | --- |
 | Start a job and leave it running | `berth apply studio --detach`, which needs a `berth serve` |
 | See the jobs | `berth job list` |
+| See some of them | `berth job list --host studio`, `--subject provisioner:NAME` or `--running` |
+| See the page after | `berth job list --before ID`, with the last job of the page before |
 | See one job | `berth job show ID` |
 | Read its log, and go on as it writes | `berth job logs ID -f` |
 | Wait for it, and take its status | `berth job wait ID` |
@@ -174,6 +176,7 @@ See [Secrets](/docs/use/secrets) and [Registries](/docs/use/registries).
 | Call a service a plugin runs | `berth service call studio notes/store list` |
 | Read a host's channel as it comes | `berth channel listen studio` |
 | The messages the server took in | `berth inbox list` |
+| Mark one done, or open again | `berth inbox done studio ID`, `berth inbox reopen studio ID` |
 | The server's key-value store | `berth kv list NAMESPACE`, `berth kv set NAMESPACE KEY JSON` |
 
 ## The server of this machine
