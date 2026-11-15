@@ -1,0 +1,125 @@
+---
+title: Nodes
+description: A node is a server that berth applies without a desktop, such as one that hosts Incus and Docker machines. Creating one, taking in a server that exists, and what berth leaves to you.
+icon: Server
+---
+
+A node is a server that berth sets up and keeps up to date, without a desktop. Its plugin features install what the server is for, such as Incus or a Docker engine for berth's machines. berth then has a provisioner for each, and the provisioner records which node it is on.
+
+| Part | On a node |
+| --- | --- |
+| System | Ubuntu 24.04 or later on x86_64, its time zone and locale, and Ubuntu's security updates without reboots |
+| SSH | Keys only. The SSH user takes berth's key, and root keeps a login with keys when berth logs in as root |
+| Controller | berthd and box, with the actions status, update, reboot and secrets. Sessions run as the SSH user |
+| Firewall | `ufw`: incoming traffic is refused except SSH, the tailnet and what the features open |
+| Tailnet | Tailscale, joined as a workstation joins ([Tailnet](/docs/use/access)) |
+| Features | Only those the profile lists, such as `incus/server` and `docker/engine` |
+| Not on a node | A desktop, the agent and operator accounts, VNC, T3, Cockpit, and the agents' features |
+
+A node is a [host type](/docs/use/types) between `managed` and `workstation`. It is applied and rolled out like a workstation. It has no cloud seed or USB installer, because it is a server you install with Ubuntu first.
+
+## Create one
+
+Install Ubuntu on the server from your provider's panel, or with the [`rescue-install`](https://github.com/helightdev/berth/tree/main/recipes/rescue-install) recipe when that installer does not work. Then add it by its address as a node. This example uses the made-up name `big` and the address `192.0.2.20`:
+
+```bash
+berth host add big 192.0.2.20 --user root --auth ssh --type node
+```
+
+List its features in the profile's `ansible_vars`, and apply it:
+
+```bash
+berth profile big > big.json
+# in big.json: "ansible_vars": {"devbox_plugin_features": ["docker/engine", "incus/server"]}
+berth profile big --set big.json
+berth apply big
+```
+
+The first apply installs berth's key for the SSH user. A node added with `--auth password` is logged in to with berth's key afterwards, and berth forgets the password. `--auth ssh` stays as it is.
+
+An `ssh` or `managed` host becomes a node with `berth host type big node`. A node is not applied over a workstation that berth set up: the role stops before it changes anything.
+
+| Profile field | On a node |
+| --- | --- |
+| `type` | `node` |
+| `access` | Where berth reaches it and as whom. The SSH user is the account sessions run as |
+| `target` | `cloud`, or `container` for a node without systemd. `laptop` is refused |
+| `tailscale_auth_key`, `tailscale_login_server` | As for a workstation |
+| `ansible_vars` | `devbox_plugin_features`, the settings of the features, and the node's own settings below |
+| The agent's and the operator's fields | Refused, as a node has neither account. `berth host type HOST node` takes them out |
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `devbox_ssh_from` | `any` | Who reaches SSH from outside the tailnet: `any`, or one address or network. The address an apply comes from always does |
+| `devbox_harden_ssh` | `true` | Keys only for SSH. It is skipped while the SSH user has no key |
+| `devbox_manage_firewall` | `true` | Set the node's firewall |
+| `devbox_install_tailscale` | `true` | Install Tailscale and join the tailnet with the profile's key |
+| `devbox_timezone` | `Europe/Berlin` | The node's time zone |
+
+## Features for a node
+
+| Feature | What it sets up | Provisioners berth registers |
+| --- | --- | --- |
+| `incus/server` | Incus, the bridge `incusbr0` at `10.77.0.1/24`, a storage pool in a directory, and the API on port 8444 that trusts berth's client certificate | `big-incus-vm` and `big-incus-container` |
+| `docker/engine` | The Docker engine, and Sysbox when asked | `big-docker-container`, which reaches the engine over SSH |
+
+The guides of the [Incus](https://github.com/helightdev/berth/blob/main/plugins/incus/guide.md) and [Docker](https://github.com/helightdev/berth/blob/main/plugins/docker/guide.md) plugins list their settings. A feature says which host types it is for. berth refuses to apply a node that lists a feature for workstations, and the reverse.
+
+### Provisioners the node offers
+
+At the end of an apply the role records what each feature offers in `/etc/berth/applied.json`, and berthd reports it. berth then registers a provisioner for each:
+
+| What | Where it comes from |
+| --- | --- |
+| The name | `NODE-PLUGIN-TYPE`, such as `big-incus-vm` |
+| The node | The host it is on, shown with the provisioner and kept when the node is renamed |
+| Settings | Where berth reaches the node, such as `server=https://192.0.2.20:8444` |
+| Secrets | Public values only, such as the Incus server's certificate, kept as the provisioner's own `incus_server_cert` |
+
+berth makes its Incus client certificate and key once, as the secrets `incus_client_cert` and `incus_client_key`. Only the certificate goes to the node, which trusts it. The key stays in berth's store.
+
+An apply with the same features doesn't change them. A feature taken out of the profile takes its provisioners with it at the next apply. While one of them still holds machines or deployments, berth refuses to apply the node without the feature, and it refuses to remove the node. Remove those resources first, or keep the feature.
+
+## Take in a server that exists
+
+A server that the `incus-host` recipe set up, or that has Incus or Docker installed by hand, is added and applied as a node like a new one. The features take what is there:
+
+- Incus with a storage pool keeps its pools, networks, profiles and trusted clients. Only the API address, when it has none, and berth's certificate are added.
+- An installed Docker engine stays, with its containers and volumes, also one from Docker's own packages.
+- A provisioner registered by hand for the same server becomes the node's instead of a second one. berth knows it by the certificate it pins, or by the server it names, such as the recipe's `https://incus-host:8444`. Its settings stay as they were.
+- When the apply comes from a berth server in a container on the node, its provisioner of the local Docker engine becomes the node's.
+
+Then check the node and its provisioners:
+
+```bash
+berth run big status
+berth provisioner
+```
+
+## The berth server on a node
+
+The `berth-server` recipe installs berth's server in a container named `berth`. When a node has that container, it offers the action **Upgrade the berth server** (`upgrade-server`). It runs the server from the image of the version of the berth that asks, as a job of the node's controller:
+
+- The new container takes over what the running one has:
+
+  | Taken over | Such as |
+  | --- | --- |
+  | Name and data | `berth`, and the folders or volumes it mounts |
+  | Ports and networks | `--publish 127.0.0.1:7777:7777` |
+  | Restart policy | `--restart unless-stopped` |
+  | Groups and extra hosts | `--group-add`, `--add-host incus-host:host-gateway` |
+  | User and environment | The variables the image does not set |
+
+  A Docker socket mounted into it stays.
+- An option it cannot carry over, such as `--privileged` or devices, stops it before anything changes. Upgrade such a container by hand.
+- The old container is stopped and kept until the new one keeps running. If the new one stops, the old one runs again.
+- It refuses to go to an older version than the one running.
+
+When the server upgrades its own container, it restarts during the job. The output stays in the node's session.
+
+## What berth does not do
+
+- It never makes a storage pool on a disk, which would erase it. Create such a pool with `incus storage create` and name it in `devbox_incus_pool`.
+- Taking a feature out does not remove Incus, Docker or their guests from the node. Only the provisioner goes.
+- Docker opens the ports its containers publish by itself, past `ufw`. Publish a port on `127.0.0.1` or on the tailnet address to keep it private.
+- It does not take a workstation to a node, or a node back to `managed`.

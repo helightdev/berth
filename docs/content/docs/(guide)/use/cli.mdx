@@ -35,7 +35,7 @@ With a [berth server](/docs/use/server) set, by `--server` or the `server` setti
 | --- | --- |
 | `berth iso HOST [--write /dev/sdX]` | Build the USB installer, downloading the ISO if none is set; write it to a drive after asking |
 | `berth seed HOST` | Render the cloud-init seed |
-| `berth apply HOST` | Apply the host's profile to it over SSH. With a [berth server](/docs/use/server) set, as a job there. Only a workstation is applied |
+| `berth apply HOST` | Apply the host's profile to it over SSH. With a [berth server](/docs/use/server) set, as a job there. Only a node or a workstation is applied ([Nodes](/docs/use/nodes)) |
 | `berth host install HOST` | Install berth's controller alone on a host that is not a workstation ([Installing the controller](/docs/use/types#installing-the-controller)) |
 | `berth host type HOST TYPE` | Save the type the host's profile says, such as for a host with berth's controller added by its address. A workstation is adopted instead ([Adding a machine that exists](/docs/use/types#adding-a-machine-that-exists)) |
 | `berth apply --behind [--update] [--reboot [--force]]` | Apply every host that is behind, one at a time ([Updates](/docs/use/updates#bringing-hosts-up-to-date)). `--all` takes the current ones too |

@@ -2,8 +2,9 @@
 
 This recipe installs Ubuntu on a server from its provider's rescue system. It
 is for a server whose provider has no working installer for the Ubuntu
-release you want. The result is a plain server with SSH, which the
-[`incus-host`](../incus-host/) recipe can then set up.
+release you want. The result is a plain server with SSH, which berth can then
+apply as a [node](../../docs/content/docs/%28guide%29/use/nodes.mdx): a server
+for Incus and Docker machines.
 
 It was run for Ubuntu 26.04, from a rescue system that is Debian or Ubuntu.
 

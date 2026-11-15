@@ -10,7 +10,8 @@ berth does not have to set a machine up to work with it. A host is anything bert
 | --- | --- | --- |
 | `ssh` | Nothing of berth | Logs in over SSH for a terminal, commands and the inventory |
 | `managed` | berthd and box | Also sessions, the channel, files, actions and secrets |
-| `workstation` | The whole profile | Also the desktop, the agents, plugins, applying and roll-outs |
+| `node` | A server's part of the profile: berthd, a firewall and plugin features | Also applying, roll-outs and plugin features, such as the engines that host machines ([Nodes](/docs/use/nodes)) |
+| `workstation` | The whole profile | Also the desktop, the agents and the accounts, cloud seeds and the USB installer |
 
 The type is part of the host's [profile](/docs/reference/profile#type), as `type`. A profile that doesn't say is a workstation, so older profiles mean what they always did. What the host has right now is asked of it. The overview and the Hosts tab show both when they differ, such as for a controller installed by hand.
 
@@ -18,18 +19,19 @@ A profile of berth 0.5 or earlier calls the type `level`, with the values `reach
 
 ## Capabilities
 
-| Capability | `ssh` | `managed` | `workstation` |
-| --- | --- | --- | --- |
-| Terminal and commands over SSH, inventory | yes | yes | yes |
-| Install the controller alone | yes | update it | by applying |
-| Sessions, channel, files, units, logs, processes | no | yes | yes |
-| The actions status, update and reboot | no | yes | yes |
-| Secrets and registry logins sent to the host | no | yes | yes |
-| Plugin features, their actions and services | no | no | yes |
-| Apply, roll-out, cloud seed, USB installer | no | no | yes |
-| Desktop and access links | no | no | yes |
+| Capability | `ssh` | `managed` | `node` | `workstation` |
+| --- | --- | --- | --- | --- |
+| Terminal and commands over SSH, inventory | yes | yes | yes | yes |
+| Install the controller alone | yes | update it | by applying | by applying |
+| Sessions, channel, files, units, logs, processes | no | yes | yes | yes |
+| The actions status, update and reboot | no | yes | yes | yes |
+| Secrets and registry logins sent to the host | no | yes | yes | yes |
+| Plugin features, their actions and services | no | no | yes | yes |
+| Apply and roll-out | no | no | yes | yes |
+| Cloud seed and USB installer | no | no | no | yes |
+| Desktop and access links | no | no | no | yes |
 
-The terminal UI, berth-remote, the commands and the API all use the same check in berth. An action the type rules out is still listed, as unavailable, with the reason and what changes the type. Asked for anyway, the server refuses it with `501 not_available`. A roll-out leaves hosts that aren't workstations and says how many it left.
+The terminal UI, berth-remote, the commands and the API all use the same check in berth. An action the type rules out is still listed, as unavailable, with the reason and what changes the type. Asked for anyway, the server refuses it with `501 not_available`. A roll-out applies nodes and workstations, leaves the other hosts and says how many it left.
 
 ## Adding a machine that exists
 
@@ -51,7 +53,7 @@ After saving the host, berth logs in the way [first contact](/docs/use/accounts#
 
 Then berth asks the host what it is. A machine that berth set up before has a controller that says its type, and berth offers to change the profile here when the host has more than `--type` gave. Without a terminal it prints the command.
 
-A workstation has its whole profile on the host as well. berth offers to [adopt](/docs/use/moving) it from there:
+A workstation or a node keeps its profile on the host as well. berth offers to [adopt](/docs/use/moving) it from there:
 
 ```bash
 berth adopt dock
@@ -63,7 +65,7 @@ A host with berth's controller alone has nothing more to keep, and berth offers 
 berth host type dock managed
 ```
 
-`berth host type HOST TYPE` only changes the profile here. A host's page says the same when its controller reports more than its profile says. berth refuses to install the controller alone on a host that is a workstation, whatever its profile here says. It asks the host's controller first, and the playbook checks the host's own record and the profile it keeps.
+`berth host type HOST TYPE` only changes the profile here. A host's page says the same when its controller reports more than its profile says. berth refuses to install the controller alone on a host that is a workstation or a node, whatever its profile here says. It asks the host's controller first, and the playbook checks the host's own record and the profile it keeps.
 
 In the terminal UI, create a host on the home screen and choose **Existing host, SSH only** on the **Install** tab. The address and the login are all the set-up asks for, and **Run** saves the host. For a managed host, choose **Existing host over SSH** and set **Type** to `managed`. **Run** then installs the controller. berth-remote does the same through the server.
 
@@ -77,20 +79,9 @@ curl --unix-socket "$XDG_RUNTIME_DIR/berth/serve.sock" -X PUT \
 
 The host's `trust-key` action then installs the server's key, with a password used once in its arguments ([Actions](/docs/extend/serve#actions)).
 
-## Add the server to berth
+## A server for machines
 
-The recipes leave a plain Ubuntu server where the account `root` takes the public key you gave `rescue-install`. Add it to berth from your own machine. This example uses the made-up name `big` and the address `192.0.2.20`:
-
-```bash
-berth host add big 192.0.2.20 --user root --auth ssh
-berth host install big
-```
-
-`berth host add` saves `big` with the type `ssh`. `--auth ssh` makes berth log in with your own SSH configuration and agent, so the key that works for `ssh root@192.0.2.20` works for berth. The default, `--auth berth`, uses berth's own key, which berth installs on the first contact with a password or a private key that logs in once. `--auth ssh` works with a local berth only. With a [berth server](/docs/use/server) set, the server logs in with its own keys.
-
-`berth host install big` puts the controller alone on the server. berth can then report its status and run commands there, and it can update and reboot the server. Sessions run as the SSH user, here `root`. berth does not apply such a server as a workstation. Its type stays `ssh` or `managed`, and the machines on it are created with the Incus or Docker provisioner.
-
-The recipes are in [`recipes/`](https://github.com/helightdev/berth/tree/main/recipes): `rescue-install` installs Ubuntu, and `incus-host` makes the server a host for machines.
+A server that hosts Incus or Docker machines is a [node](/docs/use/nodes). berth applies it like a workstation, without the desktop and the accounts, and its features install the engines and register their provisioners. A server that the recipes set up before is taken in the same way.
 
 ## Installing the controller
 
@@ -100,9 +91,9 @@ berth host install dock
 
 The controller is berthd and box with the files they read, from the same part of the role that a full apply runs. Nothing else of a workstation is installed: no accounts, desktop, agents or plugins. The SSH user is the account sessions run as, and its home is where the file calls may go. The host's type becomes `managed`, and its actions are status, update, reboot and secrets.
 
-The same is the host's action **Install the controller** on its overview, in berth-remote and over the API as `install-controller`. On a managed host it's called **Update the controller**: run it after updating berth, as berth's own version is all such a host is compared with. A workstation's controller comes with applying its configuration, so the action is not offered there.
+The same is the host's action **Install the controller** on its overview, in berth-remote and over the API as `install-controller`. On a managed host it's called **Update the controller**: run it after updating berth, as berth's own version is all such a host is compared with. The controller of a node or a workstation comes with applying its configuration, so the action is not offered there.
 
-berth also refuses it on a host that is a workstation whatever its profile here says. It asks the host's controller first. The role checks again on the host before it changes anything. It stops when the host's record says workstation. It also stops when berthd there serves an account other than the SSH user. Installing the controller alone on such a host would take the workstation's controller apart. The overview and `berth actions` say when a host is more than its profile, and how to adopt it.
+berth also refuses it on a host that is a workstation or a node whatever its profile here says. It asks the host's controller first. The role checks again on the host before it changes anything. It stops when the host's record says workstation or node. It also stops when berthd there serves an account other than the SSH user. Installing the controller alone on such a host would take the workstation's controller apart. The overview and `berth actions` say when a host is more than its profile, and how to adopt it.
 
 <Callout type="warn" title="A host without systemd">
   On a host with systemd the controller is a service that starts at boot. Without systemd, as in most containers, the controller is installed but nothing on the host starts it. berth says so and waits a minute for it to answer. The install fails when it doesn't. Something on the host then has to run `/usr/local/bin/berthd`, as the init of a container can.
@@ -113,6 +104,7 @@ berth also refuses it on a host that is a workstation whatever its profile here 
 | From | To | How |
 | --- | --- | --- |
 | `ssh` | `managed` | Install the controller |
-| `ssh` or `managed` | `workstation` | Set **Type** to `workstation` in the set-up, fill in the rest of the tabs, and apply |
+| `ssh` or `managed` | `node` | `berth host type HOST node`, list its features, and apply ([Nodes](/docs/use/nodes)) |
+| `ssh`, `managed` or `node` | `workstation` | Set **Type** to `workstation` in the set-up, fill in the rest of the tabs, and apply |
 
-berth never takes a host back to a type with less, and never removes what it installed.
+berth never takes a host back to a type with less, and never removes what it installed. A node is not applied over a workstation that berth set up, as nothing would look after its desktop, agent and accounts any more. Making a profile a node's takes the fields of the agent and the operator out of it.

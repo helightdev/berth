@@ -287,6 +287,8 @@ pub fn register(
                 .iter()
                 .filter(|(argument, _)| declared.own.contains(argument))
                 .map(|(argument, value)| (argument.clone(), fill(value, host)))
+                // An empty value is the argument's default, as berth keeps no empty settings.
+                .filter(|(_, value)| !value.is_empty())
                 .collect();
             let registered = provisioner::entries(paths)?;
             let ours = registered

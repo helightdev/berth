@@ -89,25 +89,30 @@
 # A berth server in a container here, with this engine's socket, calls it
 # its local engine: when the apply comes from that container, a provisioner
 # of its local engine is this one.
-- name: Find the addresses of a berth server's container here
+- name: Find the addresses and mounts of a berth server's container here
   ansible.builtin.command: >-
     docker container inspect --format
-    '{% raw %}{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}{% endraw %}'
+    '{% raw %}{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}|{{range .Mounts}}{{.Destination}} {{end}}{% endraw %}'
     {{ devbox_berth_server_container | default('berth') | quote }}
   register: devbox_docker_server
   changed_when: false
   failed_when: false
 
+# A server applying from its container with the socket reaches the engine
+# without SSH; any other berth reaches it over SSH as the account it applies as.
 - name: Offer the provisioner of this engine
   ansible.builtin.set_fact:
     devbox_node_units: "{{ devbox_node_units + ['docker'] }}"
     devbox_offer:
       provisioners: [container]
       settings:
-        host: "ssh://{user}@{address}:{port}"
+        host: "{{ '' if devbox_docker_local else 'ssh://{user}@{address}:{port}' }}"
       aliases:
         host: "{{ [''] if devbox_docker_here else [] }}"
   vars:
+    devbox_docker_found: "{{ (devbox_docker_server.stdout ~ '|').split('|') if devbox_docker_server.rc == 0 else ['', ''] }}"
     devbox_docker_here: >-
-      {{ devbox_docker_server.rc == 0 and (devbox_apply_from | default('')) | length > 0
-         and (devbox_apply_from | default('')) in devbox_docker_server.stdout.split() }}
+      {{ (devbox_apply_from | default('')) | length > 0
+         and (devbox_apply_from | default('')) in devbox_docker_found[0].split() }}
+    devbox_docker_local: "{{ devbox_docker_here and '/var/run/docker.sock' in devbox_docker_found[1].split() }}"
+
