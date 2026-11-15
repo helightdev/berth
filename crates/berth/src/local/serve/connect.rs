@@ -42,9 +42,10 @@ pub enum Dialler {
 impl Dialler {
     /// The dialler for the provisioner that made a resource.
     pub fn of(paths: &Paths, kept: &Kept) -> Dialler {
-        match berth_core::provisioner::entry(paths, &kept.record.provisioner) {
-            Ok(Some(entry)) if !entry.node.is_empty() => Dialler::Node(entry.node),
-            _ => Dialler::Server,
+        // The server's hosts are known by name.
+        match berth_core::provisioner::node_of(paths, &kept.record.provisioner) {
+            node if node.is_empty() => Dialler::Server,
+            node => Dialler::Node(node),
         }
     }
 

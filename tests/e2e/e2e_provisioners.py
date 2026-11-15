@@ -142,7 +142,7 @@ class Provisioners(unittest.TestCase):
         return self.station.berth(*args, **kwargs)
 
     def test_a_provisioner_is_listed_with_why_it_cannot_be_used(self):
-        listed = {found['id']: found for found in json.loads(self.berth('provisioner', 'list', '-o', 'json').stdout)}
+        listed = {found['name']: found for found in json.loads(self.berth('provisioner', 'list', '-o', 'json').stdout)}
         self.assertEqual(listed['box']['type'], 'lab/box')
         self.assertEqual(listed['box']['problem'], 'box needs place: berth provisioner set box place=VALUE')
         self.assertEqual(listed['old']['type'], 'lab/old')
@@ -200,7 +200,8 @@ class Provisioners(unittest.TestCase):
             acted = serve.call('POST', '/v1/provisioners/box/actions/sweep',
                                {'arguments': {'code': 's3cret-code'}, 'token': 'sweep-1'}, expect=202)
             job = acted['job']
-            self.assertEqual((job['subject'], job['action']), ('provisioner:box', 'sweep'))
+            self.assertEqual((job['subject_name'], job['action']), ('provisioner:box', 'sweep'))
+            self.assertRegex(job['subject'], r'^provisioner:[0-9a-f]{32}$')
             portal = serve.portal()
             texts, data, _ = portal.stream('jobs.follow', {'id': job['id']},
                                            until=lambda texts, data: any('exited' in t for t in texts if t))
@@ -325,7 +326,7 @@ class Deployments(unittest.TestCase):
         self.assertEqual(list(create['environment']), ['TOKEN'])
         self.assertNotIn('b3nch-t0ken', create['spec'] + json.dumps(create['arguments']))
         listed = self.berth('resource', 'list').stdout
-        self.assertRegex(listed, r'(?m)^r-\S+\s+deployment\s+bench\s+box\s+running\s*$')
+        self.assertRegex(listed, r'(?m)^[0-9a-f]{32}\s+deployment\s+bench\s+box\s+running\s*$')
         page = self.berth('provisioner', 'show', 'box').stdout
         self.assertIn('Bench setup berth made with it', page)
         self.assertRegex(page, r'  bench\s+project-bench  r-')
@@ -383,7 +384,7 @@ class Deployments(unittest.TestCase):
         self.assertNotEqual(taken.returncode, 0)
         self.assertIn('There is a provisioner old already', taken.stderr)
         self.assertIn('box is called bench-lab now', self.berth('provisioner', 'rename', 'box', 'bench-lab').stdout)
-        self.assertRegex(self.berth('resource', 'list').stdout, r'(?m)^r-\S+\s+deployment\s+shed\s+bench-lab\s')
+        self.assertRegex(self.berth('resource', 'list').stdout, r'(?m)^[0-9a-f]{32}\s+deployment\s+shed\s+bench-lab\s')
         self.assertIn('The lab at attic answers', self.berth('provisioner', 'show', 'bench-lab').stdout)
         self.assertIn('State      running', self.berth('resource', 'show', 'shed').stdout)
         self.assertNotEqual(self.berth('provisioner', 'show', 'box', check=False).returncode, 0)

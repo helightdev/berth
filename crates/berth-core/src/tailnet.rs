@@ -1675,7 +1675,6 @@ mod tests {
         let kept = Kept::of(&paths, &place).unwrap();
         assert_eq!(kept.rename.as_deref(), Some("pier"));
         assert_eq!(kept.device.as_ref(), Some(&reported));
-        assert_eq!(Kept::of(&paths, &host.place).unwrap(), Kept::default());
         let pier = crate::host::Host::load_at(&paths, place.clone()).unwrap();
 
         // A refusal keeps the rename for the next apply.

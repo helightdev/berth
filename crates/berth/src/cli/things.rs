@@ -628,7 +628,7 @@ pub fn provisioner(client: &Client, command: Provisioner) -> Result<()> {
                         problem => styled(&format!("no: {problem}"), Style::Dim),
                     };
                     table.row(vec![
-                        text("id"),
+                        text("name"),
                         text("type"),
                         text("node"),
                         usable,

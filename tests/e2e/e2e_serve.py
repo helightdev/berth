@@ -202,7 +202,9 @@ class SetUp(unittest.TestCase):
         self.assertNotIn(name, self.serve.call('GET', '/v1/secrets')['names'])
         registry = {'type': 'npm', 'url': 'http://192.0.2.60/npm/'}
         self.serve.call('PUT', '/v1/registries/e2e-npm', registry)
-        self.assertEqual(self.serve.call('GET', '/v1/registries')['registries']['e2e-npm'], registry)
+        kept = self.serve.call('GET', '/v1/registries')['registries']['e2e-npm']
+        self.assertRegex(kept.pop('id'), r'^[0-9a-f]{32}$')
+        self.assertEqual(kept, registry)
         self.serve.call('DELETE', '/v1/registries/e2e-npm')
         self.assertNotIn('e2e-npm', self.serve.call('GET', '/v1/registries')['registries'])
 

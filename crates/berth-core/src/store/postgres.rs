@@ -128,7 +128,7 @@ impl Link {
                 let (client, _) = self.client()?;
                 work(client).map_err(|error| self.error(described(&error)))
             }
-            Err(error) => Err(self.error(error)),
+            Err(error) => Err(self.error(described(&error))),
         }
     }
 }

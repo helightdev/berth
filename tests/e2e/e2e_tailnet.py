@@ -132,7 +132,7 @@ class ThroughTheServer(Joined, unittest.TestCase):
         store = sqlite3.connect(self.serve.station.data / 'berth/berth.db')
         try:
             kept = store.execute("SELECT value FROM state WHERE kind = 'secret' AND scope = ''"
-                                 " AND name = 'tailnet_api_key'").fetchone()
+                                 " AND label = 'tailnet_api_key'").fetchone()
         finally:
             store.close()
         self.assertEqual(bytes(kept[0]).decode(), headscale().api_key)
