@@ -3,17 +3,17 @@
 profile, and the others use the host it set up.
 
     ci/run.sh e2e                          all of them
-    ci/run.sh e2e --shard dock             the tests of one test host, as a CI job runs them
+    ci/run.sh e2e --shard plain            the tests of one shard, on a host of their own, as CI runs them
     ci/run.sh e2e e2e_serve                one module
     ci/run.sh e2e e2e_serve.Roles          one test case
 
 The tests of each test host run in a process of their own, at the same
 time: the output of the first host comes as it happens, that of the others
-when they are done. A shard is the tests of one test host: CI runs each in
-a job of its own, so the hosts run on machines apart and no state is made
-twice. At the end each prints how long each test and each test
-case took, slowest first, how many playbook runs there were and which tests
-made them.
+when they are done. A shard is a run of the tests of one host that share
+its states (SHARDS): CI runs each in a job of its own, on a fresh host,
+where the first test case makes the state it needs. At the end each
+prints how long each test and each test case took, slowest first, how many
+playbook runs there were and which tests made them.
 
 Only meant for the runner container of ci/compose.yml.
 """
@@ -82,6 +82,52 @@ HOSTS = {
     'dock': ['e2e_access', 'e2e_controller.Controller', 'e2e_own_key', 'e2e_provisioners',
              'e2e_update.FromBerth052', 'e2e_node'],
 }
+
+
+# The tests of each host cut into shards, in the order HOSTS has them. Each
+# shard starts from a fresh host, so it pays for the first apply and the
+# states it uses; one state is never cut in two. The shards `studio` and
+# `dock` are the tests that make no apply but the first: ci/plan.py runs them
+# for any change to berth, and the others only for changes to what the role
+# is given (its SEAM) on a pull request.
+SHARDS = {
+    'studio': ['e2e_apply.Apply', 'e2e_host', 'e2e_secrets', 'e2e_local', 'e2e_controller.OnAWorkstation',
+               'e2e_serve.Routes', 'e2e_serve.Portal', 'e2e_serve.Roles', 'e2e_serve.SetUp',
+               'e2e_serve.ClosedSetUp', 'e2e_client.Client', 'e2e_client.AccessToken', 'e2e_restore'],
+    'adopt': ['e2e_adopt.Adopt'],
+    'extended': ['e2e_apply.Again', 'e2e_plugins.Plugin', 'e2e_tailnet.AutomaticKey', 'e2e_update.Update',
+                 'e2e_update.ShippedChanged'],
+    'plain': ['e2e_plugins.PluginRemoved', 'e2e_tailnet.JoinedByHand'],
+    'served-extended': ['e2e_tailnet.ThroughTheServer', 'e2e_serve.ApplyJob', 'e2e_client.ClientApply',
+                        'e2e_update.UpdateServed'],
+    'dock': ['e2e_access', 'e2e_provisioners', 'e2e_update.FromBerth052'],
+    'controller': ['e2e_controller.Controller'],
+    'own-key': ['e2e_own_key'],
+    'node': ['e2e_node'],
+}
+
+
+def host_of_shard(shard):
+    return next(host for host, names in HOSTS.items() if SHARDS[shard][0] in names)
+
+
+def unsharded():
+    """What is wrong with SHARDS: a test of HOSTS in none or in two, or a shard of two hosts."""
+    problems = []
+    for host, names in HOSTS.items():
+        for name in names:
+            holding = [shard for shard, listed in SHARDS.items() if name in listed]
+            if len(holding) != 1:
+                problems.append(f'{name} is in {len(holding)} shards')
+    for shard, listed in SHARDS.items():
+        if len({host_of(name) for name in listed}) != 1 or any(
+                name not in HOSTS[host_of(name)] for name in listed):
+            problems.append(f'shard {shard} is not the tests of one host in HOSTS')
+    return problems
+
+def host_of_name_in(shard, name):
+    """Whether a module or test case named on the command line is of the shard."""
+    return any(listed == name or listed.split('.')[0] == name.split('.')[0] for listed in SHARDS[shard])
 
 
 def host_of(name):
@@ -220,16 +266,22 @@ def main():
             sys.exit('The end-to-end tests run in their containers: ci/run.sh e2e')
         sys.exit(0 if run_here(sys.argv[1:], os.environ.get('BERTH_E2E_CHILD') == 'all') else 1)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--shard', choices=HOSTS, help='run the tests of this test host only')
+    parser.add_argument('--shard', choices=SHARDS, help='run the tests of this shard only')
     parser.add_argument('--shards', action='store_true', help='print the names of the shards as JSON')
-    parser.add_argument('--tests-of', choices=HOSTS, help='print the tests of this shard, one to a line')
+    parser.add_argument('--tests-of', choices=SHARDS, help='print the tests of this shard, one to a line')
+    parser.add_argument('--host-of', choices=SHARDS, help='print the test host of this shard')
     parser.add_argument('names', nargs='*', help='modules or test cases, as unittest names them')
     args = parser.parse_args()
+    if problems := unsharded():
+        sys.exit('SHARDS of tests/e2e/run.py: ' + '; '.join(problems))
     if args.shards:
-        print(json.dumps(list(HOSTS)))
+        print(json.dumps(list(SHARDS)))
         return
     if args.tests_of:
-        print('\n'.join(HOSTS[args.tests_of]))
+        print('\n'.join(SHARDS[args.tests_of]))
+        return
+    if args.host_of:
+        print(host_of_shard(args.host_of))
         return
     if os.environ.get('BERTH_E2E') != '1':
         sys.exit('The end-to-end tests run in their containers: ci/run.sh e2e')
@@ -240,7 +292,10 @@ def main():
     if not names:
         groups = {host: list(listed) for host, listed in HOSTS.items()}
     if args.shard:
-        groups = {args.shard: groups.get(args.shard, [])} if names else {args.shard: list(HOSTS[args.shard])}
+        host = host_of_shard(args.shard)
+        listed = [name for name in groups.get(host, []) if host_of_name_in(args.shard, name)] if names \
+            else list(SHARDS[args.shard])
+        groups = {host: listed}
     started = time.monotonic()
     running = []
     for host, listed in groups.items():
