@@ -128,8 +128,8 @@ pub struct App {
     tab_hits: Vec<Rect>,
     /// The name of a new host, while it is typed.
     naming: Option<Input>,
-    /// Removing a host waits for a second x.
-    armed: bool,
+    /// Removing a host asks first: to forget it, or to destroy its machine too.
+    removal: Option<berth_tui::page::Removal>,
     setup: Option<Setup>,
     /// The SSH user's sudo password, asked for to apply a host.
     password: Option<Input>,
@@ -212,7 +212,7 @@ impl App {
             home: Home::default(),
             tab_hits: vec![],
             naming: None,
-            armed: false,
+            removal: None,
             setup: None,
             password: None,
             seed: None,
@@ -494,6 +494,12 @@ impl App {
         };
         if let Some(said) = said {
             self.status = said;
+        }
+        // The page of a host that was removed goes back to the list.
+        let gone = self.data.borrow_mut().gone.take();
+        if gone.is_some_and(|gone| gone == self.name) && self.screen == Screen::Host {
+            self.host.disconnect();
+            self.screen = Screen::Hosts;
         }
         if changed {
             self.ask_hosts();
@@ -1202,7 +1208,29 @@ impl App {
     }
 
     fn hosts_key(&mut self, key: Key) {
-        let armed = std::mem::take(&mut self.armed);
+        if let Some(removal) = &mut self.removal {
+            let chosen = match key.code {
+                Code::Esc => berth_tui::page::Removing::Cancel,
+                Code::Char(ch) => removal.key(ch),
+                _ => berth_tui::page::Removing::Stay,
+            };
+            match chosen {
+                berth_tui::page::Removing::Stay => {}
+                berth_tui::page::Removing::Cancel => self.removal = None,
+                berth_tui::page::Removing::Run { destroy } => {
+                    let name = removal.name.clone();
+                    self.removal = None;
+                    let arguments = BTreeMap::from([(
+                        "destroy".to_owned(),
+                        if destroy { "yes" } else { "no" }.to_owned(),
+                    )]);
+                    if let Some(admin) = &self.admin {
+                        admin.run(&name, "remove", "Remove", &arguments, self.panel_size());
+                    }
+                }
+            }
+            return;
+        }
         if let Some(input) = &mut self.naming {
             match key.code {
                 Code::Esc => self.naming = None,
@@ -1218,11 +1246,9 @@ impl App {
             return;
         }
         let count = self.host_rows();
-        let selected = self
-            .hosts
-            .borrow()
-            .list
-            .get(self.cursor)
+        let selected_host = self.hosts.borrow().list.get(self.cursor).cloned();
+        let selected = selected_host
+            .as_ref()
             .and_then(|host| host["name"].as_str().map(str::to_owned));
         match key.code {
             Code::Up | Code::Char('k') if count > 0 => {
@@ -1242,16 +1268,27 @@ impl App {
                     admin.set_setting("default_host", &name, format!("{name} is the default host"));
                 }
             }
-            Code::Char('x') | Code::Delete if self.is_admin() => match (selected, &self.admin) {
-                (Some(name), Some(admin)) if armed => admin.remove_host(&name),
-                (Some(name), _) => {
-                    self.armed = true;
-                    self.status = format!(
-                        "x again removes {name} from the server. The host itself is left as it is."
-                    );
+            Code::Char('x') | Code::Delete if self.is_admin() => {
+                if let Some(host) = &selected_host {
+                    self.removal = Some(berth_tui::page::Removal::of(host));
                 }
-                _ => {}
-            },
+            }
+            // Starting goes through the action, which says why when it cannot.
+            Code::Char('s') if self.admin.is_some() => {
+                if let (Some(host), Some(admin)) = (&selected_host, &self.admin) {
+                    let name = host["name"].as_str().unwrap_or("");
+                    match host["power"]["start"] == true {
+                        true => {
+                            admin.run(name, "start", "Start", &BTreeMap::new(), self.panel_size())
+                        }
+                        false => {
+                            self.status = format!(
+                                "berth cannot start {name}: no provisioner that can made it"
+                            )
+                        }
+                    }
+                }
+            }
             Code::Char('o') if !self.local() => self.sign_out(""),
             Code::Char('q') => self.quit = true,
             _ => {}
@@ -1260,10 +1297,11 @@ impl App {
 
     fn home_event(&mut self, event: Event) {
         let typing = self.naming.is_some()
+            || self.removal.is_some()
             || self.home.editor.is_some()
             || (self.tab > 0 && self.home.takes(self.tab - 1, &Key::plain(Code::Enter)));
         if let Event::Mouse(mouse) = &event {
-            if mouse.click != Click::Left {
+            if mouse.click != Click::Left || self.removal.is_some() {
                 return;
             }
             // A form covers the tab, and takes the click itself.
@@ -1467,6 +1505,11 @@ impl App {
                     Span::styled(format!("● {version}"), Style::new().fg(theme::GOOD))
                 }
                 (Some(true), None) => Span::styled("●", Style::new().fg(theme::GOOD)),
+                // One that is off was not lost: it was stopped.
+                _ if host["power"]["state"] == "stopped" => match host["power"]["start"] == true {
+                    true => Span::styled("◌ stopped · s starts it", Style::new().fg(theme::MUTED)),
+                    false => Span::styled("◌ stopped", Style::new().fg(theme::MUTED)),
+                },
                 _ => Span::styled(
                     format!(
                         "○ {}",
@@ -1551,13 +1594,25 @@ impl App {
         if let Some(input) = &self.naming {
             draw_editor(frame, edit, " New host name ", input, false);
         }
+        if let Some(removal) = &self.removal {
+            let (lines, keys) = removal.question();
+            let lines = lines
+                .iter()
+                .flat_map(|line| match line.is_empty() {
+                    true => vec![String::new()],
+                    false => berth_tui::screen::wrap(line, 56),
+                })
+                .map(Line::raw)
+                .collect();
+            berth_tui::screen::dialog(frame, " Remove ", keys, lines);
+        }
         let keys = match (admin, self.naming.is_some(), self.local()) {
             (_, true, _) => "Enter create · Esc cancel · Ctrl+O copy",
             (true, false, true) => {
-                "↑↓ select · Enter open · n new host · d default · x remove · r refresh · q quit"
+                "↑↓ select · Enter open · n new host · s start · d default · x remove · r refresh · q quit"
             }
             (true, false, false) => {
-                "↑↓ select · Enter open · n new host · d default · x remove · r refresh · o sign out · q quit"
+                "↑↓ select · Enter open · n new host · s start · d default · x remove · r refresh · o sign out · q quit"
             }
             (false, false, _) => "↑↓ select · Enter open · r refresh · o sign out · q quit",
         };
