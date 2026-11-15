@@ -4,7 +4,7 @@ description: Every command of berth with its arguments, made from the same defin
 icon: SquareTerminal
 ---
 
-This page is generated from the commands themselves. [The command line](/docs/use/cli) explains them by task.
+This page is generated from the commands themselves. [The command line](/docs/use/cli) explains them by what they do.
 
 ## Flags of every command
 
@@ -248,7 +248,7 @@ berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH] [--type TY
 | `NAME` | Its name. |
 | `ADDRESS` | Its name or IP address, or a Host alias of the server's SSH configuration. |
 | `--user USER` | The account berth logs in as. |
-| `--port PORT` |  |
+| `--port PORT` | Its SSH port, when not 22. |
 | `--auth AUTH` | How berth logs in: berth, key:NAME, password or ssh. |
 | `--type TYPE` | What berth does with it: ssh, managed, node or workstation. By default `ssh`. |
 | `--feature FEATURE` | Switch on a plugin's feature of a node or a workstation, PLUGIN/FEATURE, such as incus/server. Again for more. |
@@ -303,7 +303,7 @@ berth host import NAME FILE
 | Argument | What it is |
 | --- | --- |
 | `NAME` | Its name. |
-| `FILE` |  |
+| `FILE` | The profile as JSON, such as berth host export wrote; - for standard input. |
 
 ### berth host apply
 
@@ -387,7 +387,7 @@ berth host adopt NAME [ADDRESS] [--port PORT] [--key FILE] [--force] [--detach]
 | --- | --- |
 | `NAME` | Its name. |
 | `ADDRESS` | [USER@]ADDRESS; without it, the saved host of that name. |
-| `--port PORT` |  |
+| `--port PORT` | Its SSH port, when not 22. |
 | `--key FILE` | A private key file where the server runs, offered as well for reading the profile only. |
 | `--force` | Replace a host of that name. |
 | `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
@@ -454,7 +454,7 @@ berth host inventory [NAMES…]
 
 | Argument | What it is |
 | --- | --- |
-| `NAMES…` |  |
+| `NAMES…` | The hosts; all with an address when none is named. |
 
 ## berth rollout
 
@@ -584,7 +584,7 @@ berth provisioner add NAME TYPE [NAME=VALUE…]
 | Argument | What it is |
 | --- | --- |
 | `NAME` | Its name. |
-| `TYPE` |  |
+| `TYPE` | Its type, as berth provisioner types lists them. |
 | `NAME=VALUE…` | Its settings. |
 
 ### berth provisioner show
@@ -598,7 +598,7 @@ berth provisioner show NAME [NAME=VALUE…]
 | Argument | What it is |
 | --- | --- |
 | `NAME` | Its name. |
-| `NAME=VALUE…` |  |
+| `NAME=VALUE…` | A setting with another value for this once. |
 
 ### berth provisioner set
 
@@ -611,7 +611,7 @@ berth provisioner set NAME NAME=VALUE…
 | Argument | What it is |
 | --- | --- |
 | `NAME` | Its name. |
-| `NAME=VALUE…` |  |
+| `NAME=VALUE…` | A setting and its new value. |
 
 ### berth provisioner remove
 
@@ -651,7 +651,7 @@ berth provisioner run NAME ACTION [NAME=VALUE…] [--detach]
 | --- | --- |
 | `NAME` | Its name. |
 | `ACTION` | The action's name. |
-| `NAME=VALUE…` |  |
+| `NAME=VALUE…` | The action's arguments; a required one that is missing is asked for. |
 | `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
 
 ## berth resource
@@ -670,9 +670,9 @@ berth resource list [--kind KIND] [--provisioner PROVISIONER] [--host HOST]
 
 | Argument | What it is |
 | --- | --- |
-| `--kind KIND` |  |
-| `--provisioner PROVISIONER` |  |
-| `--host HOST` | A host's name. |
+| `--kind KIND` | Only those of this kind, such as deployment or machine. |
+| `--provisioner PROVISIONER` | Only those this provisioner made. |
+| `--host HOST` | Only the machine of this host. |
 
 ### berth resource show
 
@@ -697,11 +697,11 @@ berth resource create NAME --provisioner PROVISIONER [--kind KIND] [--spec FILE]
 | Argument | What it is |
 | --- | --- |
 | `NAME` | Its name. |
-| `--provisioner PROVISIONER` |  |
+| `--provisioner PROVISIONER` | The provisioner that makes it. |
 | `--kind KIND` | Its kind, where the provisioner makes several. |
 | `--spec FILE` | The specification, such as a Compose file; - for standard input. |
 | `--secret NAME[:VARIABLE]` | A secret it gets, NAME or NAME:VARIABLE. Again for more. |
-| `NAME=VALUE…` |  |
+| `NAME=VALUE…` | The arguments of its kind. |
 | `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
 
 ### berth resource set
@@ -715,9 +715,9 @@ berth resource set ID [--spec FILE] [--secret NAME[:VARIABLE]] [NAME=VALUE…] [
 | Argument | What it is |
 | --- | --- |
 | `ID` | Its id. |
-| `--spec FILE` | A plugin's npm name, or the address of its .tgz. |
-| `--secret NAME[:VARIABLE]` |  |
-| `NAME=VALUE…` |  |
+| `--spec FILE` | A new specification; - for standard input. |
+| `--secret NAME[:VARIABLE]` | The secrets it gets from now on, NAME or NAME:VARIABLE. Again for more. |
+| `NAME=VALUE…` | Arguments with new values. |
 | `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
 
 ### berth resource remove
@@ -746,8 +746,8 @@ berth resource logs ID [-f, --follow] [--tail N]
 | Argument | What it is |
 | --- | --- |
 | `ID` | Its id. |
-| `-f, --follow` |  |
-| `--tail N` |  |
+| `-f, --follow` | Go on as it writes more. |
+| `--tail N` | Only the last N lines. |
 
 ### berth resource exec
 
@@ -788,7 +788,7 @@ berth resource run ID ACTION [NAME=VALUE…] [--detach]
 | --- | --- |
 | `ID` | Its id. |
 | `ACTION` | The action's name. |
-| `NAME=VALUE…` |  |
+| `NAME=VALUE…` | The action's arguments; a required one that is missing is asked for. |
 | `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
 
 ## berth job
@@ -907,7 +907,7 @@ berth key import NAME FILE
 | Argument | What it is |
 | --- | --- |
 | `NAME` | Its name. |
-| `FILE` |  |
+| `FILE` | The private key file, in OpenSSH format. |
 
 ### berth key remove
 
@@ -1032,7 +1032,7 @@ berth registry add-repo NAME FORMAT REPOSITORY [--address ADDRESS]
 | --- | --- |
 | `NAME` | Its name. |
 | `FORMAT` | npm, raw or docker. |
-| `REPOSITORY` |  |
+| `REPOSITORY` | The repository's name on the registry. |
 | `--address ADDRESS` | Its own address, HOST[:PORT], for a Docker repository. |
 
 ### berth registry login
@@ -1233,7 +1233,7 @@ berth port forward TARGET [LOCAL:]PORT|ENDPOINT… [--resource] [--address ADDRE
 
 | Argument | What it is |
 | --- | --- |
-| `TARGET` |  |
+| `TARGET` | A host's name, or a resource's id or name. |
 | `[LOCAL:]PORT|ENDPOINT…` | [LOCAL:]PORT for a host's port. For a resource, [LOCAL:]ENDPOINT, an endpoint's name or port; LOCAL is the endpoint's port unless given. |
 | `--resource` | TARGET is a resource, even where a host has the same name. |
 | `--address ADDRESS` | The address to listen on. By default `127.0.0.1`. |

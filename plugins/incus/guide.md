@@ -142,8 +142,9 @@ host. It starts from any image on `https://images.linuxcontainers.org`, such as
 `debian/12`, and berth puts nothing of its own in it. Cloud-init user data that
 you paste sets it up on its first boot, if the image has cloud-init.
 
-Make one with **+ New instance** under the hosts, or the action New instance
-on the provisioner's page. Both open a form laid out like a host's set-up, with every field on a row. Or:
+Make one with **+ New resource from an image** under the hosts, or the action
+New container from an image (New virtual machine from an image for a provisioner
+of virtual machines) on the provisioner's page. Both open a form laid out like a host's set-up, with every field on a row. Or:
 
     berth provisioner run ovh-incus new-instance name=web image=debian/12
 

@@ -130,8 +130,8 @@ matches.
 
 An instance is one plain container from any image, such as `nginx:1.27` or
 `debian:12`. It becomes no berth host, and berth puts nothing of its own in it.
-Make one with **+ New instance** under the hosts, or the action New instance
-on the provisioner's page. Both open a form laid out like a host's set-up, with every field on a row. Or:
+Make one with **+ New resource from an image** under the hosts, or the action
+New container from an image on the provisioner's page. Both open a form laid out like a host's set-up, with every field on a row. Or:
 
     berth provisioner run docker new-instance name=web image=nginx:1.27 ports=8080:80
 

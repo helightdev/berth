@@ -211,6 +211,7 @@ pub enum Host {
     /// Save the profile in FILE (- for standard input) as the host's, new or changed.
     Import {
         name: String,
+        /// The profile as JSON, such as berth host export wrote; - for standard input.
         #[arg(value_name = "FILE")]
         file: String,
     },
@@ -263,7 +264,10 @@ pub enum Host {
     Stop(HostPower),
     /// The hosts as an Ansible inventory. Needs the installation on this machine.
     #[cfg(target_os = "linux")]
-    Inventory { names: Vec<String> },
+    Inventory {
+        /// The hosts; all with an address when none is named.
+        names: Vec<String>,
+    },
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -311,6 +315,7 @@ pub struct HostAdd {
     /// The account berth logs in as.
     #[arg(long)]
     pub user: Option<String>,
+    /// Its SSH port, when not 22.
     #[arg(long)]
     pub port: Option<String>,
     /// How berth logs in: berth, key:NAME, password or ssh.
@@ -363,6 +368,7 @@ pub struct HostAdopt {
     pub name: String,
     /// [USER@]ADDRESS; without it, the saved host of that name.
     pub address: Option<String>,
+    /// Its SSH port, when not 22.
     #[arg(long)]
     pub port: Option<String>,
     /// A private key file where the server runs, offered as well for reading the profile only.
@@ -486,6 +492,7 @@ pub enum Provisioner {
     /// Register a provisioner of a type, such as incus/vm, under a name of its own.
     Add {
         name: String,
+        /// Its type, as berth provisioner types lists them.
         #[arg(value_name = "TYPE")]
         kind: String,
         /// Its settings.
@@ -495,12 +502,14 @@ pub enum Provisioner {
     /// How it is now and what it holds. NAME=VALUE gives one of its settings another value for this once.
     Show {
         name: String,
+        /// A setting with another value for this once.
         #[arg(value_name = "NAME=VALUE")]
         settings: Vec<String>,
     },
     /// Change its settings.
     Set {
         name: String,
+        /// A setting and its new value.
         #[arg(value_name = "NAME=VALUE", required = true)]
         settings: Vec<String>,
     },
@@ -513,6 +522,7 @@ pub enum Provisioner {
     Run {
         name: String,
         action: String,
+        /// The action's arguments; a required one that is missing is asked for.
         #[arg(value_name = "NAME=VALUE")]
         arguments: Vec<String>,
         #[command(flatten)]
@@ -525,10 +535,13 @@ pub enum Resource {
     /// What provisioners made.
     #[command(visible_alias = "ls")]
     List {
+        /// Only those of this kind, such as deployment or machine.
         #[arg(long)]
         kind: Option<String>,
+        /// Only those this provisioner made.
         #[arg(long)]
         provisioner: Option<String>,
+        /// Only the machine of this host.
         #[arg(long)]
         host: Option<String>,
     },
@@ -548,8 +561,10 @@ pub enum Resource {
     /// What it wrote.
     Logs {
         id: String,
+        /// Go on as it writes more.
         #[arg(short = 'f', long)]
         follow: bool,
+        /// Only the last N lines.
         #[arg(long, value_name = "N")]
         tail: Option<u64>,
     },
@@ -571,6 +586,7 @@ pub enum Resource {
     Run {
         id: String,
         action: String,
+        /// The action's arguments; a required one that is missing is asked for.
         #[arg(value_name = "NAME=VALUE")]
         arguments: Vec<String>,
         #[command(flatten)]
@@ -581,6 +597,7 @@ pub enum Resource {
 #[derive(Args, Debug, Clone)]
 pub struct ResourceCreate {
     pub name: String,
+    /// The provisioner that makes it.
     #[arg(long, required = true)]
     pub provisioner: String,
     /// Its kind, where the provisioner makes several.
@@ -592,6 +609,7 @@ pub struct ResourceCreate {
     /// A secret it gets, NAME or NAME:VARIABLE. Again for more.
     #[arg(long, value_name = "NAME[:VARIABLE]")]
     pub secret: Vec<String>,
+    /// The arguments of its kind.
     #[arg(value_name = "NAME=VALUE")]
     pub arguments: Vec<String>,
     #[command(flatten)]
@@ -601,10 +619,13 @@ pub struct ResourceCreate {
 #[derive(Args, Debug, Clone)]
 pub struct ResourceSet {
     pub id: String,
+    /// A new specification; - for standard input.
     #[arg(long, value_name = "FILE")]
     pub spec: Option<String>,
+    /// The secrets it gets from now on, NAME or NAME:VARIABLE. Again for more.
     #[arg(long, value_name = "NAME[:VARIABLE]")]
     pub secret: Vec<String>,
+    /// Arguments with new values.
     #[arg(value_name = "NAME=VALUE")]
     pub arguments: Vec<String>,
     #[command(flatten)]
@@ -653,6 +674,7 @@ pub enum Key {
     /// Add an OpenSSH private key without a passphrase from FILE (- for standard input).
     Import {
         name: String,
+        /// The private key file, in OpenSSH format.
         #[arg(value_name = "FILE")]
         file: String,
     },
@@ -715,6 +737,7 @@ pub enum Registry {
         name: String,
         /// npm, raw or docker.
         format: String,
+        /// The repository's name on the registry.
         repository: String,
         /// Its own address, HOST[:PORT], for a Docker repository.
         #[arg(long)]
@@ -793,6 +816,7 @@ pub enum Port {
     ///
     /// TARGET is a host's name. A resource's id or name is taken when no host has that name, or always with --resource.
     Forward {
+        /// A host's name, or a resource's id or name.
         #[arg(value_name = "TARGET")]
         target: String,
         /// [LOCAL:]PORT for a host's port. For a resource, [LOCAL:]ENDPOINT, an endpoint's name or port; LOCAL is the endpoint's port unless given.

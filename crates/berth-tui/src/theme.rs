@@ -259,7 +259,7 @@ pub fn logo() -> Vec<Line<'static>> {
     let mut name = row("█ ", "▄▄", " █", 1.0);
     name.push(Span::styled("berth", Style::new().fg(ACCENT).bold()));
     let mut about = row("█ ", "██", " █", 0.6);
-    about.push(Span::styled("set up and look after agent machines", muted));
+    about.push(Span::styled("set up and look after agent workstations", muted));
     let mut version = row("▀▀", "▀▀", "▀▀", 0.0);
     version.push(Span::styled(format!("v{}", berth_api::VERSION), muted));
     vec![Line::from(name), Line::from(about), Line::from(version)]

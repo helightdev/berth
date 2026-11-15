@@ -213,7 +213,7 @@ pub fn page() -> String {
     let mut out = String::from(
         "---\ntitle: Command reference\ndescription: Every command of berth with its arguments, made from the same definition as berth --help.\nicon: SquareTerminal\n---\n\n",
     );
-    out.push_str("This page is generated from the commands themselves. [The command line](/docs/use/cli) explains them by task.\n\n");
+    out.push_str("This page is generated from the commands themselves. [The command line](/docs/use/cli) explains them by what they do.\n\n");
     out.push_str("## Flags of every command\n\n");
     let global: Vec<(String, String)> = command
         .get_arguments()
