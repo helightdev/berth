@@ -2283,6 +2283,7 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
             "prune",
             "restart",
             "secrets",
+            "adopt",
             "remove"
         ]
     );

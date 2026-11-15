@@ -662,7 +662,7 @@
               },
               "type": "array"
             },
-            "description": "Other values of a setting that reach the same server, such as the\nname a berth server on the host gives it: a provisioner registered by\nhand with one of them is the host's.",
+            "description": "Other values of a setting that reach the same server, such as the\nname a berth server on the host gives it: a provisioner registered by\nhand with one of them is named to its owner, who can make it the\nhost's.",
             "propertyNames": {
               "type": "string"
             },

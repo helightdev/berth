@@ -1438,7 +1438,8 @@ pub struct Offer {
     pub secrets: BTreeMap<String, String>,
     /// Other values of a setting that reach the same server, such as the
     /// name a berth server on the host gives it: a provisioner registered by
-    /// hand with one of them is the host's.
+    /// hand with one of them is named to its owner, who can make it the
+    /// host's.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub aliases: BTreeMap<String, Vec<String>>,
     /// What the host says identifies the server, such as the fingerprint of
