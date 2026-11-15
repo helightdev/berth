@@ -41,6 +41,27 @@ def named(name, path):
     return next(task for task in tasks(path) if task['name'] == name)
 
 
+def node_tasks():
+    """The tasks of the node's path in the order they run, with those of the
+    node's own task files it imports in their place."""
+    found = []
+    for task in tasks(ROLE / 'tasks/node.yml'):
+        imported = task.get('ansible.builtin.import_tasks', '')
+        found.append(task)
+        if imported.startswith('node_'):
+            found.extend(tasks(ROLE / 'tasks' / imported))
+    return found
+
+
+def node_named(name):
+    return next(task for task in node_tasks() if task['name'] == name)
+
+
+def node_text():
+    return ''.join((ROLE / 'tasks' / name).read_text()
+                   for name in ('node.yml', 'node_facts.yml', 'node_ssh.yml', 'node_berth.yml'))
+
+
 def write_program(path, text):
     path.write_text(text)
     path.chmod(0o755)
@@ -54,10 +75,10 @@ class RolePath(unittest.TestCase):
             ('node.yml', "devbox_level == 'node'"), ('workstation.yml', "devbox_level != 'node'")])
 
     def test_a_node_has_nothing_of_the_desktop_or_its_accounts(self):
-        node = (ROLE / 'tasks/node.yml').read_text()
+        node = node_text()
         included = [task.get('ansible.builtin.import_tasks') or task.get('ansible.builtin.include_tasks')
-                    for task in tasks(ROLE / 'tasks/node.yml')]
-        included = sorted(name for name in included if name)
+                    for task in node_tasks()]
+        included = sorted(name for name in included if name and not name.startswith('node_'))
         self.assertEqual(included, ['applied.yml', 'berth.yml', 'plugins.yml', 'system.yml',
                                     'tailnet.yml', 'tailscale.yml'])
         for absent in ('desktop.yml', 'accounts.yml', 'applications.yml', 'toolchains.yml', 'laptop.yml',
@@ -70,29 +91,29 @@ class RolePath(unittest.TestCase):
         self.assertIn('unattended-upgrades', packages)
 
     def test_root_keeps_a_login_with_keys_and_others_none(self):
-        task = named('Require SSH keys, and keep root\'s login as berth uses it', ROLE / 'tasks/node.yml')
+        task = node_named('Require SSH keys, and keep root\'s login as berth uses it')
         content = task['ansible.builtin.copy']['content']
         self.assertIn('PasswordAuthentication no', content)
         self.assertIn("PermitRootLogin {{ 'prohibit-password' if devbox_node_user == 'root' else 'no' }}", content)
         # Only when the SSH user has a key, which berth's own is, so no apply locks berth out.
         self.assertEqual(task['when'], 'devbox_harden_ssh and devbox_node_keys.rc == 0')
-        given = named('Give the SSH user the keys of the berth that applies this', ROLE / 'tasks/node.yml')
+        given = node_named('Give the SSH user the keys of the berth that applies this')
         self.assertEqual(given['ansible.builtin.blockinfile']['path'], '{{ devbox_node_home }}/.ssh/authorized_keys')
-        order = [task['name'] for task in tasks(ROLE / 'tasks/node.yml')]
+        order = [task['name'] for task in node_tasks()]
         self.assertLess(order.index('Give the SSH user the keys of the berth that applies this'),
                         order.index('Require SSH keys, and keep root\'s login as berth uses it'))
 
     def test_the_firewall_keeps_ssh_and_comes_last(self):
-        task = named("Set the node's firewall", ROLE / 'tasks/node.yml')
+        task = node_named("Set the node's firewall")
         rules = task['vars']['devbox_node_firewall']
         self.assertIn("'allow 22/tcp' if devbox_ssh_from == 'any'", rules)
         self.assertIn("'allow from ' ~ devbox_apply_from ~ ' to any port 22 proto tcp'", rules)
         self.assertIn('devbox_firewall_rules', rules)
-        order = [task['name'] for task in tasks(ROLE / 'tasks/node.yml')]
+        order = [task['name'] for task in node_tasks()]
         self.assertGreater(order.index("Set the node's firewall"), order.index('Apply the features of the node'))
 
     def test_a_node_is_not_applied_over_a_workstation(self):
-        task = named('Refuse a host that berth set up as a workstation', ROLE / 'tasks/node.yml')
+        task = node_named('Refuse a host that berth set up as a workstation')
         self.assertIn("level | default('workstation') == 'workstation'", task['when'][1])
 
     def test_the_actions_of_a_node_run_what_it_installs(self):
@@ -103,7 +124,7 @@ class RolePath(unittest.TestCase):
         upgrade = actions['upgrade-server']
         self.assertTrue(upgrade['run'].startswith('/usr/local/lib/berth/berth-server-upgrade '))
         self.assertEqual(upgrade['arguments'][0]['name'], 'version')
-        installed = named("Install the helper that upgrades a berth server's container", ROLE / 'tasks/node.yml')
+        installed = node_named("Install the helper that upgrades a berth server's container")
         self.assertEqual(installed['ansible.builtin.copy']['dest'], '/usr/local/lib/berth/berth-server-upgrade')
 
     def test_a_feature_says_what_it_offers_and_for_which_hosts(self):

@@ -78,7 +78,8 @@ HOSTS = {
     # The bare host first: the ways berth logs in, and berth's controller
     # alone, which leave it as they found it. Then a host that only ever
     # takes berth's own key. The provisioners' tests need no host at all.
-    'dock': ['e2e_access', 'e2e_controller.Controller', 'e2e_own_key', 'e2e_provisioners'],
+    # Last, a node, which stays one.
+    'dock': ['e2e_access', 'e2e_controller.Controller', 'e2e_own_key', 'e2e_provisioners', 'e2e_node'],
 }
 
 
