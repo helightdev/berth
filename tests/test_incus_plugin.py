@@ -527,6 +527,60 @@ class IncusPluginTests(unittest.TestCase):
         rows = {row['label']: row['value'] for row in answer['details']}
         self.assertEqual((rows['Name'], rows['Storage'], rows['Kernel']), ('dock', 'zfs, dir', 'Linux 6.17.0'))
 
+    def test_status_gives_the_items_of_each_collection_as_rows(self):
+        gib = 1024 ** 3
+        self.server.pools['fast']['used_by'] = ['/1.0/profiles/default', '/1.0/instances/web?project=default']
+        self.server.volumes[('default', 'data')] = {'name': 'data', 'config': {'size': '10GiB'}, 'used': 2 * gib,
+                                                    'content_type': 'filesystem',
+                                                    'used_by': ['/1.0/instances/berth-studio?project=default']}
+        self.server.volumes[('fast', 'disk')] = {'name': 'disk', 'config': {}, 'content_type': 'block',
+                                                 'used_by': []}
+        code, answer, err = self.run_verb('status')
+        self.assertEqual(code, 0, err)
+        collections = answer['collections']
+        self.assertEqual(sorted(collections), ['images', 'pools', 'volumes'])
+        pools = {row['name']: row for row in collections['pools']}
+        self.assertEqual(pools['default']['columns'],
+                         {'driver': 'zfs', 'source': '/var/lib/incus/disks/default.img', 'size': '100.0 GiB',
+                          'used': '10.0 GiB', 'free': '90.0 GiB'})
+        # Each row says which of its actions cannot run on it, and why.
+        self.assertEqual(pools['default']['unavailable'], {})
+        self.assertEqual(pools['fast']['unavailable']['resize-pool'],
+                         'A dir pool has no size of its own, only the space of its file system')
+        self.assertEqual(pools['fast']['unavailable']['remove-pool'],
+                         'Incus removes only an empty pool, and profile default, instance web use it')
+        self.assertIn('/dev/sdb', pools['disk']['unavailable']['resize-pool'])
+        volumes = {(row['key']['pool'], row['key']['volume']): row for row in collections['volumes']}
+        self.assertEqual(volumes[('default', 'data')]['columns'],
+                         {'pool': 'default', 'type': 'filesystem', 'size': '10GiB', 'used': '2.0 GiB',
+                          'used_by': 'berth-studio'})
+        self.assertEqual(volumes[('default', 'data')]['unavailable'],
+                         {'remove-volume': 'Incus refuses it while berth-studio uses it'})
+        self.assertEqual(volumes[('fast', 'disk')]['columns']['size'], 'no set size')
+        self.assertEqual(volumes[('fast', 'disk')]['unavailable'], {})
+        self.assertEqual(collections['images'], [{
+            'name': 'Ubuntu 26.04', 'key': {'image': 'abcdef123456'},
+            'columns': {'fingerprint': 'abcdef123456', 'type': 'container', 'size': '2.0 GiB', 'cached': 'yes',
+                        'uploaded': ''}}])
+        # The key of an image removes it.
+        code, answer, err = self.act('remove-image', image='abcdef123456')
+        self.assertEqual(code, 0, err)
+        self.assertIn(('image-delete', 'abcdef1234567890'), self.server.events)
+
+    def test_the_manifest_declares_the_collections_status_gives(self):
+        manifest = json.loads((PLUGIN / 'package.json').read_text())
+        for provisioner in manifest['berth']['provisioners']:
+            actions = {action['name']: action for action in provisioner['actions']}
+            declared = {collection['id']: collection for collection in provisioner['collections']}
+            self.assertEqual(sorted(declared), ['images', 'instances', 'pools', 'volumes'])
+            for collection in declared.values():
+                for sort in ('new', 'item', 'list'):
+                    for used in collection.get(sort, []):
+                        self.assertIn(used['action'], actions)
+            # Grow root disk is on the machines, not loose on the page.
+            self.assertEqual(declared['instances']['kinds'], ['machine', 'instance'])
+            self.assertEqual(declared['volumes']['within'], 'pools')
+
     def test_volumes_and_pools_are_created_listed_and_removed(self):
         act = self.act
         code, answer, err = act('create-pool', name='bulk', driver='zfs', size='50GiB')

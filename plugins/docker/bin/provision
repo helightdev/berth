@@ -481,7 +481,81 @@ def engine_status(cfg):
         'message': f'Docker {server.get("Version") or ""} answers at {docker.where()}'.replace('  ', ' '),
         'details': details,
         'values': {'runtime': ['privileged', 'sysbox'] if SYSBOX in runtimes else ['privileged']},
+        'collections': collections_of(docker),
     }
+
+
+def collections_of(docker):
+    """The images and volumes of the engine as rows of the collections the manifest declares, each
+    with the containers that use it. One the engine does not answer for is left out."""
+    try:
+        containers = docker.json_lines('ps', '--all', '--no-trunc')
+    except Failure:
+        containers = []
+    found = {}
+    for collection, rows in (('images', image_rows), ('volumes', volume_rows)):
+        try:
+            found[collection] = rows(docker, containers)
+        except Failure:
+            pass
+    return found
+
+
+def users(names):
+    return ', '.join(names[:3]) + (f' and {len(names) - 3} more' if len(names) > 3 else '')
+
+
+def image_rows(docker, containers):
+    rows = []
+    for image in docker.json_lines('image', 'ls')[:ROWS]:
+        repository, tag, short = image.get('Repository') or '', image.get('Tag') or '', image.get('ID') or ''
+        short = short.split(':')[-1][:12]
+        named = repository not in ('', '<none>') and tag not in ('', '<none>')
+        name = f'{repository}:{tag}' if named else short
+        if not name:
+            continue
+        # A container names its image as it was given: by name, by name without the tag latest, or by its id.
+        given = {name, short}
+        if named and tag == 'latest':
+            given.add(repository)
+        used_by = [row.get('Names') or '' for row in containers
+                   if (row.get('Image') or '') in given or (row.get('Image') or '').split(':')[-1].startswith(short)]
+        rows.append({'name': name, 'key': {'image': name},
+                     'columns': {'id': short, 'size': image.get('Size') or '', 'created': image.get('CreatedSince') or '',
+                                 'used_by': users(used_by) or 'nothing'},
+                     'unavailable': {'remove-image': f'Docker refuses it while {users(used_by)} '
+                                                     + ('uses' if len(used_by) == 1 else 'use') + ' it'}
+                     if used_by else {}})
+    return rows
+
+
+def volume_sizes(docker):
+    """The size of each volume, as docker system df reckons it, or none when it does not say."""
+    done = docker.run('system', 'df', '--verbose', '--format', '{{json .}}', check=False)
+    try:
+        listed = json.loads(done.stdout or '{}').get('Volumes') or [] if done.returncode == 0 else []
+    except (ValueError, AttributeError):
+        return {}
+    return {volume.get('Name'): volume.get('Size') or '' for volume in listed if isinstance(volume, dict)}
+
+
+def volume_rows(docker, containers):
+    sizes = volume_sizes(docker)
+    rows = []
+    for volume in docker.json_lines('volume', 'ls')[:ROWS]:
+        name = volume.get('Name') or ''
+        if not name:
+            continue
+        labels = dict(part.split('=', 1) for part in (volume.get('Labels') or '').split(',') if '=' in part)
+        used_by = [row.get('Names') or '' for row in containers
+                   if name in [mount.strip() for mount in (row.get('Mounts') or '').split(',')]]
+        rows.append({'name': name,
+                     'columns': {'driver': volume.get('Driver') or 'local', 'size': sizes.get(name, ''),
+                                 'made_for': labels.get('berth-host', ''), 'used_by': users(used_by) or 'nothing'},
+                     'unavailable': {'remove-volume': f'Docker refuses it while {users(used_by)} '
+                                                      + ('uses' if len(used_by) == 1 else 'use') + ' it'}
+                     if used_by else {}})
+    return rows
 
 
 def status(request):

@@ -275,6 +275,7 @@ Its type is `PLUGIN/ID`, here `lab/vm`. berth runs it as each provisioner regist
     arguments: { type: 'Argument[]', description: 'Its own arguments, which say where it is, such as a server. berth keeps their values as the settings of the provisioner, and every call gets them.' },
     kinds: { type: 'Kind[]', description: 'What it makes. The kind machine makes the machines of hosts.' },
     actions: { type: 'Action[]', description: 'Its own actions, each run with the verb act.' },
+    collections: { type: 'Collection[]', description: 'What it holds that people browse, such as storage pools, each with the actions of its items. See Collections.' },
   }}
 />
 
@@ -328,6 +329,69 @@ It also takes these:
 | `role` | `admin`. An action of the provisioner with `"changes": false` is `view` | The least [role](/docs/extend/serve#who-gets-in) that may run it through a berth server. An action of a kind is `admin` unless it says otherwise, even one that only reads |
 
 An action runs where berth runs, as the provisioner does, so it has no terminal and no user. An argument with `"secret": true` is not shown as it is typed and is masked in the job's output.
+
+### Collections
+
+A collection is a list of things the provisioner holds, such as the storage pools of a server, its volumes or its images. The provisioner's page shows each as one row with the number of its items. Enter opens a table of them, and each item has a page with the actions that act on it. Its actions are the provisioner's own, declared in `actions` as usual. A collection lists the ones that belong to it in `new`, `item` and `list`, and the page offers them there and not as rows of their own. `berth provisioner run` runs them as any other action, and `berth provisioner show` prints each collection as a table.
+
+The Incus plugin declares its pools and the volumes in them:
+
+```json
+"collections": [
+  {
+    "id": "pools", "label": "Storage pool", "plural": "Storage pools", "group": "Storage",
+    "key": ["pool"],
+    "columns": [{"name": "driver", "label": "Driver"}, {"name": "size", "label": "Size"}],
+    "new": [{"action": "create-pool"}],
+    "item": [
+      {"action": "resize-pool", "label": "Grow"},
+      {"action": "remove-pool", "label": "Remove", "arguments": {"pool": "name"}}
+    ],
+    "remove": "remove-pool",
+    "show": "pools"
+  },
+  {
+    "id": "volumes", "label": "Volume", "plural": "Volumes", "group": "Storage",
+    "key": ["pool", "volume"], "within": "pools",
+    "new": [{"action": "create-volume"}],
+    "item": [{"action": "remove-volume", "label": "Remove", "arguments": {"volume": "name"}}],
+    "remove": "remove-volume"
+  }
+]
+```
+
+<TypeTable
+  type={{
+    id: { type: 'string', required: true, description: 'Lower-case letters, digits, - and _, starting with a letter. The key of its items in the answer of status.' },
+    label: { type: 'string', default: 'the id', description: 'What one item is called, such as Storage pool.' },
+    plural: { type: 'string', default: 'the label', description: 'What several are called, such as Storage pools.' },
+    help: { type: 'string', description: 'What they are, for the Information panel.' },
+    group: { type: 'string', description: 'The group of the provisioner\'s page its row is listed in.' },
+    key: { type: 'string[]', required: true, description: 'The names that identify an item, such as ["pool", "volume"]. They fill the arguments of the same name.' },
+    within: { type: 'string', description: 'A collection declared before it whose items hold these, such as pools. Its key starts with that one\'s.' },
+    kinds: { type: 'string[]', description: 'Kinds of the provisioner, such as machine, whose resources are its items. See below.' },
+    columns: { type: 'Column[]', description: 'The values each item shows besides its name, in order: {"name", "label"}.' },
+    new: { type: 'Use[]', description: 'The actions that make an item. Several are offered side by side.' },
+    item: { type: 'Use[]', description: 'The actions on one item. Its key fills their arguments.' },
+    list: { type: 'Use[]', description: 'The actions on the whole list, such as pruning.' },
+    remove: { type: 'string', description: 'The item action that x runs in the table, after a question that names the item.' },
+    show: { type: 'string', description: 'An action that only reads and prints the list, for the command line. The screens show the table instead.' },
+  }}
+/>
+
+Each entry of `new`, `item` and `list` names an action:
+
+| Field | Means |
+| --- | --- |
+| `action` | The name of the provisioner's action |
+| `label` | What it is called where the item is known, such as `Grow`. The action's own label when empty |
+| `arguments` | The argument each part of the key fills where its name is not the part's own, such as `{"volume": "name"}` |
+
+On an item's page, the key fills the arguments of its actions, and they are not asked for again. A new item or an action on the list of a collection that is `within` another has the key of that item filled when it starts from that item's page. From the provisioner's page, it asks for that key too. The page of a pool lists the volumes in it, and the provisioner's page lists all of them.
+
+A collection with `kinds` has the resources of those kinds that berth made with the provisioner as its items, in place of items that `status` gives. It has a key of one name, which takes the provisioner's id of the resource, and only `item` actions. Those are offered on the page of each such resource. The Incus plugin offers its action that grows a root disk on each machine and instance this way.
+
+berth checks the collections when it loads the plugin. If a collection refers to an action, an argument, a kind or a collection that is not there, the provisioner cannot be used, and berth says what to fix. Each action belongs to one collection at most.
 
 ### Arguments
 
@@ -419,7 +483,7 @@ Each verb adds to it and answers like this:
 | --- | --- | --- |
 | `create` | `token`. For a machine, `seed` or `access`. For another kind, `environment`, and `spec` when the kind has one | `id`, and optionally `address`, `port` and `endpoints` |
 | `status` | `id` | `state`, which is `running`, `stopped` or `gone`, and optionally `address` and `endpoints`. berth shows `gone` as `missing` |
-| `status` | nothing | The provisioner itself: `state` (`ready` unless it says otherwise), `message`, `details`, `values` |
+| `status` | nothing | The provisioner itself: `state` (`ready` unless it says otherwise), `message`, `details`, `values`, `collections` |
 | `destroy` | `id` | `{}` |
 | `start`, `stop` | `id` | `{}`, and optionally `state` and `endpoints` |
 | `change` | `id`, the new values in `arguments`, `changed` with the names of the arguments whose value is new, and `environment`. For a kind with a specification, `spec`: the new one, or the one berth has | `state`, and optionally `endpoints` |
@@ -462,6 +526,21 @@ berth leaves out an endpoint that does not fit, and the first of two with the sa
 A kind with `exec` among its verbs gets berth's action `exec` ([Run a command in it](/docs/deploy/resources#run-a-command-in-it)). berth sends the command as a list of words in `command`, never as one line for a shell. Run it as it is, with `stdin` on its standard input when the request has it. Write its output to standard error as it comes. Answer with its `exit_code`. Exit with 0 even when the command fails; exit with another code only when you could not run it, such as when the resource is not running. berth records the command line in the job, and not the input.
 
 `details` is a list of rows, each `{"label": …, "value": …}`, which berth shows as they are, such as a pool and how full it is. `values` names, by argument, the values an argument takes here, such as `{"pool": ["default", "fast"]}`. berth offers those in place of what the manifest says.
+
+`collections` gives the items of each [collection](#collections), by its id. An item has a `name` and a `key` with a value for each part. Its `columns` hold its values by name. `unavailable` gives the item actions that cannot run on it, each with why not. The key of a collection whose key has one part may be left out: it is the name. berth leaves out an item without its whole key, and a collection left out of the answer is shown as not listed.
+
+```json
+"collections": {
+  "pools": [
+    {"name": "default", "columns": {"driver": "zfs", "size": "100.0 GiB"}},
+    {"name": "fast", "columns": {"driver": "dir", "size": "200.0 GiB"},
+     "unavailable": {"resize-pool": "A dir pool has no size of its own"}}
+  ],
+  "volumes": [
+    {"name": "data", "key": {"pool": "default", "volume": "data"}, "columns": {"size": "10GiB"}}
+  ]
+}
+```
 
 A `status` without an `id` that fails is shown as `unreachable`, with the reason. Answer it quickly: berth asks it each time the provisioner's page opens.
 

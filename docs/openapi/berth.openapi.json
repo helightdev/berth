@@ -119,6 +119,10 @@
             "description": "False when it only reads, and may be called at any time.",
             "type": "boolean"
           },
+          "collection": {
+            "description": "The id of the provisioner's collection it belongs to, whose items it\nmakes, acts on or lists. The screens offer it there and not on the\nprovisioner's page.",
+            "type": "string"
+          },
           "confirm": {
             "description": "The question to answer yes to before it runs.",
             "type": [
@@ -381,6 +385,172 @@
         },
         "required": [
           "choices"
+        ],
+        "type": "object"
+      },
+      "Collection": {
+        "description": "A list of things a provisioner holds, such as the storage pools of a\nserver. Its items come with the provisioner's status, and its actions are\nthe provisioner's own: some make an item, some act on one item, whose\nkey fills their arguments, and some act on the whole list.",
+        "properties": {
+          "columns": {
+            "description": "The values each item shows besides its name, in order.",
+            "items": {
+              "$ref": "#/components/schemas/CollectionColumn"
+            },
+            "type": "array"
+          },
+          "group": {
+            "description": "The group of the provisioner's page it is listed in.",
+            "type": "string"
+          },
+          "help": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "item": {
+            "description": "The actions on one item.",
+            "items": {
+              "$ref": "#/components/schemas/CollectionAction"
+            },
+            "type": "array"
+          },
+          "key": {
+            "description": "The names that identify an item, such as `pool` and `volume`. A\ncollection within another starts with that one's key.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "kinds": {
+            "description": "The kinds of resource that are its items, such as `machine`, in\nplace of items the status gives: its item actions are offered on\nthe page of each resource of those kinds the provisioner made.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "label": {
+            "description": "What one item is called, such as `Storage pool`.",
+            "type": "string"
+          },
+          "list": {
+            "description": "The actions on the whole list, such as pruning.",
+            "items": {
+              "$ref": "#/components/schemas/CollectionAction"
+            },
+            "type": "array"
+          },
+          "new": {
+            "description": "The actions that make a new item.",
+            "items": {
+              "$ref": "#/components/schemas/CollectionAction"
+            },
+            "type": "array"
+          },
+          "plural": {
+            "description": "What several are called, such as `Storage pools`.",
+            "type": "string"
+          },
+          "remove": {
+            "description": "The item action that removes one.",
+            "type": "string"
+          },
+          "show": {
+            "description": "The action that prints the list for the command line, which the\nscreens show as the table instead.",
+            "type": "string"
+          },
+          "within": {
+            "description": "The collection whose items hold these, such as the pools that hold\nvolumes. Each item of that one lists those that belong to it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key"
+        ],
+        "type": "object"
+      },
+      "CollectionAction": {
+        "description": "An action of a provisioner as one of a collection's.",
+        "properties": {
+          "action": {
+            "description": "The provisioner's action, by its name.",
+            "type": "string"
+          },
+          "arguments": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The argument of the action each part of the key fills, where its\nname is not the part's own: `{\"volume\": \"name\"}`.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "label": {
+            "description": "What it is called where its item is known already, such as `Grow`.\nThe action's own label when empty.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "CollectionColumn": {
+        "description": "A value an item of a collection shows.",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "CollectionItem": {
+        "description": "One item of a collection, as the provisioner's status gives it.",
+        "properties": {
+          "columns": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The value of each column, by its name.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "key": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The value of each part of the collection's key.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "unavailable": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The item actions that cannot run on it, each with why not.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "name"
         ],
         "type": "object"
       },
@@ -2026,6 +2196,13 @@
             },
             "type": "array"
           },
+          "collections": {
+            "description": "What it holds that can be listed, such as storage pools, each with\nthe actions of its items.",
+            "items": {
+              "$ref": "#/components/schemas/Collection"
+            },
+            "type": "array"
+          },
           "description": {
             "type": "string"
           },
@@ -2151,6 +2328,19 @@
       "ProvisionerState": {
         "description": "A provisioner's page: what it is, what it says of itself now, and what\nit holds.",
         "properties": {
+          "collections": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/CollectionItem"
+              },
+              "type": "array"
+            },
+            "description": "The items of each of its collections, by the collection's id, as its\nstatus gave them.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
           "details": {
             "items": {
               "$ref": "#/components/schemas/Detail"

@@ -177,6 +177,8 @@ pub struct Provisioner {
     pub kinds: Vec<berth_api::ProvisionerKind>,
     /// Its own actions, each run with the verb `act`.
     pub actions: Vec<berth_api::Action>,
+    /// What it holds that can be listed, with the actions of their items.
+    pub collections: Vec<berth_api::Collection>,
     /// Why berth does not run it, as a sentence that says what to change.
     pub refused: Option<String>,
 }
@@ -213,6 +215,7 @@ impl Provisioner {
             node: String::new(),
             kinds: self.kinds.clone(),
             actions: self.actions.clone(),
+            collections: self.collections.clone(),
             problem: self.refused.clone().unwrap_or_default(),
         }
     }
@@ -482,6 +485,7 @@ fn provisioner_actions(entries: &Value, reading: berth_api::ops::Role) -> Vec<be
             available: true,
             why: String::new(),
             steps: vec![],
+            collection: String::new(),
             role,
             ..action
         });
@@ -536,12 +540,24 @@ fn read_provisioner(plugin: &str, entry: &Value, dir: &Path) -> Option<Provision
         }
     }
     let mut own = provisioner_arguments(&entry["arguments"]);
-    let (kinds, actions) = match refused {
+    let (kinds, mut actions) = match refused {
         Some(_) => (vec![], vec![]),
         None => (
             provisioner_kinds(&entry["kinds"]),
             provisioner_actions(&entry["actions"], berth_api::ops::Role::View),
         ),
+    };
+    let (collections, refused) = match refused {
+        Some(refused) => (vec![], Some(refused)),
+        None => match provisioner_collections(&entry["collections"], &mut actions, &kinds) {
+            Ok(collections) => (collections, None),
+            Err(why) => (
+                vec![],
+                Some(format!(
+                    "{plugin}/{id} declares its collections wrong: {why}. Its manifest has to be fixed"
+                )),
+            ),
+        },
     };
     let machine = kinds.iter().find(|kind| kind.id == MACHINE);
     let setup = match machine.map(|kind| kind.setup.as_str()) {
@@ -593,8 +609,170 @@ fn read_provisioner(plugin: &str, entry: &Value, dir: &Path) -> Option<Provision
         own: names,
         kinds,
         actions,
+        collections,
         refused,
     })
+}
+
+/// The collections of a provisioner's manifest, checked against its actions
+/// and kinds; each action they name is marked with the collection's id. A
+/// collection that names an action, an argument, a kind or a collection
+/// there is not is an error that says which.
+fn provisioner_collections(
+    entries: &Value,
+    actions: &mut [berth_api::Action],
+    kinds: &[berth_api::ProvisionerKind],
+) -> std::result::Result<Vec<berth_api::Collection>, String> {
+    let Some(entries) = entries.as_array() else {
+        return match entries.is_null() {
+            true => Ok(vec![]),
+            false => Err("collections is not a list".into()),
+        };
+    };
+    let mut collections: Vec<berth_api::Collection> = vec![];
+    for entry in entries {
+        let mut collection: berth_api::Collection = serde_json::from_value(entry.clone())
+            .map_err(|error| format!("a collection does not read: {error}"))?;
+        let id = collection.id.clone();
+        if !valid_name(&id) {
+            return Err(format!("{id:?} is not a name for a collection"));
+        }
+        if collections.iter().any(|known| known.id == id) {
+            return Err(format!("the collection {id} is declared twice"));
+        }
+        if collection.label.is_empty() {
+            collection.label = id.clone();
+        }
+        if collection.plural.is_empty() {
+            collection.plural = collection.label.clone();
+        }
+        if collection.key.is_empty() || collection.key.iter().any(|part| !valid_name(part)) {
+            return Err(format!(
+                "the collection {id} needs a key of argument names, such as [\"pool\"]"
+            ));
+        }
+        let mut parent: Vec<String> = vec![];
+        if !collection.within.is_empty() {
+            let Some(holder) = collections
+                .iter()
+                .find(|known| known.id == collection.within)
+            else {
+                return Err(format!(
+                    "the collection {id} is within {}, which is not declared before it",
+                    collection.within
+                ));
+            };
+            if !holder.kinds.is_empty()
+                || collection.key.len() <= holder.key.len()
+                || !collection.key.starts_with(&holder.key)
+            {
+                return Err(format!(
+                    "the key of {id} has to start with the key of {}, {}, and name more",
+                    holder.id,
+                    holder.key.join(" ")
+                ));
+            }
+            parent = holder.key.clone();
+        }
+        for kind in &collection.kinds {
+            if !kinds.iter().any(|known| &known.id == kind) {
+                return Err(format!("the collection {id} has items of no kind {kind}"));
+            }
+        }
+        if !collection.kinds.is_empty()
+            && (collection.key.len() != 1
+                || !collection.within.is_empty()
+                || !collection.new.is_empty()
+                || !collection.list.is_empty())
+        {
+            return Err(format!(
+                "the collection {id} of resources has a key of one name, and only item actions"
+            ));
+        }
+        let mut seen: Vec<&str> = vec![];
+        for column in &collection.columns {
+            if column.name.is_empty() || seen.contains(&column.name.as_str()) {
+                return Err(format!(
+                    "the columns of {id} need names, each once: {:?}",
+                    column.name
+                ));
+            }
+            seen.push(&column.name);
+        }
+        // What fills an action's arguments: the whole key on an item, the
+        // key of the item it is within when new or on the list.
+        let sorts = [
+            ("new", &collection.new, &parent),
+            ("item", &collection.item, &collection.key),
+            ("list", &collection.list, &parent),
+        ];
+        for (sort, listed, filled) in sorts {
+            for used in listed {
+                let Some(action) = actions.iter_mut().find(|known| known.name == used.action)
+                else {
+                    return Err(format!(
+                        "{id} names the action {}, which the provisioner does not have",
+                        used.action
+                    ));
+                };
+                if !action.collection.is_empty() && action.collection != id {
+                    return Err(format!(
+                        "the action {} is in the collections {} and {id}; it can be in one",
+                        used.action, action.collection
+                    ));
+                }
+                for part in used.arguments.keys() {
+                    if !collection.key.contains(part) {
+                        return Err(format!(
+                            "{id} fills an argument of {} from {part}, which is not in its key",
+                            used.action
+                        ));
+                    }
+                }
+                for part in filled {
+                    let argument = used.argument(part);
+                    if !action.arguments.iter().any(|known| known.name == argument) {
+                        return Err(format!(
+                            "{id} fills the argument {argument} of {} from its {sort}'s {part}, and {} has no argument {argument}",
+                            used.action, used.action
+                        ));
+                    }
+                }
+                action.collection = id.clone();
+            }
+        }
+        if !collection.remove.is_empty()
+            && !collection
+                .item
+                .iter()
+                .any(|known| known.action == collection.remove)
+        {
+            return Err(format!(
+                "{id} removes an item with {}, which is none of its item actions",
+                collection.remove
+            ));
+        }
+        if !collection.show.is_empty() {
+            let Some(action) = actions
+                .iter_mut()
+                .find(|known| known.name == collection.show)
+            else {
+                return Err(format!(
+                    "{id} is shown by the action {}, which the provisioner does not have",
+                    collection.show
+                ));
+            };
+            if action.changes || !action.collection.is_empty() {
+                return Err(format!(
+                    "{id} is shown by the action {}, which has to only read and be in no other collection",
+                    collection.show
+                ));
+            }
+            action.collection = id.clone();
+        }
+        collections.push(collection);
+    }
+    Ok(collections)
 }
 
 // ── Managing them ───────────────────────────────────────────────────────────
@@ -1212,6 +1390,183 @@ mod tests {
         let extra = &one.features[1];
         assert_eq!(extra.services[0].methods[0].name, "start");
         assert_eq!(extra.channels[0].keep, Some(berth_api::Keep::None));
+    }
+
+    /// The provisioner `vm` of a plugin whose manifest declares `collections`
+    /// beside a few actions and the kinds machine and instance.
+    fn with_collections(collections: &str) -> Provisioner {
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path().join("plugins/cloud");
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        fs::write(dir.join("bin/provision"), "#!/bin/sh\n").unwrap();
+        let manifest = format!(
+            r#"{{"name": "berth-plugin-cloud", "berth": {{"provisioners": [
+                {{"id": "vm", "command": "bin/provision", "protocol": 2,
+                 "kinds": [{{"id": "machine", "setup": "apply"}}, {{"id": "instance"}}],
+                 "actions": [
+                   {{"name": "pools", "changes": false}},
+                   {{"name": "new-pool", "arguments": [{{"name": "name"}}]}},
+                   {{"name": "grow-pool", "arguments": [{{"name": "pool"}}, {{"name": "size"}}]}},
+                   {{"name": "remove-pool", "arguments": [{{"name": "name"}}]}},
+                   {{"name": "new-volume", "arguments": [{{"name": "pool"}}, {{"name": "name"}}]}},
+                   {{"name": "remove-volume", "arguments": [{{"name": "pool"}}, {{"name": "name"}}]}},
+                   {{"name": "grow-disk", "arguments": [{{"name": "instance"}}, {{"name": "size"}}]}},
+                   {{"name": "clean"}}, {{"name": "check", "changes": false}}],
+                 "collections": {collections}}}]}}}}"#
+        );
+        fs::write(dir.join("package.json"), manifest).unwrap();
+        load(&[base.path().join("plugins")])
+            .remove(0)
+            .provisioners
+            .remove(0)
+    }
+
+    #[test]
+    fn collections_name_their_actions_and_mark_them() {
+        let vm = with_collections(
+            r#"[{"id": "pools", "label": "Storage pool", "key": ["pool"],
+                 "columns": [{"name": "driver", "label": "Driver"}],
+                 "new": [{"action": "new-pool"}], "list": [{"action": "clean"}],
+                 "item": [{"action": "grow-pool", "label": "Grow"},
+                          {"action": "remove-pool", "arguments": {"pool": "name"}}],
+                 "remove": "remove-pool", "show": "pools"},
+                {"id": "volumes", "label": "Volume", "plural": "Volumes", "key": ["pool", "volume"],
+                 "within": "pools", "new": [{"action": "new-volume"}],
+                 "item": [{"action": "remove-volume", "arguments": {"volume": "name"}}]},
+                {"id": "disks", "key": ["instance"], "kinds": ["machine", "instance"],
+                 "item": [{"action": "grow-disk"}]}]"#,
+        );
+        assert!(vm.refused.is_none(), "{:?}", vm.refused);
+        let ids: Vec<&str> = vm
+            .collections
+            .iter()
+            .map(|known| known.id.as_str())
+            .collect();
+        assert_eq!(ids, ["pools", "volumes", "disks"]);
+        // The plural is the label when it is not given.
+        assert_eq!(vm.collections[0].plural, "Storage pool");
+        assert_eq!(vm.collections[1].item[0].argument("volume"), "name");
+        assert_eq!(vm.collections[1].item[0].argument("pool"), "pool");
+        let marked: Vec<(&str, &str)> = vm
+            .actions
+            .iter()
+            .map(|action| (action.name.as_str(), action.collection.as_str()))
+            .collect();
+        assert_eq!(
+            marked,
+            [
+                ("pools", "pools"),
+                ("new-pool", "pools"),
+                ("grow-pool", "pools"),
+                ("remove-pool", "pools"),
+                ("new-volume", "volumes"),
+                ("remove-volume", "volumes"),
+                ("grow-disk", "disks"),
+                ("clean", "pools"),
+                ("check", "")
+            ]
+        );
+        assert_eq!(vm.info("cloud", vec![]).collections, vm.collections);
+    }
+
+    #[test]
+    fn a_collection_that_names_what_is_not_there_refuses_the_provisioner() {
+        for (collections, said) in [
+            (
+                r#"[{"id": "pools", "key": ["pool"], "item": [{"action": "shrink-pool"}]}]"#,
+                "pools names the action shrink-pool, which the provisioner does not have",
+            ),
+            (
+                r#"[{"id": "pools", "key": ["pool"], "item": [{"action": "remove-pool"}]}]"#,
+                "remove-pool has no argument pool",
+            ),
+            (
+                r#"[{"id": "pools", "key": ["pool"],
+                     "item": [{"action": "remove-pool", "arguments": {"name": "name"}}]}]"#,
+                "from name, which is not in its key",
+            ),
+            (
+                r#"[{"id": "volumes", "key": ["pool", "volume"], "within": "pools"}]"#,
+                "is within pools, which is not declared before it",
+            ),
+            (
+                r#"[{"id": "pools", "key": ["pool"]},
+                    {"id": "volumes", "key": ["volume"], "within": "pools"}]"#,
+                "has to start with the key of pools",
+            ),
+            (
+                r#"[{"id": "pools", "key": ["pool"]},
+                    {"id": "volumes", "key": ["pool", "volume"], "within": "pools",
+                     "new": [{"action": "new-pool"}]}]"#,
+                "new-pool has no argument pool",
+            ),
+            (
+                r#"[{"id": "disks", "key": ["instance"], "kinds": ["deployment"]}]"#,
+                "has items of no kind deployment",
+            ),
+            (
+                r#"[{"id": "pools", "key": ["pool"], "remove": "remove-pool"}]"#,
+                "which is none of its item actions",
+            ),
+            (
+                r#"[{"id": "pools", "key": ["pool"], "show": "clean"}]"#,
+                "has to only read",
+            ),
+            (
+                r#"[{"id": "a", "key": ["pool"], "list": [{"action": "clean"}]},
+                    {"id": "b", "key": ["pool"], "list": [{"action": "clean"}]}]"#,
+                "clean is in the collections a and b",
+            ),
+            (r#"[{"id": "pools"}]"#, "does not read"),
+            (r#"[{"id": "pools", "key": []}]"#, "needs a key"),
+            (r#"{"pools": {}}"#, "collections is not a list"),
+        ] {
+            let vm = with_collections(collections);
+            let refused = vm.refused.unwrap_or_default();
+            assert!(refused.contains(said), "{said:?} in {refused:?}");
+            assert!(
+                refused.starts_with("cloud/vm declares its collections wrong: "),
+                "{refused}"
+            );
+            assert!(vm.collections.is_empty());
+        }
+    }
+
+    #[test]
+    fn the_shipped_provisioners_declare_their_collections_right() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
+        let plugins = load(&[root]);
+        for (plugin, provisioner, collections) in [
+            (
+                "incus",
+                "vm",
+                vec!["pools", "volumes", "images", "instances"],
+            ),
+            (
+                "incus",
+                "container",
+                vec!["pools", "volumes", "images", "instances"],
+            ),
+            ("docker", "container", vec!["images", "volumes"]),
+        ] {
+            let found = plugins
+                .iter()
+                .find(|known| known.id == plugin)
+                .and_then(|known| {
+                    known
+                        .provisioners
+                        .iter()
+                        .find(|known| known.id == provisioner)
+                })
+                .unwrap();
+            assert!(found.refused.is_none(), "{:?}", found.refused);
+            let ids: Vec<&str> = found
+                .collections
+                .iter()
+                .map(|known| known.id.as_str())
+                .collect();
+            assert_eq!(ids, collections);
+        }
     }
 
     #[test]

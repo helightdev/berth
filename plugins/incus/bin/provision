@@ -552,7 +552,98 @@ def server_status(incus):
     return {'state': 'ready',
             'message': f'Incus {environment.get("server_version") or ""} answers at {incus.server} and trusts berth'
                        .replace('  ', ' '),
-            'details': details, 'values': values}
+            'details': details, 'values': values, 'collections': collections_of(incus)}
+
+
+def collections_of(incus):
+    """The items of the collections the manifest declares, as rows berth shows in tables. One the
+    server does not answer for is left out, and the rest are still given."""
+    found = {}
+    for collection, rows in (('pools', pool_rows), ('volumes', volume_rows), ('images', image_rows)):
+        try:
+            found[collection] = rows(incus)
+        except IncusError:
+            pass
+    return found
+
+
+def users_of(used_by):
+    """What the used_by of Incus names, as 'instance web' or 'profile default'."""
+    users = []
+    for url in used_by or []:
+        parts = urllib.parse.urlparse(url).path.strip('/').split('/')
+        if len(parts) >= 3:
+            kind = {'instances': 'instance', 'profiles': 'profile', 'images': 'image',
+                    'storage-pools': 'volume'}.get(parts[1], parts[1])
+            users.append(f'{kind} {parts[-1][:12] if kind == "image" else parts[-1]}')
+    return users
+
+
+def pool_rows(incus):
+    rows = []
+    for pool in (incus.call('GET', '/1.0/storage-pools', query={'recursion': 1}) or [])[:ROWS]:
+        name = pool.get('name') or ''
+        config = pool.get('config') or {}
+        total, used = space_of(incus, name)
+        known = total is not None
+        unavailable = {}
+        can, why = resizable(incus, pool)
+        if not can:
+            unavailable['resize-pool'] = why[:1].upper() + why[1:]
+        users = users_of(pool.get('used_by'))
+        if users:
+            unavailable['remove-pool'] = f'Incus removes only an empty pool, and {", ".join(users[:3])}' + \
+                (f' and {len(users) - 3} more' if len(users) > 3 else '') + ' use it'
+        rows.append({'name': name,
+                     'columns': {'driver': pool.get('driver') or '?', 'source': config.get('source') or '',
+                                 'size': gib(total) if known else config.get('size') or '?',
+                                 'used': gib(used) if known else '?',
+                                 'free': gib((total or 0) - (used or 0)) if known else '?'},
+                     'unavailable': unavailable})
+    return rows
+
+
+def volume_rows(incus):
+    rows = []
+    for pool in names(incus, '/1.0/storage-pools'):
+        for volume in incus.call('GET', f'/1.0/storage-pools/{pool}/volumes/custom', query={'recursion': 1}) or []:
+            if len(rows) >= ROWS:
+                return rows
+            name = volume.get('name') or ''
+            used = ''
+            try:
+                usage = (incus.call('GET', f'/1.0/storage-pools/{pool}/volumes/custom/{name}/state',
+                                    missing=True) or {}).get('usage') or {}
+                if usage.get('used') is not None:
+                    used = gib(usage['used'])
+            except IncusError:
+                pass
+            users = [user.split(' ', 1)[1] for user in users_of(volume.get('used_by'))]
+            unavailable = {}
+            if users:
+                unavailable['remove-volume'] = f'Incus refuses it while {", ".join(users)} use' + \
+                    ('s' if len(users) == 1 else '') + ' it'
+            rows.append({'name': name, 'key': {'pool': pool, 'volume': name},
+                         'columns': {'pool': pool, 'type': volume.get('content_type') or 'filesystem',
+                                     'size': (volume.get('config') or {}).get('size') or 'no set size',
+                                     'used': used, 'used_by': ', '.join(users) or 'nothing'},
+                         'unavailable': unavailable})
+    return rows
+
+
+def image_rows(incus):
+    rows = []
+    for image in (incus.call('GET', '/1.0/images', query={'recursion': 1}) or [])[:ROWS]:
+        fingerprint = (image.get('fingerprint') or '')[:12]
+        if not fingerprint:
+            continue
+        aliases = ', '.join(alias.get('name') or '' for alias in image.get('aliases') or [])
+        described = (image.get('properties') or {}).get('description') or ''
+        rows.append({'name': aliases or described or fingerprint, 'key': {'image': fingerprint},
+                     'columns': {'fingerprint': fingerprint, 'type': image.get('type') or '?',
+                                 'size': gib(image.get('size')), 'cached': 'yes' if image.get('cached') else 'no',
+                                 'uploaded': (image.get('uploaded_at') or '')[:10]}})
+    return rows
 
 
 # What change applies to an instance in place; the rest are fixed when it is made.

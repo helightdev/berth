@@ -615,6 +615,11 @@ pub struct Action {
     /// What plugins add to it, in the order they run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<ActionStep>,
+    /// The id of the provisioner's collection it belongs to, whose items it
+    /// makes, acts on or lists. The screens offer it there and not on the
+    /// provisioner's page.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub collection: String,
 }
 
 impl Default for Action {
@@ -633,6 +638,7 @@ impl Default for Action {
             available: true,
             why: String::new(),
             steps: vec![],
+            collection: String::new(),
         }
     }
 }
@@ -1183,6 +1189,10 @@ pub struct ProvisionerInfo {
     /// Its plugin's own actions, such as listing images or pruning.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Action>,
+    /// What it holds that can be listed, such as storage pools, each with
+    /// the actions of its items.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collections: Vec<Collection>,
     /// Why it cannot be used here, as a sentence that says what to change.
     /// Empty when it can.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1276,6 +1286,125 @@ pub struct ProvisionerState {
     /// berth's records of what it made, with what its own list says.
     #[serde(default)]
     pub resources: Vec<ListedResource>,
+    /// The items of each of its collections, by the collection's id, as its
+    /// status gave them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub collections: BTreeMap<String, Vec<CollectionItem>>,
+}
+
+/// A list of things a provisioner holds, such as the storage pools of a
+/// server. Its items come with the provisioner's status, and its actions are
+/// the provisioner's own: some make an item, some act on one item, whose
+/// key fills their arguments, and some act on the whole list.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct Collection {
+    pub id: String,
+    /// What one item is called, such as `Storage pool`.
+    #[serde(default)]
+    pub label: String,
+    /// What several are called, such as `Storage pools`.
+    #[serde(default)]
+    pub plural: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub help: String,
+    /// The group of the provisioner's page it is listed in.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
+    /// The names that identify an item, such as `pool` and `volume`. A
+    /// collection within another starts with that one's key.
+    pub key: Vec<String>,
+    /// The collection whose items hold these, such as the pools that hold
+    /// volumes. Each item of that one lists those that belong to it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub within: String,
+    /// The kinds of resource that are its items, such as `machine`, in
+    /// place of items the status gives: its item actions are offered on
+    /// the page of each resource of those kinds the provisioner made.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<String>,
+    /// The values each item shows besides its name, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns: Vec<CollectionColumn>,
+    /// The actions that make a new item.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub new: Vec<CollectionAction>,
+    /// The actions on one item.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub item: Vec<CollectionAction>,
+    /// The actions on the whole list, such as pruning.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub list: Vec<CollectionAction>,
+    /// The item action that removes one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub remove: String,
+    /// The action that prints the list for the command line, which the
+    /// screens show as the table instead.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub show: String,
+}
+
+/// A value an item of a collection shows.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct CollectionColumn {
+    pub name: String,
+    #[serde(default)]
+    pub label: String,
+}
+
+/// An action of a provisioner as one of a collection's.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct CollectionAction {
+    /// The provisioner's action, by its name.
+    pub action: String,
+    /// What it is called where its item is known already, such as `Grow`.
+    /// The action's own label when empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    /// The argument of the action each part of the key fills, where its
+    /// name is not the part's own: `{"volume": "name"}`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub arguments: BTreeMap<String, String>,
+}
+
+impl CollectionAction {
+    /// The argument of the action the part `part` of a key fills.
+    pub fn argument<'a>(&'a self, part: &'a str) -> &'a str {
+        self.arguments.get(part).map_or(part, String::as_str)
+    }
+}
+
+/// One item of a collection, as the provisioner's status gives it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct CollectionItem {
+    pub name: String,
+    /// The value of each part of the collection's key.
+    #[serde(default)]
+    pub key: BTreeMap<String, String>,
+    /// The value of each column, by its name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub columns: BTreeMap<String, String>,
+    /// The item actions that cannot run on it, each with why not.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unavailable: BTreeMap<String, String>,
+}
+
+impl Collection {
+    /// The label of a column, by its name.
+    pub fn column_label<'a>(&'a self, column: &'a CollectionColumn) -> &'a str {
+        match column.label.is_empty() {
+            true => &column.name,
+            false => &column.label,
+        }
+    }
+
+    /// The action of the collection called `name`, of any of its sorts.
+    pub fn find(&self, name: &str) -> Option<&CollectionAction> {
+        self.new
+            .iter()
+            .chain(&self.item)
+            .chain(&self.list)
+            .find(|known| known.action == name)
+    }
 }
 
 /// A berth secret a resource is given in its environment, by name. Its

@@ -377,18 +377,23 @@ fn logs(client: &Client, host: &str, id: &str, follow: bool, tail: Option<u64>) 
 /// A subject's actions as a table, and under it why each that cannot run
 /// now cannot, which is too long for a column.
 pub fn print_actions(actions: &[berth_api::Action]) {
-    let mut table = Table::new(&["action", "group", "label", "available"]);
+    // A provisioner's actions say which of its collections each belongs to.
+    let collected = actions.iter().any(|action| !action.collection.is_empty());
+    let mut table = match collected {
+        true => Table::new(&["action", "group", "collection", "label", "available"]),
+        false => Table::new(&["action", "group", "label", "available"]),
+    };
     for action in actions {
         let available = match action.available {
             true => styled("yes", Style::Good),
             false => styled("no", Style::Warn),
         };
-        table.row(vec![
-            action.name.clone(),
-            action.group.clone(),
-            action.label.clone(),
-            available,
-        ]);
+        let mut row = vec![action.name.clone(), action.group.clone()];
+        if collected {
+            row.push(action.collection.clone());
+        }
+        row.extend([action.label.clone(), available]);
+        table.row(row);
     }
     table.print("Nothing to do");
     let refused: Vec<&berth_api::Action> = actions

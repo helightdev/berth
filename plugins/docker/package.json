@@ -102,6 +102,56 @@
             ]
           }
         ],
+        "collections": [
+          {
+            "id": "images",
+            "label": "Image",
+            "plural": "Images",
+            "group": "Engine",
+            "help": "The images the engine has. A new one is pulled from its registry, or is the image the plugin brings, built here.",
+            "key": ["image"],
+            "columns": [
+              {"name": "id", "label": "ID"},
+              {"name": "size", "label": "Size"},
+              {"name": "created", "label": "Created"},
+              {"name": "used_by", "label": "Used by"}
+            ],
+            "new": [
+              {"action": "pull-image", "label": "Pull an image"},
+              {"action": "build", "label": "Build berth's image"}
+            ],
+            "item": [
+              {"action": "remove-image", "label": "Remove"}
+            ],
+            "list": [
+              {"action": "prune"}
+            ],
+            "remove": "remove-image",
+            "show": "images"
+          },
+          {
+            "id": "volumes",
+            "label": "Volume",
+            "plural": "Volumes",
+            "group": "Storage",
+            "help": "The named volumes of the engine, with the host berth made each for, if any, and the containers that use it. One kept with keep_volume stays here until it is removed.",
+            "key": ["volume"],
+            "columns": [
+              {"name": "driver", "label": "Driver"},
+              {"name": "size", "label": "Size"},
+              {"name": "made_for", "label": "Made for"},
+              {"name": "used_by", "label": "Used by"}
+            ],
+            "new": [
+              {"action": "create-volume"}
+            ],
+            "item": [
+              {"action": "remove-volume", "label": "Remove", "arguments": {"volume": "name"}}
+            ],
+            "remove": "remove-volume",
+            "show": "volumes"
+          }
+        ],
         "actions": [
           {"name": "engine", "label": "Check the engine", "group": "Engine", "changes": false, "help": "Ask the Docker engine for its version, its runtimes and how many containers berth made there."},
           {"name": "images", "label": "Images", "group": "Engine", "changes": false, "help": "The images the engine has, with their sizes."},

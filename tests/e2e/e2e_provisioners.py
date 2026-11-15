@@ -37,7 +37,11 @@ if verb == 'status' and request.get('id'):
 elif verb == 'status':
     print(json.dumps({'message': f'The lab at {place} answers',
                       'details': [{'label': 'Benches', 'value': '3'}],
-                      'values': {'shelf': ['top', 'bottom']}}))
+                      'values': {'shelf': ['top', 'bottom']},
+                      'collections': {'shelves': [
+                          {'name': 'top', 'columns': {'dust': 'little'}},
+                          {'name': 'bottom', 'columns': {'dust': 'thick'},
+                           'unavailable': {'tidy': 'The bottom shelf is out of reach'}}]}}))
 elif verb == 'list':
     print(json.dumps({'resources': [{'id': 'box-1', 'kind': 'machine', 'name': 'attic', 'state': 'running'}]}))
 elif verb in ('create', 'change') and request.get('kind') == 'deployment':
@@ -69,6 +73,8 @@ elif verb == 'act':
     if request.get('id'):
         print(json.dumps({'message': f'{request["kind"]} {request["id"]} has 1 service',
                           'details': [{'label': 'web', 'value': 'running'}]}))
+    elif action['name'] == 'tidy':
+        print(json.dumps({'message': f'Tidied the {action["arguments"]["shelf"]} shelf'}))
     elif action['name'] == 'look':
         print(json.dumps({'message': f'Looked around {place}', 'details': [{'label': 'Dust', 'value': 'little'}]}))
     else:
@@ -94,7 +100,11 @@ MANIFEST = {
             {'name': 'sweep', 'label': 'Sweep', 'confirm': 'Sweep the lab?',
              'arguments': [{'name': 'shelf', 'values': ['top', 'bottom'], 'default': 'top'},
                            {'name': 'code', 'secret': True}]},
+            {'name': 'tidy', 'label': 'Tidy a shelf', 'group': 'Lab', 'arguments': [{'name': 'shelf'}]},
         ],
+        'collections': [{'id': 'shelves', 'label': 'Shelf', 'plural': 'Shelves', 'key': ['shelf'],
+                         'columns': [{'name': 'dust', 'label': 'Dust'}],
+                         'item': [{'action': 'tidy', 'label': 'Tidy'}]}],
     }, {
         'id': 'old', 'label': 'Old box', 'command': 'bin/provision', 'setup': 'apply',
     }]},
@@ -150,6 +160,15 @@ class Provisioners(unittest.TestCase):
                      'Machines berth made with it', '  attic            box-1  running · berth has no record of it',
                      '    look'):
             self.assertIn(line, page)
+        # Its collection is a table, with what cannot be done to an item and why.
+        for line in ('Shelves (2)\n', '  SHELF   DUST\n', '  top     little\n',
+                     '  bottom: no tidy: The bottom shelf is out of reach\n', '  Shelves\n    tidy'):
+            self.assertIn(line, page)
+        actions = json.loads(self.berth('provisioner', 'actions', 'box', '-o', 'json').stdout)
+        self.assertEqual({action['name']: action.get('collection', '') for action in actions}['tidy'], 'shelves')
+        self.assertRegex(self.berth('provisioner', 'actions', 'box').stdout, r'(?m)^tidy\s+Lab\s+shelves\s+Tidy a shelf')
+        tidied = self.berth('provisioner', 'run', 'box', 'tidy', 'shelf=top', '--yes').stdout
+        self.assertIn('Tidied the top shelf', tidied)
         # For this once, another place.
         self.assertIn('The lab at cellar answers', self.berth('provisioner', 'show', 'box', 'place=cellar').stdout)
         looked = self.berth('provisioner', 'run', 'box', 'look').stdout
@@ -169,9 +188,13 @@ class Provisioners(unittest.TestCase):
             page = serve.call('GET', '/v1/provisioners/box')
             self.assertEqual((page['state'], page['message']), ('ready', 'The lab at attic answers'))
             self.assertEqual(page['values'], {'shelf': ['top', 'bottom']})
+            self.assertEqual([found['id'] for found in page['provisioner']['collections']], ['shelves'])
+            self.assertEqual(page['collections']['shelves'][1],
+                             {'name': 'bottom', 'key': {'shelf': 'bottom'}, 'columns': {'dust': 'thick'},
+                              'unavailable': {'tidy': 'The bottom shelf is out of reach'}})
             actions = serve.call('GET', '/v1/provisioners/box/actions')
             self.assertEqual([action['name'] for action in actions],
-                             ['new-deployment', 'settings', 'look', 'sweep', 'adopt', 'remove'])
+                             ['new-deployment', 'settings', 'look', 'sweep', 'tidy', 'adopt', 'remove'])
             looked = serve.call('POST', '/v1/provisioners/box/actions/look')
             self.assertEqual(looked['result']['message'], 'Looked around attic')
             acted = serve.call('POST', '/v1/provisioners/box/actions/sweep',
@@ -525,6 +548,9 @@ class DockerEngine(unittest.TestCase):
         self.assertIn('Runtimes', page)
         volumes = station.berth('provisioner', 'run', 'docker', 'volumes').stdout
         self.assertIn(f'volumes at {endpoint}', volumes)
+        # The engine's images and volumes are tables of their own on the page.
+        self.assertRegex(page, r'(?m)^Images \(\d+\)$')
+        self.assertRegex(page, r'(?m)^Volumes \(\d+\)$')
 
     def test_a_compose_deployment_is_made_changed_and_removed(self):
         station = Workstation('provisioners-compose', ssh_key=False, trust=False)
