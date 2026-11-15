@@ -56,13 +56,18 @@ impl Fail {
 impl IntoResponse for Fail {
     fn into_response(self) -> Response {
         let status = StatusCode::from_u16(self.0).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let code = axum::http::HeaderValue::from_str(&self.1).ok();
         let body = ErrorBody {
             error: ErrorDetail {
                 code: self.1,
                 message: self.2,
             },
         };
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        if let Some(code) = code {
+            response.headers_mut().insert(berth_api::ERROR_HEADER, code);
+        }
+        response
     }
 }
 

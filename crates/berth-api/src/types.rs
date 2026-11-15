@@ -28,6 +28,10 @@ pub struct ErrorDetail {
     pub message: String,
 }
 
+/// The header that repeats an error's code, for a caller that is not given
+/// the body: a WebSocket handshake that was refused shows only its head.
+pub const ERROR_HEADER: &str = "berth-error";
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ErrorBody {
     pub error: ErrorDetail,

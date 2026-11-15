@@ -44,6 +44,6 @@ impl IntoResponse for E {
                 message: self.1,
             },
         };
-        (status, Json(body)).into_response()
+        (status, [(berth_api::ERROR_HEADER, self.0.1)], Json(body)).into_response()
     }
 }
