@@ -3,5 +3,5 @@
   "description": "berthd and berth serve",
   "icon": "Plug",
   "root": true,
-  "pages": ["index", "portal", "host", "serve"]
+  "pages": ["index", "portal", "testing", "host", "serve"]
 }
