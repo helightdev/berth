@@ -180,8 +180,13 @@ fn ids_are_given(paths: &Paths, store: &store::Store) {
         secrets.has_secret("registry/nexus").unwrap()
     );
     assert!(secrets.has_secret("registry/nexus").unwrap());
-    let names = secrets.secret_names();
-    assert!(names.iter().all(|name| !name.contains('/')), "{names:?}");
+    // Owned secrets are not among the global ones.
+    assert!(
+        secrets
+            .secret_names()
+            .iter()
+            .all(|name| !name.contains('/'))
+    );
     // Jobs are about the hosts by id.
     let jobs = store.jobs(10).unwrap();
     assert!(

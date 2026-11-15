@@ -1426,7 +1426,7 @@ async fn the_server_is_set_up_through_the_api() {
     let (_, secrets) = send(client, "GET", "/v1/secrets", Value::Null).await;
     assert_eq!(secrets["names"], json!(["github"]));
     let github = secrets["secrets"][0]["id"].as_str().unwrap().to_owned();
-    assert!(berth_api::ids::is_id(&github), "{secrets}");
+    assert!(berth_api::ids::is_id(&github));
     assert_eq!(secrets["secrets"][0]["name"], "github");
     // By id, bare or with its prefix; a prefix of another kind is refused.
     let (status, _) = send(
