@@ -204,22 +204,38 @@ impl Auth {
 }
 
 /// The operation a request is, for a table lookup of the role it needs.
-/// `Err` is a request below a host that no operation is known for.
+/// `Err` is a request no operation is known for. What a request says of
+/// itself only orders the lookup: one that claims to be a stream at the path
+/// of a call is still that call, and a HEAD is the GET that answers it.
 pub fn operation(method: &str, path: &str, stream: bool) -> Result<Option<&'static Op>, ()> {
-    let kind = if stream { Kind::Stream } else { Kind::Call };
-    if let Some((op, _)) = ops::recognise(ops::SERVE, kind, method, path) {
+    let method = if method.eq_ignore_ascii_case("HEAD") {
+        "GET"
+    } else {
+        method
+    };
+    let kinds = if stream {
+        [Kind::Stream, Kind::Call]
+    } else {
+        [Kind::Call, Kind::Stream]
+    };
+    let found = |table: &'static [Op], path: &str| {
+        kinds
+            .iter()
+            .find_map(|kind| ops::recognise(table, *kind, method, path))
+            .map(|(op, _)| op)
+    };
+    if let Some(op) = found(ops::SERVE, path) {
         return Ok(Some(op));
     }
-    let Some((_, rest)) = path
+    // Each operation on the portal is asked about there.
+    if path == ops::PORTAL {
+        return Ok(None);
+    }
+    let (_, rest) = path
         .strip_prefix("/v1/hosts/")
         .and_then(|below| below.split_once('/'))
-    else {
-        return Ok(None);
-    };
-    match ops::recognise(ops::HOST, kind, method, &format!("/v1/{rest}")) {
-        Some((op, _)) => Ok(Some(op)),
-        None => Err(()),
-    }
+        .ok_or(())?;
+    found(ops::HOST, &format!("/v1/{rest}")).map(Some).ok_or(())
 }
 
 // ── Access tokens ───────────────────────────────────────────────────────────
@@ -457,6 +473,24 @@ mod tests {
         assert!(operation("GET", "/v1/portal", true).unwrap().is_none());
         // What nobody knows below a host is not let through on a guess.
         assert!(operation("POST", "/v1/hosts/a/nothing", false).is_err());
+        // A call that claims to be a stream is still that call, and a HEAD is its GET.
+        assert_eq!(
+            operation("PUT", "/v1/secrets/main", true)
+                .unwrap()
+                .unwrap()
+                .name,
+            "secrets.set"
+        );
+        assert_eq!(
+            operation("HEAD", "/v1/secrets", false)
+                .unwrap()
+                .unwrap()
+                .name,
+            "secrets.list"
+        );
+        // What no operation is known for is not let through, below a host or not.
+        assert!(operation("GET", "/v1/nothing", false).is_err());
+        assert!(operation("GET", "/v1/portal/more", true).is_err());
 
         let auth = Auth {
             token: None,
