@@ -329,7 +329,7 @@ class Deployments(unittest.TestCase):
         self.assertRegex(listed, r'(?m)^[0-9a-f]{32}\s+deployment\s+bench\s+box\s+running\s*$')
         page = self.berth('provisioner', 'show', 'box').stdout
         self.assertIn('Bench setup berth made with it', page)
-        self.assertRegex(page, r'  bench\s+project-bench  r-')
+        self.assertRegex(page, r'  bench\s+project-bench  [0-9a-f]{32}\n')
 
     def test_2_its_page_actions_log_and_change(self):
         shown = self.berth('resource', 'show', 'bench').stdout
