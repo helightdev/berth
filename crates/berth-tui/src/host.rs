@@ -16,6 +16,8 @@ pub const NEEDS_API: u32 = 1;
 const POLL: Duration = Duration::from_secs(10);
 /// Lines of a process session's transcript kept for scrolling back.
 const HISTORY: usize = 5000;
+/// How long a session that was hung up has to end before it is killed.
+const HANG_UP: Duration = Duration::from_secs(5);
 
 /// The way to one host. Requests are answered later, as events.
 pub trait Transport {
@@ -44,6 +46,8 @@ pub enum Request {
     Resize(u16, u16),
     Close,
     Delete(String),
+    /// Send a signal, such as `HUP`, to what a session runs.
+    Signal(String, String),
     Choices {
         task: String,
         argument: String,
@@ -91,6 +95,21 @@ pub struct View {
     pub shell: bool,
     /// The last bytes of output, for a question that arrives in two pieces.
     tail: Vec<u8>,
+    /// Whether it was asked to end from the panel.
+    pub exit: Exit,
+}
+
+/// Ending a session from its panel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Exit {
+    /// Nobody asked it to end.
+    No,
+    /// The exit key was pressed, and the panel asks first.
+    Asked,
+    /// It was hung up then; it is killed when it runs on too long after.
+    HungUp(Instant),
+    /// It ran on after the hangup and was killed.
+    Killed,
 }
 
 impl View {
@@ -105,6 +124,7 @@ impl View {
             ours,
             shell,
             tail: vec![],
+            exit: Exit::No,
         }
     }
 
@@ -120,6 +140,7 @@ impl View {
             ours: true,
             shell: false,
             tail: vec![],
+            exit: Exit::No,
         }
     }
 
@@ -134,6 +155,21 @@ impl View {
     /// Whether it succeeded, once it has ended.
     pub fn outcome(&self) -> Option<bool> {
         self.ended.map(|code| code == Some(0))
+    }
+
+    /// Whether the panel offers to end it: a running terminal, which has
+    /// no other way out than what runs in it.
+    pub fn can_exit(&self) -> bool {
+        self.terminal && self.running() && !self.id.is_empty()
+    }
+
+    /// Whether it has ended in a way that needs no key to close its panel:
+    /// a shell that was left, or a session ended from the panel.
+    pub fn left(&self) -> bool {
+        match self.exit {
+            Exit::HungUp(_) | Exit::Killed => !self.running(),
+            Exit::No | Exit::Asked => self.shell && self.outcome() == Some(true),
+        }
     }
 
     /// Take in output. Returns what a terminal answers by itself: programs
@@ -438,6 +474,31 @@ impl HostView {
         }
     }
 
+    /// Close the panel once its session was left. Returns whether it closed.
+    pub fn close_left(&mut self) -> bool {
+        let Some(view) = &self.view else {
+            return false;
+        };
+        if !view.left() {
+            return false;
+        }
+        // A session ended from its panel is forgotten as Enter would.
+        let forget = view.exit == Exit::No || view.ours;
+        self.close(forget);
+        true
+    }
+
+    /// End the session in the panel: hang it up, as closing a terminal
+    /// window would, and kill it if it runs on.
+    pub fn end(&mut self) {
+        let Some(view) = self.view.as_mut().filter(|view| view.can_exit()) else {
+            return;
+        };
+        view.exit = Exit::HungUp(Instant::now());
+        let id = view.id.clone();
+        self.send(Request::Signal(id, "HUP".into()));
+    }
+
     /// Type into the session in the panel.
     pub fn input(&self, bytes: Vec<u8>) {
         if !bytes.is_empty() && self.view.as_ref().is_some_and(View::running) {
@@ -540,6 +601,15 @@ impl HostView {
                     note = Some(message);
                 }
             }
+        }
+        if let Some(view) = self.view.as_mut()
+            && let Exit::HungUp(since) = view.exit
+            && view.running()
+            && since.elapsed() >= HANG_UP
+        {
+            view.exit = Exit::Killed;
+            let id = view.id.clone();
+            self.send(Request::Signal(id, "KILL".into()));
         }
         if self.view.is_none()
             && matches!(self.state, State::Ready(_))
@@ -743,6 +813,152 @@ pub fn session_help(host: &HostView, index: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::{Click, Code, Event as Input, Mouse};
+    use crate::screen::{Platform, draw_view, hint_at, hint_click, view_event};
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+
+    /// A host that keeps what it was asked and answers with what a test gives it.
+    #[derive(Clone, Default)]
+    struct Fake {
+        sent: Rc<RefCell<Vec<String>>>,
+        events: Rc<RefCell<VecDeque<Event>>>,
+    }
+
+    impl Transport for Fake {
+        fn send(&self, request: Request) {
+            let said = match request {
+                Request::Signal(id, signal) => format!("signal {id} {signal}"),
+                Request::Delete(id) => format!("delete {id}"),
+                Request::Input(bytes) => format!("input {}", String::from_utf8_lossy(&bytes)),
+                Request::Close => "close".into(),
+                _ => return,
+            };
+            self.sent.borrow_mut().push(said);
+        }
+        fn next(&self) -> Option<Event> {
+            self.events.borrow_mut().pop_front()
+        }
+    }
+
+    struct Nowhere;
+
+    impl Platform for Nowhere {
+        fn copy(&mut self, _: &str) -> bool {
+            false
+        }
+        fn paste(&mut self) -> Option<String> {
+            None
+        }
+        fn open(&mut self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// The panel as drawn, a row a line.
+    fn drawn(host: &HostView) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_view(frame, host.view.as_ref().unwrap(), "", "Alt+Q");
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..30)
+            .map(|y| {
+                (0..160)
+                    .map(|x| buffer[(x, y)].symbol().to_owned())
+                    .collect::<String>()
+                    + "\n"
+            })
+            .collect()
+    }
+
+    fn press(host: &mut HostView, event: Input) {
+        view_event(host, &vec![], &vec![], &hint_click(event), &mut Nowhere);
+    }
+
+    fn key(code: Code) -> Input {
+        Input::Key(Key::plain(code))
+    }
+
+    #[test]
+    fn a_terminal_is_ended_from_its_panel_after_a_yes() {
+        let fake = Fake::default();
+        let mut host = HostView {
+            size: (20, 100),
+            ..HostView::default()
+        };
+        host.connect(Box::new(fake.clone()));
+        host.starting = Some(true);
+        let session: api::Session = serde_json::from_value(json!({
+            "id": "s1", "kind": "terminal", "title": "agent on studio",
+            "command": ["bash", "-l"], "user": "agent",
+            "started_by": {"level": "host", "uid": 0}, "started": "2026-11-12T10:00:00Z",
+        }))
+        .unwrap();
+        fake.events
+            .borrow_mut()
+            .push_back(Event::Opened(Box::new(session)));
+        host.pump();
+        assert!(host.view.as_ref().is_some_and(View::can_exit));
+
+        // The footer offers it, and a click on the hint is the key.
+        let text = drawn(&host);
+        assert!(
+            text.contains("Alt+Q leave it running  Alt+X exit"),
+            "{text}"
+        );
+        let exit = crate::screen::hint_key("Alt+X").unwrap();
+        let (column, row) = (0..30)
+            .flat_map(|row| (0..160).map(move |column| (column, row)))
+            .find(|(column, row)| hint_at(*column, *row) == Some(exit))
+            .unwrap();
+        press(
+            &mut host,
+            Input::Mouse(Mouse {
+                click: Click::Left,
+                column,
+                row,
+            }),
+        );
+        assert_eq!(host.view.as_ref().unwrap().exit, Exit::Asked);
+        assert!(drawn(&host).contains("End the session \"agent on studio\"?"));
+
+        // While it asks, typing goes nowhere, and no takes it back.
+        press(&mut host, key(Code::Char('a')));
+        press(&mut host, key(Code::Char('n')));
+        assert_eq!(host.view.as_ref().unwrap().exit, Exit::No);
+        assert!(fake.sent.borrow().is_empty());
+
+        // Yes hangs it up.
+        press(
+            &mut host,
+            Input::Key(Key {
+                alt: true,
+                ..Key::plain(Code::Char('x'))
+            }),
+        );
+        press(&mut host, key(Code::Char('y')));
+        assert_eq!(*fake.sent.borrow(), ["signal s1 HUP"]);
+        assert!(drawn(&host).contains("Ending the session…"));
+
+        // One that runs on after the hangup is killed.
+        host.view.as_mut().unwrap().exit =
+            Exit::HungUp(Instant::now().checked_sub(HANG_UP).unwrap());
+        host.pump();
+        assert_eq!(host.view.as_ref().unwrap().exit, Exit::Killed);
+        assert_eq!(fake.sent.borrow().last().unwrap(), "signal s1 KILL");
+
+        // Once it has ended, its panel closes and, started here, it is forgotten.
+        fake.events
+            .borrow_mut()
+            .push_back(Event::Exited("s1".into(), Some(137)));
+        host.pump();
+        assert!(host.close_left());
+        assert!(host.view.is_none());
+        assert_eq!(fake.sent.borrow()[2..], ["close", "delete s1"]);
+    }
 
     #[test]
     fn berths_own_actions_follow_the_tasks_and_say_when_they_cannot_run() {

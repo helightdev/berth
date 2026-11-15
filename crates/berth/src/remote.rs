@@ -193,6 +193,13 @@ async fn worker(
                 }
                 refresh(link, events, false, None).await;
             })),
+            Request::Signal(id, signal) => drop(tokio::spawn(async move {
+                let path = format!("/v1/sessions/{id}/signal");
+                let body = json!({ "signal": signal });
+                if let Err(error) = link.post::<Value>(&path, &body).await {
+                    let _ = events.send(Event::Error(error.to_string()));
+                }
+            })),
             Request::Choices { task, argument } => drop(tokio::spawn(async move {
                 let path = format!(
                     "/v1/tasks/{}/choices/{}",

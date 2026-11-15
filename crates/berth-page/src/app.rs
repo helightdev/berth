@@ -367,15 +367,9 @@ impl App {
         if let Some(note) = self.host.pump() {
             self.status = note;
         }
-        // A shell that was left needs no key to close its panel.
-        if self
-            .host
-            .view
-            .as_ref()
-            .is_some_and(|view| view.shell && view.outcome() == Some(true))
-        {
-            self.host.close(true);
-        }
+        // A shell that was left, or a session ended from its panel, needs
+        // no key to close its panel.
+        self.host.close_left();
         let (width, height) = self.size;
         self.host.resize(
             height.saturating_sub(4).max(4),

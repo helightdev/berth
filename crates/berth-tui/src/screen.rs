@@ -3,7 +3,7 @@
 
 use crate::{
     event::{Click, Code, Event, Key, edit, paste},
-    host::{Arguments, HostView, View, argument_label},
+    host::{Arguments, Exit, HostView, View, argument_label},
     theme,
 };
 use ratatui::{
@@ -316,15 +316,27 @@ pub fn words(line: &str) -> Vec<(u16, String)> {
     found
 }
 
+/// The key that ends a running terminal from its panel. A shell has no use
+/// for it, as it has none for Alt+Q.
+pub const EXIT: &str = "Alt+X";
+
+/// Whether `key` is [`EXIT`].
+fn is_exit(key: &Key) -> bool {
+    key.alt && !key.ctrl && matches!(key.code, Code::Char('x' | 'X'))
+}
+
 /// Draw a session of the host: the same panel, with what leaving it means
 /// there. `leave` is the key that leaves a running one: `Ctrl+Q`, or `Alt+Q`
 /// where Ctrl+Q is not the page's to take.
 pub fn draw_view(frame: &mut Frame, view: &View, note: &str, leave: &str) -> (Spots, Spots) {
-    let running = match view.terminal {
-        true => format!(
-            " Ctrl+V paste · {leave} leave it running · Click opens a link · Right-click copies · Wheel scrolls "
+    let running = match (view.terminal, view.exit) {
+        (true, Exit::HungUp(_) | Exit::Killed) => {
+            format!(" Ending the session… · {leave} leave it running ")
+        }
+        (true, _) => format!(
+            " Ctrl+V paste · {leave} leave it running · {EXIT} exit · Click opens a link · Right-click copies · Wheel scrolls "
         ),
-        false => format!(
+        (false, _) => format!(
             " {leave} leave it running · Click opens a link · Right-click copies · Wheel scrolls "
         ),
     };
@@ -335,14 +347,25 @@ pub fn draw_view(frame: &mut Frame, view: &View, note: &str, leave: &str) -> (Sp
         (Some(true), false) => " ✓ Done · Enter close · d forget it ",
         (Some(false), false) => " ✗ It did not finish · Enter close · d forget it ",
     };
-    draw_panel(
+    let spots = draw_panel(
         frame,
         &view.title,
         view.screen(),
         view.outcome(),
         keys,
         note,
-    )
+    );
+    if view.exit == Exit::Asked && view.can_exit() {
+        draw_question(
+            frame,
+            &format!(
+                "End the session \"{}\"? This stops whatever runs in it.",
+                view.title
+            ),
+        );
+        return (vec![], vec![]);
+    }
+    spots
 }
 
 /// The terminal panel: a screen, in a box coloured by how the command fared.
@@ -647,6 +670,13 @@ pub fn view_event(
     event: &Event,
     platform: &mut dyn Platform,
 ) -> Option<String> {
+    if host
+        .view
+        .as_ref()
+        .is_some_and(|view| view.exit == Exit::Asked && view.can_exit())
+    {
+        return exit_question_event(host, event);
+    }
     if let Some(said) = spot_event(links, words, event, platform) {
         return (!said.is_empty()).then_some(said);
     }
@@ -679,6 +709,10 @@ pub fn view_event(
                 });
             } else if !view.terminal {
                 // A transcript takes no typing.
+            } else if is_exit(key) {
+                if view.can_exit() && view.exit == Exit::No {
+                    view.exit = Exit::Asked;
+                }
             } else if key.is_ctrl('v') {
                 // Terminals that keep Ctrl+V to themselves paste by their own means.
                 return Some(match platform.paste() {
@@ -692,6 +726,23 @@ pub fn view_event(
             } else {
                 let bytes = view.key(key);
                 host.input(bytes);
+            }
+        }
+        _ => {}
+    }
+    None
+}
+
+/// Keys of the question before a session is ended from its panel.
+fn exit_question_event(host: &mut HostView, event: &Event) -> Option<String> {
+    let Event::Key(key) = event else {
+        return None;
+    };
+    match key.code {
+        Code::Char('y' | 'Y') => host.end(),
+        Code::Char('n' | 'N') | Code::Esc => {
+            if let Some(view) = &mut host.view {
+                view.exit = Exit::No;
             }
         }
         _ => {}

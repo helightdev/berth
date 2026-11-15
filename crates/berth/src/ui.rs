@@ -3190,10 +3190,10 @@ pub fn run(
             session_event(app, &event);
             continue;
         }
-        if let Some(view) = &app.host.view {
-            // A shell that was left needs no key to close its panel.
-            if view.shell && view.outcome() == Some(true) {
-                app.host.close(true);
+        if app.host.view.is_some() {
+            // A shell that was left, or a session ended from its panel,
+            // needs no key to close its panel.
+            if app.host.close_left() {
                 continue;
             }
             if !crate::keys::poll(std::time::Duration::from_millis(40))? {
