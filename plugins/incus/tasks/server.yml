@@ -1,0 +1,180 @@
+---
+# Incus on a node, with the bridge its guests are on, a storage pool, and its
+# API over HTTPS for clients it trusts by certificate. An Incus that is set up
+# already is taken as it is: its pools, networks, profiles and trust stay, and
+# only the API address and berth's certificate are added when missing. A
+# storage pool is never made on a disk, which would erase it.
+- name: Take the Incus settings of the profile
+  ansible.builtin.set_fact:
+    devbox_incus:
+      virtual_machines: "{{ devbox_incus_virtual_machines | default(true) | bool }}"
+      pool: "{{ devbox_incus_pool | default('default') }}"
+      pool_driver: "{{ devbox_incus_pool_driver | default('dir') }}"
+      pool_source: "{{ devbox_incus_pool_source | default('') }}"
+      bridge: "{{ devbox_incus_bridge | default('incusbr0') }}"
+      bridge_address: "{{ devbox_incus_bridge_address | default('10.77.0.1/24') }}"
+      api_address: "{{ devbox_incus_api_address | default('') }}"
+      api_interfaces: "{{ devbox_incus_api_interfaces | default(['tailscale0']) }}"
+      api_from: "{{ devbox_incus_api_from | default(devbox_apply_from | default('')) }}"
+      client: "{{ (devbox_client_certificates | default({}))[devbox_plugin_feature] | default({}) }}"
+
+- name: Check the Incus settings
+  ansible.builtin.assert:
+    that:
+      - devbox_incus.pool is match('^[a-zA-Z0-9][a-zA-Z0-9_.-]*$')
+      - devbox_incus.pool_driver in ['dir', 'btrfs', 'zfs', 'lvm']
+      - devbox_incus.bridge is match('^[a-z][a-z0-9-]{0,14}$')
+      # A source on a device would be formatted.
+      - not devbox_incus.pool_source.startswith('/dev/')
+      - devbox_incus.pool_driver in ['dir', 'btrfs'] or devbox_incus.pool_source | length > 0
+    fail_msg: >-
+      devbox_incus_pool_driver is dir, btrfs, zfs or lvm, and devbox_incus_pool_source names
+      an existing directory, btrfs file system, ZFS pool or LVM volume group, never a disk:
+      making a pool on a disk erases it, so the feature does not. A zfs or lvm pool needs its
+      source. Create a pool on a disk yourself with incus storage create and name it in
+      devbox_incus_pool.
+
+- name: Install Incus
+  ansible.builtin.apt:
+    name: >-
+      {{ ['incus']
+         + (['qemu-system-x86', 'ovmf'] if devbox_incus.virtual_machines | bool else [])
+         + (['btrfs-progs'] if devbox_incus.pool_driver == 'btrfs' else [])
+         + (['zfsutils-linux'] if devbox_incus.pool_driver == 'zfs' else [])
+         + (['lvm2'] if devbox_incus.pool_driver == 'lvm' else []) }}
+    state: present
+    lock_timeout: 300
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+- name: Start Incus now and at boot
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [incus.socket, incus.service]
+  when: devbox_start_services
+
+- name: See what Incus has
+  ansible.builtin.command: "incus {{ item }} list --format csv --columns n"
+  loop: [storage, network]
+  register: devbox_incus_found
+  changed_when: false
+
+- name: Note what Incus has
+  ansible.builtin.set_fact:
+    devbox_incus_pools: "{{ devbox_incus_found.results[0].stdout_lines | map('trim') | select | list }}"
+    devbox_incus_networks: "{{ devbox_incus_found.results[1].stdout_lines | map('trim') | select | list }}"
+
+# Only an Incus with no storage pool is new: one that has a pool keeps its
+# set-up, so its guests are never touched.
+- name: Set a new Incus up with the guests' bridge, a storage pool and the default profile
+  ansible.builtin.command: incus admin init --preseed
+  args:
+    stdin: "{{ devbox_incus_preseed | to_nice_yaml }}"
+  when: devbox_incus_pools | length == 0
+  changed_when: true
+  vars:
+    devbox_incus_preseed:
+      networks: >-
+        {{ [] if devbox_incus.bridge in devbox_incus_networks else
+           [{'name': devbox_incus.bridge, 'type': 'bridge',
+             'config': {'ipv4.address': devbox_incus.bridge_address, 'ipv4.nat': 'true', 'ipv6.address': 'none'}}] }}
+      storage_pools:
+        - name: "{{ devbox_incus.pool }}"
+          driver: "{{ devbox_incus.pool_driver }}"
+          config: "{{ {'source': devbox_incus.pool_source} if devbox_incus.pool_source | length > 0 else {} }}"
+      profiles:
+        - name: default
+          # A container's systemd does not come up without it, and Docker in a guest needs it too.
+          config:
+            security.nesting: "true"
+          devices:
+            eth0: {name: eth0, network: "{{ devbox_incus.bridge }}", type: nic}
+            root: {path: /, pool: "{{ devbox_incus.pool }}", type: disk}
+
+- name: Say what an Incus set up before keeps
+  ansible.builtin.debug:
+    msg: >-
+      Incus was set up already, with the storage pools {{ devbox_incus_pools | join(', ') }}
+      and the networks {{ devbox_incus_networks | join(', ') or 'none' }}. They stay as they are.
+  when: devbox_incus_pools | length > 0
+
+- name: Read where the Incus API listens
+  ansible.builtin.command: incus config get core.https_address
+  register: devbox_incus_listens
+  changed_when: false
+
+# An address chosen before stays unless the profile names another.
+- name: Set where the Incus API listens
+  ansible.builtin.command:
+    argv: [incus, config, set, core.https_address, "{{ devbox_incus_wanted }}"]
+  when: devbox_incus_listens.stdout | trim != devbox_incus_wanted
+  changed_when: true
+  vars:
+    devbox_incus_wanted: >-
+      {{ devbox_incus.api_address if devbox_incus.api_address | length > 0
+         else (devbox_incus_listens.stdout | trim or '[::]:8444') }}
+
+- name: Read where the Incus API listens now
+  ansible.builtin.command: incus config get core.https_address
+  register: devbox_incus_listening
+  changed_when: false
+
+- name: Read the clients Incus trusts
+  ansible.builtin.command: incus config trust list --format json
+  register: devbox_incus_trusted
+  changed_when: false
+
+# Only berth's certificate comes here; its key stays with berth.
+- name: Trust berth's client certificate
+  when:
+    - devbox_incus.client.fingerprint | default('') | length > 0
+    - devbox_incus.client.fingerprint not in (devbox_incus_trusted.stdout | from_json | map(attribute='fingerprint') | list)
+  block:
+    - name: Put berth's certificate where Incus reads it
+      ansible.builtin.copy:
+        dest: /root/berth-incus-client.crt
+        content: "{{ devbox_incus.client.certificate }}"
+        mode: '0600'
+    - name: Add berth's certificate to the trust store
+      ansible.builtin.command:
+        argv: [incus, config, trust, add-certificate, /root/berth-incus-client.crt, --name, "{{ devbox_incus.client.name }}"]
+      changed_when: true
+  always:
+    - name: Remove the copy of berth's certificate
+      ansible.builtin.file:
+        path: /root/berth-incus-client.crt
+        state: absent
+
+- name: Read the server's certificate
+  ansible.builtin.slurp:
+    src: /var/lib/incus/server.crt
+  register: devbox_incus_server_cert
+
+- name: Read the fingerprint of the server's certificate
+  ansible.builtin.command: openssl x509 -noout -fingerprint -sha256 -in /var/lib/incus/server.crt
+  register: devbox_incus_fingerprint
+  changed_when: false
+
+- name: Open the firewall to the guests and to the API, and offer the provisioners
+  ansible.builtin.set_fact:
+    devbox_firewall_rules: >-
+      {{ devbox_firewall_rules
+         + ['allow in on ' ~ devbox_incus.bridge, 'route allow in on ' ~ devbox_incus.bridge, 'route allow out on ' ~ devbox_incus.bridge]
+         + (devbox_incus.api_interfaces | map('regex_replace', '^(.*)$', 'allow in on \\1 to any port ' ~ devbox_incus_port ~ ' proto tcp') | list)
+         + (['allow from ' ~ devbox_incus.api_from ~ ' to any port ' ~ devbox_incus_port ~ ' proto tcp'] if devbox_incus.api_from | length > 0 else [])
+         + (['allow in on docker0 to any port ' ~ devbox_incus_port ~ ' proto tcp'] if 'docker0' in ansible_facts.interfaces else []) }}
+    devbox_node_units: "{{ devbox_node_units + ['incus'] }}"
+    devbox_offer:
+      provisioners: "{{ ['vm', 'container'] if devbox_incus.virtual_machines | bool else ['container'] }}"
+      settings:
+        server: "https://{address}:{{ devbox_incus_port }}"
+      secrets:
+        incus_server_cert: "{{ devbox_incus_server_cert.content | b64decode }}"
+      # The name a berth server in a container on this node gave it.
+      aliases:
+        server: ["https://incus-host:{{ devbox_incus_port }}"]
+      fingerprint: "{{ devbox_incus_fingerprint.stdout.split('=')[-1] | replace(':', '') | lower | trim }}"
+  vars:
+    devbox_incus_port: "{{ (devbox_incus_listening.stdout | trim).rsplit(':', 1)[-1] }}"

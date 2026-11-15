@@ -58,12 +58,13 @@ class RoleTextTests(unittest.TestCase):
         self.assertEqual(cleanup['ansible.builtin.file']['state'], 'absent')
 
     def test_the_check_comes_before_any_change(self):
-        main = self.tasks('main.yml')
+        main = self.tasks('workstation.yml')
         self.assertIn('ansible.builtin.assert', main[0])
         self.assertEqual(main[1]['ansible.builtin.include_tasks'], 'tailnet_check.yml')
         self.assertIn('devbox_install_tailscale', main[1]['when'])
-        e2e = yaml.safe_load((ROOT / 'tests/e2e/site.yml').read_text())[0]['tasks']
-        self.assertEqual(e2e[1]['ansible.builtin.include_role']['tasks_from'], 'tailnet_check.yml')
+        # The play of a workstation: a node's comes first, and ends the host there.
+        e2e = yaml.safe_load((ROOT / 'tests/e2e/site.yml').read_text())[1]['tasks']
+        self.assertEqual(e2e[2]['ansible.builtin.include_role']['tasks_from'], 'tailnet_check.yml')
 
 
 @unittest.skipUnless(yaml and playbook(), 'Run with the Ansible venv Python for the role tasks')

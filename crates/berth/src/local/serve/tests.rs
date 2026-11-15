@@ -3678,7 +3678,7 @@ async fn a_host_added_by_its_address_has_a_type_and_actions_to_match() {
         (&json!(true), &json!("Install the controller"))
     );
     for (name, why) in [
-        ("apply", "not a workstation"),
+        ("apply", "neither a node nor a workstation"),
         ("seed", "not a workstation"),
         ("secrets", "berth host install dock"),
     ] {
@@ -3696,7 +3696,7 @@ async fn a_host_added_by_its_address_has_a_type_and_actions_to_match() {
         said["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("Set its type to workstation")
+            .contains("or a workstation in its set-up")
     );
     let (status, _) = send(client, "POST", "/v1/hosts/dock/actions/seed", Value::Null).await;
     assert_eq!(status, 501);
@@ -3714,7 +3714,7 @@ async fn a_host_added_by_its_address_has_a_type_and_actions_to_match() {
     let (output, code) = job_ended(&served.socket, &id).await;
     assert_eq!(code, 0, "{output}");
     assert!(
-        output.contains("Skipped 1 host that is not a workstation: dock"),
+        output.contains("Skipped 1 host that is neither a node nor a workstation: dock"),
         "{output}"
     );
 

@@ -90,4 +90,46 @@ devbox_controller_tasks:
     input: secrets
     help: "Send this host's secrets and the logins of its registries to the account sessions run as: tokens in ~/.config/devbox/secrets.env or as files, npm and Docker logins. Replaces what was installed before."
     run: /usr/local/bin/devbox-secrets
+# The actions of a node, which has berth's controller and plugin features but
+# no desktop or accounts of its own. The role leaves out upgrade-server where
+# it finds no berth server's container.
+devbox_node_tasks:
+  - name: status
+    label: Status
+    group: System
+    user: root
+    help: The node, how long it has been up, the state of SSH, berthd, the firewall and the tailnet, disk space and failed units, followed by what its features report.
+    run: "{{ devbox_task_dir }}/status.sh node"
+  - name: update
+    label: Update
+    group: System
+    user: root
+    help: apt update and dist-upgrade on the node, then what its features keep up to date. Says whether a reboot is needed afterwards.
+    run: "{{ devbox_task_dir }}/update.sh"
+  - name: reboot
+    label: Reboot
+    group: System
+    user: root
+    confirm: Restart the node? Everything running on it ends, sessions and the machines it hosts included.
+    help: Restart the node.
+    run: "{{ devbox_task_dir }}/reboot.sh"
+  - name: secrets
+    label: Secrets and registry logins
+    group: Sync
+    user: agent
+    input: secrets
+    help: "Send this host's secrets and the logins of its registries to the account sessions run as: tokens in ~/.config/devbox/secrets.env or as files, npm and Docker logins. Replaces what was installed before."
+    run: /usr/local/bin/devbox-secrets
+  - name: upgrade-server
+    label: Upgrade the berth server
+    group: Server
+    user: root
+    confirm: Run the berth server in its container from the image of another version? It restarts, and its jobs end.
+    help: Run the berth server in the container on this node from the image of the version given, with the same data and the same options as the running container. It is refused when the container has an option it cannot carry over, and the old container is started again when the new one does not come up.
+    arguments:
+      - name: version
+        label: Version
+        required: true
+        help: The version of berth to run, as its image is tagged, such as 0.6.0.
+    run: "/usr/local/lib/berth/berth-server-upgrade {{ devbox_berth_server_container | quote }}"
 devbox_service_dir: /usr/local/lib/berth/services

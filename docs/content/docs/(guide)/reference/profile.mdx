@@ -115,11 +115,11 @@ A profile of an older berth may still hold `tailscale_auth_key`, `tailscale_auto
 
 <TypeTable
   type={{
-    type: { type: '"ssh" | "managed" | "workstation"', default: '"workstation"', description: 'What berth does with the host: only log in over SSH, run berthd and box alone, or apply the whole profile. Only a workstation is applied.' },
+    type: { type: '"ssh" | "managed" | "node" | "workstation"', default: '"workstation"', description: 'What berth does with the host: only log in over SSH, run berthd and box alone, apply a server without a desktop, or apply the whole profile. Only a node or a workstation is applied.' },
   }}
 />
 
-A host that is not a workstation needs only its type and `access`. The other fields are for a workstation. See [Host types](/docs/use/types).
+An `ssh` or `managed` host needs only its type and `access`. A node also takes `target`, the Tailscale fields and `ansible_vars`, and refuses the fields of the agent and the operator ([Nodes](/docs/use/nodes)). The other fields are for a workstation. See [Host types](/docs/use/types).
 
 ```json title="dock's profile"
 {

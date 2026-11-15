@@ -27,7 +27,7 @@ Usage:
                              berth itself until the screens close
   berth list                 saved hosts
   berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH]
-          [--type ssh|managed|workstation] [--no-contact]
+          [--type ssh|managed|node|workstation] [--no-contact]
                              save a machine that exists already, by its address, and
                              install berth's key there; its type is ssh unless told
   berth host install HOST    install berth's controller alone on a host that is not

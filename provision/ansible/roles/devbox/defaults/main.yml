@@ -113,7 +113,8 @@ devbox_install_tailscale: true
 devbox_install_cockpit: true
 devbox_cockpit_packages: [cockpit, cockpit-storaged, cockpit-packagekit, cockpit-files]
 devbox_start_services: true
-# How much of the role runs: workstation for all of it, controller for
+# How much of the role runs: workstation for all of it, node for a server
+# without a desktop (berth sets it for a host of that type), controller for
 # berthd and box alone (the playbook controller.yml sets it).
 devbox_level: workstation
 # Where berthd's files are, which installing the controller alone reads first.
@@ -127,6 +128,35 @@ devbox_berthd_roots: ["{{ devbox_home }}", /srv/agent]
 devbox_berthd_units: "{{ ['ssh', 'tailscaled', 'berthd', 'cockpit.socket', 'docker', 'lightdm'] + devbox_service_units }}"
 # The account sessions run as on a host with the controller alone: the SSH user.
 devbox_controller_user: "{{ ansible_facts.env.SUDO_USER | default(ansible_facts.user_id) }}"
+# A node's account berth logs in as, whom sessions run as: the SSH user too.
+# berth sets it from the profile's access.user.
+devbox_node_user: "{{ devbox_controller_user }}"
+# Who reaches SSH on a node from outside the tailnet: any, or one address or
+# network such as 198.51.100.7. The address an apply comes from always does.
+devbox_ssh_from: any
+# What a node needs of its own; its features install the rest.
+devbox_node_packages:
+  - sudo
+  - ca-certificates
+  - curl
+  - gnupg
+  - locales
+  - tzdata
+  - git
+  - jq
+  - rsync
+  - unzip
+  - xz-utils
+  - zstd
+  - iproute2
+  - openssh-server
+  - ufw
+  - unattended-upgrades
+  - python3
+  - python3-psutil
+# The name of a berth server's container on a node, which the action
+# upgrade-server runs from a newer image.
+devbox_berth_server_container: berth
 # berth sets these when the host joins the tailnet (devbox_install_tailscale);
 # a profile cannot. The one-use key berth made for a seed:
 devbox_tailscale_auth_key: ""

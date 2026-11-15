@@ -60,6 +60,15 @@ pub fn operator(config: &Value) -> &str {
 /// keep what they say. Says whether it changed the profile.
 pub fn settle_after_apply(config: &mut Value) -> bool {
     let mut access = Access::of(config);
+    // A node's role gave the SSH user berth's key and left sudo as it was.
+    if host_type(config) == crate::HostType::Node {
+        if access.link.is_some() || access.user.is_empty() || access.auth != Auth::Password {
+            return false;
+        }
+        access.auth = Auth::Berth;
+        access.write(config);
+        return true;
+    }
     if config["target"] == "container"
         || host_type(config) != crate::HostType::Workstation
         || access.link.is_some()
@@ -316,7 +325,54 @@ pub fn set_host_type(config: &mut Value, host_type: crate::HostType) {
                 profile.remove("type");
             }
         }
+        // A node has none of a workstation's accounts, so what described them goes.
+        crate::HostType::Node => {
+            if let Some(profile) = config.as_object_mut() {
+                for field in ACCOUNT_FIELDS {
+                    profile.remove(*field);
+                }
+                profile.insert("type".into(), json!("node"));
+            }
+            if config["target"] == "laptop" {
+                config["target"] = json!("cloud");
+            }
+        }
         other => config["type"] = json!(other.name()),
+    }
+}
+
+/// The fields of a profile that describe a workstation's agent and operator
+/// accounts. A node has neither: sessions run as the SSH user.
+pub const ACCOUNT_FIELDS: &[&str] = &[
+    "agent_username",
+    "agent_password_hash",
+    "agent_passwordless_sudo",
+    "agent_privileges",
+    "agent_ssh_public_keys",
+    "agent_ssh_public_key",
+    "operator_username",
+    "operator_password_hash",
+    "operator_ssh_public_keys",
+    "operator_ssh_public_key",
+];
+
+/// Whether a field of a profile says something: not absent, empty or false.
+fn said(value: &Value) -> bool {
+    match value {
+        Value::Null | Value::Bool(false) => false,
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(fields) => !fields.is_empty(),
+        _ => true,
+    }
+}
+
+/// What a target is installed on, as a node's role takes it: a server
+/// unless the profile says a container.
+pub fn node_target(config: &Value) -> &str {
+    match config["target"].as_str() {
+        Some("container") => "container",
+        _ => "cloud",
     }
 }
 
@@ -397,6 +453,25 @@ pub fn problems(config: &Value) -> Vec<String> {
             "A host of the type {host_type} needs access.address, where berth reaches it"
         )),
         _ => {}
+    }
+    if host_type == crate::HostType::Node {
+        let described: Vec<&str> = ACCOUNT_FIELDS
+            .iter()
+            .copied()
+            .filter(|field| said(&config[*field]))
+            .collect();
+        if !described.is_empty() {
+            problems.push(format!(
+                "A node has no agent or operator accounts, so {} {} for a workstation: sessions on a node run as the SSH user. Remove {}, or make the host a workstation",
+                described.join(", "),
+                if described.len() == 1 { "is" } else { "are" },
+                if described.len() == 1 { "it" } else { "them" }
+            ));
+        }
+        if config["target"] == "laptop" {
+            problems
+                .push("A node is a server: its target is cloud or container, not laptop".into());
+        }
     }
     problems
 }
@@ -788,7 +863,7 @@ mod tests {
         assert_eq!(host_type(&json!({"type": "server"})), HostType::Workstation);
         assert_eq!(
             problems(&json!({"type": "server"})),
-            ["type is ssh, managed or workstation, not \"server\""]
+            ["type is ssh, managed, node or workstation, not \"server\""]
         );
         let access = Access {
             address: "192.0.2.10".into(),
@@ -810,6 +885,55 @@ mod tests {
         let mut changed = ssh.clone();
         set_host_type(&mut changed, HostType::Workstation);
         assert!(changed.get("type").is_none());
+    }
+
+    #[test]
+    fn a_node_has_no_accounts_of_a_workstation() {
+        use crate::HostType;
+        let node = json!({"type": "node", "target": "cloud",
+            "access": {"address": "192.0.2.20", "user": "root"},
+            "ansible_vars": {"devbox_plugin_features": ["incus/server"]}});
+        assert_eq!(host_type(&node), HostType::Node);
+        assert!(problems(&node).is_empty(), "{:?}", problems(&node));
+        // Empty fields, as a profile from the example has them, say nothing.
+        let mut quiet = node.clone();
+        quiet["agent_password_hash"] = json!("");
+        quiet["operator_ssh_public_keys"] = json!([]);
+        assert!(problems(&quiet).is_empty());
+        let mut desktop = node.clone();
+        desktop["agent_username"] = json!("agent");
+        desktop["operator_ssh_public_keys"] = json!(["ssh-ed25519 KEY"]);
+        desktop["target"] = json!("laptop");
+        let found = problems(&desktop);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found[0].starts_with(
+            "A node has no agent or operator accounts, so agent_username, operator_ssh_public_keys are for a workstation"
+        ));
+        assert!(found[1].contains("not laptop"));
+        // Making a workstation a node takes its accounts out of the profile.
+        let mut workstation = desktop.clone();
+        set_host_type(&mut workstation, HostType::Workstation);
+        set_host_type(&mut workstation, HostType::Node);
+        assert!(
+            problems(&workstation).is_empty(),
+            "{:?}",
+            problems(&workstation)
+        );
+        assert_eq!(workstation["ansible_vars"], node["ansible_vars"]);
+        assert_eq!(node_target(&workstation), "cloud");
+        assert_eq!(node_target(&json!({"target": "container"})), "container");
+    }
+
+    #[test]
+    fn a_node_applied_with_a_password_is_logged_in_to_with_berths_key_after() {
+        let mut node = json!({"type": "node",
+            "access": {"address": "192.0.2.20", "user": "root", "auth": "password"}});
+        assert!(settle_after_apply(&mut node));
+        assert_eq!(Access::of(&node).auth, Auth::Berth);
+        assert!(!settle_after_apply(&mut node));
+        let mut keyed = json!({"type": "node",
+            "access": {"address": "192.0.2.20", "user": "root", "auth": "ssh", "sudo": "password"}});
+        assert!(!settle_after_apply(&mut keyed));
     }
 
     #[test]

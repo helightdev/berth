@@ -118,9 +118,11 @@ class Harness(unittest.TestCase):
 
 
 class Provision(Harness):
-    def test_manifest_has_provisioner_and_no_features(self):
+    def test_manifest_has_provisioner_and_the_engine_of_a_node(self):
         package = json.loads((PLUGIN / 'package.json').read_text())
-        self.assertNotIn('features', package['berth'])
+        # Its one feature is for a node; a workstation has Docker from the role.
+        self.assertEqual([(feature['id'], feature['types']) for feature in package['berth']['features']],
+                         [('engine', ['node'])])
         [entry] = package['berth']['provisioners']
         self.assertEqual((entry['id'], entry['protocol'], entry['command']), ('container', 2, 'bin/provision'))
         self.assertEqual(entry['verbs'], ['list'])

@@ -312,7 +312,14 @@ pub(crate) fn take_in_provisioners(store: &Store) -> Result<Vec<String>> {
     for (kind, value) in store.entries(kind::PROVISIONER, OWN)? {
         removals.push((kind::PROVISIONER, OWN.into(), kind.clone()));
         let settings = serde_json::from_slice(&value).unwrap_or_default();
-        types.insert(kind.clone(), Entry { kind, settings });
+        types.insert(
+            kind.clone(),
+            Entry {
+                kind,
+                settings,
+                ..Entry::default()
+            },
+        );
     }
     let mut scopes = std::collections::BTreeSet::new();
     if let crate::store::Rows::State(rows) = store.export(crate::store::Table::State)? {

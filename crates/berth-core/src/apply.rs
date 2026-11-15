@@ -72,6 +72,25 @@ pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: &[String]) -> Valu
     // The role names the target by its older name.
     vars["devbox_profile"] = config["target"].clone();
     vars["devbox_plugin_dirs"] = plugin_dirs.clone();
+    // A node takes the role's path without the desktop, and only the features its profile names.
+    if berth_api::profile::host_type(config) == berth_api::HostType::Node {
+        vars["devbox_level"] = json!("node");
+        vars["devbox_profile"] = json!(berth_api::profile::node_target(config));
+        if !vars["devbox_plugin_features"].is_array() {
+            vars["devbox_plugin_features"] = json!([]);
+        }
+        for account in ["devbox_user", "devbox_operator_user"] {
+            if let Some(vars) = vars.as_object_mut() {
+                vars.remove(account);
+            }
+        }
+        if let Some(user) = config["access"]["user"]
+            .as_str()
+            .filter(|user| !user.is_empty())
+        {
+            vars["devbox_node_user"] = json!(user);
+        }
+    }
     vars
 }
 
@@ -106,12 +125,14 @@ pub fn playbook(source: &std::path::Path) -> Command {
 
 /// The Ansible run that applies `host`'s profile to it over SSH. With a
 /// password it becomes root with it, taken from a private file; without one a
-/// host that asks for a password is asked for on the terminal. Only a
-/// workstation is applied: every way to apply comes through here.
+/// host that asks for a password is asked for on the terminal. Only a node
+/// or a workstation is applied: every way to apply comes through here.
 pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Result<Prepared> {
     crate::host_type::guard(host, crate::host_type::Capability::Apply)?;
     let source = paths.source()?;
     let plugins = plugins::load(&[source.join("plugins"), paths.config_dir.join("plugins")]);
+    crate::node::check_features(&plugins, &host.name, &host.config)?;
+    crate::node::check_removal(paths, host)?;
     let dirs = plugin_dirs(&plugins);
     // Without its own key in the operator's authorized_keys, berth could be
     // locked out of the host it sets up, so it does not go on without one.
@@ -126,6 +147,10 @@ pub fn prepare(paths: &Paths, host: &Host, become_password: Option<&str>) -> Res
     });
     // The role keeps the profile on the host too, for a berth that lacks it.
     vars["devbox_berth_profile"] = crate::kept_profile::for_host(paths, host);
+    // Only the certificates go to the host; their keys stay in berth's store.
+    let store = crate::registry::Store::own(crate::store::shared(paths)?);
+    vars["devbox_client_certificates"] =
+        crate::node::client_certificates(&plugins, &store, &host.config)?;
     let mut prepared = run(paths, host, layout::PLAYBOOK, vars, become_password)?;
     prepared.command.env("BERTH_PLUGINS", dirs.to_string());
     prepared.command.env("BERTH_SSH_PUBLIC_KEY", own.join("\n"));
@@ -221,8 +246,26 @@ fn run(
 /// kept for the first apply is not needed again and is removed. A host of
 /// a berth server is settled by the server, which applies it.
 pub fn settle(paths: &Paths, host: &Host) -> Result<()> {
+    settle_with(paths, host, &mut std::io::sink())
+}
+
+/// [`settle`], saying on `out` what it did for a node: the provisioners its
+/// features offer are registered, and those they no longer offer forgotten.
+/// A node that does not say is named on `out`, and its profile is settled
+/// all the same.
+pub fn settle_with(paths: &Paths, host: &Host, out: &mut dyn Write) -> Result<()> {
     if host.served(paths).is_some() {
         return Ok(());
+    }
+    match settle_node(paths, host) {
+        Ok(lines) => {
+            for line in lines {
+                let _ = writeln!(out, "{line}");
+            }
+        }
+        Err(error) => {
+            let _ = writeln!(out, "! {error}");
+        }
     }
     let Some(mut profile) = host.place.load(paths)? else {
         return Ok(());
@@ -234,7 +277,10 @@ pub fn settle(paths: &Paths, host: &Host) -> Result<()> {
     host.place.save(paths, &profile)?;
     let store = crate::store::shared(paths)?;
     let secrets = crate::registry::Store::own(store.clone());
-    secrets.set_secret(&crate::keys::sudo_secret(&host.place), None)?;
+    // A node's sudo is as it was; only a workstation's operator was given one that never asks.
+    if crate::host_type::of(&profile) != crate::host_type::HostType::Node {
+        secrets.set_secret(&crate::keys::sudo_secret(&host.place), None)?;
+    }
     if before.auth == berth_api::profile::Auth::Password {
         secrets.set_secret(&crate::keys::password_secret(&host.place), None)?;
     }
@@ -244,6 +290,21 @@ pub fn settle(paths: &Paths, host: &Host) -> Result<()> {
         login.noted(None);
     }
     Ok(())
+}
+
+/// After a successful apply of a node: register the provisioners its
+/// features offer, and forget those they no longer do. Says what it did, a
+/// line each. A host of a berth server is the server's to settle.
+pub fn settle_node(paths: &Paths, host: &Host) -> Result<Vec<String>> {
+    if host.served(paths).is_some()
+        || crate::host_type::of(&host.config) != crate::host_type::HostType::Node
+    {
+        return Ok(vec![]);
+    }
+    let offers = crate::node::reported(paths, host)
+        .map_err(|error| format!("{} did not say what its features offer: {error}", host.name))?;
+    let store = crate::registry::Store::own(crate::store::shared(paths)?);
+    crate::node::register(paths, &store, host, &offers)
 }
 
 /// How long a controller just installed has to answer.
@@ -391,6 +452,30 @@ mod tests {
         assert!(vars.get("devbox_tailscale_key_command").is_none());
         assert!(vars.get("devbox_tailscale_auth_key").is_none());
         assert!(vars.get("devbox_tailscale_login_server").is_none());
+    }
+
+    #[test]
+    fn a_node_takes_the_path_without_the_desktop() {
+        let node = json!({"type": "node", "access": {"address": "192.0.2.20", "user": "root"},
+            "agent_username": "bot", "ansible_vars": {"devbox_user": "x"}});
+        let vars = ansible_vars(&node, &json!({}), &["ssh-ed25519 OWN".to_owned()]);
+        assert_eq!(vars["devbox_level"], "node");
+        assert_eq!(vars["devbox_profile"], "cloud");
+        assert_eq!(vars["devbox_node_user"], "root");
+        // A node has only the features its profile names, and no accounts of a workstation.
+        assert_eq!(vars["devbox_plugin_features"], json!([]));
+        assert!(vars.get("devbox_user").is_none() && vars.get("devbox_operator_user").is_none());
+        assert_eq!(vars["devbox_berth_ssh_public_key"], "ssh-ed25519 OWN");
+        let contained = json!({"type": "node", "target": "container",
+            "ansible_vars": {"devbox_plugin_features": ["docker/engine"]}});
+        let vars = ansible_vars(&contained, &json!({}), &[]);
+        assert_eq!(vars["devbox_profile"], "container");
+        assert_eq!(vars["devbox_plugin_features"], json!(["docker/engine"]));
+        assert!(
+            ansible_vars(&json!({"builder": {}}), &json!({}), &[])
+                .get("devbox_level")
+                .is_none()
+        );
     }
 
     #[test]

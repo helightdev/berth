@@ -22,7 +22,6 @@ shell-syntax() {
 ansible-syntax() {
   (cd provision && ansible-playbook -i localhost, ansible/site.yml --syntax-check) &&
     (cd provision && ansible-playbook -i localhost, ansible/controller.yml --syntax-check) &&
-    (cd recipes/incus-host && ansible-playbook -i localhost, site.yml --syntax-check) &&
     (cd recipes/berth-server && ansible-playbook -i localhost, site.yml --syntax-check)
 }
 fmt() { cargo fmt --check "${crates[@]}"; }

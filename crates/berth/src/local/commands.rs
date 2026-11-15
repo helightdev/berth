@@ -829,7 +829,7 @@ fn offer_found_type(paths: &Paths, name: &str, intended: host_type::HostType) ->
 /// first contact, unless told not to: berth's key is tried, and a host that
 /// refuses it is logged in to once with a password or key to install it.
 pub fn add_host(paths: &Paths, name: &str, address: &str, args: &[&str]) -> Result<()> {
-    const USAGE: &str = "Usage: berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth berth|key:NAME|password|ssh] [--type ssh|managed|workstation] [--no-contact]";
+    const USAGE: &str = "Usage: berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth berth|key:NAME|password|ssh] [--type ssh|managed|node|workstation] [--no-contact]";
     let mut access = api::profile::Access {
         address: address.to_owned(),
         ..api::profile::Access::default()
@@ -1844,7 +1844,7 @@ mod tests {
         // Applying is refused to a host that is not a workstation, before anything runs.
         let dock = Host::load(&paths, "dock").unwrap();
         let refused = berth_core::apply::prepare(&paths, &dock, None);
-        assert!(said(refused.map(|_| ())).contains("not a workstation"));
+        assert!(said(refused.map(|_| ())).contains("neither a node nor a workstation"));
         let refused = install_controller_here(&paths, &studio);
         assert!(said(refused.map(|_| ())).contains("berth apply studio"));
     }

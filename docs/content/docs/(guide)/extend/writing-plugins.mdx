@@ -94,6 +94,9 @@ The plugin's id is the package name without its scope and without a leading `ber
     actions: { type: 'Action[]', description: "Actions for the host's overview." },
     services: { type: 'Service[]', description: 'Programs that keep running on the host and answer calls. See Writing a service.' },
     channels: { type: 'Channel[]', description: "Topics of the host's channel the feature uses, with how long messages are kept." },
+    types: { type: 'string[]', default: '["workstation"]', description: 'The host types it is for: workstation, node or both. berth refuses to apply a host whose profile lists a feature that is not for its type.' },
+    offers: { type: 'string[]', description: "Ids of the plugin's provisioners the feature can offer once it is applied on a node. See Offering provisioners." },
+    trusts: { type: '{certificate, key}', description: "The names of two berth secrets, a client certificate and its key, that the host is to trust. berth makes them when it has neither, and the tasks get the certificate alone." },
   }}
 />
 
@@ -153,6 +156,37 @@ version: "{{ devbox_unity_cli_version | default('1.0.0-beta.17') }}"
 ```
 
 Tasks must be safe to run again, because applying a configuration runs them every time.
+
+On a [node](/docs/use/nodes) there is no agent: `devbox_user` and `devbox_home` are the SSH user and its home, and `devbox_level` is `node`. A feature for a node can also set these:
+
+| Fact | What it adds |
+| --- | --- |
+| `devbox_firewall_rules` | Rules of the node's firewall, as the arguments of `ufw`, such as `allow in on incusbr0`. The role deletes a rule of a feature that the node no longer has |
+| `devbox_node_units` | Units whose state berthd reports, such as `incus` |
+| `devbox_offer` | The provisioners it offers, once the tasks are sure of them |
+
+### Offering provisioners
+
+A feature that lists `offers` sets `devbox_offer` with `set_fact` at the end of its tasks. The role keeps it in the host's `/etc/berth/applied.json`, and berth registers a provisioner of each type after the apply, with the node it is on. The record is readable on the node, so it holds public values only.
+
+| Field | Meaning |
+| --- | --- |
+| `provisioners` | The ids it offers now, out of `offers`. All of them when it is left out |
+| `settings` | Values of the provisioners' own arguments. `{address}`, `{user}` and `{port}` become where berth reaches the node and as whom |
+| `secrets` | Values of the provisioners' secrets, such as a server's certificate, kept as each provisioner's own |
+| `aliases` | Other values of a setting that reach the same server. A provisioner registered by hand with one becomes the node's |
+| `fingerprint` | What identifies the server, for the apply's output |
+
+```yaml
+- name: Offer the provisioner of this engine
+  ansible.builtin.set_fact:
+    devbox_offer:
+      provisioners: [container]
+      settings:
+        host: "ssh://{user}@{address}:{port}"
+```
+
+With `trusts`, the certificate is in `devbox_client_certificates`, under the feature's `PLUGIN/ID`, with its `fingerprint` and a `name` for the trust store.
 
 ## Guide
 

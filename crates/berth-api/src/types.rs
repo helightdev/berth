@@ -95,18 +95,27 @@ pub enum HostType {
     Ssh,
     /// berthd and box are installed and answer: sessions, actions and files.
     Managed,
+    /// A server berth applies without a desktop: berthd, updates, the
+    /// firewall and plugin features, such as the engines that host machines.
+    Node,
     /// The whole profile is applied: desktop, agents and plugins.
     #[default]
     Workstation,
 }
 
 impl HostType {
-    pub const ALL: [HostType; 3] = [HostType::Ssh, HostType::Managed, HostType::Workstation];
+    pub const ALL: [HostType; 4] = [
+        HostType::Ssh,
+        HostType::Managed,
+        HostType::Node,
+        HostType::Workstation,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             HostType::Ssh => "ssh",
             HostType::Managed => "managed",
+            HostType::Node => "node",
             HostType::Workstation => "workstation",
         }
     }
@@ -128,11 +137,13 @@ impl HostType {
     }
 
     /// The type a value of the `level` that profiles and berthd had before
-    /// types stands for.
+    /// types stands for. The role still records the type so, and names a
+    /// node `node`.
     pub fn from_level(level: &str) -> Option<HostType> {
         match level.trim() {
             "reachable" => Some(HostType::Ssh),
             "controller" => Some(HostType::Managed),
+            "node" => Some(HostType::Node),
             "workstation" => Some(HostType::Workstation),
             _ => None,
         }
@@ -144,6 +155,7 @@ impl HostType {
         match self {
             HostType::Ssh => "SSH only, nothing of berth installed",
             HostType::Managed => "berthd alone: sessions, actions, files",
+            HostType::Node => "a server: berthd, firewall, plugin features",
             HostType::Workstation => "the whole profile",
         }
     }
@@ -160,8 +172,9 @@ impl std::fmt::Display for HostType {
 pub fn type_mismatch(name: &str, intended: HostType, observed: Option<HostType>) -> Option<String> {
     let observed = observed.filter(|observed| *observed > intended)?;
     Some(match observed {
-        HostType::Workstation => format!(
-            "{name} is a workstation; its profile here says {intended}. To adopt it from the profile it keeps: berth adopt {name}"
+        // Both keep the profile they were applied from.
+        HostType::Workstation | HostType::Node => format!(
+            "{name} is a {observed}; its profile here says {intended}. To adopt it from the profile it keeps: berth adopt {name}"
         ),
         _ => format!(
             "{name} has berth's controller; its profile here says {intended}. To adopt it: berth host type {name} managed"
@@ -1078,6 +1091,9 @@ pub struct ProvisionerInfo {
     /// The values of its own arguments that are kept, by name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub settings: BTreeMap<String, String>,
+    /// The node it lives on, when a feature of that host offered it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub node: String,
     /// What it can make: `machine`, and kinds its plugin names.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kinds: Vec<ProvisionerKind>,
@@ -1388,12 +1404,44 @@ pub struct AppliedPlugin {
 }
 
 /// What berth recorded on a host when it applied the configuration: its own
-/// version and the plugins whose features the host has.
+/// version, the plugins whose features the host has, and the provisioners
+/// those features offer.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Applied {
     pub berth: String,
     #[serde(default)]
     pub plugins: Vec<AppliedPlugin>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offers: Vec<Offer>,
+}
+
+/// Provisioners a feature of a host offers, as its tasks found them: berth
+/// registers each under a name of its own that names the host. The host
+/// serves this to anyone who may read it, so it holds public values only,
+/// such as a server's certificate, never a key.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Offer {
+    /// The feature, as `PLUGIN/FEATURE`.
+    pub feature: String,
+    /// The plugin's provisioners it offers, by their ids in the plugin.
+    pub provisioners: Vec<String>,
+    /// Values of the provisioners' own arguments. `{address}`, `{user}` and
+    /// `{port}` stand for where berth reaches the host and as whom.
+    #[serde(default)]
+    pub settings: BTreeMap<String, String>,
+    /// Values of the provisioners' secrets, such as the certificate of the
+    /// server to pin, kept as the provisioners' own.
+    #[serde(default)]
+    pub secrets: BTreeMap<String, String>,
+    /// Other values of a setting that reach the same server, such as the
+    /// name a berth server on the host gives it: a provisioner registered by
+    /// hand with one of them is the host's.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub aliases: BTreeMap<String, Vec<String>>,
+    /// What the host says identifies the server, such as the fingerprint of
+    /// its certificate, for the person who reads the report.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fingerprint: String,
 }
 
 /// The profile a host keeps of itself, at `/etc/berth/profile.json`: the
@@ -1626,7 +1674,14 @@ mod tests {
             assert_eq!(HostType::parse(host_type.name()), Some(host_type));
             assert_eq!(json!(host_type), json!(host_type.name()));
         }
-        assert_eq!(HostType::choices(), "ssh, managed or workstation");
+        assert_eq!(HostType::choices(), "ssh, managed, node or workstation");
+        // In the order of how much of berth each has.
+        assert!(HostType::Managed < HostType::Node && HostType::Node < HostType::Workstation);
+        assert_eq!(HostType::from_level("node"), Some(HostType::Node));
+        assert_eq!(
+            type_mismatch("big", HostType::Managed, Some(HostType::Node)).unwrap(),
+            "big is a node; its profile here says managed. To adopt it from the profile it keeps: berth adopt big"
+        );
         assert_eq!(HostType::parse("controller"), None);
         assert_eq!(HostType::from_level("reachable"), Some(HostType::Ssh));
         assert_eq!(HostType::from_level("controller"), Some(HostType::Managed));
@@ -1642,6 +1697,23 @@ mod tests {
         let written = json!(session);
         assert_eq!(written["action"], "status");
         assert!(written.get("task").is_none());
+    }
+
+    #[test]
+    fn an_apply_record_carries_what_a_node_offers() {
+        let record = json!({"berth": "0.6.0", "plugins": [], "level": "node", "offers": [{
+            "feature": "incus/server", "provisioners": ["vm", "container"],
+            "settings": {"server": "https://{address}:8444"},
+            "secrets": {"incus_server_cert": "-----BEGIN CERTIFICATE-----"}}]});
+        let applied: Applied = serde_json::from_value(record).unwrap();
+        assert_eq!(applied.offers[0].provisioners, ["vm", "container"]);
+        assert!(applied.offers[0].aliases.is_empty());
+        // A record without offers is written as before.
+        let plain = json!(Applied {
+            berth: "0.6.0".into(),
+            ..Applied::default()
+        });
+        assert!(plain.get("offers").is_none());
     }
 
     #[test]

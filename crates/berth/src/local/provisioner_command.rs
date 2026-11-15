@@ -539,6 +539,9 @@ pub fn describe(
     for row in &state.details {
         text += &format!("{:<width$}  {}\n", row.label, row.value);
     }
+    if !info.node.is_empty() {
+        text += &format!("Node      {}, whose feature offers it\n", info.node);
+    }
     if !info.own.is_empty() {
         let set: Vec<String> = info
             .own

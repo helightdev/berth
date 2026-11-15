@@ -48,6 +48,13 @@ pub struct Entry {
     pub kind: String,
     #[serde(default)]
     pub settings: BTreeMap<String, String>,
+    /// The node it lives on, when a feature of that host offered it: its
+    /// name among this berth's hosts.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub node: String,
+    /// The node's feature that offered it, as `PLUGIN/FEATURE`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub feature: String,
 }
 
 /// The entry registered under a provisioner's name, if there is one.
@@ -131,10 +138,15 @@ pub fn register(paths: &Paths, name: &str, saved: &berth_api::SavedProvisioner) 
     let settings = match &saved.settings {
         Some(given) => kept_values(name, provisioner, given)?,
         None => existing
-            .map(|existing| existing.settings)
+            .as_ref()
+            .map(|existing| existing.settings.clone())
             .unwrap_or_default(),
     };
-    let entry = Entry { kind, settings };
+    let entry = Entry {
+        kind,
+        settings,
+        ..existing.unwrap_or_default()
+    };
     save_entry(paths, name, &entry)?;
     Ok(entry)
 }
@@ -286,6 +298,11 @@ pub fn describe(
     let mut info = provisioner.info(plugin, missing.clone());
     info.id = name.to_owned();
     info.settings = settings(paths, name).unwrap_or_default();
+    info.node = entry(paths, name)
+        .ok()
+        .flatten()
+        .map(|entry| entry.node)
+        .unwrap_or_default();
     if info.problem.is_empty() {
         info.problem = problem(&info.id, provisioner, &missing, &info.settings);
     }

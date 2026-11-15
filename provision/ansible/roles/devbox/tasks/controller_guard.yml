@@ -1,6 +1,7 @@
 ---
-# A workstation's controller describes the agent and its desktop: installing
-# the controller alone over it would take that apart, so it is refused here,
+# A workstation's controller describes the agent and its desktop, and a
+# node's its features: installing the controller alone over either would
+# take that apart, so it is refused here,
 # whatever the profile on berth's side says. Nothing skips this check.
 - name: Read what berth installed on the host before
   ansible.builtin.slurp:
@@ -18,17 +19,17 @@
   ansible.builtin.set_fact:
     devbox_controller_recorded: "{{ (devbox_controller_found.results[0].content | b64decode | from_json) if 'content' in devbox_controller_found.results[0] else {} }}"
     devbox_controller_config: "{{ (devbox_controller_found.results[1].content | b64decode | from_json) if 'content' in devbox_controller_found.results[1] else {} }}"
-- name: Refuse a host that berth set up as a workstation
+- name: Refuse a host that berth set up as a workstation or a node
   ansible.builtin.fail:
     msg: >-
-      {{ inventory_hostname }} is a workstation that berth set up, and its
-      profile here says otherwise. Installing the controller alone would take
-      its controller apart, so nothing was changed. To adopt it from the
-      profile it keeps: berth adopt NAME.
+      {{ inventory_hostname }} is a {{ 'node' if devbox_controller_recorded.level | default('') == 'node' else 'workstation' }}
+      that berth set up, and its profile here says otherwise. Installing the
+      controller alone would take its controller apart, so nothing was
+      changed. To adopt it from the profile it keeps: berth adopt NAME.
   when: >-
     devbox_controller_kept.stat.exists
     or (devbox_controller_recorded | length > 0
-        and devbox_controller_recorded.level | default('workstation') == 'workstation')
+        and devbox_controller_recorded.level | default('workstation') in ['workstation', 'node'])
 - name: Refuse a host whose controller serves another account
   ansible.builtin.fail:
     msg: >-

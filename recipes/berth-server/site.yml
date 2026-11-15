@@ -61,9 +61,42 @@
       when: "'Status: active' not in firewall_state.stdout"
       changed_when: true
 
+    - name: Find the group of Docker's socket
+      ansible.builtin.command: stat --format %g /var/run/docker.sock
+      register: docker_socket_group
+      changed_when: false
+      when: berth_server_node | bool
+
     - name: Run the berth server
       ansible.builtin.include_tasks: ../shared/berth-server.yml
+      vars:
+        # On a node the server reaches this machine as `node`, and its Docker
+        # engine through the socket. The server in the image is no root, so it
+        # joins the socket's group.
+        berth_server_run_options: >-
+          {{ ('--add-host node:host-gateway --volume /var/run/docker.sock:/var/run/docker.sock --group-add '
+              ~ (docker_socket_group.stdout | trim)) if berth_server_node | bool else '' }}
+
+    # Only the public half comes out of the container; berth makes its key there.
+    - name: Read the berth server's public key
+      ansible.builtin.command: docker exec berth berth key show
+      register: berth_server_key
+      changed_when: false
+      when: berth_server_node | bool
+
+    - name: Let the berth server log in to this machine as root
+      ansible.builtin.blockinfile:
+        path: /root/.ssh/authorized_keys
+        create: true
+        mode: "0600"
+        marker: "# {mark} BERTH SERVER IN ITS CONTAINER"
+        block: "{{ berth_server_key.stdout | trim }}"
+      when: berth_server_node | bool
 
     - name: Say how to use the berth server
       ansible.builtin.debug:
-        msg: "{{ berth_server_handover }}"
+        msg: "{{ berth_server_handover + (berth_server_as_node if berth_server_node | bool else []) }}"
+      vars:
+        berth_server_as_node:
+          - "To make this machine a node of the server, on a berth connected to it: berth host add NAME node --user root --type node"
+          - "Then list its features, such as docker/engine and incus/server, and apply it: berth apply NAME"

@@ -13,6 +13,13 @@ berth_server_port: 7777
 # on a machine that is on no tailnet.
 berth_server_tailscale_serve: true
 
+# Make this machine a node of the server, a server berth applies itself:
+# the server gets root's login here with its own key, reaches this machine by
+# the name `node`, and gets the socket of its Docker engine. Then add it from
+# the server, as the README says. A container from an earlier run keeps its
+# options: remove it first (the data stays) to give it these.
+berth_server_node: false
+
 # ── The tailnet ───────────────────────────────────────────────────────────
 
 # An enrollment key joins the machine to your tailnet. Without one Tailscale

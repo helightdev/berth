@@ -26,6 +26,54 @@ While berth waits for a new machine to answer on SSH, it shows the latest lines
 of the machine's console log. When the console has none, the plugin reads
 cloud-init's output in the machine instead.
 
+## An Incus server on a node
+
+The feature `incus/server` installs Incus on a [node](https://github.com/helightdev/berth/blob/main/docs/content/docs/%28guide%29/use/nodes.mdx),
+a server that berth applies without a desktop, and sets it up for berth's
+machines. berth then registers the provisioners `NODE-incus-vm` and
+`NODE-incus-container` for it, so the steps of the next section are done for
+you. List it among the node's features:
+
+    "ansible_vars": {"devbox_plugin_features": ["incus/server"]}
+
+| Part | Set-up |
+| --- | --- |
+| Incus | From Ubuntu's packages, with QEMU for virtual machines |
+| Network | The bridge `incusbr0` at `10.77.0.1/24`. The node routes the guests' traffic out, and lets nothing in to them. No IPv6 |
+| Storage | A pool named `default` with the driver `dir`, in a folder on the node's root file system |
+| Default profile | Nesting is on. A container's systemd needs it, and so does Docker in a guest |
+| API | `[::]:8444`, open in the node's firewall on the tailnet, to the address the apply came from, and to Docker's bridge |
+| Trust | berth's client certificate. berth makes it once, as the secrets `incus_client_cert` and `incus_client_key`. The certificate goes to the node, and the key stays with berth |
+
+The settings go in the profile's `ansible_vars`:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `devbox_incus_virtual_machines` | `true` | Install QEMU, and offer `incus/vm`. The node needs KVM |
+| `devbox_incus_pool` | `default` | The storage pool's name |
+| `devbox_incus_pool_driver` | `dir` | `dir`, `btrfs`, `zfs` or `lvm` |
+| `devbox_incus_pool_source` | empty | An existing folder, btrfs file system, ZFS pool or LVM volume group. Never a disk |
+| `devbox_incus_bridge` | `incusbr0` | The guests' bridge |
+| `devbox_incus_bridge_address` | `10.77.0.1/24` | The node's address on the bridge. It must not be a network the node is on already |
+| `devbox_incus_api_address` | empty | Where the API listens. Empty keeps the address Incus has, or `[::]:8444` when it has none |
+| `devbox_incus_api_interfaces` | `[tailscale0]` | The interfaces the firewall opens the API on |
+| `devbox_incus_api_from` | the apply's address | An address or network the firewall opens the API to besides |
+
+The feature does not erase a disk. Making a storage pool on a disk would, so
+it never does: it makes a pool in a folder, or uses the source you name. For
+a pool on a disk of its own, create it on the node first and name it:
+
+    incus storage create fast zfs source=/dev/nvme1n1
+
+An Incus that has a storage pool is set up already, and the feature keeps it
+as it is. Its pools, networks, profiles and trusted clients stay. Only an API
+address, when it has none, and berth's certificate are added. A server the
+`incus-host` recipe set up is taken in so, with its guests. A
+provisioner registered there by hand becomes the node's.
+
+berth reaches the API at the address it has for the node, and pins the
+server's certificate. The fingerprint is in the apply's output.
+
 ## Let the server trust berth
 
 Incus accepts a client whose certificate is in its trust store. Make a key and

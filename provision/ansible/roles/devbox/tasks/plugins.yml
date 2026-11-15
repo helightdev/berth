@@ -6,6 +6,11 @@
     devbox_plugin_tasks: []
     devbox_plugin_services: []
     devbox_plugin_channels: []
+    # What a node's features add: the provisioners they offer, the rules of
+    # its firewall and the units whose state berthd reports.
+    devbox_plugin_offers: []
+    devbox_firewall_rules: []
+    devbox_node_units: []
 - name: Create the directory for detailed guides
   ansible.builtin.file:
     path: /etc/devbox/guides
