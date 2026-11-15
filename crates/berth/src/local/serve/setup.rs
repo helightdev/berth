@@ -89,6 +89,8 @@ pub async fn save_profile(
         builder.remove("ssh_key");
     }
     berth_core::import::convert_layout(&state.paths, &name, &mut profile);
+    // An older caller's pasted tailnet key is never stored: berth makes the keys.
+    berth_api::profile::take_old_tailnet(&mut profile);
     // A workstation's has its set-up's part; a host of another type, only how it is reached.
     let problems = berth_api::profile::problems(&profile);
     if !problems.is_empty() {
@@ -610,7 +612,7 @@ pub async fn catalogue(State(state): App) -> Answer<Json<Catalogue>> {
 /// Something for the server to make up for a profile.
 #[derive(Deserialize, ToSchema)]
 pub struct Generate {
-    /// `hostname`, `password` or `tailscale_key`.
+    /// `hostname` or `password`.
     pub what: String,
     /// For `password`: the password to hash. Without it one is made up and
     /// kept in the server's store with `host`, under `user`, for
@@ -622,7 +624,7 @@ pub struct Generate {
 
 #[derive(Serialize, ToSchema)]
 pub struct Generated {
-    /// The host name, the password's hash, or the key.
+    /// The host name or the password's hash.
     pub value: String,
     /// What to tell whoever asked.
     pub note: String,
@@ -631,7 +633,7 @@ pub struct Generated {
     pub password: Option<String>,
 }
 
-#[utoipa::path(post, path = "/v1/setup/generate", summary = "Make up a host name, hash or make up a password, or create a one-use enrollment key at the tailnet's control server.", tag = "set-up",
+#[utoipa::path(post, path = "/v1/setup/generate", summary = "Make up a host name, or hash or make up a password.", tag = "set-up",
     request_body(content = Generate, description = "What to make"),
     responses((status = 200, description = "What was made", body = Generated),
               (status = 400, description = "It could not be made; the message says why", body = ErrorBody)))]
@@ -675,21 +677,6 @@ pub async fn generate(State(state): App, Json(asked): Json<Generate>) -> Answer<
                     Err("A made-up password is kept with a host: name the host".into())
                 }
             },
-            "tailscale_key" => {
-                let host = asked.host.unwrap_or_default();
-                let config = Place::own(&host)
-                    .and_then(|place| place.load(&paths))
-                    .ok()
-                    .flatten()
-                    .unwrap_or_default();
-                let (value, note) =
-                    berth_core::tailnet::generate(&paths, &config, &host).map_err(fail)?;
-                Ok(Generated {
-                    value,
-                    note,
-                    password: None,
-                })
-            }
             other => Err(format!("Nothing to make for {other}")),
         }
     })

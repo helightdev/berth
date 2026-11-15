@@ -51,7 +51,7 @@ class FirstBoot(unittest.TestCase):
         return self.station.root_on_host(command).stdout
 
     def test_the_first_boot_applied_the_release_it_was_given(self):
-        self.assertEqual(self.root('cat /var/lib/devbox/provision-state').strip(), 'configured-needs-enrollment')
+        self.assertEqual(self.root('cat /var/lib/devbox/provision-state').strip(), 'configured')
         deployment = json.loads(self.root('cat /opt/devbox-bootstrap/deployment.json'))
         self.assertEqual(self.root('cat /var/lib/devbox/ready').strip(), deployment['release_sha256'])
         self.assertEqual(self.root('readlink /opt/devbox/current').strip(),
@@ -132,7 +132,7 @@ class FirstBoot(unittest.TestCase):
     def test_the_status_task_ends_well(self):
         done = self.station.berth('run', HOST, 'status', check=False, timeout=180)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        for line in (f'Host        {HOST}', 'Provision   configured-needs-enrollment', 'ssh         active',
+        for line in (f'Host        {HOST}', 'Provision   configured', 'ssh         active',
                      'berthd      active'):
             self.assertIn(line, done.stdout)
         self.assertNotRegex(done.stdout, r'(?m)^Failed', done.stdout)
@@ -235,8 +235,9 @@ class Reboot(unittest.TestCase):
 
 
 # Enrolment in a tailnet on first boot, against a control server of the tests'
-# own. boot.py gives the profile the key and switches Tailscale on when
-# BERTH_CI_BOOT_CONTROL_URL and BERTH_CI_BOOT_CONTROL_KEY are set.
+# own. boot.py gives berth its API key and switches Tailscale on when
+# BERTH_CI_BOOT_CONTROL_URL and BERTH_CI_BOOT_CONTROL_KEY are set, and the
+# seed carries a key berth made there.
 @needs_boot
 class Enrolment(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('BERTH_BOOT_CONTROL_URL') and os.environ.get('BERTH_BOOT_CONTROL_KEY'),
@@ -247,4 +248,6 @@ class Enrolment(unittest.TestCase):
         self.assertEqual(status['BackendState'], 'Running')
         self.assertEqual(status.get('CurrentTailnet', {}).get('Name') is not None, True)
         deployment = station.root_on_host('cat /opt/devbox-bootstrap/deployment.json').stdout
+        # Neither the API key nor the key berth made for the seed stays.
         self.assertNotIn(os.environ['BERTH_BOOT_CONTROL_KEY'], deployment)
+        self.assertNotIn('devbox_tailscale_auth_key', deployment)

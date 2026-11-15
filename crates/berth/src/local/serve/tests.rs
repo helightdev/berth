@@ -1437,6 +1437,21 @@ async fn the_server_is_set_up_through_the_api() {
             .unwrap()
             .contains("does not answer")
     );
+    // A key pasted by an older caller is not kept.
+    let pasted = json!({"builder": {}, "access": {"address": "192.0.2.7"}, "tailscale_auth_key": "tskey-auth-kFAKE-0000", "tailscale_auto_key": false});
+    send(client, "PUT", "/v1/hosts/studio/profile", pasted).await;
+    let (_, kept) = send(client, "GET", "/v1/hosts/studio/profile", Value::Null).await;
+    assert!(!kept.to_string().contains("tailscale_a"), "{kept}");
+    // A seed of a host that joins the tailnet is refused, with what to do,
+    // while the server has no API key of the tailnet to make its key with.
+    let (status, said) = send(client, "POST", "/v1/hosts/studio/actions/seed", Value::Null).await;
+    assert_eq!(status, 400, "{said}");
+    let message = said["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("berth secret set tailnet_api_key")
+            && message.contains("switch Tailscale off"),
+        "{message}"
+    );
 
     // The user the server runs as changes any setting on its socket; over
     // the network only some are a caller's to change.
@@ -2538,7 +2553,8 @@ async fn machines_are_created_and_deleted_through_the_api() {
         .unwrap()
         .save(
             paths,
-            &json!({"builder": {}, "access": {"user": "ops", "link": ["sh", "-c", "exit 1"]}}),
+            &json!({"builder": {}, "access": {"user": "ops", "link": ["sh", "-c", "exit 1"]},
+                    "ansible_vars": {"devbox_install_tailscale": false}}),
         )
         .unwrap();
     let message = |said: &Value| said["error"]["message"].as_str().unwrap_or("").to_owned();

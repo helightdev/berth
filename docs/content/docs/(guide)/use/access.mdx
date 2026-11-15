@@ -23,45 +23,43 @@ The desktop link printed by the action includes the password after `#` and signs
 
 ## Joining the tailnet
 
-A host joins the tailnet while it is set up, with an enrollment key. The key fields are under **Tailscale** on the host's Install tab:
+A host joins the tailnet while it is set up, with a one-use key berth makes through the API of the tailnet's control server. Nobody pastes a key. The one choice in a profile is **Tailscale** on the host's Install tab (`devbox_install_tailscale`): whether the host joins at all.
 
-| Field | Profile | What it does |
-| --- | --- | --- |
-| Login server | `tailscale_login_server` | The Headscale server the host joins. Empty: berth's `tailnet_login_server` setting, or Tailscale's own service when that is empty too |
-| Automatic enrollment key | `tailscale_auto_key` | berth creates a key itself whenever the host needs one |
-| Tailscale enrollment key | `tailscale_auth_key` | A key you made, pasted in. Prefer a short-lived, one-use one |
-
-A host that is on the tailnet already is left alone, so applying again doesn't need a key. Once it has joined, it publishes the desktop and T3 there. That is `devbox_tailscale_serve`, on by default, and it needs HTTPS certificates enabled for the tailnet.
-
-Without a key, enroll by hand and then run **Publish desktop and T3 on the tailnet**, or do it on the host:
-
-```bash title="On the host"
-sudo tailscale up
-sudo tailscale serve --bg --https=443 http://127.0.0.1:6080
-sudo tailscale serve --bg --https=8443 http://127.0.0.1:3773
-```
-
-Enable tailnet HTTPS if Tailscale asks for it. The publish action also gives Cockpit the tailnet's trusted certificate in place of its self-signed one.
-
-### Automatic enrollment keys
-
-With an API key of the control server, berth makes the keys and nobody pastes one. Store the API key as the secret `tailnet_api_key`. For Tailscale it's an API access token from the admin console. `TS_API_KEY` in the environment also works. For Headscale, make one with `headscale apikeys create`.
+berth needs the control server's API key in the secret `tailnet_api_key`:
 
 ```bash
 berth secret set tailnet_api_key
 berth config tailnet_tags tag:berth          # if the tailnet wants tags
 ```
 
-Then switch on **Automatic enrollment key** for the host. berth creates a key only at the moment it's used:
+The secret is one of these:
+
+| Control server | The secret | Lifetime |
+| --- | --- | --- |
+| Tailscale | An OAuth client with the `auth_keys` scope, as `CLIENT_ID:CLIENT_SECRET` | The client doesn't expire. berth trades it for an access token of an hour each time it makes a key |
+| Tailscale | An API access token from the admin console | 1 to 90 days, chosen when you make it |
+| Headscale | An API key from `headscale apikeys create` | 90 days unless you choose otherwise |
+
+Prefer an OAuth client for Tailscale, so the secret doesn't run out. Keys it makes have tags, from those the client may give, so set `tailnet_tags` to them. On the Secrets tab of the home screen, Enter replaces the value. With a berth server, the server keeps the secret and the `tailnet_` settings.
+
+berth makes a key only at the moment it's used:
 
 | When | Key valid for |
 | --- | --- |
 | A seed or installer is made | 24 hours, for writing the installer and the first boot |
 | An apply finds the host not on the tailnet | 1 hour |
 
-Every key joins one host once. It's pre-approved, not reusable and not ephemeral, and it gets the tags of `tailnet_tags`. A seed has its key written into its files, which only you can read, and the installed host deletes its copy after it has joined. Until then, whoever has the seed or the USB stick can join a machine to the tailnet with it. The API key never leaves the machine that runs berth. With a berth server, that's the server, and its settings and secret are set there.
+Every key joins one host once. It's pre-approved, not reusable and not ephemeral, and it gets the tags of `tailnet_tags`. The role reads it from a private file, never from the command line. A seed has its key written into its files, which only you can read, and the installed host deletes its copy after it has joined. Until then, whoever has the seed or the USB stick can join a machine to the tailnet with it. The API key never leaves the machine that runs berth.
 
-F4 on **Tailscale enrollment key** creates a key the same way, valid for 24 hours, for pasting where you need one.
+When berth writes a seed or an installer, it says until when the key works. A machine first started later is set up without the tailnet, and the next apply from berth joins it with a new key.
+
+A host that's on the tailnet already is left alone, so applying again goes without a key and leaves the host logged in. Once it has joined, it publishes the desktop and T3 there. That's `devbox_tailscale_serve`, on by default, and it needs HTTPS certificates enabled for the tailnet. Enable them if Tailscale asks, then run **Publish desktop and T3 on the tailnet**. That action also gives Cockpit the tailnet's trusted certificate in place of its self-signed one.
+
+### When berth has no API key
+
+A host whose profile wants the tailnet needs the secret. Without it, berth stops before anything runs and says what to do: set the secret, or switch **Tailscale** off for the host. A seed, an installer or a new machine isn't made, and the set-up tabs show the problem for them. An apply stops before its first change. A host that's on the tailnet already is applied as usual, as it doesn't need a key.
+
+A new host on a berth without the secret starts with **Tailscale** off.
 
 ### Headscale
 
@@ -73,10 +71,11 @@ berth config tailnet_user agents              # the user new hosts belong to
 berth secret set tailnet_api_key              # from: headscale apikeys create
 ```
 
-Hosts then join with `tailscale up --login-server https://hs.example.org`. Headscale keys need a user or tags (`tailnet_tags`). Some things differ from Tailscale:
+berth makes its keys through Headscale's API with that key, and hosts join with `--login-server https://hs.example.org`. Headscale keys need a user or tags (`tailnet_tags`). Some things differ from Tailscale:
 
 | | On Headscale |
 | --- | --- |
+| The secret | An API key. Headscale has no OAuth clients |
 | Names | Those of Headscale's MagicDNS, `HOST.BASE_DOMAIN`. berth shows what `tailscale status` reports |
 | `tailscale serve`, Funnel | Headscale doesn't offer them, so the desktop and T3 aren't published. The access action shows SSH tunnels for them instead |
 | HTTPS certificates | Headscale doesn't issue them. Cockpit stays on its self-signed certificate, at `https://TAILNET-ADDRESS:9090` |
@@ -115,7 +114,7 @@ For which addresses may reach SSH, see [the firewall](/docs/deploy/ssh#the-firew
 
 ## Without a tailnet
 
-Tunnel the ports over SSH and open them on your own machine:
+Switch **Tailscale** off for a host, and berth reaches it over SSH at its address. The access action says so where the tailnet's links would be, and shows the tunnels. Tunnel the ports over SSH and open them on your own machine:
 
 ```bash
 ssh -L 16080:127.0.0.1:6080 -L 13773:127.0.0.1:3773 ops@HOST
