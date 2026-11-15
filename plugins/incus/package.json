@@ -93,7 +93,7 @@
         ],
         "actions": [
           {"name": "server", "label": "Check the server", "group": "Server", "changes": false, "help": "Ask the Incus server for its version, its kernel and its storage drivers, and whether it trusts berth's client certificate."},
-          {"name": "pools", "label": "Storage pools", "group": "Storage", "changes": false, "help": "The storage pools of the server, with how much of each is used."},
+          {"name": "pools", "label": "Storage pools", "group": "Storage", "changes": false, "help": "The storage pools of the server as a table: each one's driver, source, size, used and free space, and whether it can grow, or why not."},
           {"name": "images", "label": "Cached images", "group": "Storage", "changes": false, "help": "The images the server keeps in its project, with their sizes. Incus fetches one from images.linuxcontainers.org when a machine first needs it."},
           {"name": "networks", "label": "Networks", "group": "Server", "changes": false, "help": "The networks of the server a machine can be attached to."},
           {"name": "volumes", "label": "Volumes", "group": "Storage", "changes": false, "help": "The custom volumes of every storage pool in the project, with their sizes and whether an instance uses each."},
@@ -121,6 +121,29 @@
           {"name": "remove-image", "label": "Remove image", "group": "Storage", "confirm": "Remove this image from the server?", "help": "Remove a cached image from the project. Incus fetches it again when something needs it.",
            "arguments": [
              {"name": "image", "label": "Image", "default": "", "help": "The image's alias, or the start of its fingerprint as the cached images show it."}
+           ]},
+          {"name": "resize-pool", "label": "Grow storage pool", "group": "Storage", "confirm": "Grow this storage pool? Incus cannot shrink it again.", "help": "Grow a loop-backed btrfs, zfs or lvm pool to a new size. A dir pool has no size of its own, and a pool on a device or dataset that was given when it was made is grown there instead.",
+           "arguments": [
+             {"name": "pool", "label": "Pool", "default": "default", "help": "The storage pool to grow."},
+             {"name": "size", "label": "Size", "default": "", "help": "Its new size, larger than it is now, such as 100GiB or 200GB."}
+           ]},
+          {"name": "set-pool", "label": "Change storage pool", "group": "Storage", "help": "Change a setting of a storage pool that Incus allows to change once it is made: description, volume.size, volume.snapshots.schedule and volume.snapshots.expiry, rsync.bwlimit and rsync.compression of a dir pool, btrfs.mount_options of a btrfs pool, and zfs.clone_copy and zfs.export of a zfs pool.",
+           "arguments": [
+             {"name": "pool", "label": "Pool", "default": "default", "help": "The storage pool to change."},
+             {"name": "key", "label": "Setting", "default": "", "help": "The setting, such as volume.size or description."},
+             {"name": "value", "label": "Value", "default": "", "help": "Its new value, such as 20GiB for volume.size. Empty unsets it."}
+           ]},
+          {"name": "resize-volume", "label": "Resize volume", "group": "Storage", "help": "Give a custom volume a new size. Incus grows any volume, and shrinks a filesystem volume only to no less than it holds; a block volume cannot shrink.",
+           "arguments": [
+             {"name": "pool", "label": "Pool", "default": "default", "help": "The storage pool it is in."},
+             {"name": "volume", "label": "Volume", "default": "", "help": "The name of the volume."},
+             {"name": "size", "label": "Size", "default": "", "help": "Its new size, such as 20GiB."}
+           ]},
+          {"name": "resize-disk", "label": "Grow root disk", "group": "Storage", "help": "Grow the root disk of an instance. One that has its root disk from a profile gets one of its own. A container has the new size at once; a virtual machine's guest sees it after a restart, which happens only with restart=yes.",
+           "arguments": [
+             {"name": "instance", "label": "Instance", "default": "", "help": "The instance's name as the server lists it, such as berth-studio for the host studio."},
+             {"name": "size", "label": "Size", "default": "", "help": "The new size of its root disk, larger than it is now, such as 80GiB."},
+             {"name": "restart", "label": "Restart", "default": "no", "values": ["no", "yes"], "help": "Whether to restart a running virtual machine so that its guest sees the new size. A container needs no restart."}
            ]}
         ]
       },
@@ -170,7 +193,7 @@
         ],
         "actions": [
           {"name": "server", "label": "Check the server", "group": "Server", "changes": false, "help": "Ask the Incus server for its version, its kernel and its storage drivers, and whether it trusts berth's client certificate."},
-          {"name": "pools", "label": "Storage pools", "group": "Storage", "changes": false, "help": "The storage pools of the server, with how much of each is used."},
+          {"name": "pools", "label": "Storage pools", "group": "Storage", "changes": false, "help": "The storage pools of the server as a table: each one's driver, source, size, used and free space, and whether it can grow, or why not."},
           {"name": "images", "label": "Cached images", "group": "Storage", "changes": false, "help": "The images the server keeps in its project, with their sizes. Incus fetches one from images.linuxcontainers.org when a machine first needs it."},
           {"name": "networks", "label": "Networks", "group": "Server", "changes": false, "help": "The networks of the server a machine can be attached to."},
           {"name": "volumes", "label": "Volumes", "group": "Storage", "changes": false, "help": "The custom volumes of every storage pool in the project, with their sizes and whether an instance uses each."},
@@ -198,6 +221,29 @@
           {"name": "remove-image", "label": "Remove image", "group": "Storage", "confirm": "Remove this image from the server?", "help": "Remove a cached image from the project. Incus fetches it again when something needs it.",
            "arguments": [
              {"name": "image", "label": "Image", "default": "", "help": "The image's alias, or the start of its fingerprint as the cached images show it."}
+           ]},
+          {"name": "resize-pool", "label": "Grow storage pool", "group": "Storage", "confirm": "Grow this storage pool? Incus cannot shrink it again.", "help": "Grow a loop-backed btrfs, zfs or lvm pool to a new size. A dir pool has no size of its own, and a pool on a device or dataset that was given when it was made is grown there instead.",
+           "arguments": [
+             {"name": "pool", "label": "Pool", "default": "default", "help": "The storage pool to grow."},
+             {"name": "size", "label": "Size", "default": "", "help": "Its new size, larger than it is now, such as 100GiB or 200GB."}
+           ]},
+          {"name": "set-pool", "label": "Change storage pool", "group": "Storage", "help": "Change a setting of a storage pool that Incus allows to change once it is made: description, volume.size, volume.snapshots.schedule and volume.snapshots.expiry, rsync.bwlimit and rsync.compression of a dir pool, btrfs.mount_options of a btrfs pool, and zfs.clone_copy and zfs.export of a zfs pool.",
+           "arguments": [
+             {"name": "pool", "label": "Pool", "default": "default", "help": "The storage pool to change."},
+             {"name": "key", "label": "Setting", "default": "", "help": "The setting, such as volume.size or description."},
+             {"name": "value", "label": "Value", "default": "", "help": "Its new value, such as 20GiB for volume.size. Empty unsets it."}
+           ]},
+          {"name": "resize-volume", "label": "Resize volume", "group": "Storage", "help": "Give a custom volume a new size. Incus grows any volume, and shrinks a filesystem volume only to no less than it holds; a block volume cannot shrink.",
+           "arguments": [
+             {"name": "pool", "label": "Pool", "default": "default", "help": "The storage pool it is in."},
+             {"name": "volume", "label": "Volume", "default": "", "help": "The name of the volume."},
+             {"name": "size", "label": "Size", "default": "", "help": "Its new size, such as 20GiB."}
+           ]},
+          {"name": "resize-disk", "label": "Grow root disk", "group": "Storage", "help": "Grow the root disk of an instance. One that has its root disk from a profile gets one of its own. A container has the new size at once; a virtual machine's guest sees it after a restart, which happens only with restart=yes.",
+           "arguments": [
+             {"name": "instance", "label": "Instance", "default": "", "help": "The instance's name as the server lists it, such as berth-studio for the host studio."},
+             {"name": "size", "label": "Size", "default": "", "help": "The new size of its root disk, larger than it is now, such as 80GiB."},
+             {"name": "restart", "label": "Restart", "default": "no", "values": ["no", "yes"], "help": "Whether to restart a running virtual machine so that its guest sees the new size. A container needs no restart."}
            ]}
         ]
       }

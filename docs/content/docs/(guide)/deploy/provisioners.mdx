@@ -364,7 +364,22 @@ A provisioner of the type `incus/vm` makes a virtual machine, and one of `incus/
 
 berth talks to the Incus API over HTTPS. `server` is required, as a setting or for each machine. Incus must trust a certificate of berth, which you store as the secrets `incus_client_cert` and `incus_client_key`. A provisioner may have its own instead. The secret `incus_server_cert` is optional and pins the server's own certificate. `plugins/incus/guide.md` shows how to make and trust the certificate.
 
-Their actions only read: `server` says the server's version and whether it trusts berth, `pools` how full each storage pool is, `images` the images the server keeps, and `networks` its networks. The page offers the server's pools and networks for a machine's `pool` and `network`.
+The page offers the server's pools, networks and instances for the arguments `pool`, `network` and `instance`.
+
+| Action | Does |
+| --- | --- |
+| `server` | Says the server's version and whether it trusts berth |
+| `pools` | Lists the storage pools in a table with the driver, source, size, used and free space of each, and whether it can grow |
+| `images`, `networks`, `volumes` | List the images the server keeps, its networks and the custom volumes of every pool |
+| `create-pool`, `remove-pool` | Create and remove a storage pool |
+| `resize-pool` | Grows a loop-backed `btrfs`, `zfs` or `lvm` pool to `size`. It refuses a `dir` pool, a pool on a disk or dataset given when it was made, and any smaller size, as Incus never shrinks a pool |
+| `set-pool` | Sets a setting `key` of a pool that Incus changes once the pool is made, such as `description` or `volume.size`, to `value` |
+| `create-volume`, `remove-volume` | Create and remove a custom volume |
+| `resize-volume` | Gives a custom volume a new `size`. A block volume only grows |
+| `resize-disk` | Grows the root disk of `instance` to `size`. A container has it at once. A running virtual machine needs a restart, which happens only with `restart=yes` |
+| `remove-image` | Removes a cached image |
+
+A size is a whole number and a unit, such as `50GiB` or `200GB`. The plugin checks it before it asks Incus. `plugins/incus/guide.md` has what each driver allows.
 
 ```bash
 berth provisioner add ovh-incus incus/vm server=https://192.0.2.10:8443
