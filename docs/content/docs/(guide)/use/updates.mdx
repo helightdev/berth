@@ -28,7 +28,9 @@ berth update             # download it, check its SHA-256 and replace this progr
 
 `berth update` takes the same archive as the install script. It offers only full releases, not pre-releases such as `0.4.0-rc.1`, and moves from a pre-release to its release. A container is updated by pulling a newer image. `berthd` and `box` travel inside `berth`. A host gets the new ones when you apply its configuration. Its overview says when its tools are of another version than your berth.
 
-A berthd of berth 0.5 says the host's type by its older name, and berth reads it. For sessions, actions and files berth needs the berthd of API 2, and until then the overview offers to install the controller or apply the configuration, which brings berthd up to date. An older berth that meets a newer berthd is out of date: update it. It refuses the profile a newer berth left on the host rather than misread it. `berth update --from URL` takes the releases from a mirror instead, and the setting `releases` keeps one.
+A berthd of berth 0.5 says the host's type by its older name, and berth reads it. Its sessions, files and `berth exec` work. Its actions and port forwarding need the berthd of API 2: until then `berth ls` marks the host `old controller`, and the host's page and its actions say what updates it, `berth apply HOST` or, for a managed host, `berth run HOST install-controller`. An older berth that meets a newer berthd is out of date: update it. It refuses the profile a newer berth left on the host rather than misread it. `berth update --from URL` takes the releases from a mirror instead, and the setting `releases` keeps one.
+
+A client refuses a server with an older API, and says to update the server first. [Upgrading from 0.5](/docs/use/upgrading) has the order for a server, its clients and its hosts.
 
 ## Hosts that are behind
 

@@ -125,7 +125,7 @@ node from the server with `berth host add big node --user root --type node`,
 then as in the node's section above.
 
 A second run changes nothing in place. The container `berth` keeps its image,
-its data and its options, and starts when it was stopped. To update the
+data and options. A stopped one is started. To update the
 server, fetch the recipe of the new version and run
 `sudo ./install.sh -e berth_server_update=true`. It makes the container again
 from the new image with the options of the old one, and starts the old one

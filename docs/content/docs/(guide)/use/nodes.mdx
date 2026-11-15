@@ -9,7 +9,7 @@ A node is a server that berth sets up and keeps up to date, without a desktop. I
 | Part | On a node |
 | --- | --- |
 | System | Ubuntu 24.04 or later on x86_64, its time zone and locale, and Ubuntu's security updates without reboots |
-| SSH | Keys only. The SSH user takes berth's key, and root keeps a login with keys when berth logs in as root |
+| SSH | Keys only. The SSH user takes berth's key, and root keeps a login with keys when berth logs in as root or root had one before |
 | Controller | berthd and box, with the actions status, update, reboot and secrets. Sessions run as the SSH user |
 | Firewall | `ufw`: incoming traffic is refused except SSH, the tailnet and what the features open |
 | Tailnet | Tailscale, joined as a workstation joins ([Tailnet](/docs/use/access)) |
@@ -44,7 +44,7 @@ An `ssh` or `managed` host becomes a node with `berth host set big type=node`. A
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `devbox_ssh_from` | `any` | Who reaches SSH from outside the tailnet: `any`, or one address or network. The address an apply comes from always does |
+| `devbox_ssh_from` | `any` | Who reaches SSH from outside the tailnet: `any`, or one address or network. The address an apply comes from always does. A server taken in keeps SSH as limited as its firewall had it |
 | `devbox_harden_ssh` | `true` | Keys only for SSH. It is skipped while the SSH user has no key |
 | `devbox_manage_firewall` | `true` | Set the node's firewall |
 | `devbox_install_tailscale` | `true` | Install Tailscale and join the tailnet with a key berth makes ([Joining the tailnet](/docs/use/access#joining-the-tailnet)) |
@@ -88,12 +88,18 @@ An apply with the same features doesn't change them. A feature taken out of the 
 
 ## Take in a server that exists
 
-A server that the `incus-host` recipe set up, or that has Incus or Docker installed by hand, is added and applied as a node like a new one. The features take what is there:
+A server that the `incus-host` recipe of berth 0.5 set up, or that has Incus or Docker installed by hand, is added and applied as a node like a new one. The features take what is there:
 
 - Incus with a storage pool keeps its pools, networks, profiles and trusted clients. Only the API address, when it has none, and berth's certificate are added.
 - An installed Docker engine stays, with its containers and volumes, also one from Docker's own packages.
-- A provisioner registered by hand for the same server becomes the node's instead of a second one. berth knows it by the certificate it pins, or by the server it names, such as the recipe's `https://incus-host:8444`. Its settings stay as they were.
-- When the apply comes from a berth server in a container on the node, its provisioner of the local Docker engine becomes the node's.
+- A firewall rule made by hand that lets SSH in from some addresses only stays, and the node does not open SSH to every address. The address the apply comes from is let in too. Delete the rule by hand to open SSH wider.
+- Root keeps a login with keys it had, such as the one the berth server in its container uses. The node never opens root to passwords.
+
+Apply the node from the berth server that holds the provisioners registered for this machine, such as the server of the recipe. Those provisioners are that server's. A berth elsewhere doesn't see them, and registers new ones beside them.
+
+berth links a provisioner registered by hand to the node only when it can tell that both reach the same server. Its settings then stay as they were. When berth cannot tell, it leaves the provisioner as it is, and the node gets one of its own. A provisioner left that way can be attached to the node by hand, with the command for that if your berth has one: `berth provisioner --help` lists it.
+
+When the apply comes from a berth server in a container on the node, its provisioner of the local Docker engine becomes the node's.
 
 Then check the node and its provisioners:
 
@@ -117,11 +123,14 @@ The `berth-server` recipe installs berth's server in a container named `berth`. 
   | User and environment | The variables the image does not set |
 
   A Docker socket mounted into it stays.
+- Logging, such as the `max-size` and `max-file` a `daemon.json` gives every container, is carried over too.
 - An option it cannot carry over, such as `--privileged` or devices, stops it before anything changes. Upgrade such a container by hand.
 - The old container is stopped and kept until the new one keeps running. If the new one stops, the old one runs again.
 - It refuses to go to an older version than the one running.
 
 When the server upgrades its own container, it restarts during the job. The output stays in the node's session.
+
+The action needs the machine to be a node, which needs a server of this berth. So the recipe makes the first update of a server of berth 0.5, as [Upgrading from 0.5](/docs/use/upgrading) shows.
 
 ## What berth does not do
 

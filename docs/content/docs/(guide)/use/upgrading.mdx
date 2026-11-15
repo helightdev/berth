@@ -1,0 +1,199 @@
+---
+title: Upgrading from 0.5
+description: What changed since berth 0.5, the order of the updates, and the way back.
+icon: CircleArrowUp
+---
+
+This berth has one set of screens and one command line, both over a server's API. Many commands and names changed, and the store is converted the first time this berth opens it. Update in the order below, and make the backup first.
+
+## The order
+
+| Step | What | Why then |
+| --- | --- | --- |
+| 1 | Back up the store | berth 0.5 cannot read the store once this berth has converted it |
+| 2 | Update the server | A client of this berth refuses a server of berth 0.5 |
+| 3 | Update the clients | A client of berth 0.5 cannot work with the new server |
+| 4 | Update the hosts' controllers | berth needs their actions, which the controller of berth 0.5 does not have |
+| 5 | Make the server's machine a node, if it hosts Incus or Docker | Optional. It then gets `upgrade-server` for the next update |
+
+### 1. Back up
+
+For a server of the `berth-server` recipe, stop it and copy its folder:
+
+```bash
+sudo docker stop berth
+sudo tar -C /srv -czf ~/berth-0.5.tar.gz berth
+sudo docker start berth
+```
+
+For a berth without a server, copy `~/.local/share/berth` and `~/.config/berth` while no berth runs. A store in PostgreSQL needs a dump, with the password in `~/.pgpass` rather than on the command line:
+
+```bash
+pg_dump --format=custom --file=berth-0.5.dump --host=192.0.2.40 --username=berth berth
+```
+
+### 2. The server
+
+Fetch the recipe of the new version and run it with `berth_server_update`. It pulls the new image and makes the container again with the data and every option of the old one, such as the name `incus-host` and the Docker socket. The old container runs again if the new one does not come up:
+
+```bash
+curl -fsSL https://github.com/helightdev/berth/archive/refs/heads/main.tar.gz \
+  | tar xz --strip-components=1 --wildcards '*/recipes' \
+    '*/provision/ansible/roles/devbox/files/berth-server-upgrade.py'
+cd recipes/berth-server
+sudo ./install.sh -e berth_server_update=true
+```
+
+Pass the options you gave the first run again, such as `-e berth_server_node=true`. Do not remove the container by hand. A new container from the recipe gets the recipe's options alone. [Update it](https://github.com/helightdev/berth/blob/main/recipes/berth-server/README.md#update-it) in the recipe's guide has the details.
+
+For a server in a container you made yourself, run the same helper with the version to run:
+
+```bash
+sudo python3 provision/ansible/roles/devbox/files/berth-server-upgrade.py berth 0.6.0
+```
+
+A `berth serve` that runs as a service is updated with `berth update`, then restarted. Its command line may keep `--web`, which does nothing now.
+
+### 3. The clients
+
+```bash
+berth update
+```
+
+Install berth where berth-remote was used: the [installation](/docs/start/install) replaces it. berth takes in the server and token berth-remote kept, on the first command that needs a server:
+
+| berth has | What happens to berth-remote's settings |
+| --- | --- |
+| No server | Its server and token become berth's, and its file goes |
+| The same server | Its token is taken when berth has none, and its file goes |
+| Another server, or the same with another token | Its file stays. berth says so once, with `berth login` for the other server |
+
+A server that does not answer never costs berth the token it kept. Only `berth logout`, signing out in the screens, or a new token in place of one the server refused replaces it.
+
+### 4. The hosts
+
+`berth ls` marks each host whose controller is of berth 0.5 as `old controller`. Update them:
+
+| Host type | Command |
+| --- | --- |
+| `workstation` or `node` | `berth apply HOST` |
+| `managed` | `berth run HOST install-controller` |
+
+Until then sessions, files and `berth exec` work, and the host's actions and its page in the screens say that the controller is older.
+
+### 5. The server's machine as a node
+
+The `incus-host` recipe is gone. A machine it set up becomes a [node](/docs/use/nodes). Run the server recipe with `berth_server_node`. Add the machine from a berth connected to that server, because the provisioners of the machine are that server's:
+
+```bash
+sudo ./install.sh -e berth_server_node=true -e berth_server_update=true
+berth host add big node --user root --type node \
+  --feature docker/engine --feature incus/server
+berth apply big
+```
+
+From then on, `berth run big upgrade-server version=0.7.0` updates the server.
+
+## What is converted, and when
+
+The first start of this berth on a store converts it, whether that is the server in its container or a command on your machine.
+
+| What | Becomes |
+| --- | --- |
+| The schema of the SQLite file or the database | The schema of this berth |
+| `level` and `profile` in every profile | `type` and `target` |
+| `controller` as a type | `managed` |
+| Keys pasted into profiles to join the tailnet | Removed. berth makes the keys with the secret `tailnet_api_key` |
+| A host berth 0.5 never joined to the tailnet itself | Keeps applying without the tailnet until berth can make its key: its profile gets `devbox_tailnet_optional` |
+
+The conversion happens once. A second start doesn't change the store.
+
+## Going back
+
+Before it converts a SQLite store, berth writes a copy of it beside the store, named for the version and schema it had, such as `berth.db.berth-0.5.2-schema-4`, and says where. Only the latest copy is kept. With no room for it, berth says so and converts the store without one.
+
+berth 0.5 cannot read a converted store, and in a container it stops again and again. To go back, stop the new berth, put the copy in place and start berth 0.5:
+
+```bash
+sudo docker rm -f berth
+cd /srv/berth/data/berth
+sudo mv berth.db berth.db.converted
+sudo rm -f berth.db-wal berth.db-shm
+sudo mv berth.db.berth-0.5.2-schema-4 berth.db
+```
+
+Then run the recipe of berth 0.5 again, or `berth serve` of that version. What changed after the upgrade is lost. A store in PostgreSQL goes back from the dump of step 1 with `pg_restore`. berth doesn't copy it, and prints a line when it converts one.
+
+## Commands
+
+Each old spelling fails with the new one named, so a script does not do something it did not mean. `berth serve --web` is the exception: it works and says that `--web` does nothing.
+
+{/* old-spellings:start */}
+
+| berth 0.5 | Now |
+| --- | --- |
+| `berth list` | `berth host list, or berth ls` |
+| `berth remove` | `berth host remove NAME` |
+| `berth profile` | `berth host export NAME, berth host import NAME FILE or berth host set NAME KEY=VALUE` |
+| `berth credentials` | `berth host credentials NAME` |
+| `berth adopt` | `berth host adopt NAME [ADDRESS]` |
+| `berth iso` | `berth host iso NAME` |
+| `berth seed` | `berth host seed NAME` |
+| `berth inventory` | `berth host inventory [NAME…]` |
+| `berth provisioners` | `berth provisioner list` |
+| `berth provision` | `berth host create NAME --provisioner PROVISIONER` |
+| `berth instance` | `berth host start NAME, berth host stop NAME or berth host remove NAME --destroy` |
+| `berth deploy` | `berth resource create NAME --provisioner PROVISIONER --spec FILE` |
+| `berth actions` | `berth action list HOST` |
+| `berth manage` | `berth run HOST ACTION` |
+| `berth attach` | `berth session attach HOST [ID]` |
+| `berth sessions` | `berth session list HOST` |
+| `berth output` | `berth session logs HOST ID` |
+| `berth call` | `berth service call HOST SERVICE METHOD` |
+| `berth plugins` | `berth plugin list, add, remove or update` |
+| `berth connect` | `berth login URL` |
+| `berth setup-key` | `berth server setup-key` |
+| `berth store` | `berth server store` |
+| `berth openapi` | `berth server api openapi` |
+| `berth asyncapi` | `berth server api asyncapi` |
+| `berth operations` | `berth server api operations` |
+| `berth publish` | `berth registry publish DESTINATION --host HOST` |
+| `berth image` | `berth registry push-image DESTINATION` |
+| `berth host install` | `berth host apply NAME for a managed host, or berth run HOST install-controller` |
+| `berth host type` | `berth host set NAME type=TYPE` |
+| `berth key new` | `berth key create NAME` |
+| `berth key add` | `berth key import NAME FILE` |
+| `berth key host` | `berth host verify NAME [--accept]` |
+| `berth registry repo` | `berth registry add-repo NAME FORMAT REPOSITORY` |
+| `berth apply --behind` | `berth rollout` |
+| `berth apply --all` | `berth rollout --all` |
+| `berth channel` | `berth channel listen HOST` |
+
+{/* old-spellings:end */}
+
+## Names
+
+| Before | Now |
+| --- | --- |
+| A host's `level` | Its `type` |
+| The level `controller` | The type `managed` |
+| A profile's `profile`, such as `laptop` | Its `target` |
+| Tasks of a host | Its actions: `berth run HOST ACTION` |
+| `berth connect URL` | `berth login URL` |
+| berth-remote | berth: `berth ui` opens the screens |
+| The page in the browser | The screens and the command line. The server's address shows a line about `berth login` |
+| The `incus-host` recipe | A node with the features `incus/server` and `docker/engine` |
+| `tailscale_auth_key` and `tailscale_auto_key` in a profile | The secret `tailnet_api_key`, from which berth makes each host's key |
+
+## API clients
+
+The API is number 2 now, and `GET /v1/version` says so in `api`. A client of berth's own refuses a server with an older number. A call that only berth 0.5 makes gets an error that names berth 0.5.
+
+| Before | Now |
+| --- | --- |
+| `level` in hosts and profiles | `type` |
+| `profile` in a profile | `target` |
+| `/v1/tasks`, `tasks.list`, `tasks.run` | `/v1/actions`, `actions.list`, `actions.run` |
+| The server's `actions.act` | `hosts.act`, `installation.act`, `provisioners.act` and `resources.act` |
+
+The [API reference](/docs/api/serve) lists every operation.

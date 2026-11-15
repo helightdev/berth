@@ -41,8 +41,7 @@ ansible-playbook -i 192.0.2.10, -u root site.yml -e tailscale_auth_key=tskey-aut
 ```
 
 A second run changes nothing that is already in place. A container named
-`berth` keeps its image, its data and its options, and is started when it
-was stopped. It is made again only when it lacks one of the recipe's
+`berth` keeps its image, data and options. A stopped one is started. It is made again only when it lacks one of the recipe's
 options, such as the port or a folder in `/srv/berth`.
 
 ## Use it
