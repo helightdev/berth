@@ -264,6 +264,12 @@ impl App {
             .map(|host| host["address"].as_str().unwrap_or("").to_owned());
         match address {
             Some(address) => self.open_host(&name, &address),
+            // A name the server does not know starts a new host, once it has
+            // said what a new host starts from.
+            None if self.admin.is_some() && !self.data.borrow().template.is_object() => {
+                self.wanted = Some(name);
+            }
+            None if self.admin.is_some() => self.name_host(&name),
             None => self.status = format!("There is no host {name}"),
         }
     }
