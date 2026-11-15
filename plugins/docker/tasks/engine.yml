@@ -1,0 +1,113 @@
+---
+# A Docker engine on a node, for the plugin's machines, deployments and
+# instances. An engine that is installed already, from Ubuntu's packages or
+# Docker's own, is taken as it is, with its containers, volumes and settings.
+# Sysbox is installed beside it when the profile asks.
+- name: Take the Docker settings of the profile
+  ansible.builtin.set_fact:
+    devbox_docker:
+      sysbox: "{{ devbox_docker_sysbox | default(false) | bool }}"
+      sysbox_version: "{{ devbox_docker_sysbox_version | default('0.7.1') }}"
+      sysbox_checksums:
+        amd64: "{{ devbox_docker_sysbox_checksum_amd64 | default('9d6d5484f980d0a17f86c492c1262015c2afb66280bdb97215b79fde6a0261c5') }}"
+        arm64: "{{ devbox_docker_sysbox_checksum_arm64 | default('04ca894ae0b53f0fa54eaacc173ce40363c9a95ea5450f773716a84ef650a69b') }}"
+
+- name: See whether Docker is installed
+  ansible.builtin.command: docker version --format '{% raw %}{{.Client.Version}}{% endraw %}'
+  register: devbox_docker_found
+  changed_when: false
+  failed_when: false
+
+# Docker's own packages conflict with Ubuntu's, so an engine that is there stays.
+- name: Install Docker from Ubuntu's packages
+  ansible.builtin.apt:
+    name: [docker.io, docker-buildx, docker-compose-v2]
+    state: present
+    lock_timeout: 300
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  when: devbox_docker_found.rc != 0
+
+- name: Start Docker now and at boot
+  ansible.builtin.systemd_service:
+    name: docker.service
+    enabled: true
+    state: started
+  when: devbox_start_services
+
+- name: Let the SSH user use Docker
+  ansible.builtin.user:
+    name: "{{ devbox_user }}"
+    groups: docker
+    append: true
+  when: devbox_user != 'root'
+
+# Its installer restarts Docker when it has to change Docker's network
+# settings, unless containers exist (then it leaves Docker running and says
+# so). A host that has this version is left as it is.
+- name: Install Sysbox beside Docker
+  when: devbox_docker.sysbox | bool
+  vars:
+    devbox_sysbox_arch: "{{ 'arm64' if ansible_facts.architecture == 'aarch64' else 'amd64' }}"
+    devbox_sysbox_sum: "{{ devbox_docker.sysbox_checksums[devbox_sysbox_arch] }}"
+    devbox_sysbox_package: "/root/sysbox-ce_{{ devbox_docker.sysbox_version }}.linux_{{ devbox_sysbox_arch }}.deb"
+  block:
+    - name: Require a checksum for the Sysbox package
+      ansible.builtin.assert:
+        that: devbox_sysbox_sum is match('^[0-9a-f]{64}$')
+        fail_msg: >-
+          Sysbox is installed as root, so its package must be checked. Set
+          devbox_docker_sysbox_checksum_{{ devbox_sysbox_arch }} to the SHA-256 of version
+          {{ devbox_docker.sysbox_version }} from its release page.
+    - name: See which Sysbox is installed
+      ansible.builtin.command: dpkg-query -W -f=${Version} sysbox-ce
+      register: devbox_sysbox_installed
+      changed_when: false
+      failed_when: false
+    - name: Download Sysbox
+      ansible.builtin.get_url:
+        url: "https://github.com/nestybox/sysbox/releases/download/v{{ devbox_docker.sysbox_version }}/sysbox-ce_{{ devbox_docker.sysbox_version }}.linux_{{ devbox_sysbox_arch }}.deb"
+        dest: "{{ devbox_sysbox_package }}"
+        mode: '0600'
+        checksum: "sha256:{{ devbox_sysbox_sum }}"
+      when: not devbox_sysbox_installed.stdout.startswith(devbox_docker.sysbox_version)
+    - name: Install Sysbox
+      ansible.builtin.apt:
+        deb: "{{ devbox_sysbox_package }}"
+      when: not devbox_sysbox_installed.stdout.startswith(devbox_docker.sysbox_version)
+    - name: Remove the package file
+      ansible.builtin.file:
+        path: "{{ devbox_sysbox_package }}"
+        state: absent
+    - name: Start Sysbox now and at boot
+      ansible.builtin.systemd_service:
+        name: sysbox.service
+        enabled: true
+        state: started
+      when: devbox_start_services
+
+# A berth server in a container here, with this engine's socket, calls it
+# its local engine: when the apply comes from that container, a provisioner
+# of its local engine is this one.
+- name: Find the addresses of a berth server's container here
+  ansible.builtin.command: >-
+    docker container inspect --format
+    '{% raw %}{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}{% endraw %}'
+    {{ devbox_berth_server_container | default('berth') | quote }}
+  register: devbox_docker_server
+  changed_when: false
+  failed_when: false
+
+- name: Offer the provisioner of this engine
+  ansible.builtin.set_fact:
+    devbox_node_units: "{{ devbox_node_units + ['docker'] }}"
+    devbox_offer:
+      provisioners: [container]
+      settings:
+        host: "ssh://{user}@{address}:{port}"
+      aliases:
+        host: "{{ [''] if devbox_docker_here else [] }}"
+  vars:
+    devbox_docker_here: >-
+      {{ devbox_docker_server.rc == 0 and (devbox_apply_from | default('')) | length > 0
+         and (devbox_apply_from | default('')) in devbox_docker_server.stdout.split() }}
