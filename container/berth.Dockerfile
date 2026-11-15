@@ -3,25 +3,19 @@
 # client for the Docker plugin. The engine is another machine's, or this
 # machine's through its socket.
 #
-#   docker build -f container/berth.Dockerfile -t berth .
+# The program is not built here. The context holds a static Linux build of
+# it as `berth`, with `requirements.txt` from the provisioning source:
 #
-# BERTH_BUILD_VERSION is the version a release gives it, from its tag; without
-# it the image says the version in Cargo.toml.
+#   berth server image               builds it with this machine's engine
+#   berth server deploy HOST         builds it on HOST and runs the server from it
+#
+# CI builds the published image from the same file, with the release's own
+# program in the context and BERTH_SOURCE=published. berth carries this file
+# and a test checks that the two are the same.
 #
 # Settings and host profiles live in /config, the store and builds in /data.
-FROM rust:1-bookworm AS build
-RUN apt-get update && apt-get install -y --no-install-recommends musl-tools python3 \
-    && rm -rf /var/lib/apt/lists/* \
-    && rustup target add x86_64-unknown-linux-musl
-WORKDIR /src
-COPY . .
-ARG BERTH_BUILD_VERSION=
-RUN cargo build --release --locked --target x86_64-unknown-linux-musl -p berth \
-    && said=$(target/x86_64-unknown-linux-musl/release/berth --version) && echo "$said" \
-    && { [ -z "$BERTH_BUILD_VERSION" ] || [ "$said" = "berth $BERTH_BUILD_VERSION" ]; }
-
 FROM debian:trixie-slim
-COPY provision/requirements.txt /tmp/requirements.txt
+COPY requirements.txt /tmp/requirements.txt
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl docker-buildx docker-cli docker-compose npm openssh-client openssl \
       python3 python3-pip tar tini \
@@ -30,7 +24,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* /tmp/requirements.txt \
     && useradd --create-home --uid 1000 berth \
     && mkdir -p /config /data && chown berth:berth /config /data
-COPY --from=build /src/target/x86_64-unknown-linux-musl/release/berth /usr/local/bin/berth
+# The context gives it mode 0755, which COPY keeps.
+COPY berth /usr/local/bin/berth
+# The version the program has to say, and the SHA-256 it has to have. The
+# build stops when either is not so, which also stops a program for another
+# CPU, as it does not run here.
+ARG BERTH_VERSION=
+ARG BERTH_SHA256=
+RUN said=$(berth --version) && echo "$said" \
+    && case "$said" in "berth $BERTH_VERSION" | "berth $BERTH_VERSION "*) ;; *) [ -z "$BERTH_VERSION" ] ;; esac \
+    && { [ -z "$BERTH_SHA256" ] || echo "$BERTH_SHA256  /usr/local/bin/berth" | sha256sum -c -; }
+# `self-built` for an image built from a berth, `published` for CI's. The
+# baseline is the repository a self-built server goes back to for a release.
+ARG BERTH_SOURCE=self-built
+ARG BERTH_BASELINE=ghcr.io/helightdev/berth
+LABEL org.opencontainers.image.version=$BERTH_VERSION \
+      dev.berth.source=$BERTH_SOURCE \
+      dev.berth.baseline=$BERTH_BASELINE \
+      dev.berth.binary-sha256=$BERTH_SHA256
 USER berth
 ENV XDG_CONFIG_HOME=/config XDG_DATA_HOME=/data TERM=xterm-256color
 VOLUME ["/config", "/data"]

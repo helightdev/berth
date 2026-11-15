@@ -44,7 +44,7 @@ pub fn arguments(words: &[String]) -> Result<BTreeMap<String, String>> {
 }
 
 /// How following a session ended.
-enum Ended {
+pub(super) enum Ended {
     Exited(Option<i32>),
     /// Left with Ctrl+Q, or Ctrl+C when nothing is typed into it; it runs on.
     Detached,
@@ -57,7 +57,7 @@ fn exited(said: &Value) -> Option<Option<i32>> {
 
 /// Follow a process session: its two streams to ours, apart. With `stdin`,
 /// ours is its input and Ctrl+C interrupts it; without, Ctrl+C only leaves.
-async fn follow_process(mut stream: PortalStream, stdin: bool) -> Result<Ended> {
+pub(super) async fn follow_process(mut stream: PortalStream, stdin: bool) -> Result<Ended> {
     let (sender, mut typed) = tokio::sync::mpsc::unbounded_channel::<Piece>();
     if stdin && !std::io::stdin().is_terminal() {
         tokio::spawn(async move {
@@ -221,7 +221,12 @@ fn finish(client: &Client, host: &str, id: &str, ended: Ended, forget: bool) -> 
     }
 }
 
-fn attach_stream(client: &Client, host: &str, id: &str, since: u64) -> Result<PortalStream> {
+pub(super) fn attach_stream(
+    client: &Client,
+    host: &str,
+    id: &str,
+    since: u64,
+) -> Result<PortalStream> {
     client.stream(
         "sessions.attach",
         Some(host),
@@ -498,16 +503,30 @@ pub(super) fn run_on(
     };
     let action = find_action(client.actions(subject)?, name, &shown, &list)?;
     let mut given = arguments(words)?;
+    // This berth goes with the request, as what the node builds.
+    let here = match subject {
+        Subject::Host(host) if super::upgrade::wanted(name, &given) => Some(host.as_str()),
+        _ => None,
+    };
     complete(&action, &mut given, &shown)?;
+    let input_b64 = match here {
+        Some(host) => Some(super::upgrade::send_here(client, host, &mut given)?),
+        None => None,
+    };
     let (rows, cols) = terminal_size();
     let act = Act {
         arguments: given,
         sudo_password: sudo,
         rows: Some(rows),
         cols: Some(cols),
+        input_b64,
         ..Act::default()
     };
     let acted = client.act(subject, name, &act)?;
+    if let (Some(host), Some(session), false) = (here, &acted.session, detach) {
+        super::upgrade::follow(client, host, &session.id)?;
+        return Ok(None);
+    }
     // A terminal of the host's is attached to here.
     if acted.job.is_none()
         && let (Some(session), Subject::Host(host)) = (&acted.session, subject)

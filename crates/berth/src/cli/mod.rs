@@ -17,6 +17,7 @@ pub mod out;
 mod pages;
 mod setup;
 mod things;
+mod upgrade;
 
 #[cfg(target_os = "linux")]
 pub use host::{profile_of as host_profile, save as save_host};

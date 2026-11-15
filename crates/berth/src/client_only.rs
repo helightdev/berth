@@ -27,3 +27,17 @@ pub fn ssh(_: &Global, ssh: &Ssh) -> Done<()> {
         ssh.host
     )))
 }
+
+/// Only a berth for Linux goes into a server's image.
+pub fn server_context(machine: &str) -> Done<(Vec<u8>, String)> {
+    let file = match machine.trim() {
+        "aarch64" | "arm64" => "berth-aarch64-linux.tar.gz",
+        _ => "berth-x86_64-linux.tar.gz",
+    };
+    Err(Fail::refused(format!(
+        "This berth is for {}, and a server's image holds berth for Linux. Run it from berth {} for Linux, from {file} of https://github.com/helightdev/berth/releases/tag/v{}",
+        std::env::consts::OS,
+        berth_api::VERSION,
+        berth_api::VERSION
+    )))
+}

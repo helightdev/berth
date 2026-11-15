@@ -701,6 +701,22 @@ pub struct Act {
     pub rows: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cols: Option<u16>,
+    /// Bytes for the standard input of an action that takes them, in base64:
+    /// the build context of a berth for `upgrade-server source=here`. They
+    /// go over HTTP when they are more than the portal carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_b64: Option<String>,
+}
+
+/// The node's action that runs a berth server in its container from another
+/// image, and its argument `source`.
+pub mod upgrade_server {
+    pub const ACTION: &str = "upgrade-server";
+    pub const SOURCE: &str = "source";
+    /// The published image of the version.
+    pub const RELEASE: &str = "release";
+    /// An image built on the node from the berth that runs the action.
+    pub const HERE: &str = "here";
 }
 
 /// What running an action answers: one of the three.

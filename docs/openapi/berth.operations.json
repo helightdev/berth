@@ -45,6 +45,13 @@
               "null"
             ]
           },
+          "input_b64": {
+            "description": "Bytes for the standard input of an action that takes them, in base64:\nthe build context of a berth for `upgrade-server source=here`. They\ngo over HTTP when they are more than the portal carries.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "rows": {
             "description": "The size of the terminal, for an action that runs in one.",
             "format": "int32",

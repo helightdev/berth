@@ -770,6 +770,19 @@ async fn a_hosts_api_is_passed_through() {
         .await
         .unwrap_err();
     assert_eq!(secrets.status(), 403);
+    // Building the server's image goes through the server's own action, which an admin runs.
+    let upgrade = client
+        .post::<Value>(
+            "/v1/hosts/box/controller/actions/upgrade-server",
+            &json!({"arguments": {"version": "0.6.0", "source": "here"}, "input_b64": "eA=="}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(upgrade.status(), 403);
+    assert!(
+        upgrade.to_string().contains("which an admin may"),
+        "{upgrade}"
+    );
 
     // A stream, both ways: what is published through it comes back on it.
     let mut channel =

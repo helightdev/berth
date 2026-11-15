@@ -18,6 +18,8 @@ type Finish = Box<dyn FnOnce()>;
 pub struct Client {
     /// The server's address, as `--server` takes it.
     pub url: String,
+    /// The token it was opened with, for a request over HTTP and to open it again.
+    token: String,
     portal: Portal,
     finish: Option<Finish>,
     /// The hosts whose sudo password the server in this process was given
@@ -131,6 +133,7 @@ impl Client {
         let client = Client {
             portal: connect(&url, &token)?,
             url,
+            token,
             finish,
             sudo_ready: Default::default(),
         };
@@ -152,6 +155,18 @@ impl Client {
         Ok(Client {
             portal: connect(&url, &token)?,
             url,
+            token,
+            finish: None,
+            sudo_ready: Default::default(),
+        })
+    }
+
+    /// The same server again, as when it was replaced and answers anew.
+    pub fn reopen(&self) -> Result<Client> {
+        Ok(Client {
+            portal: connect(&self.url, &self.token)?,
+            url: self.url.clone(),
+            token: self.token.clone(),
             finish: None,
             sudo_ready: Default::default(),
         })
@@ -233,8 +248,35 @@ impl Client {
             Subject::Resource(id) => ("resources.act", json!({"id": id, "action": action})),
             Subject::Installation => ("installation.act", json!({"action": action})),
         };
+        let large = act
+            .input_b64
+            .as_ref()
+            .is_some_and(|input| input.len() > berth_api::ops::PORTAL_BYTES);
+        if let (true, Subject::Host(name)) = (large, subject) {
+            return self.act_over_http(name, action, act);
+        }
         let acted = self.call(op, args, Some(serde_json::to_value(act)?))?;
         Ok(serde_json::from_value(acted)?)
+    }
+
+    /// Run a host's action with more input than the portal carries: the
+    /// same request, over HTTP.
+    fn act_over_http(
+        &self,
+        host: &str,
+        action: &str,
+        act: &berth_api::Act,
+    ) -> Result<berth_api::Acted> {
+        let path = format!(
+            "/v1/hosts/{}/actions/{}",
+            berth_api::client::encode(host),
+            berth_api::client::encode(action)
+        );
+        let body = serde_json::to_vec(act)?;
+        let answer = self
+            .wait(net::send("POST", &self.url, &path, &self.token, body))
+            .map_err(Fail::unreachable)?;
+        answer.json().map_err(Fail::from)
     }
 
     /// The actions of a subject.

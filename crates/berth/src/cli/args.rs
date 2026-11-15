@@ -920,6 +920,31 @@ pub enum Server {
     /// The server's API documents.
     #[command(subcommand)]
     Api(Api),
+    /// Build the server's image from this berth with this machine's Docker engine.
+    Image {
+        /// The image's tag: berth:VERSION, this berth's version, unless another is given.
+        #[arg(long, value_name = "TAG")]
+        tag: Option<String>,
+    },
+    /// Run the berth server on a machine with Docker, over SSH: from an image built there from this berth, or from a release.
+    Deploy(Deploy),
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Args, Debug, Clone)]
+pub struct Deploy {
+    /// The machine, as ssh reaches it with your own keys and settings.
+    #[arg(value_name = "[USER@]HOST")]
+    pub target: String,
+    /// The server's container there.
+    #[arg(long, value_name = "NAME", default_value = "berth")]
+    pub container: String,
+    /// The port the server listens on there, on 127.0.0.1. A new container gets 7777 without it.
+    #[arg(long, value_name = "PORT")]
+    pub port: Option<u16>,
+    /// Pull the published image of this version instead, as ghcr.io/helightdev/berth:VERSION.
+    #[arg(long, value_name = "VERSION")]
+    pub release: Option<String>,
 }
 
 #[cfg(target_os = "linux")]

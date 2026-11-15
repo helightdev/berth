@@ -27,6 +27,7 @@ pub mod runner;
 pub mod seal;
 pub mod seed;
 pub mod server;
+pub mod server_image;
 pub mod store;
 pub mod tailnet;
 
