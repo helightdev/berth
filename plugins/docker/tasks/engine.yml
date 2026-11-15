@@ -110,9 +110,9 @@
       aliases:
         host: "{{ [''] if devbox_docker_here else [] }}"
   vars:
-    devbox_docker_found: "{{ (devbox_docker_server.stdout ~ '|').split('|') if devbox_docker_server.rc == 0 else ['', ''] }}"
+    devbox_docker_container: "{{ (devbox_docker_server.stdout ~ '|').split('|') if devbox_docker_server.rc == 0 else ['', ''] }}"
     devbox_docker_here: >-
       {{ (devbox_apply_from | default('')) | length > 0
-         and (devbox_apply_from | default('')) in devbox_docker_found[0].split() }}
-    devbox_docker_local: "{{ devbox_docker_here and '/var/run/docker.sock' in devbox_docker_found[1].split() }}"
+         and (devbox_apply_from | default('')) in devbox_docker_container[0].split() }}
+    devbox_docker_local: "{{ devbox_docker_here and '/var/run/docker.sock' in devbox_docker_container[1].split() }}"
 
