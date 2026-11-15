@@ -830,10 +830,73 @@ fn pack(folder: &std::path::Path) -> Result<Vec<u8>> {
 
 // ── settings ────────────────────────────────────────────────────────────────
 
+/// The settings of berth itself, on this machine, beside those of the
+/// server: where the server is, and its token.
+const CLIENT_SETTINGS: &[(&str, &str)] = &[
+    (
+        berth_page::settings::SERVER,
+        "the berth server this berth uses, kept by berth login; empty for the one in berth itself",
+    ),
+    (
+        berth_page::settings::TOKEN,
+        "the token of that server, kept by berth login and never shown",
+    ),
+];
+
+/// The client's own settings, as the server's are listed.
+fn client_settings() -> Vec<Value> {
+    let kept = super::client::settings();
+    CLIENT_SETTINGS
+        .iter()
+        .map(|(key, meaning)| {
+            let value = match (kept.get(key), *key == berth_page::settings::TOKEN) {
+                (Some(_), true) => "(set)".to_owned(),
+                (Some(value), false) => value,
+                (None, _) => String::new(),
+            };
+            json!({"key": key, "value": value, "meaning": meaning, "where": "client"})
+        })
+        .collect()
+}
+
+fn is_client_setting(key: &str) -> bool {
+    CLIENT_SETTINGS.iter().any(|(known, _)| *known == key)
+}
+
+/// Change one of the client's own settings.
+fn set_client(key: &str, value: &str) -> Result<()> {
+    if key == berth_page::settings::TOKEN && !value.is_empty() {
+        return Err(Fail::usage(
+            "The token is not given on the command line, where others can read it. berth login URL keeps one",
+        ));
+    }
+    let mut changes = vec![(key, value)];
+    // Another server takes another token.
+    if key == berth_page::settings::SERVER {
+        changes.push((berth_page::settings::TOKEN, ""));
+    }
+    super::client::settings()
+        .set(&changes)
+        .map_err(|error| Fail::failed(error.to_string()))
+}
+
 pub fn config(client: &Client, command: args::Config) -> Result<()> {
     let settings = || -> Result<Vec<Value>> {
         let found = client.call("settings.list", json!({}), None)?;
-        Ok(found.as_array().cloned().unwrap_or_default())
+        // A server's own server and token are not this berth's: those are the client's.
+        let mut all: Vec<Value> = found
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|setting| !is_client_setting(setting["key"].as_str().unwrap_or("")))
+            .map(|mut setting| {
+                setting["where"] = json!("server");
+                setting
+            })
+            .collect();
+        all.extend(client_settings());
+        Ok(all)
     };
     let known = |key: &str| -> Result<Value> {
         settings()?
@@ -844,6 +907,9 @@ pub fn config(client: &Client, command: args::Config) -> Result<()> {
             })
     };
     let set = |key: &str, value: &str| -> Result<()> {
+        if is_client_setting(key) {
+            return set_client(key, value);
+        }
         known(key)?;
         client.call(
             "settings.set",
@@ -856,15 +922,32 @@ pub fn config(client: &Client, command: args::Config) -> Result<()> {
         args::Config::List => {
             let all = settings()?;
             out::data(&Value::Array(all.clone()), || {
+                let width = all
+                    .iter()
+                    .map(|setting| setting["key"].as_str().unwrap_or("").chars().count())
+                    .max()
+                    .unwrap_or(0);
+                let mut place = "";
                 for setting in &all {
+                    let here = setting["where"].as_str().unwrap_or("");
+                    if here != place {
+                        place = here;
+                        let heading = match here {
+                            "client" => "This berth, on this machine",
+                            _ => "The server",
+                        };
+                        println!("{}", styled(heading, Style::Accent));
+                    }
                     let value = setting["value"].as_str().unwrap_or("");
                     let shown = match value {
                         "" => styled("(not set)", Style::Dim),
                         value => value.to_owned(),
                     };
-                    println!("{} = {shown}", setting["key"].as_str().unwrap_or(""));
+                    let key = setting["key"].as_str().unwrap_or("");
+                    println!("  {key:<width$}  {shown}");
                     println!(
-                        "    {}",
+                        "  {:<width$}  {}",
+                        "",
                         styled(setting["meaning"].as_str().unwrap_or(""), Style::Dim)
                     );
                 }
@@ -872,6 +955,11 @@ pub fn config(client: &Client, command: args::Config) -> Result<()> {
             Ok(())
         }
         args::Config::Get { key } => {
+            if key == berth_page::settings::TOKEN {
+                return Err(Fail::usage(
+                    "The token is never shown. berth config list says whether there is one",
+                ));
+            }
             let setting = known(&key)?;
             out::data(&setting, || {
                 println!("{}", setting["value"].as_str().unwrap_or(""))
@@ -881,6 +969,9 @@ pub fn config(client: &Client, command: args::Config) -> Result<()> {
         args::Config::Set { key, value } => {
             set(&key, &value)?;
             out::done(format!("{key} = {value}"));
+            if key == berth_page::settings::SERVER {
+                out::hint(format!("Claim its token with: berth login {value}"));
+            }
             Ok(())
         }
         args::Config::Unset { key } => {

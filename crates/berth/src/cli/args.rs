@@ -145,10 +145,10 @@ pub enum Command {
     /// Plugins and what they install.
     #[command(subcommand)]
     Plugin(Plugin),
-    /// The server's settings.
+    /// The settings: the server's, and this berth's own, such as the server it uses.
     #[command(subcommand)]
     Config(Config),
-    /// Reach a port of a host from this machine.
+    /// Reach a port of a host, or an endpoint of a resource, from this machine.
     #[command(subcommand)]
     Port(Port),
     /// Messages taken in from the hosts' channels.
@@ -787,7 +787,7 @@ pub enum Plugin {
 
 #[derive(Subcommand, Debug)]
 pub enum Config {
-    /// The settings, with what each means.
+    /// The settings, with what each means and where it is kept.
     #[command(visible_alias = "ls")]
     List,
     /// One setting's value.
