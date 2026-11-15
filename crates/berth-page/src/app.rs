@@ -1440,8 +1440,8 @@ impl App {
     fn draw_hosts(&mut self, frame: &mut Frame, main: Rect, footer: Rect) {
         let admin = self.is_admin();
         let preferred = self.data.borrow().setting("default_host").to_owned();
+        let count = self.host_rows();
         let hosts = self.hosts.borrow();
-        let count = hosts.list.len() + usize::from(admin);
         self.cursor = self.cursor.min(count.saturating_sub(1));
         let widest = hosts
             .list
