@@ -590,11 +590,14 @@ impl App {
             rows.push(Row::info(""));
         }
         rows.push(heading("Connection"));
+        let address = match self.address.as_str() {
+            "" => "no SSH address yet",
+            address => address,
+        };
         rows.push(Row::info(match self.local() {
-            true => format!("  {}", self.address),
+            true => format!("  {address}"),
             false => format!(
-                "  {} · through the berth server at {}",
-                self.address,
+                "  {address} · through the berth server at {}",
                 device::shown(&self.server)
             ),
         }));

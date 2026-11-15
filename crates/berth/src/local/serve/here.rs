@@ -25,12 +25,12 @@ pub fn socket() -> std::path::PathBuf {
 /// The server berth goes through when it is set to use none: a `berth
 /// serve` of this user on this machine, or else one started in this process,
 /// which the caller keeps while it is needed. The address names either.
-pub fn local(paths: &Paths) -> Result<(String, Option<Here>)> {
+pub fn local(paths: &Paths, ask: bool) -> Result<(String, Option<Here>)> {
     let socket = socket();
     if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
         return Ok((format!("unix:{}", socket.display()), None));
     }
-    let here = Here::start(paths)?;
+    let here = Here::start(paths, ask)?;
     berth_core::server::serve_here(here.dial());
     Ok((berth_core::server::HERE.to_owned(), Some(here)))
 }
@@ -41,7 +41,7 @@ pub fn server(paths: &Paths) -> Result<(berth_core::server::Server, Option<Here>
     if let Some(server) = berth_core::server::Server::configured(paths) {
         return Ok((server, None));
     }
-    let (url, here) = local(paths)?;
+    let (url, here) = local(paths, false)?;
     Ok((berth_core::server::Server { url, token: None }, here))
 }
 
@@ -92,8 +92,10 @@ pub struct Here {
 impl Here {
     /// Open the store and serve its API to this process. The hosts' channels
     /// are left to `berth serve`, and so are jobs a server before left
-    /// unfinished, which another berth beside this one may be running.
-    pub fn start(paths: &Paths) -> Result<Here> {
+    /// unfinished, which another berth beside this one may be running. With
+    /// `ask`, a host whose sudo asks for a password has it asked for on the
+    /// terminal first, as `berth serve` does when it starts.
+    pub fn start(paths: &Paths, ask: bool) -> Result<Here> {
         let store = super::open_store(paths)?;
         crate::local::restore_plugins(paths);
         let mut state = Serve::with(paths.clone(), store, auth::Auth::nobody());
@@ -107,10 +109,9 @@ impl Here {
             .enable_all()
             .build()?;
         let (connections, pipes) = unbounded_channel();
+        runtime.block_on(async { state.refresh(ask) });
         let router = api::router(state.clone(), false);
-        let serving = state.clone();
         runtime.spawn(async move {
-            serving.refresh(false);
             let _ = axum::serve(Pipes(pipes), router).await;
         });
         // Another berth beside this one changes the store too.
@@ -187,7 +188,7 @@ mod tests {
             .unwrap()
             .save(&paths, &profile)
             .unwrap();
-        let here = Here::start(&paths).unwrap();
+        let here = Here::start(&paths, false).unwrap();
         let dial = here.dial();
         // The client has a runtime of its own, as the screens do.
         let client_runtime = tokio::runtime::Builder::new_current_thread()
@@ -285,7 +286,7 @@ mod tests {
                 .save(&paths, &profile)
                 .unwrap();
         }
-        let here = Here::start(&paths).unwrap();
+        let here = Here::start(&paths, false).unwrap();
         berth_page::net::serve_here(here.dial());
         let kept = dir.path().join("client");
         let linked = berth_page::device::Linked {
@@ -333,7 +334,7 @@ mod tests {
     #[test]
     fn nothing_listens_for_it() {
         let (dir, paths) = scratch();
-        let _here = Here::start(&paths).unwrap();
+        let _here = Here::start(&paths, false).unwrap();
         // No socket, no token and no port are made for a server in the process.
         assert!(!paths.data_dir.join("serve.token").exists());
         let made: Vec<_> = walk(dir.path());

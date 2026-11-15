@@ -158,7 +158,7 @@ impl Action {
                 "Generate the NoCloud files and provisioning bundle for an unattended installer."
             }
             Action::Iso => {
-                "For a blank machine: build an installer image from the Ubuntu Server ISO that installs and sets up the host without questions, and write it to a USB drive. F4 on the ISO field downloads the ISO."
+                "For a blank machine: build an installer image from the Ubuntu Server ISO that installs and sets up the host without questions, and write it to a USB drive. Without an ISO the current one is downloaded and checked first. It is built on the machine berth serve runs on."
             }
             Action::CloudSeed => {
                 "Generate cloud-init user data. Upload the generated release archive to the configured URL."
@@ -528,13 +528,13 @@ impl Field {
                 "Source ISO",
                 "/builder/iso",
                 Path,
-                "Ubuntu Server 26.04 amd64 installer ISO to build from. F4 downloads the current one and checks it against Ubuntu's published SHA256SUMS.",
+                "Ubuntu Server 26.04 amd64 installer ISO to build from, a path on the machine berth serve runs on. Left empty, the build downloads the current one and checks it against Ubuntu's published SHA256SUMS.",
             ),
             IsoSha => (
                 "ISO SHA256",
                 "/builder/iso_sha256",
                 Text,
-                "SHA-256 the source ISO must have. Filled in from the file when you choose the ISO, and F4 recomputes it. Compare it with Ubuntu's published SHA256SUMS before trusting the image.",
+                "SHA-256 the source ISO must have, which the build checks. Take it from Ubuntu's published SHA256SUMS.",
             ),
             Inventory => (
                 "Ansible inventory",
@@ -582,7 +582,7 @@ impl Field {
                 "Then write to USB drive",
                 "/builder/usb_device",
                 Text,
-                "Enter switches between not writing and each connected USB drive. The chosen drive is erased and gets the finished ISO; that asks for confirmation and your sudo password. You can also press w after the build instead.",
+                "The USB drive the finished ISO is written to, such as /dev/sdb, on the machine berth serve runs on. It is erased. The host's overview asks for it again, with your sudo password, when the installer is built.",
             ),
         };
         Spec {
@@ -629,9 +629,6 @@ impl Field {
 
     /// Fields with a Generate (F4) action.
     pub fn can_generate(self) -> bool {
-        matches!(
-            self,
-            Field::Hostname | Field::Iso | Field::IsoSha | Field::TailscaleKey
-        ) || self.is_password_hash()
+        matches!(self, Field::Hostname | Field::TailscaleKey) || self.is_password_hash()
     }
 }

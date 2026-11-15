@@ -19,7 +19,7 @@ use std::process::Command;
 /// The server of this machine for the screens: a `berth serve` of this
 /// user, or one in this process, whose jobs `finish` waits for.
 pub fn server() -> Result<Option<crate::Local>> {
-    let (server, here) = serve::here::local(&Paths::locate()?)?;
+    let (server, here) = serve::here::local(&Paths::locate()?, true)?;
     if let Some(here) = &here {
         berth_page::net::serve_here(here.dial());
     }

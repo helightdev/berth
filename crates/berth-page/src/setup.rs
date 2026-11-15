@@ -220,7 +220,7 @@ impl Setup {
         if self.action == Action::Iso && !self.local {
             problems.push(Problem::new(
                 Step::Install,
-                "The USB installer is built on the machine berth serve runs on: there, with berth ui or berth iso",
+                "The USB installer is built where berth serve runs, with berth ui there",
             ));
         }
         if self.action == Action::Ssh && view.text(Field::SshHost).is_empty() {
