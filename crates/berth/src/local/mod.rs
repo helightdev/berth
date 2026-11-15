@@ -4,8 +4,11 @@
 //! store, its API documents, and the commands that need the installation's
 //! own files, such as `berth ssh` with its key.
 
+mod deploy;
 pub mod serve;
 mod store_command;
+
+pub use deploy::server_context;
 
 use crate::Result;
 use crate::cli::args::{self, Global};
@@ -286,5 +289,7 @@ pub fn server_command(command: args::Server) -> Done<()> {
             out::json(&document);
             Ok(())
         }
+        args::Server::Image { tag } => deploy::image(tag),
+        args::Server::Deploy(deploy) => deploy::deploy(&deploy),
     }
 }

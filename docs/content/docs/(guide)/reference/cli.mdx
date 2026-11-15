@@ -1478,6 +1478,33 @@ The operations, with their routes and roles.
 berth server api operations
 ```
 
+### berth server image
+
+Build the server's image from this berth with this machine's Docker engine.
+
+```text
+berth server image [--tag TAG]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `--tag TAG` | The image's tag: berth:VERSION, this berth's version, unless another is given. |
+
+### berth server deploy
+
+Run the berth server on a machine with Docker, over SSH: from an image built there from this berth, or from a release.
+
+```text
+berth server deploy [USER@]HOST [--container NAME] [--port PORT] [--release VERSION]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `[USER@]HOST` | The machine, as ssh reaches it with your own keys and settings. |
+| `--container NAME` | The server's container there. By default `berth`. |
+| `--port PORT` | The port the server listens on there, on 127.0.0.1. A new container gets 7777 without it. |
+| `--release VERSION` | Pull the published image of this version instead, as ghcr.io/helightdev/berth:VERSION. |
+
 ## berth serve
 
 Short for berth server run.

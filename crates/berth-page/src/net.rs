@@ -196,6 +196,35 @@ pub async fn http(
     ))
 }
 
+/// One request with a bearer and a JSON body, such as one with more bytes
+/// than the portal carries: the answer as it came.
+pub async fn send(
+    method: &str,
+    server: &str,
+    path: &str,
+    bearer: &str,
+    body: Vec<u8>,
+) -> Result<client::Response, String> {
+    let target = target(server, path)?;
+    let stream = connect(&target).await?;
+    let mut client = client::Client::over(stream)
+        .await
+        .map_err(|error| describe(&error))?;
+    let authorization = format!("Bearer {bearer}");
+    let mut headers = vec![
+        ("host", target.authority.as_str()),
+        ("accept", "application/json"),
+        ("content-type", "application/json"),
+    ];
+    if !bearer.is_empty() {
+        headers.push(("authorization", authorization.as_str()));
+    }
+    client
+        .send(method, &target.path, &headers, body.into())
+        .await
+        .map_err(|error| describe(&error))
+}
+
 pub fn describe(error: &Error) -> String {
     match error {
         Error::Api { message, .. } => message.clone(),

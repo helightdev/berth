@@ -19,7 +19,7 @@ use axum::{
 use berth_api::profile::{self, Auth};
 use berth_api::{
     Act, Acted, Action, Argument, ErrorBody, HostAction, Resource, Rollout, RolloutReport, Runs,
-    Session, b64, client, code, ops::Role,
+    Session, b64, client, code, ops::Role, upgrade_server,
 };
 use berth_core::{
     apply,
@@ -72,7 +72,7 @@ const THROUGH_CONTROLLER: &[&str] = &["secrets", UPGRADE_SERVER];
 /// berth's own action that upgrades the berth server in a container on a
 /// node. It is offered only where the node's controller lists it, which its
 /// role does when it found such a container.
-const UPGRADE_SERVER: &str = "upgrade-server";
+const UPGRADE_SERVER: &str = upgrade_server::ACTION;
 
 /// One of berth's own actions.
 pub(super) struct Builtin {
@@ -180,8 +180,20 @@ fn unavailable(mut action: Action, why: Option<String>) -> Action {
     action
 }
 
-/// What a request to run an action carries; nothing is an empty one.
+/// What a request to run an action carries; nothing is an empty one. Only
+/// the action that takes bytes on its input is given them.
 pub(super) fn parse(body: &Bytes) -> Answer<Act> {
+    let act = parse_with_input(body)?;
+    match act.input_b64 {
+        Some(_) => Err(Fail::new(
+            code::BAD_REQUEST,
+            "This action takes no input_b64: only a node's upgrade-server with source=here does",
+        )),
+        None => Ok(act),
+    }
+}
+
+fn parse_with_input(body: &Bytes) -> Answer<Act> {
     match body.is_empty() {
         true => Ok(Act::default()),
         false => serde_json::from_slice(body)
@@ -399,7 +411,10 @@ pub async fn host_act(
     body: Bytes,
 ) -> Answer<(StatusCode, Json<Acted>)> {
     state.refresh(false);
-    let act = parse(&body)?;
+    let act = match action == UPGRADE_SERVER {
+        true => parse_with_input(&body)?,
+        false => parse(&body)?,
+    };
     let remote = remote(&state, &name)?;
     let profile = profile_of(&state, &name);
     // berth's own are described without asking the host, which they do themselves.
@@ -572,7 +587,7 @@ async fn run_action(
     remote: &Arc<Remote>,
     action: &Action,
     act: Act,
-    input: Option<String>,
+    input: Option<Vec<u8>>,
 ) -> Answer<Acted> {
     let Some(link) = &remote.link else {
         let problem = remote.problem.clone().unwrap_or_else(|| "no link".into());
@@ -584,7 +599,7 @@ async fn run_action(
             (json!(act.rows.unwrap_or(24)), json!(act.cols.unwrap_or(80)));
     }
     if let Some(input) = input {
-        body["input_b64"] = json!(b64(format!("{input}\n").as_bytes()));
+        body["input_b64"] = json!(b64(&input));
     }
     let path = format!("/v1/actions/{}", client::encode(&action.name));
     // One to attach to is the session alone, with no job to find again.
@@ -1047,8 +1062,30 @@ fn secrets(state: Arc<Serve>, name: String, act: Act) -> Run {
             name: "secrets".into(),
             ..Action::default()
         };
-        run_action(&state, &remote, &action, act, Some(payload.to_string())).await
+        let input = format!("{payload}\n").into_bytes();
+        run_action(&state, &remote, &action, act, Some(input)).await
     })
+}
+
+/// The arguments of `upgrade-server`.
+fn upgrade_arguments() -> Vec<Argument> {
+    vec![
+        Argument {
+            name: "version".into(),
+            label: "Version".into(),
+            help: "The version of berth to run, as its image is tagged: this berth's own unless another is given. With source=here it is that of the berth sent.".into(),
+            default: berth_api::VERSION.into(),
+            ..Argument::default()
+        },
+        Argument {
+            name: upgrade_server::SOURCE.into(),
+            label: "Source".into(),
+            help: "release pulls the published image ghcr.io/helightdev/berth:VERSION, and takes a server built from a berth back to it. here builds the image berth:VERSION on the node from the berth that runs the action, which berth run sends from Linux.".into(),
+            default: upgrade_server::RELEASE.into(),
+            values: vec![upgrade_server::RELEASE.into(), upgrade_server::HERE.into()],
+            ..Argument::default()
+        },
+    ]
 }
 
 fn upgrade_server_action(seen: &Seen) -> Action {
@@ -1058,7 +1095,7 @@ fn upgrade_server_action(seen: &Seen) -> Action {
     let mut action = set_up(
         UPGRADE_SERVER,
         "Upgrade the berth server",
-        "Run the berth server in the container on this node from the image of this berth's version, with the same data and the same options as the running container. It is refused when the container has an option it cannot carry over, and the old container is started again when the new one does not come up. A server that upgrades itself restarts during the job.",
+        "Run the berth server in the container on this node from the image of this berth's version, with the same data and the same options as the running container. With source=here the node builds the image from the berth that runs the action instead, which sends itself: berth run NODE upgrade-server source=here, from berth for Linux. It is refused when the container has an option it cannot carry over, and the old container is started again when the new one does not come up. A server that upgrades itself restarts during the job.",
     );
     action.group = "Server".into();
     action.runs = Runs::Host;
@@ -1067,13 +1104,7 @@ fn upgrade_server_action(seen: &Seen) -> Action {
         seen.name,
         berth_api::VERSION
     ));
-    action.arguments = vec![Argument {
-        name: "version".into(),
-        label: "Version".into(),
-        help: "The version of berth to run, as its image is tagged: this berth's own unless another is given.".into(),
-        default: berth_api::VERSION.into(),
-        ..Argument::default()
-    }];
+    action.arguments = upgrade_arguments();
     if let Some(kept) = kept {
         action.help = match kept.help.is_empty() {
             true => action.help,
@@ -1096,21 +1127,83 @@ fn upgrade_server_action(seen: &Seen) -> Action {
     unavailable(action, why)
 }
 
+/// What `upgrade-server` passes to the controller: its arguments, and the
+/// build context with source=here. A release is asked for with the version
+/// alone, as a controller of an older berth knows no source.
+fn upgrade_request(act: &mut Act) -> Answer<Option<Vec<u8>>> {
+    let given = |name: &str| {
+        act.arguments
+            .get(name)
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    };
+    let source = given(upgrade_server::SOURCE).unwrap_or_else(|| upgrade_server::RELEASE.into());
+    let version = given("version");
+    let bad = |message: String| Fail::new(code::BAD_REQUEST, message);
+    let input = match (source.as_str(), act.input_b64.take()) {
+        (upgrade_server::RELEASE, None) => None,
+        (upgrade_server::RELEASE, Some(_)) => {
+            return Err(bad(
+                "A release is pulled: source=release takes no build context".into(),
+            ));
+        }
+        (upgrade_server::HERE, Some(context)) => {
+            let context = berth_api::unb64(&context)
+                .filter(|context| !context.is_empty())
+                .ok_or_else(|| bad("input_b64 is not a build context in base64".into()))?;
+            if version.is_none() {
+                return Err(bad(
+                    "source=here needs the version of the berth it sends".into()
+                ));
+            }
+            Some(context)
+        }
+        (upgrade_server::HERE, None) => {
+            return Err(bad(
+                "source=here needs the build context of the berth that runs it, which berth run NODE upgrade-server source=here sends from berth for Linux".into(),
+            ));
+        }
+        (other, _) => return Err(bad(format!("source is release or here, not {other}"))),
+    };
+    let version = version.unwrap_or_else(|| berth_api::VERSION.to_owned());
+    act.arguments = [("version".to_owned(), version)].into();
+    if input.is_some() {
+        act.arguments
+            .insert(upgrade_server::SOURCE.into(), upgrade_server::HERE.into());
+    }
+    Ok(input)
+}
+
 fn upgrade_server(state: Arc<Serve>, name: String, mut act: Act) -> Run {
     Box::pin(async move {
         let remote = remote(&state, &name)?;
-        let version = act
-            .arguments
-            .get("version")
-            .map(|version| version.trim().to_owned())
-            .filter(|version| !version.is_empty())
-            .unwrap_or_else(|| berth_api::VERSION.to_owned());
-        act.arguments = [("version".to_owned(), version)].into();
+        let input = upgrade_request(&mut act)?;
+        // A controller of an older role cannot build: its action has no source.
+        if input.is_some() {
+            let profile = profile_of(&state, &name);
+            let listed = controller_actions(&remote, host_type::of(&profile)).await;
+            let builds = listed.iter().flatten().any(|kept| {
+                kept.name == UPGRADE_SERVER
+                    && kept
+                        .arguments
+                        .iter()
+                        .any(|argument| argument.name == upgrade_server::SOURCE)
+            });
+            if !builds {
+                return Err(Fail::new(
+                    code::PRECONDITION,
+                    format!(
+                        "The controller on {name} cannot build the server's image yet: apply its configuration first, with berth apply {name}"
+                    ),
+                ));
+            }
+        }
         let action = Action {
             name: UPGRADE_SERVER.into(),
+            arguments: upgrade_arguments(),
             ..Action::default()
         };
-        run_action(&state, &remote, &action, act, None).await
+        run_action(&state, &remote, &action, act, input).await
     })
 }
 
@@ -2233,6 +2326,15 @@ mod tests {
         let upgrade = find(&actions).unwrap();
         assert!(upgrade.available, "{}", upgrade.why);
         assert_eq!(upgrade.arguments[0].default, berth_api::VERSION);
+        // Its source is the published image, or this berth sent with the request.
+        let source = &upgrade.arguments[1];
+        assert_eq!(source.name, upgrade_server::SOURCE);
+        assert_eq!(source.default, upgrade_server::RELEASE);
+        assert_eq!(
+            source.values,
+            [upgrade_server::RELEASE, upgrade_server::HERE]
+        );
+        assert_eq!(upgrade.role, Role::Admin);
         assert_eq!(upgrade.runs, Runs::Host);
         // Listed once: berth's own takes the place of the controller's.
         assert_eq!(
@@ -2250,6 +2352,54 @@ mod tests {
         let managed = upgrade_server_action(&seen(HostType::Managed, Some(&with), &profile));
         assert!(!managed.available && managed.why.contains("only a node's controller"));
         assert!(managed.why.contains(berth_api::compat::UPGRADE_DOCS));
+    }
+
+    #[test]
+    fn upgrading_from_here_takes_the_build_context_and_a_release_takes_none() {
+        let act = |arguments: &[(&str, &str)], input: Option<&[u8]>| Act {
+            arguments: arguments
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
+            input_b64: input.map(b64),
+            ..Act::default()
+        };
+        // A release: the version alone, as a controller of an older role takes it.
+        let mut release = act(&[("version", " 0.6.1 ")], None);
+        assert_eq!(upgrade_request(&mut release).ok().unwrap(), None);
+        assert_eq!(
+            release.arguments,
+            [("version".to_owned(), "0.6.1".to_owned())].into()
+        );
+        let mut default = act(&[("source", "release")], None);
+        assert!(upgrade_request(&mut default).is_ok());
+        assert_eq!(default.arguments["version"], berth_api::VERSION);
+        assert!(!default.arguments.contains_key("source"));
+        // Here: the context goes to the controller's input, with the version sent.
+        let mut here = act(
+            &[("version", "0.6.0"), ("source", "here")],
+            Some(b"context"),
+        );
+        assert_eq!(
+            upgrade_request(&mut here).ok().flatten().as_deref(),
+            Some(&b"context"[..])
+        );
+        assert_eq!(here.arguments["source"], "here");
+        assert_eq!(here.input_b64, None);
+        let refused = |mut act: Act| upgrade_request(&mut act).unwrap_err().message().to_owned();
+        assert!(refused(act(&[("source", "here")], None)).contains("needs the build context"));
+        assert!(
+            refused(act(&[("source", "here")], Some(b"context"))).contains("needs the version")
+        );
+        assert!(
+            refused(act(&[("version", "0.6.0")], Some(b"context")))
+                .contains("takes no build context")
+        );
+        assert!(refused(act(&[("source", "there")], None)).contains("release or here"));
+        // No other action takes input.
+        let body = Bytes::from(serde_json::to_vec(&act(&[], Some(b"x"))).unwrap());
+        assert!(parse(&body).is_err());
+        assert!(parse_with_input(&body).is_ok());
     }
 
     #[test]

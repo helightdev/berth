@@ -51,6 +51,12 @@ impl Fail {
     pub fn new(kind: (u16, &str), message: impl Into<String>) -> Fail {
         Fail(kind.0, kind.1.to_owned(), message.into())
     }
+
+    /// What it says, for a test of why something was refused.
+    #[cfg(test)]
+    pub fn message(&self) -> &str {
+        &self.2
+    }
 }
 
 impl IntoResponse for Fail {
@@ -1290,6 +1296,14 @@ async fn proxy(
         return Err(Fail::new(
             code::FORBIDDEN,
             "The controller's secrets action takes the server's secrets: run the server's secrets action of the host (POST /v1/hosts/NAME/actions/secrets)",
+        ));
+    }
+    // Building the server's image runs what the caller sends, so it takes the
+    // admin role that the server's own action asks for.
+    if method == Method::POST && rest.trim_end_matches('/') == "actions/upgrade-server" {
+        return Err(Fail::new(
+            code::FORBIDDEN,
+            "The controller's upgrade-server replaces the berth server: run the server's upgrade-server action of the host (POST /v1/hosts/NAME/actions/upgrade-server), which an admin may",
         ));
     }
     let Some(link) = &remote.link else {
