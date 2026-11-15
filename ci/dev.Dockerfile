@@ -3,7 +3,8 @@
 # downloads (/cache/cargo) and the target directory (/src/target) are volumes.
 #
 #   ci/run.sh shell
-FROM rust:1-trixie
+# CI installs the same version (.github/actions/rust reads it here).
+FROM rust:1.99.0-trixie
 ARG VALE_VERSION=3.25.1
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
 RUN apt-get update && apt-get install -y --no-install-recommends \

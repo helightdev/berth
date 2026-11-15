@@ -1,0 +1,28 @@
+name: Green
+description: >-
+  Leave the markers of a unit that passed, so that a later run with the same
+  key skips it (ci/plan.py).
+inputs:
+  unit:
+    description: The unit as ci/plan.py gives it, as JSON
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: marker
+      shell: bash
+      env:
+        UNIT: ${{ inputs.unit }}
+      run: |
+        mkdir -p "$RUNNER_TEMP/green"
+        echo "$GITHUB_SHA" > "$RUNNER_TEMP/green/commit"
+        python3 -c 'import json, os; unit = json.loads(os.environ["UNIT"]); print("key=" + unit["key"]); print("also=" + (unit["also"][0] if unit["also"] else ""))' >> "$GITHUB_OUTPUT"
+    - uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/green
+        key: ${{ steps.marker.outputs.key }}
+    - if: steps.marker.outputs.also != ''
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/green
+        key: ${{ steps.marker.outputs.also }}

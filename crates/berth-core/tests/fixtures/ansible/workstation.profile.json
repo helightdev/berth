@@ -1,0 +1,17 @@
+{
+  "hostname": "studio",
+  "target": "cloud",
+  "operator_username": "ops",
+  "operator_ssh_public_keys": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOPERATOR ops@laptop"],
+  "agent_username": "agent",
+  "agent_ssh_public_keys": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAGENT agent@laptop"],
+  "agent_passwordless_sudo": true,
+  "agent_privileges": "limited",
+  "ansible_vars": {
+    "devbox_geometry": "1920x1080",
+    "devbox_plugin_features": ["docker/engine", "not a feature"],
+    "devbox_tailscale_key_command": ["sh", "-c", "id"],
+    "ansible_host": "192.0.2.9"
+  },
+  "access": {"address": "192.0.2.5", "user": "ops", "auth": "berth"}
+}

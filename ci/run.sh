@@ -7,8 +7,9 @@
 #   ci/run.sh e2e [TEST…]       build berth, start a test host and run the
 #                               end-to-end tests against it (names as in
 #                               unittest: e2e_serve, e2e_serve.Roles)
-#   ci/run.sh e2e --shard HOST  the same for the tests of one test host, as a
-#                               CI job runs them (see tests/e2e/run.py)
+#   ci/run.sh e2e --shard NAME  the same for the tests of one shard, on a
+#                               fresh host, as a CI job runs them (see SHARDS
+#                               in tests/e2e/run.py)
 #   ci/run.sh all               check, then e2e
 #   ci/run.sh boot [cloud|iso]  boot real installs in QEMU and test them; needs
 #                               KVM and takes a while (see ci/boot.sh)
@@ -124,7 +125,7 @@ want_docker() {
   esac
   [[ $engine == docker ]] || return 1
   (($# == 0)) && return 0
-  # A shard is the tests of one test host; it wants the engine when they include the Docker case.
+  # A shard wants the engine when its tests include the Docker case.
   if [[ ${1:-} == --shard ]]; then
     python3 tests/e2e/run.py --tests-of "${2:-}" | grep -q '^e2e_provisioners' || return 1
     shift 2
@@ -148,16 +149,23 @@ e2e() {
   fi
   e2e_down
   trap e2e_down EXIT
-  compose --profile e2e up -d studio dock
+  # A shard needs its own host alone, and Headscale beside studio.
+  local hosts=(studio dock)
+  if [[ ${1:-} == --shard ]]; then
+    hosts=("$(python3 tests/e2e/run.py --host-of "${2:-}")") || return 1
+  fi
+  local services=("${hosts[@]}")
+  [[ " ${hosts[*]} " == *" studio "* ]] && services+=(headscale)
+  compose --profile e2e up -d "${services[@]}"
   if want_docker "$@"; then
     docker_up || { echo "The Docker engine for the tests did not start" >&2; return 1; }
   fi
   local status=0
-  compose --profile e2e run --rm "${tty[@]}" runner python3 tests/e2e/run.py "$@" || status=$?
+  compose --profile e2e run --rm --no-deps "${tty[@]}" runner python3 tests/e2e/run.py "$@" || status=$?
   rm -rf "$logs"
   mkdir -p "$logs"
   local host
-  for host in studio dock; do
+  for host in "${hosts[@]}"; do
     mkdir -p "$logs/$host"
     compose --profile e2e logs --no-color "$host" >"$logs/$host/init.log" 2>&1 || true
     compose --profile e2e cp "$host:/var/log/berth-ci/." "$logs/$host/" >/dev/null 2>&1 || true

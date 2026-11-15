@@ -1,0 +1,8 @@
+{
+  "type": "node",
+  "target": "cloud",
+  "agent_username": "agent",
+  "operator_username": "ops",
+  "ansible_vars": {"devbox_plugin_features": ["incus/host"]},
+  "access": {"address": "192.0.2.7", "user": "admin", "auth": "berth"}
+}

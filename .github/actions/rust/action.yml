@@ -1,0 +1,34 @@
+name: Rust
+description: >-
+  The toolchain of ci/dev.Dockerfile, and cargo's downloads and the target
+  directory from the cache of main, with the times of the files that did not
+  change set back so cargo builds only what did (ci/mtimes.py).
+inputs:
+  cache:
+    description: The name of the cache, one for each kind of build
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install the toolchain
+      shell: bash
+      run: |
+        version=$(sed -n 's/^FROM rust:\([0-9.]*\)-.*/\1/p' ci/dev.Dockerfile)
+        rustup toolchain install "$version" --profile minimal \
+          --component clippy,rustfmt --target x86_64-unknown-linux-musl --no-self-update
+        echo "RUSTUP_TOOLCHAIN=$version" >> "$GITHUB_ENV"
+    - name: Restore the build
+      id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          target
+          provision/ansible/roles/devbox/files/bin
+        key: cargo-${{ inputs.cache }}-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-${{ github.sha }}
+        restore-keys: cargo-${{ inputs.cache }}-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-
+    - name: Keep the times of what did not change
+      shell: bash
+      run: python3 ci/mtimes.py restore target
