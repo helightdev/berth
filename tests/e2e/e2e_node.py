@@ -135,6 +135,7 @@ class Node(unittest.TestCase):
         page = self.berth('provisioner', name).stdout
         self.assertIn(f'place=https://{HOST}:9999', page)
         self.assertIn(f'The crane at https://{HOST}:9999 answers', page)
+        self.assertIn(f'Node      {HOST}, whose feature offers it', page)
         # The host records what it is and what it offers, and says so.
         applied = json.loads(self.root('cat /etc/berth/applied.json').stdout)
         self.assertEqual(applied['level'], 'node')

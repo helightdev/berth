@@ -72,7 +72,7 @@ At the end of an apply the role records what each feature offers in `/etc/berth/
 | What | Where it comes from |
 | --- | --- |
 | The name | `NODE-PLUGIN-TYPE`, such as `big-incus-vm` |
-| The node | The host it is on, shown with the provisioner and kept when the node is renamed |
+| The node | The host it is on, on the provisioner's page (`node` over the API), and kept when the node is renamed |
 | Settings | Where berth reaches the node, such as `server=https://192.0.2.20:8444` |
 | Secrets | Public values only, such as the Incus server's certificate, kept as the provisioner's own `incus_server_cert` |
 
@@ -98,7 +98,7 @@ berth provisioner
 
 ## The berth server on a node
 
-The `berth-server` recipe installs berth's server in a container named `berth`. When a node has that container, it offers the action **Upgrade the berth server** (`upgrade-server`). It runs the server from the image of the version of the berth that asks, as a job of the node's controller:
+The `berth-server` recipe installs berth's server in a container named `berth`. When a node has that container, it offers the action **Upgrade the berth server** (`upgrade-server`). It runs the server from the image of the version of the berth that runs the action, or of the `version` it is given. The node's controller does it, and a job follows it:
 
 - The new container takes over what the running one has:
 
