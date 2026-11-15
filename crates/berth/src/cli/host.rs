@@ -35,6 +35,12 @@ pub fn command(global: &Global, command: Host) -> Result<()> {
             hostname,
         } => rename(&open()?, &name, &new, hostname),
         Host::Remove { name, destroy } => remove(&open()?, &name, destroy),
+        Host::Duplicate {
+            name,
+            new,
+            create,
+            detach,
+        } => duplicate(&open()?, &name, &new, create, detach.detach),
         Host::Adopt(adopt) => self::adopt(&open()?, &adopt),
         Host::Credentials { name, show } => credentials(&open()?, &name, show),
         Host::Verify { name, accept } => verify(&open()?, &name, accept),
@@ -56,6 +62,10 @@ fn state_of(host: &Value) -> String {
             Value::Null => styled("answers", Style::Good),
             _ => styled("behind", Style::Warn),
         };
+    }
+    // One that is off was stopped, not lost.
+    if host["power"]["state"] == "stopped" {
+        return styled("stopped", Style::Dim);
     }
     match host["address"].as_str() {
         Some("") | None => styled("no address", Style::Dim),
@@ -573,45 +583,36 @@ fn rename(client: &Client, name: &str, new: &str, hostname: bool) -> Result<()> 
     Ok(())
 }
 
+/// Remove a host with its action remove, which asks first and names what
+/// is destroyed.
 fn remove(client: &Client, name: &str, destroy: bool) -> Result<()> {
-    let machine = machine_of(client, name)?;
-    match (&machine, destroy) {
-        (Some(machine), true) => {
-            let id = machine["id"].as_str().unwrap_or("");
-            ask::confirm(&format!(
-                "This destroys {} of {}, the machine of {name}, and forgets {name}.",
-                machine["external_id"].as_str().unwrap_or(id),
-                machine["provisioner"].as_str().unwrap_or("its provisioner")
-            ))?;
-            let acted = client.call("resources.remove", json!({"id": id}), None)?;
-            let acted: berth_api::Acted = serde_json::from_value(acted["acted"].clone())
-                .or_else(|_| serde_json::from_value(acted.clone()))?;
-            follow::acted(
-                client,
-                acted,
-                &format!("Destroying the machine of {name}"),
-                false,
-                false,
-            )?;
-        }
-        (Some(machine), false) => {
-            return Err(Fail::refused(format!(
-                "{name} has a machine {} made, {}. Destroy it with the host: berth host remove {name} --destroy",
-                machine["provisioner"].as_str().unwrap_or("a provisioner"),
-                machine["external_id"].as_str().unwrap_or("")
-            )));
-        }
-        (None, true) => {
-            return Err(Fail::usage(format!(
-                "No provisioner made {name}, so there is nothing to destroy. berth host remove {name} forgets it"
-            )));
-        }
-        (None, false) => ask::confirm(&format!(
-            "This forgets {name}, with its profile and passwords. The machine is left as it is."
-        ))?,
+    let words = vec![format!("destroy={}", if destroy { "yes" } else { "no" })];
+    super::things::run_on(
+        client,
+        &Subject::Host(name.to_owned()),
+        "remove",
+        &words,
+        false,
+        None,
+        false,
+    )?;
+    Ok(())
+}
+
+fn duplicate(client: &Client, name: &str, new: &str, create: bool, detach: bool) -> Result<()> {
+    let mut words = vec![format!("name={new}")];
+    if create {
+        words.push("create=yes".into());
     }
-    client.call("hosts.remove", json!({"name": name}), None)?;
-    out::done(format!("Removed {name}"));
+    super::things::run_on(
+        client,
+        &Subject::Host(name.to_owned()),
+        "duplicate",
+        &words,
+        detach,
+        None,
+        false,
+    )?;
     Ok(())
 }
 
@@ -697,19 +698,17 @@ fn verify(client: &Client, name: &str, accept: bool) -> Result<()> {
     Ok(())
 }
 
+/// Start or stop a host with its action of that name, which says why when
+/// it cannot.
 fn power(client: &Client, power: &args::HostPower, verb: &str) -> Result<()> {
-    let name = &power.name;
-    let machine = machine_of(client, name)?.ok_or_else(|| {
-        Fail::usage(format!(
-            "No provisioner made {name}, so berth cannot {verb} it. berth host create NAME --provisioner P makes one that can"
-        ))
-    })?;
-    let id = machine["id"].as_str().unwrap_or("").to_owned();
-    let acted = client.act(&Subject::Resource(id), verb, &Act::default())?;
-    let title = match verb {
-        "start" => format!("Starting {name}"),
-        _ => format!("Stopping {name}"),
-    };
-    follow::acted(client, acted, &title, power.detach.detach, false)?;
+    super::things::run_on(
+        client,
+        &Subject::Host(power.name.clone()),
+        verb,
+        &[],
+        power.detach.detach,
+        None,
+        false,
+    )?;
     Ok(())
 }

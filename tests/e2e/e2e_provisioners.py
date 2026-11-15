@@ -55,6 +55,11 @@ elif verb in ('create', 'change') and request.get('kind') == 'deployment':
 elif verb == 'exec':
     print(f'ran {" ".join(request["command"])} reading {request.get("stdin", "nothing")!r}', file=sys.stderr)
     print(json.dumps({'exit_code': 4}))
+elif verb == 'create' and request.get('kind') == 'machine':
+    # A machine with no address: berth keeps it, and cannot reach it to set it up.
+    print(json.dumps({'id': f'box-{request["name"]}', 'state': 'running'}))
+elif verb in ('start', 'stop'):
+    print(json.dumps({'state': 'running' if verb == 'start' else 'stopped'}))
 elif verb == 'destroy':
     print(json.dumps({'state': 'gone'}))
 elif verb == 'logs':
@@ -80,7 +85,7 @@ MANIFEST = {
     'berth': {'provisioners': [{
         'id': 'box', 'label': 'Lab box', 'command': 'bin/provision', 'protocol': 2, 'verbs': ['list'],
         'arguments': [{'name': 'place', 'label': 'Place', 'required': True}],
-        'kinds': [{'id': 'machine', 'setup': 'apply'},
+        'kinds': [{'id': 'machine', 'setup': 'apply', 'verbs': ['start', 'stop']},
                   {'id': 'deployment', 'label': 'Bench setup', 'verbs': ['change', 'logs', 'exec'],
                    'spec': {'format': 'text', 'label': 'Setup'},
                    'actions': [{'name': 'services', 'label': 'Services', 'changes': False}]}],
@@ -192,6 +197,84 @@ class Provisioners(unittest.TestCase):
             portal.close()
         finally:
             serve.stop()
+
+
+@needs_e2e
+class HostLifecycle(unittest.TestCase):
+    """A host the lab provisioner made, stopped, started, duplicated and
+    removed with its machine through the host's own actions; and a host no
+    provisioner made, which has nothing to destroy."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.station = Workstation('lifecycle', ssh_key=False, trust=False)
+        cls.folder = lab(cls.station)
+        cls.station.berth('provisioner', 'run', 'box', 'settings', 'place=attic', '--yes')
+        profile = cls.station.root / 'bench.json'
+        profile.write_text(json.dumps({'builder': {}, 'access': {'user': 'ops'},
+                                       'ansible_vars': {'devbox_install_tailscale': False}}))
+        cls.station.berth('host', 'import', 'bench', str(profile))
+        # The machine is made, and setting it up stops as it has no address.
+        made = cls.station.berth('host', 'create', 'bench', '--provisioner', 'box', check=False)
+        assert 'no address to reach it at' in made.stdout + made.stderr, made.stdout + made.stderr
+
+    def berth(self, *args, **kwargs):
+        return self.station.berth(*args, **kwargs)
+
+    def host(self, name):
+        hosts = json.loads(self.berth('host', 'list', '-o', 'json').stdout)
+        return next((host for host in hosts if host['name'] == name), None)
+
+    def verbs(self):
+        return [request['verb'] for request in requests(self.folder)]
+
+    def test_1_it_is_stopped_and_started_through_its_provisioner(self):
+        power = self.host('bench')['power']
+        self.assertEqual((power['start_by'], power['stop_by']), ('provisioner', 'provisioner'))
+        self.assertIn('stop', [line.split()[0] for line in self.berth('action', 'list', 'bench').stdout.splitlines() if line.strip()])
+        self.berth('host', 'stop', 'bench', '--yes')
+        self.assertEqual(self.verbs()[-1], 'stop')
+        self.assertEqual(self.host('bench')['power']['state'], 'stopped')
+        self.berth('host', 'start', 'bench')
+        self.assertEqual(self.verbs()[-1], 'start')
+        self.assertEqual(self.host('bench')['power']['state'], 'running')
+
+    def test_2_a_duplicate_has_its_machine_planned(self):
+        self.berth('host', 'duplicate', 'bench', 'shelf')
+        shelf = self.host('shelf')
+        self.assertEqual((shelf['machine']['provisioner'], shelf['machine']['state']), ('box', 'planned'))
+        self.assertEqual(shelf['machine']['external_id'], '')
+        profile = json.loads(self.berth('host', 'export', 'shelf').stdout)
+        self.assertNotIn('address', profile['access'])
+        refused = self.berth('host', 'stop', 'shelf', '--yes', check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('not made yet', refused.stderr)
+        again = self.berth('host', 'duplicate', 'bench', 'shelf', check=False)
+        self.assertNotEqual(again.returncode, 0)
+        self.assertIn('There is a host shelf already', again.stderr)
+        self.berth('host', 'remove', 'shelf', '--yes')
+        self.assertIsNone(self.host('shelf'))
+
+    def test_3_removing_it_with_destroy_destroys_its_machine(self):
+        removed = self.berth('host', 'remove', 'bench', '--destroy', '--yes')
+        self.assertIn('box destroyed box-bench', removed.stdout + removed.stderr)
+        self.assertEqual(self.verbs()[-1], 'destroy')
+        self.assertIsNone(self.host('bench'))
+        machines = json.loads(self.berth('resource', 'list', '-o', 'json').stdout)
+        self.assertFalse([machine for machine in machines if machine['kind'] == 'machine'], machines)
+
+    def test_4_a_host_no_provisioner_made_has_nothing_to_destroy(self):
+        profile = self.station.root / 'dock.json'
+        profile.write_text(json.dumps({'type': 'ssh', 'access': {'address': '192.0.2.4', 'user': 'ops'}}))
+        self.berth('host', 'import', 'dock', str(profile))
+        power = self.host('dock')['power']
+        self.assertEqual((power['start'], power['stop']), (False, False))
+        refused = self.berth('host', 'remove', 'dock', '--destroy', '--yes', check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('No provisioner made dock', refused.stderr)
+        self.assertIsNotNone(self.host('dock'))
+        self.berth('host', 'remove', 'dock', '--yes')
+        self.assertIsNone(self.host('dock'))
 
 
 @needs_e2e

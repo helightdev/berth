@@ -475,7 +475,7 @@ fn find_action(
 }
 
 /// Run an action of a subject with its arguments, and follow what it started.
-fn run_on(
+pub(super) fn run_on(
     client: &Client,
     subject: &Subject,
     name: &str,

@@ -346,6 +346,16 @@ impl<'a> Output<'a> {
         self.log.as_deref()
     }
 
+    /// Hide these texts too from here on, for work that learns of secrets
+    /// while it runs, such as a provisioner it prepares then.
+    pub fn hide<'s>(&mut self, secrets: impl IntoIterator<Item = &'s str>) {
+        let mut all = std::mem::take(&mut self.hidden);
+        all.extend(hidden(secrets));
+        all.sort_by_key(|text| std::cmp::Reverse(text.len()));
+        all.dedup();
+        self.hidden = all;
+    }
+
     fn pass_lines(&mut self) -> std::io::Result<()> {
         while let Some(end) = self
             .pending

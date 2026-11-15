@@ -349,6 +349,79 @@ pub fn rename(paths: &Paths, from: &Place, to: &str, hostname: bool) -> Result<P
     Ok(place)
 }
 
+/// What a copy of `profile` under the name `to` keeps: everything but what
+/// belongs to the one machine. Its hostname goes, so the copy takes its own
+/// name; so do its address and the command that reaches it, which is also
+/// how it is known on a tailnet; and so do the hashes of the passwords berth
+/// generated for its accounts (`generated` names those accounts), whose
+/// passwords stay with the original. A hash that was typed stays.
+pub fn copy_of(profile: &Value, generated: &[String]) -> Value {
+    let mut copy = profile.clone();
+    let Some(fields) = copy.as_object_mut() else {
+        return copy;
+    };
+    fields.remove("hostname");
+    for (account, hash, default) in [
+        ("operator_username", "operator_password_hash", "ops"),
+        ("agent_username", "agent_password_hash", "agent"),
+    ] {
+        let user = profile[account].as_str().unwrap_or(default);
+        if generated.iter().any(|known| known == user) {
+            fields.remove(hash);
+        }
+    }
+    if let Some(access) = fields.get_mut("access").and_then(Value::as_object_mut) {
+        access.remove("address");
+        access.remove("link");
+    }
+    copy
+}
+
+/// Save a copy of the saved host at `from` as the host `to`, as
+/// [`copy_of`] makes it. Nothing else of the host comes along: not its
+/// generated passwords, host keys, the passwords berth keeps for logging in
+/// or its jobs. A machine a provisioner made for it, or one planned, is
+/// planned for the copy with the same provisioner and arguments, to be made
+/// when the copy's machine is created. Returns the copy's place, and the
+/// record of its planned machine.
+pub fn duplicate(
+    paths: &Paths,
+    from: &Place,
+    to: &str,
+) -> Result<(Place, Option<crate::resource::Kept>)> {
+    let Place::Stored { scope, name: old } = from else {
+        return Err("A profile in a file is copied by copying the file".into());
+    };
+    let place = Place::stored(scope, to)?;
+    if old == to {
+        return Err(format!("{old} has that name already").into());
+    }
+    let _new = crate::runner::lock_at(&place.lock_file(paths), "duplicate the host", |holder| {
+        format!("Something else is being done to {to}{holder}. Try again when it has ended")
+    })?;
+    let profile = from.load(paths)?.ok_or_else(|| format!("No host {old}"))?;
+    if place.load(paths)?.is_some() {
+        return Err(format!("There is a host {to} already").into());
+    }
+    let generated: Vec<String> = crate::credentials::load(paths, from)?
+        .keys()
+        .cloned()
+        .collect();
+    let copy = copy_of(&profile, &generated);
+    let machine = crate::resource::of_place(paths, from)?;
+    place.save(paths, &copy)?;
+    let planned = match machine {
+        Some(machine) => Some(crate::provision::plan(
+            paths,
+            &place,
+            &machine.record.provisioner,
+            &machine.record.arguments,
+        )?),
+        None => None,
+    };
+    Ok((place, planned))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,6 +607,112 @@ mod tests {
         // With hostname, the profile's is the new name.
         let lab = rename(&paths, &studio, "lab", true).unwrap();
         assert_eq!(lab.load(&paths).unwrap().unwrap()["hostname"], "lab");
+    }
+
+    #[test]
+    fn a_copy_leaves_out_what_belongs_to_the_one_machine() {
+        let profile = json!({
+            "hostname": "studio", "target": "cloud", "operator_username": "ops",
+            "operator_password_hash": "$6$made", "agent_password_hash": "$6$typed",
+            "ansible_vars": {"devbox_plugin_features": ["claude/cli"]},
+            "access": {"address": "studio.example.ts.net", "user": "ops", "auth": "berth",
+                       "link": ["docker", "exec", "-i", "studio", "berthd", "connect"]},
+            "power": {"stop": {"by": "controller"}},
+            "secrets": ["github_token"],
+        });
+        let copy = copy_of(&profile, &["ops".into()]);
+        assert_eq!(
+            copy,
+            json!({
+                "target": "cloud", "operator_username": "ops", "agent_password_hash": "$6$typed",
+                "ansible_vars": {"devbox_plugin_features": ["claude/cli"]},
+                "access": {"user": "ops", "auth": "berth"},
+                "power": {"stop": {"by": "controller"}},
+                "secrets": ["github_token"],
+            })
+        );
+        // The agent's generated password goes too, under the default name.
+        let copy = copy_of(&profile, &["ops".into(), "agent".into()]);
+        assert!(copy.get("agent_password_hash").is_none());
+    }
+
+    #[test]
+    fn a_duplicate_is_a_new_host_with_its_machine_planned() {
+        let (_home, paths) = scratch();
+        let studio = Place::own("studio").unwrap();
+        studio
+            .save(
+                &paths,
+                &json!({"hostname": "studio", "access": {"address": "192.0.2.10", "user": "ops"}}),
+            )
+            .unwrap();
+        crate::credentials::save(&paths, &studio, "ops", "made-up-1").unwrap();
+        let store = store::shared(&paths).unwrap();
+        store
+            .write_json(
+                kind::ACCESS,
+                OWN,
+                "studio",
+                &json!({"host_keys": ["ssh-ed25519 AAAA"]}),
+            )
+            .unwrap();
+        let machine = crate::resource::Record {
+            id: "r-studio".into(),
+            provisioner: "incus".into(),
+            kind: crate::plugins::MACHINE.into(),
+            name: "studio".into(),
+            host: "studio".into(),
+            external_id: "berth-studio".into(),
+            arguments: [("cpus".to_owned(), "4".to_owned())].into(),
+            state: "running".into(),
+            ..Default::default()
+        };
+        store
+            .write_json(
+                kind::RESOURCE,
+                OWN,
+                "r-studio",
+                &serde_json::to_value(&machine).unwrap(),
+            )
+            .unwrap();
+
+        let (lab, planned) = duplicate(&paths, &studio, "lab").unwrap();
+        assert_eq!(lab, Place::own("lab").unwrap());
+        assert_eq!(
+            lab.load(&paths).unwrap().unwrap(),
+            json!({"access": {"user": "ops"}})
+        );
+        // The original keeps all it had.
+        assert_eq!(studio.load(&paths).unwrap().unwrap()["hostname"], "studio");
+        assert!(crate::credentials::load(&paths, &lab).unwrap().is_empty());
+        assert_eq!(store.read(kind::ACCESS, OWN, "lab").unwrap(), None);
+        let planned = planned.unwrap();
+        let kept = crate::resource::of_place(&paths, &lab).unwrap().unwrap();
+        assert_eq!(kept, planned);
+        assert_eq!(
+            (
+                kept.record.provisioner.as_str(),
+                kept.record.name.as_str(),
+                kept.record.state.as_str()
+            ),
+            ("incus", "lab", crate::resource::PLANNED)
+        );
+        assert!(kept.record.external_id.is_empty());
+        assert_eq!(kept.record.arguments["cpus"], "4");
+        assert_ne!(kept.record.id, "r-studio");
+        assert_eq!(
+            crate::resource::of_place(&paths, &studio)
+                .unwrap()
+                .unwrap()
+                .record
+                .external_id,
+            "berth-studio"
+        );
+        // A name that is taken is refused, and so is a copy under its own name.
+        let taken = duplicate(&paths, &studio, "lab").unwrap_err();
+        assert_eq!(taken.to_string(), "There is a host lab already");
+        assert!(duplicate(&paths, &studio, "studio").is_err());
+        assert!(duplicate(&paths, &Place::own("none").unwrap(), "other").is_err());
     }
 
     #[test]

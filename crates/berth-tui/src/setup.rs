@@ -558,6 +558,18 @@ pub fn commit(config: &mut Value, field: Field, value: &str) -> Result<(), Strin
     {
         return Err(format!("Choose one of: {}", choices.join(", ")));
     }
+    // Not stopping it is saying nothing of how it is stopped.
+    if field == Field::PowerStop && value == "none" {
+        if let Some(power) = config["power"].as_object_mut() {
+            power.remove("stop");
+            if power.is_empty() {
+                config
+                    .as_object_mut()
+                    .map(|profile| profile.remove("power"));
+            }
+        }
+        return Ok(());
+    }
     // A type changes more than its field, such as a node's accounts going.
     if field == Field::Type {
         let host_type = berth_api::HostType::parse(value)
@@ -708,6 +720,7 @@ impl<'a> Profile<'a> {
         match (field, text) {
             (Field::Login, "") => "berth",
             (Field::Type, "") => "workstation",
+            (Field::PowerStop, "") => "none",
             _ => text,
         }
     }
@@ -1000,7 +1013,12 @@ impl<'a> Profile<'a> {
         if self.locked() {
             return vec![];
         }
-        vec![Type, SshHost, SshUser, SshPort, Login, AskBecomePass]
+        let mut fields = vec![Type, SshHost, SshUser, SshPort, Login, AskBecomePass];
+        // A host berth's controller runs on can be shut down by it.
+        if berth_api::profile::host_type(self.config) != berth_api::HostType::Ssh {
+            fields.push(PowerStop);
+        }
+        fields
     }
 
     /// The fields of the Install tab: those before the provisioner's rows,
@@ -1024,15 +1042,17 @@ impl<'a> Profile<'a> {
                     SshPort,
                     Login,
                     AskBecomePass,
+                    PowerStop,
                     Tailscale,
                 ],
             );
         }
         if action == Action::Ssh && host_type != berth_api::HostType::Workstation {
             let mut after = vec![Type, SshHost, SshUser, SshPort, Login];
-            // Nothing is installed on a host of the type ssh, so nothing asks for sudo.
+            // Nothing is installed on a host of the type ssh, so nothing asks
+            // for sudo, and no controller shuts it down.
             if host_type == berth_api::HostType::Managed {
-                after.push(AskBecomePass);
+                after.extend([AskBecomePass, PowerStop]);
             }
             return (vec![], after);
         }
@@ -1043,7 +1063,15 @@ impl<'a> Profile<'a> {
         };
         let mut after = vec![];
         if action == Action::Ssh {
-            after.extend([Type, SshHost, SshUser, SshPort, Login, AskBecomePass]);
+            after.extend([
+                Type,
+                SshHost,
+                SshUser,
+                SshPort,
+                Login,
+                AskBecomePass,
+                PowerStop,
+            ]);
         }
         if action.installer() || action.seeds() {
             after.push(Hostname);

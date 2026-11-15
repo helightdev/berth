@@ -56,7 +56,8 @@ pub struct Record {
     pub spec_sha256: String,
     #[serde(default)]
     pub created: String,
-    /// As last seen: `running`, `stopped`, `missing` or `unknown`.
+    /// As last seen: `running`, `stopped`, `missing` or `unknown`; or
+    /// [`PLANNED`] for a machine saved to be made later.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub state: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -67,6 +68,12 @@ pub struct Record {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub endpoints: Vec<Endpoint>,
 }
+
+/// The state of the record of a host's machine that is saved with the
+/// provisioner and arguments to make it with, and not asked for yet: the
+/// machine of a host that was duplicated. Creating the host's machine takes
+/// it up.
+pub const PLANNED: &str = berth_api::PLANNED;
 
 /// A record with the scope it is kept in.
 #[derive(Debug, Clone, PartialEq)]
@@ -231,6 +238,23 @@ impl Kept {
         Ok(())
     }
 
+    /// Keep it as a resource of no host, in this installation's own scope,
+    /// so that the machine of a host that is forgotten stays where berth
+    /// finds it: under its provisioner, to be removed later.
+    pub fn detach(&mut self, paths: &Paths) -> Result<()> {
+        let (scope, id) = (self.scope.clone(), self.record.id.clone());
+        self.record.host.clear();
+        self.scope = OWN.to_owned();
+        let value = serde_json::to_vec(&self.record)?;
+        let store = store::shared(paths)?;
+        let mut removals = vec![];
+        if scope != OWN {
+            removals.push((kind::RESOURCE, scope.as_str(), id.as_str()));
+        }
+        store.change(&[(kind::RESOURCE, OWN, &id, value)], &removals)?;
+        Ok(())
+    }
+
     /// Forget it with its specification.
     pub fn forget(&self, paths: &Paths) -> Result<()> {
         store::shared(paths)?.change(
@@ -332,6 +356,7 @@ pub fn info(paths: &Paths, kept: &Kept, plugins: &[Plugin], busy: bool) -> Resou
         .unwrap_or_default();
     let (state, problem) = match (record.external_id.is_empty(), busy) {
         (true, true) => ("creating".to_owned(), String::new()),
+        (true, false) if record.state == PLANNED => (PLANNED.to_owned(), String::new()),
         (true, false) => (
             "unknown".to_owned(),
             format!(

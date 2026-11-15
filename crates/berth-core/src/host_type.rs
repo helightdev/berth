@@ -4,7 +4,7 @@
 //! what it is seen to be comes from asking it.
 
 use crate::{Result, host::Host};
-use berth_api::{Action, Version, ops::Role};
+use berth_api::{Action, Resource, Version, ops::Role};
 
 pub use berth_api::HostType;
 
@@ -304,6 +304,86 @@ pub fn rename_action() -> Action {
     }
 }
 
+/// How a host is started and stopped, with why it cannot be when it cannot.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Powered {
+    pub power: berth_api::Power,
+    /// Why berth cannot start it; empty when it can.
+    pub why_start: String,
+    /// Why berth cannot stop it; empty when it can.
+    pub why_stop: String,
+}
+
+impl Powered {
+    /// Why `verb` (`start` or `stop`) cannot be done, or `None` when it can.
+    pub fn why(&self, verb: &str) -> Option<&str> {
+        let why = match verb {
+            "start" => &self.why_start,
+            _ => &self.why_stop,
+        };
+        (!why.is_empty()).then_some(why.as_str())
+    }
+}
+
+/// How the host `name` is started and stopped: through the provisioner
+/// that made `machine`, when its kind has the verb, or else as its profile
+/// declares in `power`. A host that declares nothing can be neither. The
+/// state is the provisioner's last word; the caller knows better when the
+/// host's controller answers.
+pub fn power(name: &str, profile: &serde_json::Value, machine: Option<&Resource>) -> Powered {
+    use berth_api::{PowerState, profile::power_way};
+    let host_type = of(profile);
+    let mut powered = Powered::default();
+    if let Some(machine) = machine {
+        powered.power.state = PowerState::of(&machine.state);
+    }
+    for verb in ["start", "stop"] {
+        let declared = power_way(profile, verb);
+        let (by, why) = match machine {
+            Some(machine) if machine.external_id.is_empty() => (
+                "",
+                format!("{name}'s machine is not made yet. Make it with: berth host create {name}"),
+            ),
+            Some(machine) if machine.verbs.iter().any(|known| known == verb) => {
+                ("provisioner", String::new())
+            }
+            _ if declared == "controller" => match check(name, host_type, Capability::Actions) {
+                Ok(()) => ("controller", String::new()),
+                Err(refusal) => ("", refusal.why),
+            },
+            Some(machine) => (
+                "",
+                format!(
+                    "{} cannot {verb} the machines it makes, and the profile of {name} declares no other way in power.{verb}",
+                    machine.provisioner
+                ),
+            ),
+            None => (
+                "",
+                match verb {
+                    "stop" => format!(
+                        "{name} declares no way to stop it: no provisioner made it, and its profile has no power.stop. To have its controller shut it down: berth host set {name} power_stop=controller"
+                    ),
+                    _ => format!(
+                        "{name} declares no way to start it: berth starts a host only through the provisioner that made it"
+                    ),
+                },
+            ),
+        };
+        match verb {
+            "start" => {
+                (powered.power.start, powered.power.start_by) = (!by.is_empty(), by.into());
+                powered.why_start = why;
+            }
+            _ => {
+                (powered.power.stop, powered.power.stop_by) = (!by.is_empty(), by.into());
+                powered.why_stop = why;
+            }
+        }
+    }
+    powered
+}
+
 /// berth's own actions on a host of this machine, which need no server:
 /// those that change the host's type, and renaming it.
 pub fn local_actions(name: &str, host_type: HostType, observed: Option<HostType>) -> Vec<Action> {
@@ -465,5 +545,101 @@ mod tests {
         );
         assert!(mismatch("dock", HostType::Workstation, Some(HostType::Managed)).is_none());
         assert!(mismatch("dock", HostType::Managed, None).is_none());
+    }
+
+    fn machine(verbs: &[&str], state: &str, made: bool) -> Resource {
+        Resource {
+            provisioner: "incus".into(),
+            kind: "machine".into(),
+            state: state.into(),
+            external_id: if made {
+                "berth-studio".into()
+            } else {
+                String::new()
+            },
+            verbs: verbs.iter().map(|verb| (*verb).to_owned()).collect(),
+            ..Resource::default()
+        }
+    }
+
+    #[test]
+    fn a_host_a_provisioner_made_is_started_and_stopped_through_it() {
+        use berth_api::PowerState;
+        let profile = serde_json::json!({"builder": {}});
+        let made = machine(&["start", "stop"], "stopped", true);
+        let powered = power("studio", &profile, Some(&made));
+        assert!(powered.power.start && powered.power.stop);
+        assert_eq!(
+            (
+                powered.power.start_by.as_str(),
+                powered.power.stop_by.as_str()
+            ),
+            ("provisioner", "provisioner")
+        );
+        assert_eq!(powered.power.state, PowerState::Stopped);
+        assert_eq!((powered.why("start"), powered.why("stop")), (None, None));
+        // A kind without the verbs says so, unless the profile declares a way to stop.
+        let plain = machine(&[], "running", true);
+        let powered = power("studio", &profile, Some(&plain));
+        assert!(!powered.power.start && !powered.power.stop);
+        assert!(
+            powered
+                .why("stop")
+                .unwrap()
+                .starts_with("incus cannot stop the machines it makes")
+        );
+        let declared = serde_json::json!({"builder": {}, "power": {"stop": {"by": "controller"}}});
+        let powered = power("studio", &declared, Some(&plain));
+        assert_eq!(
+            (powered.power.stop, powered.power.stop_by.as_str()),
+            (true, "controller")
+        );
+        assert!(!powered.power.start);
+        // One planned and not made yet can do neither.
+        let planned = machine(&["start", "stop"], "planned", false);
+        let powered = power("lab", &profile, Some(&planned));
+        assert!(!powered.power.start && !powered.power.stop);
+        assert!(
+            powered
+                .why("start")
+                .unwrap()
+                .contains("berth host create lab")
+        );
+        assert_eq!(powered.power.state, PowerState::Unknown);
+    }
+
+    #[test]
+    fn any_other_host_declares_how_it_is_stopped() {
+        let bare = serde_json::json!({"type": "managed", "access": {"address": "192.0.2.4"}});
+        let powered = power("dock", &bare, None);
+        assert_eq!(powered.power, berth_api::Power::default());
+        assert!(
+            powered
+                .why("stop")
+                .unwrap()
+                .contains("berth host set dock power_stop=controller")
+        );
+        assert!(
+            powered
+                .why("start")
+                .unwrap()
+                .starts_with("dock declares no way to start it")
+        );
+        let declared = serde_json::json!({"type": "managed", "access": {"address": "192.0.2.4"},
+                                          "power": {"stop": {"by": "controller"}}});
+        let powered = power("dock", &declared, None);
+        assert!(powered.power.stop && !powered.power.start);
+        assert_eq!(powered.power.stop_by, "controller");
+        // Without a controller there is nothing to shut it down.
+        let ssh = serde_json::json!({"type": "ssh", "access": {"address": "192.0.2.4"},
+                                     "power": {"stop": {"by": "controller"}}});
+        let powered = power("dock", &ssh, None);
+        assert!(!powered.power.stop);
+        assert!(
+            powered
+                .why("stop")
+                .unwrap()
+                .contains("berth run dock install-controller")
+        );
     }
 }

@@ -889,8 +889,23 @@
               "null"
             ]
           },
+          "machine": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HostMachine",
+                "description": "The machine a provisioner made for it, or one planned for it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "type": "string"
+          },
+          "power": {
+            "$ref": "#/components/schemas/Power",
+            "description": "Whether berth can start and stop it, and whether it runs: running\nwhen its controller answers, else as its provisioner said last."
           },
           "reachable": {
             "type": "boolean"
@@ -926,7 +941,36 @@
           "name",
           "address",
           "reachable",
-          "type"
+          "type",
+          "power"
+        ],
+        "type": "object"
+      },
+      "HostMachine": {
+        "description": "The machine of a host, as berth's record of the resource has it.",
+        "properties": {
+          "external_id": {
+            "description": "The provisioner's id of it; empty until it is made.",
+            "type": "string"
+          },
+          "provisioner": {
+            "description": "The provisioner that made it, or is to make it.",
+            "type": "string"
+          },
+          "resource": {
+            "description": "berth's id of the resource.",
+            "type": "string"
+          },
+          "state": {
+            "description": "As last seen, or `planned` for one not asked for yet.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "resource",
+          "provisioner",
+          "external_id",
+          "state"
         ],
         "type": "object"
       },
@@ -1885,6 +1929,46 @@
         ],
         "type": "object"
       },
+      "Power": {
+        "description": "How a host is started and stopped, and whether it runs. A host a\nprovisioner made is started and stopped through it, when its kind can;\nany other declares in its profile's `power` how it is stopped.",
+        "properties": {
+          "start": {
+            "description": "Whether berth can start it.",
+            "type": "boolean"
+          },
+          "start_by": {
+            "description": "What starts it: `provisioner`, or empty when nothing does.",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/PowerState",
+            "description": "Whether it runs: what its controller or its provisioner said last."
+          },
+          "stop": {
+            "description": "Whether berth can stop it.",
+            "type": "boolean"
+          },
+          "stop_by": {
+            "description": "What stops it: `provisioner`, `controller`, or empty when nothing does.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "stop",
+          "state"
+        ],
+        "type": "object"
+      },
+      "PowerState": {
+        "description": "Whether a host runs, as far as the server knows.",
+        "enum": [
+          "running",
+          "stopped",
+          "unknown"
+        ],
+        "type": "string"
+      },
       "Process": {
         "properties": {
           "command": {
@@ -2283,7 +2367,7 @@
             "type": "string"
           },
           "state": {
-            "description": "`creating`, `running`, `stopped`, `missing` or `unknown`, as last seen.",
+            "description": "`creating`, `running`, `stopped`, `missing` or `unknown`, as last\nseen; `planned` for a host's machine saved to be made later, as a\nduplicate's is.",
             "type": "string"
           },
           "verbs": {

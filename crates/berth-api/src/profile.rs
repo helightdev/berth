@@ -304,6 +304,54 @@ impl Access {
     }
 }
 
+/// The ways berth stops a host no provisioner made, as `power.stop.by` names
+/// them: `controller` has the host's controller shut the machine down.
+pub const STOP_WAYS: &[&str] = &["controller"];
+
+/// The ways berth starts such a host, as `power.start.by` names them. There
+/// is none yet: a host that is off has no controller to ask.
+pub const START_WAYS: &[&str] = &[];
+
+/// How a profile says its host is stopped or started (`"stop"` or
+/// `"start"`): the `by` of that setting of `power`, empty when it says none.
+pub fn power_way<'a>(config: &'a Value, verb: &str) -> &'a str {
+    config["power"][verb]["by"].as_str().unwrap_or("").trim()
+}
+
+/// What is wrong with the `power` object of a profile, in sentences. Each of
+/// `start` and `stop` is an object whose `by` names the way, so that a way
+/// can take settings of its own beside it.
+pub fn power_problems(config: &Value) -> Vec<String> {
+    let power = &config["power"];
+    if power.is_null() {
+        return vec![];
+    }
+    let Some(settings) = power.as_object() else {
+        return vec!["power must be an object".into()];
+    };
+    let mut problems = vec![];
+    for (key, setting) in settings {
+        let ways = match key.as_str() {
+            "stop" => STOP_WAYS,
+            "start" => START_WAYS,
+            other => {
+                problems.push(format!("power has start and stop, not {other}"));
+                continue;
+            }
+        };
+        let by = setting["by"].as_str().unwrap_or("");
+        if !setting.is_object() || !ways.contains(&by) {
+            problems.push(match ways.is_empty() {
+                true => format!(
+                    "power.{key}.by names no way berth knows: berth {key}s a host only through the provisioner that made it"
+                ),
+                false => format!("power.{key}.by is {}, not {by}", ways.join(" or ")),
+            });
+        }
+    }
+    problems
+}
+
 /// The type a profile means its host to be: `type`, a workstation when it
 /// does not say, so profiles from before types keep their meaning.
 pub fn host_type(config: &Value) -> crate::HostType {
@@ -533,6 +581,7 @@ pub fn problems(config: &Value) -> Vec<String> {
     };
     problems.extend(Access::problems(config));
     problems.extend(vars_problems(config));
+    problems.extend(power_problems(config));
     match host_type {
         crate::HostType::Workstation if !config["builder"].is_object() => {
             problems.push("A workstation's profile has a builder object".into())
@@ -1114,5 +1163,36 @@ mod tests {
             ["devbox_plugin_features must be a list"]
         );
         assert!(feature_name("t3/server") && feature_name("my_plugin/a-b"));
+    }
+
+    #[test]
+    fn power_names_a_way_for_each_of_stop_and_start() {
+        let profile = |power: Value| json!({"type": "managed", "access": {"address": "192.0.2.4"}, "power": power});
+        let stops = profile(json!({"stop": {"by": "controller"}}));
+        assert!(problems(&stops).is_empty(), "{:?}", problems(&stops));
+        assert_eq!(power_way(&stops, "stop"), "controller");
+        assert_eq!(power_way(&stops, "start"), "");
+        assert_eq!(power_way(&json!({}), "stop"), "");
+        assert_eq!(
+            power_problems(&profile(json!({"stop": {"by": "magic"}}))),
+            ["power.stop.by is controller, not magic"]
+        );
+        assert_eq!(
+            power_problems(&profile(json!({"stop": "controller"}))),
+            ["power.stop.by is controller, not "]
+        );
+        let start = power_problems(&profile(json!({"start": {"by": "wake-on-lan"}})));
+        assert!(
+            start[0].starts_with("power.start.by names no way berth knows"),
+            "{start:?}"
+        );
+        assert_eq!(
+            power_problems(&profile(json!({"reboot": {}}))),
+            ["power has start and stop, not reboot"]
+        );
+        assert_eq!(
+            power_problems(&profile(json!([]))),
+            ["power must be an object"]
+        );
     }
 }

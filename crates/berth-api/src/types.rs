@@ -180,6 +180,50 @@ impl std::fmt::Display for HostType {
     }
 }
 
+/// The state of a host's machine that is saved with its provisioner and
+/// arguments and not asked for yet.
+pub const PLANNED: &str = "planned";
+
+/// Whether a host runs, as far as the server knows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PowerState {
+    Running,
+    Stopped,
+    #[default]
+    Unknown,
+}
+
+impl PowerState {
+    /// The state a provisioner's record of a machine says.
+    pub fn of(state: &str) -> PowerState {
+        match state {
+            "running" => PowerState::Running,
+            "stopped" => PowerState::Stopped,
+            _ => PowerState::Unknown,
+        }
+    }
+}
+
+/// How a host is started and stopped, and whether it runs. A host a
+/// provisioner made is started and stopped through it, when its kind can;
+/// any other declares in its profile's `power` how it is stopped.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Power {
+    /// Whether berth can start it.
+    pub start: bool,
+    /// Whether berth can stop it.
+    pub stop: bool,
+    /// Whether it runs: what its controller or its provisioner said last.
+    pub state: PowerState,
+    /// What starts it: `provisioner`, or empty when nothing does.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub start_by: String,
+    /// What stops it: `provisioner`, `controller`, or empty when nothing does.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stop_by: String,
+}
+
 /// What to say when a host is seen to be more than its profile here says,
 /// with how to adopt it: as when a workstation is added by its address.
 pub fn type_mismatch(name: &str, intended: HostType, observed: Option<HostType>) -> Option<String> {
@@ -1343,7 +1387,9 @@ pub struct Resource {
     pub kind: String,
     /// Unique per provisioner and kind.
     pub name: String,
-    /// `creating`, `running`, `stopped`, `missing` or `unknown`, as last seen.
+    /// `creating`, `running`, `stopped`, `missing` or `unknown`, as last
+    /// seen; `planned` for a host's machine saved to be made later, as a
+    /// duplicate's is.
     pub state: String,
     /// The provisioner's id of it; empty until `create` said it.
     #[serde(default)]

@@ -159,6 +159,16 @@ impl Machine {
             let id = made.provisioner.clone();
             self.choose_id(&id);
         }
+        // One planned, as for a duplicate, is the form to create it with.
+        if let Ok(Some(planned)) = &instance
+            && planned.state == berth_api::PLANNED
+        {
+            if self.chosen.as_deref() == Some(planned.provisioner.as_str()) {
+                self.values.extend(planned.arguments.clone());
+            }
+            self.instance = Some(Ok(None));
+            return;
+        }
         self.instance = Some(instance);
     }
 
@@ -965,6 +975,24 @@ mod tests {
                 .help(Pick::Provisioner)
                 .contains("Not set yet: lab_token")
         );
+    }
+
+    #[test]
+    fn a_planned_machine_is_the_form_to_create_it_with() {
+        let mut machine = Machine::default();
+        machine.asking();
+        machine.listed(Ok(vec![provisioner(&[])]));
+        machine.found(Ok(Some(Resource {
+            provisioner: "lab/vm".into(),
+            id: "r-lab".into(),
+            state: "planned".into(),
+            arguments: [("cpus".to_owned(), "6".to_owned())].into(),
+            ..Default::default()
+        })));
+        assert!(!machine.exists());
+        assert_eq!(machine.chosen.as_deref(), Some("lab/vm"));
+        assert_eq!(machine.values["cpus"], "6");
+        assert_eq!(text(&machine.run_rows())[0], "[Create with Lab machine]");
     }
 
     #[test]

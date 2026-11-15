@@ -537,6 +537,8 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) ->
         Some(mut kept) => {
             kept.record.arguments = arguments;
             kept.record.asked = asked.token.clone().unwrap_or_default();
+            // A planned machine is being made now.
+            kept.record.state.clear();
             kept
         }
         None => Kept {
@@ -567,6 +569,35 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) ->
         kept,
         lock: Some(lock),
     })
+}
+
+/// Save the record of a machine for the host at `place`, to be made later
+/// by `provisioner` with `arguments`: creating the host's machine takes it
+/// up, with the arguments it is asked with then.
+pub fn plan(
+    paths: &Paths,
+    place: &Place,
+    provisioner: &str,
+    arguments: &BTreeMap<String, String>,
+) -> Result<Kept> {
+    let (scope, side) = place.side();
+    let kept = Kept {
+        scope,
+        record: resource::Record {
+            id: resource::new_id()?,
+            provisioner: provisioner.to_owned(),
+            kind: crate::plugins::MACHINE.into(),
+            name: place.title(),
+            host: side,
+            token: new_token()?,
+            arguments: arguments.clone(),
+            created: berth_api::now(),
+            state: resource::PLANNED.into(),
+            ..resource::Record::default()
+        },
+    };
+    kept.save(paths)?;
+    Ok(kept)
 }
 
 /// Make the host's target `cloud` before the machine is made from it:

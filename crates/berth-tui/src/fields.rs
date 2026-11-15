@@ -11,6 +11,9 @@ pub const DISK_TYPES: &[&str] = &["any", "ssd", "hdd"];
 pub const LOGINS: &[&str] = &["berth", "password", "ssh"];
 /// The types a host can be meant to be, the whole profile first.
 pub const TYPES: &[&str] = &["workstation", "node", "managed", "ssh"];
+/// How a host no provisioner made is stopped: not by berth, or by its
+/// controller shutting it down.
+pub const POWER_STOPS: &[&str] = &["none", "controller"];
 
 /// The pages of a host: its overview (`Manage`) and the tabs of the set-up
 /// flow. Each tab depends only on the ones before it.
@@ -327,11 +330,12 @@ pub enum Field {
     SshPort,
     Login,
     Type,
+    PowerStop,
 }
 
 impl Field {
     /// Every field, in the order of the set-up tabs.
-    pub const ALL: [Field; 48] = {
+    pub const ALL: [Field; 49] = {
         use Field::*;
         [
             Type,
@@ -341,6 +345,7 @@ impl Field {
             SshPort,
             Login,
             AskBecomePass,
+            PowerStop,
             Hostname,
             Tailscale,
             ToolsWeb,
@@ -395,6 +400,7 @@ impl Field {
             ("builder/", ""),
             ("ansible_vars/devbox_", ""),
             ("wifi/", "wifi_"),
+            ("power/stop/by", "power_stop"),
         ] {
             if let Some(rest) = pointer.strip_prefix(part) {
                 return format!("{instead}{rest}");
@@ -704,6 +710,12 @@ impl Field {
                 "/type",
                 Choice(TYPES),
                 "What berth does with the host. workstation: the whole profile, with the desktop, the agents and plugins. node: a server for machines, applied without a desktop or accounts, with the plugin features that install Incus or Docker and register their provisioners. managed: berthd and box alone, for sessions, actions and files on a machine that stays as it is. ssh: nothing is installed; berth logs in over SSH. The type can change later: install the controller, or set workstation and apply.",
+            ),
+            PowerStop => (
+                "Stopped by",
+                "/power/stop/by",
+                Choice(POWER_STOPS),
+                "How berth stops this host when no provisioner made it. controller: the host's controller shuts the machine down, which ends its sessions; berth cannot start it again, so it is started by hand or by whatever powers it. none: berth does not stop it. A host a provisioner made is started and stopped through the provisioner.",
             ),
             UsbDevice => (
                 "Then write to USB drive",

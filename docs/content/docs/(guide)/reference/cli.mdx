@@ -193,6 +193,7 @@ The fields of a profile, for `--set KEY=VALUE` here and `berth host set`. A swit
 | `port` | SSH port |
 | `auth` | Log in with |
 | `sudo` | Ask for sudo password |
+| `power_stop` | Stopped by |
 | `hostname` | Hostname |
 | `install_tailscale` | Tailscale |
 | `tools_web` | JavaScript runtimes |
@@ -373,7 +374,22 @@ berth host remove NAME [--destroy]
 | Argument | What it is |
 | --- | --- |
 | `NAME` | Its name. |
-| `--destroy` | Delete the machine a provisioner made for it as well. |
+| `--destroy` | Destroy the machine a provisioner made for it as well, with its disk. |
+
+### berth host duplicate
+
+Save a copy of a host's profile as the host NEW, without what belongs to its machine. No disk is cloned.
+
+```text
+berth host duplicate NAME NEW [--create] [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `NEW` | The copy's name. |
+| `--create` | Have the provisioner that made NAME make NEW's machine at once. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
 
 ### berth host adopt
 
@@ -420,7 +436,7 @@ berth host verify NAME [--accept]
 
 ### berth host start
 
-Start the machine a provisioner made for the host.
+Start a host, through the provisioner that made it.
 
 ```text
 berth host start NAME [--detach]
@@ -433,7 +449,7 @@ berth host start NAME [--detach]
 
 ### berth host stop
 
-Stop the machine a provisioner made for the host.
+Stop a host: through the provisioner that made it, or as its profile's power.stop says.
 
 ```text
 berth host stop NAME [--detach]

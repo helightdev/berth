@@ -238,9 +238,20 @@ pub enum Host {
     #[command(visible_alias = "rm")]
     Remove {
         name: String,
-        /// Delete the machine a provisioner made for it as well.
+        /// Destroy the machine a provisioner made for it as well, with its disk.
         #[arg(long)]
         destroy: bool,
+    },
+    /// Save a copy of a host's profile as the host NEW, without what belongs to its machine. No disk is cloned.
+    Duplicate {
+        name: String,
+        /// The copy's name.
+        new: String,
+        /// Have the provisioner that made NAME make NEW's machine at once.
+        #[arg(long)]
+        create: bool,
+        #[command(flatten)]
+        detach: Detach,
     },
     /// Take in a host berth set up before, from the profile it keeps.
     Adopt(HostAdopt),
@@ -258,9 +269,9 @@ pub enum Host {
         #[arg(long)]
         accept: bool,
     },
-    /// Start the machine a provisioner made for the host.
+    /// Start a host, through the provisioner that made it.
     Start(HostPower),
-    /// Stop the machine a provisioner made for the host.
+    /// Stop a host: through the provisioner that made it, or as its profile's power.stop says.
     Stop(HostPower),
     /// The hosts as an Ansible inventory. Needs the installation on this machine.
     #[cfg(target_os = "linux")]

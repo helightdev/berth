@@ -18,13 +18,13 @@ use axum::{
 };
 use berth_api::profile::{self, Auth};
 use berth_api::{
-    Act, Acted, Action, Argument, ErrorBody, HostAction, Rollout, RolloutReport, Runs, Session,
-    b64, client, code, ops::Role,
+    Act, Acted, Action, Argument, ErrorBody, HostAction, Resource, Rollout, RolloutReport, Runs,
+    Session, b64, client, code, ops::Role,
 };
 use berth_core::{
     apply,
     host::Host,
-    host_type::{self, Capability, HostType},
+    host_type::{self, Capability, HostType, Powered},
     keys::{self, Once, contact, ring},
     profiles::Place,
     registry::Store,
@@ -59,6 +59,10 @@ pub(super) struct Seen<'a> {
     /// The caller is on the machine the server runs on: in its process, or
     /// on its socket.
     pub local: bool,
+    /// How the host is started and stopped.
+    pub power: &'a Powered,
+    /// The machine a provisioner made for it, or one planned.
+    pub machine: Option<&'a Resource>,
 }
 
 /// berth's own actions that run through the host's controller, so the host
@@ -126,6 +130,26 @@ pub(super) static HOST: &[Builtin] = &[
         name: "installer",
         describe: installer_action,
         run: installer,
+    },
+    Builtin {
+        name: "start",
+        describe: start_action,
+        run: start,
+    },
+    Builtin {
+        name: "stop",
+        describe: stop_action,
+        run: stop,
+    },
+    Builtin {
+        name: "duplicate",
+        describe: duplicate_action,
+        run: duplicate,
+    },
+    Builtin {
+        name: "remove",
+        describe: remove_action,
+        run: remove,
     },
 ];
 
@@ -264,6 +288,20 @@ fn profile_of(state: &Serve, name: &str) -> Value {
     saved_profile(state, name).map_or(Value::Null, |(_, profile)| profile)
 }
 
+/// The machine a provisioner made for the saved host `name`, or one planned
+/// for it, as berth's record has it.
+pub(super) fn machine_of(state: &Serve, name: &str) -> Option<Resource> {
+    let place = Place::own(name).ok()?;
+    let kept = berth_core::resource::of_place(&state.paths, &place).ok()??;
+    let plugins = berth_core::provision::list_plugins(&state.paths);
+    Some(berth_core::resource::info(
+        &state.paths,
+        &kept,
+        &plugins,
+        false,
+    ))
+}
+
 /// Check that the caller may run the action and that it can run now, with
 /// the arguments it needs.
 pub(super) fn admit(state: &Serve, access: &Access, action: &Action, act: &Act) -> Answer<()> {
@@ -325,6 +363,8 @@ pub async fn host_actions(
     };
     let secrets = secret_names(&state);
     let observed = observed(&remote).await;
+    let machine = machine_of(&state, &name);
+    let power = host_type::power(&name, &profile, machine.as_ref());
     Ok(Json(host_list(&Seen {
         name: &name,
         profile: &profile,
@@ -335,6 +375,8 @@ pub async fn host_actions(
         unanswered,
         older,
         local: access.is_none(),
+        power: &power,
+        machine: machine.as_ref(),
     })))
 }
 
@@ -363,9 +405,14 @@ pub async fn host_act(
     // berth's own are described without asking the host, which they do themselves.
     let builtin = HOST.iter().find(|builtin| builtin.name == action);
     let ssh_only = host_type::of(&profile) == HostType::Ssh;
+    let machine = machine_of(&state, &name);
+    let power = host_type::power(&name, &profile, machine.as_ref());
+    // Stopping a host goes through its controller when that is how it is stopped.
+    let through = THROUGH_CONTROLLER.contains(&action.as_str())
+        || (action == "stop" && power.power.stop_by == CONTROLLER);
     let (mut unanswered, mut older) = (None, None);
     let listed = match builtin {
-        Some(_) if ssh_only || !THROUGH_CONTROLLER.contains(&action.as_str()) => None,
+        Some(_) if ssh_only || !through => None,
         // One that runs through the controller is described as the host answers.
         Some(_) => match controller_actions(&remote, host_type::of(&profile)).await {
             Ok(listed) => Some(listed),
@@ -404,6 +451,8 @@ pub async fn host_act(
         unanswered: unanswered.as_deref(),
         older: older.as_deref(),
         local: access.is_none(),
+        power: &power,
+        machine: machine.as_ref(),
     });
     let found = actions
         .iter()
@@ -442,6 +491,8 @@ fn installation_list() -> Vec<Action> {
         unanswered: None,
         older: None,
         local: false,
+        power: &Powered::default(),
+        machine: None,
     };
     INSTALLATION
         .iter()
@@ -1060,6 +1111,458 @@ fn upgrade_server(state: Arc<Serve>, name: String, mut act: Act) -> Run {
             ..Action::default()
         };
         run_action(&state, &remote, &action, act, None).await
+    })
+}
+
+// ── Its power, its copy and removing it ─────────────────────────────────────
+
+/// What stops a host that declares in its profile that its controller does.
+const CONTROLLER: &str = "controller";
+
+fn power_action(seen: &Seen, verb: &str) -> Action {
+    let (label, help, by) = match verb {
+        "start" => (
+            "Start",
+            "Start the host's machine: through the provisioner that made it. A host no provisioner made cannot be started by berth yet.",
+            seen.power.power.start_by.as_str(),
+        ),
+        _ => (
+            "Stop",
+            "Stop the host's machine: through the provisioner that made it, which keeps its disk, or as the host's profile declares in power.stop, such as by its controller shutting it down. Its sessions end.",
+            seen.power.power.stop_by.as_str(),
+        ),
+    };
+    let mut action = Action {
+        name: verb.into(),
+        label: label.into(),
+        help: help.into(),
+        group: "Power".into(),
+        ..Action::default()
+    };
+    if verb == "stop" {
+        action.confirm = Some(format!("Stop {}? Its sessions end.", seen.name));
+    }
+    if by == CONTROLLER {
+        action.arguments = vec![flag(
+            "force",
+            "Although sessions run",
+            "Shut it down although sessions run, which ends them. Without it the controller refuses while any runs.",
+        )];
+    }
+    let why = match seen.power.why(verb) {
+        Some(why) => Some(why.to_owned()),
+        None if by == CONTROLLER && seen.older.is_some() => seen.older.map(str::to_owned),
+        None if by == CONTROLLER => seen.unanswered.map(|error| {
+            format!(
+                "The controller on {} does not answer, and it shuts the host down: {error}",
+                seen.name
+            )
+        }),
+        None => None,
+    };
+    unavailable(action, why)
+}
+
+fn start_action(seen: &Seen) -> Action {
+    power_action(seen, "start")
+}
+
+fn stop_action(seen: &Seen) -> Action {
+    power_action(seen, "stop")
+}
+
+fn start(state: Arc<Serve>, name: String, act: Act) -> Run {
+    power(state, name, act, "start")
+}
+
+fn stop(state: Arc<Serve>, name: String, act: Act) -> Run {
+    power(state, name, act, "stop")
+}
+
+/// Start or stop a host, as a job: one of its machine's through the
+/// provisioner, or one of the host's that asks its controller to power off.
+fn power(state: Arc<Serve>, name: String, act: Act, verb: &'static str) -> Run {
+    Box::pin(async move {
+        let profile = profile_of(&state, &name);
+        let machine = machine_of(&state, &name);
+        let powered = host_type::power(&name, &profile, machine.as_ref());
+        if let Some(why) = powered.why(verb) {
+            return Err(Fail::new(code::NOT_AVAILABLE, why.to_owned()));
+        }
+        let by = match verb {
+            "start" => &powered.power.start_by,
+            _ => &powered.power.stop_by,
+        };
+        if let (Some(machine), "provisioner") = (&machine, by.as_str()) {
+            let given = berth_core::resource::Given::default();
+            return super::resources::run_action(
+                state,
+                machine.id.clone(),
+                verb.into(),
+                given,
+                act.token,
+            )
+            .await;
+        }
+        let force = yes(&act, "force")?;
+        let remote = remote(&state, &name)?;
+        let mut request = Request::new(Subject::Host(name.clone()), verb);
+        request.token = act.token;
+        request.role = Role::Operate;
+        request.arguments = Argument::shown(&stop_action_arguments(), &act.arguments);
+        let runtime = tokio::runtime::Handle::current();
+        let work = Work::Function(Box::new(move |out| {
+            let Some(link) = &remote.link else {
+                let _ = writeln!(
+                    out,
+                    "✗ {name} cannot be reached: {}",
+                    remote.problem.clone().unwrap_or_default()
+                );
+                return false;
+            };
+            let _ = writeln!(out, "▸ Asking the controller on {name} to shut it down");
+            let path = format!("/v1/power/poweroff?force={force}");
+            match runtime.block_on(link.post::<Value>(&path, &json!({}))) {
+                Ok(_) => {
+                    let _ = writeln!(
+                        out,
+                        "✓ {name} is shutting down. It is off in a moment, and stops answering"
+                    );
+                    true
+                }
+                Err(error) => {
+                    let _ = writeln!(out, "✗ {error}");
+                    false
+                }
+            }
+        }));
+        let job = state.runner.start(request, work).map_err(refused)?;
+        Ok(Acted {
+            job: Some(job_info(&state.paths, job)),
+            ..Acted::default()
+        })
+    })
+}
+
+/// The arguments stopping a host through its controller takes.
+fn stop_action_arguments() -> Vec<Argument> {
+    vec![flag("force", "Although sessions run", "")]
+}
+
+/// The machine of a host that a provisioner made, not one only planned.
+fn made(machine: Option<&Resource>) -> Option<&Resource> {
+    machine.filter(|machine| !machine.external_id.is_empty())
+}
+
+fn remove_action(seen: &Seen) -> Action {
+    let name = seen.name;
+    let (help, confirm) = match made(seen.machine) {
+        Some(machine) => (
+            format!(
+                "Forget {name}: its profile, the passwords berth generated and keeps for it, and its host keys. With destroy, {} also destroys its machine {} with its disk. Without destroy the machine is left as it is, and berth keeps it as a resource of {} with no host, which berth resource remove deletes later.",
+                machine.provisioner, machine.external_id, machine.provisioner
+            ),
+            format!(
+                "Remove {name}? With destroy=yes {} destroys its machine {} and the disk it has; without, the machine is left as it is.",
+                machine.provisioner, machine.external_id
+            ),
+        ),
+        None => (
+            format!(
+                "Forget {name}: its profile, the passwords berth generated and keeps for it, and its host keys. The machine is left as it is: no provisioner made it, so there is nothing for berth to destroy."
+            ),
+            format!("Forget {name}? The machine is left as it is."),
+        ),
+    };
+    let destroy = match made(seen.machine) {
+        Some(machine) => format!(
+            "Destroy the machine {} made, {}, with its disk. It cannot be undone.",
+            machine.provisioner, machine.external_id
+        ),
+        None => "Destroy the machine a provisioner made for the host. This host has none, so yes is refused.".into(),
+    };
+    let action = Action {
+        name: "remove".into(),
+        label: "Remove".into(),
+        help,
+        group: "Host".into(),
+        role: Role::Admin,
+        confirm: Some(confirm),
+        arguments: vec![flag("destroy", "Destroy its machine", &destroy)],
+        ..Action::default()
+    };
+    let why = seen
+        .profile
+        .is_null()
+        .then(|| format!("{name} has no profile on the server"));
+    unavailable(action, why)
+}
+
+/// Why `destroy` cannot be done to the host `name`, whose machine is `machine`.
+fn destroy_refused(name: &str, machine: Option<&Resource>) -> Option<String> {
+    match (machine, made(machine)) {
+        (_, Some(_)) => None,
+        (Some(_), None) => Some(format!(
+            "{name}'s machine is not made yet, so there is nothing to destroy. Remove it without destroy to forget it with its plan"
+        )),
+        (None, _) => Some(format!(
+            "No provisioner made {name}, so there is nothing for berth to destroy. Remove it without destroy to forget it; the machine is left as it is"
+        )),
+    }
+}
+
+fn remove(state: Arc<Serve>, name: String, act: Act) -> Run {
+    Box::pin(async move {
+        let destroy = yes(&act, "destroy")?;
+        let place = own_place(&name)?;
+        saved_profile(&state, &name)?;
+        let machine = machine_of(&state, &name);
+        if destroy && let Some(why) = destroy_refused(&name, machine.as_ref()) {
+            return Err(Fail::new(code::NOT_AVAILABLE, why));
+        }
+        let mut request = Request::new(Subject::Host(name.clone()), "remove");
+        request.token = act.token;
+        request.arguments = Argument::shown(&[flag("destroy", "", "")], &act.arguments);
+        // Destroying takes the machine's lock, which is the host's.
+        let acting = match (destroy, &machine) {
+            (true, Some(machine)) => {
+                let (paths, registries, id) = (
+                    state.paths.clone(),
+                    Store::own(state.store.clone()),
+                    machine.id.clone(),
+                );
+                let mut acting = tokio::task::spawn_blocking(move || {
+                    berth_core::resource::prepare_action(
+                        &paths,
+                        &registries,
+                        &id,
+                        berth_core::resource::REMOVE,
+                        &berth_core::resource::Given::default(),
+                    )
+                    .map_err(Said::from)
+                })
+                .await
+                .map_err(internal)?
+                .map_err(super::resources::refusal)?;
+                request.held = acting.take_lock();
+                request.secrets = acting.secrets();
+                Some(acting)
+            }
+            _ => None,
+        };
+        let (serve, runtime) = (state.clone(), tokio::runtime::Handle::current());
+        let work = Work::Function(Box::new(move |out| {
+            let paths = &serve.paths;
+            if let Some(acting) = acting {
+                let (provisioner, id) = (
+                    acting.kept().record.provisioner.clone(),
+                    acting.kept().record.external_id.clone(),
+                );
+                match acting.run(paths, &(serve.provision)(), out) {
+                    // What it says of the profile staying is not so here.
+                    Ok(_) => {
+                        let _ = writeln!(
+                            out,
+                            "✓ {provisioner} destroyed {id}. A node of {name} on a tailnet stays: remove it there"
+                        );
+                    }
+                    Err(error) => {
+                        let _ = writeln!(out, "✗ {error}");
+                        let _ = writeln!(out, "{name} is kept, as its machine is");
+                        return false;
+                    }
+                }
+            } else if let Ok(Some(mut kept)) = berth_core::resource::of_place(paths, &place)
+                && !kept.record.external_id.is_empty()
+            {
+                // The record stays, without the host, so the machine can still be deleted.
+                if let Err(error) = kept.detach(paths) {
+                    let _ = writeln!(out, "✗ {error}");
+                    return false;
+                }
+                let _ = writeln!(
+                    out,
+                    "{name}'s machine {} of {} is left as it is. berth keeps it as {}: berth resource remove {} deletes it",
+                    kept.record.external_id,
+                    kept.record.provisioner,
+                    kept.record.id,
+                    kept.record.id
+                );
+            }
+            let _inside = runtime.enter();
+            match berth_core::profiles::remove(paths, &place) {
+                Ok(()) => {
+                    serve.forget(&name);
+                    serve.notice();
+                    let _ = writeln!(out, "✓ Removed {name}");
+                    true
+                }
+                Err(error) => {
+                    let _ = writeln!(out, "✗ {error}");
+                    false
+                }
+            }
+        }));
+        let job = state.runner.start(request, work).map_err(refused)?;
+        Ok(Acted {
+            job: Some(job_info(&state.paths, job)),
+            ..Acted::default()
+        })
+    })
+}
+
+fn duplicate_action(seen: &Seen) -> Action {
+    let name = seen.name;
+    let made_by = seen
+        .machine
+        .map(|machine| machine.provisioner.as_str())
+        .unwrap_or("");
+    let help = match made_by {
+        "" => format!(
+            "Save a copy of {name}'s profile as a new host, with its own hostname and without what belongs to the one machine: its address, host keys, the passwords berth generated, how it is known on the tailnet and what was applied to it. The disk is not cloned: the new host is installed from the profile, as any other."
+        ),
+        provisioner => format!(
+            "Save a copy of {name}'s profile as a new host, with its own hostname and without what belongs to the one machine: its address, host keys, the passwords berth generated, how it is known on the tailnet and what was applied to it. Its machine is to be made by {provisioner} with the same settings: with create, at once, or later on its Run tab or with berth host create NAME. The disk is not cloned: the new machine is installed from the profile."
+        ),
+    };
+    let mut arguments = vec![Argument {
+        name: "name".into(),
+        label: "New host's name".into(),
+        help: "The copy's name in berth, and its hostname: letters, digits, `-`, `_` and `.`."
+            .into(),
+        required: true,
+        ..Argument::default()
+    }];
+    if !made_by.is_empty() {
+        arguments.push(flag(
+            "create",
+            "Create its machine now",
+            &format!("Have {made_by} make the copy's machine at once, in the same job."),
+        ));
+    }
+    let action = Action {
+        name: "duplicate".into(),
+        label: "Duplicate".into(),
+        help,
+        group: "Host".into(),
+        role: Role::Admin,
+        arguments,
+        ..Action::default()
+    };
+    let why = seen
+        .profile
+        .is_null()
+        .then(|| format!("{name} has no profile on the server"));
+    unavailable(action, why)
+}
+
+fn duplicate(state: Arc<Serve>, name: String, act: Act) -> Run {
+    Box::pin(async move {
+        let new = given(&act, "name").unwrap_or_default().to_owned();
+        let create = yes(&act, "create")?;
+        let to = own_place(&new)?;
+        let from = own_place(&name)?;
+        saved_profile(&state, &name)?;
+        if to.load(&state.paths).map_err(internal)?.is_some() {
+            return Err(Fail::new(
+                code::CONFLICT,
+                format!("There is a host {new} already"),
+            ));
+        }
+        let machine = machine_of(&state, &name);
+        if create && machine.is_none() {
+            return Err(Fail::new(
+                code::NOT_AVAILABLE,
+                format!(
+                    "No provisioner made {name}, so its copy has none to be made with: create is for a host a provisioner made"
+                ),
+            ));
+        }
+        let mut request = Request::new(Subject::Host(name.clone()), "duplicate");
+        request.token = act.token;
+        request.host = format!("{name}, {new}");
+        request.arguments = Argument::shown(
+            &[
+                Argument {
+                    name: "name".into(),
+                    ..Argument::default()
+                },
+                flag("create", "", ""),
+            ],
+            &act.arguments,
+        );
+        // The copy takes the lock of its own name itself.
+        request.changes = false;
+        let (serve, runtime) = (state.clone(), tokio::runtime::Handle::current());
+        let work = Work::Function(Box::new(move |out| {
+            let paths = &serve.paths;
+            let planned = match berth_core::profiles::duplicate(paths, &from, &new) {
+                Ok((_, planned)) => planned,
+                Err(error) => {
+                    let _ = writeln!(out, "✗ {error}");
+                    return false;
+                }
+            };
+            {
+                let _inside = runtime.enter();
+                serve.refresh(false);
+                serve.notice();
+            }
+            let _ = writeln!(out, "✓ Saved {new}, a copy of {name}'s profile");
+            let Some(planned) = planned else {
+                let _ = writeln!(
+                    out,
+                    "Next: give it an address and apply it (berth host set {new} address=ADDRESS, then berth host apply {new}), or install it another way: berth ui {new}"
+                );
+                return true;
+            };
+            let provisioner = planned.record.provisioner.clone();
+            if !create {
+                let _ = writeln!(
+                    out,
+                    "Its machine is to be made by {provisioner} with {name}'s settings. Make it with: berth host create {new}"
+                );
+                return true;
+            }
+            let asked = berth_api::NewResource {
+                provisioner: provisioner.clone(),
+                kind: berth_core::plugins::MACHINE.into(),
+                host: Some(new.clone()),
+                arguments: planned.record.arguments.clone(),
+                ..berth_api::NewResource::default()
+            };
+            let registries = Store::own(serve.store.clone());
+            let made =
+                berth_core::resource::prepare(paths, &registries, &asked).and_then(|asked| {
+                    match asked {
+                        berth_core::resource::Asked::New(creating) => {
+                            out.hide(creating.secrets().iter().map(String::as_str));
+                            creating.run(paths, &registries, &(serve.provision)(), out)
+                        }
+                        berth_core::resource::Asked::Again(_) => Ok(()),
+                    }
+                });
+            let _inside = runtime.enter();
+            // An address the provisioner gave is how the copy is reached now.
+            serve.forget(&new);
+            serve.refresh(false);
+            match made {
+                Ok(()) => true,
+                Err(error) => {
+                    let _ = writeln!(out, "✗ {error}");
+                    let _ = writeln!(
+                        out,
+                        "{new} is saved. Asking again makes the same machine: berth host create {new}"
+                    );
+                    false
+                }
+            }
+        }));
+        let job = state.runner.start(request, work).map_err(refused)?;
+        Ok(Acted {
+            job: Some(job_info(&state.paths, job)),
+            ..Acted::default()
+        })
     })
 }
 
@@ -1691,6 +2194,8 @@ mod tests {
             .collect()
     }
 
+    static UNPOWERED: std::sync::LazyLock<Powered> = std::sync::LazyLock::new(Powered::default);
+
     fn seen<'a>(
         host_type: HostType,
         listed: Option<&'a [HostAction]>,
@@ -1706,6 +2211,8 @@ mod tests {
             unanswered: None,
             older: None,
             local: false,
+            power: &UNPOWERED,
+            machine: None,
         }
     }
 
@@ -1781,5 +2288,147 @@ mod tests {
         assert!(!find("seed").available);
         assert!(find("seed").why.contains("not a workstation"));
         assert!(!find("install-controller").available);
+    }
+
+    fn made_machine(made: bool) -> Resource {
+        Resource {
+            id: "r-big".into(),
+            provisioner: "incus".into(),
+            kind: "machine".into(),
+            external_id: if made {
+                "berth-big".into()
+            } else {
+                String::new()
+            },
+            verbs: vec!["start".into(), "stop".into()],
+            state: if made {
+                "stopped".into()
+            } else {
+                "planned".into()
+            },
+            ..Resource::default()
+        }
+    }
+
+    #[test]
+    fn starting_and_stopping_follow_how_the_host_is_powered() {
+        let profile = json!({"builder": {}});
+        let machine = made_machine(true);
+        let powered = host_type::power("big", &profile, Some(&machine));
+        let mut by_provisioner = seen(HostType::Workstation, Some(&[]), &profile);
+        by_provisioner.power = &powered;
+        by_provisioner.machine = Some(&machine);
+        let (start, stop) = (start_action(&by_provisioner), stop_action(&by_provisioner));
+        assert!(
+            start.available && stop.available,
+            "{} {}",
+            start.why,
+            stop.why
+        );
+        assert!(start.confirm.is_none());
+        assert_eq!(stop.confirm.as_deref(), Some("Stop big? Its sessions end."));
+        assert!(stop.arguments.is_empty());
+        assert_eq!((start.role, stop.role), (Role::Operate, Role::Operate));
+        // A host that declares nothing says why.
+        let unpowered = host_type::power("big", &profile, None);
+        let mut bare = seen(HostType::Managed, Some(&[]), &profile);
+        bare.power = &unpowered;
+        let (start, stop) = (start_action(&bare), stop_action(&bare));
+        assert!(!start.available && start.why.contains("declares no way to start it"));
+        assert!(!stop.available && stop.why.contains("power_stop=controller"));
+        // Its controller shuts it down only while it answers.
+        let declared = json!({"type": "managed", "access": {"address": "192.0.2.4"}, "power": {"stop": {"by": "controller"}}});
+        let powered = host_type::power("big", &declared, None);
+        let mut by_controller = seen(HostType::Managed, Some(&[]), &declared);
+        by_controller.power = &powered;
+        let stop = stop_action(&by_controller);
+        assert!(stop.available, "{}", stop.why);
+        assert_eq!(stop.arguments[0].name, "force");
+        by_controller.unanswered = Some("no answer in time");
+        let stop = stop_action(&by_controller);
+        assert!(!stop.available);
+        assert!(
+            stop.why
+                .ends_with("it shuts the host down: no answer in time"),
+            "{}",
+            stop.why
+        );
+    }
+
+    #[test]
+    fn removing_names_what_is_destroyed_and_refuses_destroying_nothing() {
+        let profile = json!({"builder": {}});
+        let machine = made_machine(true);
+        let mut made = seen(HostType::Workstation, None, &profile);
+        made.machine = Some(&machine);
+        let remove = remove_action(&made);
+        assert!(remove.available);
+        assert_eq!(remove.role, Role::Admin);
+        assert_eq!(
+            remove.confirm.as_deref(),
+            Some(
+                "Remove big? With destroy=yes incus destroys its machine berth-big and the disk it has; without, the machine is left as it is."
+            )
+        );
+        assert_eq!(
+            (
+                remove.arguments[0].name.as_str(),
+                remove.arguments[0].default.as_str()
+            ),
+            ("destroy", "no")
+        );
+        assert!(destroy_refused("big", Some(&machine)).is_none());
+        let bare = remove_action(&seen(HostType::Workstation, None, &profile));
+        assert_eq!(
+            bare.confirm.as_deref(),
+            Some("Forget big? The machine is left as it is.")
+        );
+        let refused = destroy_refused("big", None).unwrap();
+        assert!(
+            refused
+                .starts_with("No provisioner made big, so there is nothing for berth to destroy")
+        );
+        let planned = made_machine(false);
+        assert!(
+            destroy_refused("big", Some(&planned))
+                .unwrap()
+                .contains("not made yet")
+        );
+        // A host the server has no profile of has nothing to remove here.
+        let unsaved = remove_action(&seen(HostType::Workstation, None, &Value::Null));
+        assert!(!unsaved.available);
+    }
+
+    #[test]
+    fn a_duplicate_of_a_host_a_provisioner_made_may_be_created_at_once() {
+        let profile = json!({"builder": {}});
+        let machine = made_machine(true);
+        let mut made = seen(HostType::Workstation, None, &profile);
+        made.machine = Some(&machine);
+        let duplicate = duplicate_action(&made);
+        let names: Vec<&str> = duplicate
+            .arguments
+            .iter()
+            .map(|argument| argument.name.as_str())
+            .collect();
+        assert_eq!(names, ["name", "create"]);
+        assert!(duplicate.arguments[0].required);
+        assert!(
+            duplicate
+                .help
+                .contains("to be made by incus with the same settings")
+        );
+        assert!(duplicate.help.contains("The disk is not cloned"));
+        let bare = duplicate_action(&seen(HostType::Workstation, None, &profile));
+        assert_eq!(bare.arguments.len(), 1);
+        assert!(bare.help.contains("The disk is not cloned"));
+        // All four are listed with berth's own, whatever the controller says.
+        let names: Vec<String> = host_list(&made)
+            .into_iter()
+            .map(|action| action.name)
+            .collect();
+        for name in ["start", "stop", "duplicate", "remove"] {
+            assert!(names.iter().any(|known| known == name), "{name}: {names:?}");
+        }
     }
 }

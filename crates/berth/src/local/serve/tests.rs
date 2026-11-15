@@ -859,7 +859,11 @@ async fn a_hosts_actions_are_its_controllers_and_berths_own() {
             "trust-key",
             "host-key",
             "rename",
-            "installer"
+            "installer",
+            "start",
+            "stop",
+            "duplicate",
+            "remove"
         ]
     );
     let status = &actions[0];
@@ -2794,7 +2798,7 @@ async fn machines_are_created_and_deleted_through_the_api() {
     let (status, said) = send(client, "DELETE", "/v1/hosts/studio", Value::Null).await;
     assert_eq!(status, 409, "{said}");
     assert!(
-        message(&said).contains(&format!("berth resource remove {id}")),
+        message(&said).contains("berth host remove studio --destroy"),
         "{said}"
     );
 
@@ -4809,4 +4813,334 @@ async fn a_profile_does_not_say_how_ansible_reaches_the_host() {
     assert!(listed.to_string().contains("\"dock\""), "{listed}");
     let (status, profile) = send(&mut client, "GET", "/v1/hosts/dock/profile", Value::Null).await;
     assert_eq!(status, 200, "{profile}");
+}
+
+/// The names of what a host's actions list says, with each one's availability.
+async fn host_action(client: &mut Client, host: &str, name: &str) -> Value {
+    let (status, listed) = send(
+        client,
+        "GET",
+        &format!("/v1/hosts/{host}/actions"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{listed}");
+    listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["name"] == name)
+        .cloned()
+        .unwrap_or_else(|| panic!("{host} has no action {name}: {listed}"))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_is_started_stopped_duplicated_and_removed_by_its_actions() {
+    let served = served_with(quick).await;
+    let fake = fake_provisioner(&served);
+    let mut client = served.client().await;
+    let client = &mut client;
+    register_fake(client).await;
+    send(
+        client,
+        "PUT",
+        "/v1/secrets/api_token",
+        json!({"value": "tok-s3cret"}),
+    )
+    .await;
+    let paths = &served.state.paths;
+    paths.prepare().unwrap();
+    berth_core::profiles::Place::own("studio")
+        .unwrap()
+        .save(
+            paths,
+            &json!({"hostname": "studio", "builder": {}, "access": {"user": "ops", "link": ["sh", "-c", "exit 1"]},
+                    "ansible_vars": {"devbox_install_tailscale": false}}),
+        )
+        .unwrap();
+    let machine = |host: &str| berth_core::resource::of_host(paths, host).unwrap();
+    let done = async |client: &mut Client, acted: &Value| {
+        let job = job_done(client, acted["job"]["id"].as_str().unwrap()).await;
+        let (output, _) = job_ended(&served.socket, acted["job"]["id"].as_str().unwrap()).await;
+        (job, output)
+    };
+    let act = |path: &str| format!("/v1/hosts/{path}");
+
+    // A host no provisioner made declares nothing, and can be neither started nor stopped.
+    let start = host_action(client, "studio", "start").await;
+    assert_eq!(start["available"], false, "{start}");
+    assert!(
+        start["why"]
+            .as_str()
+            .unwrap()
+            .contains("declares no way to start it")
+    );
+    let (_, host) = send(client, "GET", "/v1/hosts/studio", Value::Null).await;
+    assert_eq!(
+        host["power"],
+        json!({"start": false, "stop": false, "state": "unknown"})
+    );
+    let remove = host_action(client, "studio", "remove").await;
+    assert_eq!(
+        (&remove["role"], &remove["available"]),
+        (&json!("admin"), &json!(true))
+    );
+    assert_eq!(
+        remove["confirm"],
+        "Forget studio? The machine is left as it is."
+    );
+    let (status, said) = send(
+        client,
+        "POST",
+        &act("studio/actions/remove"),
+        json!({"arguments": {"destroy": "yes"}}),
+    )
+    .await;
+    assert_eq!(status, 501, "{said}");
+    assert!(
+        said["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("No provisioner made studio"),
+        "{said}"
+    );
+
+    // Made by a provisioner whose machines start but do not stop.
+    std::fs::write(
+        fake.join("answer.create"),
+        r#"{"id": "vm-1", "address": "192.0.2.20"}"#,
+    )
+    .unwrap();
+    let asked = json!({"provisioner": "vm", "host": "studio", "arguments": {"server": "https://192.0.2.10:8443", "cpus": "2"}});
+    let (status, created) = send(client, "POST", "/v1/resources", asked).await;
+    assert_eq!(status, 202, "{created}");
+    let (job, output) = done(client, &created).await;
+    assert_eq!(job["exit_code"], 0, "{output}");
+    let (_, host) = send(client, "GET", "/v1/hosts/studio", Value::Null).await;
+    assert_eq!(
+        host["power"],
+        json!({"start": true, "stop": false, "state": "running", "start_by": "provisioner"})
+    );
+    let stop = host_action(client, "studio", "stop").await;
+    assert_eq!(
+        (&stop["available"], &stop["group"]),
+        (&json!(false), &json!("Power"))
+    );
+    assert!(
+        stop["why"]
+            .as_str()
+            .unwrap()
+            .starts_with("vm cannot stop the machines it makes"),
+        "{stop}"
+    );
+    let (status, said) = send(client, "POST", &act("studio/actions/stop"), Value::Null).await;
+    assert_eq!(status, 501, "{said}");
+    let remove = host_action(client, "studio", "remove").await;
+    assert!(
+        remove["confirm"]
+            .as_str()
+            .unwrap()
+            .contains("vm destroys its machine vm-1 and the disk it has"),
+        "{remove}"
+    );
+    let (status, acted) = send(client, "POST", &act("studio/actions/start"), Value::Null).await;
+    assert_eq!(status, 202, "{acted}");
+    let (job, output) = done(client, &acted).await;
+    assert_eq!(
+        (&job["exit_code"], &job["action"]),
+        (&json!(0), &json!("start")),
+        "{output}"
+    );
+    let asked = std::fs::read_to_string(fake.join("requests.log")).unwrap();
+    assert_eq!(asked.lines().last(), Some("start"));
+
+    // A copy is a new host whose machine is planned with the same provisioner and arguments.
+    let duplicate = host_action(client, "studio", "duplicate").await;
+    assert!(
+        duplicate["help"]
+            .as_str()
+            .unwrap()
+            .contains("The disk is not cloned")
+    );
+    assert_eq!(duplicate["arguments"][1]["name"], "create");
+    let (status, acted) = send(
+        client,
+        "POST",
+        &act("studio/actions/duplicate"),
+        json!({"arguments": {"name": "lab"}}),
+    )
+    .await;
+    assert_eq!(status, 202, "{acted}");
+    let (job, output) = done(client, &acted).await;
+    assert_eq!(job["exit_code"], 0, "{output}");
+    assert!(
+        output.contains("Make it with: berth host create lab"),
+        "{output}"
+    );
+    let (_, copy) = send(client, "GET", "/v1/hosts/lab/profile", Value::Null).await;
+    assert_eq!(
+        copy["access"],
+        json!({"user": "ops", "auth": "berth"}),
+        "{copy}"
+    );
+    assert!(copy.get("hostname").is_none());
+    let planned = machine("lab").unwrap().record;
+    assert_eq!(
+        (
+            planned.provisioner.as_str(),
+            planned.state.as_str(),
+            planned.external_id.as_str()
+        ),
+        ("vm", "planned", "")
+    );
+    assert_eq!(planned.arguments["cpus"], "2");
+    let (_, listed) = send(client, "GET", "/v1/resources?host=lab", Value::Null).await;
+    assert_eq!(
+        (&listed[0]["state"], &listed[0]["problem"]),
+        (&json!("planned"), &Value::Null)
+    );
+    let start = host_action(client, "lab", "start").await;
+    assert!(
+        start["why"].as_str().unwrap().contains("not made yet"),
+        "{start}"
+    );
+    let (status, said) = send(
+        client,
+        "POST",
+        &act("studio/actions/duplicate"),
+        json!({"arguments": {"name": "lab"}}),
+    )
+    .await;
+    assert_eq!(status, 409, "{said}");
+    let (status, said) = send(client, "POST", &act("studio/actions/duplicate"), json!({})).await;
+    assert_eq!(status, 400, "{said}");
+
+    // With create, the copy's machine is made in the same job.
+    std::fs::write(
+        fake.join("answer.create"),
+        r#"{"id": "vm-2", "address": "192.0.2.21"}"#,
+    )
+    .unwrap();
+    let (status, acted) = send(
+        client,
+        "POST",
+        &act("studio/actions/duplicate"),
+        json!({"arguments": {"name": "attic", "create": "yes"}}),
+    )
+    .await;
+    assert_eq!(status, 202, "{acted}");
+    let (job, output) = done(client, &acted).await;
+    assert_eq!(job["exit_code"], 0, "{output}");
+    assert!(!output.contains("tok-s3cret"), "{output}");
+    let made = machine("attic").unwrap().record;
+    assert_eq!(
+        (made.external_id.as_str(), made.arguments["cpus"].as_str()),
+        ("vm-2", "2")
+    );
+
+    // Removing a planned copy forgets it with its plan; destroying it is refused.
+    let (status, said) = send(
+        client,
+        "POST",
+        &act("lab/actions/remove"),
+        json!({"arguments": {"destroy": "yes"}}),
+    )
+    .await;
+    assert_eq!(status, 501, "{said}");
+    let (status, acted) = send(client, "POST", &act("lab/actions/remove"), Value::Null).await;
+    assert_eq!(status, 202, "{acted}");
+    assert_eq!(done(client, &acted).await.0["exit_code"], 0);
+    assert_eq!(
+        send(client, "GET", "/v1/hosts/lab", Value::Null).await.0,
+        404
+    );
+    assert!(
+        berth_core::resource::list(paths)
+            .unwrap()
+            .iter()
+            .all(|kept| kept.record.name != "lab")
+    );
+
+    // Without destroy, the machine stays, and berth keeps it under its provisioner.
+    let (status, acted) = send(client, "POST", &act("attic/actions/remove"), Value::Null).await;
+    assert_eq!(status, 202, "{acted}");
+    let (job, output) = done(client, &acted).await;
+    assert_eq!(job["exit_code"], 0, "{output}");
+    assert!(output.contains("berth resource remove"), "{output}");
+    assert_eq!(
+        send(client, "GET", "/v1/hosts/attic", Value::Null).await.0,
+        404
+    );
+    let kept = berth_core::resource::list(paths).unwrap();
+    let left = kept
+        .iter()
+        .find(|kept| kept.record.external_id == "vm-2")
+        .unwrap();
+    assert!(left.record.host.is_empty());
+
+    // With destroy, the provisioner destroys the machine and the host goes.
+    let (status, acted) = send(
+        client,
+        "POST",
+        &act("studio/actions/remove"),
+        json!({"arguments": {"destroy": "yes"}}),
+    )
+    .await;
+    assert_eq!(status, 202, "{acted}");
+    let (job, output) = done(client, &acted).await;
+    assert_eq!(job["exit_code"], 0, "{output}");
+    assert!(output.contains("vm destroyed vm-1"), "{output}");
+    let asked = std::fs::read_to_string(fake.join("requests.log")).unwrap();
+    assert_eq!(asked.lines().last(), Some("destroy"));
+    assert_eq!(
+        send(client, "GET", "/v1/hosts/studio", Value::Null).await.0,
+        404
+    );
+    assert!(machine("studio").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_that_declares_its_controller_stops_it_asks_the_controller() {
+    let served = served().await;
+    let mut client = served.client().await;
+    let client = &mut client;
+    let paths = &served.state.paths;
+    let profile = json!({"type": "managed", "access": {"address": "192.0.2.7", "link": ["sh", "-c", "exit 1"]},
+                         "power": {"stop": {"by": "controller"}}});
+    let (status, said) = send(client, "PUT", "/v1/hosts/dock/profile", profile).await;
+    assert_eq!(status, 200, "{said}");
+    let (status, said) = send(
+        client,
+        "PUT",
+        "/v1/hosts/yard/profile",
+        json!({"type": "managed", "access": {"address": "192.0.2.8"}, "power": {"stop": {"by": "magic"}}}),
+    )
+    .await;
+    assert_eq!(status, 400, "{said}");
+    assert!(
+        berth_core::profiles::Place::own("yard")
+            .unwrap()
+            .load(paths)
+            .unwrap()
+            .is_none()
+    );
+    let (_, host) = send(client, "GET", "/v1/hosts/dock", Value::Null).await;
+    assert_eq!(
+        host["power"],
+        json!({"start": false, "stop": true, "state": "unknown", "stop_by": "controller"})
+    );
+    // Its controller does not answer, so it cannot be asked to shut the host down.
+    let stop = host_action(client, "dock", "stop").await;
+    assert_eq!(stop["available"], false, "{stop}");
+    assert!(
+        stop["why"]
+            .as_str()
+            .unwrap()
+            .starts_with("The controller on dock does not answer"),
+        "{stop}"
+    );
+    assert_eq!(stop["arguments"][0]["name"], "force");
+    assert_eq!(stop["role"], "operate");
+    let (status, said) = send(client, "POST", "/v1/hosts/dock/actions/stop", Value::Null).await;
+    assert_eq!(status, 501, "{said}");
 }
