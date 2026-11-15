@@ -769,7 +769,7 @@ impl Setup {
         ])
         .areas(left);
         // The cursor only stops on rows that do something.
-        let rows = self.rows();
+        let rows = berth_tui::setup::wrapped(self.rows(), body.width);
         let positions: Vec<usize> = rows
             .iter()
             .enumerate()

@@ -1027,7 +1027,16 @@ impl App {
             right,
         );
         // The cursor only stops on rows that do something.
-        let rows = self.rows();
+        let rows: Vec<Row> = berth_tui::setup::wrapped_rows(
+            self.rows()
+                .into_iter()
+                .map(|row| (row.line, row.entry))
+                .collect(),
+            left.width,
+        )
+        .into_iter()
+        .map(|(line, entry)| Row { line, entry })
+        .collect();
         let positions: Vec<usize> = rows
             .iter()
             .enumerate()

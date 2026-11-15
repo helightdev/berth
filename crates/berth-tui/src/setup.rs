@@ -150,6 +150,121 @@ pub struct Row {
     pub entry: Option<Entry>,
 }
 
+/// The rows as a list draws them in `width` cells, its cursor's mark taken
+/// off: a row the cursor skips, such as a problem, a refusal or a note,
+/// wraps under itself instead of running off the panel. A row the cursor
+/// stops on stays one line, and the Information panel has its whole text.
+pub fn wrapped(rows: Vec<Row>, width: u16) -> Vec<Row> {
+    wrapped_rows(
+        rows.into_iter().map(|row| (row.line, row.entry)).collect(),
+        width,
+    )
+    .into_iter()
+    .map(|(line, entry)| Row { line, entry })
+    .collect()
+}
+
+/// [`wrapped`] for the rows of any list: each a line and what choosing it does.
+pub fn wrapped_rows<E>(
+    rows: Vec<(Line<'static>, Option<E>)>,
+    width: u16,
+) -> Vec<(Line<'static>, Option<E>)> {
+    let width = usize::from(width.saturating_sub(theme::CURSOR.chars().count() as u16));
+    let mut drawn = Vec::with_capacity(rows.len());
+    for (line, entry) in rows {
+        match entry {
+            Some(entry) => drawn.push((line, Some(entry))),
+            None => drawn.extend(wrap_line(&line, width).into_iter().map(|line| (line, None))),
+        }
+    }
+    drawn
+}
+
+/// A line broken at spaces into lines `width` cells wide. Its lines after
+/// the first are indented as far as its text begins, past a mark such as
+/// `✗ ` or `! `, so they read as one item.
+pub fn wrap_line(line: &Line<'static>, width: usize) -> Vec<Line<'static>> {
+    let cells: Vec<(String, Style)> = line
+        .spans
+        .iter()
+        .flat_map(|span| {
+            let style = line.style.patch(span.style);
+            span.content.chars().map(move |ch| (ch.to_string(), style))
+        })
+        .collect();
+    let wide = |text: &str| Span::raw(text).width();
+    let total: usize = cells.iter().map(|(text, _)| wide(text)).sum();
+    if width < 8 || total <= width {
+        return vec![line.clone()];
+    }
+    let mut indent = cells.iter().take_while(|(text, _)| text == " ").count();
+    let marked = cells.get(indent + 1).is_some_and(|(text, _)| text == " ")
+        && cells
+            .get(indent)
+            .is_some_and(|(text, _)| !text.chars().all(char::is_alphanumeric));
+    if marked {
+        indent += 2;
+    }
+    let indent = indent.min(width / 2);
+    // Words with the spaces before them.
+    let mut words: Vec<(Vec<(String, Style)>, Vec<(String, Style)>)> = vec![];
+    let mut spaces = vec![];
+    let mut word = vec![];
+    for cell in cells {
+        if cell.0 == " " {
+            if !word.is_empty() {
+                words.push((std::mem::take(&mut spaces), std::mem::take(&mut word)));
+            }
+            spaces.push(cell);
+        } else {
+            word.push(cell);
+        }
+    }
+    if !word.is_empty() || !spaces.is_empty() {
+        words.push((spaces, word));
+    }
+    let to_line = |cells: &[(String, Style)]| {
+        let mut spans: Vec<Span<'static>> = vec![];
+        for (text, style) in cells {
+            match spans.last_mut() {
+                Some(last) if last.style == *style => last.content.to_mut().push_str(text),
+                _ => spans.push(Span::styled(text.clone(), *style)),
+            }
+        }
+        Line::from(spans)
+    };
+    let mut lines = vec![];
+    let mut current: Vec<(String, Style)> = vec![];
+    let mut used = 0;
+    for (spaces, word) in words {
+        let word_wide: usize = word.iter().map(|(text, _)| wide(text)).sum();
+        let starting = lines.is_empty() && current.iter().all(|(text, _)| text == " ");
+        if !starting && used + spaces.len() + word_wide > width && used > indent {
+            lines.push(to_line(&current));
+            current = vec![(" ".to_owned(), Style::new()); indent];
+            used = indent;
+        } else {
+            used += spaces.len();
+            current.extend(spaces);
+        }
+        for cell in word {
+            let cell_wide = wide(&cell.0);
+            // A word longer than a whole line is broken where the line ends.
+            if used + cell_wide > width && used > indent {
+                lines.push(to_line(&current));
+                current = vec![(" ".to_owned(), Style::new()); indent];
+                used = indent;
+            }
+            used += cell_wide;
+            current.push(cell);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(to_line(&current));
+    }
+    lines
+}
+
 impl Row {
     pub fn info(line: impl Into<Line<'static>>) -> Self {
         Row {
@@ -2009,6 +2124,48 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_long_problem_wraps_under_itself_and_rows_to_choose_stay_whole() {
+        let problem = "✗ The USB installer is built where berth serve runs, with berth ui there";
+        let rows = vec![
+            Row::entry(
+                "  ○ USB installer, a way that has a long label too",
+                Entry::Action(Action::Iso),
+            ),
+            Row::info(Line::styled(problem, Style::new().fg(theme::BAD))),
+        ];
+        let drawn = wrapped(rows, 40);
+        let text: Vec<String> = drawn.iter().map(|row| row.line.to_string()).collect();
+        assert_eq!(
+            text,
+            [
+                "  ○ USB installer, a way that has a long label too",
+                "✗ The USB installer is built where",
+                "  berth serve runs, with berth ui",
+                "  there",
+            ]
+        );
+        assert!(drawn[0].entry.is_some() && drawn[1..].iter().all(|row| row.entry.is_none()));
+        // Every word is kept, in its colour, and nothing is wider than the panel.
+        let joined: Vec<&str> = text[1..]
+            .iter()
+            .flat_map(|line| line.split_whitespace())
+            .collect();
+        assert_eq!(joined.join(" "), problem);
+        assert!(text[1..].iter().all(|line| line.chars().count() <= 38));
+        assert!(
+            drawn[2]
+                .line
+                .spans
+                .iter()
+                .any(|span| span.style.fg == Some(theme::BAD))
+        );
+        // A word longer than a line is broken at its end.
+        let long = wrap_line(&Line::raw(format!("  ! {}", "x".repeat(30))), 20);
+        assert!(long.iter().all(|line| line.width() <= 20), "{long:?}");
+        assert_eq!(long.len(), 2);
     }
 
     #[test]
