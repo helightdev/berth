@@ -49,7 +49,7 @@ berth host add dock 192.0.2.4 --user ops
 | `--type TYPE` | `ssh` | The type it is meant to be |
 | `--no-contact` | | Save it without logging in |
 
-After saving the host, berth logs in the way [first contact](/docs/use/accounts#first-contact) does. It tries its own key, and if the machine refuses it, it asks for a password or a private key that logs in once to install the key. It records the host's SSH host key and prints its fingerprint. When your `~/.ssh/known_hosts` knows the address and the server runs on your machine, berth takes the host key from there. With a [berth server](/docs/use/server) elsewhere, the host is saved on the server, which logs in with its own keys and records the key the host shows it; see [host keys](/docs/use/accounts#host-keys).
+After saving the host, berth logs in the way [first contact](/docs/use/accounts#first-contact) does. It tries its own key, and if the machine refuses it, it asks for a password or a private key that logs in once to install the key. It records the host's SSH host key and prints its fingerprint. When your `~/.ssh/known_hosts` knows the address and the server runs on your machine, berth takes the host key from there. With a [berth server](/docs/use/server) elsewhere, the host is saved on the server, which logs in with its own keys and records the key the host shows it. [Host keys](/docs/use/accounts#host-keys) has more.
 
 Then berth asks the host what it is. A machine that berth set up before has a controller that says its type, and berth offers to change the profile here when the host has more than `--type` gave. Without a terminal it prints the command.
 
