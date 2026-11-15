@@ -1155,7 +1155,11 @@ mod tests {
             .collect()
     }
 
-    fn seen<'a>(host_type: HostType, listed: Option<&'a [HostAction]>, profile: &'a Value) -> Seen<'a> {
+    fn seen<'a>(
+        host_type: HostType,
+        listed: Option<&'a [HostAction]>,
+        profile: &'a Value,
+    ) -> Seen<'a> {
         Seen {
             name: "big",
             profile,
@@ -1170,7 +1174,12 @@ mod tests {
     #[test]
     fn upgrading_the_server_is_offered_where_the_node_has_its_container() {
         let profile = json!({"type": "node", "access": {"address": "192.0.2.20", "user": "root"}});
-        let find = |actions: &[Action]| actions.iter().find(|action| action.name == UPGRADE_SERVER).cloned();
+        let find = |actions: &[Action]| {
+            actions
+                .iter()
+                .find(|action| action.name == UPGRADE_SERVER)
+                .cloned()
+        };
         // A node whose role found no berth server's container lists none.
         let without = listed(&["status", "update"]);
         assert!(find(&host_list(&seen(HostType::Node, Some(&without), &profile))).is_none());
@@ -1181,7 +1190,13 @@ mod tests {
         assert_eq!(upgrade.arguments[0].default, berth_api::VERSION);
         assert_eq!(upgrade.runs, Runs::Host);
         // Listed once: berth's own takes the place of the controller's.
-        assert_eq!(actions.iter().filter(|action| action.name == UPGRADE_SERVER).count(), 1);
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|action| action.name == UPGRADE_SERVER)
+                .count(),
+            1
+        );
         // A controller that does not answer cannot run it.
         let mut quiet = seen(HostType::Node, Some(&with), &profile);
         quiet.unanswered = Some("no answer in time");

@@ -1395,7 +1395,10 @@ async fn a_node_says_it_is_one_and_what_its_features_offer() {
             "applied.json",
             json!({"berth": "0.6.0", "plugins": [], "level": "node", "offers": [offer]}),
         ),
-        ("profile.json", json!({"format": 2, "berth": "0.6.0", "host": "big", "profile": {}})),
+        (
+            "profile.json",
+            json!({"format": 2, "berth": "0.6.0", "host": "big", "profile": {}}),
+        ),
     ]);
     let mut host = daemon.host().await;
     let version: api::Version = host.get("/v1/version").await.unwrap();
