@@ -699,6 +699,21 @@ pub fn provisioner(client: &Client, command: Provisioner) -> Result<()> {
             )?;
             Ok(())
         }
+        Provisioner::Rename { name, new } => {
+            let act = Act {
+                arguments: BTreeMap::from([("name".to_owned(), new.clone())]),
+                ..Act::default()
+            };
+            let acted = client.act(&Subject::Provisioner(name.clone()), "rename", &act)?;
+            follow::acted(
+                client,
+                acted,
+                &format!("Renaming {name} to {new}"),
+                false,
+                false,
+            )?;
+            Ok(())
+        }
         Provisioner::Remove { name } => {
             ask::confirm(&format!(
                 "This forgets the provisioner {name} with its settings."

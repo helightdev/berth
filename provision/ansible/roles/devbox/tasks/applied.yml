@@ -1,14 +1,40 @@
 ---
+# The host's device on the tailnet, so that berth can remove it when the
+# machine is destroyed and rename it with the host: the id the control
+# server's API knows it by, and what berth finds it by otherwise.
+- name: Inspect the host's device on the tailnet
+  ansible.builtin.command: tailscale status --json
+  register: devbox_tailnet_self
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: devbox_berth_applied is defined
+- name: Tell which device the host is on the tailnet
+  vars:
+    devbox_tailnet_said: "{{ devbox_tailnet_self.stdout | default('', true) | from_json }}"
+  ansible.builtin.set_fact:
+    devbox_tailnet_device:
+      id: "{{ devbox_tailnet_said.Self.ID | string }}"
+      dns_name: "{{ devbox_tailnet_said.Self.DNSName | default('', true) | regex_replace('[.]$', '') }}"
+      host_name: "{{ devbox_tailnet_said.Self.HostName | default('', true) }}"
+      addresses: "{{ devbox_tailnet_said.Self.TailscaleIPs | default([], true) }}"
+      tailnet: "{{ (devbox_tailnet_said.CurrentTailnet | default({}, true)).Name | default('', true) }}"
+  when:
+    - devbox_berth_applied is defined
+    - devbox_tailnet_self.rc | default(1) == 0
+    - devbox_tailnet_self.stdout is search('"BackendState":\\s*"Running"')
+    - (devbox_tailnet_said.Self | default({}, true)).ID | default('', true) | length > 0
 # Which berth and plugins this configuration came from, for berthd to report:
 # berth compares it with what it would apply now to tell whether the host is
 # behind. Only the plugins whose features the host has are recorded. A host
 # with the controller alone says so, and so does a node, with the
 # provisioners its features offer; a whole profile is recorded as before.
+# The device on the tailnet goes in too, when the host is on one.
 - name: Record which berth and plugins this configuration came from
   ansible.builtin.copy:
     dest: /etc/berth/applied.json
     mode: '0644'
-    content: "{{ ({'berth': devbox_berth_applied.berth, 'plugins': devbox_berth_applied.plugins | selectattr('id', 'in', devbox_plugin_features | map('regex_replace', '/.*$', '') | list) | list} | combine({'level': devbox_level} if devbox_level != 'workstation' else {}) | combine({'offers': devbox_plugin_offers} if devbox_plugin_offers | default([]) | length > 0 else {})) | to_nice_json }}\n"
+    content: "{{ ({'berth': devbox_berth_applied.berth, 'plugins': devbox_berth_applied.plugins | selectattr('id', 'in', devbox_plugin_features | map('regex_replace', '/.*$', '') | list) | list} | combine({'level': devbox_level} if devbox_level != 'workstation' else {}) | combine({'offers': devbox_plugin_offers} if devbox_plugin_offers | default([]) | length > 0 else {}) | combine({'tailnet': devbox_tailnet_device} if devbox_tailnet_device is defined else {})) | to_nice_json }}\n"
   when: devbox_berth_applied is defined
 # The profile itself, as berth holds it, so that a berth without it can take
 # the host over: berth host adopt reads it over SSH, and berthd serves it to an

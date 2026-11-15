@@ -360,6 +360,9 @@ pub fn settle_with(paths: &Paths, host: &Host, out: &mut dyn Write) -> Result<()
             let _ = writeln!(out, "! {error}");
         }
     }
+    for line in settle_tailnet(paths, host) {
+        let _ = writeln!(out, "{line}");
+    }
     let Some(mut profile) = host.place.load(paths)? else {
         return Ok(());
     };
@@ -383,6 +386,35 @@ pub fn settle_with(paths: &Paths, host: &Host, out: &mut dyn Write) -> Result<()
         login.noted(None);
     }
     Ok(())
+}
+
+/// After a successful apply of a host that joins the tailnet: record its
+/// device, and rename it when a rename asked for that. Only with the API
+/// key, as berth does nothing with the device without it; a host applied
+/// before the key was set is looked up by its address or hostname instead.
+fn settle_tailnet(paths: &Paths, host: &Host) -> Vec<String> {
+    if !berth_api::profile::joins_tailnet(&host.config)
+        || crate::tailnet::Control::configured(paths)
+            .device_problem()
+            .is_some()
+    {
+        return vec![];
+    }
+    let reported = match crate::node::applied(paths, host) {
+        Ok(applied) => applied.and_then(|applied| applied.tailnet),
+        Err(error) => {
+            return vec![format!(
+                "! {} did not say which device it is on the tailnet, so berth has not recorded it: {error}",
+                host.name
+            )];
+        }
+    };
+    crate::tailnet::after_apply(paths, host, reported).unwrap_or_else(|error| {
+        vec![format!(
+            "! berth did not record {}'s device on the tailnet: {error}",
+            host.name
+        )]
+    })
 }
 
 /// After a successful apply of a node: register the provisioners its

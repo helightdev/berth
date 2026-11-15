@@ -87,11 +87,13 @@ on_each_backend!(
     old_messages_and_jobs_are_pruned_and_values_stay,
     a_repeated_token_finds_the_job_it_started,
     a_job_keeps_what_it_was_started_with,
+    jobs_are_listed_by_subject_host_and_state_a_page_at_a_time,
     a_store_is_up_to_date_and_says_what_it_is,
     state_rows_are_kept_listed_and_removed,
     replacing_states_leaves_other_scopes_and_kinds_alone,
     changes_are_all_or_nothing,
     a_renamed_host_takes_its_rows_messages_and_jobs,
+    a_renamed_subject_takes_its_rows_and_jobs,
     sealed_values_round_trip,
     a_sealed_store_without_its_key_says_so,
     plain_rows_are_read_with_a_key_loaded,
@@ -513,6 +515,97 @@ fn a_job_keeps_what_it_was_started_with(place: &Place) {
     assert!(listed.iter().any(|job| job.arguments.len() == 3));
 }
 
+fn jobs_are_listed_by_subject_host_and_state_a_page_at_a_time(place: &Place) {
+    let store = place.open();
+    let job = |id: &str, age: u64, host: &str, subject: &str, ended: bool| Job {
+        id: id.into(),
+        host: host.into(),
+        what: "apply".into(),
+        started: rfc3339(unix_now() - age),
+        ended: ended.then(|| rfc3339(unix_now())),
+        output_path: format!("/tmp/{id}.log"),
+        subject: subject.into(),
+        action: "apply".into(),
+        ..Job::default()
+    };
+    store
+        .add_job(&job("j1", 50, "studio", "host:studio", true))
+        .unwrap();
+    store
+        .add_job(&job("j2", 40, "studio, lab", "installation", true))
+        .unwrap();
+    store
+        .add_job(&job("j3", 30, "", "provisioner:vm", false))
+        .unwrap();
+    store
+        .add_job(&job("j4", 20, "studio-2", "host:studio-2", true))
+        .unwrap();
+    store
+        .add_job(&job("j5", 10, "studio", "host:studio", false))
+        .unwrap();
+    let ids = |filter: JobFilter| -> Vec<String> {
+        store
+            .find_jobs(&JobFilter {
+                limit: 10,
+                ..filter
+            })
+            .unwrap()
+            .into_iter()
+            .map(|job| job.id)
+            .collect()
+    };
+    assert_eq!(ids(JobFilter::default()), ["j5", "j4", "j3", "j2", "j1"]);
+    // A host is found alone and among others, and not as part of another's name.
+    let studio = JobFilter {
+        host: Some("studio"),
+        ..JobFilter::default()
+    };
+    assert_eq!(ids(studio.clone()), ["j5", "j2", "j1"]);
+    assert_eq!(
+        ids(JobFilter {
+            subject: Some("host:studio"),
+            ..JobFilter::default()
+        }),
+        ["j5", "j1"]
+    );
+    assert_eq!(
+        ids(JobFilter {
+            running: Some(true),
+            ..JobFilter::default()
+        }),
+        ["j5", "j3"]
+    );
+    assert_eq!(
+        ids(JobFilter {
+            running: Some(false),
+            ..studio.clone()
+        }),
+        ["j2", "j1"]
+    );
+    // A page goes on after the last job of the one before.
+    let first = store
+        .find_jobs(&JobFilter {
+            limit: 2,
+            ..JobFilter::default()
+        })
+        .unwrap();
+    assert_eq!(first.len(), 2);
+    assert_eq!(
+        ids(JobFilter {
+            before: Some(&first[1].id),
+            ..JobFilter::default()
+        }),
+        ["j3", "j2", "j1"]
+    );
+    assert!(
+        ids(JobFilter {
+            before: Some("nothing"),
+            ..JobFilter::default()
+        })
+        .is_empty()
+    );
+}
+
 fn a_store_is_up_to_date_and_says_what_it_is(place: &Place) {
     let store = place.open();
     let (name, steps) = match place {
@@ -794,6 +887,63 @@ fn a_renamed_host_takes_its_rows_messages_and_jobs(place: &Place) {
     let found = store.job_by_token("host:studio", "apply", "t").unwrap();
     assert_eq!(found.map(|job| job.id), Some("j1".into()));
     assert_eq!(store.job("j3").unwrap().unwrap().host, "test, lab");
+}
+
+fn a_renamed_subject_takes_its_rows_and_jobs(place: &Place) {
+    let store = place.open().with_keys(Some(keys()), None);
+    store.write("provisioner-entry", OWN, "vm", b"e").unwrap();
+    let job = |id: &str, subject: &str, token: Option<&str>| Job {
+        id: id.into(),
+        what: "settings".into(),
+        started: rfc3339(unix_now()),
+        output_path: format!("/tmp/{id}.log"),
+        subject: subject.into(),
+        action: "settings".into(),
+        token: token.map(str::to_owned),
+        ..Job::default()
+    };
+    store
+        .add_job(&job("j1", "provisioner:vm", Some("t")))
+        .unwrap();
+    // A provisioner of the new name that was removed left a job.
+    store
+        .add_job(&job("j2", "provisioner:lab", Some("t")))
+        .unwrap();
+    store
+        .add_job(&job("j3", "provisioner:other", None))
+        .unwrap();
+    store
+        .rename_subject(
+            "provisioner:vm",
+            "provisioner:lab",
+            &[("provisioner-entry", OWN, "lab", b"e".to_vec())],
+            &[("provisioner-entry", OWN, "vm")],
+        )
+        .unwrap();
+    assert_eq!(
+        all_names(&store),
+        owned(&[("provisioner-entry", "", "lab")])
+    );
+    assert_eq!(
+        store
+            .read("provisioner-entry", OWN, "lab")
+            .unwrap()
+            .unwrap(),
+        b"e"
+    );
+    let subject = |id: &str| store.job(id).unwrap().unwrap().subject;
+    assert_eq!(
+        (subject("j1"), subject("j2"), subject("j3")),
+        (
+            "provisioner:lab".to_owned(),
+            "provisioner:lab".to_owned(),
+            "provisioner:other".to_owned()
+        )
+    );
+    let found = store
+        .job_by_token("provisioner:lab", "settings", "t")
+        .unwrap();
+    assert_eq!(found.map(|job| job.id), Some("j1".into()));
 }
 
 fn sealed_values_round_trip(place: &Place) {

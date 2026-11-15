@@ -34,6 +34,8 @@ pub const SECRETS: &str = "secrets";
 pub const REMOVE: &str = "remove";
 /// berth's own action that makes a provisioner registered by hand a node's.
 pub const ADOPT: &str = "adopt";
+/// berth's own action that gives a registered provisioner another name.
+pub const RENAME: &str = "rename";
 /// The start of berth's own action that makes a resource of a kind, such as
 /// `new-deployment`.
 pub const NEW: &str = "new-";
@@ -247,6 +249,113 @@ pub fn remove_entry(paths: &Paths, store: &Store, name: &str) -> Result<()> {
         }
     }
     store::shared(paths)?.forget(kind::PROVISIONER_ENTRY, OWN, name)?;
+    Ok(())
+}
+
+/// Why the registered provisioner `old` cannot be called `new`, if it cannot.
+pub fn rename_problem(paths: &Paths, old: &str, new: &str) -> Result<Option<String>> {
+    if entry(paths, old)?.is_none() {
+        return Err(
+            format!("No provisioner {old} is registered. See: berth provisioner list").into(),
+        );
+    }
+    Ok(if !plugins::valid_name(new) {
+        Some(format!(
+            "{new} is not a name for a provisioner: lowercase letters, digits, - and _, starting with a letter"
+        ))
+    } else if new == old {
+        Some(format!("{old} has that name already"))
+    } else if entry(paths, new)?.is_some() {
+        Some(format!("There is a provisioner {new} already"))
+    } else {
+        None
+    })
+}
+
+/// Give the registered provisioner `old` the name `new`, in one change: its
+/// entry with its settings and the node it is of, the secrets it keeps of its
+/// own, the records of what it made and of the machines planned with it, and
+/// its jobs. Each resource keeps its id, and the machines and what runs on
+/// them are not touched. The caller holds the lock of `old`, as its job does;
+/// the lock of `new` and those of what it made are taken here, so that no
+/// work on one of them saves its record with the old name meanwhile.
+pub fn rename(paths: &Paths, store: &Store, old: &str, new: &str) -> Result<()> {
+    if let Some(problem) = rename_problem(paths, old, new)? {
+        return Err(problem.into());
+    }
+    let _new = crate::runner::lock(
+        paths,
+        &crate::runner::Subject::Provisioner(new.to_owned()),
+        "rename the provisioner",
+    )?;
+    let _held = crate::resource::list(paths)?
+        .iter()
+        .filter(|kept| kept.record.provisioner == old)
+        .map(|kept| kept.lock(paths))
+        .collect::<Result<Vec<_>>>()?;
+    let shared = store::shared(paths)?;
+    let mut writes: Vec<(&str, String, String, Vec<u8>)> = vec![];
+    let mut removals: Vec<(&str, String, String)> = vec![];
+    let mut moved = |kind: &'static str, scope: &str, from: String, to: String, value: Vec<u8>| {
+        writes.push((kind, scope.to_owned(), to, value));
+        removals.push((kind, scope.to_owned(), from));
+    };
+    for kind in [kind::PROVISIONER_ENTRY, kind::PROVISIONER] {
+        if let Some(value) = shared.read(kind, OWN, old)? {
+            moved(kind, OWN, old.to_owned(), new.to_owned(), value);
+        }
+    }
+    let (from, to) = (secret_name(old, ""), secret_name(new, ""));
+    let mut stale = vec![];
+    for secret in store.all_secret_names()? {
+        if let Some(own) = secret.strip_prefix(&from) {
+            if let Some(value) = shared.read(kind::SECRET, OWN, &secret)? {
+                moved(
+                    kind::SECRET,
+                    OWN,
+                    secret.clone(),
+                    format!("{to}{own}"),
+                    value,
+                );
+            }
+        } else if secret.starts_with(&to) {
+            // Left by a provisioner of that name before; the renamed one has its own.
+            stale.push(secret);
+        }
+    }
+    for scope in [OWN, crate::profiles::FILE_SCOPE] {
+        for (id, value) in shared.entries(kind::RESOURCE, scope)? {
+            let mut record: crate::resource::Record =
+                serde_json::from_slice(&value).map_err(|error| {
+                    format!("The record of the resource {id} in berth's store: {error}")
+                })?;
+            if record.provisioner == old {
+                record.provisioner = new.to_owned();
+                writes.push((
+                    kind::RESOURCE,
+                    scope.to_owned(),
+                    id,
+                    serde_json::to_vec(&record)?,
+                ));
+            }
+        }
+    }
+    let written: Vec<(&str, &str, &str, Vec<u8>)> = writes
+        .iter()
+        .map(|(kind, scope, name, value)| (*kind, scope.as_str(), name.as_str(), value.clone()))
+        .collect();
+    let mut removed: Vec<(&str, &str, &str)> = removals
+        .iter()
+        .map(|(kind, scope, name)| (*kind, scope.as_str(), name.as_str()))
+        .collect();
+    removed.extend(
+        stale
+            .iter()
+            .filter(|secret| !written.iter().any(|(_, _, name, _)| name == secret))
+            .map(|secret| (kind::SECRET, OWN, secret.as_str())),
+    );
+    let subject = |name: &str| crate::runner::Subject::Provisioner(name.to_owned()).key();
+    shared.rename_subject(&subject(old), &subject(new), &written, &removed)?;
     Ok(())
 }
 
@@ -608,6 +717,7 @@ pub fn actions(paths: &Paths, store: &Store, name: &str) -> Result<Vec<Action>> 
         if entry(paths, name)?.is_some_and(|kept| kept.node.is_empty()) {
             actions.push(adopt_action(name));
         }
+        actions.push(rename_action(name));
         actions.push(remove_action(paths, name));
     }
     Ok(actions)
@@ -741,6 +851,27 @@ fn adopt_action(name: &str) -> Action {
     }
 }
 
+/// berth's own action that gives a registered provisioner another name.
+fn rename_action(name: &str) -> Action {
+    Action {
+        name: RENAME.into(),
+        label: "Rename".into(),
+        help: format!(
+            "Give {name} another name in berth. Its settings, the secrets it keeps of its own, the resources and machines it made or plans, and its jobs go with it. What it made is not touched, and a node's provisioner stays the node's."
+        ),
+        group: "Set-Up".into(),
+        arguments: vec![Argument {
+            name: "name".into(),
+            label: "New name".into(),
+            required: true,
+            help: "Lowercase letters, digits, - and _, starting with a letter".into(),
+            ..Argument::default()
+        }],
+        role: Role::Admin,
+        ..Action::default()
+    }
+}
+
 /// berth's own action that forgets a registered provisioner, which it does
 /// only when it holds nothing.
 fn remove_action(paths: &Paths, name: &str) -> Action {
@@ -800,6 +931,7 @@ enum Doing {
     Secrets(BTreeMap<String, String>, Store),
     Remove(Store),
     Adopt(String),
+    Rename(String, Store),
     Create(Box<crate::resource::Creating>, Store),
     Program {
         dir: PathBuf,
@@ -916,6 +1048,22 @@ pub fn prepare(
             hidden: vec![],
             action: found,
             work: Doing::Adopt(values.get("node").cloned().unwrap_or_default()),
+        });
+    }
+    if action == RENAME {
+        let values = values_of(name, &found.arguments, given, &BTreeMap::new())?;
+        let new = values
+            .get("name")
+            .map(|new| new.trim().to_owned())
+            .unwrap_or_default();
+        if let Some(problem) = rename_problem(paths, name, &new)? {
+            return Err(problem.into());
+        }
+        return Ok(Acting {
+            name: name.to_owned(),
+            hidden: vec![],
+            action: found,
+            work: Doing::Rename(new, store.clone()),
         });
     }
     if let Some(kind) = action
@@ -1092,6 +1240,14 @@ impl Acting {
                 details: vec![],
                 exit_code: None,
             }),
+            Doing::Rename(new, store) => {
+                rename(paths, &store, &self.name, &new)?;
+                Ok(Answered {
+                    message: format!("{} is called {new} now", self.name),
+                    details: vec![],
+                    exit_code: None,
+                })
+            }
             Doing::Create(creating, store) => {
                 let id = creating.kept().record.id.clone();
                 let title = creating.kept().title();

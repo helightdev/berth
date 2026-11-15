@@ -44,6 +44,9 @@ pub mod kind {
     pub const KEY: &str = "key";
     /// What berth knows of a host's SSH: its host keys and the keys it trusts.
     pub const ACCESS: &str = "access";
+    /// What berth knows of a host's device on the tailnet, and a new name
+    /// it is to take.
+    pub const TAILNET: &str = "tailnet";
     pub const TOKEN: &str = "token";
     pub const PLUGIN: &str = "plugin";
     pub const MIRROR: &str = "mirror";
@@ -142,6 +145,20 @@ pub struct Filter<'a> {
     /// Only messages taken in before this `seq`.
     pub before: Option<i64>,
     pub done: Option<bool>,
+    pub limit: usize,
+}
+
+/// Which jobs a list has, newest first.
+#[derive(Debug, Clone, Default)]
+pub struct JobFilter<'a> {
+    /// Only those of this subject, as [`crate::runner::Subject::key`] says it.
+    pub subject: Option<&'a str>,
+    /// Only those about this host, alone or among others.
+    pub host: Option<&'a str>,
+    /// Only those that have not ended, or only those that have.
+    pub running: Option<bool>,
+    /// Only those that started before the job of this id.
+    pub before: Option<&'a str>,
     pub limit: usize,
 }
 
@@ -393,7 +410,9 @@ pub trait Backend: Send {
     fn stop_job(&mut self, id: &str, by: &str) -> Result<()>;
     fn end_lost_jobs(&mut self, ended: &str) -> Result<usize>;
     fn job(&mut self, id: &str) -> Result<Option<Job>>;
-    fn jobs(&mut self, limit: usize) -> Result<Vec<Job>>;
+    /// The jobs `filter` lets through, newest first. A `before` that names
+    /// no job lets none through.
+    fn jobs(&mut self, filter: &JobFilter<'_>) -> Result<Vec<Job>>;
 
     /// Drop messages from before `cutoff` and jobs that ended and started
     /// before it, in one transaction. Returns the dropped jobs' output files.
@@ -422,6 +441,17 @@ pub trait Backend: Send {
     /// What a host of the name `new` left before, which nothing would tell
     /// from the renamed host's, goes: its messages, cursor and job tokens.
     fn rename_host(
+        &mut self,
+        old: &str,
+        new: &str,
+        writes: &[StateRow],
+        removals: &[(String, String, String)],
+    ) -> Result<()>;
+    /// In one transaction: the change of [`Backend::change_states`], and the
+    /// jobs of the subject `old`, such as `provisioner:NAME`, given to `new`.
+    /// The tokens of jobs `new` had before go, so that asking again does not
+    /// find them.
+    fn rename_subject(
         &mut self,
         old: &str,
         new: &str,
@@ -643,7 +673,20 @@ impl Store {
 
     /// Jobs, newest first.
     pub fn jobs(&self, limit: usize) -> Result<Vec<Job>> {
-        self.backend().jobs(limit.clamp(1, 1000))
+        self.find_jobs(&JobFilter {
+            limit,
+            ..JobFilter::default()
+        })
+    }
+
+    /// The jobs `filter` lets through, newest first: at most its limit,
+    /// which is between 1 and 1,000.
+    pub fn find_jobs(&self, filter: &JobFilter<'_>) -> Result<Vec<Job>> {
+        let filter = JobFilter {
+            limit: filter.limit.clamp(1, 1000),
+            ..filter.clone()
+        };
+        self.backend().jobs(&filter)
     }
 
     // ── Pruning ─────────────────────────────────────────────────────────────
@@ -814,6 +857,30 @@ impl Store {
             })
             .collect();
         self.backend().rename_host(old, new, &rows, &removals)
+    }
+
+    /// A change as [`Store::change`] makes it, in the same transaction as
+    /// giving the jobs of the subject `old` to `new`, both as
+    /// [`crate::runner::Subject::key`] says them.
+    pub fn rename_subject(
+        &self,
+        old: &str,
+        new: &str,
+        writes: &[(&str, &str, &str, Vec<u8>)],
+        removals: &[(&str, &str, &str)],
+    ) -> Result<()> {
+        let updated = now();
+        let rows = writes
+            .iter()
+            .map(|(kind, scope, name, value)| self.row(kind, scope, name, value, &updated))
+            .collect::<Result<Vec<_>>>()?;
+        let removals: Vec<_> = removals
+            .iter()
+            .map(|(kind, scope, name)| {
+                ((*kind).to_owned(), (*scope).to_owned(), (*name).to_owned())
+            })
+            .collect();
+        self.backend().rename_subject(old, new, &rows, &removals)
     }
 
     /// The ids of the keys the sealed rows of `state` were made with.
