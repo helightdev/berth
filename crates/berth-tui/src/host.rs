@@ -3,6 +3,7 @@
 //! business; requests go out through it and what happened comes back.
 
 use crate::event::{Key, key_bytes};
+use crate::form::{self, Form};
 use crate::page::{self, Accepted, Begin};
 pub use crate::page::{Arguments, Launch, argument_label};
 use berth_api as api;
@@ -257,6 +258,8 @@ pub struct HostView {
     pub password: Option<String>,
     pub question: Option<(String, Pending)>,
     pub arguments: Option<Arguments>,
+    /// The form of an action with switches or a text, over the whole screen.
+    pub form: Option<Form>,
     polled: Instant,
     /// The next `Opened` is a session started from here, and maybe a shell.
     starting: Option<bool>,
@@ -280,6 +283,7 @@ impl Default for HostView {
             password: None,
             question: None,
             arguments: None,
+            form: None,
             polled: Instant::now(),
             starting: None,
             size: (24, 80),
@@ -311,6 +315,7 @@ impl HostView {
         self.remote = None;
         self.view = None;
         self.host_actions.clear();
+        self.form = None;
         self.sessions.clear();
         self.stats = None;
         self.behind = None;
@@ -357,10 +362,15 @@ impl HostView {
     }
 
     /// Begin an action: its question first, then its arguments. Returns the
-    /// action to run now when it needs neither.
-    pub fn begin_action(&mut self, index: usize, confirmed: bool) -> Option<Launch> {
-        match page::begin(&self.actions(), index, confirmed) {
+    /// action to run now when it needs neither. `place` is the host's name,
+    /// for the top line of a form.
+    pub fn begin_action(&mut self, place: &str, index: usize, confirmed: bool) -> Option<Launch> {
+        let actions = self.actions();
+        match page::begin(&actions, index, confirmed) {
             Begin::Ask(question) => self.question = Some((question, Pending::Action(index))),
+            Begin::Arguments(_) if form::takes(&actions[index]) => {
+                self.form = Some(Form::of(place, index, &actions[index], &BTreeMap::new()));
+            }
             Begin::Arguments(dialog) => {
                 self.arguments = Some(dialog);
                 self.ask_choices();

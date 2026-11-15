@@ -1667,6 +1667,7 @@ fn flag(name: &str, label: &str, help: &str) -> Argument {
         label: label.into(),
         help: help.into(),
         default: "no".into(),
+        kind: Argument::BOOLEAN.into(),
         values: vec!["no".into(), "yes".into()],
         ..Argument::default()
     }
@@ -1786,12 +1787,13 @@ fn rollout(state: Arc<Serve>, _: String, act: Act) -> Run {
 /// The yes or no of a flag argument.
 fn yes(act: &Act, name: &str) -> Answer<bool> {
     match act.arguments.get(name).map(|value| value.trim()) {
-        None | Some("" | "no" | "false") => Ok(false),
-        Some("yes" | "true") => Ok(true),
-        Some(other) => Err(Fail::new(
-            code::BAD_REQUEST,
-            format!("{name} is yes or no, not {other}"),
-        )),
+        None | Some("") => Ok(false),
+        Some(value) => berth_api::parse_bool(value).ok_or_else(|| {
+            Fail::new(
+                code::BAD_REQUEST,
+                format!("{name} is yes or no, not {value}"),
+            )
+        }),
     }
 }
 
@@ -2113,7 +2115,7 @@ fn adopt_reach(
     let force = act
         .arguments
         .get("force")
-        .is_some_and(|value| value == "yes" || value == "true");
+        .is_some_and(|value| Argument::is_on(value));
     let address = given(act, "address").unwrap_or("");
     let port = given(act, "port").unwrap_or("");
     let key = given(act, "key");

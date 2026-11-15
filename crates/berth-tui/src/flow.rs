@@ -20,7 +20,7 @@ pub struct Choice {
 }
 
 impl Choice {
-    fn new(key: &str, label: &str, help: &str) -> Choice {
+    pub fn new(key: &str, label: &str, help: &str) -> Choice {
         Choice {
             key: key.to_owned(),
             label: label.to_owned(),
@@ -650,6 +650,9 @@ impl Flow {
                 label => label.to_owned(),
             };
             let asked = match argument.values.is_empty() {
+                _ if argument.is_boolean() => Asked::Confirm {
+                    default: berth_api::Argument::is_on(&argument.default),
+                },
                 true => Asked::Text {
                     default: argument.default.clone(),
                     secret: argument.secret,
@@ -676,6 +679,7 @@ impl Flow {
                 Some(Answer::Choice(index)) => {
                     argument.values.get(index).cloned().unwrap_or_default()
                 }
+                Some(Answer::Confirm(on)) => argument.switched(on),
                 _ => continue,
             };
             self.machine.values.insert(argument.name.clone(), value);

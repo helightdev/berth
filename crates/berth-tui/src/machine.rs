@@ -426,7 +426,14 @@ impl Machine {
                     false => label(argument).to_owned(),
                 };
                 let value = self.values.get(&argument.name).map_or("", String::as_str);
-                let mut line = value_line(&name, value, Kind::Text);
+                // A yes or no is a switch, as the set-up's own are.
+                let mut line = match argument.is_boolean() {
+                    true => {
+                        let on = berth_api::Argument::is_on(value).to_string();
+                        value_line(&name, &on, Kind::Toggle)
+                    }
+                    false => value_line(&name, value, Kind::Text),
+                };
                 line.spans.insert(0, Span::styled(branch, muted));
                 Row::entry(line, Entry::Machine(Pick::Argument(index)))
             })
@@ -591,9 +598,10 @@ impl Machine {
                 if !argument.default.is_empty() {
                     text += &format!(" Default: {}.", argument.default);
                 }
-                match argument.values.is_empty() {
-                    true => text + " Enter changes it.",
-                    false => text + " Space or Enter switches to the next value.",
+                match (argument.is_boolean(), argument.values.is_empty()) {
+                    (true, _) => text + " Space or Enter turns it on or off.",
+                    (false, true) => text + " Enter changes it.",
+                    (false, false) => text + " Space or Enter switches to the next value.",
                 }
             }
             Pick::Create => "Creates the machine and sets it up as this host, with the profile saved first. The output is shown as it runs. When setting it up fails, the machine stays: Destroy removes it.".into(),
@@ -615,6 +623,11 @@ impl Machine {
                     return Next::Nothing;
                 };
                 let value = self.value(index).unwrap_or("").to_owned();
+                if argument.is_boolean() {
+                    let next = argument.switched(!berth_api::Argument::is_on(&value));
+                    self.values.insert(argument.name.clone(), next);
+                    return Next::Nothing;
+                }
                 // One of a few values goes on to the next, as a choice field does.
                 if !argument.values.is_empty() {
                     let all = &argument.values;
@@ -1069,24 +1082,40 @@ mod tests {
             help: "Whether deleting the machine keeps its volume.".into(),
             ..Default::default()
         });
+        lab.arguments.push(Argument {
+            name: "runtime".into(),
+            default: "privileged".into(),
+            values: vec!["privileged".into(), "sysbox".into()],
+            ..Default::default()
+        });
         let mut machine = without_machine(vec![lab]);
         assert_eq!(
-            machine.argument_choices(2),
+            machine.argument_choices(3),
             [
-                ("no".to_owned(), "no".to_owned()),
-                ("yes".to_owned(), "yes".to_owned())
+                ("privileged".to_owned(), "privileged".to_owned()),
+                ("sysbox".to_owned(), "sysbox".to_owned())
             ]
         );
         assert!(machine.argument_choices(1).is_empty());
         // Enter goes on to the next value and around, as on a choice field.
-        assert_eq!(machine.enter(Pick::Argument(2), "studio"), Next::Nothing);
+        assert_eq!(machine.enter(Pick::Argument(3), "studio"), Next::Nothing);
+        assert_eq!(machine.value(3), Some("sysbox"));
+        machine.enter(Pick::Argument(3), "studio");
+        assert_eq!(machine.value(3), Some("privileged"));
+        assert!(
+            machine
+                .help(Pick::Argument(3))
+                .contains("Space or Enter switches to the next value")
+        );
+        // A yes or no is a switch, turned on and off.
+        machine.enter(Pick::Argument(2), "studio");
         assert_eq!(machine.value(2), Some("yes"));
         machine.enter(Pick::Argument(2), "studio");
         assert_eq!(machine.value(2), Some("no"));
         // The label is a name; what it means is in the help.
         let help = machine.help(Pick::Argument(2));
         assert!(help.starts_with("Keep volume on destroy (`keep_volume`). Whether deleting"));
-        assert!(help.contains("Space or Enter switches to the next value"));
+        assert!(help.contains("Space or Enter turns it on or off"));
         assert!(
             machine
                 .help(Pick::Argument(1))

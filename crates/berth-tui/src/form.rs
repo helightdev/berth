@@ -1,12 +1,13 @@
 //! The form of an action that asks for much: every argument on a row of its
 //! own, laid out and edited as a host's set-up is. A value of one line is
 //! typed in the box under the rows, one of a few values goes on to the next,
-//! and a value of several lines opens the text editor.
+//! a yes or no is a switch, and a value of several lines opens the text
+//! editor.
 
 use crate::event::{self, Code, Event, Key};
 use crate::fields::Kind;
-use crate::page::{Launch, argument_label};
-use crate::screen::{self, Platform, draw_editor, draw_footer, draw_header, inside};
+use crate::page::{self, Launch, argument_label};
+use crate::screen::{self, Platform, draw_editor, draw_footer, draw_header, draw_question, inside};
 use crate::setup::value_line;
 use crate::text::{Outcome, TextEditor};
 use crate::{markdown, theme};
@@ -23,14 +24,24 @@ use std::collections::{BTreeMap, BTreeSet};
 use tui_input::Input;
 
 /// Whether an action's arguments are asked for in a form: a value of several
-/// lines needs the editor, and more than two values are too many to ask for
-/// one after another.
+/// lines needs the editor, a yes or no is a switch as on a set-up, and more
+/// than two values are too many to ask for one after another.
 pub fn wants_form(action: &Action) -> bool {
     action.arguments.len() > 2
         || action
             .arguments
             .iter()
-            .any(|argument| argument.kind == Argument::TEXT)
+            .any(|argument| argument.kind == Argument::TEXT || argument.is_boolean())
+}
+
+/// Whether the form can ask for all of an action's arguments. It offers no
+/// values from a command, which only the dialog asks the host for.
+pub fn takes(action: &Action) -> bool {
+    wants_form(action)
+        && action
+            .arguments
+            .iter()
+            .all(|argument| argument.choices.is_empty())
 }
 
 /// A row of the form the cursor stops on.
@@ -83,6 +94,8 @@ pub struct Form {
     text: Option<TextEditor>,
     /// The suggestion the cursor is on while the suggestions have the keys.
     suggested: Option<usize>,
+    /// The action's question, asked over the form once Run is chosen.
+    asking: Option<String>,
     /// Where the rows were drawn, with the place of each among those the
     /// cursor stops on, and where the suggestions were.
     hits: RefCell<Vec<(Rect, usize)>>,
@@ -106,6 +119,7 @@ impl Form {
             editing: None,
             text: None,
             suggested: None,
+            asking: None,
             hits: RefCell::new(vec![]),
             suggestion_hits: RefCell::new(vec![]),
         }
@@ -168,6 +182,7 @@ impl Form {
         self.offered = action
             .arguments
             .iter()
+            .filter(|argument| !argument.is_boolean())
             .filter_map(|argument| {
                 let values = narrowed.get(&argument.name).unwrap_or(&argument.values);
                 (!values.is_empty()).then(|| (argument.name.clone(), values.clone()))
@@ -191,10 +206,35 @@ impl Form {
                     argument.default.clone()
                 }
             };
+            // A switch is always on or off, as the action declares those.
+            let value = match argument.is_boolean() {
+                true => argument.switched(Argument::is_on(&value)),
+                false => value,
+            };
             self.values.insert(argument.name.clone(), value);
         }
         self.problem.clear();
+        self.asking = None;
         self.action = Some((index, action.clone()));
+    }
+
+    /// The question asked before the action runs, while it is asked.
+    pub fn asking(&self) -> Option<&str> {
+        self.asking.as_deref()
+    }
+
+    /// Turn the switch of the argument at `index` over.
+    fn toggle(&mut self, index: usize) {
+        if let Some(argument) = self.argument(index) {
+            let on = !Argument::is_on(self.value(argument));
+            let value = argument.switched(on);
+            self.put(index, value);
+        }
+    }
+
+    /// Whether the argument at `index` is a switch.
+    fn is_switch(&self, index: usize) -> bool {
+        self.argument(index).is_some_and(Argument::is_boolean)
     }
 
     /// There is no action to fill it with, and why.
@@ -353,6 +393,11 @@ impl Form {
             };
             let value = self.value(argument);
             let line = match (argument.secret, argument.kind == Argument::TEXT) {
+                // A switch shows the set-up's marker of on and off.
+                _ if argument.is_boolean() => {
+                    let on = Argument::is_on(value).to_string();
+                    value_line(&name, &on, Kind::Toggle)
+                }
                 (true, _) => value_line(&name, value, Kind::Secret),
                 // A text shows its first line, and how many it has.
                 (false, true) if !value.is_empty() => {
@@ -407,7 +452,9 @@ impl Form {
                     return String::new();
                 };
                 let mut text = argument.help.clone();
-                if let Some(values) = self.offered.get(&argument.name) {
+                if argument.is_boolean() {
+                    text += "\n\nA switch. Enter, Space or a click turns it on or off.";
+                } else if let Some(values) = self.offered.get(&argument.name) {
                     text += &format!(
                         "\n\nOne of {}. Enter or Space goes on to the next, and → chooses from the suggestions.",
                         values
@@ -548,19 +595,24 @@ impl Form {
             let title = self.argument(index).map_or("Edit", argument_label);
             draw_editor(frame, edit, title, input, secret);
         }
+        let switch = matches!(selected, Some(Row::Argument(index)) if self.is_switch(index));
         let keys = match (&self.editing, secret, self.suggested) {
             (Some(_), true, _) => "Enter accept · Esc cancel".to_owned(),
             (Some(_), false, _) => format!("Enter accept · Esc cancel · {}", screen::COPY_FIELD),
             (None, _, Some(_)) => "↑↓ select · Enter choose · Esc back to the rows".to_owned(),
+            (None, _, None) if switch => "↑↓ select · Space toggle · Esc back".to_owned(),
             (None, _, None) => "↑↓ select · Enter choose · x unset · Esc back".to_owned(),
         };
         draw_footer(frame, footer, &keys, status, theme::ACCENT);
+        if let Some(question) = &self.asking {
+            draw_question(frame, question);
+        }
     }
 
     /// A click at a place of the screen: it selects the row there, and on
     /// the row selected it is the Enter key, which is given back.
     pub fn click(&mut self, column: u16, row: u16) -> Option<Key> {
-        if self.editing.is_some() || self.text.is_some() {
+        if self.editing.is_some() || self.text.is_some() || self.asking.is_some() {
             return None;
         }
         // A suggestion that is clicked is chosen as Enter on it would.
@@ -581,7 +633,11 @@ impl Form {
             .iter()
             .find(|(rect, _)| inside(*rect, column, row))
             .map(|(_, place)| *place)?;
-        if place == self.cursor {
+        // A switch turns over at the first click, as a box that is ticked.
+        let switch =
+            matches!(self.rows().get(place), Some(Row::Argument(index)) if self.is_switch(*index));
+        if place == self.cursor || switch {
+            self.cursor = place;
             return Some(Key::plain(Code::Enter));
         }
         self.cursor = place;
@@ -611,6 +667,23 @@ impl Form {
 
     /// A key on the form. `platform` copies what is typed.
     pub fn key(&mut self, key: Key, platform: &mut dyn Platform) -> Did {
+        // The question is answered with y or n, as every other is.
+        if self.asking.is_some() {
+            return match key.code {
+                Code::Char('y' | 'Y') => {
+                    self.asking = None;
+                    match &self.action {
+                        Some((index, _)) => Did::Run((*index, self.values.clone())),
+                        None => Did::Stay(None),
+                    }
+                }
+                Code::Char('n' | 'N') | Code::Esc => {
+                    self.asking = None;
+                    Did::Stay(Some("Not run".into()))
+                }
+                _ => Did::Stay(None),
+            };
+        }
         if let Some(mut editor) = self.text.take() {
             match editor.handle(&key) {
                 Outcome::Editing => self.text = Some(editor),
@@ -679,16 +752,25 @@ impl Form {
                     self.suggested = Some(current.unwrap_or(0));
                 }
             }
-            // Space goes on to the next of a few values, as on a set-up.
-            Code::Char(' ') if !self.suggestions().0.is_empty() => return self.enter(selected),
+            // Space goes on to the next of a few values, or turns a switch
+            // over, as on a set-up.
+            Code::Char(' ')
+                if !self.suggestions().0.is_empty()
+                    || matches!(selected, Some(Row::Argument(index)) if self.is_switch(index)) =>
+            {
+                return self.enter(selected);
+            }
             Code::Up | Code::Char('k') if count > 0 => {
                 self.cursor = (self.cursor.min(count - 1) + count - 1) % count
             }
             Code::Down | Code::Char('j') if count > 0 => {
                 self.cursor = (self.cursor.min(count - 1) + 1) % count
             }
+            // A switch has no unset value: it is on or off.
             Code::Char('x') => {
-                if let Some(Row::Argument(index)) = selected {
+                if let Some(Row::Argument(index)) = selected
+                    && !self.is_switch(index)
+                {
                     self.put(index, String::new());
                 }
             }
@@ -710,7 +792,9 @@ impl Form {
                 };
                 let value = self.value(argument).to_owned();
                 // One of a few values goes on to the next, as a choice of the set-up does.
-                if let Some(values) = self.offered.get(&argument.name) {
+                if argument.is_boolean() {
+                    self.toggle(index);
+                } else if let Some(values) = self.offered.get(&argument.name) {
                     let next = values
                         .iter()
                         .position(|known| *known == value)
@@ -738,6 +822,10 @@ impl Form {
                     return Did::Stay(Some(format!("{label} is needed")));
                 }
                 match &self.action {
+                    Some((_, action)) if action.confirm.is_some() => {
+                        self.asking = page::confirmation(action, &self.values);
+                        Did::Stay(None)
+                    }
                     Some((index, _)) => Did::Run((*index, self.values.clone())),
                     None => Did::Stay(None),
                 }
@@ -903,6 +991,114 @@ mod tests {
         };
         assert_eq!((index, values["name"].as_str()), (3, "wiki"));
         assert_eq!(press(&mut form, Code::Esc), Did::Leave);
+    }
+
+    /// berth's Remove of a host, with its switch, and a question to answer.
+    fn remove() -> Action {
+        Action {
+            name: "remove".into(),
+            label: "Remove".into(),
+            confirm: Some("Remove studio?".into()),
+            arguments: vec![Argument {
+                label: "Destroy its machine".into(),
+                default: "no".into(),
+                kind: Argument::BOOLEAN.into(),
+                values: vec!["no".into(), "yes".into()],
+                ..argument("destroy")
+            }],
+            ..Action::default()
+        }
+    }
+
+    #[test]
+    fn a_yes_or_no_is_a_switch_in_a_form() {
+        let by_values = Action {
+            arguments: vec![Argument {
+                values: vec!["false".into(), "true".into()],
+                ..argument("restart")
+            }],
+            ..Action::default()
+        };
+        let choice = Action {
+            arguments: vec![Argument {
+                values: vec!["no".into(), "always".into()],
+                ..argument("restart")
+            }],
+            ..Action::default()
+        };
+        assert!(wants_form(&remove()) && wants_form(&by_values));
+        assert!(!wants_form(&choice));
+        let mut form = Form::of("studio", 4, &by_values, &BTreeMap::new());
+        // Without a default it is off, as the value it declares.
+        assert_eq!(form.values["restart"], "false");
+        assert_eq!(text(&form)[1], "  restart  ○ Off");
+        assert_eq!(form.suggestions(), (vec![], None));
+        press(&mut form, Code::Char(' '));
+        assert_eq!(form.values["restart"], "true");
+        assert_eq!(text(&form)[1], "  restart  ● On");
+        // x leaves a switch as it is: it has no value that is unset.
+        press(&mut form, Code::Char('x'));
+        assert_eq!(form.values["restart"], "true");
+        press(&mut form, Code::Enter);
+        assert_eq!(form.values["restart"], "false");
+        assert!(form.help().contains("A switch."));
+    }
+
+    #[test]
+    fn a_click_turns_a_switch_over_and_run_asks_naming_it() {
+        let mut form = Form::of("studio", 2, &remove(), &BTreeMap::new());
+        assert_eq!(form.context(), "studio › remove");
+        let shown = screen(&form, "");
+        assert!(shown.contains("Destroy its machine  ○ Off"), "{shown}");
+        assert!(shown.contains("Space toggle"), "{shown}");
+        // Move to Run, then click the switch: one click turns it over.
+        press(&mut form, Code::Down);
+        let (rect, _) = form.hits.borrow()[0];
+        let did = event(
+            &mut form,
+            &Event::Mouse(crate::event::Mouse {
+                click: crate::event::Click::Left,
+                column: rect.x + 4,
+                row: rect.y,
+            }),
+            &mut Nowhere,
+        );
+        assert_eq!(did, Did::Stay(None));
+        assert_eq!(form.values["destroy"], "yes");
+        assert!(screen(&form, "").contains("Destroy its machine  ● On"));
+        // Run asks the question over the form, with the switch that is on.
+        press(&mut form, Code::Down);
+        assert_eq!(press(&mut form, Code::Enter), Did::Stay(None));
+        assert_eq!(
+            form.asking(),
+            Some("Remove studio? Destroy its machine is on.")
+        );
+        let shown = screen(&form, "");
+        assert!(
+            shown.contains("Are you sure?") && shown.contains("y yes"),
+            "{shown}"
+        );
+        // Other keys wait for y or n; n goes back to the form.
+        assert_eq!(press(&mut form, Code::Enter), Did::Stay(None));
+        assert_eq!(
+            press(&mut form, Code::Char('n')),
+            Did::Stay(Some("Not run".into()))
+        );
+        assert!(form.asking().is_none());
+        press(&mut form, Code::Enter);
+        let Did::Run((index, values)) = press(&mut form, Code::Char('y')) else {
+            panic!("not run");
+        };
+        assert_eq!((index, values["destroy"].as_str()), (2, "yes"));
+        // Off, the question is the action's own.
+        let mut form = Form::of("studio", 2, &remove(), &BTreeMap::new());
+        press(&mut form, Code::Down);
+        press(&mut form, Code::Enter);
+        assert_eq!(form.asking(), Some("Remove studio?"));
+        let Did::Run((_, values)) = press(&mut form, Code::Char('Y')) else {
+            panic!("not run");
+        };
+        assert_eq!(values["destroy"], "no");
     }
 
     fn screen(form: &Form, status: &str) -> String {

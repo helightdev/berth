@@ -7,6 +7,7 @@ use crate::installed::{Installed, Outcome};
 use crate::portal::{Link, Portal};
 use crate::remote::Remote;
 use crate::setup::{Flow, Setup, draw_editor, masked_line};
+use berth_tui::form::{self, Did};
 use berth_tui::host::{self, HostView, Pending, Pick, Request, State, View};
 use berth_tui::screen::{
     self, Platform, Spots, clear_hints, dialog, draw_arguments, draw_footer, draw_header,
@@ -887,7 +888,7 @@ impl App {
                     self.status = format!("{} cannot run now: {}", action.title(), action.why);
                     return;
                 }
-                if let Some((index, values)) = self.host.begin_action(index, false) {
+                if let Some((index, values)) = self.host.begin_action(&self.name, index, false) {
                     self.launch(index, values);
                 }
             }
@@ -990,6 +991,19 @@ impl App {
             }
             return;
         }
+        if let Some(mut form) = self.host.form.take() {
+            match form::event(&mut form, &event, &mut Here) {
+                Did::Stay(said) => {
+                    if let Some(said) = said {
+                        self.status = said;
+                    }
+                    self.host.form = Some(form);
+                }
+                Did::Leave | Did::Switch(_) => {}
+                Did::Run((index, values)) => self.launch(index, values),
+            }
+            return;
+        }
         if self.host.question.is_some() {
             let Event::Key(key) = event else {
                 return;
@@ -997,7 +1011,9 @@ impl App {
             match key.code {
                 Code::Char('y' | 'Y') => match self.host.question.take() {
                     Some((_, Pending::Action(index))) => {
-                        if let Some((index, values)) = self.host.begin_action(index, true) {
+                        if let Some((index, values)) =
+                            self.host.begin_action(&self.name, index, true)
+                        {
                             self.launch(index, values);
                         }
                     }
@@ -1130,6 +1146,9 @@ impl App {
             draw_question(frame, question);
         }
         draw_arguments(frame, &self.host);
+        if let Some(form) = &self.host.form {
+            form.draw(frame, &self.status);
+        }
     }
 
     // ── The home screen ─────────────────────────────────────────────────────

@@ -163,12 +163,20 @@ impl Arguments {
         values: BTreeMap<String, String>,
         argument: &Argument,
     ) -> Self {
+        // A yes or no, or one of a few values, is chosen from them.
+        let choices = match argument.is_boolean() {
+            true => {
+                let (on, off) = argument.switch_values();
+                vec![off, on]
+            }
+            false => argument.values.clone(),
+        };
         Arguments {
             action,
             index,
             values,
             input: Input::new(argument.default.clone()),
-            choices: vec![],
+            choices,
             chosen: None,
             secret: argument.secret,
             text: argument.kind == Argument::TEXT,
@@ -215,18 +223,43 @@ pub enum Begin {
 }
 
 /// Begin an action: its question first, unless it was answered, then its
-/// arguments.
+/// arguments. An action asked for in a form asks its question when it is
+/// run from there, so that the question can say which switches are on.
 pub fn begin(actions: &[Action], index: usize, confirmed: bool) -> Begin {
     let Some(action) = actions.get(index) else {
         return Begin::Nothing;
     };
-    if let (Some(question), false) = (&action.confirm, confirmed) {
+    if let (Some(question), false) = (&action.confirm, confirmed)
+        && !crate::form::takes(action)
+    {
         return Begin::Ask(question.clone());
     }
     match action.arguments.first() {
         None => Begin::Run((index, BTreeMap::new())),
         Some(first) => Begin::Arguments(Arguments::at(index, 0, BTreeMap::new(), first)),
     }
+}
+
+/// The question to answer yes to before an action runs with `values`, if it
+/// has one. It names the switches that are on, such as destroying a machine.
+pub fn confirmation(action: &Action, values: &BTreeMap<String, String>) -> Option<String> {
+    let question = action.confirm.as_ref()?;
+    let on: Vec<&str> = action
+        .arguments
+        .iter()
+        .filter(|argument| argument.is_boolean())
+        .filter(|argument| {
+            values
+                .get(&argument.name)
+                .is_some_and(|value| Argument::is_on(value))
+        })
+        .map(argument_label)
+        .collect();
+    Some(match on.as_slice() {
+        [] => question.clone(),
+        [one] => format!("{question} {one} is on."),
+        [rest @ .., last] => format!("{question} {} and {last} are on.", rest.join(", ")),
+    })
 }
 
 /// What taking the value typed for an argument leads to.
@@ -480,6 +513,91 @@ mod tests {
             (values["pool"].as_str(), values["size"].as_str()),
             ("fast", "200GiB")
         );
+    }
+
+    fn switch(name: &str, label: &str) -> Argument {
+        Argument {
+            name: name.into(),
+            label: label.into(),
+            default: "no".into(),
+            kind: Argument::BOOLEAN.into(),
+            values: vec!["no".into(), "yes".into()],
+            ..Argument::default()
+        }
+    }
+
+    #[test]
+    fn an_action_with_a_switch_asks_once_its_values_are_known() {
+        let rename = Action {
+            name: "rename".into(),
+            confirm: Some("Rename studio?".into()),
+            arguments: vec![
+                Argument {
+                    name: "new".into(),
+                    required: true,
+                    ..Argument::default()
+                },
+                switch("hostname", "Also its hostname"),
+            ],
+            ..Action::default()
+        };
+        // Its form asks the question when it is run from there.
+        let actions = [rename.clone()];
+        assert!(matches!(begin(&actions, 0, false), Begin::Arguments(_)));
+        // One with values from a command is asked in the dialog, after the question.
+        let mut offered = rename.clone();
+        offered.arguments[0].choices = "ls /srv".into();
+        assert!(matches!(begin(&[offered], 0, false), Begin::Ask(_)));
+        let values = |hostname: &str| {
+            BTreeMap::from([
+                ("new".to_owned(), "dock".to_owned()),
+                ("hostname".to_owned(), hostname.to_owned()),
+            ])
+        };
+        assert_eq!(
+            confirmation(&rename, &values("no")).as_deref(),
+            Some("Rename studio?")
+        );
+        assert_eq!(
+            confirmation(&rename, &values("yes")).as_deref(),
+            Some("Rename studio? Also its hostname is on.")
+        );
+        let mut both = rename.clone();
+        both.arguments.push(switch("force", "Force"));
+        let mut given = values("yes");
+        given.insert("force".into(), "yes".into());
+        assert_eq!(
+            confirmation(&both, &given).as_deref(),
+            Some("Rename studio? Also its hostname and Force are on.")
+        );
+        both.confirm = None;
+        assert_eq!(confirmation(&both, &given), None);
+    }
+
+    #[test]
+    fn a_dialog_offers_the_values_an_argument_takes() {
+        let mut restart = switch("restart", "Restart");
+        restart.values = vec!["true".into(), "false".into()];
+        let actions = [Action {
+            arguments: vec![
+                Argument {
+                    name: "source".into(),
+                    values: vec!["release".into(), "here".into()],
+                    ..Argument::default()
+                },
+                restart,
+            ],
+            ..Action::default()
+        }];
+        let Begin::Arguments(dialog) = begin(&actions, 0, true) else {
+            panic!("no arguments");
+        };
+        assert_eq!(dialog.choices, ["release", "here"]);
+        let Accepted::Next(dialog) = accept(&actions, dialog) else {
+            panic!("no next");
+        };
+        // A yes or no is offered off first, as the values it declares.
+        assert_eq!(dialog.choices, ["false", "true"]);
     }
 
     #[test]
