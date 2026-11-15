@@ -83,6 +83,27 @@ the client closes the WebSocket or the connection to the port breaks. A stream
 that closes before its `{"eof":true}` has lost its connection.
 `berth_api::tunnel` reads and writes such a stream like a socket.
 
+## The stream of an endpoint
+
+[`resources.connect`](/docs/api/serve/resources) of `berth serve` is a TCP
+connection to an endpoint of a resource, one that its provisioner reported
+([Endpoints](/docs/deploy/resources#endpoints)). It is at
+`/v1/resources/{id}/endpoints/{endpoint}`, where `endpoint` is the endpoint's
+name or its port. Its frames are those of the stream of a port.
+
+The server reads the endpoints from the resource's record, then resolves the
+address, checks it and connects, all before the handshake. It needs the role
+`operate`. What it can refuse:
+
+| Error | When |
+|---|---|
+| `404 not_found` | No such resource, or its provisioner did not report that endpoint |
+| `400 bad_request` | The endpoint is UDP |
+| `403 forbidden` | The address is one berth does not dial from the server |
+| `503 not_served`, `504 timeout` | The endpoint refuses the connection, or doesn't answer in time |
+
+`Portal::connect_endpoint` and `berth_api::tunnel::endpoint_tunnel` open one.
+
 ## Resuming
 
 A stream that can be resumed takes `since=` and starts there. The page of each

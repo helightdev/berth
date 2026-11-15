@@ -34,7 +34,16 @@ A *call* takes arguments and input and gives back a result. After it opens, a *s
 | `api` | Added |
 | --- | --- |
 | 1 | The API as first released |
-| 2 | `ports.connect` with windows on the portal's streams, roles from the keys of an object claim, the `dropped` frame of `events.follow`, `inbox.follow` and `kv.follow`, and host and resource changes on `events.follow`. It also renames, and breaks what a client of number 1 calls: see below |
+| 2 | What the list below names. It also renames, and breaks what a client of number 1 calls: see below |
+
+What number 2 adds:
+
+- `ports.connect`, with windows on the portal's streams
+- Roles from the keys of an object claim
+- The `dropped` frame of `events.follow`, `inbox.follow` and `kv.follow`
+- Host and resource changes on `events.follow`
+- The endpoints of a resource, and `resources.connect` to them
+- The `exec` action of a resource
 
 What number 2 renames, with no old name kept:
 

@@ -43,7 +43,7 @@ const groups = {
   hosts: ['Hosts', 'The hosts berth serve knows, their profiles, and what can be done to each.'],
   actions: ['Actions', 'What can be done to the installation as a whole, such as a roll-out.'],
   provisioners: ['Provisioners', 'What the plugins can create machines and deployments with, their pages and their actions.'],
-  resources: ['Resources', 'What provisioners made for berth, a host\'s machine among them: creating, changing, removing, their actions and logs.'],
+  resources: ['Resources', 'What provisioners made for berth, a host\'s machine among them: creating, changing, removing, their actions, logs and endpoints.'],
   jobs: ['Jobs', 'Long-running work of berth serve, such as an apply: one run of an action.'],
   inbox: ['Inbox', "Messages taken in from the hosts' channels."],
   kv: ['Key-value store', 'Small JSON values with revisions, for user interfaces.'],
