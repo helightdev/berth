@@ -681,6 +681,10 @@ impl Runner {
                 _ => Stopping::NotHere,
             });
         };
+        // A job ends in the store a moment before it leaves the stops.
+        if self.store.job(id)?.is_some_and(|job| job.ended.is_some()) {
+            return Ok(Stopping::Ended);
+        }
         if let Some(before) = stop.asked() {
             return Ok(Stopping::AskedBefore(before));
         }
