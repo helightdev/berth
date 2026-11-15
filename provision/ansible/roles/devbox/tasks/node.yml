@@ -1,0 +1,43 @@
+---
+# A node: a server berth applies without a desktop. It gets the base system,
+# updates, SSH that takes keys, berth's controller, a firewall and the plugin
+# features its profile names, such as the engines that host machines. There
+# are no agent or operator accounts: sessions run as the SSH user, and berth
+# keeps logging in as that user with its own key.
+- name: Check the node and find the account sessions run as
+  ansible.builtin.import_tasks: node_facts.yml
+- name: Check that the node can join the tailnet
+  ansible.builtin.include_tasks: tailnet_check.yml
+  when: devbox_install_tailscale and devbox_start_services and devbox_profile != 'container'
+- name: Install what a node needs
+  ansible.builtin.apt:
+    name: "{{ devbox_node_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+- name: Configure the time zone, the locale and security updates
+  ansible.builtin.import_tasks: system.yml
+
+- name: Let berth in with its key, and nobody with a password
+  ansible.builtin.import_tasks: node_ssh.yml
+
+# ── The tailnet ─────────────────────────────────────────────────────────────
+
+- name: Install Tailscale
+  ansible.builtin.import_tasks: tailscale.yml
+  when: devbox_install_tailscale
+- name: Start Tailscale now and at boot
+  ansible.builtin.systemd_service:
+    name: tailscaled
+    enabled: true
+    state: started
+  when: devbox_install_tailscale and devbox_start_services
+- name: Join the tailnet
+  ansible.builtin.include_tasks: tailnet.yml
+  when: devbox_install_tailscale and devbox_start_services
+
+- name: Apply the features, berth's controller and the firewall
+  ansible.builtin.import_tasks: node_berth.yml

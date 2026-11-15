@@ -200,6 +200,11 @@ pub fn list(paths: &Paths, scope: &str) -> Result<Vec<(String, Value)>> {
 /// logging in, in one change. A profile in a file is removed with the file.
 pub fn remove(paths: &Paths, place: &Place) -> Result<()> {
     let (scope, name) = place.side();
+    // The provisioners a node offers go with it, unless they still hold resources.
+    if scope == OWN {
+        let secrets = crate::registry::Store::own(store::shared(paths)?);
+        crate::node::forget(paths, &secrets, &name)?;
+    }
     let password = crate::keys::password_secret(place);
     let sudo = crate::keys::sudo_secret(place);
     // The record of a machine that was never made goes with the host; a
@@ -316,6 +321,22 @@ pub fn rename(paths: &Paths, from: &Place, to: &str, hostname: bool) -> Result<P
     }
     for (id, value) in &resources {
         writes.push((kind::RESOURCE, scope.as_str(), id.as_str(), value.clone()));
+    }
+    // The provisioners a node offers name it, and go on naming it.
+    let mut offered = vec![];
+    if scope == OWN {
+        for (name, value) in store.entries(kind::PROVISIONER_ENTRY, OWN)? {
+            let Ok(mut entry) = serde_json::from_slice::<crate::provisioner::Entry>(&value) else {
+                continue;
+            };
+            if entry.node == *old {
+                entry.node = to.to_owned();
+                offered.push((name, serde_json::to_vec(&entry)?));
+            }
+        }
+    }
+    for (name, value) in &offered {
+        writes.push((kind::PROVISIONER_ENTRY, OWN, name.as_str(), value.clone()));
     }
     match scope == OWN {
         true => store.rename_host(old, to, &writes, &removals)?,

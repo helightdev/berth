@@ -263,9 +263,6 @@ pub enum Field {
     RecoveryCidr,
     ReleaseStore,
     ReleasePrivate,
-    TailscaleKey,
-    TailscaleAuto,
-    TailscaleLoginServer,
     DiskMode,
     DiskSerial,
     DiskModel,
@@ -310,7 +307,7 @@ pub enum Field {
 
 impl Field {
     /// Every field, in the order of the set-up tabs.
-    pub const ALL: [Field; 51] = {
+    pub const ALL: [Field; 48] = {
         use Field::*;
         [
             Type,
@@ -322,9 +319,6 @@ impl Field {
             AskBecomePass,
             Hostname,
             Tailscale,
-            TailscaleLoginServer,
-            TailscaleAuto,
-            TailscaleKey,
             ToolsWeb,
             ToolsNative,
             ToolsJvm,
@@ -452,24 +446,6 @@ impl Field {
                 "/ansible_vars/devbox_bootstrap_ssh_cidr",
                 Text,
                 "Network allowed to use SSH from outside the tailnet, such as your admin IP with /32. Left empty, a cloud host accepts SSH from any address, and other hosts only from the tailnet and the session used for installing.",
-            ),
-            TailscaleKey => (
-                "Tailscale enrollment key",
-                "/tailscale_auth_key",
-                Secret,
-                "Optional enrollment key from Tailscale or Headscale. Prefer a short-lived, one-use key. With the API key of the control server in the secret tailnet_api_key berth can create a one-use key valid for 24 hours.",
-            ),
-            TailscaleAuto => (
-                "Automatic enrollment key",
-                "/tailscale_auto_key",
-                Toggle,
-                "berth creates a one-use key whenever this host is about to join the tailnet: when a seed or installer is made (valid for 24 hours) and when an apply finds the host not on the tailnet yet (valid for an hour). It needs the control server's API key in the secret tailnet_api_key and, for Headscale, the tailnet_ settings. A host on the tailnet already needs no key.",
-            ),
-            TailscaleLoginServer => (
-                "Login server",
-                "/tailscale_login_server",
-                Text,
-                "The Headscale server this host joins, such as https://hs.example.org. Leave it empty for berth's tailnet_login_server setting, or Tailscale's own service when that is empty too. It takes effect when the host joins.",
             ),
             DiskMode => (
                 "Disk selection",
@@ -649,7 +625,7 @@ impl Field {
                 "Tailscale",
                 "/ansible_vars/devbox_install_tailscale",
                 Toggle,
-                "Install Tailscale on the target host and enable optional enrollment.",
+                "Install Tailscale and join the tailnet with a one-use key berth makes through the control server's API, from the secret tailnet_api_key and the tailnet_ settings. A host on the tailnet already is left on it. Off, berth reaches the host over SSH at its address, and the desktop and T3 through an SSH tunnel.",
             ),
             Iso => (
                 "Source ISO",
@@ -732,7 +708,6 @@ impl Field {
             | ToolsChrome => Group::Heading("Development Tools"),
             DiskSerial | DiskModel | DiskPath | DiskType => Group::Under(DiskMode),
             WifiInterface | WifiSsid | WifiPassword => Group::Under(Wifi),
-            TailscaleKey | TailscaleAuto | TailscaleLoginServer => Group::Under(Tailscale),
             ReleaseUrl | ReleasePrivate => Group::Under(ReleaseStore),
             IsoSha | UsbDevice => Group::Under(Iso),
             SshUser | SshPort | Login => Group::Under(SshHost),
@@ -756,6 +731,6 @@ impl Field {
 
     /// Fields with a Generate action.
     pub fn can_generate(self) -> bool {
-        matches!(self, Field::Hostname | Field::TailscaleKey) || self.is_password_hash()
+        matches!(self, Field::Hostname) || self.is_password_hash()
     }
 }

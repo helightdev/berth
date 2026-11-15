@@ -12,6 +12,20 @@ if [[ ${1:-} == controller ]]; then
   { systemctl --failed --no-legend 2>/dev/null || true; } | sed 's/^/Failed      /'
   exit 0
 fi
+# A node is a server: its controller, firewall, tailnet and what its features run.
+if [[ ${1:-} == node ]]; then
+  echo "Host        $(hostname), up since $(uptime -s)"
+  echo "Type        node: berthd, firewall and plugin features, no desktop"
+  echo "Tailscale   ${address:-not enrolled} ${name}"
+  for unit in ssh berthd tailscaled docker incus; do
+    systemctl cat "$unit" >/dev/null 2>&1 && printf '%-11s %s\n' "$unit" "$(systemctl is-active "$unit" || true)"
+  done
+  echo "Firewall    $(ufw status 2>/dev/null | sed -n 's/^Status: //p' || echo unknown)"
+  echo "Disk        $(df -h --output=avail,pcent / | tail -1 | xargs) free/used on /"
+  [[ -f /var/run/reboot-required ]] && echo 'Reboot      required by installed updates'
+  { systemctl --failed --no-legend 2>/dev/null || true; } | sed 's/^/Failed      /'
+  exit 0
+fi
 echo "Host        $(hostname), up since $(uptime -s)"
 echo "Provision   $(cat /var/lib/devbox/provision-state 2>/dev/null || echo unknown)"
 echo "Tailscale   ${address:-not enrolled} ${name}"

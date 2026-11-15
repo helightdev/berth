@@ -1,6 +1,6 @@
 ---
 name: install-berth
-description: "Use when installing or setting up berth. That covers the client, a berth server and an Incus and Docker host for machines. It also covers a server installed from a provider's rescue system. Covers which recipe to pick, the exact commands, what is destructive, and how to hand the server over to the user."
+description: "Use when installing or setting up berth. That covers the client, a berth server and a node, a server that hosts Incus and Docker machines. It also covers a server installed from a provider's rescue system. Covers which recipe to pick, the exact commands, what is destructive, and how to hand the server over to the user."
 ---
 
 # Install berth
@@ -14,8 +14,9 @@ terminal. A set-up has these pieces:
 | --- | --- |
 | `berth` client | The program on the user's machine. It has a terminal UI and commands. |
 | berth server | Optional. `berth serve`, usually in a Docker container, reached over a tailnet with TLS. It keeps the hosts, profiles and secrets. |
-| Host | A machine berth logs in to over SSH. Its type is one of three: `ssh` means berth only logs in, `managed` adds berthd and box, and `workstation` is set up from a profile. A machine that exists is added with `berth host add NAME ADDRESS --user USER`. |
-| Provisioner | Creates the machine for a host, such as on Docker or Incus. Plugins bring the types `docker/container`, `incus/vm` and `incus/container`, and berth runs each provisioner under a name of its own, registered with `berth provisioner add NAME TYPE`. The `incus-host` recipe registers `incus-vm`, `incus-container` and `docker`. `berth provisioner list` lists them, and the Provisioners tab of the terminal UI (key `2`) shows each one's page. |
+| Host | A machine berth logs in to over SSH. Its type is one of four: `ssh` means berth only logs in, `managed` adds berthd and box, `node` is a server berth applies without a desktop, and `workstation` is set up from a profile. A machine that exists is added with `berth host add NAME ADDRESS --user USER`. |
+| Node | A server for machines. Its features `incus/server` and `docker/engine` install Incus and Docker, and after the apply berth registers their provisioners, such as `big-incus-vm`, `big-incus-container` and `big-docker-container`. |
+| Provisioner | Creates the machine for a host, such as on Docker or Incus. Plugins bring the types `docker/container`, `incus/vm` and `incus/container`, and berth runs each provisioner under a name of its own, registered with `berth provisioner add NAME TYPE` or by a node. `berth provisioner list` lists them, and the Provisioners tab of the terminal UI (key `2`) shows each one's page. |
 
 ## Where to look things up
 
@@ -25,20 +26,22 @@ terminal. A set-up has these pieces:
 | `docs/content/docs/(guide)/start/quick-start.mdx` | A first host from the terminal UI |
 | `docs/content/docs/(guide)/use/server.mdx` | Running a server and connecting to it |
 | `docs/content/docs/(guide)/use/types.mdx` | Host types, and adding a machine by its address |
+| `docs/content/docs/(guide)/use/nodes.mdx` | Nodes, which are servers for Incus and Docker machines, and taking in one that exists |
 | `docs/content/docs/(guide)/use/store.mdx` | Where a server keeps its state, and restoring it |
 | `docs/content/docs/(guide)/deploy/index.mdx` | The install methods |
 | `docs/content/docs/(guide)/deploy/provisioners.mdx` | Creating a host's machine with a provisioner |
 | `recipes/README.md` | The list of recipes |
 | `recipes/*/README.md` | One recipe, with what it needs, its command and its settings |
-| `plugins/incus/guide.md`, `plugins/docker/guide.md` | The provisioners and their arguments |
+| `plugins/incus/guide.md`, `plugins/docker/guide.md` | The provisioners and their arguments, and the settings of the features `incus/server` and `docker/engine` |
 | `AGENTS.md` | Working in this repository |
 
 ## Choosing a set-up
 
 | The user has or wants | Follow |
 | --- | --- |
-| A rented dedicated server whose installer fails | `rescue-install`, then `incus-host` |
-| An empty server to host many machines | `incus-host`. Add `berth_server=true` to run the server there too. |
+| A rented dedicated server whose installer fails | `rescue-install`, then add it as a node |
+| An empty server to host many machines | Add it as a node with the features `incus/server` and `docker/engine`. To run the server there too, `berth-server` with `berth_server_node=true` first. |
+| A server the old `incus-host` recipe set up | Add it as a node with the same features. They keep its pools, bridge, trust and guests. |
 | A small VM just for the server | `berth-server` |
 | Only a client | The install instructions in `README.md` and the quick start |
 
@@ -69,50 +72,37 @@ Find the disks with `lsblk` first. Afterwards the user sets the server to start
 from its disk in the provider's panel, restarts it and logs in over SSH. A
 second run would wipe the disks again, so there is no reason to repeat it.
 
-### `incus-host`
+### A node for machines
 
-Turns an empty Ubuntu server into a host for machines. It installs Incus with QEMU and Docker,
-and sets up a btrfs storage pool, the bridge `incusbr0` and a `ufw` firewall. berth creates
-its hosts there as Incus guests. It needs Ubuntu 24.04 or later, run as root on
-the server, from a fresh install. It does not wipe anything.
-
-```bash
-curl -fsSL https://github.com/helightdev/berth/archive/refs/heads/main.tar.gz \
-  | tar xz --strip-components=1 --wildcards '*/recipes'
-cd recipes/incus-host
-sudo ./install.sh -e tailscale_auth_key=tskey-auth-EXAMPLE
-```
-
-To run a berth server on the same machine:
+berth applies a node itself, with no recipe. It needs Ubuntu 24.04 or later on
+x86_64 and a login as root or as an account with sudo. On the user's own
+machine, or on a berth connected to their server, with the made-up name `big`:
 
 ```bash
-sudo ./install.sh -e berth_server=true -e tailscale_auth_key=tskey-auth-EXAMPLE
+berth host add big 192.0.2.20 --user root --auth ssh --type node
+berth profile big > big.json
+# in big.json: "ansible_vars": {"devbox_plugin_features": ["docker/engine", "incus/server"]}
+berth profile big --set big.json
+berth apply big
 ```
 
-To also install Sysbox, so that berth's Docker provisioner can run containers
-with `runtime=sysbox` instead of privileged, add `-e sysbox=true` on the first
-run. It downloads a package and checks it against a sum in `vars.yml`.
+`--auth ssh` uses the user's own SSH configuration and agent, and works with a
+local berth only. The default `--auth berth` uses berth's own key, which berth
+installs on first contact with a password or a private key that logs in once.
+The apply gives the SSH user berth's key and allows only keys for SSH. Root
+keeps a login with keys. Its `ufw` firewall keeps these open: SSH, the
+tailnet, the guests' bridge `incusbr0` and the Incus API on port 8444. berth
+then registers the provisioners. Check with `berth run big status` and
+`berth provisioner`.
 
-A second run changes nothing in place. It leaves a server alone that has a
-storage pool, so it never touches existing guests. Settings are in `vars.yml`,
-and the README lists them.
+The features never erase a disk. They make an Incus storage pool in a folder,
+or use one the user names in `devbox_incus_pool`. A server with Incus or Docker
+already keeps its pools, networks, trusted clients, containers and guests, and
+a provisioner registered for it by hand becomes the node's.
 
-### Add the server to berth
-
-A server from `rescue-install` and `incus-host` takes the user's public key for
-`root`. On the user's own machine, with the made-up name `big`:
-
-```bash
-berth host add big 192.0.2.20 --user root --auth ssh
-berth run big install-controller -y
-```
-
-`host add` saves the host with the type `ssh`. The default `--auth berth` uses berth's own
-key, which berth installs on first contact with a password or a private key that
-logs in once. `--auth ssh` uses the user's own SSH configuration and agent, and
-works with a local berth only. `host install` puts the controller alone on the
-server, for status, updates, a reboot and commands. Sessions then run as `root`.
-Such a server is never applied as a workstation.
+Virtual machines need KVM. On a rented virtual server without it, set
+`devbox_incus_virtual_machines` to `false` in `ansible_vars`. For Sysbox beside
+Docker, set `devbox_docker_sysbox` to `true` on the first apply.
 
 ### `berth-server`
 
@@ -128,10 +118,18 @@ cd recipes/berth-server
 sudo ./install.sh -e tailscale_auth_key=tskey-auth-EXAMPLE
 ```
 
+To let the server apply its own machine as a node, add
+`-e berth_server_node=true`. The server's own key then logs in to it as
+`root`. The container finds the machine at the name `node` and has the Docker
+socket. Add the
+node from the server with `berth host add big node --user root --type node`,
+then as in the node's section above.
+
 A second run changes nothing in place. It leaves the container `berth` as it
-is and starts it when it was stopped. To update, run `sudo docker pull
-ghcr.io/helightdev/berth`, `sudo docker rm -f berth`, then `sudo ./install.sh`.
-The data in `/srv/berth` stays.
+is and starts it when it was stopped. On a node, the node's action
+`upgrade-server` updates it to the version of the berth that asks. Elsewhere,
+run `sudo docker pull ghcr.io/helightdev/berth`, `sudo docker rm -f berth`,
+then `sudo ./install.sh`. The data in `/srv/berth` stays.
 
 ## Things that go wrong
 
@@ -139,11 +137,13 @@ The data in `/srv/berth` stays.
 | --- | --- |
 | The tailnet address does not work | HTTPS certificates must be on for the tailnet. Or set `berth_server_tailscale_serve` to `false` to keep the server on the machine only. |
 | The image does not pull | A private image needs `sudo docker login ghcr.io` before the run. |
-| Virtual machines fail on a rented virtual server | They need KVM. Set `incus_virtual_machines` to `false` and use containers. |
-| The bridge clashes with the server's network | Change `incus_bridge_address` if `10.77.0.0/24` is taken. |
-| Locked out of SSH | With `ssh_from` set to one address, SSH from anywhere else is refused. The provider's console is the way back in. |
+| Virtual machines fail on a rented virtual server | They need KVM. Set `devbox_incus_virtual_machines` to `false` and use containers. |
+| The bridge clashes with the server's network | Change `devbox_incus_bridge_address` if `10.77.0.0/24` is taken. |
+| Locked out of SSH | With `ssh_from` in `berth-server`, or `devbox_ssh_from` on a node, set to one address, SSH from anywhere else is refused. The provider's console is the way back in. |
+| A storage pool on its own disk | The features never erase a disk. Create it with `incus storage create` and name it in `devbox_incus_pool`. |
 | Docker ports are open to the world | Docker publishes past `ufw`. Publish on `127.0.0.1` or the tailnet address. |
 | The enrollment key leaks | Pass `tailscale_auth_key` on the command line. Never save it in a file you commit. |
+| Hosts berth sets up do not join the tailnet | berth makes their keys itself, with the secret `tailnet_api_key`: a Tailscale OAuth client as `CLIENT_ID:CLIENT_SECRET`, a Tailscale API access token or a Headscale API key. Ask the user to set it with `berth secret set tailnet_api_key`. Only the recipes' own machine takes a key by hand, because the recipe runs before berth does. |
 | A rescue install refuses to run | It refuses a system that did not start with UEFI, and a disk the running system is on. |
 
 ## Hand the server over to the user

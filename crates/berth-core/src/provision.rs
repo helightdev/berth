@@ -525,6 +525,11 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) ->
         )
         .into());
     }
+    // A new machine is on no tailnet, so a host that joins one needs a key
+    // berth can make, before anything is created.
+    if let Some(problem) = crate::tailnet::problem(paths, &profile.config, host) {
+        return Err(problem.into());
+    }
     let (scope, side) = profile.place.side();
     // Asked again after a failure, the provisioner finds the machine by its token.
     let kept = match kept {
@@ -1633,6 +1638,34 @@ print(out)
     }
 
     #[test]
+    fn a_host_that_joins_the_tailnet_gets_no_machine_without_berths_api_key() {
+        let world = World::new();
+        world
+            .store()
+            .set_secret("api_token", Some("tok-made-up"))
+            .unwrap();
+        world.file("answer.create", r#"{"id": "vm-1"}"#);
+        world.profile(
+            "studio",
+            json!({"hostname": "studio", "access": {"user": "ops"}}),
+        );
+        let said = world
+            .provision("fake/vm", &[("server", "x")])
+            .0
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("berth secret set tailnet_api_key"), "{said}");
+        // Nothing was asked of the provisioner, and no record was kept.
+        assert!(world.requests().iter().all(|(verb, _)| verb != "create"));
+        let place = crate::profiles::Place::own("studio").unwrap();
+        assert!(
+            crate::resource::of_place(&world.paths, &place)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn secrets_go_on_standard_input_and_never_into_the_output() {
         let world = World::new();
         world
@@ -1648,7 +1681,7 @@ print(out)
         world.file("answer.create", r#"{"id": "vm-1"}"#);
         world.profile(
             "studio",
-            json!({"access": {"user": "ops", "address": "192.0.2.30"}}),
+            json!({"access": {"user": "ops", "address": "192.0.2.30"}, "ansible_vars": {"devbox_install_tailscale": false}}),
         );
         let (done, out) = world.provision("fake/vm", &[("server", "x")]);
         done.unwrap();
@@ -1696,7 +1729,7 @@ print(out)
         world.file("answer.create", r#"{"id": "vm-2"}"#);
         world.profile(
             "studio",
-            json!({"access": {"user": "ops", "address": "192.0.2.20"}}),
+            json!({"access": {"user": "ops", "address": "192.0.2.20"}, "ansible_vars": {"devbox_install_tailscale": false}}),
         );
         world.provision("fake/vm", &[("server", "x")]).0.unwrap();
         world.file("answer.status", r#"{"state": "running"}"#);
@@ -1895,7 +1928,7 @@ print(out)
                 Ok(match asked("first boot") {
                     1 => "state provisioning\n==> Installing Ansible\n-- cursor: s=1;i=1\n",
                     2 => "state provisioning\n==> Applying the role\nTASK [devbox : Check the profile] *\nTASK [devbox : Install Docker] *\n-- cursor: s=1;i=2\n",
-                    _ => "state configured-needs-enrollment\n==> The role is applied\n-- cursor: s=1;i=3\n",
+                    _ => "state configured\n==> The role is applied\n-- cursor: s=1;i=3\n",
                 }
                 .to_owned())
             },
@@ -1919,7 +1952,7 @@ print(out)
                 "  │ Installing Ansible",
                 "  │ Applying the role",
                 "  │ Ansible task 2: Install Docker",
-                "  │ first boot: configured-needs-enrollment",
+                "  │ first boot: configured",
                 "  │ The role is applied",
                 "✓ studio: berthd answers",
                 "finished 192.0.2.40 as cloud",

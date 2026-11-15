@@ -113,7 +113,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ),
     (
         "tailnet_tags",
-        "tags new hosts get, comma separated, such as tag:berth",
+        "tags new hosts get, comma separated, such as tag:berth; an OAuth client of Tailscale needs them",
     ),
     (
         "store",

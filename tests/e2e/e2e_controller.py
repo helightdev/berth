@@ -63,7 +63,7 @@ class Controller(unittest.TestCase):
         # What needs more than a login is refused, and says what changes the type.
         refused = self.berth('apply', HOST, check=False)
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn('type ssh', refused.stderr)
+        self.assertIn('neither a node nor a workstation', refused.stderr)
         refused = self.berth('exec', HOST, '--', 'id', check=False)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn(f'berth run {HOST} install-controller', refused.stderr)

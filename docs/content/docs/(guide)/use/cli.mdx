@@ -74,6 +74,7 @@ berth host create studio --method cloud-seed --set operator_username=ops \
 | Build the USB installer | `berth host iso studio`, with `--write /dev/sdX` to write it to a drive |
 | Install berth's controller alone | `berth run build-vm install-controller` ([Host types](/docs/use/types#installing-the-controller)) |
 | Change the type a profile says | `berth host set build-vm type=managed` |
+| Make a server a node, for Incus and Docker machines | `berth host add big 192.0.2.20 --user root --type node` ([Nodes](/docs/use/nodes)) |
 | Install berth's key on a host | `berth key trust build-vm` ([First contact](/docs/use/accounts#first-contact)) |
 | Check the host's SSH host key, or accept a changed one | `berth host verify studio`, `berth host verify studio --accept` |
 | The passwords berth made for the accounts | `berth host credentials studio` |

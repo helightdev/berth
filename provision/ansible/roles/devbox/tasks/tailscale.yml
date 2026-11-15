@@ -1,0 +1,19 @@
+---
+# Tailscale from its own repository, for the release the host runs. Joining
+# is tailnet.yml's.
+- name: Add Tailscale package signing key
+  ansible.builtin.get_url:
+    url: https://pkgs.tailscale.com/stable/ubuntu/{{ ansible_facts.distribution_release }}.noarmor.gpg
+    dest: /usr/share/keyrings/devbox-tailscale.gpg
+    mode: '0644'
+- name: Configure Tailscale repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/devbox-tailscale.list
+    content: "deb [signed-by=/usr/share/keyrings/devbox-tailscale.gpg] https://pkgs.tailscale.com/stable/ubuntu {{ ansible_facts.distribution_release }} main\n"
+    mode: '0644'
+  register: tailscale_repo
+- name: Install Tailscale
+  ansible.builtin.apt:
+    name: tailscale
+    state: present
+    update_cache: "{{ tailscale_repo.changed }}"

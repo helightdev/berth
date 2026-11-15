@@ -556,7 +556,8 @@ impl Admin {
             json!({"name": name, "action": "seed"}),
             Value::Null,
             |admin, acted| {
-                admin.say("");
+                // Until when the seed can join the tailnet, for a host that joins it.
+                admin.say(acted["result"]["tailnet"].as_str().unwrap_or(""));
                 admin.arrive(Arrived::Seed(
                     acted["result"]["user_data"]
                         .as_str()

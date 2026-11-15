@@ -41,9 +41,6 @@ Settings of the Ansible role go under `ansible_vars`, and how berth reaches and 
     hostname: { type: 'string', description: 'Hostname of the installed machine: lower-case letters, digits and hyphens, starting with a letter. F4 generates one. A cloud seed or a created machine without one takes the name of the host.' },
     target: { type: '"laptop" | "cloud"', default: '"laptop"', description: 'What the host is installed on, with its provisioning defaults. Only laptop adds a physical login and power settings. A created machine is always cloud. A profile that still says qemu is read as cloud with the recovery SSH CIDR 10.0.2.2/32.' },
     keyboard: { type: 'string', description: 'Keyboard layout of the installer, such as de or us.' },
-    tailscale_auth_key: { type: 'string', description: 'Optional enrollment key; prefer a short-lived, one-use key.' },
-    tailscale_auto_key: { type: 'boolean', default: 'false', description: 'berth creates a one-use enrollment key whenever the host joins the tailnet. A pasted key wins. See Access.' },
-    tailscale_login_server: { type: 'string', description: 'The Headscale server the host joins. Empty: berth\'s tailnet_login_server setting, or Tailscale.' },
     release_url: { type: 'string', description: 'HTTPS address of the release archive, for cloud seeds.' },
     release_store: { type: 'string', description: 'A registry or repository berth uploads the release archive to when it makes the seed.' },
     release_private: { type: 'boolean', default: 'false', description: 'Whether the seed carries a login for downloading the archive.' },
@@ -108,19 +105,21 @@ Any `devbox_` setting of the role. The ones the terminal UI edits:
 | `devbox_harden_ssh` | SSH hardening, under Access on the Settings tab | on |
 | `devbox_install_cockpit` | Cockpit web console, Features tab | on |
 | `devbox_install_docker` | Docker on host, Features tab | on |
-| `devbox_install_tailscale` | Tailscale, Install tab | on |
+| `devbox_install_tailscale` | Tailscale, Install tab: whether the host joins the tailnet, with a key berth makes | on, or off for a new host while berth has no secret `tailnet_api_key` |
 
-Others, such as `devbox_tailscale_serve`, the agent versions and the backup settings, are described where they are used. All defaults are in [`defaults/main.yml`](https://github.com/helightdev/berth/blob/main/ansible/roles/devbox/defaults/main.yml).
+Others, such as `devbox_tailscale_serve`, the agent versions and the backup settings, are described where they are used. berth sets the variables of joining the tailnet itself, and a profile's `ansible_vars` can't: `devbox_tailscale_auth_key`, `devbox_tailscale_login_server`, `devbox_tailscale_key_command` and `devbox_tailnet_problem`.
+
+A profile of an older berth may still hold `tailscale_auth_key`, `tailscale_auto_key` or `tailscale_login_server`. berth drops them when it reads the profile, and says so once. The host then joins the tailnet on its next apply, with a key berth makes, unless it's on the tailnet already. All defaults are in [`defaults/main.yml`](https://github.com/helightdev/berth/blob/main/ansible/roles/devbox/defaults/main.yml).
 
 ## Type
 
 <TypeTable
   type={{
-    type: { type: '"ssh" | "managed" | "workstation"', default: '"workstation"', description: 'What berth does with the host: only log in over SSH, run berthd and box alone, or apply the whole profile. Only a workstation is applied.' },
+    type: { type: '"ssh" | "managed" | "node" | "workstation"', default: '"workstation"', description: 'What berth does with the host: only log in over SSH, run berthd and box alone, apply a server without a desktop, or apply the whole profile. Only a node or a workstation is applied.' },
   }}
 />
 
-A host that is not a workstation needs only its type and `access`. The other fields are for a workstation. See [Host types](/docs/use/types).
+An `ssh` or `managed` host needs only its type and `access`. A node also takes `target`, the Tailscale fields and `ansible_vars`, and refuses the fields of the agent and the operator ([Nodes](/docs/use/nodes)). The other fields are for a workstation. See [Host types](/docs/use/types).
 
 ```json title="dock's profile"
 {

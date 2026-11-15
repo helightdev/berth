@@ -16,7 +16,7 @@ The file contains the profile as berth stores it, with a few fields left out:
 
 | Field | Kept | Why |
 | --- | --- | --- |
-| `tailscale_auth_key` | No | An enrollment key works once. The new berth makes a new one when the host has to join again |
+| `tailscale_auth_key`, `tailscale_auto_key`, `tailscale_login_server` | No | Fields of older berths. berth makes a key when the host has to join the tailnet again, at the control server of its own settings |
 | `access` | No | `berth host adopt` sets the address, user and port from how it reached the host. A key name means a key of the old berth's key ring, and a link command is a program of the old berth's machine |
 | `builder.served` | No | A server of the old berth means nothing to another one |
 | `secrets`, `registries` | Names only | Their values stay in each berth's own store and are never in a profile |

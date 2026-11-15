@@ -76,6 +76,7 @@ The end-to-end tests in `tests/e2e/` use throw-away containers over SSH, with be
 | `e2e_controller.Controller` | The same host and berth's controller alone, with one playbook run |
 | `e2e_provisioners` | A provisioner of a made-up plugin, and no test host. With Docker, `ci/run.sh` starts an engine on the test network for the Docker plugin's cases |
 | `e2e_restore` | The host `studio` as it is, and a server of its own with an encrypted store. It leaves the host as it is |
+| `e2e_node` | The bare host `dock` applied as a node, with a made-up plugin's feature that offers a provisioner. It runs last there and leaves the node |
 | The rest | A full apply of the profile |
 
 That engine starts with Docker when the run is complete, names `e2e_provisioners` or is the shard that holds it. `BERTH_CI_DOCKER` (`1` or `0`) forces it on or off, and `BERTH_CI_DIND_IMAGES` lists images of your own engine to load into it, as it cannot pull. The header of `ci/run.sh` has the rest.

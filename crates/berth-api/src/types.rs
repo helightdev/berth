@@ -28,6 +28,10 @@ pub struct ErrorDetail {
     pub message: String,
 }
 
+/// The header that repeats an error's code, for a caller that is not given
+/// the body: a WebSocket handshake that was refused shows only its head.
+pub const ERROR_HEADER: &str = "berth-error";
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ErrorBody {
     pub error: ErrorDetail,
@@ -91,18 +95,27 @@ pub enum HostType {
     Ssh,
     /// berthd and box are installed and answer: sessions, actions and files.
     Managed,
+    /// A server berth applies without a desktop: berthd, updates, the
+    /// firewall and plugin features, such as the engines that host machines.
+    Node,
     /// The whole profile is applied: desktop, agents and plugins.
     #[default]
     Workstation,
 }
 
 impl HostType {
-    pub const ALL: [HostType; 3] = [HostType::Ssh, HostType::Managed, HostType::Workstation];
+    pub const ALL: [HostType; 4] = [
+        HostType::Ssh,
+        HostType::Managed,
+        HostType::Node,
+        HostType::Workstation,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             HostType::Ssh => "ssh",
             HostType::Managed => "managed",
+            HostType::Node => "node",
             HostType::Workstation => "workstation",
         }
     }
@@ -124,11 +137,13 @@ impl HostType {
     }
 
     /// The type a value of the `level` that profiles and berthd had before
-    /// types stands for.
+    /// types stands for. The role still records the type so, and names a
+    /// node `node`.
     pub fn from_level(level: &str) -> Option<HostType> {
         match level.trim() {
             "reachable" => Some(HostType::Ssh),
             "controller" => Some(HostType::Managed),
+            "node" => Some(HostType::Node),
             "workstation" => Some(HostType::Workstation),
             _ => None,
         }
@@ -140,6 +155,7 @@ impl HostType {
         match self {
             HostType::Ssh => "SSH only, nothing of berth installed",
             HostType::Managed => "berthd alone: sessions, actions, files",
+            HostType::Node => "a server: berthd, firewall, plugin features",
             HostType::Workstation => "the whole profile",
         }
     }
@@ -156,8 +172,9 @@ impl std::fmt::Display for HostType {
 pub fn type_mismatch(name: &str, intended: HostType, observed: Option<HostType>) -> Option<String> {
     let observed = observed.filter(|observed| *observed > intended)?;
     Some(match observed {
-        HostType::Workstation => format!(
-            "{name} is a workstation; its profile here says {intended}. To adopt it from the profile it keeps: berth host adopt {name}"
+        // Both keep the profile they were applied from.
+        HostType::Workstation | HostType::Node => format!(
+            "{name} is a {observed}; its profile here says {intended}. To adopt it from the profile it keeps: berth host adopt {name}"
         ),
         _ => format!(
             "{name} has berth's controller; its profile here says {intended}. To adopt it: berth host set {name} type=managed"
@@ -1074,6 +1091,9 @@ pub struct ProvisionerInfo {
     /// The values of its own arguments that are kept, by name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub settings: BTreeMap<String, String>,
+    /// The node it lives on, when a feature of that host offered it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub node: String,
     /// What it can make: `machine`, and kinds its plugin names.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kinds: Vec<ProvisionerKind>,
@@ -1197,6 +1217,81 @@ impl ResourceSecret {
     }
 }
 
+/// Where a resource can be reached: an address and a port, as its
+/// provisioner reports it. The address is as seen from the machine the
+/// provisioner's engine runs on, such as a Docker engine or an Incus server.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Endpoint {
+    /// Unique among the resource's endpoints: lowercase letters, digits, `-`, `_` and `.`.
+    pub name: String,
+    /// An IP address or a DNS name.
+    pub address: String,
+    pub port: u16,
+    /// `tcp` or `udp`.
+    pub protocol: String,
+    /// What speaks there, for people, such as `http` or `postgres`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hint: String,
+    /// The engine runs on the server's own machine, so the address is one
+    /// the server reaches as it is, a loopback address among them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local: bool,
+}
+
+impl Endpoint {
+    pub const TCP: &'static str = "tcp";
+    pub const UDP: &'static str = "udp";
+
+    /// Whether a text can be an endpoint's name.
+    pub fn valid_name(name: &str) -> bool {
+        !name.is_empty()
+            && name.len() <= 63
+            && name.starts_with(|ch: char| ch.is_ascii_alphanumeric())
+            && name
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || "-_.".contains(ch))
+    }
+
+    /// One endpoint of a provisioner's answer, or why it is none.
+    pub fn from_answer(value: &Value) -> Result<Endpoint, String> {
+        let text = |key: &str| value[key].as_str().unwrap_or("").trim().to_owned();
+        let name = text("name");
+        if !Endpoint::valid_name(&name) {
+            return Err(format!("{name:?} cannot name an endpoint"));
+        }
+        let address = text("address");
+        let usable = !address.is_empty()
+            && address.len() <= 253
+            && (address.parse::<std::net::IpAddr>().is_ok()
+                || address
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || "-.".contains(ch)));
+        if !usable {
+            return Err(format!("the endpoint {name} has no address berth can use"));
+        }
+        let port = value["port"]
+            .as_u64()
+            .or_else(|| value["port"].as_str().and_then(|port| port.parse().ok()))
+            .and_then(|port| u16::try_from(port).ok())
+            .filter(|port| *port > 0)
+            .ok_or_else(|| format!("the endpoint {name} has no port from 1 to 65535"))?;
+        let protocol = match text("protocol").to_ascii_lowercase().as_str() {
+            "" | Endpoint::TCP => Endpoint::TCP.to_owned(),
+            Endpoint::UDP => Endpoint::UDP.to_owned(),
+            other => return Err(format!("the endpoint {name} has the protocol {other:?}")),
+        };
+        let hint: String = text("hint").chars().take(32).collect();
+        Ok(Endpoint {
+            name,
+            address,
+            port,
+            protocol,
+            hint,
+            local: value["local"] == true,
+        })
+    }
+}
+
 /// Something a provisioner made for berth: a machine, which may be a
 /// host's, or a kind its plugin names, such as a deployment.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -1219,6 +1314,10 @@ pub struct Resource {
     pub host: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub address: String,
+    /// Where it can be reached, as its provisioner last said: when it was
+    /// made, changed or checked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endpoints: Vec<Endpoint>,
     #[serde(default)]
     pub arguments: BTreeMap<String, String>,
     /// The berth secrets it is given, by name; never their values.
@@ -1234,7 +1333,7 @@ pub struct Resource {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub checked: String,
     /// What can be done to it besides being removed: `start`, `stop`,
-    /// `change`, `logs`, as its kind declares.
+    /// `change`, `logs`, `exec`, as its kind declares.
     #[serde(default)]
     pub verbs: Vec<String>,
     /// Why its state is `unknown`, or what is wrong with it.
@@ -1305,12 +1404,44 @@ pub struct AppliedPlugin {
 }
 
 /// What berth recorded on a host when it applied the configuration: its own
-/// version and the plugins whose features the host has.
+/// version, the plugins whose features the host has, and the provisioners
+/// those features offer.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Applied {
     pub berth: String,
     #[serde(default)]
     pub plugins: Vec<AppliedPlugin>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offers: Vec<Offer>,
+}
+
+/// Provisioners a feature of a host offers, as its tasks found them: berth
+/// registers each under a name of its own that names the host. The host
+/// serves this to anyone who may read it, so it holds public values only,
+/// such as a server's certificate, never a key.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Offer {
+    /// The feature, as `PLUGIN/FEATURE`.
+    pub feature: String,
+    /// The plugin's provisioners it offers, by their ids in the plugin.
+    pub provisioners: Vec<String>,
+    /// Values of the provisioners' own arguments. `{address}`, `{user}` and
+    /// `{port}` stand for where berth reaches the host and as whom.
+    #[serde(default)]
+    pub settings: BTreeMap<String, String>,
+    /// Values of the provisioners' secrets, such as the certificate of the
+    /// server to pin, kept as the provisioners' own.
+    #[serde(default)]
+    pub secrets: BTreeMap<String, String>,
+    /// Other values of a setting that reach the same server, such as the
+    /// name a berth server on the host gives it: a provisioner registered by
+    /// hand with one of them is the host's.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub aliases: BTreeMap<String, Vec<String>>,
+    /// What the host says identifies the server, such as the fingerprint of
+    /// its certificate, for the person who reads the report.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fingerprint: String,
 }
 
 /// The profile a host keeps of itself, at `/etc/berth/profile.json`: the
@@ -1552,7 +1683,14 @@ mod tests {
             assert_eq!(HostType::parse(host_type.name()), Some(host_type));
             assert_eq!(json!(host_type), json!(host_type.name()));
         }
-        assert_eq!(HostType::choices(), "ssh, managed or workstation");
+        assert_eq!(HostType::choices(), "ssh, managed, node or workstation");
+        // In the order of how much of berth each has.
+        assert!(HostType::Managed < HostType::Node && HostType::Node < HostType::Workstation);
+        assert_eq!(HostType::from_level("node"), Some(HostType::Node));
+        assert_eq!(
+            type_mismatch("big", HostType::Managed, Some(HostType::Node)).unwrap(),
+            "big is a node; its profile here says managed. To adopt it from the profile it keeps: berth adopt big"
+        );
         assert_eq!(HostType::parse("controller"), None);
         assert_eq!(HostType::from_level("reachable"), Some(HostType::Ssh));
         assert_eq!(HostType::from_level("controller"), Some(HostType::Managed));
@@ -1568,6 +1706,23 @@ mod tests {
         let written = json!(session);
         assert_eq!(written["action"], "status");
         assert!(written.get("task").is_none());
+    }
+
+    #[test]
+    fn an_apply_record_carries_what_a_node_offers() {
+        let record = json!({"berth": "0.6.0", "plugins": [], "level": "node", "offers": [{
+            "feature": "incus/server", "provisioners": ["vm", "container"],
+            "settings": {"server": "https://{address}:8444"},
+            "secrets": {"incus_server_cert": "-----BEGIN CERTIFICATE-----"}}]});
+        let applied: Applied = serde_json::from_value(record).unwrap();
+        assert_eq!(applied.offers[0].provisioners, ["vm", "container"]);
+        assert!(applied.offers[0].aliases.is_empty());
+        // A record without offers is written as before.
+        let plain = json!(Applied {
+            berth: "0.6.0".into(),
+            ..Applied::default()
+        });
+        assert!(plain.get("offers").is_none());
     }
 
     #[test]

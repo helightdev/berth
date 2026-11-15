@@ -170,26 +170,30 @@ pub fn fit_target(config: &mut Value, action: Action) {
     }
 }
 
-/// Let a host that is not set up yet join the tailnet with keys berth makes,
-/// when berth has the control server's API key to make them with.
+/// A host that is not set up yet joins the tailnet when berth has the
+/// control server's API key to make its key with, and is reached over SSH
+/// alone when it has not. A host that was set up keeps its choice.
 pub fn default_enrollment(config: &mut Value, names: &[String]) {
-    let unset = |key: &str| config[key].as_str().unwrap_or("").is_empty();
-    if names
+    let has_key = names
         .iter()
-        .any(|name| name == berth_api::profile::TAILNET_API_KEY)
+        .any(|name| name == berth_api::profile::TAILNET_API_KEY);
+    if !has_key
         && config.is_object()
-        && config.get("tailscale_auto_key").is_none()
-        && unset("hostname")
-        && unset("tailscale_auth_key")
+        && config["hostname"].as_str().unwrap_or("").is_empty()
+        && config["ansible_vars"]["devbox_install_tailscale"].is_null()
     {
-        config["tailscale_auto_key"] = json!(true);
+        set_pointer(
+            config,
+            "/ansible_vars/devbox_install_tailscale",
+            json!(false),
+        );
     }
 }
 
 /// What the home screen's Secrets tab says of a secret berth uses itself, if it is one.
 pub fn own_secret_help(name: &str) -> Option<&'static str> {
     (name == berth_api::profile::TAILNET_API_KEY).then_some(
-        "The API key of the tailnet's control server: a Tailscale API access token, or a Headscale API key (headscale apikeys create). berth creates one-use enrollment keys with it, for hosts that join the tailnet automatically and for F4 on the key field. It is never sent to a host. Enter replaces it, x twice removes it.",
+        "The API key of the tailnet's control server: a Tailscale OAuth client with the auth_keys scope as CLIENT_ID:CLIENT_SECRET, a Tailscale API access token, or a Headscale API key (headscale apikeys create). berth makes a one-use key with it for each host that joins the tailnet. An access token expires after at most 90 days, and an OAuth client does not. It is never sent to a host. Enter replaces it, x twice removes it.",
     )
 }
 
@@ -199,13 +203,6 @@ pub fn set_pointer(config: &mut Value, pointer: &str, value: Value) {
         ("/access/sudo", Value::Bool(asks)) => json!(if *asks { "password" } else { "none" }),
         _ => value,
     };
-    // A pasted key would win over the automatic one and is hidden from then on.
-    if pointer == "/tailscale_auto_key"
-        && value == json!(true)
-        && let Some(profile) = config.as_object_mut()
-    {
-        profile.remove("tailscale_auth_key");
-    }
     let mut node = config;
     let mut parts = pointer.trim_start_matches('/').split('/').peekable();
     while let Some(part) = parts.next() {
@@ -521,6 +518,9 @@ pub struct Profile<'a> {
     /// Whether the host's name can be the machine's: a profile without a
     /// hostname takes it.
     pub named: bool,
+    /// Whether berth has the API key of the tailnet's control server, which
+    /// a host that joins the tailnet needs.
+    pub tailnet_key: bool,
 }
 
 impl<'a> Profile<'a> {
@@ -854,12 +854,6 @@ impl<'a> Profile<'a> {
             after.push(Hostname);
         }
         after.push(Tailscale);
-        if self.enabled(Tailscale) {
-            after.extend([TailscaleLoginServer, TailscaleAuto]);
-            if !self.enabled(TailscaleAuto) {
-                after.push(TailscaleKey);
-            }
-        }
         (before, after)
     }
 
@@ -964,19 +958,7 @@ impl<'a> Profile<'a> {
         } else {
             self.text(field).to_owned()
         };
-        let (value, kind) = match field {
-            // Enough of the key to recognise it, not enough to use it.
-            Field::TailscaleKey if value.len() > 24 && value.is_ascii() => (
-                format!(
-                    "{}…{}",
-                    &value[..value.len().min(16)],
-                    &value[value.len() - 4..]
-                ),
-                Kind::Text,
-            ),
-            _ => (value, spec.kind),
-        };
-        let mut line = value_line(spec.label, &value, kind);
+        let mut line = value_line(spec.label, &value, spec.kind);
         line.spans.insert(0, Span::styled(prefix.to_owned(), muted));
         rows.push(Row::entry(line, Entry::Field(field)));
     }
@@ -1361,6 +1343,16 @@ impl<'a> Profile<'a> {
                 );
             }
         }
+        // A new machine always needs a key. A host applied over SSH may be on
+        // the tailnet already, which only the host can say, so the apply asks it.
+        if action.installer() || action.seeds() {
+            check(
+                !self.enabled(Tailscale) || self.tailnet_key,
+                Step::Install,
+                Tailscale,
+                "Tailscale is on, and berth has no API key of the tailnet to make the host's key: set the secret tailnet_api_key on the Secrets tab of the home screen, or switch Tailscale off",
+            );
+        }
         if action == Action::CloudSeed {
             check(
                 !self.text(ReleaseStore).is_empty()
@@ -1460,6 +1452,7 @@ mod tests {
             secrets: &[],
             own_key: "",
             named: false,
+            tailnet_key: true,
         };
         let groups = profile.feature_groups();
         assert_eq!(groups[0].title, "Coding Agents");
@@ -1469,28 +1462,37 @@ mod tests {
     }
 
     #[test]
-    fn a_host_joins_automatically_or_with_a_pasted_key() {
-        let mut config = json!({"tailscale_auth_key": "tskey-old"});
-        let fields = |config: &Value| {
-            Profile {
-                config,
-                step: Step::Install,
-                action: Action::Ssh,
-                features: &[],
-                registries: &[],
-                secrets: &[],
-                own_key: "",
-                named: false,
-            }
-            .fields()
+    fn the_tailnet_is_one_switch_and_needs_berths_api_key() {
+        let config = json!({"hostname": "studio", "builder": {}});
+        let profile = |tailnet_key: bool| Profile {
+            config: &config,
+            step: Step::Install,
+            action: Action::CloudSeed,
+            features: &[],
+            registries: &[],
+            secrets: &[],
+            own_key: "",
+            named: false,
+            tailnet_key,
         };
-        let shown = fields(&config);
-        assert!(shown.contains(&Field::TailscaleKey));
-        assert!(shown.contains(&Field::TailscaleLoginServer));
-        set_pointer(&mut config, "/tailscale_auto_key", json!(true));
-        assert!(config.get("tailscale_auth_key").is_none());
-        let shown = fields(&config);
-        assert!(shown.contains(&Field::TailscaleAuto) && !shown.contains(&Field::TailscaleKey));
+        let shown = profile(true).fields();
+        assert!(shown.contains(&Field::Tailscale));
+        let lacks = |problems: Vec<String>| {
+            problems
+                .iter()
+                .any(|problem| problem.contains("set the secret tailnet_api_key"))
+        };
+        assert!(!lacks(profile(true).problems()));
+        assert!(lacks(profile(false).problems()));
+        // Without the tailnet there is nothing to make a key for.
+        let off = json!({"builder": {}, "ansible_vars": {"devbox_install_tailscale": false}});
+        assert!(!lacks(
+            Profile {
+                config: &off,
+                ..profile(false)
+            }
+            .problems()
+        ));
         // berth's own API key is no secret a host can be given.
         let names = vec!["github".to_owned(), "tailnet_api_key".to_owned()];
         assert_eq!(host_secrets(names), ["github"]);
@@ -1523,6 +1525,7 @@ mod tests {
             secrets: &[],
             own_key: "",
             named: false,
+            tailnet_key: true,
         };
         let problems = profile.problems();
         assert!(problems.iter().any(|problem| problem.contains("Hostname")));
@@ -1555,23 +1558,22 @@ mod tests {
     }
 
     #[test]
-    fn a_new_host_enrolls_itself_when_berth_has_the_api_key() {
+    fn a_new_host_joins_the_tailnet_when_berth_has_the_api_key() {
         let names = vec!["tailnet_api_key".to_owned()];
         let mut new = json!({});
         default_enrollment(&mut new, &names);
-        assert_eq!(new["tailscale_auto_key"], true);
-        // Without the key there is nothing to make enrollment keys with.
+        assert_eq!(new, json!({}));
+        // Without the key there is nothing to make its key with: it is reached over SSH.
         let mut new = json!({});
         default_enrollment(&mut new, &["github".to_owned()]);
-        assert!(new.get("tailscale_auto_key").is_none());
-        // A host that was set up, or has a key of its own, keeps its choice.
+        assert_eq!(new["ansible_vars"]["devbox_install_tailscale"], false);
+        // A host that was set up, or chose already, keeps its choice.
         for kept in [
             json!({"hostname": "studio"}),
-            json!({"tailscale_auth_key": "tskey-auth-example"}),
-            json!({"tailscale_auto_key": false}),
+            json!({"ansible_vars": {"devbox_install_tailscale": true}}),
         ] {
             let mut profile = kept.clone();
-            default_enrollment(&mut profile, &names);
+            default_enrollment(&mut profile, &["github".to_owned()]);
             assert_eq!(profile, kept);
         }
     }
@@ -1592,6 +1594,7 @@ mod tests {
             secrets: &[],
             own_key: "ssh-ed25519 AAAA berth@studio",
             named: true,
+            tailnet_key: true,
         };
         let problems = profile.problems_with(machine);
         profile
@@ -1809,6 +1812,7 @@ mod tests {
             secrets: &[],
             own_key: "ssh-ed25519 AAAA berth@studio",
             named: true,
+            tailnet_key: true,
         };
         let placed = profile.placed_problems();
         let on = |step: Step| -> Vec<String> {
@@ -1865,6 +1869,7 @@ mod tests {
                 secrets: &["github".to_owned()],
                 own_key: "",
                 named: true,
+                tailnet_key: true,
             };
             let problems = profile.problems_with(&machine);
             for row in profile.page_rows(Page {
@@ -1897,6 +1902,7 @@ mod tests {
             secrets: &[],
             own_key: "",
             named: true,
+            tailnet_key: true,
         };
         assert_eq!(profile.way(), Action::Reach);
         let rows: Vec<String> = profile

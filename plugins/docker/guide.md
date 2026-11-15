@@ -9,6 +9,38 @@ engine you already have. It also runs Compose projects on the same engine,
 as [deployments](#deployments), and plain containers from any image, as
 [instances](#instances).
 
+## A Docker engine on a node
+
+The feature `docker/engine` installs the Docker engine on a [node](https://github.com/helightdev/berth/blob/main/docs/content/docs/%28guide%29/use/nodes.mdx),
+a server that berth applies without a desktop. berth then registers the
+provisioner `NODE-docker-container` for it, with `host=ssh://USER@ADDRESS:PORT`
+for the account and address berth reaches the node at. List it among the
+node's features:
+
+    "ansible_vars": {"devbox_plugin_features": ["docker/engine"]}
+
+| Part | Set-up |
+| --- | --- |
+| Docker | `docker.io` with Compose and Buildx, from Ubuntu's packages |
+| An engine installed already | Kept as it is, also one from Docker's own packages, with its containers and volumes |
+| The SSH user | Joins the group `docker` unless it is root |
+| Sysbox | With `devbox_docker_sysbox` set to `true`, installed beside Docker. See [Sysbox](#sysbox) |
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `devbox_docker_sysbox` | `false` | Install Sysbox |
+| `devbox_docker_sysbox_version` | `0.7.1` | The Sysbox release |
+| `devbox_docker_sysbox_checksum_amd64`, `devbox_docker_sysbox_checksum_arm64` | those of `0.7.1` | The SHA-256 of the package. The download is always checked, and another version needs its own sums |
+
+Docker opens the ports its containers publish by itself, past the node's
+firewall. Publish a port on `127.0.0.1` or on the tailnet address to keep it
+private.
+
+A berth server in a container on the node, with the engine's socket, calls
+this engine its local one. When that server applies the node, its
+provisioner of the local engine becomes the node's, and no second one is
+registered.
+
 ## What it makes
 
 - A container named `berth-HOST`, with the labels `berth-host` and
@@ -78,7 +110,8 @@ the socket's group:
       --group-add "$(stat --format %g /var/run/docker.sock)" ghcr.io/helightdev/berth
 
 Leave `host` empty then. The socket gives root on that machine. The
-`incus-host` recipe sets its berth server up this way.
+`berth-server` recipe sets its berth server up this way with
+`berth_server_node`.
 
 ## Machines
 
@@ -119,6 +152,29 @@ and not one of a deployment. Only `cpus` and `memory` change in place: a change
 to another argument is refused, so make a new instance for it. The values of
 `environment` reach Docker in its environment, not on its command line.
 Removing an instance removes its anonymous volumes and keeps named ones.
+
+### Endpoints and commands
+
+The plugin reports where a container is reached as its endpoints, each time
+berth makes, changes, starts or checks it. Each published port is one, named
+after the port it is published on, such as `8080`. On the local engine, each
+port the image exposes is one too, at each of the container's network
+addresses, such as `bridge-80`. A deployment reports those of each running
+container, named after its service, such as `web-8080`.
+
+| Engine | Address of a published port | Network addresses |
+| --- | --- | --- |
+| On this machine | `127.0.0.1`, or the address it is published on | Reported, as this machine routes to them |
+| Elsewhere, by `host` or a context | The engine's host name from its address, or the address it is published on | Left out, as only the engine's machine routes to them |
+
+berth opens a tunnel to an endpoint with `resources.connect`. A port published
+on the loopback of an engine elsewhere is reported too, and the server refuses
+to dial it.
+
+An instance also takes the action `exec`. It runs `docker exec` with the
+command, and `-i` with its standard input when it has some. The container has
+to be running. The command's output is the job's, and the job ends with the
+command's exit status.
 
 ## Deployments
 
@@ -196,9 +252,8 @@ and its cgroup and `/run` options:
 The Docker host needs Sysbox installed. The plugin checks for the runtime
 `sysbox-runc` before it makes anything, and says what to install when it is
 missing. The action `engine` lists the runtimes the engine has, and the
-provisioner's page offers `sysbox` only where the engine has it. The recipe
-`incus-host` in the berth source installs Sysbox beside Docker when you ask it
-to. Sysbox's own documentation lists the distributions and kernels it supports.
+provisioner's page offers `sysbox` only where the engine has it. The feature
+`docker/engine` installs Sysbox beside Docker on a node when you ask it to. Sysbox's own documentation lists the distributions and kernels it supports.
 
 Whether berth's role applies cleanly inside a Sysbox container has not been
 checked yet. These are the parts to watch: the firewall, the tailnet's tunnel

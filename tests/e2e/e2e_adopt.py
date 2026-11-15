@@ -49,9 +49,8 @@ class Adopt(unittest.TestCase):
         # How this berth logs in means nothing to another one.
         self.assertNotIn('access', kept)
         self.assertEqual(kept['builder'], {key: value for key, value in saved['builder'].items() if key not in LOCAL})
-        self.assertNotIn('tailscale_auth_key', kept)
         for key, value in saved.items():
-            if key not in ('access', 'builder', 'tailscale_auth_key'):
+            if key not in ('access', 'builder'):
                 # An empty list a test saved since the last apply is not on the host yet.
                 self.assertEqual(kept.get(key, []), value, key)
 

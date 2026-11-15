@@ -32,6 +32,10 @@ NAME_LIMIT = 63
 PROTOCOL = 2
 # Rows of a listing an action answers with, at most.
 ROWS = 60
+# What usually speaks on a port, as a hint for people.
+HINTS = {22: 'ssh', 80: 'http', 443: 'https', 3000: 'http', 3306: 'mysql', 5432: 'postgres', 6379: 'redis',
+         8000: 'http', 8080: 'http', 8443: 'https', 27017: 'mongodb'}
+LOOPBACK = ('127.0.0.1', '::1', 'localhost')
 
 
 class Failure(Exception):
@@ -245,6 +249,42 @@ def state_of(instance):
     return 'stopped' if status in ('Stopped', 'Frozen', 'Error') else 'running'
 
 
+def split_address(text):
+    """The protocol, address and port of a proxy device's listen or connect, such as
+    tcp:0.0.0.0:8080 or tcp:[::]:443, or None for a socket file or a range of ports."""
+    protocol, _, rest = (text or '').partition(':')
+    address, _, port = rest.rpartition(':')
+    if protocol not in ('tcp', 'udp') or not port.isdigit() or not 0 < int(port) < 65536:
+        return None
+    return protocol, address.strip('[]'), int(port)
+
+
+def endpoints_of(incus, instance):
+    """The instance's proxy devices, each a port of the Incus server that leads into it. An instance's
+    own address is its address; berth is not told which of its ports serve anything."""
+    local = incus.host in LOOPBACK
+    found = []
+    for name, device in sorted(((instance or {}).get('expanded_devices') or {}).items()):
+        if (device or {}).get('type') != 'proxy':
+            continue
+        listen, connect = split_address(device.get('listen')), split_address(device.get('connect'))
+        if not listen:
+            continue
+        protocol, address, port = listen
+        # Listening on every address: the server's own name for it, or this machine's loopback.
+        if address in ('', '0.0.0.0', '::'):
+            address = '127.0.0.1' if local else incus.host
+        endpoint = {'name': re.sub(r'[^a-z0-9_.-]+', '-', name.lower()).strip('-._')[:63] or 'proxy',
+                    'address': address, 'port': port, 'protocol': protocol}
+        target = connect[2] if connect else port
+        if protocol == 'tcp' and target in HINTS:
+            endpoint['hint'] = HINTS[target]
+        if local:
+            endpoint['local'] = True
+        found.append(endpoint)
+    return found
+
+
 def checked_archive(seed):
     archive = (seed or {}).get('archive') or {}
     path, expected = archive.get('path') or '', archive.get('sha256') or ''
@@ -355,7 +395,7 @@ def create(incus, request, arguments):
                 raise Failure(f'There is no image {image} on {IMAGES} for {TYPES[kind]} instances: {reason}') from None
             raise Failure(f'Incus could not create {name}: {reason}') from None
         deliver(incus, name, kind, archive, False)
-    answer = {'id': name}
+    answer = {'id': name, 'endpoints': endpoints_of(incus, incus.instance(name))}
     address = wait_for_address(incus, name)
     if address:
         answer['address'] = address
@@ -415,7 +455,8 @@ def create_instance(incus, request, arguments):
             if 'image' in reason.lower() and ('not found' in reason.lower() or "couldn't be found" in reason.lower()):
                 raise Failure(f'There is no image {image} on {IMAGES} for {TYPES[kind]} instances: {reason}') from None
             raise Failure(f'Incus could not create {name}: {reason}') from None
-    answer = {'id': name, 'state': state_of(incus.instance(name))}
+    instance = incus.instance(name)
+    answer = {'id': name, 'state': state_of(instance), 'endpoints': endpoints_of(incus, instance)}
     address = wait_for_address(incus, name)
     if address:
         answer['address'] = address
@@ -425,6 +466,8 @@ def create_instance(incus, request, arguments):
 def status(incus, request, arguments):
     instance = incus.instance(request['id'])
     answer = {'state': state_of(instance)}
+    if instance:
+        answer['endpoints'] = endpoints_of(incus, instance) if answer['state'] == 'running' else []
     if answer['state'] == 'running':
         address = incus.address(request['id'])
         if address:
@@ -534,7 +577,8 @@ def change(incus, request, arguments):
     if patch['config'] or 'devices' in patch:
         say(f'Changing {name}…')
         incus.call('PATCH', f'/1.0/instances/{name}', patch)
-    return {'state': state_of(incus.instance(name))}
+    instance = incus.instance(name)
+    return {'state': state_of(instance), 'endpoints': endpoints_of(incus, instance)}
 
 
 def logs(incus, request, arguments):
@@ -553,6 +597,35 @@ def logs(incus, request, arguments):
     if request.get('follow'):
         say('Incus keeps the console log as a whole; this is all of it for now.')
     return None
+
+
+def run_in(incus, request, arguments):
+    """Run the request's command in a running instance, with its output recorded by Incus and then
+    written on standard error, which berth shows as the job's: the command's exit status."""
+    name = request['id']
+    command = request.get('command')
+    if not isinstance(command, list) or not command or not all(isinstance(word, str) for word in command):
+        raise Failure('The request carries no command as a list of words.')
+    if request.get('stdin'):
+        raise Failure('Incus runs the command here without standard input: give it none.')
+    instance = incus.instance(name)
+    if not instance:
+        raise Failure(f'{name} is no longer on {incus.server}.')
+    if state_of(instance) != 'running':
+        raise Failure(f'{name} is not running: start it first.')
+    done = incus.call('POST', f'/1.0/instances/{name}/exec', {
+        'command': command, 'environment': {}, 'interactive': False,
+        'wait-for-websocket': False, 'record-output': True,
+    }) or {}
+    for stream in ('1', '2'):
+        path = ((done.get('output') or {}).get(stream) or '').split('?')[0]
+        if not path.startswith(f'/1.0/instances/{name}/logs/'):
+            continue
+        sys.stderr.write(incus.text(path))
+        sys.stderr.flush()
+        # The recorded output stays on the server until it is removed.
+        incus.exchange('DELETE', path)
+    return {'exit_code': int(done.get('return', -1))}
 
 
 def counted(count, word):
@@ -698,9 +771,9 @@ def status_of(incus, request, arguments):
 
 VERBS = {'create': create, 'status': status_of, 'destroy': destroy,
          'start': power('start'), 'stop': power('stop'), 'list': listed,
-         'change': change, 'logs': logs, 'act': act}
+         'change': change, 'logs': logs, 'act': act, 'exec': run_in}
 # The verbs that are about one instance, and need its id.
-ABOUT_ONE = ('destroy', 'start', 'stop', 'change', 'logs')
+ABOUT_ONE = ('destroy', 'start', 'stop', 'change', 'logs', 'exec')
 
 
 def main():

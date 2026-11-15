@@ -101,7 +101,6 @@ class Update(unittest.TestCase):
         # A roll-out that fails at its first host leaves the next as it was.
         alpha = station.read_profile()
         alpha['ansible_vars'] = light_vars(['up/missing'])
-        alpha.pop('tailscale_auto_key', None)
         station.write_profile(alpha, name='alpha')
         stopped = station.berth('rollout', check=False, timeout=900)
         self.assertEqual(stopped.returncode, 1, stopped.stdout)

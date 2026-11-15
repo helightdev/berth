@@ -216,8 +216,11 @@ class SetUp(unittest.TestCase):
         self.assertTrue(hashed['value'].startswith('$6$'))
 
     def test_a_host_is_made_seeded_and_removed(self):
+        profile = provisioned().read_profile()
+        # A seed of a host that joins the tailnet needs a key no test network can make.
+        apart = {**profile.get('ansible_vars', {}), 'devbox_install_tailscale': False}
         self.serve.call('PUT', '/v1/hosts/cloud-2/profile', {
-            **provisioned().read_profile(), 'hostname': 'cloud-2', 'builder': {}, 'access': {},
+            **profile, 'hostname': 'cloud-2', 'builder': {}, 'access': {}, 'ansible_vars': apart,
             'operator_password_hash': '$6$e2e$' + 'x' * 86,
             'release_url': 'https://192.0.2.30/berth-release.tar.gz'})
         self.assertFalse(self.serve.call('GET', '/v1/hosts/cloud-2')['reachable'])

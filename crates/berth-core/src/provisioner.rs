@@ -48,6 +48,13 @@ pub struct Entry {
     pub kind: String,
     #[serde(default)]
     pub settings: BTreeMap<String, String>,
+    /// The node it lives on, when a feature of that host offered it: its
+    /// name among this berth's hosts.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub node: String,
+    /// The node's feature that offered it, as `PLUGIN/FEATURE`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub feature: String,
 }
 
 /// The entry registered under a provisioner's name, if there is one.
@@ -131,10 +138,15 @@ pub fn register(paths: &Paths, name: &str, saved: &berth_api::SavedProvisioner) 
     let settings = match &saved.settings {
         Some(given) => kept_values(name, provisioner, given)?,
         None => existing
-            .map(|existing| existing.settings)
+            .as_ref()
+            .map(|existing| existing.settings.clone())
             .unwrap_or_default(),
     };
-    let entry = Entry { kind, settings };
+    let entry = Entry {
+        kind,
+        settings,
+        ..existing.unwrap_or_default()
+    };
     save_entry(paths, name, &entry)?;
     Ok(entry)
 }
@@ -286,6 +298,11 @@ pub fn describe(
     let mut info = provisioner.info(plugin, missing.clone());
     info.id = name.to_owned();
     info.settings = settings(paths, name).unwrap_or_default();
+    info.node = entry(paths, name)
+        .ok()
+        .flatten()
+        .map(|entry| entry.node)
+        .unwrap_or_default();
     if info.problem.is_empty() {
         info.problem = problem(&info.id, provisioner, &missing, &info.settings);
     }
@@ -705,6 +722,8 @@ enum Doing {
 pub struct Answered {
     pub message: String,
     pub details: Vec<Detail>,
+    /// The exit status of a command it ran, which its job ends with.
+    pub exit_code: Option<i32>,
 }
 
 impl Answered {
@@ -717,7 +736,11 @@ impl Answered {
     pub fn lines(&self) -> Vec<String> {
         let mut lines = vec![];
         if !self.message.is_empty() {
-            lines.push(format!("✓ {}", self.message));
+            let mark = match self.exit_code {
+                Some(code) if code != 0 => "✗",
+                _ => "✓",
+            };
+            lines.push(format!("{mark} {}", self.message));
         }
         let width = self
             .details
@@ -924,6 +947,7 @@ impl Acting {
                         false => format!("{} uses {}", self.name, shown.join(" ")),
                     },
                     details: vec![],
+                    exit_code: None,
                 })
             }
             Doing::Secrets(values, store) => {
@@ -952,6 +976,7 @@ impl Acting {
                         false => format!("{}'s secrets", self.name),
                     },
                     details,
+                    exit_code: None,
                 })
             }
             Doing::Remove(store) => {
@@ -959,6 +984,7 @@ impl Acting {
                 Ok(Answered {
                     message: format!("{} is removed", self.name),
                     details: vec![],
+                    exit_code: None,
                 })
             }
             Doing::Create(creating, store) => {
@@ -968,6 +994,7 @@ impl Acting {
                 Ok(Answered {
                     message: format!("{title} is made. Its page: berth resource show {id}"),
                     details: vec![],
+                    exit_code: None,
                 })
             }
             Doing::Program {
@@ -983,6 +1010,7 @@ impl Acting {
                 Ok(Answered {
                     message: answer["message"].as_str().unwrap_or("").to_owned(),
                     details: details(&answer),
+                    exit_code: None,
                 })
             }
         }

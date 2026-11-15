@@ -38,10 +38,11 @@ What berth does to a host or to the installation is an *action*. `GET /v1/hosts/
 | --- | --- | --- | --- |
 | An action of the host's controller, such as `status` | The host | On the host, as a session | `202` with the session and a job that copies its output. One that needs a terminal answers `200` with the session alone, to attach to |
 | `apply` | The host | Here, as a job | `202` with the job |
-| `install-controller` | The host | Here, as a job | `202` with the job. It installs berthd and box alone on a host that is not a workstation |
+| `install-controller` | The host | Here, as a job | `202` with the job. It installs berthd and box alone on an `ssh` or `managed` host |
 | `seed` | The host | Here, at once | `200` with the seed's `user_data` as the result |
 | `secrets` | The host | On the host, with the server's secrets | `202` with the session and its job |
 | `rename` | The host | Here, as a job | `202` with the job. It gives the host the name in its `name` argument, with what the server keeps of it ([Renaming a host](/docs/use/moving#renaming-a-host)) |
+| `upgrade-server` | A node with a berth server's container | On the node, as a session | `202` with the session and its job. It runs the server from the image of `version`, this server's own unless given ([The berth server on a node](/docs/use/nodes#the-berth-server-on-a-node)) |
 | `rollout` | The installation | Here, as a job | `202` with the job; its report says how each host went |
 
 An action that the host's type rules out is listed with `available` false, and its `why` says which action changes the type. Run anyway, it is refused with `501 not_available`.

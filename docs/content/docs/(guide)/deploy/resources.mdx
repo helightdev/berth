@@ -24,7 +24,7 @@ The list comes from berth's records, with each resource as it was last seen. ber
 | `machine` | A saved host, at most one machine for each | `berth host create HOST --provisioner PROVISIONER` ([Create the machine](/docs/deploy/provisioners#create-the-machine)) |
 | A kind its plugin declares, such as `deployment` or `instance` | No host | `berth resource create` for a deployment, the provisioner's `new-KIND` action, or `resources.create` for any kind |
 
-A provisioner's page says which kinds it makes. Each kind lists which of `start`, `stop`, `change` and `logs` its provisioner takes for it, and can bring actions of its own.
+A provisioner's page says which kinds it makes. Each kind lists which of `start`, `stop`, `change`, `logs` and `exec` its provisioner takes for it, and can bring actions of its own.
 
 ## What berth keeps of one
 
@@ -36,6 +36,7 @@ A provisioner's page says which kinds it makes. Each kind lists which of `start`
 | `host` | The saved host, for a machine |
 | `state`, `checked` | How it was when berth last asked, and when that was (`Asked`) |
 | `address` | Where it is reached, when the provisioner says |
+| `endpoints` | The addresses and ports it serves on, as the provisioner last said ([Endpoints](#endpoints)) |
 | `arguments` | The values it was made or last changed with |
 | `secrets` | The names of the berth secrets it is given, and the variable each becomes. Never their values |
 | `spec_sha256` | The SHA-256 of its specification, for a kind made from one |
@@ -87,6 +88,7 @@ An action that cannot run now says why beside its name, such as a secret of the 
 | --- | --- | --- |
 | `start`, `stop` | The kind lists that verb | Start or stop it. Stop asks first |
 | `change` | The kind lists `change` | Give it other values of the kind's arguments. A kind made from a specification also takes a new one, and other secrets |
+| `exec` | The kind lists `exec` | Run a command in it and wait for it to end ([Run a command in it](#run-a-command-in-it)) |
 | The kind's own | Its plugin declares them | What the plugin does, such as `services` of a deployment |
 | `remove` | Always | Remove it with its provisioner and forget the record. For a machine, the host's profile stays |
 
@@ -103,6 +105,55 @@ berth resource remove r-k3q7wz2m
 `change` takes what is given and keeps the rest. For a kind made from a specification, `--spec FILE` gives a new one and `-` reads it from standard input. `--secret NAME[:VARIABLE]` gives the secrets it gets. Given once, it replaces the whole list.
 
 `logs` prints the last 100 lines, or `--tail N`. `--follow` goes on with what comes after them until the log ends or you stop it. A berth server ends a followed log after an hour. Lines that contain a secret show `[secret]` in its place.
+
+## Endpoints
+
+A resource's endpoints say where it listens, as a list of addresses and ports. Its provisioner reports them each time it makes, changes or checks the resource. After a container restarts with a new address, its next check reports the new one. When the resource is gone, berth clears the list.
+
+| Field | Holds |
+| --- | --- |
+| `name` | Unique within the resource, such as `8080` or `web-80` |
+| `address` | An IP address or a DNS name |
+| `port` | The port |
+| `protocol` | `tcp` or `udp` |
+| `hint` | What speaks there, for people, such as `http` or `postgres`. It may be empty |
+| `local` | `true` when the provisioner's engine runs on the server's own machine |
+
+An address is as seen from the machine the provisioner's engine runs on, such as the Docker engine or the Incus server. With `local`, that machine is the server's own. The server then dials the address as it is, `127.0.0.1` among them. Without `local`, `127.0.0.1` names the engine's machine, and the server refuses to dial it. For an engine elsewhere, a provisioner reports addresses that other machines can connect to, such as the engine's own name.
+
+A change in the endpoints is a change of the resource for `events.follow`, so a follower of `resources` hears of it.
+
+### Reach an endpoint
+
+`resources.connect` opens a TCP connection to one endpoint, through the server ([The stream of an endpoint](/docs/extend/streams#the-stream-of-an-endpoint)). The caller names the endpoint by its name or its port, and needs the role `operate`.
+
+The server dials only what the provisioner reported. When it dials, it reads the resource's endpoints again and resolves the address then. It refuses:
+
+| What | Why |
+| --- | --- |
+| An endpoint the provisioner did not report | The tunnel is not a way to an address of the caller's choosing |
+| A UDP endpoint | A tunnel is a TCP connection |
+| A cloud's metadata address, `169.254.169.254` or `fd00:ec2::254` | It hands credentials of the server's machine to whoever asks |
+| A loopback or link-local address, unless the endpoint is `local` and reports that very address | Such an address is the server's own. A name that resolves to one now, or one an engine elsewhere reported, is not what the provisioner meant |
+
+The server is the one that dials. That is right for an engine on the server's machine or on a network the server routes to, such as a Docker engine on the same network.
+
+### Run a command in it
+
+The action `exec` runs a command in a resource whose kind has it, such as a Docker or an Incus instance. Its provisioner runs it, and the server waits for it to end.
+
+| Argument | Holds |
+| --- | --- |
+| `command` | The words of the command, split at spaces, or a JSON list such as `["sh", "-c", "echo hi"]` for a word with spaces in it |
+| `stdin` | What the command reads on its standard input. Empty gives it none |
+
+It runs as a job of the resource, and needs the role `operate`. It does not hold the resource's lock, so several commands can run at once. The job's output is the command's, and the job ends with the command's exit status. The job records the command line, but not the standard input. Give a secret on standard input, never on the command line.
+
+```bash
+curl -X POST "$BERTH/v1/resources/r-m4t8qv2c/actions/exec" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"arguments": {"command": "psql -U app", "stdin": "select count(*) from notes;"}}'
+```
 
 ## A host's machine
 
@@ -164,7 +215,8 @@ With a [berth server](/docs/use/server) set, `berth resource list`, `berth resou
 | `resources.act` | `POST /v1/resources/{id}/actions/{action}` | The action's own |
 | `resources.logs` | `GET /v1/resources/{id}/logs?tail=N`, as plain text | `operate` |
 | `resources.follow` | A WebSocket at the same path. The lines come as binary frames, then `{"exited": …}` | `operate` |
+| `resources.connect` | A WebSocket at `/v1/resources/{id}/endpoints/{endpoint}`: a TCP connection to the endpoint | `operate` |
 
-An action of a resource needs `admin` unless its plugin says otherwise, including one that only reads. Requests and answers are in the [API reference](/docs/api/serve/resources).
+An action of a resource needs `admin` unless its plugin says otherwise, including one that only reads. `exec` needs `operate`. Requests and answers are in the [API reference](/docs/api/serve/resources).
 
 With `serve_setup off`, a server takes changes to resources only on its own socket, not over the network ([Closing set-up](/docs/extend/serve#closing-set-up)).

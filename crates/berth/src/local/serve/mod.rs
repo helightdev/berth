@@ -4,6 +4,7 @@
 mod actions;
 mod api;
 mod auth;
+mod connect;
 mod docs;
 pub mod here;
 pub(crate) mod keys;

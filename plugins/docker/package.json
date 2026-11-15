@@ -9,10 +9,40 @@
   ],
   "files": [
     "bin",
+    "tasks",
     "Dockerfile",
     "guide.md"
   ],
   "berth": {
+    "features": [
+      {
+        "id": "engine",
+        "group": "Servers",
+        "label": "Docker engine",
+        "description": "Install the Docker engine on a node for berth's machines, Compose projects and instances, with Sysbox beside it when devbox_docker_sysbox is true in the profile's ansible_vars. An engine that is installed already is kept as it is. berth registers the provisioner docker/container of this node after the apply, which reaches the engine over SSH.",
+        "summary": "The Docker engine (`docker`) runs containers here.",
+        "types": [
+          "node"
+        ],
+        "offers": [
+          "container"
+        ],
+        "commands": [
+          "docker"
+        ],
+        "tasks": "tasks/engine.yml",
+        "actions": [
+          {
+            "name": "engine-status",
+            "label": "Docker",
+            "user": "root",
+            "extends": "status",
+            "help": "The version of the Docker engine, its runtimes and its containers. Part of Status.",
+            "run": "echo; echo '── Docker'; docker version | sed -n '/^Server/,$p' | sed -n '1,3p'; docker info 2>/dev/null | grep -i '^ *runtimes:'; docker ps --all"
+          }
+        ]
+      }
+    ],
     "provisioners": [
       {
         "id": "container",
@@ -58,7 +88,7 @@
           {
             "id": "instance",
             "label": "Instance",
-            "verbs": ["start", "stop", "change", "logs"],
+            "verbs": ["start", "stop", "change", "logs", "exec"],
             "arguments": [
               {"name": "image", "label": "Image", "default": "", "help": "The image to start from, such as debian:12 or any image reference. It becomes no berth host: nothing of berth is put in it."},
               {"name": "command", "label": "Command", "default": "", "help": "The command to run in the container, such as sleep infinity. Empty runs the image's own command."},

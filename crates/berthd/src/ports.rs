@@ -12,7 +12,7 @@ use berth_api::{code, streams::EOF};
 use futures_util::{SinkExt, StreamExt};
 use std::{net::Ipv4Addr, time::Duration};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
 };
 
@@ -59,12 +59,15 @@ fn said_end(text: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(text).is_ok_and(|frame| frame["eof"] == true)
 }
 
-/// Bytes both ways, each direction on its own. Each side's end is a frame,
-/// so the other direction goes on until it ends too; the caller leaving, or
-/// the port failing, ends both at once.
-async fn tunnel(socket: WebSocket, tcp: TcpStream) {
+/// Bytes both ways between a stream and a connection, each direction on its
+/// own. Each side's end is a frame, so the other direction goes on until it
+/// ends too; the caller leaving, or the connection failing, ends both at once.
+pub async fn tunnel<C>(socket: WebSocket, connection: C)
+where
+    C: AsyncRead + AsyncWrite + Send + 'static,
+{
     let (mut sink, mut source) = socket.split();
-    let (reader, writer) = tcp.into_split();
+    let (reader, writer) = tokio::io::split(connection);
     let (said, heard) = tokio::sync::oneshot::channel::<()>();
     let upstream = async move {
         let (mut writer, mut said) = (Some(writer), Some(said));

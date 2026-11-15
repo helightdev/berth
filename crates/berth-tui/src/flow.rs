@@ -339,6 +339,11 @@ impl Flow {
             secrets: &[],
             own_key: &self.catalogue.own_key,
             named: setup::valid_hostname(&self.name),
+            tailnet_key: self
+                .catalogue
+                .secrets
+                .iter()
+                .any(|name| name == berth_api::profile::TAILNET_API_KEY),
         }
     }
 

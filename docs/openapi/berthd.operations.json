@@ -2,10 +2,16 @@
   "components": {
     "schemas": {
       "Applied": {
-        "description": "What berth recorded on a host when it applied the configuration: its own\nversion and the plugins whose features the host has.",
+        "description": "What berth recorded on a host when it applied the configuration: its own\nversion, the plugins whose features the host has, and the provisioners\nthose features offer.",
         "properties": {
           "berth": {
             "type": "string"
+          },
+          "offers": {
+            "items": {
+              "$ref": "#/components/schemas/Offer"
+            },
+            "type": "array"
           },
           "plugins": {
             "items": {
@@ -402,6 +408,7 @@
         "enum": [
           "ssh",
           "managed",
+          "node",
           "workstation"
         ],
         "type": "string"
@@ -642,6 +649,64 @@
         },
         "required": [
           "name"
+        ],
+        "type": "object"
+      },
+      "Offer": {
+        "description": "Provisioners a feature of a host offers, as its tasks found them: berth\nregisters each under a name of its own that names the host. The host\nserves this to anyone who may read it, so it holds public values only,\nsuch as a server's certificate, never a key.",
+        "properties": {
+          "aliases": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "Other values of a setting that reach the same server, such as the\nname a berth server on the host gives it: a provisioner registered by\nhand with one of them is the host's.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "feature": {
+            "description": "The feature, as `PLUGIN/FEATURE`.",
+            "type": "string"
+          },
+          "fingerprint": {
+            "description": "What the host says identifies the server, such as the fingerprint of\nits certificate, for the person who reads the report.",
+            "type": "string"
+          },
+          "provisioners": {
+            "description": "The plugin's provisioners it offers, by their ids in the plugin.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "secrets": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Values of the provisioners' secrets, such as the certificate of the\nserver to pin, kept as the provisioners' own.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "settings": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Values of the provisioners' own arguments. `{address}`, `{user}` and\n`{port}` stand for where berth reaches the host and as whom.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "feature",
+          "provisioners"
         ],
         "type": "object"
       },

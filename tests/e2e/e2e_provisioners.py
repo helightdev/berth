@@ -1,19 +1,24 @@
 """Provisioners as subjects of their own, with the real berth: a made-up
 provisioner of a plugin in the workstation's own plugin folder, its page, its
 settings and its actions, and a deployment it makes as a resource, from the
-command line and through berth serve. It needs no test host, and runs on
-`dock` beside the modules there.
+command line and through berth serve, with the endpoints it reports and the
+commands it runs. It needs no test host, and runs on `dock` beside the
+modules there.
 
 With BERTH_E2E_DOCKER_HOST set to a Docker engine the runner may use, such as
-tcp://docker:2375, the Docker plugin's own actions are asked of it too, and a
-small Compose deployment is made, changed and removed there. Without one those
-cases are skipped."""
+tcp://docker:2375, the Docker plugin's own actions are asked of it too, a
+small Compose deployment is made, changed and removed there, and an instance
+with a published port is reached through its endpoint and runs a command.
+Without one those cases are skipped."""
 import json
 import os
+import socket
 import stat
+import struct
+import threading
 import unittest
 
-from harness import Serve, Workstation, needs_e2e
+from harness import Serve, WebSocket, Workstation, needs_e2e
 
 # A provisioner that answers from what it is asked: it writes each request,
 # secrets left out, to requests.jsonl of its folder.
@@ -40,7 +45,16 @@ elif verb in ('create', 'change') and request.get('kind') == 'deployment':
     print(f'deploying {request["name"]} with {request.get("environment", {}).get("TOKEN")}', file=sys.stderr)
     with open(f'spec.{request["name"]}', 'w') as spec:
         spec.write(request['spec'])
-    print(json.dumps({'id': f'project-{request["name"]}', 'state': 'running'}))
+    answer = {'id': f'project-{request["name"]}', 'state': 'running'}
+    # A spec that names a port of this machine is reached there.
+    for line in request['spec'].splitlines():
+        if line.startswith('listen: '):
+            answer['endpoints'] = [{'name': 'bench', 'address': '127.0.0.1', 'port': int(line[8:]),
+                                    'hint': 'echo', 'local': True}]
+    print(json.dumps(answer))
+elif verb == 'exec':
+    print(f'ran {" ".join(request["command"])} reading {request.get("stdin", "nothing")!r}', file=sys.stderr)
+    print(json.dumps({'exit_code': 4}))
 elif verb == 'destroy':
     print(json.dumps({'state': 'gone'}))
 elif verb == 'logs':
@@ -67,7 +81,7 @@ MANIFEST = {
         'id': 'box', 'label': 'Lab box', 'command': 'bin/provision', 'protocol': 2, 'verbs': ['list'],
         'arguments': [{'name': 'place', 'label': 'Place', 'required': True}],
         'kinds': [{'id': 'machine', 'setup': 'apply'},
-                  {'id': 'deployment', 'label': 'Bench setup', 'verbs': ['change', 'logs'],
+                  {'id': 'deployment', 'label': 'Bench setup', 'verbs': ['change', 'logs', 'exec'],
                    'spec': {'format': 'text', 'label': 'Setup'},
                    'actions': [{'name': 'services', 'label': 'Services', 'changes': False}]}],
         'actions': [
@@ -266,10 +280,120 @@ class Deployments(unittest.TestCase):
         self.assertNotIn('Lab box', self.berth('provisioner', 'list').stdout)
 
 
+def echo():
+    """A listener on the loopback that sends back what it gets and ends its side after the
+    caller has ended theirs: its port."""
+    listener = socket.create_server(('127.0.0.1', 0))
+
+    def serve():
+        while True:
+            connection, _ = listener.accept()
+            with connection:
+                while data := connection.recv(65536):
+                    connection.sendall(data)
+                connection.shutdown(socket.SHUT_WR)
+
+    threading.Thread(target=serve, daemon=True).start()
+    return listener.getsockname()[1]
+
+
+def through_endpoint(serve, rid, endpoint, data):
+    """Send `data` to an endpoint of a resource on its own stream, end, and read what comes back
+    until the other side has ended too."""
+    ws = WebSocket(serve.port, f'/v1/resources/{rid}/endpoints/{endpoint}', protocols=[serve.token])
+    try:
+        ws.send(data)
+        ws.send({'eof': True})
+        back = b''
+        while True:
+            frame = ws.recv()
+            if frame is None or frame == {'eof': True}:
+                return back
+            back += frame
+    finally:
+        ws.close()
+
+
+def through_portal(portal, rid, endpoint, data):
+    """The same over the portal, as a stream of its own number."""
+    opened = portal.result('resources.connect', {'id': rid, 'endpoint': endpoint})
+    assert opened.get('open'), opened
+    number = portal.next - 1
+    tag = struct.pack('!I', number)
+    portal.send(tag + data)
+    portal.send({'sub': number, 'data': {'eof': True}})
+    back = b''
+    while True:
+        frame = portal._take(lambda got: (got[:4] == tag) if isinstance(got, bytes) else got.get('sub') == number,
+                             60)
+        if isinstance(frame, bytes):
+            back += frame[4:]
+        elif frame.get('data') == {'eof': True} or frame.get('end'):
+            portal.send({'sub': number, 'end': True})
+            return back
+
+
+def job_output(portal, job):
+    """A job's output and the exit code it ended with."""
+    texts, data, _ = portal.stream('jobs.follow', {'id': job['id']},
+                                   until=lambda texts, data: any('exited' in t for t in texts if t))
+    exited = next(t['exited'] for t in texts if t and 'exited' in t)
+    return data.decode(errors='replace'), exited['exit_code']
+
+
+@needs_e2e
+class Endpoints(unittest.TestCase):
+    """A deployment of the lab provisioner that says where it listens, reached through berth
+    serve, and a command run in it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.station = Workstation('endpoints', ssh_key=False, trust=False)
+        cls.folder = lab(cls.station)
+        cls.station.berth('provisioner', 'box', 'run', 'settings', 'place=attic', '--yes')
+        cls.serve = Serve(cls.station)
+        cls.portal = cls.serve.portal()
+        cls.port = echo()
+        body = {'provisioner': 'box', 'kind': 'deployment', 'name': 'db', 'spec': f'listen: {cls.port}\n'}
+        created = cls.serve.call('POST', '/v1/resources', body, expect=202)
+        cls.rid = created['resource']['id']
+        _, code = job_output(cls.portal, created['job'])
+        assert code == 0, code
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.portal.close()
+        cls.serve.stop()
+
+    def test_its_endpoints_are_kept_with_it(self):
+        seen = self.serve.call('GET', f'/v1/resources/{self.rid}')
+        self.assertEqual(seen['endpoints'], [{'name': 'bench', 'address': '127.0.0.1', 'port': self.port,
+                                              'protocol': 'tcp', 'hint': 'echo', 'local': True}])
+
+    def test_an_endpoint_is_reached_on_its_own_stream_and_over_the_portal(self):
+        data = os.urandom(1 << 20)
+        self.assertEqual(through_endpoint(self.serve, self.rid, 'bench', b'hello'), b'hello')
+        self.assertEqual(through_endpoint(self.serve, self.rid, str(self.port), data), data)
+        self.assertEqual(through_portal(self.portal, self.rid, 'bench', data), data)
+        # Only what the provisioner reported is opened.
+        with self.assertRaisesRegex(PermissionError, '^404 '):
+            WebSocket(self.serve.port, f'/v1/resources/{self.rid}/endpoints/22', protocols=[self.serve.token])
+        refused = self.portal.call('resources.connect', {'id': self.rid, 'endpoint': '22'})
+        self.assertEqual(refused['error']['code'], 'not_found')
+
+    def test_a_command_runs_in_it_as_a_job_that_ends_as_the_command_did(self):
+        acted = self.serve.call('POST', f'/v1/resources/{self.rid}/actions/exec',
+                                {'arguments': {'command': 'count --all', 'stdin': 'benches'}}, expect=202)
+        output, code = job_output(self.portal, acted['job'])
+        self.assertEqual(code, 4, output)
+        self.assertIn("ran count --all reading 'benches'", output)
+        self.assertIn('✗ count exited with 4', output)
+
+
 @needs_e2e
 @unittest.skipUnless(os.environ.get('BERTH_E2E_DOCKER_HOST'), 'no Docker engine on the test network')
 class DockerEngine(unittest.TestCase):
-    """The Docker plugin's actions that only read, against the engine of the test network."""
+    """The Docker plugin against the engine of the test network."""
 
     def test_the_engine_answers_and_lists_its_runtimes(self):
         station = Workstation('provisioners-docker', ssh_key=False, trust=False)
@@ -301,6 +425,42 @@ class DockerEngine(unittest.TestCase):
         finally:
             removed = station.berth('resource', 'remove', name, '-y', timeout=300)
         self.assertIn(f'Removed the deployment {name}', removed.stdout)
+
+    def test_an_instance_is_reached_at_its_published_port_and_runs_a_command(self):
+        station = Workstation('provisioners-instance', ssh_key=False, trust=False)
+        endpoint = os.environ['BERTH_E2E_DOCKER_HOST']
+        station.berth('provisioner', 'add', 'docker', 'docker/container', f'host={endpoint}')
+        serve = Serve(station)
+        portal = serve.portal()
+        command = "sh -c 'mkdir -p /www && echo hello-from-box > /www/index.html && httpd -f -p 8080 -h /www'"
+        body = {'provisioner': 'docker', 'kind': 'instance', 'name': 'berth-test-web',
+                'arguments': {'image': 'busybox:1.37', 'command': command, 'ports': '8080'}}
+        created = serve.call('POST', '/v1/resources', body, expect=202)
+        rid = created['resource']['id']
+        try:
+            output, code = job_output(portal, created['job'])
+            self.assertEqual(code, 0, output)
+            # The engine is elsewhere, so the port Docker chose is at the engine's own name.
+            [published] = serve.call('GET', f'/v1/resources/{rid}')['endpoints']
+            host = endpoint.split('://', 1)[1].rsplit(':', 1)[0]
+            self.assertEqual((published['address'], published['protocol']), (host, 'tcp'))
+            self.assertNotIn('local', published)
+            answer = through_endpoint(serve, rid, published['name'], b'GET / HTTP/1.0\r\n\r\n')
+            self.assertIn(b'200 OK', answer)
+            self.assertIn(b'hello-from-box', answer)
+            answer = through_portal(portal, rid, str(published['port']), b'GET / HTTP/1.0\r\n\r\n')
+            self.assertIn(b'hello-from-box', answer)
+            acted = serve.call('POST', f'/v1/resources/{rid}/actions/exec',
+                               {'arguments': {'command': '["sh", "-c", "cat /www/index.html; exit 5"]'}},
+                               expect=202)
+            output, code = job_output(portal, acted['job'])
+            self.assertEqual(code, 5, output)
+            self.assertIn('hello-from-box', output)
+        finally:
+            removed = serve.call('DELETE', f'/v1/resources/{rid}', expect=202)
+            job_output(portal, removed['job'])
+            portal.close()
+            serve.stop()
 
 
 if __name__ == '__main__':

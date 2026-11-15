@@ -14,6 +14,8 @@ Each host has at most one machine made this way.
 
 ## Register a provisioner
 
+A [node](/docs/use/nodes) registers the provisioners of its engines by itself when it is applied, such as `big-incus-vm`. Register one by hand for an engine that is not a node's.
+
 See the types the plugins bring:
 
 ```bash
@@ -192,7 +194,7 @@ The first boot of a seeded machine installs everything and can take most of the 
   │ Ansible task 87: Install the desktop
 … studio-2: still waiting, 12 minutes so far
   │ Ansible task 214: Configure the browser
-  │ first boot: configured-needs-enrollment
+  │ first boot: configured
 ✓ studio-2: berthd answers
 ```
 

@@ -428,8 +428,8 @@ class Operator(unittest.TestCase):
         self.assertEqual(check['loop'], '{{ devbox_berth_ssh_public_key.splitlines() }}')
         self.assertNotIn('failed_when', check)
         # Both come before any change to the SSH server.
-        main = (ROLE / 'tasks/main.yml').read_text()
-        self.assertLess(main.index('accounts.yml'), main.index('host.yml'))
+        workstation = (ROLE / 'tasks/workstation.yml').read_text()
+        self.assertLess(workstation.index('accounts.yml'), workstation.index('host.yml'))
 
 
 if __name__ == '__main__':

@@ -56,9 +56,9 @@ HOSTS = {
         'e2e_tailnet.AutomaticKey',
         'e2e_update.Update',
         'e2e_update.ShippedChanged',
-        # plain(): without them, with a pasted key.
+        # plain(): without them, joined by hand by an older berth.
         'e2e_plugins.PluginRemoved',
-        'e2e_tailnet.PastedKey',
+        'e2e_tailnet.JoinedByHand',
         # served(): berth serve, applying nothing.
         'e2e_serve.Routes',
         'e2e_serve.Portal',
@@ -78,7 +78,8 @@ HOSTS = {
     # The bare host first: the ways berth logs in, and berth's controller
     # alone, which leave it as they found it. Then a host that only ever
     # takes berth's own key. The provisioners' tests need no host at all.
-    'dock': ['e2e_access', 'e2e_controller.Controller', 'e2e_own_key', 'e2e_provisioners'],
+    # Last, a node, which stays one.
+    'dock': ['e2e_access', 'e2e_controller.Controller', 'e2e_own_key', 'e2e_provisioners', 'e2e_node'],
 }
 
 

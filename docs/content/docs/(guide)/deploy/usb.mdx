@@ -34,9 +34,9 @@ It opens on **Install**. Choose **USB installer** under **How To Install**, and 
 
 ### Optionally, join the tailnet
 
-The Tailscale settings are on **Install** too. Give a short-lived, one-use Tailscale key in **Tailscale enrollment key**. Or switch on **Automatic enrollment key**: with the control server's API key in the secret `tailnet_api_key`, berth creates a one-use key valid for 24 hours each time it builds the installer. F4 on the key field does the same for a key to paste. Tailnets that require tags take them from `berth config set tailnet_tags tag:devbox`. For a Headscale server, see [Headscale](/docs/use/access#headscale).
+**Tailscale** is on **Install** too. With it on, berth makes a one-use key through the control server's API each time it builds the installer, from the secret `tailnet_api_key` ([joining the tailnet](/docs/use/access#joining-the-tailnet)). Tailnets that require tags take them from `berth config set tailnet_tags tag:devbox`. For a Headscale server, see [Headscale](/docs/use/access#headscale).
 
-Reusable keys and existing machine identities do not belong in installer images.
+The key lasts 24 hours. When berth builds the image, it says until when the image can join the tailnet. A machine installed later is set up without the tailnet, and the next apply from berth joins it.
 
 </Step>
 <Step>
@@ -103,10 +103,10 @@ cat /var/lib/devbox/provision-state
 sudo systemctl start devbox-provision.service     # start it again after a failure
 ```
 
-`configured-needs-enrollment` means the role finished but nobody has signed in yet. The `ready` marker means Ansible converged, not that every acceptance test passed. If a dependency fails, the state is `failed` and a timer retries. The success marker is only written after a successful run.
+`configured` means the role finished. The `ready` marker means Ansible converged, not that every acceptance test passed. If a dependency fails, the state is `failed` and a timer retries. The success marker is only written after a successful run.
 
 <Callout type="warn" title="Without a tailnet or recovery CIDR">
-  The installed machine accepts SSH only from the tailnet, unless you set a Tailscale key or a **Recovery SSH CIDR**. Set one of them, or be ready to use the console.
+  The installed machine accepts SSH only from the tailnet, unless you set a **Recovery SSH CIDR**. Keep **Tailscale** on with the secret `tailnet_api_key` set, set the CIDR, or be ready to use the console.
 </Callout>
 
 ## Disk selection
@@ -137,7 +137,7 @@ A serial comes from `udevadm info --query=property --name=/dev/nvme0n1`. The dis
 
 The ISO keeps the source image's boot configuration through `xorriso` replay and patches GRUB to install automatically. It embeds the seed and the release archive. The bootstrap checks the archive against the digest in the seed.
 
-The USB drive and its seed can still hold credentials after the installed copies have been used. One-use enrollment keys limit how long they are useful. Secure Boot with the remastered image has not been qualified.
+The USB drive and its seed can still hold credentials after the installed copies have been used. The enrollment key berth puts in it works once and for 24 hours. Secure Boot with the remastered image has not been qualified.
 
 ## Without berth
 

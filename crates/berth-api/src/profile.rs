@@ -60,6 +60,15 @@ pub fn operator(config: &Value) -> &str {
 /// keep what they say. Says whether it changed the profile.
 pub fn settle_after_apply(config: &mut Value) -> bool {
     let mut access = Access::of(config);
+    // A node's role gave the SSH user berth's key and left sudo as it was.
+    if host_type(config) == crate::HostType::Node {
+        if access.link.is_some() || access.user.is_empty() || access.auth != Auth::Password {
+            return false;
+        }
+        access.auth = Auth::Berth;
+        access.write(config);
+        return true;
+    }
     if config["target"] == "container"
         || host_type(config) != crate::HostType::Workstation
         || access.link.is_some()
@@ -316,7 +325,54 @@ pub fn set_host_type(config: &mut Value, host_type: crate::HostType) {
                 profile.remove("type");
             }
         }
+        // A node has none of a workstation's accounts, so what described them goes.
+        crate::HostType::Node => {
+            if let Some(profile) = config.as_object_mut() {
+                for field in ACCOUNT_FIELDS {
+                    profile.remove(*field);
+                }
+                profile.insert("type".into(), json!("node"));
+            }
+            if config["target"] == "laptop" {
+                config["target"] = json!("cloud");
+            }
+        }
         other => config["type"] = json!(other.name()),
+    }
+}
+
+/// The fields of a profile that describe a workstation's agent and operator
+/// accounts. A node has neither: sessions run as the SSH user.
+pub const ACCOUNT_FIELDS: &[&str] = &[
+    "agent_username",
+    "agent_password_hash",
+    "agent_passwordless_sudo",
+    "agent_privileges",
+    "agent_ssh_public_keys",
+    "agent_ssh_public_key",
+    "operator_username",
+    "operator_password_hash",
+    "operator_ssh_public_keys",
+    "operator_ssh_public_key",
+];
+
+/// Whether a field of a profile says something: not absent, empty or false.
+fn said(value: &Value) -> bool {
+    match value {
+        Value::Null | Value::Bool(false) => false,
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(fields) => !fields.is_empty(),
+        _ => true,
+    }
+}
+
+/// What a target is installed on, as a node's role takes it: a server
+/// unless the profile says a container.
+pub fn node_target(config: &Value) -> &str {
+    match config["target"].as_str() {
+        Some("container") => "container",
+        _ => "cloud",
     }
 }
 
@@ -333,12 +389,14 @@ pub fn minimal(host_type: crate::HostType, access: &Access) -> Value {
 /// `level` (`reachable`, `controller`, `workstation`) becomes `type`
 /// (`ssh`, `managed`, a workstation left unsaid), and `profile`, what the
 /// host is installed on, becomes `target`. What a later berth wrote stays.
-/// Says whether it changed the profile.
+/// The ways of joining the tailnet berth has no more go too
+/// ([`take_old_tailnet`]), so a pasted key is never read again. Says whether
+/// it changed the profile.
 pub fn take_old_names(config: &mut Value) -> bool {
+    let mut changed = take_old_tailnet(config).is_some();
     let Some(profile) = config.as_object_mut() else {
         return false;
     };
-    let mut changed = false;
     if let Some(level) = profile.remove("level") {
         changed = true;
         if !profile.contains_key("type") {
@@ -395,6 +453,25 @@ pub fn problems(config: &Value) -> Vec<String> {
             "A host of the type {host_type} needs access.address, where berth reaches it"
         )),
         _ => {}
+    }
+    if host_type == crate::HostType::Node {
+        let described: Vec<&str> = ACCOUNT_FIELDS
+            .iter()
+            .copied()
+            .filter(|field| said(&config[*field]))
+            .collect();
+        if !described.is_empty() {
+            problems.push(format!(
+                "A node has no agent or operator accounts, so {} {} for a workstation: sessions on a node run as the SSH user. Remove {}, or make the host a workstation",
+                described.join(", "),
+                if described.len() == 1 { "is" } else { "are" },
+                if described.len() == 1 { "it" } else { "them" }
+            ));
+        }
+        if config["target"] == "laptop" {
+            problems
+                .push("A node is a server: its target is cloud or container, not laptop".into());
+        }
     }
     problems
 }
@@ -488,22 +565,57 @@ pub fn take_builder_access(config: &mut Value) -> Option<OldAccess> {
 /// uses it itself, to create enrollment keys, and never gives it to a host.
 pub const TAILNET_API_KEY: &str = "tailnet_api_key";
 
-/// Whether the host gets Tailscale, which it does unless the profile says not.
-pub fn installs_tailscale(config: &Value) -> bool {
+/// Whether the host gets Tailscale and joins the tailnet, with a key berth
+/// makes, which it does unless the profile says not.
+pub fn joins_tailnet(config: &Value) -> bool {
     config["ansible_vars"]["devbox_install_tailscale"]
         .as_bool()
         .unwrap_or(true)
 }
 
-/// Whether berth creates the host's enrollment key itself when one is needed:
-/// switched on, and no key pasted into the profile.
-pub fn joins_automatically(config: &Value) -> bool {
-    installs_tailscale(config)
-        && config["tailscale_auto_key"].as_bool().unwrap_or(false)
-        && config["tailscale_auth_key"]
-            .as_str()
-            .unwrap_or("")
-            .is_empty()
+/// What a profile of an older berth said of joining the tailnet in ways
+/// berth has no more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OldTailnet {
+    /// It held an enrollment key pasted into it.
+    pub pasted: bool,
+    /// It was to be joined by hand: berth was not to make its key.
+    pub by_hand: bool,
+}
+
+/// Take out of a profile what older berths kept of joining the tailnet: a
+/// pasted enrollment key (`tailscale_auth_key`, also as the role's variable),
+/// the switch for keys berth makes (`tailscale_auto_key`), which is always on
+/// now, and a login server of the host's own (`tailscale_login_server`), as
+/// berth makes keys only at the one of its settings. Says what there was, or
+/// `None` when there was nothing.
+pub fn take_old_tailnet(config: &mut Value) -> Option<OldTailnet> {
+    let joins = joins_tailnet(config);
+    let profile = config.as_object_mut()?;
+    let filled = |value: &Option<Value>| {
+        value
+            .as_ref()
+            .and_then(Value::as_str)
+            .is_some_and(|key| !key.is_empty())
+    };
+    let key = profile.remove("tailscale_auth_key");
+    let switch = profile.remove("tailscale_auto_key");
+    let server = profile.remove("tailscale_login_server");
+    let variable = profile
+        .get_mut("ansible_vars")
+        .and_then(Value::as_object_mut)
+        .and_then(|vars| vars.remove("devbox_tailscale_auth_key"));
+    if key.is_none() && switch.is_none() && server.is_none() && variable.is_none() {
+        return None;
+    }
+    let pasted = filled(&key) || filled(&variable);
+    // Older profiles stored the switch as a string too.
+    let automatic = matches!(&switch, Some(Value::Bool(true)))
+        || matches!(&switch, Some(Value::String(text)) if text == "true");
+    Some(OldTailnet {
+        pasted,
+        by_hand: joins && !automatic,
+    })
 }
 
 /// Where a QEMU guest on the user-mode network sees the machine it runs on.
@@ -552,16 +664,70 @@ mod tests {
     }
 
     #[test]
-    fn a_pasted_key_wins_over_the_automatic_one() {
-        assert!(!joins_automatically(&json!({})));
-        assert!(joins_automatically(&json!({"tailscale_auto_key": true})));
-        assert!(!joins_automatically(
-            &json!({"tailscale_auto_key": true, "tailscale_auth_key": "tskey-1"})
+    fn a_host_joins_the_tailnet_unless_its_profile_says_not() {
+        assert!(joins_tailnet(&json!({})));
+        assert!(!joins_tailnet(
+            &json!({"ansible_vars": {"devbox_install_tailscale": false}})
         ));
-        assert!(!joins_automatically(&json!({
-            "tailscale_auto_key": true,
-            "ansible_vars": {"devbox_install_tailscale": false},
-        })));
+    }
+
+    #[test]
+    fn a_pasted_key_and_the_switch_of_older_profiles_are_dropped_on_reading() {
+        let mut pasted = json!({
+            "hostname": "studio",
+            "tailscale_auth_key": "tskey-auth-kFAKE-0000",
+            "tailscale_auto_key": false,
+            "tailscale_login_server": "https://hs.example.org",
+            "ansible_vars": {"devbox_geometry": "1x1", "devbox_tailscale_auth_key": "tskey-auth-kFAKE-1111"},
+        });
+        assert!(take_old_names(&mut pasted));
+        assert_eq!(
+            pasted,
+            json!({"hostname": "studio", "ansible_vars": {"devbox_geometry": "1x1"}})
+        );
+        assert!(!take_old_names(&mut pasted));
+        let said = |mut config: Value| take_old_tailnet(&mut config);
+        assert_eq!(
+            said(json!({"tailscale_auth_key": "tskey-auth-kFAKE-0000"})),
+            Some(OldTailnet {
+                pasted: true,
+                by_hand: true
+            })
+        );
+        // A host that was to be joined by hand joins with berth's key from now on.
+        assert_eq!(
+            said(json!({"tailscale_auto_key": false, "tailscale_auth_key": ""})),
+            Some(OldTailnet {
+                pasted: false,
+                by_hand: true
+            })
+        );
+        assert_eq!(
+            said(json!({"tailscale_auto_key": "true"})),
+            Some(OldTailnet {
+                pasted: false,
+                by_hand: false
+            })
+        );
+        // Without Tailscale nobody was joining it by hand.
+        assert_eq!(
+            said(
+                json!({"tailscale_auto_key": false, "ansible_vars": {"devbox_install_tailscale": false}})
+            ),
+            Some(OldTailnet {
+                pasted: false,
+                by_hand: false
+            })
+        );
+        assert_eq!(
+            said(json!({"tailscale_login_server": "https://hs.example.org"})),
+            Some(OldTailnet {
+                pasted: false,
+                by_hand: true
+            })
+        );
+        assert_eq!(said(json!({"hostname": "studio"})), None);
+        assert_eq!(said(json!([])), None);
     }
 
     #[test]
@@ -697,7 +863,7 @@ mod tests {
         assert_eq!(host_type(&json!({"type": "server"})), HostType::Workstation);
         assert_eq!(
             problems(&json!({"type": "server"})),
-            ["type is ssh, managed or workstation, not \"server\""]
+            ["type is ssh, managed, node or workstation, not \"server\""]
         );
         let access = Access {
             address: "192.0.2.10".into(),
@@ -719,6 +885,55 @@ mod tests {
         let mut changed = ssh.clone();
         set_host_type(&mut changed, HostType::Workstation);
         assert!(changed.get("type").is_none());
+    }
+
+    #[test]
+    fn a_node_has_no_accounts_of_a_workstation() {
+        use crate::HostType;
+        let node = json!({"type": "node", "target": "cloud",
+            "access": {"address": "192.0.2.20", "user": "root"},
+            "ansible_vars": {"devbox_plugin_features": ["incus/server"]}});
+        assert_eq!(host_type(&node), HostType::Node);
+        assert!(problems(&node).is_empty(), "{:?}", problems(&node));
+        // Empty fields, as a profile from the example has them, say nothing.
+        let mut quiet = node.clone();
+        quiet["agent_password_hash"] = json!("");
+        quiet["operator_ssh_public_keys"] = json!([]);
+        assert!(problems(&quiet).is_empty());
+        let mut desktop = node.clone();
+        desktop["agent_username"] = json!("agent");
+        desktop["operator_ssh_public_keys"] = json!(["ssh-ed25519 KEY"]);
+        desktop["target"] = json!("laptop");
+        let found = problems(&desktop);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found[0].starts_with(
+            "A node has no agent or operator accounts, so agent_username, operator_ssh_public_keys are for a workstation"
+        ));
+        assert!(found[1].contains("not laptop"));
+        // Making a workstation a node takes its accounts out of the profile.
+        let mut workstation = desktop.clone();
+        set_host_type(&mut workstation, HostType::Workstation);
+        set_host_type(&mut workstation, HostType::Node);
+        assert!(
+            problems(&workstation).is_empty(),
+            "{:?}",
+            problems(&workstation)
+        );
+        assert_eq!(workstation["ansible_vars"], node["ansible_vars"]);
+        assert_eq!(node_target(&workstation), "cloud");
+        assert_eq!(node_target(&json!({"target": "container"})), "container");
+    }
+
+    #[test]
+    fn a_node_applied_with_a_password_is_logged_in_to_with_berths_key_after() {
+        let mut node = json!({"type": "node",
+            "access": {"address": "192.0.2.20", "user": "root", "auth": "password"}});
+        assert!(settle_after_apply(&mut node));
+        assert_eq!(Access::of(&node).auth, Auth::Berth);
+        assert!(!settle_after_apply(&mut node));
+        let mut keyed = json!({"type": "node",
+            "access": {"address": "192.0.2.20", "user": "root", "auth": "ssh", "sudo": "password"}});
+        assert!(!settle_after_apply(&mut keyed));
     }
 
     #[test]

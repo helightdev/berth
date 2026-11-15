@@ -34,7 +34,16 @@ A *call* takes arguments and input and gives back a result. After it opens, a *s
 | `api` | Added |
 | --- | --- |
 | 1 | The API as first released |
-| 2 | `ports.connect` with windows on the portal's streams, roles from the keys of an object claim, the `dropped` frame of `events.follow`, `inbox.follow` and `kv.follow`, and host and resource changes on `events.follow`. It also renames, and breaks what a client of number 1 calls: see below |
+| 2 | What the list below names. It also renames, and breaks what a client of number 1 calls: see below |
+
+What number 2 adds:
+
+- `ports.connect`, with windows on the portal's streams
+- Roles from the keys of an object claim
+- The `dropped` frame of `events.follow`, `inbox.follow` and `kv.follow`
+- Host and resource changes on `events.follow`
+- The endpoints of a resource, and `resources.connect` to them
+- The `exec` action of a resource
 
 What number 2 renames, with no old name kept:
 
@@ -70,6 +79,8 @@ Over HTTP an error is a status code with a JSON body; on the portal the same obj
 ```json
 { "error": { "code": "not_found", "message": "No session k3v9qz2m8w1x", "status": 404 } }
 ```
+
+Over HTTP the header `berth-error` repeats the code. A WebSocket client that is refused during the handshake often sees only the head of the answer, so it reads the code there.
 
 | Status | Code | Means |
 | --- | --- | --- |

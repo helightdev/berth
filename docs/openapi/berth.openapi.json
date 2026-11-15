@@ -182,10 +182,16 @@
         "type": "object"
       },
       "Applied": {
-        "description": "What berth recorded on a host when it applied the configuration: its own\nversion and the plugins whose features the host has.",
+        "description": "What berth recorded on a host when it applied the configuration: its own\nversion, the plugins whose features the host has, and the provisioners\nthose features offer.",
         "properties": {
           "berth": {
             "type": "string"
+          },
+          "offers": {
+            "items": {
+              "$ref": "#/components/schemas/Offer"
+            },
+            "type": "array"
           },
           "plugins": {
             "items": {
@@ -496,6 +502,43 @@
         ],
         "type": "object"
       },
+      "Endpoint": {
+        "description": "Where a resource can be reached: an address and a port, as its\nprovisioner reports it. The address is as seen from the machine the\nprovisioner's engine runs on, such as a Docker engine or an Incus server.",
+        "properties": {
+          "address": {
+            "description": "An IP address or a DNS name.",
+            "type": "string"
+          },
+          "hint": {
+            "description": "What speaks there, for people, such as `http` or `postgres`.",
+            "type": "string"
+          },
+          "local": {
+            "description": "The engine runs on the server's own machine, so the address is one\nthe server reaches as it is, a loopback address among them.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Unique among the resource's endpoints: lowercase letters, digits, `-`, `_` and `.`.",
+            "type": "string"
+          },
+          "port": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "protocol": {
+            "description": "`tcp` or `udp`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "address",
+          "port",
+          "protocol"
+        ],
+        "type": "object"
+      },
       "ErrorBody": {
         "properties": {
           "error": {
@@ -658,7 +701,7 @@
             ]
           },
           "what": {
-            "description": "`hostname`, `password` or `tailscale_key`.",
+            "description": "`hostname` or `password`.",
             "type": "string"
           }
         },
@@ -681,7 +724,7 @@
             ]
           },
           "value": {
-            "description": "The host name, the password's hash, or the key.",
+            "description": "The host name or the password's hash.",
             "type": "string"
           }
         },
@@ -884,6 +927,7 @@
         "enum": [
           "ssh",
           "managed",
+          "node",
           "workstation"
         ],
         "type": "string"
@@ -1427,6 +1471,64 @@
         ],
         "type": "object"
       },
+      "Offer": {
+        "description": "Provisioners a feature of a host offers, as its tasks found them: berth\nregisters each under a name of its own that names the host. The host\nserves this to anyone who may read it, so it holds public values only,\nsuch as a server's certificate, never a key.",
+        "properties": {
+          "aliases": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "Other values of a setting that reach the same server, such as the\nname a berth server on the host gives it: a provisioner registered by\nhand with one of them is the host's.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "feature": {
+            "description": "The feature, as `PLUGIN/FEATURE`.",
+            "type": "string"
+          },
+          "fingerprint": {
+            "description": "What the host says identifies the server, such as the fingerprint of\nits certificate, for the person who reads the report.",
+            "type": "string"
+          },
+          "provisioners": {
+            "description": "The plugin's provisioners it offers, by their ids in the plugin.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "secrets": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Values of the provisioners' secrets, such as the certificate of the\nserver to pin, kept as the provisioners' own.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "settings": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Values of the provisioners' own arguments. `{address}`, `{user}` and\n`{port}` stand for where berth reaches the host and as whom.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "feature",
+          "provisioners"
+        ],
+        "type": "object"
+      },
       "Output": {
         "properties": {
           "data_b64": {
@@ -1842,6 +1944,10 @@
             },
             "type": "array"
           },
+          "node": {
+            "description": "The node it lives on, when a feature of that host offered it.",
+            "type": "string"
+          },
           "own": {
             "description": "The names of the provisioner's own arguments, which say where it is,\nsuch as an Incus server. Their values are kept as its settings.",
             "items": {
@@ -2105,6 +2211,13 @@
             "description": "When it was asked for, RFC 3339.",
             "type": "string"
           },
+          "endpoints": {
+            "description": "Where it can be reached, as its provisioner last said: when it was\nmade, changed or checked.",
+            "items": {
+              "$ref": "#/components/schemas/Endpoint"
+            },
+            "type": "array"
+          },
           "external_id": {
             "description": "The provisioner's id of it; empty until `create` said it.",
             "type": "string"
@@ -2152,7 +2265,7 @@
             "type": "string"
           },
           "verbs": {
-            "description": "What can be done to it besides being removed: `start`, `stop`,\n`change`, `logs`, as its kind declares.",
+            "description": "What can be done to it besides being removed: `start`, `stop`,\n`change`, `logs`, `exec`, as its kind declares.",
             "items": {
               "type": "string"
             },
@@ -7546,6 +7659,21 @@
         ]
       }
     },
+    "/v1/resources/{id}/endpoints/{endpoint}": {
+      "get": {
+        "operationId": "stream_resource-connect",
+        "parameters": [],
+        "responses": {
+          "101": {
+            "description": "A WebSocket; its frames are in the AsyncAPI document"
+          }
+        },
+        "summary": "A TCP connection to an endpoint its provisioner reported for a resource, named by the endpoint's name or its port. The server dials it first, so one that nothing answers on, or an address berth refuses, is an error and not a stream.",
+        "tags": [
+          "streams"
+        ]
+      }
+    },
     "/v1/resources/{id}/logs": {
       "get": {
         "operationId": "logs",
@@ -7959,7 +8087,7 @@
             "description": "It could not be made; the message says why"
           }
         },
-        "summary": "Make up a host name, hash or make up a password, or create a one-use enrollment key at the tailnet's control server.",
+        "summary": "Make up a host name, or hash or make up a password.",
         "tags": [
           "set-up"
         ]

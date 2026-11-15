@@ -22,6 +22,15 @@
 - name: Take the feature's description
   ansible.builtin.set_fact:
     devbox_feature: "{{ devbox_plugin_matches[0] }}"
+    # Its tasks set this to the provisioners they found, once they are sure of them.
+    devbox_offer: {}
+# A feature is for a workstation unless its manifest names other types.
+- name: Require the feature to be for this type of host
+  ansible.builtin.assert:
+    that: ('node' if devbox_level == 'node' else 'workstation') in (devbox_feature.types | default(['workstation']))
+    fail_msg: >-
+      {{ devbox_plugin_feature }} is for {{ (devbox_feature.types | default(['workstation'])) | join(' or ') }} hosts,
+      not for a {{ 'node' if devbox_level == 'node' else 'workstation' }}. Take it out of the profile's features.
 - name: Install the feature's packages
   ansible.builtin.apt:
     name: "{{ devbox_feature.packages }}"
@@ -31,6 +40,17 @@
 - name: Run the feature's tasks
   ansible.builtin.include_tasks: "{{ devbox_plugin_dir }}/{{ devbox_feature.tasks }}"
   when: devbox_feature.tasks | default('') | length > 0
+- name: Record the provisioners the feature offers
+  ansible.builtin.set_fact:
+    devbox_plugin_offers: >-
+      {{ devbox_plugin_offers + [{
+           'feature': devbox_plugin_feature,
+           'provisioners': devbox_offer.provisioners | default(devbox_feature.offers) | intersect(devbox_feature.offers),
+           'settings': devbox_offer.settings | default({}),
+           'secrets': devbox_offer.secrets | default({}),
+           'aliases': devbox_offer.aliases | default({}),
+           'fingerprint': devbox_offer.fingerprint | default('')}] }}
+  when: devbox_feature.offers | default([]) | length > 0 and devbox_offer | length > 0
 - name: Install the feature's guide for agents
   ansible.builtin.template:
     src: "{{ devbox_plugin_dir }}/{{ devbox_feature.guide }}"
