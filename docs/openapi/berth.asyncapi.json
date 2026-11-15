@@ -315,6 +315,36 @@
       "x-berth-level": "host",
       "x-berth-resumable": false
     },
+    "resource-connect": {
+      "address": "/v1/resources/{id}/endpoints/{endpoint}",
+      "bindings": {
+        "ws": {
+          "query": {
+            "properties": {},
+            "type": "object"
+          }
+        }
+      },
+      "description": "A TCP connection to an endpoint its provisioner reported for a resource, named by the endpoint's name or its port. The server dials it first, so one that nothing answers on, or an address berth refuses, is an error and not a stream.",
+      "messages": {
+        "resource-connect.bytes": {
+          "$ref": "#/components/messages/resource-connect.bytes"
+        },
+        "resource-connect.eof": {
+          "$ref": "#/components/messages/resource-connect.eof"
+        }
+      },
+      "parameters": {
+        "endpoint": {
+          "description": "endpoint"
+        },
+        "id": {
+          "description": "id"
+        }
+      },
+      "x-berth-level": "host",
+      "x-berth-resumable": false
+    },
     "resource-logs": {
       "address": "/v1/resources/{id}/logs",
       "bindings": {
@@ -865,6 +895,30 @@
         },
         "summary": "A key was written."
       },
+      "resource-connect.bytes": {
+        "contentType": "application/octet-stream",
+        "name": "bytes",
+        "payload": {
+          "format": "binary",
+          "type": "string"
+        },
+        "summary": "Bytes for the endpoint."
+      },
+      "resource-connect.eof": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "eof": true
+            }
+          }
+        ],
+        "name": "eof",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "The client sends no more, and the endpoint reads the end. What it sends still comes back."
+      },
       "resource-logs.exited": {
         "contentType": "application/json",
         "examples": [
@@ -1102,6 +1156,34 @@
         },
         {
           "$ref": "#/channels/kv/messages/kv.dropped"
+        }
+      ]
+    },
+    "resource-connect.receive": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/resource-connect"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/resource-connect/messages/resource-connect.bytes"
+        },
+        {
+          "$ref": "#/channels/resource-connect/messages/resource-connect.eof"
+        }
+      ]
+    },
+    "resource-connect.send": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/resource-connect"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/resource-connect/messages/resource-connect.bytes"
+        },
+        {
+          "$ref": "#/channels/resource-connect/messages/resource-connect.eof"
         }
       ]
     },

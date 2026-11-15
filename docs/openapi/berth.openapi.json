@@ -496,6 +496,43 @@
         ],
         "type": "object"
       },
+      "Endpoint": {
+        "description": "Where a resource can be reached: an address and a port, as its\nprovisioner reports it. The address is as seen from the machine the\nprovisioner's engine runs on, such as a Docker engine or an Incus server.",
+        "properties": {
+          "address": {
+            "description": "An IP address or a DNS name.",
+            "type": "string"
+          },
+          "hint": {
+            "description": "What speaks there, for people, such as `http` or `postgres`.",
+            "type": "string"
+          },
+          "local": {
+            "description": "The engine runs on the server's own machine, so the address is one\nthe server reaches as it is, a loopback address among them.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Unique among the resource's endpoints: lowercase letters, digits, `-`, `_` and `.`.",
+            "type": "string"
+          },
+          "port": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "protocol": {
+            "description": "`tcp` or `udp`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "address",
+          "port",
+          "protocol"
+        ],
+        "type": "object"
+      },
       "ErrorBody": {
         "properties": {
           "error": {
@@ -2105,6 +2142,13 @@
             "description": "When it was asked for, RFC 3339.",
             "type": "string"
           },
+          "endpoints": {
+            "description": "Where it can be reached, as its provisioner last said: when it was\nmade, changed or checked.",
+            "items": {
+              "$ref": "#/components/schemas/Endpoint"
+            },
+            "type": "array"
+          },
           "external_id": {
             "description": "The provisioner's id of it; empty until `create` said it.",
             "type": "string"
@@ -2152,7 +2196,7 @@
             "type": "string"
           },
           "verbs": {
-            "description": "What can be done to it besides being removed: `start`, `stop`,\n`change`, `logs`, as its kind declares.",
+            "description": "What can be done to it besides being removed: `start`, `stop`,\n`change`, `logs`, `exec`, as its kind declares.",
             "items": {
               "type": "string"
             },
@@ -7543,6 +7587,21 @@
         "summary": "Run one of a resource's actions. One that changes something is a job of the resource, which holds its lock; one that only reads answers at once.",
         "tags": [
           "resources"
+        ]
+      }
+    },
+    "/v1/resources/{id}/endpoints/{endpoint}": {
+      "get": {
+        "operationId": "stream_resource-connect",
+        "parameters": [],
+        "responses": {
+          "101": {
+            "description": "A WebSocket; its frames are in the AsyncAPI document"
+          }
+        },
+        "summary": "A TCP connection to an endpoint its provisioner reported for a resource, named by the endpoint's name or its port. The server dials it first, so one that nothing answers on, or an address berth refuses, is an error and not a stream.",
+        "tags": [
+          "streams"
         ]
       }
     },

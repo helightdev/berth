@@ -1,5 +1,6 @@
-//! A TCP connection to a port of a host, as `ports.connect` gives it: read
-//! and written like a socket, over the stream's own WebSocket or the portal.
+//! A TCP connection to a port of a host, as `ports.connect` gives it, or to
+//! an endpoint of a resource, as `resources.connect` does: read and written
+//! like a socket, over the stream's own WebSocket or the portal.
 
 use crate::client::{Frame, Result, WebSocketStream, WsError, websocket};
 use crate::streams::EOF;
@@ -35,6 +36,27 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let stream = websocket(io, &format!("/v1/ports/{port}"), "").await?;
+    Ok(Tunnel::new(stream))
+}
+
+/// Open an endpoint of a resource, by its name or its port, through the
+/// `berth serve` at the other end of `io`. `protocols` carries a bearer for
+/// a server over the network, as the portal's handshake does.
+pub async fn endpoint_tunnel<S>(
+    io: S,
+    id: &str,
+    endpoint: &str,
+    protocols: &str,
+) -> Result<Tunnel<WebSocketStream<S>>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let path = format!(
+        "/v1/resources/{}/endpoints/{}",
+        crate::client::encode(id),
+        crate::client::encode(endpoint)
+    );
+    let stream = websocket(io, &path, protocols).await?;
     Ok(Tunnel::new(stream))
 }
 
