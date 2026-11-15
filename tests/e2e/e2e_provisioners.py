@@ -350,7 +350,7 @@ class Endpoints(unittest.TestCase):
     def setUpClass(cls):
         cls.station = Workstation('endpoints', ssh_key=False, trust=False)
         cls.folder = lab(cls.station)
-        cls.station.berth('provisioner', 'box', 'run', 'settings', 'place=attic', '--yes')
+        cls.station.berth('provisioner', 'set', 'box', 'place=attic')
         cls.serve = Serve(cls.station)
         cls.portal = cls.serve.portal()
         cls.port = echo()
@@ -387,7 +387,45 @@ class Endpoints(unittest.TestCase):
         output, code = job_output(self.portal, acted['job'])
         self.assertEqual(code, 4, output)
         self.assertIn("ran count --all reading 'benches'", output)
-        self.assertIn('✗ count exited with 4', output)
+        # The output is the command's alone.
+        self.assertNotIn('exited with', output)
+
+    def test_the_command_line_shows_its_endpoints(self):
+        page = self.station.berth('resource', 'show', 'db').stdout
+        self.assertIn(f'Endpoints (berth port forward {self.rid} ENDPOINT)', page)
+        self.assertRegex(page, rf'(?m)^  bench  127\.0\.0\.1:{self.port}/tcp  echo · on the server\'s machine$')
+        shown = json.loads(self.station.berth('resource', 'show', 'db', '-o', 'json').stdout)
+        self.assertEqual([endpoint['name'] for endpoint in shown['endpoints']], ['bench'])
+
+    def test_the_command_line_runs_a_command_in_it_with_its_exit_status(self):
+        ran = self.station.berth('resource', 'exec', 'db', '--stdin', '--', 'count', '--all',
+                                 input='benches', check=False)
+        self.assertEqual(ran.returncode, 4, ran.output)
+        self.assertIn("ran count --all reading 'benches'", ran.stdout)
+        self.assertNotIn('exited with', ran.stdout)
+
+    def test_port_forward_reaches_an_endpoint_by_its_name(self):
+        free = socket.create_server(('127.0.0.1', 0))
+        local = free.getsockname()[1]
+        free.close()
+        forward = self.station.spawn('port', 'forward', 'db', f'{local}:bench')
+        try:
+            said = forward.stdout.readline()
+            self.assertIn(f'127.0.0.1:{local} → db:bench', said)
+            with socket.create_connection(('127.0.0.1', local), timeout=10) as connection:
+                connection.sendall(b'hello')
+                connection.shutdown(socket.SHUT_WR)
+                got = b''
+                while data := connection.recv(65536):
+                    got += data
+            self.assertEqual(got, b'hello')
+        finally:
+            forward.terminate()
+            forward.wait(timeout=10)
+        # A name that is no host and no resource says so.
+        refused = self.station.berth('port', 'forward', 'nowhere', '80', check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('There is no host or resource nowhere', refused.stderr)
 
 
 @needs_e2e
@@ -456,6 +494,10 @@ class DockerEngine(unittest.TestCase):
             output, code = job_output(portal, acted['job'])
             self.assertEqual(code, 5, output)
             self.assertIn('hello-from-box', output)
+            # The same from the command line: its output and its exit status are the command's.
+            ran = station.berth('resource', 'exec', rid, '--', 'sh', '-c', 'cat /www/index.html; exit 5',
+                                check=False)
+            self.assertEqual((ran.returncode, ran.stdout.strip()), (5, 'hello-from-box'), ran.output)
         finally:
             removed = serve.call('DELETE', f'/v1/resources/{rid}', expect=202)
             job_output(portal, removed['job'])

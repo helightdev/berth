@@ -99,7 +99,8 @@ class Node(unittest.TestCase):
         wait_for('the operator taking the key of berth', lambda: cls.station.ssh(
             OPERATOR, 'true', key=key, check=False).returncode == 0, timeout=60)
         cls.station.ssh(OPERATOR, f'sudo -n sh -c {shell_quote(cls.LEFT)}', key=key, check=False)
-        cls.station.berth('host', 'add', HOST, HOST, '--user', OPERATOR, '--type', 'node', input='')
+        cls.station.berth('host', 'add', HOST, HOST, '--user', OPERATOR, '--type', 'node',
+                          '--feature', 'yard/crane', input='')
 
     @classmethod
     def tearDownClass(cls):
@@ -121,11 +122,19 @@ class Node(unittest.TestCase):
         return profile
 
     def provisioners(self):
-        return [line.split()[0] for line in self.berth('provisioner').stdout.splitlines()
-                if line.strip() and not line.startswith(' ')]
+        listed = json.loads(self.berth('provisioner', 'list', '-o', 'json').stdout)
+        if isinstance(listed, dict):
+            listed = listed['provisioners']
+        return [provisioner['id'] for provisioner in listed]
 
     def test_1_a_feature_for_a_workstation_is_refused_before_anything_runs(self):
-        self.assertEqual(self.station.read_profile()['type'], 'node')
+        added = self.station.read_profile()
+        self.assertEqual(added['type'], 'node')
+        self.assertEqual(added['ansible_vars']['devbox_plugin_features'], ['yard/crane'])
+        # A feature that is not for a node is refused when it is set, too.
+        refused = self.berth('host', 'set', HOST, 'feature.yard/bench=on', check=False)
+        self.assertEqual(refused.returncode, 2, refused.output)
+        self.assertIn('not for a host of the type node', refused.stderr)
         self.profile(['yard/crane', 'yard/bench'])
         refused = self.berth('apply', HOST, check=False)
         self.assertNotEqual(refused.returncode, 0)
@@ -138,7 +147,7 @@ class Node(unittest.TestCase):
         name = f'{HOST}-yard-box'
         self.assertIn(f'✓ Registered the provisioner {name} (yard/box) of {HOST}', done.stdout)
         self.assertIn('pins the server\'s certificate 0123abcd', done.stdout)
-        page = self.berth('provisioner', name).stdout
+        page = self.berth('provisioner', 'show', name).stdout
         self.assertIn(f'place=https://{HOST}:9999', page)
         self.assertIn(f'The crane at https://{HOST}:9999 answers', page)
         self.assertIn(f'Node      {HOST}, whose feature offers it', page)
@@ -156,11 +165,13 @@ class Node(unittest.TestCase):
         for absent in ('id agent', 'test -e /etc/devbox/AGENT.md', 'test -e /etc/sudoers.d/90-devbox-agent',
                        'command -v Xvnc'):
             self.assertNotEqual(self.root(absent, check=False).returncode, 0, absent)
-        listed = self.berth('actions', HOST).stdout
+        listed = self.berth('action', 'list', HOST).stdout
         for action in ('status', 'update', 'secrets'):
-            self.assertRegex(listed, rf'(?m)^  {action}\s+')
+            self.assertRegex(listed, rf'(?m)^{action}\s+')
         # No berth server's container here, so no upgrade of one.
-        self.assertNotRegex(listed, r'(?m)^  upgrade-server\s+')
+        self.assertNotRegex(listed, r'(?m)^upgrade-server\s+')
+        # The list names the node it lives on.
+        self.assertRegex(self.berth('provisioner', 'list').stdout, rf'(?m)^{name}\s+yard/box\s+{HOST}\s')
         self.assertIn('crane', self.berth('run', HOST, 'status').stdout)
         # SSH takes keys only, and leaves root none, as berth logs in as the operator.
         sshd = self.root('cat /etc/ssh/sshd_config.d/00-devbox.conf').stdout
@@ -174,7 +185,7 @@ class Node(unittest.TestCase):
 
     def test_4_a_provisioner_that_holds_a_deployment_stays_with_its_node(self):
         name = f'{HOST}-yard-box'
-        self.berth('deploy', 'crate', '--provisioner', name, '--spec', '-', input='one crate\n')
+        self.berth('resource', 'create', 'crate', '--provisioner', name, '--spec', '-', input='one crate\n')
         self.profile([])
         refused = self.berth('apply', HOST, check=False)
         self.assertNotEqual(refused.returncode, 0)
@@ -186,7 +197,7 @@ class Node(unittest.TestCase):
 
     def test_5_without_its_feature_the_provisioner_goes(self):
         name = f'{HOST}-yard-box'
-        self.berth('resource', 'crate', 'remove', '--yes')
+        self.berth('resource', 'remove', 'crate', '-y')
         done = self.berth('apply', HOST, timeout=900)
         self.assertIn(f'✓ Forgot the provisioner {name}', done.stdout)
         self.assertNotIn(name, self.provisioners())

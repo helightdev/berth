@@ -563,8 +563,8 @@ def _enter_plain():
     kept = station.read_profile()
     leave_the_tailnet(station)
     join_by_hand(station)
-    station.berth('config', 'tailnet_login_server', headscale().url)
-    station.berth('config', 'tailnet_user', headscale().user)
+    station.berth('config', 'set', 'tailnet_login_server', headscale().url)
+    station.berth('config', 'set', 'tailnet_user', headscale().user)
     station.write_profile(joining({**kept, 'ansible_vars': light_vars()}, tailscale_auth_key=headscale().new_key(),
                                   tailscale_auto_key=False, tailscale_login_server=headscale().url))
     nodes, before = headscale().nodes(), last_key_id()
@@ -578,7 +578,7 @@ def _enter_plain():
         leave_the_tailnet(station)
         station.write_profile(kept)
         for key in ('tailnet_login_server', 'tailnet_user'):
-            station.berth('config', key)
+            station.berth('config', 'unset', key)
     return Applied(station=station, kept=kept, first=first, saved=saved, nodes=nodes, after=after,
                    before=before, refused=refused), leave
 

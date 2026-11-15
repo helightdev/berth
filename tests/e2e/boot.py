@@ -56,9 +56,11 @@ def use_control_server(station):
     """berth's settings and secret for the control server, so that the seed it
     renders carries a key berth made there."""
     url, key = control_server()
-    station.berth('config', 'tailnet_login_server', '' if url == 'tailscale' else url)
-    for setting in ('user', 'tags'):
-        station.berth('config', f'tailnet_{setting}', os.environ.get(f'BERTH_BOOT_CONTROL_{setting.upper()}', ''))
+    def setting(key, value):
+        station.berth('config', *(('set', key, value) if value else ('unset', key)))
+    setting('tailnet_login_server', '' if url == 'tailscale' else url)
+    for name in ('user', 'tags'):
+        setting(f'tailnet_{name}', os.environ.get(f'BERTH_BOOT_CONTROL_{name.upper()}', ''))
     station.berth('secret', 'set', 'tailnet_api_key', input=key + '\n')
 
 
