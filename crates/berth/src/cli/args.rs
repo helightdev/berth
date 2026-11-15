@@ -230,7 +230,7 @@ pub enum Host {
     Rename {
         name: String,
         new: String,
-        /// Make NEW its profile's hostname as well, for the next apply.
+        /// Make NEW its profile's hostname as well, and its device's name on the tailnet, for the next apply.
         #[arg(long)]
         hostname: bool,
     },
@@ -238,7 +238,7 @@ pub enum Host {
     #[command(visible_alias = "rm")]
     Remove {
         name: String,
-        /// Destroy the machine a provisioner made for it as well, with its disk.
+        /// Destroy the machine a provisioner made for it as well, with its disk, and remove its device from the tailnet.
         #[arg(long)]
         destroy: bool,
     },

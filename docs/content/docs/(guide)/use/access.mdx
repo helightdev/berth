@@ -36,7 +36,7 @@ The secret is one of these:
 
 | Control server | The secret | Lifetime |
 | --- | --- | --- |
-| Tailscale | An OAuth client with the `auth_keys` scope, as `CLIENT_ID:CLIENT_SECRET` | The client doesn't expire. berth trades it for an access token of an hour each time it makes a key |
+| Tailscale | An OAuth client with the scopes `auth_keys` and `devices:core`, as `CLIENT_ID:CLIENT_SECRET` | The client doesn't expire. berth trades it for an access token of an hour each time it uses it |
 | Tailscale | An API access token from the admin console | 1 to 90 days, chosen when you make it |
 | Headscale | An API key from `headscale apikeys create` | 90 days unless you choose otherwise |
 
@@ -54,6 +54,32 @@ Every key joins one host once. It's pre-approved, not reusable and not ephemeral
 When berth writes a seed or an installer, it says until when the key works. A machine first started later is set up without the tailnet, and the next apply from berth joins it with a new key.
 
 A host that's on the tailnet already is left alone, so applying again goes without a key and leaves the host logged in. Once it has joined, it publishes the desktop and T3 there. That's `devbox_tailscale_serve`, on by default, and it needs HTTPS certificates enabled for the tailnet. Enable them if Tailscale asks, then run **Publish desktop and T3 on the tailnet**. That action also gives Cockpit the tailnet's trusted certificate in place of its self-signed one.
+
+### The host's device
+
+The same key looks after the host's device on the tailnet:
+
+| When | What berth does |
+| --- | --- |
+| An apply | Records the device's id, its name and its addresses, from `tailscale status` on the host |
+| `berth host remove HOST --destroy` | Removes the device once the provisioner has destroyed the machine |
+| The next apply after `berth host rename OLD NEW --hostname` | Gives the device the name `NEW`, after the machine has taken the hostname |
+
+The rename waits for the apply so the name on the tailnet changes when the machine's hostname does. Until then the old MagicDNS name keeps working, so berth can still connect for the apply. When the profile's address is the old name, berth changes it to the new one.
+
+Removing a host without `--destroy` leaves its device alone, and so does a rename without `--hostname`. A copy made with [duplicate](/docs/use/lifecycle#duplicating-a-host) joins as a device of its own.
+
+A host set up by an older berth has no record until its next apply. Until then berth looks for its device among the tailnet's devices, by the host's address and then by its hostname. It acts only when exactly one device matches, and says so otherwise.
+
+The key needs these permissions:
+
+| The secret | To make keys | To list, remove and rename devices |
+| --- | --- | --- |
+| A Tailscale OAuth client | The scope `auth_keys` | The scope `devices:core`. Tailscale asks for tags when a client gets it |
+| A Tailscale API access token | The permissions of the user who made it | The same |
+| A Headscale API key | Any key | Any key |
+
+When the control server refuses, or berth has no key, the job says so, and the host is removed all the same. Remove the device in the admin console then. A rename that's refused waits for the next apply.
 
 ### When berth has no API key
 
