@@ -607,7 +607,7 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
             "berth serve: the PostgreSQL database holds this installation's keys and passwords readable; berth store encrypt seals them"
         );
     }
-    crate::restore_plugins(paths);
+    crate::local::restore_plugins(paths);
     let token = match listen {
         Some(_) => Some(token(paths)?),
         None => None,

@@ -95,7 +95,7 @@ impl Here {
     /// unfinished, which another berth beside this one may be running.
     pub fn start(paths: &Paths) -> Result<Here> {
         let store = super::open_store(paths)?;
-        crate::restore_plugins(paths);
+        crate::local::restore_plugins(paths);
         let mut state = Serve::with(paths.clone(), store, auth::Auth::nobody());
         if let Some(state) = Arc::get_mut(&mut state) {
             state.follows = false;

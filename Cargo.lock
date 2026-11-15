@@ -250,14 +250,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "berth-remote"
-version = "0.5.2"
-dependencies = [
- "berth-api",
- "berth-page",
-]
-
-[[package]]
 name = "berth-tui"
 version = "0.5.2"
 dependencies = [

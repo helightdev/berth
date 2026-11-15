@@ -3,7 +3,7 @@
 //! stay there; first contact and host keys are then the server's to do.
 
 use crate::Result;
-use crate::serve::keys::{KeyInfo, KeyList, listing};
+use crate::local::serve::keys::{KeyInfo, KeyList, listing};
 use berth_core::host::Host;
 use berth_core::keys::{Once, contact, ring};
 use berth_core::paths::Paths;
@@ -106,8 +106,8 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
                         arguments: [("name".to_owned(), name.to_owned())].into(),
                         ..berth_api::Act::default()
                     };
-                    let acted = crate::commands::act_on(server, None, "rotate-key", &act)?;
-                    let code = crate::commands::follow_server_job(server, acted, out)?;
+                    let acted = crate::local::commands::act_on(server, None, "rotate-key", &act)?;
+                    let code = crate::local::commands::follow_server_job(server, acted, out)?;
                     std::process::exit(code);
                 }
                 None => {
@@ -261,9 +261,9 @@ fn trust_served(server: &Server, name: &str, key: Option<&str>, keep: bool) -> R
             arguments,
             ..berth_api::Act::default()
         };
-        let acted = crate::commands::act_on(server, Some(name), "trust-key", &act)?;
+        let acted = crate::local::commands::act_on(server, Some(name), "trust-key", &act)?;
         let mut said = vec![];
-        let code = crate::commands::follow_server_job(server, acted, &mut said)?;
+        let code = crate::local::commands::follow_server_job(server, acted, &mut said)?;
         let said = String::from_utf8_lossy(&said).into_owned();
         print!("{said}");
         Ok((code, said))
@@ -294,7 +294,7 @@ fn host_key(paths: &Paths, name: &str, accept: bool) -> Result<()> {
                 .into(),
                 ..berth_api::Act::default()
             };
-            let acted = crate::commands::act_on(&server, Some(name), "host-key", &act)?;
+            let acted = crate::local::commands::act_on(&server, Some(name), "host-key", &act)?;
             let result = acted.result.unwrap_or_default();
             result["host_keys"]
                 .as_array()

@@ -5,26 +5,31 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+# The screens and the client of a berth serve, on every system.
 [dependencies]
-berth-core.workspace = true
 berth-api = { workspace = true, features = ["client"] }
+berth-page.workspace = true
 berth-tui.workspace = true
+tokio.workspace = true
+serde_json = "1"
+tempfile = "3"
+crossterm = "=0.29.0"
+
+# The installation, berth serve and the commands, on Linux, where hosts are
+# set up from.
+[target.'cfg(target_os = "linux")'.dependencies]
+berth-core.workspace = true
 # For its API document, which berth serve's includes.
 berthd = { path = "../berthd" }
-tokio.workspace = true
 futures-util.workspace = true
 serde.workspace = true
 axum.workspace = true
 utoipa.workspace = true
 utoipa-axum.workspace = true
-crossterm = "=0.29.0"
-serde_json = "1"
-tempfile = "3"
 libc = "0.2"
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
-berth-page.workspace = true
 
-[dev-dependencies]
+[target.'cfg(target_os = "linux")'.dev-dependencies]
 # Signs the access tokens of the tests.
 ring = "0.17"
 # Draws the screens of the tests.

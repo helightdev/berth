@@ -4,7 +4,7 @@
 //! The Provisioners tab of the terminal screen goes the same way.
 
 use crate::Result;
-use crate::commands::{follow_job, parse_arguments, ready};
+use crate::local::commands::{follow_job, parse_arguments, ready};
 use berth_api::{
     self as api, Act, Action, NewResource, ProvisionerInfo, ProvisionerState, Resource,
     ResourceSecret, SavedProvisioner,

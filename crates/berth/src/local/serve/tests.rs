@@ -3132,9 +3132,12 @@ async fn berth_connect_saves_the_server_and_its_token() {
         data_dir: client.path().join("data"),
     };
     let connect = |key: String| {
-        let (paths, url) = (paths.clone(), url.clone());
+        let (dir, url) = (paths.config_dir.clone(), url.clone());
         tokio::task::spawn_blocking(move || {
-            crate::commands::connect_with(&paths, &url, &key).map_err(|error| error.to_string())
+            let settings = berth_page::settings::Settings::new(Some(dir));
+            crate::connect::connect_with(&settings, &url, &key)
+                .map(drop)
+                .map_err(|error| error.to_string())
         })
     };
     // A wrong key saves nothing.
@@ -3477,7 +3480,7 @@ fn pruning_removes_a_jobs_output_and_its_report() {
 /// The routes of the key ring, with the helpers of these tests.
 mod keys;
 
-/// berth-remote signed in to a server of the tests.
+/// The screens signed in to a server of the tests over the network.
 mod remote;
 
 #[tokio::test(flavor = "multi_thread")]

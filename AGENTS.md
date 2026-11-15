@@ -6,14 +6,13 @@ berth sets up and looks after agent workstations. These are Ubuntu machines with
 
 | Path | What it is |
 | --- | --- |
-| `crates/berth/` | The `berth` program: terminal UI, commands and `berth serve` (`crates/berth/src/serve/`). In `serve/`, `actions.rs` has the actions of hosts and of the installation, `keys.rs` the key ring's routes, `provisioners.rs` and `resources.rs` those of provisioners and resources |
+| `crates/berth/` | The `berth` program, for Linux, macOS and Windows. `main.rs` opens the screens, the same on every system. On Linux, `src/local/` adds the commands and `berth serve` (`src/local/serve/`), behind one `#[cfg(target_os = "linux")]`, and `client_only.rs` stands in for it elsewhere. In `serve/`, `here.rs` is the server in berth's own process that the screens and commands use when no other is set, `actions.rs` has the actions of hosts and of the installation, `keys.rs` the key ring's routes, `provisioners.rs` and `resources.rs` those of provisioners and resources |
 | `crates/berth-api/` | Types and the operations table shared by every program (`ops.rs` names each operation, its HTTP route and its role) |
 | `crates/berth-core/` | Hosts, profiles, links to hosts, registries and secrets, and plugins. The store is in `store/`. `kept.rs` and `plugin_state.rs` write files from it, and `import.rs` takes in the files of older versions. `kept_profile.rs` is the profile a host keeps of itself and `berth adopt`. `runner.rs` runs every action as a job. `keys/` is the key ring and how berth logs in to hosts. `host_type.rs` says what a host of each type can do. `provisioner.rs` and `resource.rs` are the provisioners of plugins and what they made |
-| `crates/berth-tui/` | The parts of the UI that `berth` and `berth-remote` share |
+| `crates/berth-tui/` | The parts of the screens with no terminal in them |
 | `crates/berth-pty/` | Terminals for sessions |
 | `crates/berthd/`, `crates/box/` | The controller on each host and the agent's own tool there |
-| `crates/berth-page/` | The screens of `berth-remote` for a `berth serve` elsewhere. `device.rs` is what the program gives them, and `portal.rs` the server's portal over it |
-| `crates/berth-remote/` | `berth-remote`, those screens in a terminal on Linux, macOS and Windows, for a `berth serve` on another machine |
+| `crates/berth-page/` | berth's screens in a terminal. They do everything through the API of a server: one elsewhere, a `berth serve` on its socket, or the one in the process. `net.rs` reaches it, `portal.rs` is its portal, `settings.rs` keeps the server and its token, and `device.rs` is what the program starts them with |
 | `crates/vendor/` | The vendored `tui-input` crate |
 | `provision/` | The installer side of the provisioning source: the role in `ansible/`, first-boot provisioning in `bootstrap/`, the builder of seeds and releases in `bin/devbox.py` and the example profile in `config/`. berth names these paths in `layout` in `crates/berth-core/src/paths.rs` |
 | `plugins/` | The plugins that come with berth, each an npm-format package with a `guide.md`. With `provision/` they make the provisioning source, which berth carries and unpacks with the same layout |
@@ -47,11 +46,13 @@ Use cargo for everything Rust. These are what CI runs:
 
 ```bash
 cargo test --locked
-cargo fmt --check -p berth-api -p berth-pty -p berth-core -p berth-tui -p berth -p berthd -p box -p berth-page -p berth-remote
+cargo fmt --check -p berth-api -p berth-pty -p berth-core -p berth-tui -p berth -p berthd -p box -p berth-page
 cargo clippy --locked --all-targets -- -D warnings
 python3 -m unittest discover -s tests -v
 vale --minAlertLevel=warning README.md docs/content/docs plugins/*/guide.md
 ```
+
+On macOS and Windows berth is the client alone. Check that it still builds there with `cargo check -p berth --target x86_64-pc-windows-msvc` or `--target aarch64-apple-darwin`; the release builds it on those systems.
 
 Development and test builds embed quick builds of berthd and box (the `host-dev` profile). Only `--release` embeds the release builds. The Python tests skip their YAML checks without PyYAML, so install `provision/requirements.txt` in a virtual environment to run them all.
 
@@ -97,12 +98,12 @@ Give a new thing a host, the installation, a provisioner or a resource can do an
 
 | Subject | Where its actions are |
 | --- | --- |
-| A host | `HOST` in `crates/berth/src/serve/actions.rs`, besides the actions its controller lists |
+| A host | `HOST` in `crates/berth/src/local/serve/actions.rs`, besides the actions its controller lists |
 | The installation | `INSTALLATION` in the same file |
 | A provisioner | `provisioner::actions` in `crates/berth-core/src/provisioner.rs`: its plugin's actions and berth's own |
 | A resource | `resource::actions` in `crates/berth-core/src/resource.rs`: those of its kind and its plugin's |
 
-An action that changes something runs as a job through `runner.rs`.
+An action that changes something runs as a job through `runner.rs`. The screens do everything through the API. What works only with the server's own machine, such as writing a USB drive, is an action that is available to a caller there alone (`Seen::local`: the socket or the process), and says why not to one over the network.
 
 ## Versions and releases
 
