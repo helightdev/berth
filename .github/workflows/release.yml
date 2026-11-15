@@ -145,7 +145,11 @@ jobs:
             || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes $prerelease
           gh release upload "$GITHUB_REF_NAME" --clobber berth-*.tar.gz berth-*.tar.gz.sha256 \
             berth-*.zip berth-*.zip.sha256 install.sh install.ps1 VERSION
+  # The image holds the program the release publishes for x86_64, so it is
+  # built once. Its Dockerfile is the one berth carries to build an image of
+  # itself on a server.
   image:
+    needs: [binary]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -164,6 +168,17 @@ jobs:
             fi
             echo "BERTH_BUILD_VERSION=$version" >> "$GITHUB_ENV"
           fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: berth-x86_64-unknown-linux-musl
+      - name: The context
+        run: |
+          mkdir -p build/image
+          tar -xzf berth-x86_64-linux.tar.gz -C build/image berth
+          cp provision/requirements.txt build/image/
+          version=${BERTH_BUILD_VERSION:-$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)}
+          echo "BERTH_IMAGE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "BERTH_IMAGE_SHA256=$(sha256sum build/image/berth | cut -d' ' -f1)" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         if: github.event_name != 'pull_request'
@@ -181,9 +196,12 @@ jobs:
             type=edge,branch=main
       - uses: docker/build-push-action@v6
         with:
-          context: .
+          context: build/image
           file: container/berth.Dockerfile
-          build-args: BERTH_BUILD_VERSION=${{ env.BERTH_BUILD_VERSION }}
+          build-args: |
+            BERTH_VERSION=${{ env.BERTH_IMAGE_VERSION }}
+            BERTH_SHA256=${{ env.BERTH_IMAGE_SHA256 }}
+            BERTH_SOURCE=published
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
