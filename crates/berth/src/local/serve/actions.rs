@@ -640,6 +640,7 @@ fn apply(state: Arc<Serve>, name: String, act: Act) -> Run {
             ));
         }
         let prepared = apply::prepare(&state.paths, &host, password.as_deref()).map_err(bad)?;
+        let notes = prepared.notes;
         let mut request = Request::new(Subject::Host(name.clone()), "apply");
         request.token = act.token;
         request.secrets = password.into_iter().collect();
@@ -650,6 +651,9 @@ fn apply(state: Arc<Serve>, name: String, act: Act) -> Run {
         };
         let paths = state.paths.clone();
         let work = Work::Function(Box::new(move |out| {
+            for note in &notes {
+                let _ = writeln!(out, "{note}");
+            }
             if berth_core::runner::run_program(program, out) != Some(0) {
                 return false;
             }

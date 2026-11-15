@@ -4572,3 +4572,61 @@ async fn a_request_that_claims_to_be_a_stream_needs_its_role_all_the_same() {
     let (status, _) = as_bearer(address, &viewer, "HEAD", "/v1/secrets", Value::Null).await;
     assert_eq!(status, 403);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_profile_does_not_say_how_ansible_reaches_the_host() {
+    let issuer = Issuer::new();
+    let (_dir, address) = trusting(&issuer, true).await;
+    let admin = issuer.token(json!({"scope": "berth:admin"}));
+    let vars = json!({"builder": {}, "access": {"address": "192.0.2.7"},
+        "ansible_vars": {"ansible_ssh_common_args": "-o ProxyCommand=\"sh -c id\"",
+                         "ansible_connection": "local", "ansible_ssh_executable": "/bin/sh",
+                         "devbox_geometry": "1x1"}});
+    let (status, said) = as_bearer(
+        address,
+        &admin,
+        "PUT",
+        "/v1/hosts/studio/profile",
+        vars.clone(),
+    )
+    .await;
+    assert_eq!(status, 400, "{said}");
+    let message = said["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("not ansible_connection, ansible_ssh_common_args, ansible_ssh_executable"),
+        "{message}"
+    );
+    // Nor from the server's own user.
+    let served = served_with(quick).await;
+    let mut client = served.client().await;
+    let (status, said) = send(&mut client, "PUT", "/v1/hosts/studio/profile", vars).await;
+    assert_eq!(status, 400, "{said}");
+    let feature = json!({"builder": {}, "access": {"address": "192.0.2.7"},
+        "ansible_vars": {"devbox_plugin_features": ["../../tmp/x"]}});
+    let (status, said) = send(&mut client, "PUT", "/v1/hosts/studio/profile", feature).await;
+    assert_eq!(status, 400, "{said}");
+    assert!(
+        said["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("PLUGIN/FEATURE"),
+        "{said}"
+    );
+
+    // A profile saved before still lists and reads.
+    let paths = &served.state.paths;
+    paths.prepare().unwrap();
+    berth_core::profiles::Place::own("dock")
+        .unwrap()
+        .save(
+            paths,
+            &json!({"builder": {}, "access": {"address": "192.0.2.8"},
+                    "ansible_vars": {"ansible_connection": "local", "devbox_geometry": "1x1"}}),
+        )
+        .unwrap();
+    let (status, listed) = send(&mut client, "GET", "/v1/hosts", Value::Null).await;
+    assert_eq!(status, 200, "{listed}");
+    assert!(listed.to_string().contains("\"dock\""), "{listed}");
+    let (status, profile) = send(&mut client, "GET", "/v1/hosts/dock/profile", Value::Null).await;
+    assert_eq!(status, 200, "{profile}");
+}
