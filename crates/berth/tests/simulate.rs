@@ -235,7 +235,17 @@ async fn a_host_lives_its_whole_life_on_a_simulated_server() {
         (&json!(berth_api::VERSION), &json!("192.0.2.20"))
     );
     let secrets = server.call("GET", "/v1/secrets", None).await;
-    assert!(secrets.to_string().contains("api_token"), "{secrets}");
+    // Only the names are compared; the list is not printed on failure.
+    let names: Vec<&str> = secrets["names"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|name| name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"api_token"),
+        "the seed's secret is not listed"
+    );
     let provisioners = server.call("GET", "/v1/provisioners", None).await;
     assert_eq!(
         (&provisioners[0]["id"], &provisioners[0]["type"]),
