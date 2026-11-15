@@ -171,7 +171,9 @@ impl App {
             })
             .unwrap_or_default();
         // A server on this machine is never kept: it is found again each run.
-        if !device::local(&server) {
+        // Another server named for this run, without its token, leaves the
+        // kept server and token alone until it signs in.
+        if !device::local(&server) && !token.is_empty() {
             device::store(Kept::Server, &server);
             device::store(Kept::Token, &token);
         }
@@ -294,6 +296,13 @@ impl App {
 
     /// Back to the token dialog, forgetting the token.
     fn sign_out(&mut self, why: &str) {
+        self.ask_token(why);
+        device::store(Kept::Token, "");
+    }
+
+    /// Back to the token dialog. The kept token stays until the one typed
+    /// next replaces it.
+    fn ask_token(&mut self, why: &str) {
         self.portal = None;
         self.admin = None;
         *self.data.borrow_mut() = Data::default();
@@ -305,7 +314,6 @@ impl App {
         self.host.disconnect();
         *self.hosts.borrow_mut() = Hosts::default();
         self.token.clear();
-        device::store(Kept::Token, "");
         self.typing = Input::default();
         self.refused = why.to_owned();
         self.screen = Screen::Token;
@@ -336,6 +344,7 @@ impl App {
             match installed.tick() {
                 Outcome::SignIn(token) => {
                     self.token = token;
+                    device::store(Kept::Server, &self.server);
                     device::store(Kept::Token, &self.token);
                     self.connect();
                 }
@@ -366,13 +375,14 @@ impl App {
                     self.status.clear();
                 }
             }
-            // A token that never opened the portal is asked for again; one that
-            // has is the right one, and the server is only away.
-            Some(Link::Refused) if !self.proven && !self.local() => {
-                self.sign_out("The server did not open its portal for that token.");
+            // A token the server refused is asked for again. The kept one stays
+            // until another is given or the user signs out: a server that does
+            // not answer, or not yet, never costs the token.
+            Some(Link::Refused) if !self.local() => {
+                self.ask_token("The server did not take that token. Enter another, or sign out.");
                 return;
             }
-            Some(Link::Refused | Link::Lost) => {
+            Some(Link::Refused | Link::Unreached | Link::Lost) => {
                 self.portal = None;
                 self.host.disconnect();
                 self.retry = Some(Instant::now());

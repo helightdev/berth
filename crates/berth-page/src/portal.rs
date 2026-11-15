@@ -12,8 +12,11 @@ use std::rc::{Rc, Weak};
 pub enum Link {
     Connecting,
     Open,
-    /// It closed before it was open: a wrong token, or nobody there.
+    /// The server refused the token.
     Refused,
+    /// It closed before it was open, and not by the server's refusal: nobody
+    /// answered there, or not in time.
+    Unreached,
     /// It was open and is not any more.
     Lost,
 }
@@ -89,6 +92,10 @@ impl Inner {
                 }
             }
             Said::Closed => self.closed(),
+            Said::Refused => {
+                self.link.set(Link::Refused);
+                self.closed();
+            }
         }
     }
 
@@ -115,7 +122,8 @@ impl Inner {
     fn closed(&self) {
         self.link.set(match self.link.get() {
             Link::Open | Link::Lost => Link::Lost,
-            _ => Link::Refused,
+            Link::Refused => Link::Refused,
+            Link::Connecting | Link::Unreached => Link::Unreached,
         });
         let calls: Vec<Answer> = self
             .calls
@@ -372,9 +380,12 @@ mod tests {
     }
 
     #[test]
-    fn a_socket_that_never_opens_is_refused() {
+    fn a_socket_that_never_opens_is_unreached_unless_the_server_refused_it() {
         let (wire, portal) = portal();
         wire.say(Said::Closed);
+        assert_eq!(portal.link(), Link::Unreached);
+        let (wire, portal) = self::portal();
+        wire.say(Said::Refused);
         assert_eq!(portal.link(), Link::Refused);
     }
 }

@@ -16,6 +16,9 @@ pub enum Said {
     Bytes(Vec<u8>),
     /// The socket is closed, or never opened.
     Closed,
+    /// The server answered the handshake and refused what was shown, as a
+    /// wrong token: 401 or 403.
+    Refused,
 }
 
 /// An open socket; dropping it closes it.
@@ -98,11 +101,12 @@ async fn run(
     mut out: UnboundedReceiver<Message>,
     said: mpsc::Sender<Said>,
 ) {
+    // Whether the server itself refused the handshake, beside why it failed.
     let opened = async {
-        let stream = net::connect(&target).await?;
+        let stream = net::connect(&target).await.map_err(|error| (false, error))?;
         client::websocket_at(stream, &target.authority, &target.path, &token)
             .await
-            .map_err(|error| net::describe(&error))
+            .map_err(|error| (matches!(error.status(), 401 | 403), net::describe(&error)))
     };
     let opened = tokio::select! {
         opened = tokio::time::timeout(CONNECT, opened) => opened.ok(),
@@ -113,9 +117,16 @@ async fn run(
             }
         } => return,
     };
-    let Some(Ok(socket)) = opened else {
-        let _ = said.send(Said::Closed);
-        return;
+    let socket = match opened {
+        Some(Ok(socket)) => socket,
+        Some(Err((true, _))) => {
+            let _ = said.send(Said::Refused);
+            return;
+        }
+        _ => {
+            let _ = said.send(Said::Closed);
+            return;
+        }
     };
     let _ = said.send(Said::Open);
     let (mut write, mut read) = socket.split();
