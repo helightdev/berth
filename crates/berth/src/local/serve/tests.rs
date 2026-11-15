@@ -2344,6 +2344,7 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
             "restart",
             "secrets",
             "adopt",
+            "rename",
             "remove"
         ]
     );
@@ -2609,6 +2610,146 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
             .iter()
             .any(|known| known["type"] == "fake/vm" && known["id"] == "fake/vm"),
         "{types}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_provisioner_is_renamed_with_everything_that_names_it() {
+    use berth_core::resource::{Kept, Record};
+    let served = served_with(quick).await;
+    fake_provisioner(&served);
+    let mut client = served.client().await;
+    let client = &mut client;
+    register_fake(client).await;
+    served.state.paths.prepare().unwrap();
+    let paths = &served.state.paths;
+    let registries = berth_core::registry::Store::own(served.state.store.clone());
+    let message = |said: &Value| said["error"]["message"].as_str().unwrap_or("").to_owned();
+    let (status, acted) = send(
+        client,
+        "POST",
+        "/v1/provisioners/vm/actions/settings",
+        json!({"arguments": {"server": "https://192.0.2.10:8443"}}),
+    )
+    .await;
+    assert_eq!(status, 202, "{acted}");
+    let before = acted["job"]["id"].as_str().unwrap().to_owned();
+    job_ended(&served.socket, &before).await;
+    let own = berth_core::provisioner::secret_name("vm", "api_token");
+    registries.set_secret(&own, Some("tok-own")).unwrap();
+    // One left by a provisioner of the new name before is not taken over.
+    let stale = berth_core::provisioner::secret_name("lab", "other");
+    registries.set_secret(&stale, Some("tok-stale")).unwrap();
+    let record = |id: &str, kind: &str, provisioner: &str, host: &str, state: &str| Kept {
+        scope: String::new(),
+        record: Record {
+            id: id.into(),
+            provisioner: provisioner.into(),
+            kind: kind.into(),
+            name: id.into(),
+            host: host.into(),
+            state: state.into(),
+            ..Record::default()
+        },
+    };
+    record("r-wiki", "deployment", "vm", "", "running")
+        .save(paths)
+        .unwrap();
+    record(
+        "r-plan",
+        "machine",
+        "vm",
+        "studio",
+        berth_core::resource::PLANNED,
+    )
+    .save(paths)
+    .unwrap();
+    record("r-other", "deployment", "old", "", "running")
+        .save(paths)
+        .unwrap();
+    // A node's provisioner stays the node's.
+    let mut offered = berth_core::provisioner::entry(paths, "vm")
+        .unwrap()
+        .unwrap();
+    offered.node = "dock".into();
+    berth_core::provisioner::save_entry(paths, "vm", &offered).unwrap();
+
+    // A name that is taken or no name is refused before anything starts.
+    for (wanted, said) in [
+        ("old", "There is a provisioner old already"),
+        ("Not A Name", "is not a name for a provisioner"),
+        ("vm", "vm has that name already"),
+    ] {
+        let (status, refused) = send(
+            client,
+            "POST",
+            "/v1/provisioners/vm/actions/rename",
+            json!({"arguments": {"name": wanted}}),
+        )
+        .await;
+        assert_eq!(status, 400, "{refused}");
+        assert!(message(&refused).contains(said), "{refused}");
+    }
+
+    let (status, acted) = send(
+        client,
+        "POST",
+        "/v1/provisioners/vm/actions/rename",
+        json!({"arguments": {"name": "lab"}}),
+    )
+    .await;
+    assert_eq!(status, 202, "{acted}");
+    let id = acted["job"]["id"].as_str().unwrap().to_owned();
+    let (output, code) = job_ended(&served.socket, &id).await;
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains("vm is called lab now"), "{output}");
+
+    assert_eq!(
+        send(client, "GET", "/v1/provisioners/vm", Value::Null)
+            .await
+            .0,
+        404
+    );
+    let entry = berth_core::provisioner::entry(paths, "lab")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (entry.kind.as_str(), entry.node.as_str()),
+        ("fake/vm", "dock")
+    );
+    assert_eq!(entry.settings["server"], "https://192.0.2.10:8443");
+    assert_eq!(
+        registries
+            .secret(&berth_core::provisioner::secret_name("lab", "api_token"))
+            .unwrap()
+            .as_deref(),
+        Some("tok-own")
+    );
+    assert_eq!(registries.secret(&own).unwrap(), None);
+    assert_eq!(registries.secret(&stale).unwrap(), None);
+    let by: std::collections::BTreeMap<String, String> = berth_core::resource::list(paths)
+        .unwrap()
+        .into_iter()
+        .map(|kept| (kept.record.id, kept.record.provisioner))
+        .collect();
+    assert_eq!(
+        by,
+        std::collections::BTreeMap::from([
+            ("r-other".to_owned(), "old".to_owned()),
+            ("r-plan".to_owned(), "lab".to_owned()),
+            ("r-wiki".to_owned(), "lab".to_owned()),
+        ])
+    );
+    // Its jobs are the renamed one's, the rename among them.
+    for job in [&before, &id] {
+        let (_, found) = send(client, "GET", &format!("/v1/jobs/{job}"), Value::Null).await;
+        assert_eq!(found["subject"], "provisioner:lab", "{found}");
+    }
+    let (status, page) = send(client, "GET", "/v1/provisioners/lab", Value::Null).await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(
+        page["provisioner"]["settings"]["server"],
+        "https://192.0.2.10:8443"
     );
 }
 

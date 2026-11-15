@@ -92,6 +92,7 @@ on_each_backend!(
     replacing_states_leaves_other_scopes_and_kinds_alone,
     changes_are_all_or_nothing,
     a_renamed_host_takes_its_rows_messages_and_jobs,
+    a_renamed_subject_takes_its_rows_and_jobs,
     sealed_values_round_trip,
     a_sealed_store_without_its_key_says_so,
     plain_rows_are_read_with_a_key_loaded,
@@ -794,6 +795,63 @@ fn a_renamed_host_takes_its_rows_messages_and_jobs(place: &Place) {
     let found = store.job_by_token("host:studio", "apply", "t").unwrap();
     assert_eq!(found.map(|job| job.id), Some("j1".into()));
     assert_eq!(store.job("j3").unwrap().unwrap().host, "test, lab");
+}
+
+fn a_renamed_subject_takes_its_rows_and_jobs(place: &Place) {
+    let store = place.open().with_keys(Some(keys()), None);
+    store.write("provisioner-entry", OWN, "vm", b"e").unwrap();
+    let job = |id: &str, subject: &str, token: Option<&str>| Job {
+        id: id.into(),
+        what: "settings".into(),
+        started: rfc3339(unix_now()),
+        output_path: format!("/tmp/{id}.log"),
+        subject: subject.into(),
+        action: "settings".into(),
+        token: token.map(str::to_owned),
+        ..Job::default()
+    };
+    store
+        .add_job(&job("j1", "provisioner:vm", Some("t")))
+        .unwrap();
+    // A provisioner of the new name that was removed left a job.
+    store
+        .add_job(&job("j2", "provisioner:lab", Some("t")))
+        .unwrap();
+    store
+        .add_job(&job("j3", "provisioner:other", None))
+        .unwrap();
+    store
+        .rename_subject(
+            "provisioner:vm",
+            "provisioner:lab",
+            &[("provisioner-entry", OWN, "lab", b"e".to_vec())],
+            &[("provisioner-entry", OWN, "vm")],
+        )
+        .unwrap();
+    assert_eq!(
+        all_names(&store),
+        owned(&[("provisioner-entry", "", "lab")])
+    );
+    assert_eq!(
+        store
+            .read("provisioner-entry", OWN, "lab")
+            .unwrap()
+            .unwrap(),
+        b"e"
+    );
+    let subject = |id: &str| store.job(id).unwrap().unwrap().subject;
+    assert_eq!(
+        (subject("j1"), subject("j2"), subject("j3")),
+        (
+            "provisioner:lab".to_owned(),
+            "provisioner:lab".to_owned(),
+            "provisioner:other".to_owned()
+        )
+    );
+    let found = store
+        .job_by_token("provisioner:lab", "settings", "t")
+        .unwrap();
+    assert_eq!(found.map(|job| job.id), Some("j1".into()));
 }
 
 fn sealed_values_round_trip(place: &Place) {

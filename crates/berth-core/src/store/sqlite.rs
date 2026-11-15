@@ -618,6 +618,34 @@ impl Backend for SqliteBackend {
         Ok(())
     }
 
+    fn rename_subject(
+        &mut self,
+        old: &str,
+        new: &str,
+        writes: &[StateRow],
+        removals: &[(String, String, String)],
+    ) -> Result<()> {
+        let transaction = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        for row in writes {
+            put_state(&transaction, row)?;
+        }
+        for (kind, scope, name) in removals {
+            transaction.execute(
+                "DELETE FROM state WHERE kind = ?1 AND scope = ?2 AND name = ?3",
+                [kind, scope, name],
+            )?;
+        }
+        transaction.execute("UPDATE jobs SET token = NULL WHERE subject = ?1", [new])?;
+        transaction.execute(
+            "UPDATE jobs SET subject = ?2 WHERE subject = ?1",
+            [old, new],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     fn swap_states(&mut self, rows: &[(StateRow, StateRow)]) -> Result<bool> {
         // Immediate: no other writer gets in between the count and the updates.
         let transaction = self

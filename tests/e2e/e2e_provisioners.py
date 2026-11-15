@@ -194,7 +194,7 @@ class Provisioners(unittest.TestCase):
                               'unavailable': {'tidy': 'The bottom shelf is out of reach'}})
             actions = serve.call('GET', '/v1/provisioners/box/actions')
             self.assertEqual([action['name'] for action in actions],
-                             ['new-deployment', 'settings', 'look', 'sweep', 'tidy', 'adopt', 'remove'])
+                             ['new-deployment', 'settings', 'look', 'sweep', 'tidy', 'adopt', 'rename', 'remove'])
             looked = serve.call('POST', '/v1/provisioners/box/actions/look')
             self.assertEqual(looked['result']['message'], 'Looked around attic')
             acted = serve.call('POST', '/v1/provisioners/box/actions/sweep',
@@ -378,11 +378,20 @@ class Deployments(unittest.TestCase):
         self.berth('provisioner', 'run', 'box', 'new-deployment', 'name=shed', 'spec=shed: 1\nbenches: 2\n', 'secrets=bench_token:TOKEN', '--yes')
         self.assertEqual((self.folder / 'spec.shed').read_text(), 'shed: 1\nbenches: 2\n')
         self.assertIn('shed', self.berth('resource', 'list').stdout)
-        refused = self.berth('provisioner', 'remove', 'box', '-y', check=False)
+        # Renamed, it keeps its settings and what it made.
+        taken = self.berth('provisioner', 'rename', 'box', 'old', check=False)
+        self.assertNotEqual(taken.returncode, 0)
+        self.assertIn('There is a provisioner old already', taken.stderr)
+        self.assertIn('box is called bench-lab now', self.berth('provisioner', 'rename', 'box', 'bench-lab').stdout)
+        self.assertRegex(self.berth('resource', 'list').stdout, r'(?m)^r-\S+\s+deployment\s+shed\s+bench-lab\s')
+        self.assertIn('The lab at attic answers', self.berth('provisioner', 'show', 'bench-lab').stdout)
+        self.assertIn('State      running', self.berth('resource', 'show', 'shed').stdout)
+        self.assertNotEqual(self.berth('provisioner', 'show', 'box', check=False).returncode, 0)
+        refused = self.berth('provisioner', 'remove', 'bench-lab', '-y', check=False)
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn('box still holds', refused.stderr)
+        self.assertIn('bench-lab still holds', refused.stderr)
         self.berth('resource', 'remove', 'shed', '-y')
-        self.assertIn('Removed the provisioner box', self.berth('provisioner', 'remove', 'box', '-y').stdout)
+        self.assertIn('Removed the provisioner bench-lab', self.berth('provisioner', 'remove', 'bench-lab', '-y').stdout)
         self.assertNotIn('Lab box', self.berth('provisioner', 'list').stdout)
 
 

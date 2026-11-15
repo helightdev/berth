@@ -524,6 +524,8 @@ pub enum Provisioner {
         #[arg(value_name = "NAME=VALUE", required = true)]
         settings: Vec<String>,
     },
+    /// Give a provisioner another name in berth, with its settings, secrets and what it made.
+    Rename { name: String, new: String },
     /// Forget a provisioner that holds nothing.
     #[command(visible_alias = "rm")]
     Remove { name: String },

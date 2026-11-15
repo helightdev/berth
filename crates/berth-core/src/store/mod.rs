@@ -428,6 +428,17 @@ pub trait Backend: Send {
         writes: &[StateRow],
         removals: &[(String, String, String)],
     ) -> Result<()>;
+    /// In one transaction: the change of [`Backend::change_states`], and the
+    /// jobs of the subject `old`, such as `provisioner:NAME`, given to `new`.
+    /// The tokens of jobs `new` had before go, so that asking again does not
+    /// find them.
+    fn rename_subject(
+        &mut self,
+        old: &str,
+        new: &str,
+        writes: &[StateRow],
+        removals: &[(String, String, String)],
+    ) -> Result<()>;
     /// In one transaction, while nobody else writes to the table: give each
     /// row the value and `sealed` of its new version, leaving `updated` as
     /// it is. False, with nothing changed, when the table no longer holds
@@ -814,6 +825,30 @@ impl Store {
             })
             .collect();
         self.backend().rename_host(old, new, &rows, &removals)
+    }
+
+    /// A change as [`Store::change`] makes it, in the same transaction as
+    /// giving the jobs of the subject `old` to `new`, both as
+    /// [`crate::runner::Subject::key`] says them.
+    pub fn rename_subject(
+        &self,
+        old: &str,
+        new: &str,
+        writes: &[(&str, &str, &str, Vec<u8>)],
+        removals: &[(&str, &str, &str)],
+    ) -> Result<()> {
+        let updated = now();
+        let rows = writes
+            .iter()
+            .map(|(kind, scope, name, value)| self.row(kind, scope, name, value, &updated))
+            .collect::<Result<Vec<_>>>()?;
+        let removals: Vec<_> = removals
+            .iter()
+            .map(|(kind, scope, name)| {
+                ((*kind).to_owned(), (*scope).to_owned(), (*name).to_owned())
+            })
+            .collect();
+        self.backend().rename_subject(old, new, &rows, &removals)
     }
 
     /// The ids of the keys the sealed rows of `state` were made with.
