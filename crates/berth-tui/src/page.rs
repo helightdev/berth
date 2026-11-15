@@ -1,8 +1,8 @@
 //! The page of a subject: lines that say how it is, what can be done to it
 //! in groups, and the dialogs before an action runs, its question and then
 //! its arguments one after another. A host's page is one. A page of another
-//! subject is its state and its actions given to the same functions; the
-//! berth and berth-remote draw the rows each their own way.
+//! subject is its state and its actions given to the same functions, which
+//! the screens draw the rows of.
 
 use berth_api::{Action, Argument};
 use std::collections::BTreeMap;

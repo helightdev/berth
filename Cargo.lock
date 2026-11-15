@@ -168,25 +168,20 @@ dependencies = [
  "berth-api",
  "berth-core",
  "berth-page",
- "berth-pty",
- "berth-remote",
  "berth-tui",
  "berthd",
  "crossterm",
  "futures-util",
  "jsonwebtoken",
  "libc",
- "pulldown-cmark",
  "ratatui",
  "ring",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
- "tui-input",
  "utoipa",
  "utoipa-axum",
- "vt100",
 ]
 
 [[package]]
@@ -234,25 +229,6 @@ version = "0.5.2"
 dependencies = [
  "berth-api",
  "berth-tui",
- "ratatui",
- "serde_json",
- "tui-input",
-]
-
-[[package]]
-name = "berth-pty"
-version = "0.5.2"
-dependencies = [
- "libc",
-]
-
-[[package]]
-name = "berth-remote"
-version = "0.5.2"
-dependencies = [
- "berth-api",
- "berth-page",
- "berth-tui",
  "crossterm",
  "futures-util",
  "ratatui",
@@ -262,7 +238,15 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-rustls",
+ "tui-input",
  "webpki-roots",
+]
+
+[[package]]
+name = "berth-pty"
+version = "0.5.2"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

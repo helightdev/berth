@@ -9,7 +9,17 @@ use crate::Result;
 use std::{fs, path::Path, process::Command};
 
 const REPOSITORY: &str = "https://github.com/helightdev/berth";
-const ASSET: &str = "berth-x86_64-linux.tar.gz";
+
+/// The archive of the release for this system, when there is one.
+fn asset() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => Some("berth-x86_64-linux.tar.gz"),
+        ("linux", "aarch64") => Some("berth-aarch64-linux.tar.gz"),
+        ("macos", "aarch64") => Some("berth-aarch64-macos.tar.gz"),
+        ("macos", "x86_64") => Some("berth-x86_64-macos.tar.gz"),
+        _ => None,
+    }
+}
 
 /// Where the releases are: GitHub's, or `BERTH_RELEASES` for a mirror.
 fn releases() -> String {
@@ -73,12 +83,15 @@ pub fn command(args: &[&str]) -> Result<()> {
         ["--check"] => true,
         _ => return Err("Usage: berth update [--check]".into()),
     };
-    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    if cfg!(windows) {
+        return Err("On Windows the new release is installed with install.ps1: irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex".into());
+    }
+    let Some(asset) = asset() else {
         return Err(format!(
-            "Releases are built for Linux on x86_64. Update this one with: cargo install --locked --git {REPOSITORY} berth"
+            "No release is built for this system. Update this one with: cargo install --locked --git {REPOSITORY} berth"
         )
         .into());
-    }
+    };
     let current = berth_api::VERSION;
     let latest = latest()?;
     if !newer(&latest, current) {
@@ -101,8 +114,8 @@ pub fn command(args: &[&str]) -> Result<()> {
         let to = work.path().join(name);
         curl(&["-o", &to.to_string_lossy(), &format!("{url}/{name}")]).map(|_| ())
     };
-    fetch(ASSET)?;
-    fetch(&format!("{ASSET}.sha256"))?;
+    fetch(asset)?;
+    fetch(&format!("{asset}.sha256"))?;
     let run = |program: &str, args: &[&str]| -> Result<()> {
         let status = Command::new(program)
             .args(args)
@@ -115,20 +128,30 @@ pub fn command(args: &[&str]) -> Result<()> {
             false => Err(format!("{program} failed ({status})").into()),
         }
     };
-    run("sha256sum", &["-c", &format!("{ASSET}.sha256")])
-        .map_err(|_| "the download does not match its checksum; nothing was changed")?;
-    run("tar", &["-xzf", ASSET, "berth"])?;
+    let sums = format!("{asset}.sha256");
+    // macOS has shasum rather than sha256sum.
+    let checked = match cfg!(target_os = "macos") {
+        true => run("shasum", &["-a", "256", "-c", &sums]),
+        false => run("sha256sum", &["-c", &sums]),
+    };
+    checked.map_err(|_| "the download does not match its checksum; nothing was changed")?;
+    run("tar", &["-xzf", asset, "berth"])?;
     replace(&work.path().join("berth"), &program)?;
     println!("berth {current} → {latest}");
-    println!("Hosts get the new berthd and box when their configuration is applied again.");
+    if cfg!(target_os = "linux") {
+        println!("Hosts get the new berthd and box when their configuration is applied again.");
+    }
     Ok(())
 }
 
 /// Put the new program in the old one's place in one step, so a running
 /// berth keeps the file it has open and the next start finds the new one.
 fn replace(new: &Path, program: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(new, fs::Permissions::from_mode(0o755))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(new, fs::Permissions::from_mode(0o755))?;
+    }
     fs::rename(new, program).map_err(|error| format!("{}: {error}", program.display()))?;
     Ok(())
 }

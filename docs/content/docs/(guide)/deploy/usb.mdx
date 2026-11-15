@@ -57,21 +57,23 @@ Under **Installer** on **Settings**, set **Disk selection**. `auto`, the default
 
 ### Set up the network
 
-Wired DHCP is always configured. To add Wi-Fi, switch **Wi-Fi** on under **Installer** and give the SSID and password. Networks saved in NetworkManager on your machine are suggested, and F5 unlocks their saved passwords so choosing one fills in its password. Leave the interface blank: the installer finds the wireless interface on the target and falls back to wired networking when there is none.
+Wired DHCP is always configured. To add Wi-Fi, switch **Wi-Fi** on under **Installer** and give the SSID and password. Leave the interface blank: the installer finds the wireless interface on the target and falls back to wired networking when there is none.
 
 </Step>
 <Step>
 
 ### Choose the ISO
 
-On **Run**, F4 on **Source ISO** downloads the current Ubuntu Server ISO and checks it against Ubuntu's `SHA256SUMS`. When you choose a file you already have, berth computes its SHA-256. Compare that with Ubuntu's signed `SHA256SUMS`, because a checksum taken from the file only proves it has not changed since.
+**Source ISO** on **Run** is the Ubuntu Server ISO to build from, a path on the machine the server runs on. Left empty, the build downloads the current one and checks it against Ubuntu's `SHA256SUMS`. For a file you already have, put the SHA-256 from Ubuntu's signed `SHA256SUMS` in **ISO SHA256**. The build checks the file against it.
 
 </Step>
 <Step>
 
 ### Build and write
 
-Choose the drive under **Then write to USB drive** on **Run**, or press `w` when the build has finished. Then press Enter on **Run · USB installer**. berth asks which drive to use when several are connected and asks you to confirm erasing it. It then asks for your `sudo` password and writes the image with a progress bar.
+Press Enter on **Run · USB installer**. berth saves the profile and opens the host's overview with its action **Build the USB installer**. Its dialog takes the drive to write and your `sudo` password for writing it. The help of the drive lists the USB drives connected now. When one drive is connected, it's filled in. Leave the drive empty to build the ISO alone. The build and the writing run as a job, whose output fills a panel.
+
+The installer is built on the machine the server runs on, which writes one of its own drives. berth on your machine does it with the server inside berth, or with a `berth serve` of yours there. From another machine the action is listed as unavailable, with that reason.
 
 </Step>
 </Steps>
@@ -120,7 +122,7 @@ sudo systemctl start devbox-provision.service     # start it again after a failu
 | `largest` / `smallest` | By capacity among eligible disks |
 | `ssd` / `hdd` | The only eligible non-rotating or rotating disk |
 
-For `auto`, `model`, `path`, `largest` and `smallest`, `target_disk_ssd` narrows the candidates to `any`, `ssd` or `hdd`. Each mode needs exactly one final candidate, including when capacities tie. The Settings tab shows the fields of the chosen mode and offers the values in Suggestions.
+For `auto`, `model`, `path`, `largest` and `smallest`, `target_disk_ssd` narrows the candidates to `any`, `ssd` or `hdd`. Each mode needs exactly one final candidate, including when capacities tie. The Settings tab shows the fields of the chosen mode.
 
 ```json title="In the host profile"
 {

@@ -162,7 +162,7 @@ The recipes make a key on the first run and print it at the end. Give the
 user the key and the address, which `tailscale serve status` shows:
 
 1. On their own machine they run `berth connect https://THIS-MACHINE.YOUR-TAILNET.ts.net` and enter the key.
-2. Or they run `berth-remote --server https://THIS-MACHINE.YOUR-TAILNET.ts.net` with the key in `BERTH_SETUP_KEY`. It works on Windows and macOS too.
+2. Or they run `berth --server https://THIS-MACHINE.YOUR-TAILNET.ts.net` with the key in `BERTH_SETUP_KEY`, which opens the screens. It works on Windows and macOS too.
 
 The key ends when they choose Done, or when `berth connect` has saved the token.
 

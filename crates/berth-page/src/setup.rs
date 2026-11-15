@@ -20,19 +20,26 @@ use ratatui::{
 use serde_json::{Value, json};
 use tui_input::Input;
 
-/// The ways the server installs a host itself.
-const METHODS: [Action; 4] = [
+/// The ways the server installs a host itself. The USB installer is built
+/// on the machine the server runs on.
+const METHODS: [Action; 5] = [
     Action::Machine,
+    Action::Iso,
     Action::CloudSeed,
     Action::Ssh,
     Action::Reach,
 ];
+
+/// The action of the host that builds its USB installer.
+pub const INSTALLER: &str = "installer";
 
 /// What a key on the set-up pages leads to.
 pub enum Flow {
     Stay,
     /// Back to the host's overview, or to the hosts for one never saved.
     Leave,
+    /// To the host's overview, to run its action of this name there.
+    Act(&'static str),
 }
 
 pub struct Setup {
@@ -68,14 +75,19 @@ pub struct Setup {
     pub panel: (u16, u16),
     /// The machine the server creates for the host, on the set-up tabs.
     pub machine: Machine,
+    /// The server runs on this machine, which builds what is made of its drives.
+    local: bool,
+    /// An action of the host to run once the profile is saved.
+    then: Option<&'static str>,
 }
 
 impl Setup {
     /// The set-up of a host the server has: its profile is on its way.
-    pub fn open(name: &str, admin: &Admin) -> Setup {
+    pub fn open(name: &str, admin: &Admin, local: bool) -> Setup {
         admin.profile(name);
         let mut setup = Setup {
             loading: true,
+            local,
             ..Setup::with(name, Value::Null, Value::Null)
         };
         setup.ask_machine(admin);
@@ -83,8 +95,11 @@ impl Setup {
     }
 
     /// The set-up of a new host, from the server's starting profile.
-    pub fn new(name: &str, template: Value, admin: &Admin) -> Setup {
-        let mut setup = Setup::with(name, template, Value::Null);
+    pub fn new(name: &str, template: Value, admin: &Admin, local: bool) -> Setup {
+        let mut setup = Setup {
+            local,
+            ..Setup::with(name, template, Value::Null)
+        };
         setup::fit_target(&mut setup.config, setup.action);
         setup.ask_machine(admin);
         setup
@@ -122,6 +137,8 @@ impl Setup {
             tabs: vec![],
             panel: (24, 80),
             machine: Machine::default(),
+            local: false,
+            then: None,
         }
     }
 
@@ -206,18 +223,13 @@ impl Setup {
     /// Every problem, each on the tab of what it is about.
     fn problems(&self) -> Vec<Problem> {
         let view = self.view();
-        // The keys that make these up are other ones here.
-        let mut problems: Vec<Problem> = view
-            .problems_with(&self.machine)
-            .into_iter()
-            .map(|problem| Problem {
-                text: problem
-                    .text
-                    .replace("(F4 generates)", "(g generates)")
-                    .replace("(F4 or F5)", "(g or p)"),
-                ..problem
-            })
-            .collect();
+        let mut problems: Vec<Problem> = view.problems_with(&self.machine);
+        if self.action == Action::Iso && !self.local {
+            problems.push(Problem::new(
+                Step::Install,
+                "The USB installer is built where berth serve runs, with berth ui there",
+            ));
+        }
         if self.action == Action::Ssh && view.text(Field::SshHost).is_empty() {
             problems.push(Problem::new(
                 Step::Install,
@@ -260,8 +272,7 @@ impl Setup {
 
     fn help(&self) -> String {
         match self.selected() {
-            // g and p do what berth's F4 and F5 do.
-            Some(Entry::Field(field)) => field.spec().help.replace("F4", "g").replace("F5", "p"),
+            Some(Entry::Field(field)) => field.spec().help.into(),
             Some(Entry::Key(Account::Operator, Some(_))) => Field::OperatorKey.spec().help.into(),
             Some(Entry::Key(Account::Agent, Some(_))) => Field::AgentKey.spec().help.into(),
             Some(Entry::Key(_, None)) => setup::ADD_KEY_HELP.into(),
@@ -443,6 +454,9 @@ impl Setup {
         admin.save(&self.name, &self.config, move |admin| {
             match (action, host_type) {
                 (Action::CloudSeed, _) => admin.seed(&name),
+                // Its drive and sudo password are asked for on the host's
+                // overview, once the server lists the host's actions.
+                (Action::Iso, _) => admin.actions(&name),
                 (Action::Ssh, berth_api::HostType::Managed) => {
                     admin.act(&name, &install, &Default::default(), size)
                 }
@@ -450,6 +464,9 @@ impl Setup {
                 _ => admin.apply(&name, None, size),
             }
         });
+        if action == Action::Iso {
+            self.then = Some(INSTALLER);
+        }
         Some("Saving…".into())
     }
 
@@ -561,14 +578,11 @@ impl Setup {
         match key.code {
             Code::Up => self.move_selection(true),
             Code::Down => self.move_selection(false),
-            // g and p do what berth's F4 and F5 do.
-            Code::Char('g') | Code::F(4)
-                if self.selected_field().is_some_and(Field::can_generate) =>
-            {
+            Code::F(4) if self.selected_field().is_some_and(Field::can_generate) => {
                 let field = self.selected_field().unwrap();
                 say(self.generate(field, admin));
             }
-            Code::Char('p') if self.selected_field().is_some_and(Field::is_password_hash) => {
+            Code::F(5) if self.selected_field().is_some_and(Field::is_password_hash) => {
                 self.password_entry = true;
                 self.editing = Some(Input::default());
             }
@@ -621,6 +635,14 @@ impl Setup {
     }
 
     pub fn event(&mut self, event: Event, admin: &Admin, status: &mut String) -> Flow {
+        let flow = self.take(event, admin, status);
+        match self.then.take() {
+            Some(action) => Flow::Act(action),
+            None => flow,
+        }
+    }
+
+    fn take(&mut self, event: Event, admin: &Admin, status: &mut String) -> Flow {
         match event {
             Event::Key(key) => {
                 status.clear();
@@ -774,10 +796,10 @@ impl Setup {
         let keys = match (&self.editing, field) {
             (Some(_), _) => "Enter accept · Esc cancel · Ctrl+O copy · Ctrl+S save".to_owned(),
             (None, Some(field)) if field.is_password_hash() => {
-                "↑↓ select · g generate · p type a password · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned()
+                "↑↓ select · F4 generate · F5 type a password · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned()
             }
             (None, Some(field)) if field.can_generate() => {
-                "↑↓ select · Enter change · g generate · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned()
+                "↑↓ select · Enter change · F4 generate · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned()
             }
             _ => "↑↓ select · Enter change · Space switch · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned(),
         };

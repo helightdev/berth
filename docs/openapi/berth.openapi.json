@@ -7797,7 +7797,7 @@
             "description": "This one is set on the server itself"
           }
         },
-        "summary": "Change one of the settings that are open to callers.",
+        "summary": "Change one of the settings that are open to callers, or any for the user the server runs as.",
         "tags": [
           "set-up"
         ]

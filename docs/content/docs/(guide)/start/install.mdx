@@ -4,16 +4,16 @@ description: Put the berth command on the machine you work from. It is one file.
 icon: Download
 ---
 
-berth runs on Linux. The program contains everything it puts on a host, so installing it means placing one file on your `PATH`. On Windows and macOS, `berth-remote` uses the hosts of a berth server.
+berth sets hosts up from Linux. The program contains everything it puts on a host, so installing it means placing one file on your `PATH`. On macOS and Windows the same program is a client of a [berth server](/docs/use/server) on another machine.
 
-<Tabs items={['Install script', 'Cargo', 'Container image', 'berth-remote']}>
+<Tabs items={['Install script', 'Windows', 'Cargo', 'Container image']}>
 <Tab value="Install script">
 
-```bash title="Linux x86_64"
+```bash title="Linux and macOS"
 curl -fsSL https://raw.githubusercontent.com/helightdev/berth/main/install.sh | sh
 ```
 
-The script downloads the latest release for Linux x86_64 from GitHub, checks it against its SHA-256 and installs it to `~/.local/bin/berth`.
+The script downloads the latest release for this machine from GitHub, checks it against its SHA-256 and installs it to `~/.local/bin/berth`. Releases have it for Linux on x86_64 and arm64, and for macOS on Apple silicon and Intel.
 
 | Variable | Effect |
 | --- | --- |
@@ -21,6 +21,15 @@ The script downloads the latest release for Linux x86_64 from GitHub, checks it 
 | `BERTH_VERSION` | Install a release tag such as `v0.2.0` instead of the latest |
 
 On other architectures, build it with cargo.
+
+</Tab>
+<Tab value="Windows">
+
+```powershell title="Windows, in PowerShell"
+irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex
+```
+
+The script installs `berth.exe` to `%LOCALAPPDATA%\Programs\berth`, checked in the same way. `BERTH_INSTALL_DIR` and `BERTH_VERSION` work as for `install.sh`. See [From macOS or Windows](/docs/use/server#on-other-systems).
 
 </Tab>
 <Tab value="Cargo">
@@ -32,7 +41,7 @@ rustup target add x86_64-unknown-linux-musl
 cargo install --locked --git https://github.com/helightdev/berth berth
 ```
 
-From a checkout, `cargo install --locked --path crates/berth` does the same.
+From a checkout, `cargo install --locked --path crates/berth` does the same. On macOS and Windows the build is the client alone, which only needs Rust.
 
 </Tab>
 <Tab value="Container image">
@@ -61,21 +70,6 @@ berth --server http://127.0.0.1:7777 --token "$(docker exec berth cat /data/bert
 ```
 
 See [A berth server](/docs/use/server).
-
-</Tab>
-<Tab value="berth-remote">
-
-berth itself needs Linux. `berth-remote` is the client for a [berth server](/docs/use/server) on another machine, in a terminal. It runs on Windows, macOS and Linux:
-
-```powershell title="Windows, in PowerShell"
-irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex
-```
-
-```bash title="macOS and Linux"
-curl -fsSL https://raw.githubusercontent.com/helightdev/berth/main/install-remote.sh | sh
-```
-
-Each script downloads the latest release for this machine, checks it against its SHA-256 and installs it: to `%LOCALAPPDATA%\Programs\berth-remote` on Windows, and to `~/.local/bin/berth-remote` elsewhere. `BERTH_INSTALL_DIR` and `BERTH_VERSION` work as for `install.sh`. Releases have it for Windows x86_64, macOS on Apple silicon and Intel, and Linux x86_64 and arm64. See [With berth-remote](/docs/use/server#with-berth-remote).
 
 </Tab>
 </Tabs>

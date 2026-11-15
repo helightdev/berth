@@ -1,12 +1,6 @@
-//! The device the screens run on, in a terminal: the clipboard, opening
-//! links, choosing a file, plain HTTP, the portal's socket, and the server
-//! and token it keeps between runs.
+//! What the screens do with the system they run on: the clipboard, opening
+//! links in the system's browser, and its dialog for choosing a file.
 
-use crate::settings::Settings;
-use crate::{net, socket};
-use berth_page::device::{Answer, Device, Kept, Linked, Said, Socket};
-use serde_json::{Map, Value};
-use std::cell::RefCell;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -14,167 +8,82 @@ use std::process::{Command, Stdio};
 /// The variables that carry secrets, which no helper program is handed.
 pub const SECRETS: [&str; 2] = ["BERTH_TOKEN", "BERTH_SETUP_KEY"];
 
-/// The device of a terminal.
-pub struct Terminal {
-    linked: Linked,
-    settings: Settings,
-    /// What is kept, as the screens last set it.
-    kept: RefCell<Map<String, Value>>,
-    /// Keep nothing on disk.
-    forget: bool,
-}
-
-fn name(key: Kept) -> &'static str {
-    match key {
-        Kept::Server => "server",
-        Kept::Token => "token",
-    }
-}
-
-impl Terminal {
-    /// With `forget`, what earlier runs kept is removed and nothing new is.
-    pub fn new(linked: Linked, settings: Settings, forget: bool) -> std::io::Result<Terminal> {
-        let kept = match forget {
-            true => {
-                settings.forget()?;
-                Map::new()
-            }
-            false => settings.read(),
-        };
-        Ok(Terminal {
-            linked,
-            settings,
-            kept: RefCell::new(kept),
-            forget,
-        })
-    }
-}
-
-impl Device for Terminal {
-    fn copy(&self, text: &str) -> bool {
-        copy_text(text)
-    }
-
-    fn paste(&self) -> Option<String> {
-        paste_text()
-    }
-
-    fn open(&self, link: &str) -> Result<(), String> {
-        let link = openable(link)?;
-        let mut command = if cfg!(windows) {
-            // Not through cmd, which would take the & of an address for its own.
-            let mut command = helper("rundll32");
-            command.args(["url.dll,FileProtocolHandler", link]);
-            command
-        } else if cfg!(target_os = "macos") {
-            let mut command = helper("open");
-            command.arg(link);
-            command
-        } else {
-            // Without a desktop xdg-open falls back to a browser in this
-            // very terminal, under the screens.
-            if !has_display() {
-                return Err("there is no desktop here to open it on".into());
-            }
-            let mut command = helper("xdg-open");
-            command.arg(link);
-            command
-        };
+/// Open a web address in the system's browser.
+pub fn open(link: &str) -> Result<(), String> {
+    let link = openable(link)?;
+    let mut command = if cfg!(windows) {
+        // Not through cmd, which would take the & of an address for its own.
+        let mut command = helper("rundll32");
+        command.args(["url.dll,FileProtocolHandler", link]);
         command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map(drop)
-            .map_err(|error| error.to_string())
-    }
+    } else if cfg!(target_os = "macos") {
+        let mut command = helper("open");
+        command.arg(link);
+        command
+    } else {
+        // Without a desktop xdg-open falls back to a browser in this
+        // very terminal, under the screens.
+        if !has_display() {
+            return Err("there is no desktop here to open it on".into());
+        }
+        let mut command = helper("xdg-open");
+        command.arg(link);
+        command
+    };
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(drop)
+        .map_err(|error| error.to_string())
+}
 
-    fn choose_file(
-        &self,
-        accept: &str,
-        then: Box<dyn FnOnce(String, Vec<u8>)>,
-    ) -> Result<(), String> {
-        let endings = endings(accept);
-        let given = std::env::var_os("BERTH_REMOTE_FILE").map(PathBuf::from);
-        let dialog = match given {
-            Some(_) => None,
-            None => Some(file_dialog(&endings).ok_or(
-                "There is no file dialog here: set BERTH_REMOTE_FILE to the package's path",
-            )?),
-        };
-        net::later_blocking(
-            move || {
-                let path = match (given, dialog) {
-                    (Some(path), _) => path,
-                    (None, Some(mut dialog)) => {
-                        let output = dialog
-                            .stdin(Stdio::null())
-                            .stderr(Stdio::null())
-                            .output()
-                            .ok()?;
-                        let chosen = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-                        if !output.status.success() || chosen.is_empty() {
-                            return None;
-                        }
-                        PathBuf::from(chosen)
+/// Let the user choose a file whose name ends with one of `accept`
+/// (comma-separated), and hand over its name and bytes at a later turn.
+/// Nothing happens when none is chosen; an error says why none can be asked for.
+pub fn choose_file(
+    accept: &str,
+    then: impl FnOnce(String, Vec<u8>) + 'static,
+) -> Result<(), String> {
+    let endings = endings(accept);
+    let given = std::env::var_os("BERTH_FILE").map(PathBuf::from);
+    let dialog = match given {
+        Some(_) => None,
+        None => Some(
+            file_dialog(&endings)
+                .ok_or("There is no file dialog here: set BERTH_FILE to the package's path")?,
+        ),
+    };
+    crate::net::later_blocking(
+        move || {
+            let path = match (given, dialog) {
+                (Some(path), _) => path,
+                (None, Some(mut dialog)) => {
+                    let output = dialog
+                        .stdin(Stdio::null())
+                        .stderr(Stdio::null())
+                        .output()
+                        .ok()?;
+                    let chosen = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+                    if !output.status.success() || chosen.is_empty() {
+                        return None;
                     }
-                    (None, None) => return None,
-                };
-                let bytes = std::fs::read(&path).ok()?;
-                let name = path.file_name()?.to_string_lossy().into_owned();
-                Some((name, bytes))
-            },
-            move |chosen| {
-                if let Some((name, bytes)) = chosen {
-                    then(name, bytes)
+                    PathBuf::from(chosen)
                 }
-            },
-        );
-        Ok(())
-    }
-
-    fn stored(&self, key: Kept) -> Option<String> {
-        self.kept
-            .borrow()
-            .get(name(key))
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    }
-
-    fn store(&self, key: Kept, value: &str) {
-        let mut kept = self.kept.borrow_mut();
-        let had = kept.get(name(key)).and_then(Value::as_str).unwrap_or("");
-        if had == value {
-            return;
-        }
-        match value.is_empty() {
-            true => kept.remove(name(key)),
-            false => kept.insert(name(key).to_owned(), Value::String(value.to_owned())),
-        };
-        if !self.forget {
-            // The screens go on without it; the next run asks again.
-            let _ = self.settings.write(&kept);
-        }
-    }
-
-    fn linked(&self) -> Linked {
-        self.linked.clone()
-    }
-
-    fn request(&self, method: &str, url: &str, bearer: &str, then: Answer) {
-        let (method, url, bearer) = (method.to_owned(), url.to_owned(), bearer.to_owned());
-        net::later(async move { net::http(&method, &url, &bearer).await }, then);
-    }
-
-    fn connect(
-        &self,
-        url: &str,
-        token: &str,
-        said: Box<dyn Fn(Said)>,
-    ) -> Result<Box<dyn Socket>, String> {
-        let socket = socket::open(url, token, said)?;
-        Ok(Box::new(socket))
-    }
+                (None, None) => return None,
+            };
+            let bytes = std::fs::read(&path).ok()?;
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            Some((name, bytes))
+        },
+        move |chosen| {
+            if let Some((name, bytes)) = chosen {
+                then(name, bytes)
+            }
+        },
+    );
+    Ok(())
 }
 
 /// A program this one starts, such as a clipboard or a browser: without
@@ -273,7 +182,7 @@ fn copiers() -> Vec<(Helper, bool)> {
     }
 }
 
-fn copy_text(text: &str) -> bool {
+pub fn copy_text(text: &str) -> bool {
     if copiers()
         .into_iter()
         .any(|((program, args), wait)| feed(program, args, text, wait))
@@ -303,7 +212,7 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-fn paste_text() -> Option<String> {
+pub fn paste_text() -> Option<String> {
     let pasters: Vec<Helper> = if cfg!(windows) {
         vec![(
             "powershell",
@@ -346,7 +255,7 @@ fn paste_text() -> Option<String> {
 /// environment variable, so that nothing is spliced into the script.
 const WINDOWS_DIALOG: &str = "Add-Type -AssemblyName System.Windows.Forms; \
     $dialog = New-Object System.Windows.Forms.OpenFileDialog; \
-    $dialog.Filter = $env:BERTH_REMOTE_FILTER; \
+    $dialog.Filter = $env:BERTH_FILTER; \
     if ($dialog.ShowDialog() -eq 'OK') { [Console]::OutputEncoding = [Text.Encoding]::UTF8; $dialog.FileName }";
 
 /// The file dialog of this system, given what the accepted names end with;
@@ -371,7 +280,7 @@ fn file_dialog(endings: &[String]) -> Option<Command> {
                 WINDOWS_DIALOG,
             ])
             .env(
-                "BERTH_REMOTE_FILTER",
+                "BERTH_FILTER",
                 format!("Packages ({filter})|{filter}|All files (*.*)|*.*"),
             );
         return Some(command);
@@ -444,49 +353,5 @@ mod tests {
     fn endings_of_accept() {
         assert_eq!(endings(".tgz, .tar.gz,"), [".tgz", ".tar.gz"]);
         assert!(endings("").is_empty());
-    }
-
-    #[test]
-    fn forget_removes_what_was_kept() {
-        let scratch = tempfile::tempdir().unwrap();
-        let dir = scratch.path().join("berth-remote");
-        let kept =
-            Terminal::new(Linked::default(), Settings::new(Some(dir.clone())), false).unwrap();
-        kept.store(Kept::Server, "https://studio.example");
-        kept.store(Kept::Token, "secret");
-        assert!(dir.join("settings.json").exists());
-        let again =
-            Terminal::new(Linked::default(), Settings::new(Some(dir.clone())), false).unwrap();
-        assert_eq!(again.stored(Kept::Token).as_deref(), Some("secret"));
-        assert_eq!(
-            again.stored(Kept::Server).as_deref(),
-            Some("https://studio.example")
-        );
-
-        let forgetting =
-            Terminal::new(Linked::default(), Settings::new(Some(dir.clone())), true).unwrap();
-        assert!(!dir.exists());
-        assert_eq!(forgetting.stored(Kept::Token), None);
-        // What this run is given is used, and still not written.
-        forgetting.store(Kept::Server, "https://dock.example");
-        forgetting.store(Kept::Token, "other");
-        assert_eq!(forgetting.stored(Kept::Token).as_deref(), Some("other"));
-        assert_eq!(
-            forgetting.stored(Kept::Server).as_deref(),
-            Some("https://dock.example")
-        );
-        assert!(!dir.exists());
-    }
-
-    #[test]
-    fn an_empty_value_forgets_it() {
-        let scratch = tempfile::tempdir().unwrap();
-        let dir = scratch.path().join("berth-remote");
-        let device =
-            Terminal::new(Linked::default(), Settings::new(Some(dir.clone())), false).unwrap();
-        device.store(Kept::Token, "secret");
-        device.store(Kept::Token, "");
-        assert_eq!(device.stored(Kept::Token), None);
-        assert!(!dir.exists());
     }
 }

@@ -8,8 +8,41 @@ on:
 permissions:
   contents: read
 jobs:
+  # berth for each system, built on that system so that its version can be
+  # run there. On Linux it carries berthd and box for the hosts, which are
+  # built for x86_64 wherever berth is; on macOS and Windows it is a client
+  # of a berth serve elsewhere.
   binary:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            asset: berth-x86_64-linux.tar.gz
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            asset: berth-aarch64-linux.tar.gz
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            asset: berth-aarch64-macos.tar.gz
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            asset: berth-x86_64-macos.tar.gz
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: berth-x86_64-windows.zip
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      # The C runtime goes into the program, so that Windows needs nothing installed.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+      # The bundled SQLite and ring's C are built against musl too, so that
+      # the program runs on any Linux.
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CC_aarch64_unknown_linux_musl: musl-gcc
     steps:
       - uses: actions/checkout@v7
       # A tag vX.Y.Z builds version X.Y.Z. Any other build says the version in
@@ -26,107 +59,26 @@ jobs:
           fi
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-musl
-      - name: musl compiler for the bundled SQLite
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
-      - uses: Swatinem/rust-cache@v2
-      - name: Build berth, with berthd and box inside
-        run: cargo build --release --locked --target x86_64-unknown-linux-musl -p berth
-      - name: Pack
-        run: |
-          mkdir dist
-          cp target/x86_64-unknown-linux-musl/release/berth LICENSE-MIT LICENSE-APACHE dist/
-          tar -czf berth-x86_64-linux.tar.gz -C dist berth LICENSE-MIT LICENSE-APACHE
-          sha256sum berth-x86_64-linux.tar.gz > berth-x86_64-linux.tar.gz.sha256
-          cp target/host/x86_64-unknown-linux-musl/release/berthd target/host/x86_64-unknown-linux-musl/release/box dist/
-      - name: Check the versions
-        # berth in the archive, and the berthd and box it carries, all say the same.
-        run: |
-          want=${BERTH_BUILD_VERSION:-$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)}
-          mkdir check
-          tar -xzf berth-x86_64-linux.tar.gz -C check berth
-          for program in check/berth dist/berthd dist/box; do
-            said=$("$program" --version)
-            echo "$program: $said"
-            case "$said" in
-              "${program##*/} $want" | "${program##*/} $want "*) ;;
-              *) echo "::error::$program says $said, not $want"; exit 1 ;;
-            esac
-          done
-          rm -r check
-      - uses: actions/upload-artifact@v4
-        with:
-          name: berth-x86_64-linux
-          path: |
-            berth-x86_64-linux.tar.gz
-            berth-x86_64-linux.tar.gz.sha256
-      - uses: actions/upload-artifact@v4
-        with:
-          name: host-programs-x86_64-linux
-          path: |
-            dist/berthd
-            dist/box
-  # berth-remote, the screens of berth serve in a terminal, to use a server's
-  # hosts from another machine. Each is built on the system it is for, so
-  # that its version can be run there.
-  remote:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: windows-latest
-            target: x86_64-pc-windows-msvc
-            asset: berth-remote-x86_64-windows.zip
-          - runner: macos-15
-            target: aarch64-apple-darwin
-            asset: berth-remote-aarch64-macos.tar.gz
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
-            asset: berth-remote-x86_64-macos.tar.gz
-          - runner: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            asset: berth-remote-x86_64-linux.tar.gz
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            asset: berth-remote-aarch64-linux.tar.gz
-    runs-on: ${{ matrix.runner }}
-    defaults:
-      run:
-        shell: bash
-    env:
-      # The C runtime goes into the program, so that Windows needs nothing installed.
-      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
-      # ring's C is built against musl too, so that the program runs on any Linux.
-      CC_x86_64_unknown_linux_musl: musl-gcc
-      CC_aarch64_unknown_linux_musl: musl-gcc
-    steps:
-      - uses: actions/checkout@v7
-      - name: The version
-        run: |
-          if [ "$GITHUB_REF_TYPE" = tag ]; then
-            version=${GITHUB_REF_NAME#v}
-            if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-              echo "::error::$GITHUB_REF_NAME is not a version tag such as v1.2.0 or v1.2.0-rc.1"
-              exit 1
-            fi
-            echo "BERTH_BUILD_VERSION=$version" >> "$GITHUB_ENV"
-          fi
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - name: musl compiler for ring
+          # On Linux the host programs are built for x86_64 as well.
+          targets: ${{ matrix.target }}${{ runner.os == 'Linux' && ',x86_64-unknown-linux-musl' || '' }}
+      - name: musl compiler
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      # berthd and box have no C in them: on an arm runner they are linked
+      # for x86_64 by Rust's own linker.
+      - name: A linker for the host programs
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-      - name: Build berth-remote
-        run: cargo build --release --locked --target ${{ matrix.target }} -p berth-remote
+      - name: Build berth
+        run: cargo build --release --locked --target ${{ matrix.target }} -p berth
       - name: Pack
         run: |
           mkdir dist
-          program=berth-remote
-          [ "$RUNNER_OS" = Windows ] && program=berth-remote.exe
+          program=berth
+          [ "$RUNNER_OS" = Windows ] && program=berth.exe
           cp "target/${{ matrix.target }}/release/$program" LICENSE-MIT LICENSE-APACHE dist/
           case "${{ matrix.asset }}" in
             *.zip) (cd dist && 7z a -tzip -bso0 "../${{ matrix.asset }}" "$program" LICENSE-MIT LICENSE-APACHE) ;;
@@ -137,21 +89,39 @@ jobs:
           else
             shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
           fi
-      - name: Check the version
+      - name: Check the versions
+        # berth, and on Linux the berthd and box it carries, all say the same.
         run: |
           want=${BERTH_BUILD_VERSION:-$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)}
-          said=$(dist/berth-remote --version)
-          echo "berth-remote: $said"
-          [ "$said" = "berth-remote $want" ] || { echo "::error::berth-remote says $said, not $want"; exit 1; }
+          programs=dist/berth
+          if [ "$RUNNER_OS" = Linux ]; then
+            cp target/host/x86_64-unknown-linux-musl/release/berthd target/host/x86_64-unknown-linux-musl/release/box dist/
+            [ "${{ matrix.target }}" = x86_64-unknown-linux-musl ] && programs="$programs dist/berthd dist/box"
+          fi
+          for program in $programs; do
+            said=$("$program" --version)
+            echo "$program: $said"
+            case "$said" in
+              "${program##*/} $want" | "${program##*/} $want "*) ;;
+              *) echo "::error::$program says $said, not $want"; exit 1 ;;
+            esac
+          done
       - uses: actions/upload-artifact@v4
         with:
-          name: berth-remote-${{ matrix.target }}
+          name: berth-${{ matrix.target }}
           path: |
             ${{ matrix.asset }}
             ${{ matrix.asset }}.sha256
+      - uses: actions/upload-artifact@v4
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        with:
+          name: host-programs-x86_64-linux
+          path: |
+            dist/berthd
+            dist/box
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [binary, remote]
+    needs: [binary]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -159,10 +129,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
-          name: berth-x86_64-linux
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: berth-remote-*
+          pattern: berth-*
           merge-multiple: true
       - name: Publish the release
         env:
@@ -176,9 +143,8 @@ jobs:
           # A release made on GitHub's page exists already, and only lacks the files.
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
             || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes $prerelease
-          gh release upload "$GITHUB_REF_NAME" --clobber berth-x86_64-linux.tar.gz berth-x86_64-linux.tar.gz.sha256 \
-            berth-remote-*.zip berth-remote-*.zip.sha256 berth-remote-*.tar.gz berth-remote-*.tar.gz.sha256 \
-            install.sh install-remote.sh install.ps1 VERSION
+          gh release upload "$GITHUB_REF_NAME" --clobber berth-*.tar.gz berth-*.tar.gz.sha256 \
+            berth-*.zip berth-*.zip.sha256 install.sh install.ps1 VERSION
   image:
     runs-on: ubuntu-latest
     permissions:

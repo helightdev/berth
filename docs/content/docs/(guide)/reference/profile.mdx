@@ -13,7 +13,7 @@ berth profile studio --set studio.json
 
 `--set -` reads the profile from standard input. berth checks it as the terminal UI reads a profile and saves it as it is. The profile of a berth server's host is saved on the server.
 
-A profile can also stay in a file of its own. berth reads a host given as a path, such as `berth ./studio.json`, from that file and saves it there.
+A profile can also stay in a file of its own. The commands read a host given as a path, such as `berth host ./studio.json`, from that file and save it there. The screens work with saved hosts: `berth profile studio --set studio.json` saves one from a file.
 
 Settings of the Ansible role go under `ansible_vars`, and how berth reaches and installs the host under `builder`.
 
@@ -168,7 +168,7 @@ A profile of berth 0.5 or earlier names two fields differently:
 | `level`: `workstation` | No `type`, which means a workstation |
 | `profile` | `target` |
 
-berth converts its stored profiles once, the profiles of a berth server's hosts with them. It reads the old names wherever a profile comes from: a file such as `berth ./studio.json`, `berth profile HOST --set FILE`, and the profile a host keeps, which [`berth adopt`](/docs/use/moving) reads. A file keeps the old names until you save it. berth writes `type` and `target` and nothing else, and the API of `berth serve` takes no other spelling.
+berth converts its stored profiles once, the profiles of a berth server's hosts with them. It reads the old names wherever a profile comes from: a file such as `berth host ./studio.json`, `berth profile HOST --set FILE`, and the profile a host keeps, which [`berth adopt`](/docs/use/moving) reads. A file keeps the old names until you save it. berth writes `type` and `target` and nothing else, and the API of `berth serve` takes no other spelling.
 
 ## Install (`builder`)
 

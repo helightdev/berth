@@ -19,7 +19,7 @@ installer on real hardware: **the installer erases the disk it selects.**
 
 ## Install
 
-On Linux x86_64:
+On Linux or macOS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/helightdev/berth/main/install.sh | sh
@@ -37,15 +37,11 @@ Setting up hosts also needs `ssh`, `python3` and `ansible-playbook` on your
 machine. berth is also an image, `ghcr.io/helightdev/berth`, which runs its
 local API server by default.
 
-`berth-remote` uses the hosts of a berth server from a terminal on Windows,
-macOS or Linux:
+On macOS and Windows berth uses the hosts of a berth server elsewhere, with the
+same screens. `install.sh` installs it on macOS too, and on Windows:
 
 ```powershell
-irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex   # Windows
-```
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/helightdev/berth/main/install-remote.sh | sh   # macOS, Linux
+irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex
 ```
 
 ## Quick start

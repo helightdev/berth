@@ -5,11 +5,12 @@
 use super::{
     Serve,
     api::{Answer, App, Fail, internal},
+    auth::Access,
 };
 use axum::{
     Json,
     body::Bytes,
-    extract::{Path, State},
+    extract::{Extension, Path, State},
 };
 use berth_api::{
     Done, ErrorBody, PluginList, PluginOrigin, PluginReport, PluginUpdateSpec, PluginUpdates, code,
@@ -89,7 +90,7 @@ pub async fn save_profile(
     }
     berth_core::import::convert_layout(&state.paths, &name, &mut profile);
     // An older caller's pasted tailnet key is never stored: berth makes the keys.
-    berth_api::profile::take_old_names(&mut profile);
+    berth_api::profile::take_old_tailnet(&mut profile);
     // A workstation's has its set-up's part; a host of another type, only how it is reached.
     let problems = berth_api::profile::problems(&profile);
     if !problems.is_empty() {
@@ -369,7 +370,12 @@ pub struct SettingValue {
 
 #[utoipa::path(get, path = "/v1/settings", summary = "The server's settings.", tag = "set-up",
     responses((status = 200, description = "The settings", body = Vec<Setting>)))]
-pub async fn settings(State(state): App) -> Answer<Json<Vec<Setting>>> {
+pub async fn settings(
+    State(state): App,
+    access: Option<Extension<Access>>,
+) -> Answer<Json<Vec<Setting>>> {
+    // The user the server runs as changes any of them, as berth config does.
+    let local = access.is_none();
     let saved = state.paths.settings().map_err(internal)?;
     let settings = SETTINGS
         .iter()
@@ -382,23 +388,24 @@ pub async fn settings(State(state): App) -> Answer<Json<Vec<Setting>>> {
                 None => String::new(),
             },
             meaning: (*meaning).into(),
-            open: OPEN_SETTINGS.contains(key),
+            open: local || OPEN_SETTINGS.contains(key),
         })
         .collect();
     Ok(Json(settings))
 }
 
-#[utoipa::path(put, path = "/v1/settings/{key}", summary = "Change one of the settings that are open to callers.", tag = "set-up",
+#[utoipa::path(put, path = "/v1/settings/{key}", summary = "Change one of the settings that are open to callers, or any for the user the server runs as.", tag = "set-up",
     params(("key" = String, Path, description = "The setting")),
     request_body(content = SettingValue, description = "The value"),
     responses((status = 200, description = "Saved", body = Done),
               (status = 403, description = "This one is set on the server itself", body = ErrorBody)))]
 pub async fn set_setting(
     State(state): App,
+    access: Option<Extension<Access>>,
     Path(key): Path<String>,
     Json(setting): Json<SettingValue>,
 ) -> Answer<Json<Done>> {
-    if !OPEN_SETTINGS.contains(&key.as_str()) {
+    if access.is_some() && !OPEN_SETTINGS.contains(&key.as_str()) {
         return Err(Fail::new(
             code::FORBIDDEN,
             format!("{key} is set on the server itself, with berth config"),
