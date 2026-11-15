@@ -117,9 +117,9 @@ A resource's endpoints say where it listens, as a list of addresses and ports. I
 | `port` | The port |
 | `protocol` | `tcp` or `udp` |
 | `hint` | What speaks there, for people, such as `http` or `postgres`. It may be empty |
-| `local` | `true` when the provisioner's engine runs on the server's own machine |
+| `local` | `true` when the provisioner's engine runs on the machine that dials it: the server's own, or the node the provisioner is on |
 
-An address is as seen from the machine the provisioner's engine runs on, such as the Docker engine or the Incus server. With `local`, that machine is the server's own. The server then dials the address as it is, `127.0.0.1` among them. Without `local`, `127.0.0.1` names the engine's machine, and the server refuses to dial it. For an engine elsewhere, a provisioner reports addresses that other machines can connect to, such as the engine's own name.
+An address is as seen from the machine the provisioner's engine runs on, such as the Docker engine or the Incus server. With `local`, that machine is the one that dials. For a provisioner on the server's machine, the server then dials the address as it is, `127.0.0.1` among them. Without `local`, `127.0.0.1` names the engine's machine, and the server refuses to dial it. For an engine elsewhere, a provisioner reports addresses that other machines can connect to, such as the engine's own name.
 
 A change in the endpoints is a change of the resource for `events.follow`, so a follower of `resources` hears of it.
 
@@ -136,7 +136,24 @@ The server dials only what the provisioner reported. When it dials, it reads the
 | A cloud's metadata address, `169.254.169.254` or `fd00:ec2::254` | It hands credentials of the server's machine to whoever asks |
 | A loopback or link-local address, unless the endpoint is `local` and reports that very address | Such an address is the server's own. A name that resolves to one now, or one an engine elsewhere reported, is not what the provisioner meant |
 
-The server is the one that dials. That is right for an engine on the server's machine or on a network the server routes to, such as a Docker engine on the same network.
+Who dials depends on where the provisioner is:
+
+| Provisioner | Who dials | How |
+| --- | --- | --- |
+| On a [node](/docs/use/nodes#reach-what-runs-on-a-node), registered by its apply | The node's controller | The server opens the connection through the link it has to the node. `127.0.0.1` is the node's loopback, and any other address has to be on a network of the node's own |
+| Any other | The server | From its own machine, with the checks above |
+
+The server is right for an engine on its own machine or on a network it routes to. A node's controller is right for a container on a bridge such as `incusbr0` or `docker0`, which only the node routes to.
+
+For a provisioner on a node, the server still refuses an endpoint that was not reported, a UDP endpoint and a metadata address. The node's controller then refuses:
+
+| What | Why |
+| --- | --- |
+| A loopback address other than `127.0.0.1` | The controller reaches the node's loopback at `127.0.0.1` alone |
+| A link-local or metadata address | It hands credentials of the node to whoever asks |
+| An address on none of the node's networks | Such an address is reached through a router, which is not the node's to offer |
+
+When the node cannot be reached, the stream fails with `502 unreachable`. A node whose controller is older than this gives `501 not_available`: update its controller or apply the node.
 
 ### Run a command in it
 

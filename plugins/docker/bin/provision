@@ -101,10 +101,12 @@ def stream(argv, env, what, cwd=None, mask=lambda text: text):
 
 
 class Docker:
-    def __init__(self, endpoint):
+    def __init__(self, endpoint, node=''):
         self.env = dict(os.environ)
         if endpoint:
             self.env['DOCKER_HOST'] = endpoint
+        # The node the engine runs on, whose controller dials the endpoints, when berth names one.
+        self.node = node
 
     def run(self, *args, input=None, check=True, merge=False, env=None):
         try:
@@ -203,7 +205,7 @@ def settings(request):
     arguments = request.get('arguments') or {}
     host = request.get('host') or ''
     return {
-        'docker': Docker((arguments.get('host') or '').strip()),
+        'docker': Docker((arguments.get('host') or '').strip(), request.get('node') or ''),
         'image': (arguments.get('image') or '').strip(),
         'port': (arguments.get('ssh_port') or '').strip(),
         'address': (arguments.get('publish_address') or '').strip() or '127.0.0.1',
@@ -245,10 +247,11 @@ def slug(text):
 
 def endpoints_of(docker, info, prefix=''):
     """Where a container is reached: each published port, at the engine's machine, and on an engine
-    of this machine also each exposed port at each of its network addresses, which only this
-    machine routes to."""
+    of the machine that dials also each exposed port at each of its network addresses, which only
+    that machine routes to. That machine is this one, or the node berth names, whose controller
+    dials."""
     host = docker.engine_host()
-    local = host is None
+    local = host is None or bool(docker.node)
     found = []
 
     def add(name, address, port, protocol, target):
@@ -270,7 +273,7 @@ def endpoints_of(docker, info, prefix=''):
             if not published.isdigit() or not target.isdigit():
                 continue
             address = binding.get('HostIp') or ''
-            # Published on every address: this machine's loopback, or the engine's machine by name.
+            # Published on every address: the dialling machine's loopback, or the engine's machine by name.
             if address in ('', '0.0.0.0', '::'):
                 address = '127.0.0.1' if local else host
             add(published + ('' if protocol == 'tcp' else f'-{protocol}'), address, published, protocol, target)

@@ -536,6 +536,17 @@ mod tests {
                 .contains("operate")
         );
         assert!(auth.allows(&admin, port).is_ok());
+        // What the server dials on a host for itself is an operation, which its pass-through refuses.
+        assert_eq!(
+            name("GET", "/v1/hosts/a/controller/endpoints/192.0.2.1/80", true),
+            "endpoints.connect"
+        );
+        assert!(
+            !ops::find(ops::HOST, "endpoints.connect")
+                .unwrap()
+                .server_only
+                .is_empty()
+        );
         let endpoint = ops::find(ops::SERVE, "resources.connect").unwrap();
         assert!(auth.allows(&viewer, endpoint).is_err());
         assert!(auth.allows(&admin, endpoint).is_ok());

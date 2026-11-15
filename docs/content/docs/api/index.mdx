@@ -11,7 +11,7 @@ berthd and `berth serve` answer the same kind of API. Each of their *operations*
 | berthd | every host, as root | unix sockets in `/run/berth` | [berthd](/docs/api/host) |
 | `berth serve` | your machine, or a server | a unix socket of your user, and optionally TCP | [berth serve](/docs/api/serve) |
 
-`berth serve` passes berthd's operations through to the host it names, under `/v1/hosts/NAME/controller`, so a program that talks to `berth serve` reaches all hosts. It also lists what can be done to each host and to the installation as [actions](/docs/extend/serve#actions), and runs one as a job it keeps.
+`berth serve` passes berthd's operations through to the host it names, under `/v1/hosts/NAME/controller`, so a program that talks to `berth serve` reaches all hosts. It does not pass through `endpoints.connect`, which it opens itself for `resources.connect`. It also lists what can be done to each host and to the installation as [actions](/docs/extend/serve#actions), and runs one as a job it keeps.
 
 ## Ways to call an operation
 
@@ -43,6 +43,7 @@ What number 2 adds:
 - The `dropped` frame of `events.follow`, `inbox.follow` and `kv.follow`
 - Host and resource changes on `events.follow`
 - The endpoints of a resource, and `resources.connect` to them
+- `endpoints.connect` of berthd, which `berth serve` alone opens, to reach an endpoint of a resource on a node
 - The `exec` action of a resource
 
 What number 2 renames, with no old name kept:

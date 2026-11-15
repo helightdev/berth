@@ -83,6 +83,28 @@ the client closes the WebSocket or the connection to the port breaks. A stream
 that closes before its `{"eof":true}` has lost its connection.
 `berth_api::tunnel` reads and writes such a stream like a socket.
 
+## The stream of an address on a host
+
+[`endpoints.connect`](/docs/api/host/endpoints) of berthd is a TCP connection
+to an address on one of the host's own networks, such as a container on a
+bridge. It is at `/v1/endpoints/{address}/{port}`, and its frames are those of
+the stream of a port. Only `berth serve` opens it, for an endpoint of a
+resource on a node. It does not pass it through under
+`/v1/hosts/{name}/controller`, and a portal refuses it.
+
+berthd resolves the address once, checks every address it has and connects to
+the one it checked, all before the handshake:
+
+| Error | When |
+|---|---|
+| `403 forbidden` | The address is a loopback, link-local or metadata address, or on none of the host's networks |
+| `502 unreachable`, `504 timeout` | The name does not resolve, or not in time |
+| `503 not_served`, `504 timeout` | The address refuses the connection, or doesn't answer in time |
+
+A network of the host is the subnet of an address of one of its interfaces
+that are up, without the loopback. A prefix shorter than `/8` for IPv4 or
+`/16` for IPv6 doesn't count.
+
 ## The stream of an endpoint
 
 [`resources.connect`](/docs/api/serve/resources) of `berth serve` is a TCP
@@ -101,6 +123,15 @@ address, checks it and connects, all before the handshake. It needs the role
 | `400 bad_request` | The endpoint is UDP |
 | `403 forbidden` | The address is one berth does not dial from the server |
 | `503 not_served`, `504 timeout` | The endpoint refuses the connection, or doesn't answer in time |
+| `502 unreachable` | The provisioner is on a node that cannot be reached |
+| `501 not_available` | The provisioner is on a node whose controller is older than `endpoints.connect` |
+
+Who dials the endpoint:
+
+| Where the provisioner is | Who dials |
+|---|---|
+| On a node | The node's controller: `ports.connect` for `127.0.0.1`, `endpoints.connect` for any other address |
+| Anywhere else | The server itself |
 
 `Portal::connect_endpoint` and `berth_api::tunnel::endpoint_tunnel` open one.
 

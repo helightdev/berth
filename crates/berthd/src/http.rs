@@ -3,7 +3,7 @@
 
 use crate::error::E;
 use crate::state::{Caller, Mode, State};
-use crate::{actions, channel, files, ports, services, sessions, system};
+use crate::{actions, channel, endpoints, files, ports, services, sessions, system};
 use axum::{
     Json, Router,
     extract::{Extension, Request, State as AppState},
@@ -79,6 +79,8 @@ pub const ROUTES: &[Route] = &[
     Route { method: "GET", path: "/v1/services/{plugin}/{name}/serve", summary: "Only as a WebSocket: for the program that answers the service's calls.", level: "both", query: &[], body: "", reply: "", stream: "serve", handler: || get(services::serve) },
 
     Route { method: "GET", path: "/v1/ports/{port}", summary: "Only as a WebSocket: a TCP connection to a port on the host's loopback. A port that nothing listens on is an error before the handshake.", level: "host", query: &[], body: "", reply: "", stream: "port", handler: || get(ports::connect) },
+    // berth serve calls it itself, for an endpoint a provisioner reported, and passes it through for nobody.
+    Route { method: "GET", path: "/v1/endpoints/{address}/{port}", summary: "Only as a WebSocket, and only for berth serve itself: a TCP connection to an address on a network of the host's own interfaces, such as a container on a bridge. Never loopback, link-local or a metadata address. One that nothing answers on is an error before the handshake.", level: "host", query: &[], body: "", reply: "", stream: "endpoint", handler: || get(endpoints::connect) },
 ];
 
 async fn version(AppState(state): AppState<Arc<State>>) -> Json<api::Version> {
@@ -409,6 +411,16 @@ const PATH_ARGUMENTS: &[(&str, &str, &str)] = &[
     ("services.", "plugin", "The plugin the service belongs to."),
     ("services.", "name", "The service's name within its plugin."),
     ("services.call", "method", "One of the service's methods."),
+    (
+        "endpoints.",
+        "address",
+        "An IP address or a DNS name, on a network of the host's own interfaces.",
+    ),
+    (
+        "endpoints.",
+        "port",
+        "A TCP port: a number from 1 to 65535.",
+    ),
     (
         "ports.",
         "port",

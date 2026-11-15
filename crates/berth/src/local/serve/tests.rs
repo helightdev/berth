@@ -4288,3 +4288,215 @@ async fn a_command_runs_in_a_resource_as_a_job_that_ends_as_it_did() {
     .await;
     assert_eq!(status, 404, "{said}");
 }
+
+/// A listener like `echo`, on an address of one of this machine's own
+/// networks, or nothing when it has none but the loopback.
+async fn echo_on_a_network() -> Option<(String, u16)> {
+    for network in berthd::endpoints::networks() {
+        let Ok(listener) = tokio::net::TcpListener::bind((network.address, 0)).await else {
+            continue;
+        };
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((connection, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    use tokio::io::AsyncWriteExt;
+                    let (mut reading, mut writing) = connection.into_split();
+                    let _ = tokio::io::copy(&mut reading, &mut writing).await;
+                    let _ = writing.shutdown().await;
+                });
+            }
+        });
+        return Some((network.address.to_string(), port));
+    }
+    None
+}
+
+/// A controller that answers every request with the version of an older
+/// berthd, for a node that has not been updated.
+fn older_controller() -> LinkSpec {
+    let script = r#"import sys
+for line in sys.stdin.buffer:
+    if line in (b"\r\n", b"\n"):
+        break
+body = b'{"version": "0.4.0", "api": 1, "mode": "system"}'
+sys.stdout.buffer.write(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: %d\r\n\r\n" % len(body) + body)
+sys.stdout.flush()
+"#;
+    LinkSpec {
+        program: "python3".into(),
+        args: vec!["-c".into(), script.into()],
+        ..LinkSpec::default()
+    }
+}
+
+/// Say that the fake's provisioner `vm` lives on `node`, as an apply of a node does.
+fn lives_on(served: &Served, node: &str) {
+    let paths = &served.state.paths;
+    let mut entry = berth_core::provisioner::entry(paths, "vm")
+        .unwrap()
+        .unwrap();
+    entry.node = node.into();
+    berth_core::provisioner::save_entry(paths, "vm", &entry).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resource_of_a_node_is_reached_through_the_nodes_controller() {
+    use berth_api::{portal::Portal, tunnel::endpoint_tunnel};
+    let Some(node) = Berthd::start().await else {
+        return;
+    };
+    let served = served_with(quick).await;
+    let fake = fake_provisioner(&served);
+    served
+        .state
+        .add(Remote::new("big", "192.0.2.30", node.link()));
+    let (port, closed) = (echo().await, closed_port());
+    let network = echo_on_a_network().await;
+    let mut endpoints = vec![
+        json!({"name": "db", "address": "127.0.0.1", "port": port, "local": true}),
+        json!({"name": "closed", "address": "127.0.0.1", "port": closed, "local": true}),
+        json!({"name": "far", "address": "192.0.2.1", "port": 5432, "local": true}),
+        json!({"name": "meta", "address": "169.254.169.254", "port": 80, "local": true}),
+        json!({"name": "loop", "address": "127.0.0.2", "port": port, "local": true}),
+    ];
+    if let Some((address, port)) = &network {
+        endpoints.push(json!({"name": "bridge", "address": address, "port": port, "local": true}));
+    }
+    let answer = json!({"id": "db-1", "state": "running", "endpoints": endpoints});
+    let id = made_box(&served, &fake, answer.clone()).await;
+    lives_on(&served, "big");
+    std::fs::write(fake.join("answer.status"), answer.to_string()).unwrap();
+
+    // The provisioner is told of the node, so its plugin reports what the node sees.
+    let status: Value = served
+        .client()
+        .await
+        .get(&format!("/v1/resources/{id}"))
+        .await
+        .unwrap();
+    assert_eq!(status["state"], "running", "{status}");
+    let asked: Value =
+        serde_json::from_str(&std::fs::read_to_string(fake.join("last.status")).unwrap()).unwrap();
+    assert_eq!(asked["node"], "big", "{asked}");
+
+    let open = |endpoint: &str| {
+        let (socket, id, endpoint) = (served.socket.clone(), id.clone(), endpoint.to_owned());
+        async move {
+            let io = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            endpoint_tunnel(io, &id, &endpoint, "").await
+        }
+    };
+    // The node's loopback, both ways, with each side's end and a few MB.
+    let data: Vec<u8> = (0..3_000_000u32).map(|n| (n % 251) as u8).collect();
+    assert_eq!(through(open("db").await.unwrap(), b"hello").await, b"hello");
+    assert!(through(open("db").await.unwrap(), &data).await == data);
+    let portal = Portal::over(
+        client::websocket_unix(&served.socket, "/v1/portal")
+            .await
+            .unwrap(),
+    );
+    let tunnel = portal.connect_endpoint(&id, "db").await.unwrap();
+    assert!(through(tunnel, &data).await == data);
+    // An address on one of the node's own networks, as a container's on a bridge.
+    match &network {
+        Some(_) => {
+            assert!(through(open("bridge").await.unwrap(), &data).await == data);
+            let tunnel = portal.connect_endpoint(&id, "bridge").await.unwrap();
+            assert_eq!(through(tunnel, b"bridged").await, b"bridged");
+        }
+        None => eprintln!("skipped the bridge: this machine has no network but the loopback"),
+    }
+    // Nothing on it, off the node's networks, a metadata address, another loopback address.
+    for (endpoint, status, said) in [
+        ("closed", 503, "Nothing answers"),
+        ("far", 403, "no network"),
+        ("meta", 403, "metadata"),
+        ("loop", 403, "127.0.0.1"),
+    ] {
+        let refused = open(endpoint).await.err().unwrap();
+        assert_eq!(refused.status(), status, "{endpoint}: {refused}");
+        assert!(refused.to_string().contains(said), "{endpoint}: {refused}");
+    }
+
+    // A caller does not reach the node's stream through the server, however it asks.
+    for path in [
+        format!("/v1/hosts/big/controller/endpoints/127.0.0.1/{port}"),
+        "/v1/hosts/big/controller/endpoints/192.0.2.1/80".to_owned(),
+        "/v1/hosts/big/controller/%65ndpoints/192.0.2.1/80".to_owned(),
+        "/v1/hosts/nobody/controller/endpoints/192.0.2.1/80".to_owned(),
+    ] {
+        let refused = client::websocket_unix(&served.socket, &path)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(refused.status(), 403, "{path}: {refused}");
+    }
+    let mut client = served.client().await;
+    let plain = client
+        .get::<Value>("/v1/hosts/big/controller/endpoints/192.0.2.1/80")
+        .await
+        .unwrap_err();
+    assert_eq!(plain.status(), 403, "{plain}");
+    let args = json!({"address": "192.0.2.1", "port": 80});
+    let refused = portal
+        .open("endpoints.connect", Some("big"), args.clone())
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(refused.status(), 403, "{refused}");
+    // Nor through the node's own portal, passed through.
+    let passed = Portal::over(
+        client::websocket_unix(&served.socket, "/v1/hosts/big/controller/portal")
+            .await
+            .unwrap(),
+    );
+    let refused = passed
+        .open("endpoints.connect", None, args)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(refused.status(), 403, "{refused}");
+
+    // A node that is gone, or whose controller is older than the stream, says so.
+    lives_on(&served, "gone");
+    let refused = open("db").await.err().unwrap();
+    assert_eq!(refused.status(), 502, "{refused}");
+    assert!(refused.to_string().contains("gone"), "{refused}");
+    served
+        .state
+        .add(Remote::new("old", "192.0.2.31", older_controller()));
+    lives_on(&served, "old");
+    let refused = open("db").await.err().unwrap();
+    assert_eq!(refused.status(), 501, "{refused}");
+    assert!(
+        refused.to_string().contains("update its controller"),
+        "{refused}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_admin_over_the_network_does_not_reach_a_hosts_stream_for_the_server() {
+    let issuer = Issuer::new();
+    let (_dir, address) = trusting(&issuer, true).await;
+    let admin = issuer.token(json!({"scope": "berth:admin"}));
+    let path = "/v1/hosts/big/controller/endpoints/192.0.2.1/80";
+    let io = tokio::net::TcpStream::connect(address).await.unwrap();
+    let refused = client::websocket(io, path, &admin).await.err().unwrap();
+    assert_eq!(refused.status(), 403, "{refused}");
+    let (status, said) = as_bearer(address, &admin, "GET", path, Value::Null).await;
+    assert_eq!(status, 403, "{said}");
+    let io = tokio::net::TcpStream::connect(address).await.unwrap();
+    let portal =
+        berth_api::portal::Portal::over(client::websocket(io, "/v1/portal", &admin).await.unwrap());
+    let refused = portal
+        .open(
+            "endpoints.connect",
+            Some("big"),
+            json!({"address": "192.0.2.1", "port": 80}),
+        )
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(refused.status(), 403, "{refused}");
+}

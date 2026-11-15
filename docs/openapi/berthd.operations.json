@@ -2769,6 +2769,67 @@
         }
       ],
       "summary": "A TCP connection to a port on the host's loopback, 127.0.0.1. The port is dialled first, so one that nothing listens on is an error and not a stream."
+    },
+    {
+      "args": [
+        {
+          "description": "An IP address or a DNS name, on a network of the host's own interfaces.",
+          "in": "path",
+          "name": "address",
+          "required": true
+        },
+        {
+          "description": "A TCP port: a number from 1 to 65535.",
+          "in": "path",
+          "name": "port",
+          "required": true
+        }
+      ],
+      "group": "endpoints",
+      "http": {
+        "method": "GET",
+        "path": "/v1/endpoints/{address}/{port}"
+      },
+      "http_only": "berth serve dials it itself, only for an endpoint a provisioner reported: open the endpoint with resources.connect",
+      "kind": "stream",
+      "level": "Host level only.",
+      "name": "endpoints.connect",
+      "portal": false,
+      "receives": [
+        {
+          "binary": true,
+          "description": "What the endpoint sent.",
+          "example": null,
+          "name": "bytes"
+        },
+        {
+          "binary": false,
+          "description": "The endpoint closed its side. Bytes sent towards it still arrive. The stream ends once both sides have sent this.",
+          "example": {
+            "eof": true
+          },
+          "name": "eof"
+        }
+      ],
+      "resumable": false,
+      "role": "operate",
+      "sends": [
+        {
+          "binary": true,
+          "description": "Bytes for the endpoint.",
+          "example": null,
+          "name": "bytes"
+        },
+        {
+          "binary": false,
+          "description": "The client sends no more, and the endpoint reads the end. What it sends still comes back.",
+          "example": {
+            "eof": true
+          },
+          "name": "eof"
+        }
+      ],
+      "summary": "For berth serve alone: a TCP connection to an address on a network of the host's own interfaces, such as a container on a bridge. The address is resolved once, every address it has is checked, and the one checked is dialled first, so one that nothing answers on is an error and not a stream."
     }
   ],
   "portal": {

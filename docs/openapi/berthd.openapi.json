@@ -1805,6 +1805,49 @@
         ]
       }
     },
+    "/v1/endpoints/{address}/{port}": {
+      "get": {
+        "description": "Host level only.",
+        "operationId": "get_v1_endpoints__address___port_",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "address",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "port",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "With a WebSocket handshake: the stream `endpoint` of the AsyncAPI document."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An error."
+          }
+        },
+        "summary": "Only as a WebSocket, and only for berth serve itself: a TCP connection to an address on a network of the host's own interfaces, such as a container on a bridge. Never loopback, link-local or a metadata address. One that nothing answers on is an error before the handshake.",
+        "tags": [
+          "endpoints"
+        ]
+      }
+    },
     "/v1/files": {
       "delete": {
         "description": "Host level only.",
