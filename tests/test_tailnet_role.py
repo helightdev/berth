@@ -140,3 +140,29 @@ class TailnetTaskTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+@unittest.skipUnless(yaml, 'needs PyYAML: install provision/requirements.txt')
+class OneRepository(unittest.TestCase):
+    """apt refuses two lists of Tailscale's repository with different keys,
+    so the role writes the list the server recipe and Tailscale's installer do."""
+
+    def written(self, tasks):
+        found = {}
+        for task in yaml.safe_load(tasks.read_text()):
+            for module in ('ansible.builtin.copy', 'ansible.builtin.get_url'):
+                if module in task:
+                    found[task[module]['dest']] = task[module].get('content', '')
+        return found
+
+    def test_the_role_and_the_recipe_write_the_same_list_and_key(self):
+        role = self.written(ROLE / 'tasks/tailscale.yml')
+        recipe = self.written(ROOT / 'recipes/shared/tailscale.yml')
+        self.assertEqual(set(role), set(recipe))
+        for dest, content in role.items():
+            self.assertEqual(content.replace('ansible_facts.distribution_release', "ansible_facts['distribution_release']"), recipe[dest])
+
+    def test_the_list_of_earlier_berths_goes(self):
+        tasks = yaml.safe_load((ROLE / 'tasks/tailscale.yml').read_text())
+        removed = [task for task in tasks if task.get('ansible.builtin.file', {}).get('state') == 'absent']
+        self.assertIn('/etc/apt/sources.list.d/devbox-tailscale.list', removed[0]['loop'])
