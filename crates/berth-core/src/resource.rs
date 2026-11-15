@@ -143,7 +143,7 @@ pub fn find_by(paths: &Paths, given: &str) -> Result<Kept> {
         .collect();
     match named.as_slice() {
         [one] => Ok((*one).clone()),
-        [] => Err(format!("No resource {given}. See: berth resource").into()),
+        [] => Err(format!("No resource {given}. See: berth resource list").into()),
         _ => Err(format!(
             "Several resources are called {given}: name one by its id ({})",
             named
@@ -161,7 +161,7 @@ pub fn find(paths: &Paths, id: &str) -> Result<Kept> {
     list(paths)?
         .into_iter()
         .find(|kept| kept.record.id == id)
-        .ok_or_else(|| format!("No resource {id}. See: berth resource").into())
+        .ok_or_else(|| format!("No resource {id}. See: berth resource list").into())
 }
 
 /// The machine of the host whose profile is at `place`.

@@ -271,6 +271,14 @@ pub fn fields(pairs: &[(&str, String)]) {
     }
 }
 
+/// Put the cursor at the start of an inline viewport that was cleared, so
+/// that what is printed next takes its place.
+pub fn to_line_of<B: ratatui::backend::Backend>(terminal: &mut ratatui::Terminal<B>) {
+    let top = terminal.get_frame().area().y;
+    let _ = terminal.set_cursor_position((0, top));
+    let _ = terminal.show_cursor();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

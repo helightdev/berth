@@ -1289,12 +1289,13 @@ async fn the_server_is_set_up_through_the_api() {
             "{name}"
         );
     }
+    // The server's own user, on its socket, chooses the command that reaches a host.
     let linked = json!({"builder": {}, "access": {"link": ["sh", "-c", "id"]}});
     assert_eq!(
-        send(client, "PUT", "/v1/hosts/studio/profile", linked)
+        send(client, "PUT", "/v1/hosts/linked/profile", linked)
             .await
             .0,
-        400
+        200
     );
     assert_eq!(
         send(client, "PUT", "/v1/hosts/studio/profile", json!([]))
@@ -1774,6 +1775,18 @@ async fn an_access_token_gets_in_with_the_role_it_names() {
     assert_eq!(status, 403, "{said}");
     let (status, said) = as_bearer(address, &admin, "PUT", "/v1/provisioners/vm", registered).await;
     assert_eq!(status, 200, "{said}");
+    // A command that reaches a host is not taken from a caller over the network.
+    let linked =
+        json!({"builder": {}, "access": {"address": "192.0.2.7", "link": ["sh", "-c", "id"]}});
+    let (status, said) =
+        as_bearer(address, &admin, "PUT", "/v1/hosts/linked/profile", linked).await;
+    assert_eq!(status, 400, "{said}");
+    assert!(
+        said["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("access.link")
+    );
     let profile = json!({"builder": {}, "access": {"address": "192.0.2.7"}});
 
     // Looking is for every role, using for two, set-up for one.

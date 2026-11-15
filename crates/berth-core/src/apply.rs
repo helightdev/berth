@@ -213,6 +213,9 @@ fn run(
     // A password is Ansible's to hand to ssh, through its own helper; no
     // other program, such as the desktop's dialog, is ever asked for one.
     command.env("SSH_ASKPASS_REQUIRE", "never");
+    // A job's output is a log, not a terminal; its colours are kept for
+    // whoever shows it on one, and taken out for whoever does not.
+    command.env("ANSIBLE_FORCE_COLOR", "1");
     command.env("DEVBOX_BUILD_DIR", paths.build_dir());
     Ok(Prepared {
         command,

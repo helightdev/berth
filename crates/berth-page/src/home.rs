@@ -6,7 +6,7 @@ use crate::admin::{Admin, Data};
 use crate::device::Here;
 use berth_tui::berth_key;
 use berth_tui::fields::Kind;
-use berth_tui::plugins::{self, Asked, Place};
+use berth_tui::plugins::{self, Asked};
 use berth_tui::provisioners;
 use berth_tui::screen;
 use berth_tui::setup::{valid_name, value_line};
@@ -893,14 +893,11 @@ impl Home {
         let listed = plugins::rows(&data.plugins, &data.updates);
         let selected = self.plugins.selected(&data.plugins);
         let plugin = listed[selected].0.map(|index| &data.plugins[index]);
-        let help = plugins::help(plugin, &data.report, &Place::Page.adding(&data.plugin_dir));
+        let help = plugins::help(plugin, &data.report, &plugins::adding(&data.plugin_dir));
         Shown {
             rows: listed.into_iter().map(|(_, line)| line).collect(),
             selected,
-            editor: self
-                .editor
-                .as_ref()
-                .map(|_| (Place::Page.editor_title(), false)),
+            editor: self.editor.as_ref().map(|_| (plugins::EDITOR_TITLE, false)),
             help,
             keys: match self.editor {
                 Some(_) => "Enter install · Esc cancel · Ctrl+O copy",
@@ -926,7 +923,7 @@ impl Home {
         }
         let asked = self
             .plugins
-            .key(key, &mut self.editor, &listed, &mut report, &Place::Page);
+            .key(key, &mut self.editor, &listed, &mut report);
         admin.data.borrow_mut().report = report;
         match asked {
             Asked::Nothing(said) => return said,

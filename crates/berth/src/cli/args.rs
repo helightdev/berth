@@ -15,7 +15,7 @@ pub const EXIT_STATUSES: &[(i32, &str)] = &[
     ),
     (
         3,
-        "refused: the role is too low, it is not available with this server, or a confirmation was declined",
+        "refused: the role is too low, the host or this server cannot do it now, or a confirmation was declined",
     ),
     (4, "the server could not be reached"),
 ];
@@ -108,7 +108,7 @@ pub enum Command {
     Ssh(Ssh),
     /// Run one of a host's actions: berth action list HOST names them.
     Run(RunAction),
-    /// Open berth's screens: the hosts, or the host HOST.
+    /// Open berth's screens: the home screen, or the page of one host.
     Ui {
         /// The host to open.
         host: Option<String>,
@@ -394,6 +394,9 @@ pub struct Exec {
     /// Start it and return; berth session logs HOST ID shows what it writes.
     #[arg(long)]
     pub detach: bool,
+    /// Keep the session once it has ended, for berth session logs.
+    #[arg(long)]
+    pub keep: bool,
     /// The command and its arguments, after --.
     #[arg(last = true, required = true, value_name = "COMMAND")]
     pub command: Vec<String>,
@@ -494,8 +497,12 @@ pub enum Provisioner {
         #[arg(value_name = "NAME=VALUE")]
         settings: Vec<String>,
     },
-    /// How it is now and what it holds.
-    Show { name: String },
+    /// How it is now and what it holds. NAME=VALUE gives one of its settings another value for this once.
+    Show {
+        name: String,
+        #[arg(value_name = "NAME=VALUE")]
+        settings: Vec<String>,
+    },
     /// Change its settings.
     Set {
         name: String,
@@ -652,7 +659,7 @@ pub enum Key {
     /// Install a key on a host that does not take it yet, with a password used once.
     Trust {
         host: String,
-        /// The key of the ring to install; the host's own by default.
+        /// Log in once with this key of the ring, to install the one the host logs in with.
         #[arg(long, value_name = "NAME")]
         key: Option<String>,
         /// Read the password from standard input.
@@ -742,6 +749,8 @@ pub enum Plugin {
     /// The plugins and where they come from.
     #[command(visible_alias = "ls")]
     List,
+    /// What a plugin brings: its features with their actions, services and channels, and its provisioners.
+    Show { id: String },
     /// Install a plugin with npm: a name, or the address of a tarball.
     Add { spec: String },
     /// Remove one of the server's own plugins.

@@ -1083,6 +1083,15 @@ async fn proxy(
     body: Bytes,
 ) -> Answer<Response> {
     let remote = remote(&state, &name)?;
+    // A host of the type ssh has no controller to pass this to; say what installs one.
+    let (host_type, _) = known(&state, &name);
+    if let Err(refusal) = berth_core::host_type::check(
+        &name,
+        host_type,
+        berth_core::host_type::Capability::Sessions,
+    ) {
+        return Err(Fail::new(code::PRECONDITION, refusal.why));
+    }
     // The secrets a host gets are the server's own: a caller cannot hand it others.
     if method == Method::POST && rest.trim_end_matches('/') == "actions/secrets" {
         return Err(Fail::new(

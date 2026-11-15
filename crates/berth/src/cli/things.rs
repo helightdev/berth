@@ -9,6 +9,7 @@ use super::fail::{Fail, Result};
 use super::follow;
 use super::host;
 use super::out::{self, Style, Table, styled};
+use super::pages;
 use berth_api::portal::{Piece, PortalStream};
 use berth_api::{Act, SessionKind};
 use serde_json::{Value, json};
@@ -248,7 +249,7 @@ pub fn exec(client: &Client, exec: &args::Exec) -> Result<()> {
     }
     let stream = attach_stream(client, &exec.host, &session.id, 0)?;
     let ended = client.wait(follow_process(stream, true))?;
-    finish(client, &exec.host, &session.id, ended, true)
+    finish(client, &exec.host, &session.id, ended, !exec.keep)
 }
 
 fn attach(client: &Client, host: &str, id: Option<&str>) -> Result<()> {
@@ -373,8 +374,9 @@ fn logs(client: &Client, host: &str, id: &str, follow: bool, tail: Option<u64>) 
 
 // ── actions ─────────────────────────────────────────────────────────────────
 
-fn action_table(actions: &[berth_api::Action]) -> Table {
-    let mut table = Table::new(&["action", "group", "available", "label"]);
+pub fn action_table(actions: &[berth_api::Action]) -> Table {
+    // Why one cannot run can be long, so it comes last and widens nothing else.
+    let mut table = Table::new(&["action", "group", "label", "available"]);
     for action in actions {
         let available = match action.available {
             true => styled("yes", Style::Good),
@@ -383,8 +385,8 @@ fn action_table(actions: &[berth_api::Action]) -> Table {
         table.row(vec![
             action.name.clone(),
             action.group.clone(),
-            available,
             action.label.clone(),
+            available,
         ]);
     }
     table
@@ -505,10 +507,9 @@ fn run_on(
     let result = follow::acted(client, acted, &format!("{label} · {shown}"), detach, own)?;
     if !result.is_null() && result.get("id").is_none() {
         out::data(&result, || {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&result).unwrap_or_default()
-            )
+            for line in pages::answer_lines(&result) {
+                println!("{line}");
+            }
         });
     }
     Ok(None)
@@ -541,11 +542,11 @@ pub fn provisioner(client: &Client, command: Provisioner) -> Result<()> {
                 let mut table = Table::new(&["name", "type", "usable", "label"]);
                 for provisioner in items(found.clone(), "provisioners") {
                     let text = |key: &str| provisioner[key].as_str().unwrap_or("").to_owned();
-                    let usable = match (provisioner["available"].as_bool(), text("why")) {
-                        (Some(false), why) => styled(&format!("no: {why}"), Style::Dim),
-                        _ => styled("yes", Style::Good),
+                    let usable = match text("problem") {
+                        problem if problem.is_empty() => styled("yes", Style::Good),
+                        problem => styled(&format!("no: {problem}"), Style::Dim),
                     };
-                    table.row(vec![text("id"), text("kind"), usable, text("label")]);
+                    table.row(vec![text("id"), text("type"), usable, text("label")]);
                 }
                 table.print("No provisioners. berth provisioner types lists what can be added");
             });
@@ -554,10 +555,16 @@ pub fn provisioner(client: &Client, command: Provisioner) -> Result<()> {
         Provisioner::Types => {
             let found = client.call("provisioners.types", json!({}), None)?;
             out::data(&found, || {
-                let mut table = Table::new(&["type", "plugin", "label"]);
+                let mut table = Table::new(&["type", "label", "makes"]);
                 for kind in items(found.clone(), "types") {
                     let text = |key: &str| kind[key].as_str().unwrap_or("").to_owned();
-                    table.row(vec![text("id"), text("plugin"), text("label")]);
+                    let makes: Vec<&str> = kind["kinds"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|made| made["id"].as_str())
+                        .collect();
+                    table.row(vec![text("id"), text("label"), makes.join(", ")]);
                 }
                 table.print("No plugin brings a provisioner");
             });
@@ -575,13 +582,19 @@ pub fn provisioner(client: &Client, command: Provisioner) -> Result<()> {
             });
             Ok(())
         }
-        Provisioner::Show { name } => {
-            let found = client.call("provisioners.get", json!({"name": name}), None)?;
+        Provisioner::Show { name, settings } => {
+            let given = arguments(&settings)?;
+            let mut args = json!({"name": name});
+            for (key, value) in &given {
+                args[key] = json!(value);
+            }
+            let found = client.call("provisioners.get", args, None)?;
+            let state: berth_api::ProvisionerState = serde_json::from_value(found.clone())?;
+            let actions = client
+                .actions(&Subject::Provisioner(name.clone()))
+                .unwrap_or_default();
             out::data(&found, || {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&found).unwrap_or_default()
-                );
+                print!("{}", pages::provisioner(&state, &actions, &given))
             });
             Ok(())
         }
@@ -674,6 +687,31 @@ fn spec_of(spec: &Option<String>) -> Result<Option<String>> {
         .transpose()
 }
 
+/// The id of a resource given by its id, or by a name only it has.
+fn resource_id(client: &Client, given: &str) -> Result<String> {
+    match client.call("resources.get", json!({"id": given}), None) {
+        Ok(_) => return Ok(given.to_owned()),
+        Err(fail) if fail.code == "not_found" => {}
+        Err(fail) => return Err(fail),
+    }
+    let found = client.call("resources.list", json!({}), None)?;
+    let named: Vec<String> = items(found, "resources")
+        .into_iter()
+        .filter(|made| made["name"] == given)
+        .filter_map(|made| made["id"].as_str().map(str::to_owned))
+        .collect();
+    match named.as_slice() {
+        [id] => Ok(id.clone()),
+        [] => Err(Fail::failed(format!(
+            "There is no resource {given}. berth resource list lists them"
+        ))),
+        _ => Err(Fail::usage(format!(
+            "Several resources are named {given}: give one of their ids, {}",
+            named.join(", ")
+        ))),
+    }
+}
+
 pub fn resource(client: &Client, command: Resource) -> Result<()> {
     match command {
         Resource::List {
@@ -706,31 +744,53 @@ pub fn resource(client: &Client, command: Resource) -> Result<()> {
             Ok(())
         }
         Resource::Show { id } => {
+            let id = resource_id(client, &id)?;
             let found = client.call("resources.get", json!({"id": id}), None)?;
-            out::data(&found, || {
-                let text = |key: &str| found[key].as_str().unwrap_or("").to_owned();
-                let mut pairs = vec![
-                    ("Id", text("id")),
-                    ("Kind", text("kind")),
-                    ("Name", text("name")),
-                    ("Provisioner", text("provisioner")),
-                    ("State", text("state")),
-                    ("Its name there", text("external_id")),
-                    ("Host", text("host")),
-                    ("Address", text("address")),
-                    ("Problem", text("problem")),
-                ];
-                for (name, value) in found["arguments"].as_object().into_iter().flatten() {
-                    pairs.push((name.as_str(), value.as_str().unwrap_or("").to_owned()));
-                }
-                out::fields(&pairs);
-            });
+            let made: berth_api::Resource = serde_json::from_value(found.clone())?;
+            let actions = client
+                .actions(&Subject::Resource(id.clone()))
+                .unwrap_or_default();
+            out::data(&found, || print!("{}", pages::resource(&made, &actions)));
             Ok(())
         }
         Resource::Create(create) => {
+            // A specification is what a deployment is made from; without one it is a host's machine.
+            let kind = match (&create.kind, &create.spec) {
+                (Some(kind), _) => kind.clone(),
+                (None, Some(_)) => "deployment".to_owned(),
+                (None, None) => String::new(),
+            };
+            let found = client.call(
+                "resources.list",
+                json!({"provisioner": create.provisioner, "kind": kind}),
+                None,
+            )?;
+            let existing = items(found, "resources").into_iter().find(|made| {
+                made["name"] == create.name.as_str()
+                    && made["external_id"]
+                        .as_str()
+                        .is_some_and(|id| !id.is_empty())
+            });
+            if let Some(existing) = existing
+                && !kind.is_empty()
+            {
+                let id = existing["id"].as_str().unwrap_or("").to_owned();
+                out::note(format!(
+                    "There is a {kind} {} already, {id}: giving it this specification",
+                    create.name
+                ));
+                let set = args::ResourceSet {
+                    id,
+                    spec: create.spec.clone(),
+                    secret: create.secret.clone(),
+                    arguments: create.arguments.clone(),
+                    detach: create.detach.clone(),
+                };
+                return resource(client, Resource::Set(set));
+            }
             let request = berth_api::NewResource {
                 provisioner: create.provisioner.clone(),
-                kind: create.kind.clone().unwrap_or_default(),
+                kind,
                 name: create.name.clone(),
                 arguments: arguments(&create.arguments)?,
                 spec: spec_of(&create.spec)?,
@@ -743,6 +803,7 @@ pub fn resource(client: &Client, command: Resource) -> Result<()> {
                 Some(serde_json::to_value(&request)?),
             )?;
             let made: berth_api::Created = serde_json::from_value(made)?;
+            let id = made.resource.id.clone();
             let acted = berth_api::Acted {
                 job: Some(made.job),
                 ..Default::default()
@@ -754,9 +815,11 @@ pub fn resource(client: &Client, command: Resource) -> Result<()> {
                 create.detach.detach,
                 false,
             )?;
+            out::hint(format!("{} is {id}: berth resource show {id}", create.name));
             Ok(())
         }
-        Resource::Set(set) => {
+        Resource::Set(mut set) => {
+            set.id = resource_id(client, &set.id)?;
             let change = berth_api::ResourceChange {
                 arguments: arguments(&set.arguments)?,
                 spec: spec_of(&set.spec)?,
@@ -778,6 +841,7 @@ pub fn resource(client: &Client, command: Resource) -> Result<()> {
             Ok(())
         }
         Resource::Remove { id, detach } => {
+            let id = resource_id(client, &id)?;
             ask::confirm(&format!("This removes {id} with its provisioner."))?;
             let acted: berth_api::Acted = serde_json::from_value(client.call(
                 "resources.remove",
@@ -794,21 +858,23 @@ pub fn resource(client: &Client, command: Resource) -> Result<()> {
             Ok(())
         }
         Resource::Logs { id, follow, tail } => {
+            let id = resource_id(client, &id)?;
             let mut args = json!({"id": id});
             if let Some(tail) = tail {
                 args["tail"] = json!(tail);
             }
             if !follow {
+                // A text answer comes as a string, or as its bytes in base64.
                 let found = client.call("resources.logs", args, None)?;
-                match found.as_str() {
-                    Some(text) => print!("{text}"),
-                    None => match &found["lines"] {
-                        Value::Array(lines) => lines
-                            .iter()
-                            .for_each(|line| println!("{}", line.as_str().unwrap_or(""))),
-                        _ => println!("{}", found["text"].as_str().unwrap_or("")),
-                    },
-                }
+                let text = match &found {
+                    Value::String(text) => text.clone(),
+                    other => other["base64"]
+                        .as_str()
+                        .and_then(berth_api::unb64)
+                        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                        .unwrap_or_default(),
+                };
+                print!("{text}");
                 return Ok(());
             }
             let mut stream = client.stream("resources.follow", None, args)?;
@@ -830,6 +896,7 @@ pub fn resource(client: &Client, command: Resource) -> Result<()> {
             })
         }
         Resource::Actions { id } => {
+            let id = resource_id(client, &id)?;
             let actions = client.actions(&Subject::Resource(id.clone()))?;
             out::data(&serde_json::to_value(&actions)?, || {
                 action_table(&actions).print("Nothing to do");
@@ -845,6 +912,7 @@ pub fn resource(client: &Client, command: Resource) -> Result<()> {
             arguments,
             detach,
         } => {
+            let id = resource_id(client, &id)?;
             run_on(
                 client,
                 &Subject::Resource(id),

@@ -12,49 +12,15 @@ use ratatui::{
 };
 use tui_input::Input;
 
-/// Where the plugins are, for what the tab says about adding one.
-pub enum Place<'a> {
-    /// This machine's.
-    Here,
-    /// The server's at this address, for berth in a terminal.
-    Server(&'a str),
-    /// The server's, for the screens.
-    Page,
-}
+/// The title of the editor for what to install.
+pub const EDITOR_TITLE: &str = " Package or address of a .tgz ";
 
-impl Place<'_> {
-    /// Where a removed plugin is gone from.
-    fn name(&self) -> &'static str {
-        match self {
-            Place::Here => "this machine",
-            _ => "the server",
-        }
-    }
-
-    /// The title of the editor for what to install.
-    pub fn editor_title(&self) -> &'static str {
-        match self {
-            Place::Page => " Package or address of a .tgz ",
-            _ => " Package, .tgz or folder ",
-        }
-    }
-
-    /// What the row that adds a plugin means. `dir` is where the own ones are.
-    pub fn adding(&self, dir: &str) -> String {
-        match self {
-            Place::Here => format!(
-                "Install a plugin with npm: a package name from your registry, a .tgz from npm pack, or a folder. Registries and logins come from your npm configuration. Nothing of a plugin runs on this machine.\n\nA folder copied to {dir} works as well."
-            ),
-            Place::Server(url) => format!(
-                "The berth server at {url} installs it with npm: a package name from its registry, or the https:// address of a .tgz. A .tgz or a folder on this machine is packed and sent to the server.\n\n{}",
-                server_note(dir)
-            ),
-            Place::Page => format!(
-                "The server installs it with npm: a package name from its registry, or the https:// address of a .tgz. u sends a .tgz from this device instead.\n\n{}",
-                server_note(dir)
-            ),
-        }
-    }
+/// What the row that adds a plugin means. `dir` is where the own ones are.
+pub fn adding(dir: &str) -> String {
+    format!(
+        "The server installs it with npm: a package name from its registry, or the https:// address of a .tgz. u sends a .tgz from this device instead.\n\n{}",
+        server_note(dir)
+    )
 }
 
 fn server_note(dir: &str) -> String {
@@ -265,7 +231,6 @@ impl Tab {
         editor: &mut Option<Input>,
         plugins: &[PluginInfo],
         report: &mut Vec<String>,
-        place: &Place,
     ) -> Asked {
         let count = rows(plugins, &[]).len();
         let selected = self.plugin(plugins).cloned();
@@ -339,11 +304,7 @@ impl Tab {
                     }
                     Some(plugin) => {
                         self.armed = Some(Armed::Remove);
-                        Some(format!(
-                            "x again removes {} from {}",
-                            plugin.label,
-                            place.name()
-                        ))
+                        Some(format!("x again removes {} from the server", plugin.label))
                     }
                     None => None,
                 });
@@ -454,10 +415,8 @@ mod tests {
         let mut tab = Tab::default();
         let mut editor = None;
         let mut report = vec!["✓ npm install x".to_owned()];
-        let place = Place::Server("https://berth.example");
-        let mut press = |tab: &mut Tab, code| {
-            tab.key(Key::plain(code), &mut editor, &plugins, &mut report, &place)
-        };
+        let mut press =
+            |tab: &mut Tab, code| tab.key(Key::plain(code), &mut editor, &plugins, &mut report);
         // The one that comes with berth stays; another goes after x twice.
         assert_eq!(
             press(&mut tab, Code::Char('x')),
@@ -483,7 +442,7 @@ mod tests {
             Asked::Install("@acme/foo".into())
         );
         assert!(report.is_empty() && editor.is_none());
-        assert!(help(None, &[], &place.adding("/srv/plugins")).contains("https://berth.example"));
+        assert!(help(None, &[], &adding("/srv/plugins")).contains("/srv/plugins on the server"));
     }
 
     #[test]
@@ -495,9 +454,8 @@ mod tests {
         let mut tab = Tab::default();
         let mut editor = None;
         let mut report = vec![];
-        let place = Place::Here;
         let mut press = |tab: &mut Tab, report: &mut Vec<String>, code| {
-            tab.key(Key::plain(code), &mut editor, &plugins, report, &place)
+            tab.key(Key::plain(code), &mut editor, &plugins, report)
         };
         assert_eq!(press(&mut tab, &mut report, Code::Char('c')), Asked::Check);
         let said = tab.checked(vec![PluginUpdate {

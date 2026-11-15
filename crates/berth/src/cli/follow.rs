@@ -118,6 +118,7 @@ impl Inline {
 
     fn end(mut self) {
         let _ = self.terminal.clear();
+        out::to_line_of(&mut self.terminal);
     }
 }
 

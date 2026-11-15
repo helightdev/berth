@@ -615,115 +615,6 @@ impl Plugin {
     }
 }
 
-/// The listing of `berth plugin list`: each plugin with what its features add.
-pub fn describe(plugins: &[PluginInfo]) -> String {
-    let mut text = String::new();
-    for plugin in plugins {
-        text += &format!(
-            "{}  {} {}  {}\n",
-            plugin.id, plugin.package, plugin.version, plugin.dir
-        );
-        for feature in &plugin.features {
-            text += &format!(
-                "  {}/{}  {} ({})\n",
-                plugin.id, feature.id, feature.label, feature.group
-            );
-            for action in &feature.actions {
-                let mut notes = vec![format!("as {}", action.user)];
-                if action.agent {
-                    notes.push("the agent may run it".into());
-                }
-                if !action.extends.is_empty() {
-                    notes.push(format!("part of {}", action.extends.join(", ")));
-                }
-                for argument in &action.arguments {
-                    notes.push(format!("asks {argument}"));
-                }
-                text += &format!(
-                    "    action   {}:{}  {} ({})\n",
-                    plugin.id,
-                    action.name,
-                    action.label,
-                    notes.join("; ")
-                );
-            }
-            for service in &feature.services {
-                text += &format!(
-                    "    service  {}/{}  as {}: {}\n",
-                    plugin.id,
-                    service.name,
-                    service.user,
-                    service.methods.join(", ")
-                );
-            }
-            for channel in &feature.channels {
-                text += &format!("    channel  {}/{channel}\n", plugin.id);
-            }
-        }
-        for provisioner in &plugin.provisioners {
-            text += &format!(
-                "  provisioner  {}  {} ({})\n",
-                provisioner.id,
-                provisioner.label,
-                provisioner_notes(provisioner).join("; ")
-            );
-        }
-    }
-    text
-}
-
-/// What a provisioner does and asks for, in a few words each.
-pub fn provisioner_notes(provisioner: &ProvisionerInfo) -> Vec<String> {
-    if !provisioner.problem.is_empty() && provisioner.kinds.is_empty() {
-        return vec![provisioner.problem.clone()];
-    }
-    let makes = |kind: &berth_api::ProvisionerKind| match (kind.id.as_str(), kind.setup.as_str()) {
-        (MACHINE, "seed") => "machines that set themselves up from the cloud seed".to_owned(),
-        (MACHINE, _) => "machines berth applies the profile to over SSH".to_owned(),
-        _ => kind.label.clone(),
-    };
-    let kinds: Vec<String> = provisioner.kinds.iter().map(makes).collect();
-    let mut notes = vec![];
-    if !kinds.is_empty() {
-        notes.push(format!("makes {}", kinds.join(" and ")));
-    }
-    if !provisioner.actions.is_empty() {
-        let names: Vec<&str> = provisioner
-            .actions
-            .iter()
-            .map(|action| action.name.as_str())
-            .collect();
-        notes.push(format!("actions {}", names.join(", ")));
-    }
-    if !provisioner.verbs.is_empty() {
-        notes.push(format!("also {}", provisioner.verbs.join(", ")));
-    }
-    for argument in &provisioner.arguments {
-        let kept = provisioner.settings.get(&argument.name);
-        let mut note = match (argument.required, argument.default.as_str(), kept) {
-            (_, _, Some(value)) => format!("asks {} (set to {value})", argument.name),
-            (true, _, None) => format!("asks {}", argument.name),
-            (false, "", None) => format!("may ask {}", argument.name),
-            (false, default, None) => format!("asks {} (default {default})", argument.name),
-        };
-        if !argument.values.is_empty() {
-            note += &format!(": {}", argument.values.join(" or "));
-        }
-        notes.push(note);
-    }
-    for secret in &provisioner.secrets {
-        let missing = provisioner.missing_secrets.contains(secret);
-        notes.push(match missing {
-            true => format!("secret {secret}, not set"),
-            false => format!("secret {secret}"),
-        });
-    }
-    if !provisioner.problem.is_empty() {
-        notes.push(format!("not usable: {}", provisioner.problem));
-    }
-    notes
-}
-
 /// SHA-256 over a plugin's files, their paths and contents, so a plugin
 /// that changed without a new version is told apart. What npm installed
 /// beside it (`node_modules`) and a `.git` folder are not part of it.
@@ -1423,11 +1314,13 @@ mod tests {
         let back: berth_api::ProvisionerInfo = serde_json::from_value(sent).unwrap();
         assert!(back.arguments[1].is_resource() && !back.arguments[0].is_resource());
         assert_eq!(info.provisioners[0].secrets, ["key", "cert"]);
-        let listing = describe(&[info]);
-        assert!(
-            listing.contains("  provisioner  cloud/vm  A VM (makes machines that set themselves up from the cloud seed and Compose project; actions prune, images, grow; also stop, list; asks server; asks cpus (default 4); may ask image: a or b; secret key; secret cert)"),
-            "{listing}"
-        );
+        let kinds: Vec<&str> = info.provisioners[0]
+            .kinds
+            .iter()
+            .map(|kind| kind.id.as_str())
+            .collect();
+        assert_eq!(kinds.len(), 2);
+        assert_eq!(info.provisioners[0].verbs, ["stop", "list"]);
     }
 
     #[test]
@@ -1495,7 +1388,6 @@ mod tests {
         assert_eq!(linked[0].origin(&own), PluginOrigin::Npm);
         let info = linked[0].info(&own);
         assert_eq!(info.features[0].actions[0].name, "go");
-        assert!(describe(&[info]).contains("    action   x:go"));
         assert!(remove(&paths, &shipped[0]).is_err());
         fs::remove_file(own.join("node_modules/berth-plugin-x")).unwrap();
         write(&own.join("x"));

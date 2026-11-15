@@ -69,7 +69,7 @@ const OLD: &[(&[&str], &str)] = &[
     (&["channel"], "berth channel listen HOST"),
 ];
 
-/// The words of the command, without the flags before them.
+/// The words of the command, without its flags.
 fn words(args: &[String]) -> Vec<&str> {
     let mut words = vec![];
     let mut rest = args.iter().skip(1);
@@ -78,7 +78,12 @@ fn words(args: &[String]) -> Vec<&str> {
             rest.next();
             continue;
         }
-        if arg.starts_with('-') && words.is_empty() {
+        // What comes after `--` is a command for a host, not berth's words.
+        if arg == "--" {
+            break;
+        }
+        // The flags the old spellings name are kept; the others are left out.
+        if arg.starts_with('-') && !matches!(arg.as_str(), "--behind" | "--all") {
             continue;
         }
         words.push(arg.as_str());
@@ -176,6 +181,8 @@ mod tests {
             "channel listen studio",
             "ls",
             "resource show r1",
+            "channel --help",
+            "rollout --all",
         ] {
             assert_eq!(said(fine), None, "{fine}");
         }

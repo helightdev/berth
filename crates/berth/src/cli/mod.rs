@@ -14,6 +14,7 @@ mod jobs;
 pub mod login;
 mod old;
 pub mod out;
+mod pages;
 mod setup;
 mod things;
 

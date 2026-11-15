@@ -586,7 +586,7 @@ impl Machine {
                     false => text + " Space or Enter switches to the next value.",
                 }
             }
-            Pick::Create => "Creates the machine and sets it up as this host, with the profile saved first. The output is shown as it runs. When setting it up fails, the machine stays: Delete machine removes it.".into(),
+            Pick::Create => "Creates the machine and sets it up as this host, with the profile saved first. The output is shown as it runs. When setting it up fails, the machine stays: Destroy removes it.".into(),
             Pick::Start => "Starts the host's machine.".into(),
             Pick::Stop => "Stops the host's machine.".into(),
             Pick::Delete => "Destroys the machine the provisioner made for this host. The profile stays, and so does its node on the tailnet. Enter, then type the host's name to say so. From the command line: berth host remove HOST --destroy, which forgets the host too.".into(),

@@ -9,7 +9,7 @@
 //! - `tailnet_user`: the Headscale user a new host belongs to
 //! - `tailnet_tags`: tags for new hosts, comma separated
 //! - the secret `tailnet_api_key`: Tailscale API access token or Headscale API
-//!   key. `TS_API_KEY` in the environment works for Tailscale too
+//!   key
 
 use crate::{Result, paths::Paths, registry::Store};
 use berth_api::profile::{self, TAILNET_API_KEY};

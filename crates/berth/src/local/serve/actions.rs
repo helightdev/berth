@@ -332,7 +332,11 @@ pub async fn host_act(
         ),
     };
     let secrets = secret_names(&state);
-    let observed = observed(&remote).await;
+    // Only installing the controller asks what the host is, which takes a login there.
+    let observed = match action.as_str() {
+        "install-controller" => observed(&remote).await,
+        _ => None,
+    };
     let actions = host_list(&Seen {
         name: &name,
         profile: &profile,
@@ -1475,7 +1479,7 @@ fn adopt(state: Arc<Serve>, _: String, act: Act) -> Run {
             let _ = writeln!(out, "berth logs in to it {way}.");
             let _ = writeln!(
                 out,
-                "Next: berth host apply {name}. It gives this berth's own key a block of its own in the operator's authorized_keys."
+                "Next: berth apply {name}. It gives this berth's own key a block of its own in the operator's authorized_keys."
             );
             let _ = writeln!(
                 out,

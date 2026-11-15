@@ -247,6 +247,7 @@ fn on_terminal(question: &Question) -> Result<Answer> {
         }
     })();
     let _ = terminal.clear();
+    out::to_line_of(&mut terminal);
     let _ = crossterm::terminal::disable_raw_mode();
     drop(terminal);
     let answer = answered?;

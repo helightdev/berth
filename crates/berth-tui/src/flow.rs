@@ -217,7 +217,30 @@ pub fn apply(config: &mut Value, features: &[Feature], setting: &Setting) -> Res
             Ok(())
         }
         Setting::Secret(name, how) => {
-            setup::set_secret(config, name, how).map_err(|why| format!("secret.{name}: {why}"))
+            // A file may say its mode after it, as PATH:0640.
+            let (how, mode) = match how.rsplit_once(':') {
+                Some((path, mode))
+                    if (3..=4).contains(&mode.len())
+                        && mode.chars().all(|ch| ('0'..='7').contains(&ch)) =>
+                {
+                    (path, Some(mode))
+                }
+                _ => (how.as_str(), None),
+            };
+            setup::set_secret(config, name, how).map_err(|why| format!("secret.{name}: {why}"))?;
+            if let Some(mode) = mode
+                && let Some(entry) = config["secrets"]
+                    .as_array_mut()
+                    .and_then(|secrets| {
+                        secrets
+                            .iter_mut()
+                            .find(|entry| entry["name"] == name.as_str())
+                    })
+                    .filter(|entry| entry["file"].is_string())
+            {
+                entry["mode"] = json!(mode);
+            }
+            Ok(())
         }
         Setting::Registry(name, on) => {
             let has = config["registries"]

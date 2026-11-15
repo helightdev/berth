@@ -77,15 +77,18 @@ pub async fn profile(State(state): App, Path(name): Path<String>) -> Answer<Json
 pub async fn save_profile(
     State(state): App,
     Path(name): Path<String>,
+    access: Option<Extension<Access>>,
     Json(mut profile): Json<Value>,
 ) -> Answer<Json<Done>> {
+    // A caller on the socket or in berth itself is the server's own user.
+    let own_user = access.is_none();
     let place = own_place(&name)?;
     if !profile.is_object() {
         return Err(bad("A profile is an object"));
     }
     // A caller of an older layout: its access fields are read as now. A key
     // file it names is on another machine, so the server logs in with its own.
-    if let Some(builder) = profile["builder"].as_object_mut() {
+    if let Some(builder) = profile.get_mut("builder").and_then(Value::as_object_mut) {
         builder.remove("ssh_key");
     }
     berth_core::import::convert_layout(&state.paths, &name, &mut profile);
@@ -105,7 +108,7 @@ pub async fn save_profile(
         }
     }
     // How the caller reached this server is not part of the host.
-    if let Some(builder) = profile["builder"].as_object_mut() {
+    if let Some(builder) = profile.get_mut("builder").and_then(Value::as_object_mut) {
         builder.remove("served");
         builder.remove("served_only");
     }
@@ -114,13 +117,13 @@ pub async fn save_profile(
     let kept = place.load(&state.paths).map_err(internal)?;
     let kept_access = kept.as_ref().map(berth_api::profile::Access::of);
     let link = kept_access.as_ref().and_then(|kept| kept.link.clone());
-    if access.link.is_some() && link != access.link {
+    if !own_user && access.link.is_some() && link != access.link {
         return Err(bad(
             "access.link is a command the server runs, and is set on the server itself",
         ));
     }
     let ssh = kept_access.is_some_and(|kept| kept.auth == berth_api::profile::Auth::Ssh);
-    if access.auth == berth_api::profile::Auth::Ssh && !ssh {
+    if !own_user && access.auth == berth_api::profile::Auth::Ssh && !ssh {
         return Err(bad(
             "access.auth ssh is the SSH configuration of the server's own account, and is set on the server itself",
         ));

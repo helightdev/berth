@@ -68,8 +68,8 @@ impl Fail {
 /// The exit status an error of the API stands for.
 pub fn status_of(status: u16) -> i32 {
     match status {
-        400 | 412 | 413 => USAGE,
-        401 | 403 | 501 => REFUSED,
+        400 | 413 => USAGE,
+        401 | 403 | 412 | 501 => REFUSED,
         503 => UNREACHABLE,
         _ => FAILED,
     }

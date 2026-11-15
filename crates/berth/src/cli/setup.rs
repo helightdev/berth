@@ -131,7 +131,7 @@ fn starting_profile(client: &Client, from: &str) -> Result<Value> {
             profile.remove(key);
         }
     }
-    if let Some(access) = profile["access"].as_object_mut() {
+    if let Some(access) = profile.get_mut("access").and_then(Value::as_object_mut) {
         access.remove("address");
     }
     Ok(profile)
@@ -710,6 +710,20 @@ pub fn plugin(client: &Client, command: Plugin) -> Result<()> {
                     ]);
                 }
                 table.print("No plugins");
+            });
+            Ok(())
+        }
+        Plugin::Show { id } => {
+            let found = client.call("plugins.list", json!({}), None)?;
+            let plugins: Vec<berth_api::PluginInfo> =
+                serde_json::from_value(found["plugins"].clone())?;
+            let Some(plugin) = plugins.into_iter().find(|plugin| plugin.id == id) else {
+                return Err(Fail::failed(format!(
+                    "There is no plugin {id}. The plugins are listed by berth plugin list"
+                )));
+            };
+            out::data(&serde_json::to_value(&plugin)?, || {
+                print!("{}", super::pages::plugins(std::slice::from_ref(&plugin)));
             });
             Ok(())
         }

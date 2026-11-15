@@ -83,6 +83,9 @@ pub fn list(client: &Client) -> Result<()> {
 pub fn show(client: &Client, name: &str) -> Result<()> {
     let host = client.call("hosts.get", json!({"name": name}), None)?;
     let machine = machine_of(client, name).ok().flatten();
+    // The profile needs the role admin, and the actions a host that answers: each is left out without.
+    let given = profile_of(client, name).ok();
+    let actions = client.actions(&Subject::Host(name.to_owned())).ok();
     let mut shown = host.clone();
     if let Some(machine) = &machine {
         shown["resource"] = machine.clone();
@@ -118,9 +121,39 @@ pub fn show(client: &Client, name: &str) -> Result<()> {
             );
             pairs.push(("Made by", made));
         }
+        if let Some(profile) = &given {
+            let secrets: Vec<String> = profile["secrets"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|secret| {
+                    let named = secret["name"].as_str().unwrap_or("");
+                    match (secret["env"].as_str(), secret["file"].as_str()) {
+                        (Some(env), _) => format!("{named} as {env}"),
+                        (None, Some(file)) => match secret["mode"].as_str() {
+                            Some(mode) => format!("{named} in {file} ({mode})"),
+                            None => format!("{named} in {file}"),
+                        },
+                        _ => named.to_owned(),
+                    }
+                })
+                .collect();
+            pairs.push(("Secrets", secrets.join(", ")));
+            let registries: Vec<&str> = profile["registries"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            pairs.push(("Registries", registries.join(", ")));
+        }
         out::fields(&pairs);
+        if let Some(actions) = &actions {
+            println!();
+            super::things::action_table(actions).print("Nothing to do");
+        }
         out::hint(format!(
-            "What it can do: berth action list {name}. Its profile: berth host export {name}"
+            "Run an action with berth run {name} ACTION. Its profile: berth host export {name}"
         ));
     });
     Ok(())
@@ -217,20 +250,9 @@ fn add(client: &Client, add: &args::HostAdd) -> Result<()> {
         ))
     })?;
     let host = client.call("hosts.get", json!({"name": add.name}), None)?;
-    if let Some(seen) = host["seen"].as_str().and_then(HostType::parse)
-        && seen > host_type
-    {
-        let said = format!("{} is set up as a host of the type {seen}", add.name);
-        match seen {
-            HostType::Workstation => out::warn(format!(
-                "{said}. Take in its profile with berth host adopt {}",
-                add.name
-            )),
-            _ => out::warn(format!(
-                "{said}. Say so with berth host set {} type={seen}",
-                add.name
-            )),
-        }
+    let seen = host["seen"].as_str().and_then(HostType::parse);
+    if let Some(said) = berth_api::type_mismatch(&add.name, host_type, seen) {
+        out::warn(said);
     }
     Ok(())
 }
@@ -260,8 +282,7 @@ pub fn trust(
     match follow::acted(client, tried, &title, false, false) {
         Ok(_) => Ok(()),
         // Refused without a password: ask for one, once.
-        Err(fail) if password.is_none() && key.is_none() && out::get().ask => {
-            let _ = fail;
+        Err(_) if password.is_none() && key.is_none() && out::get().ask => {
             let password = ask::secret(
                 &format!("Password of the SSH user of {name}, used once"),
                 "--password-stdin",
