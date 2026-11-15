@@ -191,7 +191,7 @@ actions:
 | Action | What it does |
 | --- | --- |
 | `server` | Says the server's version, its kernel and storage drivers, and whether it trusts berth. |
-| `pools` | The storage pools, with how much of each is used. |
+| `pools` | A table of the storage pools with the driver, source, size, used and free space of each, and whether it can grow. |
 | `images` | The images the server keeps in the project, with their sizes. |
 | `networks` | The networks a machine can be attached to. |
 | `volumes` | The custom volumes of every pool, with their sizes and whether an instance uses each. |
@@ -200,8 +200,78 @@ actions:
 | `create-pool` | Creates a storage pool with the driver `dir`, `zfs`, `btrfs` or `lvm`. The last three take a size for their loop file. |
 | `remove-pool` | Removes a storage pool. Incus refuses one that still holds something. |
 | `remove-image` | Removes a cached image, by its alias or the start of its fingerprint. |
+| `resize-pool` | Grows a storage pool to `size`. |
+| `set-pool` | Sets one setting `key` of a pool to `value`. An empty value unsets it. |
+| `resize-volume` | Gives a custom volume a new `size`. |
+| `resize-disk` | Grows the root disk of `instance` to `size`, and restarts a virtual machine with `restart=yes`. |
 
-The page also offers the server's pools and networks for `pool` and `network`.
+The page also offers the server's pools, networks and instances for `pool`,
+`network` and `instance`.
+
+## Storage
+
+A size is a whole number and a unit with no space between them, such as
+`50GiB` or `200GB`. `kB`, `MB`, `GB` and `TB` count in powers of 1000, and
+`KiB`, `MiB`, `GiB` and `TiB` in powers of 1024. A number alone is bytes. The
+plugin checks a size before it sends anything to Incus.
+
+```bash
+berth provisioner run ovh-incus pools
+berth provisioner run ovh-incus resize-pool pool=default size=200GiB
+berth provisioner run ovh-incus resize-disk instance=berth-studio size=100GiB restart=yes
+```
+
+### Growing a pool
+
+`resize-pool` raises the pool's `size`, and Incus grows its loop file. The
+job says the pool's size and free space before and after. Incus grows a pool
+and never shrinks one, with any driver. The plugin refuses a smaller size.
+
+| Pool | `resize-pool` |
+| --- | --- |
+| `btrfs`, `zfs` or `lvm` on a loop file Incus made | Grows it |
+| `dir` | Refused, as the pool has no size of its own, only the space of the file system it's in |
+| On a disk, partition, ZFS dataset or LVM volume group given when it was made | Refused. Grow that on the server instead |
+| Another driver, such as `ceph` | Refused |
+
+An Incus without the API extension `storage_pool_loop_resize` can't grow a
+pool, and the plugin says so.
+
+### Pool settings
+
+`set-pool` changes only the settings that Incus takes for a pool that exists.
+The ones that say where and how the pool was made, such as `source`,
+`zfs.pool_name` or `lvm.vg_name`, stay as they are. The plugin refuses any
+other key and lists the ones it knows.
+
+| Pool | Settings |
+| --- | --- |
+| Any | `description`, and the defaults of new volumes: `volume.size`, `volume.snapshots.schedule` and `volume.snapshots.expiry` |
+| `dir` | Also `rsync.bwlimit` and `rsync.compression` |
+| `btrfs` | Also `btrfs.mount_options` |
+| `zfs` | Also `zfs.clone_copy` and `zfs.export` |
+
+### Volumes and root disks
+
+`resize-volume` sets the size of a custom volume. Incus grows any volume. It
+shrinks a volume of the content type `filesystem` only down to what it holds,
+and refuses anything smaller. A `block` volume never shrinks, and the plugin
+refuses that. A volume in a `dir` pool has a size only when the file system
+under the pool has project quotas.
+
+`resize-disk` sets the size of the instance's root disk. When the instance has
+its root disk from a profile, it gets a disk of its own with the new size, and
+the profile stays as it is. The plugin only grows a root disk.
+
+| Instance | After `resize-disk` |
+| --- | --- |
+| Container | Has the new size at once, with no restart |
+| Running virtual machine | Its guest sees the new size after a restart. The plugin restarts it only with `restart=yes` |
+| Stopped virtual machine | Has the new size when it starts |
+
+A machine's `change` grows its disk too, when `disk` is given anew. It leaves a
+disk that `resize-disk` grew as it is, though berth's record still shows the
+size it was made with.
 
 ## Limits
 

@@ -543,7 +543,8 @@ def server_status(incus):
         {'label': 'Project', 'value': incus.project},
     ]
     values = {}
-    for argument, path in (('pool', '/1.0/storage-pools'), ('network', '/1.0/networks')):
+    for argument, path in (('pool', '/1.0/storage-pools'), ('network', '/1.0/networks'),
+                           ('instance', '/1.0/instances')):
         try:
             values[argument] = [name for name in names(incus, path) if name]
         except IncusError:
@@ -556,6 +557,62 @@ def server_status(incus):
 
 # What change applies to an instance in place; the rest are fixed when it is made.
 CHANGEABLE = ('cpus', 'memory', 'disk')
+
+# The byte suffixes Incus takes for sizes ("Units for storage, memory and network limits"); none is bytes.
+UNITS = {'': 1, 'B': 1, 'bytes': 1,
+         'kB': 1000, 'MB': 1000 ** 2, 'GB': 1000 ** 3, 'TB': 1000 ** 4, 'PB': 1000 ** 5, 'EB': 1000 ** 6,
+         'KiB': 1024, 'MiB': 1024 ** 2, 'GiB': 1024 ** 3, 'TiB': 1024 ** 4, 'PiB': 1024 ** 5, 'EiB': 1024 ** 6}
+SIZE = re.compile(r'([0-9]+)(' + '|'.join(unit for unit in UNITS if unit) + ')?')
+SIZE_HELP = ('a whole number and a unit with no space between them, such as 50GiB or 200GB '
+             '(kB, MB, GB, TB in powers of 1000; KiB, MiB, GiB, TiB in powers of 1024)')
+
+
+def bytes_of(text):
+    """The bytes a size as Incus writes it stands for, or None for one it would not take."""
+    match = SIZE.fullmatch((text or '').strip())
+    return int(match[1]) * UNITS[match[2] or ''] if match else None
+
+
+def size_of(arguments, what='size'):
+    """The size given, checked before it is sent: Incus takes nothing else."""
+    size = (arguments.get(what) or '').strip()
+    if not size:
+        raise Failure(f'Give the {what}: {SIZE_HELP}.')
+    if not bytes_of(size):
+        raise Failure(f'{size!r} is not a size Incus takes. Give {SIZE_HELP}.')
+    return size
+
+
+def optional_size(arguments):
+    """A size that may be left out, checked like any other."""
+    return size_of(arguments) if (arguments.get('size') or '').strip() else ''
+
+
+def root_device(instance):
+    """The name and settings of the instance's root disk, and whether they are its own
+    rather than its profile's."""
+    for own, devices in ((True, instance.get('devices') or {}), (False, instance.get('expanded_devices') or {})):
+        for name, device in sorted(devices.items()):
+            if (device or {}).get('type') == 'disk' and device.get('path') == '/':
+                return name, dict(device), own
+    return None, None, False
+
+
+def grow_root(incus, name, instance, size):
+    """The patch that gives the instance's root disk `size`, or None when it has it already.
+    A root disk the instance has from its profile is overridden by one of its own with the new size."""
+    device, root, own = root_device(instance)
+    if not root:
+        raise Failure(f'{name} has no root disk berth can find: neither it nor its profiles have a disk at /.')
+    current = root.get('size') or ''
+    if bytes_of(current) == bytes_of(size):
+        return None
+    if bytes_of(current) and bytes_of(size) < bytes_of(current):
+        raise Failure(f'The root disk of {name} is {current}, and berth only grows it: Incus cannot shrink a '
+                      'virtual machine\'s disk, and a container\'s only on some drivers and never below what it holds.')
+    if not own:
+        say(f'{name} has its root disk from its profile; it gets one of its own of {size}.')
+    return {'devices': {**(instance.get('devices') or {}), device: {**root, 'size': size}}}
 
 
 def change(incus, request, arguments):
@@ -574,9 +631,12 @@ def change(incus, request, arguments):
         patch['config']['limits.cpu'] = arguments['cpus']
     if arguments.get('memory'):
         patch['config']['limits.memory'] = arguments['memory']
-    root = ((instance.get('devices') or {}).get('root') or {})
-    if arguments.get('disk') and root and root.get('size') != arguments['disk']:
-        patch['devices'] = {**(instance.get('devices') or {}), 'root': {**root, 'size': arguments['disk']}}
+    # berth sends every value; the disk is grown only when it was given anew, so a disk
+    # resize-disk grew is not set back to the size berth made it with.
+    if arguments.get('disk') and 'disk' in request.get('changed', ['disk']):
+        grown = grow_root(incus, name, instance, size_of(arguments, 'disk'))
+        if grown:
+            patch.update(grown)
     if patch['config'] or 'devices' in patch:
         say(f'Changing {name}…')
         incus.call('PATCH', f'/1.0/instances/{name}', patch)
@@ -640,17 +700,214 @@ def act_server(incus, arguments):
     return {'message': status['message'], 'details': status['details']}
 
 
+def table(header, rows):
+    """Rows of an answer that read as a table: the first cell is the label, the rest are
+    lined up in the value, with the header as the first row."""
+    cells = [list(header)] + [list(row) for row in rows]
+    widths = [max(len(row[column]) for row in cells) for column in range(len(header))]
+    lined = []
+    for row in cells:
+        value = '  '.join(cell.ljust(widths[column]) for column, cell in enumerate(row[1:], 1)).rstrip()
+        lined.append({'label': row[0], 'value': value})
+    return lined
+
+
+# Drivers whose loop file Incus grows when the pool's size is raised ("Resize a storage pool").
+GROWS = ('btrfs', 'zfs', 'lvm')
+
+
+def resizable(incus, pool):
+    """Whether Incus can grow the pool by its size, and why not."""
+    driver = pool.get('driver') or '?'
+    source = ((pool.get('config') or {}).get('source') or '').strip()
+    if driver == 'dir':
+        return False, 'a dir pool has no size of its own, only the space of its file system'
+    if driver not in GROWS:
+        return False, f'Incus grows only loop-backed btrfs, zfs and lvm pools, not {driver}'
+    # A loop file Incus made is DISKS/NAME.img; any other source is a device, dataset or group the admin gave.
+    if source and not source.endswith('.img'):
+        return False, f'it is on {source}, given when it was made; grow that instead'
+    extensions = incus.about.get('api_extensions')
+    if isinstance(extensions, list) and 'storage_pool_loop_resize' not in extensions:
+        return False, 'this Incus lacks the API extension storage_pool_loop_resize'
+    return True, ''
+
+
+def space_of(incus, name):
+    """The total and used bytes of a pool, or (None, None) when Incus cannot tell."""
+    try:
+        space = (incus.call('GET', f'/1.0/storage-pools/{name}/resources') or {}).get('space') or {}
+    except IncusError:
+        return None, None
+    return space.get('total'), space.get('used')
+
+
+def space_said(total, used):
+    if total is None:
+        return 'its use is not known'
+    return f'{gib(total)}, {gib(used)} used, {gib((total or 0) - (used or 0))} free'
+
+
 def act_pools(incus, arguments):
     rows = []
-    for pool in incus.call('GET', '/1.0/storage-pools', query={'recursion': 1}) or []:
+    pools = incus.call('GET', '/1.0/storage-pools', query={'recursion': 1}) or []
+    for pool in pools[:ROWS]:
         name = pool.get('name') or ''
-        try:
-            space = (incus.call('GET', f'/1.0/storage-pools/{name}/resources') or {}).get('space') or {}
-            used = f'{gib(space.get("used"))} of {gib(space.get("total"))} used'
-        except IncusError:
-            used = 'its use is not known'
-        rows.append({'label': name, 'value': f'{pool.get("driver") or "?"} · {used}'})
-    return {'message': f'{counted(len(rows), "storage pool")} on {incus.server}', 'details': rows[:ROWS]}
+        config = pool.get('config') or {}
+        total, used = space_of(incus, name)
+        can, why = resizable(incus, pool)
+        known = total is not None
+        rows.append((name, pool.get('driver') or '?', config.get('source') or '',
+                     gib(total) if known else config.get('size') or '?',
+                     gib(used) if known else '?', gib((total or 0) - (used or 0)) if known else '?',
+                     'yes' if can else f'no: {why}'))
+    message = f'{counted(len(pools), "storage pool")} on {incus.server}'
+    if len(pools) > ROWS:
+        message += f', the first {ROWS} shown'
+    return {'message': message,
+            'details': table(('Pool', 'Driver', 'Source', 'Size', 'Used', 'Free', 'Can grow'), rows)}
+
+
+def pool_named(incus, name):
+    pool = incus.call('GET', f'/1.0/storage-pools/{name}', missing=True)
+    if not pool:
+        raise Failure(f'{incus.server} has no storage pool {name}.')
+    return pool
+
+
+def act_resize_pool(incus, arguments):
+    name, size = pool_of(arguments), size_of(arguments)
+    pool = pool_named(incus, name)
+    can, why = resizable(incus, pool)
+    if not can:
+        raise Failure(f'The pool {name} cannot be resized: {why}.')
+    total, used = space_of(incus, name)
+    current = (pool.get('config') or {}).get('size') or ''
+    now = bytes_of(current) or total
+    if now and bytes_of(size) == now:
+        return {'message': f'The pool {name} is {current or gib(total)} already',
+                'details': [{'label': 'Size', 'value': space_said(total, used)}]}
+    if now and bytes_of(size) < now:
+        raise Failure(f'The pool {name} is {current or gib(total)}, and Incus only grows a pool: no driver, '
+                      f'{pool.get("driver")} neither, can shrink one. Give a size larger than that.')
+    say(f'Before: {space_said(total, used)}')
+    say(f'Growing the {pool.get("driver")} pool {name} to {size}…')
+    incus.call('PATCH', f'/1.0/storage-pools/{name}', {'config': {'size': size}})
+    after = space_of(incus, name)
+    say(f'After: {space_said(*after)}')
+    return {'message': f'The pool {name} on {incus.server} is {size} now',
+            'details': [{'label': 'Before', 'value': space_said(total, used)},
+                        {'label': 'After', 'value': space_said(*after)}]}
+
+
+# The pool settings set-pool changes: those Incus applies to a pool that exists. The ones that
+# say where and how it was made, such as source, zfs.pool_name and lvm.vg_name, stay as they were.
+POOL_KEYS = {
+    'description': 'what the pool is for, in words',
+    'volume.size': 'the size of a new volume or root disk that names none',
+    'volume.snapshots.schedule': 'when new volumes take snapshots, as a cron expression or @daily',
+    'volume.snapshots.expiry': 'when snapshots of new volumes are removed, such as 2w',
+}
+DRIVER_KEYS = {
+    'dir': {'rsync.bwlimit': 'the bandwidth rsync may use to move volumes, such as 50MB',
+            'rsync.compression': 'whether rsync compresses what it moves: true or false'},
+    'btrfs': {'btrfs.mount_options': 'the options the pool is mounted with'},
+    'zfs': {'zfs.clone_copy': 'true, false or rebase: how instances are copied from images',
+            'zfs.export': 'whether the zpool is exported when it is unmounted: true or false'},
+}
+
+
+def act_set_pool(incus, arguments):
+    name = pool_of(arguments)
+    key, value = (arguments.get('key') or '').strip(), (arguments.get('value') or '').strip()
+    pool = pool_named(incus, name)
+    driver = pool.get('driver') or '?'
+    known = {**POOL_KEYS, **DRIVER_KEYS.get(driver, {})}
+    if key == 'size':
+        raise Failure('The size of a pool is changed with resize-pool, which says whether it can grow.')
+    if key not in known:
+        raise Failure(f'berth does not change {key or "(no key)"} of a {driver} pool. It changes '
+                      + ', '.join(known) + '; the rest are fixed when the pool is made.')
+    if key == 'volume.size' and value:
+        size_of({'size': value})
+    before = pool.get('description') if key == 'description' else (pool.get('config') or {}).get(key)
+    if key == 'description':
+        incus.call('PATCH', f'/1.0/storage-pools/{name}', {'description': value})
+    elif value:
+        incus.call('PATCH', f'/1.0/storage-pools/{name}', {'config': {key: value}})
+    else:
+        # An empty value unsets the key, as `incus storage unset` does: the pool is put back without it.
+        config = {k: v for k, v in (pool.get('config') or {}).items() if k != key}
+        incus.call('PUT', f'/1.0/storage-pools/{name}', {'config': config, 'description': pool.get('description') or ''})
+    return {'message': f'The pool {name}: {key} is {value or "unset"} now',
+            'details': [{'label': 'Before', 'value': before or '(unset)'},
+                        {'label': 'After', 'value': value or '(unset)'}]}
+
+
+def act_resize_volume(incus, arguments):
+    pool, size = pool_of(arguments), size_of(arguments)
+    name = storage_name({'name': arguments.get('volume')}, 'volume')
+    path = f'/1.0/storage-pools/{pool}/volumes/custom/{name}'
+    volume = incus.call('GET', path, missing=True)
+    if not volume:
+        raise Failure(f'The pool {pool} has no custom volume {name} in the project {incus.project}.')
+    current = (volume.get('config') or {}).get('size') or ''
+    content = volume.get('content_type') or 'filesystem'
+    if current and bytes_of(size) == bytes_of(current):
+        return {'message': f'The volume {pool}/{name} is {current} already'}
+    if current and bytes_of(size) < (bytes_of(current) or 0):
+        if content == 'block':
+            raise Failure(f'{pool}/{name} is a block volume of {current}, and Incus cannot shrink a block volume.')
+        say(f'Shrinking {pool}/{name}: Incus refuses it if the volume holds more than {size}.')
+    used = ''
+    try:
+        state = incus.call('GET', f'{path}/state', missing=True) or {}
+        if (state.get('usage') or {}).get('used') is not None:
+            used = f', {gib(state["usage"]["used"])} used'
+    except IncusError:
+        pass
+    say(f'Before: {current or "no set size"}{used}')
+    incus.call('PATCH', path, {'config': {'size': size}})
+    say(f'After: {size}')
+    return {'message': f'The volume {pool}/{name} is {size} now',
+            'details': [{'label': 'Before', 'value': (current or 'no set size') + used},
+                        {'label': 'After', 'value': size}]}
+
+
+def act_resize_disk(incus, arguments):
+    name = (arguments.get('instance') or '').strip()
+    if not re.fullmatch(r'[A-Za-z][A-Za-z0-9-]{0,62}', name):
+        raise Failure(f'{name!r} is not an Incus instance: give its name, as the server lists it.')
+    size = size_of(arguments)
+    restart = (arguments.get('restart') or 'no').strip()
+    if restart not in ('yes', 'no'):
+        raise Failure(f'restart is yes or no, not {restart!r}.')
+    instance = incus.instance(name)
+    if not instance:
+        raise Failure(f'{incus.server} has no instance {name} in the project {incus.project}.')
+    _, root, _ = root_device(instance)
+    before = (root or {}).get('size') or 'no set size'
+    patch = grow_root(incus, name, instance, size)
+    if not patch:
+        return {'message': f'The root disk of {name} is {before} already'}
+    say(f'Growing the root disk of {name} from {before} to {size}…')
+    incus.call('PATCH', f'/1.0/instances/{name}', patch)
+    running = state_of(instance) == 'running'
+    vm = instance.get('type') == 'virtual-machine'
+    if not vm:
+        said = 'A container has the new size at once; it was not restarted.'
+    elif not running:
+        said = 'The virtual machine is stopped; it has the new size when it starts.'
+    elif restart == 'yes':
+        say(f'Restarting {name}…')
+        incus.set_state(name, 'restart')
+        said = 'The virtual machine was restarted, and its guest has the new size.'
+    else:
+        said = ('The virtual machine\'s guest sees the new size after a restart: run this again with restart=yes, '
+                'or restart it when it suits.')
+    say(said)
+    return {'message': f'The root disk of {name} is {size} now. {said}',
+            'details': [{'label': 'Before', 'value': before}, {'label': 'After', 'value': size}]}
 
 
 def act_images(incus, arguments):
@@ -707,7 +964,8 @@ def act_volumes(incus, arguments):
 
 def act_create_volume(incus, arguments):
     pool, name = pool_of(arguments), storage_name(arguments, 'volume')
-    config = {'size': arguments['size'].strip()} if (arguments.get('size') or '').strip() else {}
+    size = optional_size(arguments)
+    config = {'size': size} if size else {}
     incus.call('POST', f'/1.0/storage-pools/{pool}/volumes/custom', {'name': name, 'type': 'custom', 'config': config})
     return {'message': f'Created the volume {name} in the pool {pool} on {incus.server}'}
 
@@ -722,9 +980,10 @@ def act_remove_volume(incus, arguments):
 def act_create_pool(incus, arguments):
     name = storage_name(arguments, 'storage pool')
     driver = (arguments.get('driver') or 'dir').strip()
+    size = optional_size(arguments)
     config = {}
-    if (arguments.get('size') or '').strip() and driver != 'dir':
-        config['size'] = arguments['size'].strip()
+    if size and driver != 'dir':
+        config['size'] = size
     say(f'Creating the {driver} pool {name}…')
     incus.call('POST', '/1.0/storage-pools', {'name': name, 'driver': driver, 'config': config})
     return {'message': f'Created the {driver} storage pool {name} on {incus.server}'}
@@ -755,7 +1014,9 @@ def act_remove_image(incus, arguments):
 
 ACTIONS = {'server': act_server, 'pools': act_pools, 'images': act_images, 'networks': act_networks,
            'volumes': act_volumes, 'create-volume': act_create_volume, 'remove-volume': act_remove_volume,
-           'create-pool': act_create_pool, 'remove-pool': act_remove_pool, 'remove-image': act_remove_image}
+           'create-pool': act_create_pool, 'remove-pool': act_remove_pool, 'remove-image': act_remove_image,
+           'resize-pool': act_resize_pool, 'set-pool': act_set_pool, 'resize-volume': act_resize_volume,
+           'resize-disk': act_resize_disk}
 
 
 def act(incus, request, arguments):

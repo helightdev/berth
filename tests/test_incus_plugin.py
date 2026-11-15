@@ -33,8 +33,9 @@ class FakeIncus(ThreadingHTTPServer):
         self.socket = context.wrap_socket(self.socket, server_side=True)
         self.trusted = True
         self.instances = {}
-        self.pools = {'default': 'zfs', 'fast': 'dir'}
+        self.pools = {}
         self.volumes = {}
+        self.extensions = ['storage_pool_loop_resize']
         self.operations = {}
         self.events = []
         self.lock = threading.Lock()
@@ -51,6 +52,34 @@ class FakeIncus(ThreadingHTTPServer):
 
 def public(instance):
     return {k: v for k, v in instance.items() if k not in ('files', 'request', 'console', 'logs')}
+
+
+def pools():
+    """The pools of a server that is set up: a loop-backed zfs pool, a dir pool and an lvm pool on a disk."""
+    gib = 1024 ** 3
+    return {
+        'default': {'name': 'default', 'driver': 'zfs', 'description': '', 'used': 10 * gib,
+                    'config': {'source': '/var/lib/incus/disks/default.img', 'size': '100GiB',
+                               'zfs.pool_name': 'default'}},
+        'fast': {'name': 'fast', 'driver': 'dir', 'description': '', 'used': 5 * gib, 'total': 200 * gib,
+                 'config': {'source': '/var/lib/incus/storage-pools/fast'}},
+        'disk': {'name': 'disk', 'driver': 'lvm', 'description': '', 'used': 0, 'total': 500 * gib,
+                 'config': {'source': '/dev/sdb', 'lvm.vg_name': 'disk'}},
+    }
+
+
+SIZES = {'GiB': 1024 ** 3, 'GB': 1000 ** 3}
+
+
+def size_in_bytes(text):
+    for unit, factor in SIZES.items():
+        if text.endswith(unit):
+            return int(text[:-len(unit)]) * factor
+    return int(text)
+
+
+def public_pool(pool):
+    return {k: v for k, v in pool.items() if k not in ('used', 'total')}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -92,15 +121,32 @@ class Handler(BaseHTTPRequestHandler):
             return self.answer(200, {'auth': 'trusted' if server.trusted else 'untrusted', 'api_version': '1.0',
                                      'environment': {'server_version': '6.18', 'server_name': 'dock',
                                                      'kernel': 'Linux', 'kernel_version': '6.17.0',
-                                                     'storage_supported_drivers': [{'name': 'zfs'}, {'name': 'dir'}]}})
+                                                     'storage_supported_drivers': [{'name': 'zfs'}, {'name': 'dir'}]},
+                                     'api_extensions': server.extensions})
         if not server.trusted:
             return self.answer(403, 'not authorized', 'error')
         if parts == ['1.0', 'storage-pools'] and self.command == 'GET':
-            return self.answer(200, [{'name': name, 'driver': driver} for name, driver in server.pools.items()])
+            return self.answer(200, [public_pool(pool) for pool in server.pools.values()])
         if parts == ['1.0', 'storage-pools'] and self.command == 'POST':
             data = json.loads(body)
             server.events.append(('pool', data))
-            server.pools[data['name']] = data['driver']
+            server.pools[data['name']] = {'name': data['name'], 'driver': data['driver'], 'description': '',
+                                          'config': data.get('config') or {}, 'used': 0}
+            return self.answer(200, {})
+        if parts[:2] == ['1.0', 'storage-pools'] and len(parts) == 3 and self.command in ('GET', 'PATCH', 'PUT'):
+            pool = server.pools.get(parts[2])
+            if pool is None:
+                return self.answer(404, 'Storage pool not found', 'error')
+            if self.command == 'GET':
+                return self.answer(200, public_pool(pool))
+            data = json.loads(body)
+            server.events.append(('pool-' + self.command.lower(), parts[2], data))
+            if self.command == 'PUT':
+                pool['config'] = data.get('config') or {}
+            else:
+                pool['config'].update(data.get('config') or {})
+            if 'description' in data:
+                pool['description'] = data['description']
             return self.answer(200, {})
         if parts[:2] == ['1.0', 'storage-pools'] and len(parts) == 3 and self.command == 'DELETE':
             if any(pool == parts[2] for pool, _ in server.volumes):
@@ -116,6 +162,18 @@ class Handler(BaseHTTPRequestHandler):
                 server.volumes[(pool, data['name'])] = {'name': data['name'], 'config': data.get('config') or {},
                                                         'content_type': 'filesystem', 'used_by': []}
                 return self.answer(200, {})
+            volume = server.volumes.get((pool, parts[5])) if len(parts) > 5 else None
+            if len(parts) >= 6 and volume is None:
+                return self.answer(404, 'Storage volume not found', 'error')
+            if len(parts) == 6 and self.command == 'GET':
+                return self.answer(200, volume)
+            if len(parts) == 6 and self.command == 'PATCH':
+                data = json.loads(body)
+                server.events.append(('volume-patch', pool, parts[5], data))
+                volume['config'].update(data.get('config') or {})
+                return self.answer(200, {})
+            if parts[6:] == ['state']:
+                return self.answer(200, {'usage': {'used': volume.get('used', 0)}})
             if len(parts) == 6 and self.command == 'DELETE':
                 if server.volumes.pop((pool, parts[5]), None) is None:
                     return self.answer(404, 'Storage volume not found', 'error')
@@ -126,9 +184,11 @@ class Handler(BaseHTTPRequestHandler):
             server.events.append(('image-delete', parts[2]))
             return self.answer(202, server.operation(), 'async')
         if parts[:2] == ['1.0', 'storage-pools'] and parts[3:] == ['resources']:
-            if parts[2] == 'fast':
-                return self.answer(500, 'no resources for dir', 'error')
-            return self.answer(200, {'space': {'used': 10 * 1024 ** 3, 'total': 100 * 1024 ** 3}})
+            pool = server.pools[parts[2]]
+            if pool.get('unknown'):
+                return self.answer(500, 'Failed getting the pool resources', 'error')
+            total = pool.get('total') or size_in_bytes(pool['config'].get('size') or '0')
+            return self.answer(200, {'space': {'used': pool['used'], 'total': total}})
         if parts == ['1.0', 'networks']:
             return self.answer(200, [{'name': 'incusbr0', 'type': 'bridge', 'managed': True},
                                      {'name': 'eth0', 'type': 'physical', 'managed': False}])
@@ -183,7 +243,7 @@ class Handler(BaseHTTPRequestHandler):
         if rest == ['state'] and self.command == 'PUT':
             action = json.loads(body)
             server.events.append((action['action'], instance['name'], action.get('force', False)))
-            instance['status'] = {'start': 'Running', 'stop': 'Stopped'}[action['action']]
+            instance['status'] = {'start': 'Running', 'stop': 'Stopped', 'restart': 'Running'}[action['action']]
             return self.answer(202, server.operation(), 'async')
         if rest == ['exec'] and self.command == 'POST':
             server.events.append(('exec', instance['name'], json.loads(body)))
@@ -258,6 +318,9 @@ class IncusPluginTests(unittest.TestCase):
         self.server.trusted = True
         self.server.instances.clear()
         self.server.events.clear()
+        self.server.pools = pools()
+        self.server.volumes.clear()
+        self.server.extensions = ['storage_pool_loop_resize']
 
     def run_verb(self, verb, provisioner='container', secrets=None, **fields):
         request = {'version': 2, 'verb': verb, 'provisioner': provisioner,
@@ -459,13 +522,13 @@ class IncusPluginTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(answer['state'], 'ready')
         self.assertEqual(answer['message'], f'Incus 6.18 answers at {self.address} and trusts berth')
-        self.assertEqual(answer['values'], {'pool': ['default', 'fast'], 'network': ['eth0', 'incusbr0']})
+        self.assertEqual(answer['values'], {'pool': ['default', 'disk', 'fast'], 'network': ['eth0', 'incusbr0'],
+                                            'instance': []})
         rows = {row['label']: row['value'] for row in answer['details']}
         self.assertEqual((rows['Name'], rows['Storage'], rows['Kernel']), ('dock', 'zfs, dir', 'Linux 6.17.0'))
 
     def test_volumes_and_pools_are_created_listed_and_removed(self):
-        def act(action, **arguments):
-            return self.run_verb('act', action={'name': action, 'arguments': arguments})
+        act = self.act
         code, answer, err = act('create-pool', name='bulk', driver='zfs', size='50GiB')
         self.assertEqual(code, 0, err)
         self.assertIn(('pool', {'name': 'bulk', 'driver': 'zfs', 'config': {'size': '50GiB'}}), self.server.events)
@@ -489,8 +552,6 @@ class IncusPluginTests(unittest.TestCase):
     def test_actions_answer_with_rows(self):
         code, answer, err = self.run_verb('act', action={'name': 'pools', 'arguments': {}})
         self.assertEqual(code, 0, err)
-        self.assertEqual(answer['details'], [{'label': 'default', 'value': 'zfs · 10.0 GiB of 100.0 GiB used'},
-                                             {'label': 'fast', 'value': 'dir · its use is not known'}])
         code, answer, err = self.run_verb('act', action={'name': 'images'})
         self.assertEqual(code, 0, err)
         self.assertEqual(answer['details'], [{'label': 'Ubuntu 26.04', 'value': 'container · 2.0 GiB · cached'}])
@@ -501,6 +562,195 @@ class IncusPluginTests(unittest.TestCase):
         code, _, err = self.run_verb('act', action={'name': 'wipe'})
         self.assertEqual(code, 1)
         self.assertIn("no action 'wipe'", err)
+
+    def act(self, action, **arguments):
+        return self.run_verb('act', action={'name': action, 'arguments': arguments})
+
+    def test_pools_are_a_table_that_says_which_can_grow(self):
+        self.server.pools['bare'] = {'name': 'bare', 'driver': 'btrfs', 'description': '', 'used': 0,
+                                     'unknown': True, 'config': {'source': '/var/lib/incus/disks/bare.img',
+                                                                 'size': '20GiB'}}
+        code, answer, err = self.act('pools')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(answer['message'], f'4 storage pools on {self.address}')
+        rows = {row['label']: row['value'].split() for row in answer['details']}
+        self.assertEqual(answer['details'][0]['label'], 'Pool')
+        self.assertEqual(rows['Pool'], ['Driver', 'Source', 'Size', 'Used', 'Free', 'Can', 'grow'])
+        self.assertEqual(rows['default'], ['zfs', '/var/lib/incus/disks/default.img', '100.0', 'GiB',
+                                           '10.0', 'GiB', '90.0', 'GiB', 'yes'])
+        self.assertEqual(rows['fast'][:3], ['dir', '/var/lib/incus/storage-pools/fast', '200.0'])
+        fast = answer['details'][[r['label'] for r in answer['details']].index('fast')]['value']
+        self.assertIn('no: a dir pool has no size of its own', fast)
+        disk = answer['details'][[r['label'] for r in answer['details']].index('disk')]['value']
+        self.assertIn('no: it is on /dev/sdb, given when it was made; grow that instead', disk)
+        self.assertEqual(rows['bare'][:5], ['btrfs', '/var/lib/incus/disks/bare.img', '20GiB', '?', '?'])
+        # The columns line up: each starts at the same place in every row.
+        values = [row['value'] for row in answer['details']]
+        at = values[0].index('Source')
+        self.assertTrue(all(value[at - 2:at] == '  ' and value[at] != ' ' for value in values), values)
+
+    def test_a_loop_backed_pool_grows_and_says_its_space_before_and_after(self):
+        code, answer, err = self.act('resize-pool', pool='default', size='150GiB')
+        self.assertEqual(code, 0, err)
+        self.assertIn(('pool-patch', 'default', {'config': {'size': '150GiB'}}), self.server.events)
+        self.assertEqual(answer['message'], f'The pool default on {self.address} is 150GiB now')
+        self.assertEqual(answer['details'], [
+            {'label': 'Before', 'value': '100.0 GiB, 10.0 GiB used, 90.0 GiB free'},
+            {'label': 'After', 'value': '150.0 GiB, 10.0 GiB used, 140.0 GiB free'}])
+        self.assertIn('Before: 100.0 GiB, 10.0 GiB used, 90.0 GiB free', err)
+        self.assertIn('After: 150.0 GiB, 10.0 GiB used, 140.0 GiB free', err)
+        # The same size again changes nothing.
+        self.server.events.clear()
+        code, answer, err = self.act('resize-pool', pool='default', size='150GiB')
+        self.assertEqual(code, 0, err)
+        self.assertIn('already', answer['message'])
+        self.assertFalse([e for e in self.server.events if e[0] == 'pool-patch'])
+
+    def test_a_pool_that_cannot_grow_is_refused_with_the_reason(self):
+        cases = [
+            ({'pool': 'default', 'size': '50GiB'}, 'Incus only grows a pool'),
+            ({'pool': 'fast', 'size': '500GiB'}, 'a dir pool has no size of its own'),
+            ({'pool': 'disk', 'size': '1000GiB'}, 'it is on /dev/sdb, given when it was made'),
+            ({'pool': 'gone', 'size': '50GiB'}, 'no storage pool gone'),
+        ]
+        for arguments, said in cases:
+            code, _, err = self.act('resize-pool', **arguments)
+            self.assertEqual(code, 1, arguments)
+            self.assertIn(said, err)
+        self.server.extensions = []
+        code, _, err = self.act('resize-pool', pool='default', size='200GiB')
+        self.assertEqual(code, 1)
+        self.assertIn('storage_pool_loop_resize', err)
+        self.assertFalse([e for e in self.server.events if e[0] == 'pool-patch'])
+
+    def test_sizes_are_checked_before_anything_is_sent(self):
+        self.server.instances['web'] = {'name': 'web', 'type': 'container', 'status': 'Running', 'config': {},
+                                        'devices': {'root': {'type': 'disk', 'path': '/', 'pool': 'default',
+                                                             'size': '10GiB'}}, 'files': {}}
+        for size in ('50 GiB', '50gb', '1.5GiB', '-5GiB', 'big', '0GiB', '50G'):
+            for action, arguments in (('resize-pool', {'pool': 'default'}),
+                                      ('resize-volume', {'pool': 'default', 'volume': 'data'}),
+                                      ('resize-disk', {'instance': 'web'}),
+                                      ('create-volume', {'pool': 'default', 'name': 'data'}),
+                                      ('create-pool', {'name': 'new', 'driver': 'zfs'})):
+                code, _, err = self.act(action, size=size, **arguments)
+                self.assertEqual(code, 1, (action, size))
+                self.assertIn(f'{size!r} is not a size Incus takes', err)
+                self.assertIn('such as 50GiB or 200GB', err)
+        code, _, err = self.act('resize-pool', pool='default', size='')
+        self.assertEqual(code, 1)
+        self.assertIn('Give the size', err)
+        self.assertFalse([e for e in self.server.events if e[0] not in ('client-cert',)])
+        # Bytes alone and decimal units are sizes too.
+        self.assertEqual(self.act('resize-pool', pool='default', size='200GB')[0], 0)
+        self.assertEqual(self.act('resize-pool', pool='default', size='300000000000')[0], 0)
+
+    def test_set_pool_changes_the_settings_incus_allows_and_no_others(self):
+        code, answer, err = self.act('set-pool', pool='default', key='volume.size', value='20GiB')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.server.pools['default']['config']['volume.size'], '20GiB')
+        self.assertEqual(answer['details'], [{'label': 'Before', 'value': '(unset)'},
+                                             {'label': 'After', 'value': '20GiB'}])
+        code, answer, err = self.act('set-pool', pool='default', key='description', value='The fast disks')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.server.pools['default']['description'], 'The fast disks')
+        self.assertEqual(self.act('set-pool', pool='default', key='zfs.clone_copy', value='rebase')[0], 0)
+        self.assertEqual(self.act('set-pool', pool='fast', key='rsync.bwlimit', value='50MB')[0], 0)
+        # An empty value unsets it, and the rest of the pool stays.
+        code, answer, err = self.act('set-pool', pool='default', key='volume.size', value='')
+        self.assertEqual(code, 0, err)
+        self.assertNotIn('volume.size', self.server.pools['default']['config'])
+        self.assertEqual(self.server.pools['default']['config']['zfs.clone_copy'], 'rebase')
+        self.assertEqual(self.server.pools['default']['description'], 'The fast disks')
+        self.server.events.clear()
+        for arguments, said in (
+                ({'pool': 'default', 'key': 'source', 'value': '/dev/sdc'},
+                 'does not change source of a zfs pool. It changes description, volume.size'),
+                ({'pool': 'default', 'key': 'zfs.pool_name', 'value': 'other'}, 'zfs.clone_copy, zfs.export'),
+                ({'pool': 'fast', 'key': 'zfs.export', 'value': 'false'}, 'rsync.bwlimit, rsync.compression'),
+                ({'pool': 'default', 'key': 'size', 'value': '200GiB'}, 'changed with resize-pool'),
+                ({'pool': 'default', 'key': 'volume.size', 'value': '20 gigs'}, 'not a size Incus takes'),
+                ({'pool': 'gone', 'key': 'description', 'value': 'x'}, 'no storage pool gone')):
+            code, _, err = self.act('set-pool', **arguments)
+            self.assertEqual(code, 1, arguments)
+            self.assertIn(said, err)
+        self.assertFalse([e for e in self.server.events if e[0].startswith('pool-')])
+
+    def test_a_volume_is_resized_and_a_block_volume_does_not_shrink(self):
+        self.server.volumes[('default', 'data')] = {'name': 'data', 'config': {'size': '10GiB'},
+                                                    'content_type': 'filesystem', 'used_by': [], 'used': 2 * 1024 ** 3}
+        self.server.volumes[('default', 'disk')] = {'name': 'disk', 'config': {'size': '10GiB'},
+                                                    'content_type': 'block', 'used_by': []}
+        code, answer, err = self.act('resize-volume', pool='default', volume='data', size='20GiB')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.server.volumes[('default', 'data')]['config']['size'], '20GiB')
+        self.assertEqual(answer['details'], [{'label': 'Before', 'value': '10GiB, 2.0 GiB used'},
+                                             {'label': 'After', 'value': '20GiB'}])
+        # A filesystem volume may shrink to what it holds; Incus says when it cannot.
+        code, answer, err = self.act('resize-volume', pool='default', volume='data', size='5GiB')
+        self.assertEqual(code, 0, err)
+        self.assertIn('Incus refuses it if the volume holds more than 5GiB', err)
+        self.assertEqual(self.act('resize-volume', pool='default', volume='disk', size='20GiB')[0], 0)
+        code, _, err = self.act('resize-volume', pool='default', volume='disk', size='5GiB')
+        self.assertEqual(code, 1)
+        self.assertIn('Incus cannot shrink a block volume', err)
+        self.assertEqual(self.server.volumes[('default', 'disk')]['config']['size'], '20GiB')
+        code, _, err = self.act('resize-volume', pool='default', volume='gone', size='5GiB')
+        self.assertEqual(code, 1)
+        self.assertIn('no custom volume gone', err)
+
+    def test_resize_disk_grows_the_root_disk_and_restarts_a_vm_only_when_asked(self):
+        self.assertEqual(self.create('vm')[0], 0)
+        self.server.events.clear()
+        code, answer, err = self.act('resize-disk', instance='berth-studio-2', size='80GiB')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.server.instances['berth-studio-2']['devices']['root']['size'], '80GiB')
+        self.assertIn('sees the new size after a restart: run this again with restart=yes', answer['message'])
+        self.assertEqual(answer['details'], [{'label': 'Before', 'value': '60GiB'}, {'label': 'After', 'value': '80GiB'}])
+        self.assertFalse([e for e in self.server.events if e[0] in ('restart', 'stop', 'start')])
+        code, answer, err = self.act('resize-disk', instance='berth-studio-2', size='100GiB', restart='yes')
+        self.assertEqual(code, 0, err)
+        self.assertIn(('restart', 'berth-studio-2', False), self.server.events)
+        self.assertIn('was restarted', answer['message'])
+        # It only grows.
+        code, _, err = self.act('resize-disk', instance='berth-studio-2', size='50GiB')
+        self.assertEqual(code, 1)
+        self.assertIn('is 100GiB, and berth only grows it', err)
+        code, _, err = self.act('resize-disk', instance='berth-studio-2', size='120GiB', restart='maybe')
+        self.assertEqual(code, 1)
+        self.assertIn("restart is yes or no, not 'maybe'", err)
+        code, _, err = self.act('resize-disk', instance='nowhere', size='120GiB')
+        self.assertEqual(code, 1)
+        self.assertIn('no instance nowhere', err)
+
+    def test_resize_disk_overrides_a_root_disk_from_the_profile(self):
+        self.server.instances['web'] = {
+            'name': 'web', 'type': 'container', 'status': 'Running', 'config': {}, 'files': {},
+            'devices': {'data': {'type': 'disk', 'path': '/srv', 'source': 'data', 'pool': 'default'}},
+            'expanded_devices': {'root': {'type': 'disk', 'path': '/', 'pool': 'default', 'size': '10GiB'},
+                                 'data': {'type': 'disk', 'path': '/srv', 'source': 'data', 'pool': 'default'}}}
+        code, answer, err = self.act('resize-disk', instance='web', size='30GiB', restart='yes')
+        self.assertEqual(code, 0, err)
+        [patch] = [e for e in self.server.events if e[0] == 'patch']
+        self.assertEqual(patch[2]['devices'], {
+            'data': {'type': 'disk', 'path': '/srv', 'source': 'data', 'pool': 'default'},
+            'root': {'type': 'disk', 'path': '/', 'pool': 'default', 'size': '30GiB'}})
+        self.assertIn('gets one of its own of 30GiB', err)
+        self.assertIn('A container has the new size at once; it was not restarted.', answer['message'])
+        self.assertFalse([e for e in self.server.events if e[0] == 'restart'])
+
+    def test_change_leaves_a_disk_that_was_not_given_anew(self):
+        self.assertEqual(self.create()[0], 0)
+        self.assertEqual(self.act('resize-disk', instance='berth-studio-2', size='100GiB')[0], 0)
+        self.server.events.clear()
+        # berth's record still says 60GiB, which it sends with every change.
+        code, _, err = self.run_verb('change', id='berth-studio-2', changed=['memory'],
+                                     arguments={'memory': '4GiB', 'disk': '60GiB'})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.server.instances['berth-studio-2']['devices']['root']['size'], '100GiB')
+        code, _, err = self.run_verb('change', id='berth-studio-2', changed=['disk'], arguments={'disk': '80GiB'})
+        self.assertEqual(code, 1)
+        self.assertIn('berth only grows it', err)
 
     def test_change_sets_new_limits_and_grows_the_disk(self):
         self.create()
