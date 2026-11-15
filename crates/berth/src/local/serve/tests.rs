@@ -3502,6 +3502,62 @@ mod keys;
 mod remote;
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_server_in_the_process_names_both_ways_to_give_a_sudo_password() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = state_in(dir.path(), None);
+    Arc::get_mut(&mut state).unwrap().here = true;
+    let profile = json!({"builder": {}, "access": {"address": "192.0.2.9", "user": "ops", "sudo": "password"}});
+    berth_core::profiles::Place::own("studio")
+        .unwrap()
+        .save(&state.paths, &profile)
+        .unwrap();
+    state.refresh(false);
+    let problem = state
+        .host("studio")
+        .unwrap()
+        .problem
+        .clone()
+        .unwrap_or_default();
+    assert!(problem.contains("--sudo-password-stdin"), "{problem}");
+    assert!(
+        problem.contains("berth secret set sudo/studio"),
+        "{problem}"
+    );
+    // Given one for the run, the host is taken up again with it.
+    state
+        .passwords
+        .lock()
+        .unwrap()
+        .insert("studio".into(), "pass-word-1".into());
+    state.forget("studio");
+    state.refresh(false);
+    let remote = state.host("studio").unwrap();
+    assert!(
+        !remote.problem.clone().unwrap_or_default().contains("sudo"),
+        "{:?}",
+        remote.problem
+    );
+    // berth serve says what it says to its own user.
+    let other = tempfile::tempdir().unwrap();
+    let served = state_in(other.path(), None);
+    berth_core::profiles::Place::own("studio")
+        .unwrap()
+        .save(&served.paths, &profile)
+        .unwrap();
+    served.refresh(false);
+    let problem = served
+        .host("studio")
+        .unwrap()
+        .problem
+        .clone()
+        .unwrap_or_default();
+    assert!(
+        problem.contains("run berth serve on a terminal"),
+        "{problem}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_caller_on_this_machine_takes_the_host_key_its_user_knows() {
     let dir = tempfile::tempdir().unwrap();
     let state = state_in(dir.path(), Some("s3cret-token"));

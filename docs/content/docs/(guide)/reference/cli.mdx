@@ -17,6 +17,7 @@ This page is generated from the commands themselves. [The command line](/docs/us
 | `--no-input` | Never ask. What is missing is an error that names the flag to pass. |
 | `-y, --yes` | Answer yes to a confirmation. |
 | `-q, --quiet` | Print only the result. |
+| `--sudo-password-stdin` | Read the SSH user's sudo password from standard input, for a host whose sudo asks for one. |
 | `--color WHEN` | Colours: on a terminal, always or never. NO_COLOR turns them off as well. One of `auto`, `always`, `never`. By default `auto`. |
 
 Flags go before or after the names, as `--tail 50` or `--tail=50`. `--` ends the flags; what follows it is passed on as it is.
@@ -57,13 +58,12 @@ berth ls
 Short for berth host apply.
 
 ```text
-berth apply NAME [--sudo-password-stdin] [--detach]
+berth apply NAME [--detach]
 ```
 
 | Argument | What it is |
 | --- | --- |
 | `NAME` | Its name. |
-| `--sudo-password-stdin` | Read the SSH user's sudo password from standard input, for a host whose sudo asks for one. |
 | `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
 
 ## berth exec
@@ -101,7 +101,7 @@ berth ssh HOST [--agent] [-- COMMAND…]
 Run one of a host's actions: berth action list HOST names them.
 
 ```text
-berth run HOST ACTION [NAME=VALUE…] [--sudo-password-stdin] [--detach]
+berth run HOST ACTION [NAME=VALUE…] [--detach]
 ```
 
 | Argument | What it is |
@@ -109,7 +109,6 @@ berth run HOST ACTION [NAME=VALUE…] [--sudo-password-stdin] [--detach]
 | `HOST` | A host's name. |
 | `ACTION` | The action's name. |
 | `NAME=VALUE…` | The action's arguments. |
-| `--sudo-password-stdin` | Read the SSH user's sudo password from standard input, for a host whose sudo asks for one. |
 | `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
 
 ## berth ui
@@ -155,7 +154,7 @@ berth host show NAME
 Describe a new host, then install it. Asks what is missing on a terminal.
 
 ```text
-berth host create NAME [--method METHOD] [--from PROFILE] [--type TYPE] [--feature FEATURE] [--no-feature FEATURE] [--set KEY=VALUE] [--generate-passwords] [--provisioner PROVISIONER] [NAME=VALUE…] [--run] [--detach] [--sudo-password-stdin]
+berth host create NAME [--method METHOD] [--from PROFILE] [--type TYPE] [--feature FEATURE] [--no-feature FEATURE] [--set KEY=VALUE] [--generate-passwords] [--provisioner PROVISIONER] [NAME=VALUE…] [--run] [--detach]
 ```
 
 | Argument | What it is |
@@ -172,7 +171,6 @@ berth host create NAME [--method METHOD] [--from PROFILE] [--type TYPE] [--featu
 | `NAME=VALUE…` | The provisioner's arguments, such as cpus=2. |
 | `--run` | Install it once it is saved: apply, render the seed or build the installer. |
 | `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
-| `--sudo-password-stdin` | Read the SSH user's sudo password from standard input, for a host whose sudo asks for one. |
 
 The ways to install, for `--method`:
 
@@ -312,13 +310,12 @@ berth host import NAME FILE
 Apply the host's profile to it over SSH, or install its controller alone when it is managed.
 
 ```text
-berth host apply NAME [--sudo-password-stdin] [--detach]
+berth host apply NAME [--detach]
 ```
 
 | Argument | What it is |
 | --- | --- |
 | `NAME` | Its name. |
-| `--sudo-password-stdin` | Read the SSH user's sudo password from standard input, for a host whose sudo asks for one. |
 | `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
 
 ### berth host seed
@@ -383,7 +380,7 @@ berth host remove NAME [--destroy]
 Take in a host berth set up before, from the profile it keeps.
 
 ```text
-berth host adopt NAME [ADDRESS] [--port PORT] [--key FILE] [--force] [--sudo-password-stdin]
+berth host adopt NAME [ADDRESS] [--port PORT] [--key FILE] [--force]
 ```
 
 | Argument | What it is |
@@ -393,7 +390,6 @@ berth host adopt NAME [ADDRESS] [--port PORT] [--key FILE] [--force] [--sudo-pas
 | `--port PORT` |  |
 | `--key FILE` | A private key file where the server runs, offered as well for reading the profile only. |
 | `--force` | Replace a host of that name. |
-| `--sudo-password-stdin` | Read the SSH user's sudo password from standard input, for a host whose sudo asks for one. |
 
 ### berth host credentials
 

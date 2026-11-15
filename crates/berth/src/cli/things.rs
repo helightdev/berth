@@ -516,8 +516,8 @@ fn run_on(
 }
 
 pub fn run_action(client: &Client, run: &args::RunAction) -> Result<()> {
-    let sudo = match run.sudo.sudo_password_stdin {
-        true => host::sudo_password(client, &run.host, &run.sudo)?,
+    let sudo = match out::get().sudo_stdin {
+        true => host::sudo_password(client, &run.host)?,
         false => None,
     };
     run_on(

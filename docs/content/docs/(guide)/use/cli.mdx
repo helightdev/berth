@@ -79,7 +79,7 @@ berth host create studio --method cloud-seed --set operator_username=ops \
 | Check the host's SSH host key, or accept a changed one | `berth host verify studio`, `berth host verify studio --accept` |
 | The passwords berth made for the accounts | `berth host credentials studio` |
 
-For a host whose sudo takes a password, berth asks for it at the terminal. A script gives it with `--sudo-password-stdin`, or keeps it as the secret `sudo/HOST`.
+For a host whose sudo takes a password, berth asks for it at the terminal, once in a command, and keeps it only while the command runs. A script gives it with `--sudo-password-stdin`, which every command takes, or keeps it as the secret `sudo/HOST`. A `berth serve` asks for it on its own terminal when it starts, or takes the kept secret.
 
 ## Jobs
 

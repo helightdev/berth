@@ -22,6 +22,8 @@ pub struct Out {
     /// Whether someone can be asked: a terminal, and no --no-input.
     pub ask: bool,
     pub yes: bool,
+    /// `--sudo-password-stdin`: a host's sudo password is read from standard input.
+    pub sudo_stdin: bool,
 }
 
 static OUT: OnceLock<Out> = OnceLock::new();
@@ -56,6 +58,7 @@ pub fn init(global: &Global) {
         terminal,
         ask: !global.no_input && std::io::stdin().is_terminal() && terminal.1,
         yes: global.yes,
+        sudo_stdin: global.sudo_password_stdin,
     };
     let _ = OUT.set(out);
 }
@@ -69,6 +72,7 @@ pub fn get() -> Out {
         terminal: (false, false),
         ask: false,
         yes: false,
+        sudo_stdin: false,
     })
 }
 

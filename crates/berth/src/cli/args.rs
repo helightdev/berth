@@ -60,6 +60,9 @@ pub struct Global {
     /// Print only the result.
     #[arg(short = 'q', long, global = true, help_heading = "Global")]
     pub quiet: bool,
+    /// Read the SSH user's sudo password from standard input, for a host whose sudo asks for one.
+    #[arg(long, global = true, help_heading = "Global")]
+    pub sudo_password_stdin: bool,
     /// Colours: on a terminal, always or never. NO_COLOR turns them off as well.
     #[arg(long, global = true, value_enum, default_value_t = Colour::Auto, value_name = "WHEN", help_heading = "Global")]
     pub color: Colour,
@@ -86,14 +89,6 @@ pub struct Detach {
     /// Print the job's id and return; berth job wait ID waits for it. Needs a berth serve.
     #[arg(long)]
     pub detach: bool,
-}
-
-/// How a sudo password is given to a command that may need one.
-#[derive(Args, Debug, Clone, Default)]
-pub struct Sudo {
-    /// Read the SSH user's sudo password from standard input, for a host whose sudo asks for one.
-    #[arg(long)]
-    pub sudo_password_stdin: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -306,8 +301,6 @@ pub struct HostCreate {
     pub run: bool,
     #[command(flatten)]
     pub detach: Detach,
-    #[command(flatten)]
-    pub sudo: Sudo,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -349,8 +342,6 @@ pub struct HostSet {
 pub struct HostApply {
     pub name: String,
     #[command(flatten)]
-    pub sudo: Sudo,
-    #[command(flatten)]
     pub detach: Detach,
 }
 
@@ -380,8 +371,6 @@ pub struct HostAdopt {
     /// Replace a host of that name.
     #[arg(long)]
     pub force: bool,
-    #[command(flatten)]
-    pub sudo: Sudo,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -426,8 +415,6 @@ pub struct RunAction {
     /// The action's arguments.
     #[arg(value_name = "NAME=VALUE")]
     pub arguments: Vec<String>,
-    #[command(flatten)]
-    pub sudo: Sudo,
     #[command(flatten)]
     pub detach: Detach,
 }
