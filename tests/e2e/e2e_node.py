@@ -78,6 +78,11 @@ MANIFEST = {
 class Node(unittest.TestCase):
     """The tests build on each other, in the order of their names."""
 
+    # What the workstations of the tests before this one left on `dock`: a node
+    # is not applied over a workstation that berth set up, so it goes first.
+    LEFT = ('pkill -x berthd; userdel -r agent; rm -rf /etc/berth /var/lib/berth /etc/devbox /var/lib/devbox '
+            '/etc/sudoers.d/90-devbox-agent /etc/ssh/sshd_config.d/00-devbox.conf; true')
+
     @classmethod
     def setUpClass(cls):
         cls.station = Workstation('node', ssh_key=False)
@@ -93,6 +98,7 @@ class Node(unittest.TestCase):
         key = cls.station.own_key_file()
         wait_for('the operator taking the key of berth', lambda: cls.station.ssh(
             OPERATOR, 'true', key=key, check=False).returncode == 0, timeout=60)
+        cls.station.ssh(OPERATOR, f'sudo -n sh -c {shell_quote(cls.LEFT)}', key=key, check=False)
         cls.station.berth('host', 'add', HOST, HOST, '--user', OPERATOR, '--type', 'node', input='')
 
     @classmethod

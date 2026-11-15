@@ -52,7 +52,8 @@
         operator: "{{ '' if devbox_profile == 'container' else devbox_operator_user }}"
         roots: "{{ devbox_berthd_roots }}"
         units: "{{ devbox_berthd_units }}"
-        agent_env: /usr/local/bin/agent-env
+        # Only a workstation's agent has the wrapper with its display and tools.
+        agent_env: "{{ '/usr/local/bin/agent-env' if devbox_level == 'workstation' else '' }}"
     - {name: actions, value: "{{ devbox_tasks }}"}
     - {name: services, value: "{{ devbox_plugin_services }}"}
     - {name: channels, value: "{{ devbox_plugin_channels }}"}
