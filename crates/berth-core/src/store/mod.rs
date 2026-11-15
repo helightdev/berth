@@ -9,7 +9,9 @@ mod sqlite;
 #[cfg(test)]
 mod suite;
 
-pub use installation::{Installation, default_file, hold_lock, shared, wait_lock};
+pub use installation::{
+    Installation, default_file, hold_lock, keep_before_converting, open_converting, shared, wait_lock,
+};
 pub use postgres::PostgresBackend;
 pub use sqlite::SqliteBackend;
 

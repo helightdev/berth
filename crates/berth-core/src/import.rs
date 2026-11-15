@@ -53,6 +53,18 @@ pub const NAMES_MARKER: &str = "import:names";
 /// older berths kept of joining the tailnet without a key berth makes.
 pub const TAILNET_MARKER: &str = "import:tailnet";
 
+/// Every import's marker: a store that lacks one is taken in by this berth.
+pub const MARKERS: &[&str] = &[
+    MARKER,
+    PROFILES_MARKER,
+    KEYS_MARKER,
+    ACCESS_MARKER,
+    RESOURCES_MARKER,
+    PROVISIONERS_MARKER,
+    NAMES_MARKER,
+    TAILNET_MARKER,
+];
+
 /// What a row of the import is.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Counts {
