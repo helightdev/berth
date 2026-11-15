@@ -2146,7 +2146,8 @@ fn write_fake_provisioner(home: &std::path::Path) -> PathBuf {
                         "spec": {"format": "text", "label": "Spec"},
                         "arguments": [{"name": "replicas", "default": "1"}],
                         "actions": [{"name": "services", "changes": false},
-                                    {"name": "restart", "confirm": "Restart?"}]}],
+                                    {"name": "restart", "confirm": "Restart?"}]},
+                       {"id": "box", "label": "Box", "verbs": ["exec"]}],
              "actions": [
                {"name": "images", "label": "Images", "changes": false},
                {"name": "prune", "label": "Prune", "confirm": "Prune?",
@@ -2249,6 +2250,7 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
         names,
         [
             "new-deployment",
+            "new-box",
             "settings",
             "images",
             "prune",
@@ -2267,7 +2269,7 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
     .await;
     assert_eq!(status, 404, "{said}");
     assert!(
-        message(&said).contains("Its actions: new-deployment, settings, images"),
+        message(&said).contains("Its actions: new-deployment, new-box, settings, images"),
         "{said}"
     );
     let (status, said) = send(
@@ -4021,4 +4023,252 @@ async fn the_installer_and_every_setting_are_for_the_user_here() {
     assert_eq!(open(&listed), true);
     let (_, listed) = as_bearer(address, "s3cret-token", "GET", "/v1/settings", Value::Null).await;
     assert_eq!(open(&listed), false);
+}
+
+// ── Endpoints and commands of resources ─────────────────────────────────────
+
+/// A port of the loopback that nothing listens on.
+fn closed_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().port()
+}
+
+/// Make the fake's box `db`, whose `create` answers `answer`: its id.
+async fn made_box(served: &Served, fake: &std::path::Path, answer: Value) -> String {
+    let mut client = served.client().await;
+    let client = &mut client;
+    register_fake(client).await;
+    served.state.paths.prepare().unwrap();
+    send(
+        client,
+        "PUT",
+        "/v1/secrets/api_token",
+        json!({"value": "tok-made-up"}),
+    )
+    .await;
+    std::fs::write(fake.join("answer.create"), answer.to_string()).unwrap();
+    let asked =
+        json!({"provisioner": "vm", "kind": "box", "name": "db", "arguments": {"server": "x"}});
+    let (status, created) = send(client, "POST", "/v1/resources", asked).await;
+    assert_eq!(status, 202, "{created}");
+    let (output, code) = job_ended(&served.socket, created["job"]["id"].as_str().unwrap()).await;
+    assert_eq!(code, 0, "{output}");
+    created["resource"]["id"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resource_is_reached_at_the_endpoints_its_provisioner_reports() {
+    use berth_api::{portal::Portal, tunnel::endpoint_tunnel};
+    let served = served_with(quick).await;
+    let fake = fake_provisioner(&served);
+    let (port, closed) = (echo().await, closed_port());
+    let endpoints = |port: u16| {
+        json!([
+            {"name": "db", "address": "127.0.0.1", "port": port, "hint": "postgres", "local": true},
+            {"name": "closed", "address": "127.0.0.1", "port": closed, "local": true},
+            {"name": "far", "address": "127.0.0.1", "port": 6000},
+            {"name": "stats", "address": "192.0.2.20", "port": 8125, "protocol": "udp"},
+            {"name": "Not a name", "address": "192.0.2.20", "port": 1},
+        ])
+    };
+    let answer = json!({"id": "db-1", "state": "running", "endpoints": endpoints(port)});
+    let id = made_box(&served, &fake, answer).await;
+    let mut client = served.client().await;
+
+    // Kept with the record, without the one that does not fit.
+    let listed: Value = client.get("/v1/resources").await.unwrap();
+    let kept = &listed[0]["endpoints"];
+    assert_eq!(kept.as_array().unwrap().len(), 4, "{kept}");
+    assert_eq!(
+        kept[0],
+        json!({"name": "db", "address": "127.0.0.1", "port": port, "protocol": "tcp", "hint": "postgres", "local": true})
+    );
+    assert_eq!(kept[3]["protocol"], "udp");
+
+    // Straight to the server, by name and by port, both ways and with each side's end.
+    let open = |endpoint: String| {
+        let (socket, id) = (served.socket.clone(), id.clone());
+        async move {
+            let io = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            endpoint_tunnel(io, &id, &endpoint, "").await
+        }
+    };
+    let data: Vec<u8> = (0..3_000_000u32).map(|n| (n % 251) as u8).collect();
+    assert_eq!(
+        through(open("db".into()).await.unwrap(), b"hello").await,
+        b"hello"
+    );
+    assert!(through(open(port.to_string()).await.unwrap(), &data).await == data);
+    // Nothing on it, not reported, not reachable from here, or not TCP: an answer, not a stream.
+    for (endpoint, status, code) in [
+        ("closed", 503, "not_served"),
+        ("22", 404, "not_found"),
+        ("far", 403, "forbidden"),
+        ("stats", 400, "bad_request"),
+    ] {
+        let refused = open(endpoint.into()).await.err().unwrap();
+        assert_eq!(
+            (refused.status(), refused.code()),
+            (status, code),
+            "{endpoint}: {refused}"
+        );
+    }
+
+    // Over the portal, with a window of its own.
+    let portal = Portal::over(
+        client::websocket_unix(&served.socket, "/v1/portal")
+            .await
+            .unwrap(),
+    );
+    let tunnel = portal.connect_endpoint(&id, "db").await.unwrap();
+    assert!(through(tunnel, &data).await == data);
+    let refused = portal.connect_endpoint(&id, "closed").await.err().unwrap();
+    assert_eq!((refused.status(), refused.code()), (503, "not_served"));
+    let refused = portal.connect_endpoint(&id, "6000").await.err().unwrap();
+    assert_eq!(refused.status(), 403, "{refused}");
+
+    // Endpoints that move with a check are a change of the resource.
+    let mut events = client::websocket_unix(&served.socket, "/v1/events")
+        .await
+        .unwrap();
+    let follow = json!({"changes": ["resources"]}).to_string();
+    events.send(Frame::Text(follow.into())).await.unwrap();
+    let moved = echo().await;
+    let status = json!({"state": "running", "endpoints": endpoints(moved)});
+    std::fs::write(fake.join("answer.status"), status.to_string()).unwrap();
+    let seen: Value = client.get(&format!("/v1/resources/{id}")).await.unwrap();
+    assert_eq!(seen["endpoints"][0]["port"], moved);
+    assert_eq!(
+        change_of(&mut events, "resource", "changed").await["resource"],
+        json!(id)
+    );
+    assert!(through(open("db".into()).await.unwrap(), b"moved").await == b"moved");
+    // One that is gone has none.
+    std::fs::write(fake.join("answer.status"), r#"{"state": "gone"}"#).unwrap();
+    let seen: Value = client.get(&format!("/v1/resources/{id}")).await.unwrap();
+    assert!(seen.get("endpoints").is_none(), "{seen}");
+    let refused = open("db".into()).await.err().unwrap();
+    assert_eq!(refused.status(), 404, "{refused}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_endpoint_is_opened_by_an_operator_and_not_by_a_viewer() {
+    let issuer = Issuer::new();
+    let (_dir, address) = trusting(&issuer, true).await;
+    let with = |scope: &str| issuer.token(json!({"scope": scope}));
+    // The role is asked before anything of the resource is.
+    for (scope, status) in [("berth:view", 403), ("berth:operate", 404)] {
+        let io = tokio::net::TcpStream::connect(address).await.unwrap();
+        let refused = berth_api::tunnel::endpoint_tunnel(io, "r-nothing", "db", &with(scope))
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(refused.status(), status, "{scope}: {refused}");
+    }
+    let io = tokio::net::TcpStream::connect(address).await.unwrap();
+    let socket = client::websocket(io, "/v1/portal", &with("berth:view"))
+        .await
+        .unwrap();
+    let portal = berth_api::portal::Portal::over(socket);
+    let refused = portal
+        .connect_endpoint("r-nothing", "db")
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(refused.status(), 403, "{refused}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_runs_in_a_resource_as_a_job_that_ends_as_it_did() {
+    let served = served_with(quick).await;
+    let fake = fake_provisioner(&served);
+    let id = made_box(&served, &fake, json!({"id": "db-1", "state": "running"})).await;
+    let mut client = served.client().await;
+    let client = &mut client;
+    let path = format!("/v1/resources/{id}/actions/exec");
+
+    // Offered for its kind, to an operator.
+    let (_, actions) = send(
+        client,
+        "GET",
+        &format!("/v1/resources/{id}/actions"),
+        Value::Null,
+    )
+    .await;
+    let exec = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["name"] == "exec")
+        .cloned()
+        .unwrap();
+    assert_eq!(exec["role"], "operate");
+
+    // Its output and exit status are the job's.
+    std::fs::write(fake.join("say.exec"), "hi from db\n").unwrap();
+    std::fs::write(fake.join("answer.exec"), r#"{"exit_code": 3}"#).unwrap();
+    let asked = json!({"arguments": {"command": r#"["sh", "-c", "echo hi; exit 3"]"#, "stdin": "select 1;\n"}});
+    let (status, acted) = send(client, "POST", &path, asked).await;
+    assert_eq!(status, 202, "{acted}");
+    let (output, code) = job_ended(&served.socket, acted["job"]["id"].as_str().unwrap()).await;
+    assert_eq!(code, 3, "{output}");
+    for line in [
+        "▸ Running sh -c 'echo hi; exit 3' in db",
+        "hi from db",
+        "✗ sh exited with 3",
+    ] {
+        assert!(output.contains(line), "{line} in {output}");
+    }
+    let request: Value =
+        serde_json::from_str(&std::fs::read_to_string(fake.join("last.exec")).unwrap()).unwrap();
+    assert_eq!(request["command"], json!(["sh", "-c", "echo hi; exit 3"]));
+    assert_eq!(request["stdin"], "select 1;\n");
+    assert_eq!(request["id"], "db-1");
+
+    // Words split at spaces, no input, and a command that went well.
+    std::fs::write(fake.join("answer.exec"), r#"{"exit_code": 0}"#).unwrap();
+    let asked = json!({"arguments": {"command": "uname -a"}});
+    let (_, acted) = send(client, "POST", &path, asked).await;
+    let (output, code) = job_ended(&served.socket, acted["job"]["id"].as_str().unwrap()).await;
+    assert_eq!(code, 0, "{output}");
+    let request: Value =
+        serde_json::from_str(&std::fs::read_to_string(fake.join("last.exec")).unwrap()).unwrap();
+    assert_eq!(request["command"], json!(["uname", "-a"]));
+    assert!(request.get("stdin").is_none(), "{request}");
+
+    // A provisioner that says no exit status fails the job.
+    std::fs::write(fake.join("answer.exec"), "{}").unwrap();
+    let (_, acted) = send(
+        client,
+        "POST",
+        &path,
+        json!({"arguments": {"command": "true"}}),
+    )
+    .await;
+    let (output, code) = job_ended(&served.socket, acted["job"]["id"].as_str().unwrap()).await;
+    assert_eq!(code, 1, "{output}");
+    assert!(output.contains("said no exit status"), "{output}");
+
+    // No command, or one that is no list, is refused before anything runs.
+    for command in ["", "  ", "[\"sh\", 1]"] {
+        let asked = json!({"arguments": {"command": command}});
+        let (status, said) = send(client, "POST", &path, asked).await;
+        assert_eq!(status, 400, "{command:?}: {said}");
+    }
+
+    // A kind without commands has no such action.
+    let asked = json!({"provisioner": "vm", "kind": "deployment", "name": "wiki",
+                       "arguments": {"server": "x"}, "spec": "services: {}\n"});
+    let (status, created) = send(client, "POST", "/v1/resources", asked).await;
+    assert_eq!(status, 202, "{created}");
+    job_ended(&served.socket, created["job"]["id"].as_str().unwrap()).await;
+    let wiki = created["resource"]["id"].as_str().unwrap();
+    let (status, said) = send(
+        client,
+        "POST",
+        &format!("/v1/resources/{wiki}/actions/exec"),
+        json!({"arguments": {"command": "true"}}),
+    )
+    .await;
+    assert_eq!(status, 404, "{said}");
 }

@@ -7,7 +7,7 @@ mod error;
 mod files;
 pub mod http;
 pub mod portal;
-mod ports;
+pub mod ports;
 mod services;
 mod sessions;
 pub mod state;

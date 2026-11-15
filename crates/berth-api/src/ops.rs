@@ -336,6 +336,10 @@ pub static SERVE: &[Op] = &[
         Role::Operate,
     ),
     stream("resources.follow", "/v1/resources/{id}/logs"),
+    stream(
+        "resources.connect",
+        "/v1/resources/{id}/endpoints/{endpoint}",
+    ),
     call("jobs.list", "GET", "/v1/jobs"),
     call("jobs.get", "GET", "/v1/jobs/{id}"),
     role(stream("jobs.follow", "/v1/jobs/{id}"), Role::View),
@@ -472,6 +476,7 @@ mod tests {
         assert_eq!(role(SERVE, "resources.act"), Role::View);
         assert_eq!(role(SERVE, "resources.logs"), Role::Operate);
         assert_eq!(role(SERVE, "resources.follow"), Role::Operate);
+        assert_eq!(role(SERVE, "resources.connect"), Role::Operate);
         let (op, args) = recognise(
             SERVE,
             Kind::Call,

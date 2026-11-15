@@ -252,12 +252,26 @@ where
         Ok((stream, _)) => Ok(stream),
         Err(tungstenite::Error::Http(response)) => {
             let body = response.body().clone().unwrap_or_default();
-            Err(Response {
-                status: response.status().as_u16(),
-                headers: Default::default(),
-                body: body.into(),
+            let status = response.status().as_u16();
+            // The body may still be on its way when the head is read, and
+            // then only the header says which error it was.
+            let named = response
+                .headers()
+                .get(crate::ERROR_HEADER)
+                .and_then(|code| code.to_str().ok());
+            match (serde_json::from_slice::<crate::ErrorBody>(&body), named) {
+                (Err(_), Some(code)) => Err(Error::Api {
+                    status,
+                    code: code.to_owned(),
+                    message: format!("HTTP {status}: {code}"),
+                }),
+                _ => Err(Response {
+                    status,
+                    headers: Default::default(),
+                    body: body.into(),
+                }
+                .error()),
             }
-            .error())
         }
         Err(error) => Err(transport(error)),
     }
