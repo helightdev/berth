@@ -139,7 +139,7 @@ def follows_a_job(args):
     """Whether berth follows a job of its server for these arguments."""
     words = [arg for arg in args if not str(arg).startswith('-')]
     first, second = (words + ['', ''])[:2]
-    return (first in ('apply', 'rollout', 'run')
+    return (first in ('apply', 'rollout')
             or (first, second) in {('host', 'add'), ('host', 'apply'), ('host', 'adopt'), ('host', 'iso'), ('host', 'create'),
                                    ('host', 'rename'), ('host', 'start'), ('host', 'stop'), ('key', 'trust'),
                                    ('key', 'rotate'), ('resource', 'create'), ('resource', 'set'),
