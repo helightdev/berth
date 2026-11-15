@@ -3736,7 +3736,7 @@ async fn a_host_added_by_its_address_has_a_type_and_actions_to_match() {
         said["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("Set its type to workstation")
+            .contains("or a workstation in its set-up")
     );
     let (status, _) = send(client, "POST", "/v1/hosts/dock/actions/seed", Value::Null).await;
     assert_eq!(status, 501);

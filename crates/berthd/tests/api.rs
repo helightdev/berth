@@ -1384,3 +1384,31 @@ fn the_committed_documents_are_current() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_node_says_it_is_one_and_what_its_features_offer() {
+    let offer = json!({"feature": "incus/server", "provisioners": ["vm"],
+        "settings": {"server": "https://{address}:8444"}, "secrets": {"incus_server_cert": "CERT"}});
+    // A node keeps its profile as a workstation does; its record says what it is.
+    let daemon = Daemon::start(&[
+        (
+            "applied.json",
+            json!({"berth": "0.6.0", "plugins": [], "level": "node", "offers": [offer]}),
+        ),
+        ("profile.json", json!({"format": 2, "berth": "0.6.0", "host": "big", "profile": {}})),
+    ]);
+    let mut host = daemon.host().await;
+    let version: api::Version = host.get("/v1/version").await.unwrap();
+    assert_eq!(version.host_type, Some(api::HostType::Node));
+    let applied = version.applied.unwrap();
+    assert_eq!(applied.offers[0].feature, "incus/server");
+    assert_eq!(applied.offers[0].secrets["incus_server_cert"], "CERT");
+    // A kept profile without a record is a workstation's first boot.
+    let daemon = Daemon::start(&[(
+        "profile.json",
+        json!({"format": 2, "berth": "0.6.0", "host": "studio", "profile": {}}),
+    )]);
+    let mut host = daemon.host().await;
+    let version: api::Version = host.get("/v1/version").await.unwrap();
+    assert_eq!(version.host_type, Some(api::HostType::Workstation));
+}

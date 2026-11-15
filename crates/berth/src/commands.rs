@@ -1858,7 +1858,7 @@ mod tests {
         // Applying is refused to a host that is not a workstation, before anything runs.
         let dock = Host::load(&paths, "dock").unwrap();
         let refused = berth_core::apply::prepare(&paths, &dock, None);
-        assert!(said(refused.map(|_| ())).contains("not a workstation"));
+        assert!(said(refused.map(|_| ())).contains("neither a node nor a workstation"));
         let refused = install_controller_here(&paths, &studio);
         assert!(said(refused.map(|_| ())).contains("berth apply studio"));
     }

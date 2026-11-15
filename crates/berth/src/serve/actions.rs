@@ -1140,3 +1140,65 @@ fn rotate_key(state: Arc<Serve>, _: String, act: Act) -> Run {
         super::keys::start_rotation(&state, name, act.token)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn listed(names: &[&str]) -> Vec<HostAction> {
+        names
+            .iter()
+            .map(|name| HostAction {
+                name: (*name).into(),
+                ..HostAction::default()
+            })
+            .collect()
+    }
+
+    fn seen<'a>(host_type: HostType, listed: Option<&'a [HostAction]>, profile: &'a Value) -> Seen<'a> {
+        Seen {
+            name: "big",
+            profile,
+            host_actions: listed,
+            secrets: &[],
+            host_type,
+            observed: None,
+            unanswered: None,
+        }
+    }
+
+    #[test]
+    fn upgrading_the_server_is_offered_where_the_node_has_its_container() {
+        let profile = json!({"type": "node", "access": {"address": "192.0.2.20", "user": "root"}});
+        let find = |actions: &[Action]| actions.iter().find(|action| action.name == UPGRADE_SERVER).cloned();
+        // A node whose role found no berth server's container lists none.
+        let without = listed(&["status", "update"]);
+        assert!(find(&host_list(&seen(HostType::Node, Some(&without), &profile))).is_none());
+        let with = listed(&["status", UPGRADE_SERVER]);
+        let actions = host_list(&seen(HostType::Node, Some(&with), &profile));
+        let upgrade = find(&actions).unwrap();
+        assert!(upgrade.available, "{}", upgrade.why);
+        assert_eq!(upgrade.arguments[0].default, berth_api::VERSION);
+        assert_eq!(upgrade.runs, Runs::Host);
+        // Listed once: berth's own takes the place of the controller's.
+        assert_eq!(actions.iter().filter(|action| action.name == UPGRADE_SERVER).count(), 1);
+        // A controller that does not answer cannot run it.
+        let mut quiet = seen(HostType::Node, Some(&with), &profile);
+        quiet.unanswered = Some("no answer in time");
+        assert!(!upgrade_server_action(&quiet).available);
+        // Only a node's controller does it.
+        let managed = upgrade_server_action(&seen(HostType::Managed, Some(&with), &profile));
+        assert!(!managed.available && managed.why.contains("only a node's controller"));
+    }
+
+    #[test]
+    fn a_node_is_applied_and_makes_no_seed() {
+        let profile = json!({"type": "node", "access": {"address": "192.0.2.20", "user": "root"}});
+        let actions = host_list(&seen(HostType::Node, Some(&[]), &profile));
+        let find = |name: &str| actions.iter().find(|action| action.name == name).unwrap();
+        assert!(find("apply").available, "{}", find("apply").why);
+        assert!(!find("seed").available);
+        assert!(find("seed").why.contains("not a workstation"));
+        assert!(!find("install-controller").available);
+    }
+}
