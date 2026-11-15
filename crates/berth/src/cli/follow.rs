@@ -29,6 +29,8 @@ pub struct Ended {
     pub code: i32,
     /// What the server says of it now.
     pub job: Value,
+    /// The last lines of its output, without their colours.
+    pub tail: Vec<String>,
 }
 
 /// The lines of output seen, the last of which may not be finished.
@@ -252,7 +254,11 @@ pub fn job(client: &Client, id: &str, title: &str, own: bool) -> Result<Ended> {
             }
         }
     }
-    Ok(Ended { code, job })
+    Ok(Ended {
+        code,
+        job,
+        tail: lines.last(SHOWN_ON_FAILURE),
+    })
 }
 
 use ratatui::widgets::Widget;

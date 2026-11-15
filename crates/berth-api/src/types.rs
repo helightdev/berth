@@ -1689,7 +1689,7 @@ mod tests {
         assert_eq!(HostType::from_level("node"), Some(HostType::Node));
         assert_eq!(
             type_mismatch("big", HostType::Managed, Some(HostType::Node)).unwrap(),
-            "big is a node; its profile here says managed. To adopt it from the profile it keeps: berth adopt big"
+            "big is a node; its profile here says managed. To adopt it from the profile it keeps: berth host adopt big"
         );
         assert_eq!(HostType::parse("controller"), None);
         assert_eq!(HostType::from_level("reachable"), Some(HostType::Ssh));

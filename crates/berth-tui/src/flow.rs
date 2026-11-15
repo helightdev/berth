@@ -213,6 +213,16 @@ pub fn apply(config: &mut Value, features: &[Feature], setting: &Setting) -> Res
                 .iter()
                 .position(|feature| &feature.key == key)
                 .ok_or_else(|| format!("No plugin has the feature {key}"))?;
+            let host_type = berth_api::profile::host_type(config);
+            let fits = match host_type {
+                berth_api::HostType::Node => features[index].fits(host_type),
+                _ => features[index].fits(berth_api::HostType::Workstation),
+            };
+            if *on && !fits {
+                return Err(format!(
+                    "The feature {key} is not for a host of the type {host_type}"
+                ));
+            }
             setup::set_feature(config, features, index, *on);
             Ok(())
         }
@@ -464,6 +474,10 @@ impl Flow {
         let method = match (given.method, &given.provisioner) {
             (Some(method), _) => Some(method),
             (None, Some(_)) => Some(Action::Machine),
+            // A node is only ever applied over SSH.
+            (None, None) if given.values.contains(&(Field::Type, "node".into())) => {
+                Some(Action::Ssh)
+            }
             (None, None) if given.has(Field::SshHost) => Some(Action::Ssh),
             _ => None,
         };
@@ -663,9 +677,11 @@ impl Flow {
         let view = self.view(Step::Features);
         let fields = view.fields();
         let chosen_features = setup::chosen_features(&self.config);
+        let offered = view.offered_features();
         let mut options = vec![];
         let mut chosen = vec![];
-        for feature in &self.catalogue.features {
+        for index in &offered {
+            let feature = &self.catalogue.features[*index];
             options.push(Choice::new(&feature.key, &feature.label, &feature.help));
             chosen.push(chosen_features.contains(&feature.key));
         }
@@ -696,9 +712,9 @@ impl Flow {
             if chosen.get(index) == Some(on) {
                 continue;
             }
-            if index < features.len() {
-                setup::set_feature(&mut self.config, &features, index, *on);
-            } else if let Some(field) = fields.get(index - features.len()) {
+            if let Some(feature) = offered.get(index) {
+                setup::set_feature(&mut self.config, &features, *feature, *on);
+            } else if let Some(field) = fields.get(index - offered.len()) {
                 setup::set_pointer(&mut self.config, field.spec().pointer, json!(on));
             }
         }
@@ -869,15 +885,17 @@ mod tests {
                     label: "Claude Code".into(),
                     group: "Agents".into(),
                     help: String::new(),
+                    types: vec![],
                 },
                 Feature {
                     key: "codex/cli".into(),
                     label: "Codex".into(),
                     group: "Agents".into(),
                     help: String::new(),
+                    types: vec![],
                 },
             ],
-            secrets: vec![],
+            secrets: vec!["tailnet_api_key".into()],
             own_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOwn berth".into(),
             provisioners: vec![],
         }
@@ -1003,6 +1021,62 @@ mod tests {
         match flow.run(&given, &mut Nobody, &mut Hashes) {
             Err(Stop::Missing(question)) => {
                 assert_eq!(question.flag, "--generate-passwords");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_node_is_applied_over_ssh_with_a_servers_features_and_no_accounts() {
+        let mut catalogue = catalogue();
+        catalogue.features.push(Feature {
+            key: "incus/server".into(),
+            label: "Incus".into(),
+            group: "Servers".into(),
+            help: String::new(),
+            types: vec![berth_api::HostType::Node],
+        });
+        let mut given = Given::default();
+        given
+            .set(&[
+                "type=node".into(),
+                "address=192.0.2.20".into(),
+                "user=root".into(),
+            ])
+            .unwrap();
+        let mut flow = Flow::new("big", catalogue.clone());
+        let mut script = Script {
+            answers: vec![Answer::Many(vec![true])],
+            asked: vec![],
+        };
+        flow.run(&given, &mut script, &mut Hashes).unwrap();
+        // The way is SSH, and of the features only the server's is offered.
+        assert_eq!(flow.action, Action::Ssh);
+        assert!(
+            script
+                .asked
+                .iter()
+                .all(|asked| asked != "How it is installed")
+        );
+        assert!(
+            script.asked.contains(&"Features".to_owned()),
+            "{:?}",
+            script.asked
+        );
+        assert_eq!(
+            flow.config["ansible_vars"]["devbox_plugin_features"],
+            json!(["incus/server"])
+        );
+        assert_eq!(flow.config["type"], "node");
+        assert!(flow.config.get("operator_username").is_none());
+        assert!(flow.config.get("agent_username").is_none());
+        // A workstation's feature is refused for a node.
+        let mut given = given.clone();
+        given.features.push(("claude/cli".into(), true));
+        let mut flow = Flow::new("big", catalogue);
+        match flow.run(&given, &mut Nobody, &mut Hashes) {
+            Err(Stop::Refused(why)) => {
+                assert!(why.contains("not for a host of the type node"), "{why}")
             }
             other => panic!("{other:?}"),
         }

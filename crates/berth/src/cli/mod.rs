@@ -243,10 +243,11 @@ fn run(cli: Cli) -> Result<()> {
         Command::Plugin(command) => setup::plugin(&open()?, command),
         Command::Config(command) => setup::config(&open()?, command),
         Command::Port(args::Port::Forward {
-            host,
+            target,
             ports,
+            resource,
             address,
-        }) => data::forward(&open()?, &host, &ports, &address),
+        }) => data::forward(&open()?, &target, &ports, resource, &address),
         Command::Inbox(command) => data::inbox(&open()?, command),
         Command::Kv(command) => data::kv(&open()?, command),
         Command::Channel(command) => data::channel(&open()?, command),

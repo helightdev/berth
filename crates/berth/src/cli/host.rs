@@ -193,7 +193,7 @@ fn exists(client: &Client, name: &str) -> Result<bool> {
 fn add(client: &Client, add: &args::HostAdd) -> Result<()> {
     let host_type = HostType::parse(&add.host_type).ok_or_else(|| {
         Fail::usage(format!(
-            "--type is ssh, managed or workstation, not {}",
+            "--type is ssh, managed, node or workstation, not {}",
             add.host_type
         ))
     })?;
@@ -213,6 +213,14 @@ fn add(client: &Client, add: &args::HostAdd) -> Result<()> {
     let mut config = profile::minimal(host_type, &access);
     if host_type == HostType::Workstation {
         config["builder"] = json!({});
+    }
+    if !add.feature.is_empty() {
+        let features = super::setup::catalogue(client)?.features;
+        for key in &add.feature {
+            let setting = berth_tui::flow::Setting::Feature(key.clone(), true);
+            berth_tui::flow::apply(&mut config, &features, &setting)
+                .map_err(|why| Fail::usage(format!("--feature {key}: {why}")))?;
+        }
     }
     let problems = profile::problems(&config);
     if !problems.is_empty() {
@@ -253,6 +261,12 @@ fn add(client: &Client, add: &args::HostAdd) -> Result<()> {
     let seen = host["seen"].as_str().and_then(HostType::parse);
     if let Some(said) = berth_api::type_mismatch(&add.name, host_type, seen) {
         out::warn(said);
+    }
+    if host_type == HostType::Node {
+        out::hint(format!(
+            "Its features install with: berth host apply {}",
+            add.name
+        ));
     }
     Ok(())
 }
@@ -310,7 +324,10 @@ pub fn set(client: &Client, name: &str, values: &[String]) -> Result<()> {
     }
     save(client, name, &profile)?;
     out::done(format!("Saved {name}"));
-    if profile::host_type(&profile) == HostType::Workstation {
+    if matches!(
+        profile::host_type(&profile),
+        HostType::Workstation | HostType::Node
+    ) {
         out::hint(format!(
             "It takes effect when it is applied: berth host apply {name}"
         ));
@@ -436,6 +453,10 @@ fn seed(client: &Client, name: &str, file: Option<&std::path::Path>) -> Result<(
         out::json(&seed);
         return Ok(());
     }
+    // Until when its key joins the tailnet, for whoever starts the machine.
+    if let Some(note) = seed["tailnet"].as_str().filter(|note| !note.is_empty()) {
+        out::note(note);
+    }
     match file {
         Some(file) => {
             write_private(file, data.as_bytes())?;
@@ -490,8 +511,24 @@ fn installer(client: &Client, iso: &args::HostIso) -> Result<()> {
         ),
         None => format!("Building the installer of {}", iso.name),
     };
-    follow::acted(client, acted, &title, iso.detach.detach, false)?;
-    Ok(())
+    let Some(job) = acted.job.as_ref().filter(|_| !iso.detach.detach) else {
+        follow::acted(client, acted, &title, iso.detach.detach, false)?;
+        return Ok(());
+    };
+    let ended = follow::job(client, &job.id, &title, false)?;
+    // Until when its key joins the tailnet, which the job's output says among its lines.
+    for line in &ended.tail {
+        if line.contains("joins the tailnet until") {
+            out::note(line);
+        }
+    }
+    if out::get().json {
+        out::json(&ended.job);
+    }
+    match ended.code {
+        0 => Ok(()),
+        _ => Err(Fail::exit(1)),
+    }
 }
 
 fn rename(client: &Client, name: &str, new: &str, hostname: bool) -> Result<()> {

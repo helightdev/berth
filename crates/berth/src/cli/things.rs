@@ -539,14 +539,20 @@ pub fn provisioner(client: &Client, command: Provisioner) -> Result<()> {
         Provisioner::List => {
             let found = client.call("provisioners.list", json!({}), None)?;
             out::data(&found, || {
-                let mut table = Table::new(&["name", "type", "usable", "label"]);
+                let mut table = Table::new(&["name", "type", "node", "usable", "label"]);
                 for provisioner in items(found.clone(), "provisioners") {
                     let text = |key: &str| provisioner[key].as_str().unwrap_or("").to_owned();
                     let usable = match text("problem") {
                         problem if problem.is_empty() => styled("yes", Style::Good),
                         problem => styled(&format!("no: {problem}"), Style::Dim),
                     };
-                    table.row(vec![text("id"), text("type"), usable, text("label")]);
+                    table.row(vec![
+                        text("id"),
+                        text("type"),
+                        text("node"),
+                        usable,
+                        text("label"),
+                    ]);
                 }
                 table.print("No provisioners. berth provisioner types lists what can be added");
             });
@@ -688,7 +694,7 @@ fn spec_of(spec: &Option<String>) -> Result<Option<String>> {
 }
 
 /// The id of a resource given by its id, or by a name only it has.
-fn resource_id(client: &Client, given: &str) -> Result<String> {
+pub(super) fn resource_id(client: &Client, given: &str) -> Result<String> {
     match client.call("resources.get", json!({"id": given}), None) {
         Ok(_) => return Ok(given.to_owned()),
         Err(fail) if fail.code == "not_found" => {}
@@ -894,6 +900,35 @@ pub fn resource(client: &Client, command: Resource) -> Result<()> {
                     }
                 }
             })
+        }
+        Resource::Exec {
+            id,
+            stdin,
+            command,
+            detach,
+        } => {
+            let id = resource_id(client, &id)?;
+            let mut arguments = std::collections::BTreeMap::new();
+            arguments.insert("command".to_owned(), serde_json::to_string(&command)?);
+            if stdin {
+                let bytes = super::host::read_file("-")?;
+                let text = String::from_utf8(bytes)
+                    .map_err(|_| Fail::usage("--stdin takes text, and this is not UTF-8"))?;
+                arguments.insert("stdin".to_owned(), text);
+            }
+            let act = Act {
+                arguments,
+                ..Act::default()
+            };
+            let acted = client.act(&Subject::Resource(id.clone()), "exec", &act)?;
+            follow::acted(
+                client,
+                acted,
+                &format!("{} in {id}", command[0]),
+                detach.detach,
+                true,
+            )?;
+            Ok(())
         }
         Resource::Actions { id } => {
             let id = resource_id(client, &id)?;

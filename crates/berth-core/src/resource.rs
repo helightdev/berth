@@ -1494,10 +1494,7 @@ impl Acting {
                 request,
                 command,
             } => {
-                say(
-                    out,
-                    &format!("▸ Running {} in {}", shown(&command), kept.title()),
-                );
+                // The output is the command's own, so berth adds no line of its own to it.
                 let answer = call(
                     &called.dir,
                     &called.provisioner,
@@ -1564,24 +1561,6 @@ pub fn argv(text: &str) -> Result<Vec<String>> {
         Some(first) if !first.is_empty() => Ok(words),
         _ => Err("Give the command to run".into()),
     }
-}
-
-/// A command as a line for people, each word quoted where it needs to be.
-fn shown(command: &[String]) -> String {
-    command
-        .iter()
-        .map(|word| {
-            let plain = !word.is_empty()
-                && word
-                    .chars()
-                    .all(|ch| ch.is_ascii_alphanumeric() || "-_./=:,@%+".contains(ch));
-            match plain {
-                true => word.clone(),
-                false => format!("'{}'", word.replace('\'', "'\\''")),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 // ── Its log ─────────────────────────────────────────────────────────────────

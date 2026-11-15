@@ -171,6 +171,7 @@ impl Admin {
                         label: text("label"),
                         group: text("group"),
                         help: text("help"),
+                        types: berth_tui::setup::feature_types(feature),
                     }
                 })
                 .collect();

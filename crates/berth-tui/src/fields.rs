@@ -10,7 +10,7 @@ pub const DISK_TYPES: &[&str] = &["any", "ssd", "hdd"];
 /// for each of those.
 pub const LOGINS: &[&str] = &["berth", "password", "ssh"];
 /// The types a host can be meant to be, the whole profile first.
-pub const TYPES: &[&str] = &["workstation", "managed", "ssh"];
+pub const TYPES: &[&str] = &["workstation", "node", "managed", "ssh"];
 
 /// The pages of a host: its overview (`Manage`) and the tabs of the set-up
 /// flow. Each tab depends only on the ones before it.
@@ -679,7 +679,7 @@ impl Field {
                 "Type",
                 "/type",
                 Choice(TYPES),
-                "What berth does with the host. workstation: the whole profile, with the desktop, the agents and plugins. managed: berthd and box alone, for sessions, actions and files on a machine that stays as it is. ssh: nothing is installed; berth logs in over SSH. The type can change later: install the controller, or set workstation and apply.",
+                "What berth does with the host. workstation: the whole profile, with the desktop, the agents and plugins. node: a server for machines, applied without a desktop or accounts, with the plugin features that install Incus or Docker and register their provisioners. managed: berthd and box alone, for sessions, actions and files on a machine that stays as it is. ssh: nothing is installed; berth logs in over SSH. The type can change later: install the controller, or set workstation and apply.",
             ),
             UsbDevice => (
                 "Then write to USB drive",

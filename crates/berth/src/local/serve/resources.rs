@@ -270,6 +270,8 @@ async fn run_action(
     // The job ends as the command did, or with 1 when it could not be run.
     let work = Work::Coded(Box::new(move |out| {
         match acting.run(&paths, &options, out) {
+            // A command's output is its own, and its exit status says how it went.
+            Ok(answered) if exec => answered.exit_code.unwrap_or(0),
             Ok(answered) => {
                 say(out, &answered);
                 answered.exit_code.unwrap_or(0)

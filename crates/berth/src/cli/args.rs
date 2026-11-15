@@ -280,6 +280,9 @@ pub struct HostCreate {
     /// Start from a profile: a host's name, a JSON file, or - for standard input.
     #[arg(long, value_name = "PROFILE")]
     pub from: Option<String>,
+    /// What berth does with it: workstation, or node for a server of machines, applied over SSH.
+    #[arg(long = "type", value_name = "TYPE")]
+    pub host_type: Option<String>,
     /// Switch on a plugin's feature, PLUGIN/FEATURE. Again for more.
     #[arg(long, value_name = "FEATURE")]
     pub feature: Vec<String>,
@@ -320,9 +323,12 @@ pub struct HostAdd {
     /// How berth logs in: berth, key:NAME, password or ssh.
     #[arg(long, value_name = "AUTH")]
     pub auth: Option<String>,
-    /// What berth does with it: ssh, managed or workstation.
+    /// What berth does with it: ssh, managed, node or workstation.
     #[arg(long = "type", value_name = "TYPE", default_value = "ssh")]
     pub host_type: String,
+    /// Switch on a plugin's feature of a node or a workstation, PLUGIN/FEATURE, such as incus/server. Again for more.
+    #[arg(long, value_name = "FEATURE")]
+    pub feature: Vec<String>,
     /// Save it without logging in to it.
     #[arg(long)]
     pub no_contact: bool,
@@ -558,6 +564,18 @@ pub enum Resource {
         #[arg(long, value_name = "N")]
         tail: Option<u64>,
     },
+    /// Run a command in it, for a kind that has exec, and exit with its exit status.
+    Exec {
+        id: String,
+        /// Give the command what berth reads on standard input, to its end.
+        #[arg(long)]
+        stdin: bool,
+        /// The command and its arguments, after --.
+        #[arg(last = true, required = true, value_name = "COMMAND")]
+        command: Vec<String>,
+        #[command(flatten)]
+        detach: Detach,
+    },
     /// What it can do.
     Actions { id: String },
     /// Run one of its actions.
@@ -780,12 +798,18 @@ pub enum Config {
 
 #[derive(Subcommand, Debug)]
 pub enum Port {
-    /// Listen on this machine and pass each connection to a port of the host.
+    /// Listen on this machine and pass each connection to a port of a host, or to an endpoint of a resource.
+    ///
+    /// TARGET is a host's name. A resource's id or name is taken when no host has that name, or always with --resource.
     Forward {
-        host: String,
-        /// [LOCAL:]PORT: the host's port, and the one to listen on here.
-        #[arg(value_name = "[LOCAL:]PORT", required = true)]
+        #[arg(value_name = "TARGET")]
+        target: String,
+        /// [LOCAL:]PORT for a host's port. For a resource, [LOCAL:]ENDPOINT, an endpoint's name or port; LOCAL is the endpoint's port unless given.
+        #[arg(value_name = "[LOCAL:]PORT|ENDPOINT", required = true)]
         ports: Vec<String>,
+        /// TARGET is a resource, even where a host has the same name.
+        #[arg(long)]
+        resource: bool,
         /// The address to listen on.
         #[arg(long, default_value = "127.0.0.1")]
         address: String,

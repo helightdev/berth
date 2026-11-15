@@ -19,6 +19,29 @@ pub struct Feature {
     /// The group of the Features page it is listed in.
     pub group: String,
     pub help: String,
+    /// The types of host it is for; none says a workstation.
+    pub types: Vec<berth_api::HostType>,
+}
+
+impl Feature {
+    /// Whether a host of this type can have it.
+    pub fn fits(&self, host_type: berth_api::HostType) -> bool {
+        match self.types.is_empty() {
+            true => host_type == berth_api::HostType::Workstation,
+            false => self.types.contains(&host_type),
+        }
+    }
+}
+
+/// The types of host a feature of the catalogue is for, as the API says them.
+pub fn feature_types(feature: &Value) -> Vec<berth_api::HostType> {
+    feature["types"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(berth_api::HostType::parse)
+        .collect()
 }
 
 /// What a selectable row of a set-up page does when activated.
@@ -417,6 +440,13 @@ pub fn commit(config: &mut Value, field: Field, value: &str) -> Result<(), Strin
     {
         return Err(format!("Choose one of: {}", choices.join(", ")));
     }
+    // A type changes more than its field, such as a node's accounts going.
+    if field == Field::Type {
+        let host_type = berth_api::HostType::parse(value)
+            .ok_or_else(|| format!("Choose one of: {}", crate::fields::TYPES.join(", ")))?;
+        berth_api::profile::set_host_type(config, host_type);
+        return Ok(());
+    }
     if let Some(name) = spec.pointer.strip_prefix("/ansible_vars/")
         && value.is_empty()
     {
@@ -526,6 +556,29 @@ pub struct Profile<'a> {
 impl<'a> Profile<'a> {
     pub fn keys(&self, account: Account) -> Vec<String> {
         account_keys(self.config, account.name())
+    }
+
+    /// Whether the profile is a node's: a server applied without a desktop
+    /// or accounts of its own.
+    pub fn is_node(&self) -> bool {
+        berth_api::profile::host_type(self.config) == berth_api::HostType::Node
+    }
+
+    /// The type of host whose features the Features tab offers: a node's,
+    /// or else a workstation's, as only those two are given features.
+    fn feature_host_type(&self) -> berth_api::HostType {
+        match self.is_node() {
+            true => berth_api::HostType::Node,
+            false => berth_api::HostType::Workstation,
+        }
+    }
+
+    /// The features, by index, a host of this profile can have.
+    pub fn offered_features(&self) -> Vec<usize> {
+        let host_type = self.feature_host_type();
+        (0..self.features.len())
+            .filter(|index| self.features[*index].fits(host_type))
+            .collect()
     }
 
     pub fn text(&self, field: Field) -> &'a str {
@@ -662,6 +715,7 @@ impl<'a> Profile<'a> {
             true => &[Cockpit, Docker],
             false => &[],
         };
+        let host_type = self.feature_host_type();
         let builtin: [(&str, &[Field]); 6] = [
             ("Coding Agents", &[]),
             ("Agent Orchestrator", &[]),
@@ -684,10 +738,17 @@ impl<'a> Profile<'a> {
             .iter()
             .map(|(title, fields)| FeatureGroup {
                 title: (*title).to_owned(),
-                items: fields.iter().map(|field| Item::Field(*field)).collect(),
+                // berth's own things to install are a workstation's.
+                items: match self.is_node() {
+                    true => vec![],
+                    false => fields.iter().map(|field| Item::Field(*field)).collect(),
+                },
             })
             .collect();
         for (index, feature) in self.features.iter().enumerate() {
+            if !feature.fits(host_type) {
+                continue;
+            }
             let item = Item::Feature(index);
             let known = groups
                 .iter_mut()
@@ -769,6 +830,7 @@ impl<'a> Profile<'a> {
     pub fn fields(&self) -> Vec<Field> {
         use Field::*;
         match self.step {
+            Step::Features if self.is_node() => vec![],
             Step::Features => {
                 let mut fields = vec![
                     ToolsWeb,
@@ -833,6 +895,21 @@ impl<'a> Profile<'a> {
         }
         // A host below a workstation needs only to be reached.
         let host_type = berth_api::profile::host_type(self.config);
+        // A node is applied over SSH, without a desktop, and may join the tailnet.
+        if action == Action::Ssh && host_type == berth_api::HostType::Node {
+            return (
+                vec![],
+                vec![
+                    Type,
+                    SshHost,
+                    SshUser,
+                    SshPort,
+                    Login,
+                    AskBecomePass,
+                    Tailscale,
+                ],
+            );
+        }
         if action == Action::Ssh && host_type != berth_api::HostType::Workstation {
             let mut after = vec![Type, SshHost, SshUser, SshPort, Login];
             // Nothing is installed on a host of the type ssh, so nothing asks for sudo.
@@ -867,6 +944,8 @@ impl<'a> Profile<'a> {
             Action::Save | Action::Release | Action::Manage => return (vec![], vec![], vec![]),
             // The container only has the agent account.
             Action::Docker => return (vec![AgentUser], vec![], vec![]),
+            // A node has no accounts of its own: sessions run as the SSH user.
+            _ if self.is_node() => return (vec![], vec![("Access", vec![HardenSsh])], vec![]),
             _ => {}
         }
         let accounts = vec![
@@ -1196,6 +1275,10 @@ impl<'a> Profile<'a> {
                 "The host's address is required: its name, IP address or tailnet name",
             ));
         }
+        if self.is_node() {
+            problems.extend(self.placed_problems());
+            return problems;
+        }
         // A host below a workstation is only reached: the workstation's settings do not apply.
         if self.action == Action::Ssh
             && berth_api::profile::host_type(self.config) != berth_api::HostType::Workstation
@@ -1220,6 +1303,20 @@ impl<'a> Profile<'a> {
             }
         };
         if matches!(action, Action::Save | Action::Release | Action::Manage) {
+            return problems;
+        }
+        if self.is_node() {
+            if action != Action::Ssh {
+                problems.push(Problem::of(
+                    Step::Install,
+                    Type,
+                    "A node is applied over SSH to a server that is installed already: choose Existing host over SSH",
+                ));
+            }
+            // What the profile says that a node has not got, such as accounts.
+            for problem in berth_api::profile::problems(self.config) {
+                problems.push(Problem::new(Step::Install, problem));
+            }
             return problems;
         }
         let settings = Step::Settings;
@@ -1429,6 +1526,7 @@ mod tests {
             label: key.into(),
             group: group.into(),
             help: String::new(),
+            types: vec![],
         };
         vec![
             feature("demo/agent", "coding agents"),

@@ -55,6 +55,7 @@ pub fn catalogue(client: &Client) -> Result<Catalogue> {
                 label: text("label"),
                 group: text("group"),
                 help: text("help"),
+                types: berth_tui::setup::feature_types(feature),
             }
         })
         .collect();
@@ -122,12 +123,7 @@ fn starting_profile(client: &Client, from: &str) -> Result<Value> {
         .map_err(|fail| fail.context(&format!("--from {from} is no file and no host")))?;
     // What belongs to the other host itself stays with it.
     if let Some(profile) = profile.as_object_mut() {
-        for key in [
-            "hostname",
-            "operator_password_hash",
-            "agent_password_hash",
-            "tailscale_auth_key",
-        ] {
+        for key in ["hostname", "operator_password_hash", "agent_password_hash"] {
             profile.remove(key);
         }
     }
@@ -172,6 +168,11 @@ pub fn create(client: &Client, create: &args::HostCreate) -> Result<()> {
         provisioner: create.provisioner.clone(),
         ..Given::default()
     };
+    if let Some(host_type) = &create.host_type {
+        given
+            .set(&[format!("type={host_type}")])
+            .map_err(Fail::usage)?;
+    }
     given.set(&create.set).map_err(Fail::usage)?;
     given
         .features

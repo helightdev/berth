@@ -576,6 +576,8 @@ pub struct FeatureInfo {
     /// The group of the Features page it is listed in.
     pub group: String,
     pub help: String,
+    /// The types of host it is for, such as `workstation` or `node`.
+    pub types: Vec<berth_api::HostType>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -598,11 +600,17 @@ pub async fn catalogue(State(state): App) -> Answer<Json<Catalogue>> {
     let features = found
         .iter()
         .flat_map(|plugin| {
-            plugin.features.iter().map(|feature| FeatureInfo {
+            let hosting = plugins::hosting(plugin);
+            plugin.features.iter().map(move |feature| FeatureInfo {
                 key: format!("{}/{}", plugin.id, feature.id),
                 label: feature.label.clone(),
                 group: feature.group.clone(),
                 help: feature.help.to_owned(),
+                types: hosting
+                    .iter()
+                    .find(|known| known.feature == feature.id)
+                    .map(|known| known.types.clone())
+                    .unwrap_or_else(|| vec![berth_api::HostType::Workstation]),
             })
         })
         .collect();

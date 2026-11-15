@@ -260,6 +260,12 @@ pub fn help(provisioner: Option<&ProvisionerInfo>, place: &str) -> String {
     if !provisioner.problem.is_empty() {
         text += &format!("It cannot be used here: {}\n\n", provisioner.problem);
     }
+    if !provisioner.node.is_empty() {
+        text += &format!(
+            "It lives on the node {}, whose feature offered it when the node was applied.\n\n",
+            provisioner.node
+        );
+    }
     let kinds: Vec<String> = provisioner
         .kinds
         .iter()
@@ -368,6 +374,32 @@ impl Page {
             .map(|(key, value)| format!("{key}={value}"))
             .collect();
         row("Arguments", &arguments.join(" "));
+        if !seen.endpoints.is_empty() {
+            lines.push((String::new(), Tone::Muted));
+            lines.push((
+                format!("Endpoints · berth port forward {} ENDPOINT", seen.id),
+                Tone::Plain,
+            ));
+            let width = seen
+                .endpoints
+                .iter()
+                .map(|endpoint| endpoint.name.chars().count())
+                .max()
+                .unwrap_or(0);
+            for endpoint in &seen.endpoints {
+                let hint = match endpoint.hint.is_empty() {
+                    true => String::new(),
+                    false => format!("  {}", endpoint.hint),
+                };
+                lines.push((
+                    format!(
+                        "  {:<width$}  {}:{}/{}{hint}",
+                        endpoint.name, endpoint.address, endpoint.port, endpoint.protocol
+                    ),
+                    Tone::Muted,
+                ));
+            }
+        }
         lines
     }
 
@@ -400,7 +432,7 @@ impl Page {
             (said, tone),
         ];
         // The settings row is one of them, in the same columns.
-        let settings = (!info.own.is_empty()).then_some("Settings".len());
+        let settings = (!info.own.is_empty() || !info.node.is_empty()).then_some("Settings".len());
         let width = state
             .details
             .iter()
@@ -414,6 +446,15 @@ impl Page {
                 Tone::Muted,
             )
         }));
+        if !info.node.is_empty() {
+            lines.push((
+                format!(
+                    "  {:<width$}  {}, whose feature offers it",
+                    "Node", info.node
+                ),
+                Tone::Muted,
+            ));
+        }
         if !info.own.is_empty() {
             let set: Vec<String> = info
                 .own

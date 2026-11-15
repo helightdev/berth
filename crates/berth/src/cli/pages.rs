@@ -155,6 +155,9 @@ pub fn provisioner(
     for row in &state.details {
         text += &format!("{:<width$}  {}\n", row.label, row.value);
     }
+    if !info.node.is_empty() {
+        text += &format!("Node      {}, whose feature offers it\n", info.node);
+    }
     if !info.own.is_empty() {
         let set: Vec<String> = info
             .own
@@ -276,6 +279,32 @@ pub fn resource(found: &Resource, actions: &[Action]) -> String {
         .map(|(key, value)| format!("{key}={value}"))
         .collect();
     row("Arguments", &arguments.join(" "));
+    if !found.endpoints.is_empty() {
+        text += &format!("\nEndpoints (berth port forward {} ENDPOINT)\n", found.id);
+        let width = found
+            .endpoints
+            .iter()
+            .map(|endpoint| endpoint.name.chars().count())
+            .max()
+            .unwrap_or(0);
+        for endpoint in &found.endpoints {
+            let mut notes = vec![];
+            if !endpoint.hint.is_empty() {
+                notes.push(endpoint.hint.clone());
+            }
+            if endpoint.local {
+                notes.push("on the server's machine".to_owned());
+            }
+            let notes = match notes.is_empty() {
+                true => String::new(),
+                false => format!("  {}", notes.join(" · ")),
+            };
+            text += &format!(
+                "  {:<width$}  {}:{}/{}{notes}\n",
+                endpoint.name, endpoint.address, endpoint.port, endpoint.protocol
+            );
+        }
+    }
     if !actions.is_empty() {
         text += &format!("\nActions (berth resource run {} ACTION)\n", found.id);
     }

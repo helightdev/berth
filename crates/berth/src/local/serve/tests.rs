@@ -4226,13 +4226,8 @@ async fn a_command_runs_in_a_resource_as_a_job_that_ends_as_it_did() {
     assert_eq!(status, 202, "{acted}");
     let (output, code) = job_ended(&served.socket, acted["job"]["id"].as_str().unwrap()).await;
     assert_eq!(code, 3, "{output}");
-    for line in [
-        "▸ Running sh -c 'echo hi; exit 3' in db",
-        "hi from db",
-        "✗ sh exited with 3",
-    ] {
-        assert!(output.contains(line), "{line} in {output}");
-    }
+    // The output is the command's alone.
+    assert_eq!(output.trim(), "hi from db", "{output}");
     let request: Value =
         serde_json::from_str(&std::fs::read_to_string(fake.join("last.exec")).unwrap()).unwrap();
     assert_eq!(request["command"], json!(["sh", "-c", "echo hi; exit 3"]));
