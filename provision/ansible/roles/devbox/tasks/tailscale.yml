@@ -1,19 +1,29 @@
 ---
 # Tailscale from its own repository, for the release the host runs. Joining
-# is tailnet.yml's.
+# is tailnet.yml's. The key and the list have the names Tailscale's own
+# installer and berth's server recipe give them, as apt refuses two lists of
+# the same repository with different keys.
+- name: Remove the Tailscale repository of earlier berths, kept under other names
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/apt/sources.list.d/devbox-tailscale.list
+    - /usr/share/keyrings/devbox-tailscale.gpg
+  register: tailscale_old_repo
 - name: Add Tailscale package signing key
   ansible.builtin.get_url:
     url: https://pkgs.tailscale.com/stable/ubuntu/{{ ansible_facts.distribution_release }}.noarmor.gpg
-    dest: /usr/share/keyrings/devbox-tailscale.gpg
+    dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
     mode: '0644'
 - name: Configure Tailscale repository
   ansible.builtin.copy:
-    dest: /etc/apt/sources.list.d/devbox-tailscale.list
-    content: "deb [signed-by=/usr/share/keyrings/devbox-tailscale.gpg] https://pkgs.tailscale.com/stable/ubuntu {{ ansible_facts.distribution_release }} main\n"
+    dest: /etc/apt/sources.list.d/tailscale.list
+    content: "deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/ubuntu {{ ansible_facts.distribution_release }} main\n"
     mode: '0644'
   register: tailscale_repo
 - name: Install Tailscale
   ansible.builtin.apt:
     name: tailscale
     state: present
-    update_cache: "{{ tailscale_repo.changed }}"
+    update_cache: "{{ tailscale_repo.changed or tailscale_old_repo.changed }}"
