@@ -391,6 +391,62 @@ pub(crate) fn details(answer: &Value) -> Vec<Detail> {
         .collect()
 }
 
+/// The text of a value of an answer: a string as it is, nothing as empty,
+/// and anything else as JSON.
+fn said(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// The items of each collection in the `collections` of a status: those
+/// given for a collection that is declared, each with every part of its key.
+/// The key of one that names a single part may be left out: it is the
+/// item's name.
+pub(crate) fn items(
+    declared: &[berth_api::Collection],
+    given: &Value,
+) -> BTreeMap<String, Vec<berth_api::CollectionItem>> {
+    let mut found = BTreeMap::new();
+    for collection in declared.iter().filter(|known| known.kinds.is_empty()) {
+        let Some(rows) = given[&collection.id].as_array() else {
+            continue;
+        };
+        let texts = |value: &Value| -> BTreeMap<String, String> {
+            value
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(key, value)| (key.clone(), said(value)))
+                .collect()
+        };
+        let listed: Vec<berth_api::CollectionItem> = rows
+            .iter()
+            .filter_map(|row| {
+                let name = said(&row["name"]);
+                let mut key = texts(&row["key"]);
+                if let [part] = collection.key.as_slice() {
+                    key.entry(part.clone()).or_insert_with(|| name.clone());
+                }
+                let whole = collection
+                    .key
+                    .iter()
+                    .all(|part| key.get(part).is_some_and(|value| !value.is_empty()));
+                (whole && !name.is_empty()).then(|| berth_api::CollectionItem {
+                    name,
+                    key,
+                    columns: texts(&row["columns"]),
+                    unavailable: texts(&row["unavailable"]),
+                })
+            })
+            .collect();
+        found.insert(collection.id.clone(), listed);
+    }
+    found
+}
+
 /// The page of a provisioner: what it says of itself now, and the resources
 /// berth made with it with what its own list says of them. `given` are values of its own arguments for this
 /// once, such as another server to ask.
@@ -451,6 +507,7 @@ pub fn state(
                     state.values.insert(argument.clone(), offered);
                 }
             }
+            state.collections = items(&provisioner.collections, &answer["collections"]);
         }
         Err(error) => {
             state.state = "unreachable".into();
@@ -1152,5 +1209,67 @@ pub(crate) fn stream(
             status.code().unwrap_or(-1)
         )
         .into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use berth_api::{Collection, CollectionItem};
+
+    #[test]
+    fn the_items_of_a_status_are_taken_with_their_whole_key() {
+        let declared = vec![
+            Collection {
+                id: "pools".into(),
+                key: vec!["pool".into()],
+                ..Collection::default()
+            },
+            Collection {
+                id: "volumes".into(),
+                key: vec!["pool".into(), "volume".into()],
+                within: "pools".into(),
+                ..Collection::default()
+            },
+            Collection {
+                id: "disks".into(),
+                key: vec!["instance".into()],
+                kinds: vec!["machine".into()],
+                ..Collection::default()
+            },
+        ];
+        let given = json!({
+            "pools": [
+                {"name": "default", "columns": {"driver": "zfs", "size": 100},
+                 "unavailable": {"remove-pool": "It holds volumes"}},
+                {"name": ""}
+            ],
+            "volumes": [
+                {"name": "data", "key": {"pool": "default", "volume": "data"}},
+                {"name": "half", "key": {"volume": "half"}}
+            ],
+            "disks": [{"name": "berth-studio"}],
+            "unknown": [{"name": "x"}]
+        });
+        let found = items(&declared, &given);
+        // The single part of a key is the name; a row without its whole key is left out.
+        assert_eq!(
+            found["pools"],
+            [CollectionItem {
+                name: "default".into(),
+                key: [("pool".to_owned(), "default".to_owned())].into(),
+                columns: [
+                    ("driver".to_owned(), "zfs".to_owned()),
+                    ("size".to_owned(), "100".to_owned())
+                ]
+                .into(),
+                unavailable: [("remove-pool".to_owned(), "It holds volumes".to_owned())].into(),
+            }]
+        );
+        assert_eq!(found["volumes"].len(), 1);
+        assert_eq!(found["volumes"][0].key["pool"], "default");
+        // Items of resources come from berth's records, and what is not declared is not taken.
+        assert_eq!(found.keys().collect::<Vec<_>>(), ["pools", "volumes"]);
+        assert!(items(&declared, &Value::Null).is_empty());
     }
 }
