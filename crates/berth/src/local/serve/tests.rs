@@ -3135,9 +3135,9 @@ async fn berth_connect_saves_the_server_and_its_token() {
         let (dir, url) = (paths.config_dir.clone(), url.clone());
         tokio::task::spawn_blocking(move || {
             let settings = berth_page::settings::Settings::new(Some(dir));
-            crate::connect::connect_with(&settings, &url, &key)
+            crate::cli::login::claim(&settings, &url, &key)
                 .map(drop)
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.message)
         })
     };
     // A wrong key saves nothing.

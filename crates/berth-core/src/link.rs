@@ -209,7 +209,7 @@ impl Link {
         } else if let Some(changed) = crate::keys::known::changed_key(&self.spec.name, &said) {
             changed
         } else if said.contains("a password is required") {
-            format!("{said}: set BERTH_SUDO_PASSWORD")
+            format!("{said}: keep the sudo password with berth secret set sudo/HOST")
         } else {
             said
         })

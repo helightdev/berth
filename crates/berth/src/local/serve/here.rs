@@ -35,16 +35,6 @@ pub fn local(paths: &Paths, ask: bool) -> Result<(String, Option<Here>)> {
     Ok((berth_core::server::HERE.to_owned(), Some(here)))
 }
 
-/// The server a command goes through: the one berth is set to use, or one
-/// on this machine as [`local`] finds it.
-pub fn server(paths: &Paths) -> Result<(berth_core::server::Server, Option<Here>)> {
-    if let Some(server) = berth_core::server::Server::configured(paths) {
-        return Ok((server, None));
-    }
-    let (url, here) = local(paths, false)?;
-    Ok((berth_core::server::Server { url, token: None }, here))
-}
-
 /// Wait for the jobs a command started in its own server, saying on
 /// standard error which they are.
 pub fn finish(here: Option<Here>) {

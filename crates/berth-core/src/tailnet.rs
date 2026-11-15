@@ -66,19 +66,12 @@ impl Control {
     pub fn configured(paths: &Paths) -> Control {
         let setting = |key: &str| paths.setting(key).unwrap_or_default();
         let headscale = server_address(&setting("tailnet_login_server"));
-        let mut tags = tags(&setting("tailnet_tags"));
-        let mut token = Store::new(paths)
+        let tags = tags(&setting("tailnet_tags"));
+        let token = Store::new(paths)
             .and_then(|store| store.secret(TAILNET_API_KEY))
             .ok()
             .flatten()
             .filter(|token| !token.is_empty() && token != crate::server::KEPT);
-        if headscale.is_none() {
-            let variable = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
-            token = token.or_else(|| variable("TS_API_KEY"));
-            if tags.is_empty() {
-                tags = self::tags(&variable("DEVBOX_TAILSCALE_TAGS").unwrap_or_default());
-            }
-        }
         Control {
             headscale,
             user: setting("tailnet_user"),
@@ -108,7 +101,7 @@ impl Control {
                 "berth needs an API key of Headscale to create enrollment keys: berth secret set {TAILNET_API_KEY} (make one with: headscale apikeys create)"
             ),
             None => format!(
-                "berth needs a Tailscale API access token to create enrollment keys: berth secret set {TAILNET_API_KEY}, or TS_API_KEY in the environment"
+                "berth needs a Tailscale API access token to create enrollment keys: berth secret set {TAILNET_API_KEY}"
             ),
         })?;
         if token.contains(['"', '\\', '\n', '\r']) {

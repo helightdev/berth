@@ -1054,7 +1054,6 @@ fn password(paths: &Paths, host: &Host) -> Option<String> {
         return None;
     }
     host.kept_sudo_password(paths)
-        .or_else(|| std::env::var("BERTH_SUDO_PASSWORD").ok())
 }
 
 /// Whether SSH lets berth in. A machine just made has a key nobody has seen;
@@ -1190,8 +1189,8 @@ fn finish(paths: &Paths, host: &Host, setup: Setup, out: &mut dyn Write) -> Resu
             let password = password(paths, host);
             if host.asks_password() && password.is_none() {
                 return Err(format!(
-                    "{}'s SSH user's sudo asks for a password: set BERTH_SUDO_PASSWORD, or apply it with: berth apply {}",
-                    host.name, host.name
+                    "{name}'s SSH user's sudo asks for a password: keep it with berth secret set sudo/{name}, or apply it with berth host apply {name}",
+                    name = host.name
                 )
                 .into());
             }

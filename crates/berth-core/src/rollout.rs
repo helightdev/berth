@@ -334,10 +334,10 @@ impl Target for Live<'_> {
 
     fn apply(&mut self, out: &mut dyn Write) -> std::result::Result<(), String> {
         if self.host.asks_password() && self.password.is_none() {
-            return Err(
-                "its SSH user's sudo asks for a password: set BERTH_SUDO_PASSWORD, or apply it by itself"
-                    .into(),
-            );
+            return Err(format!(
+                "its SSH user's sudo asks for a password: keep it with berth secret set sudo/{name}, or apply it by itself with berth host apply {name}",
+                name = self.host.name
+            ));
         }
         let mut prepared = apply::prepare(self.paths, &self.host, self.password.as_deref())
             .map_err(|error| error.to_string())?;
@@ -461,7 +461,7 @@ pub fn survey(paths: &Paths) -> Vec<api::HostBehind> {
     let hosts = Host::all(paths);
     let asked = runtime.block_on(futures_util::future::join_all(hosts.iter().map(
         |host| async move {
-            let password = std::env::var("BERTH_SUDO_PASSWORD").ok();
+            let password = host.kept_sudo_password(paths);
             let link = Link::new(host.link(paths, password.as_deref()).ok()?);
             // A host that refused the login a short while ago is left out,
             // as one that does not answer is.

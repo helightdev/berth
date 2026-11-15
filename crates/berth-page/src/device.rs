@@ -28,8 +28,8 @@ pub struct Linked {
 
 impl Linked {
     /// What the environment `var` gives names: `BERTH_SERVER` and
-    /// `BERTH_TOKEN` this once, and `BERTH_SETUP_KEY`. Secrets come from the
-    /// environment, not the command line, where other users could read them.
+    /// `BERTH_TOKEN` this once. Secrets come from the environment or a file,
+    /// not the command line, where other users could read them.
     pub fn from(var: impl Fn(&str) -> Option<String>) -> Linked {
         let variable = |name: &str| {
             var(name)
@@ -39,7 +39,7 @@ impl Linked {
         Linked {
             server: variable("BERTH_SERVER"),
             token: variable("BERTH_TOKEN"),
-            setup_key: variable("BERTH_SETUP_KEY"),
+            setup_key: None,
         }
     }
 

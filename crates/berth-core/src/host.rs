@@ -82,17 +82,14 @@ impl Host {
     }
 
     /// The SSH user's sudo password, for a host that asks for one: the
-    /// secret `sudo/HOST` when it is kept, `BERTH_SUDO_PASSWORD`, or asked
-    /// for on a terminal. The UI has its own dialog.
+    /// secret `sudo/HOST` when it is kept, or asked for on a terminal. The
+    /// screens and the commands ask for it themselves.
     pub fn sudo_password(&self, paths: &Paths) -> Result<Option<String>> {
         if !self.asks_password() {
             return Ok(None);
         }
         if let Some(kept) = self.kept_sudo_password(paths) {
             return Ok(Some(kept));
-        }
-        if let Ok(password) = std::env::var("BERTH_SUDO_PASSWORD") {
-            return Ok(Some(password));
         }
         use std::io::IsTerminal;
         if !std::io::stdin().is_terminal() {
