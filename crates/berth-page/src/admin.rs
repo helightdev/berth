@@ -650,7 +650,7 @@ impl Admin {
                 Ok(acted) => {
                     let job = &acted["job"];
                     admin.say("");
-                    admin.data.borrow_mut().job = Some(View::plain(&title, size.0, size.1));
+                    admin.data.borrow_mut().job = Some(View::of_job(&title, size.0, size.1, job));
                     let follower = admin.clone();
                     admin.portal.stream(
                         "jobs.follow",
@@ -762,7 +762,7 @@ impl Admin {
                 Ok(created) => {
                     admin.say("");
                     let again = host.clone();
-                    admin.follow(created["job"]["id"].clone(), &title, size, move |admin| {
+                    admin.follow(&created["job"], &title, size, move |admin| {
                         admin.machine(&again)
                     });
                 }
@@ -784,7 +784,7 @@ impl Admin {
             move |result| match result {
                 Ok(acted) => {
                     let again = host.clone();
-                    admin.follow(acted["job"]["id"].clone(), &title, size, move |admin| {
+                    admin.follow(&acted["job"], &title, size, move |admin| {
                         admin.machine(&again)
                     });
                 }
@@ -810,7 +810,7 @@ impl Admin {
                 Ok(acted) if acted["job"].is_null() => admin.machine(&host),
                 Ok(acted) => {
                     let again = host.clone();
-                    admin.follow(acted["job"]["id"].clone(), &title, size, move |admin| {
+                    admin.follow(&acted["job"], &title, size, move |admin| {
                         admin.machine(&again)
                     });
                 }
@@ -884,7 +884,7 @@ impl Admin {
                 Ok(acted) => {
                     admin.say("");
                     let again = id.clone();
-                    admin.follow(acted["job"]["id"].clone(), &title, size, move |admin| {
+                    admin.follow(&acted["job"], &title, size, move |admin| {
                         admin.resource(&again)
                     });
                 }
@@ -1069,7 +1069,7 @@ impl Admin {
                 Ok(acted) => {
                     admin.say("");
                     let again = name.clone();
-                    admin.follow(acted["job"]["id"].clone(), &title, size, move |admin| {
+                    admin.follow(&acted["job"], &title, size, move |admin| {
                         admin.provisioner(&again)
                     });
                 }
@@ -1090,8 +1090,9 @@ impl Admin {
     }
 
     /// Follow a job of the server in a panel; `ended` is run when it has ended.
-    fn follow(&self, id: Value, title: &str, size: (u16, u16), ended: impl Fn(&Admin) + 'static) {
-        self.data.borrow_mut().job = Some(View::plain(title, size.0, size.1));
+    fn follow(&self, job: &Value, title: &str, size: (u16, u16), ended: impl Fn(&Admin) + 'static) {
+        let id = job["id"].clone();
+        self.data.borrow_mut().job = Some(View::of_job(title, size.0, size.1, job));
         let follower = self.clone();
         self.portal
             .stream("jobs.follow", None, json!({"id": id}), move |frame| {

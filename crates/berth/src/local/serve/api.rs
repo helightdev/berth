@@ -194,6 +194,7 @@ pub(super) fn job_info(paths: &berth_core::paths::Paths, job: store::Job) -> Job
         ended: job.ended,
         exit_code: job.exit_code,
         stopped_by: job.stopped_by,
+        arguments: job.arguments,
     }
 }
 

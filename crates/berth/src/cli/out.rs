@@ -4,6 +4,7 @@
 
 use super::args::{Colour, Global, Output};
 use super::fail::Fail;
+use berth_tui::theme::{self, Depth, Role};
 use serde_json::Value;
 use std::io::{IsTerminal, Write};
 use std::sync::OnceLock;
@@ -14,11 +15,15 @@ pub struct Out {
     pub quiet: bool,
     /// Colours on standard output and on standard error.
     pub colour: (bool, bool),
+    /// How many colours the terminal shows, when there are any.
+    pub depth: Depth,
     /// Whether each of the two is a terminal.
     pub terminal: (bool, bool),
     /// Whether someone can be asked: a terminal, and no --no-input.
     pub ask: bool,
     pub yes: bool,
+    /// `--sudo-password-stdin`: a host's sudo password is read from standard input.
+    pub sudo_stdin: bool,
 }
 
 static OUT: OnceLock<Out> = OnceLock::new();
@@ -36,13 +41,24 @@ pub fn init(global: &Global) {
         Colour::Auto if no_colour => (false, false),
         Colour::Auto => terminal,
     };
+    let depth = Depth::of_terminal(|name| std::env::var(name).ok());
+    let colour = match depth {
+        // A dumb terminal shows the escapes as text, unless asked for.
+        Depth::None if global.color == Colour::Auto => (false, false),
+        _ => colour,
+    };
     let out = Out {
         json: global.output == Output::Json,
         quiet: global.quiet,
         colour,
+        depth: match depth {
+            Depth::None => Depth::Basic,
+            depth => depth,
+        },
         terminal,
         ask: !global.no_input && std::io::stdin().is_terminal() && terminal.1,
         yes: global.yes,
+        sudo_stdin: global.sudo_password_stdin,
     };
     let _ = OUT.set(out);
 }
@@ -52,9 +68,11 @@ pub fn get() -> Out {
         json: false,
         quiet: false,
         colour: (false, false),
+        depth: Depth::Basic,
         terminal: (false, false),
         ask: false,
         yes: false,
+        sudo_stdin: false,
     })
 }
 
@@ -74,14 +92,25 @@ fn paint(text: &str, style: Style, on: bool) -> String {
         return text.to_owned();
     }
     let code = match style {
-        Style::Good => "32",
-        Style::Bad => "31",
-        Style::Warn => "33",
-        Style::Dim => "2",
-        Style::Bold => "1",
-        Style::Accent => "36",
+        Style::Bold => "1".into(),
+        Style::Good => theme::sgr(Role::Good, get().depth),
+        Style::Bad => theme::sgr(Role::Bad, get().depth),
+        Style::Warn => theme::sgr(Role::Warn, get().depth),
+        Style::Dim => theme::sgr(Role::Muted, get().depth),
+        Style::Accent => theme::sgr(Role::Accent, get().depth),
     };
     format!("\x1b[{code}m{text}\x1b[0m")
+}
+
+/// A style of ratatui in `role`'s colour, for what the command line draws
+/// with it on standard error: prompts and progress. Plain without colours.
+pub fn look(role: Role) -> ratatui::style::Style {
+    let out = get();
+    match out.colour.1 {
+        true => theme::style(role, out.depth),
+        false if role == Role::Muted => ratatui::style::Style::new().dim(),
+        false => ratatui::style::Style::new(),
+    }
 }
 
 /// `text` styled for standard output.

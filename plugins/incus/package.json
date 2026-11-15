@@ -78,7 +78,7 @@
           },
           {
             "id": "instance",
-            "label": "Instance",
+            "label": "Virtual machine from an image",
             "verbs": ["start", "stop", "change", "logs", "exec"],
             "arguments": [
               {"name": "image", "label": "Image", "default": "ubuntu/24.04", "help": "The image on images.linuxcontainers.org to start from, such as debian/12 or alpine/3.20. It becomes no berth host: nothing of berth is put in it."},
@@ -154,7 +154,7 @@
           },
           {
             "id": "instance",
-            "label": "Instance",
+            "label": "Container from an image",
             "verbs": ["start", "stop", "change", "logs", "exec"],
             "arguments": [
               {"name": "image", "label": "Image", "default": "ubuntu/24.04", "help": "The image on images.linuxcontainers.org to start from, such as debian/12 or alpine/3.20. It becomes no berth host: nothing of berth is put in it."},

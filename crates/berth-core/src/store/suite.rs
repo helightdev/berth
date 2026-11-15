@@ -86,6 +86,7 @@ on_each_backend!(
     two_writers_on_one_key_and_one_loses,
     old_messages_and_jobs_are_pruned_and_values_stay,
     a_repeated_token_finds_the_job_it_started,
+    a_job_keeps_what_it_was_started_with,
     a_store_is_up_to_date_and_says_what_it_is,
     state_rows_are_kept_listed_and_removed,
     replacing_states_leaves_other_scopes_and_kinds_alone,
@@ -485,6 +486,31 @@ fn a_repeated_token_finds_the_job_it_started(place: &Place) {
         .map(|racer| racer.join().unwrap())
         .collect();
     assert_eq!(ids.len(), 1);
+}
+
+fn a_job_keeps_what_it_was_started_with(place: &Place) {
+    let store = place.open();
+    let job = |id: &str, arguments: &[&str]| Job {
+        id: id.into(),
+        host: "studio".into(),
+        what: "exec".into(),
+        started: rfc3339(unix_now()),
+        output_path: format!("/tmp/{id}.log"),
+        subject: "resource:r-1".into(),
+        action: "exec".into(),
+        arguments: arguments.iter().map(|word| word.to_string()).collect(),
+        ..Job::default()
+    };
+    store
+        .add_job(&job("j1", &["sh", "-c", "echo 'a b'"]))
+        .unwrap();
+    store.add_job(&job("j2", &[])).unwrap();
+    let kept = store.job("j1").unwrap().unwrap();
+    assert_eq!(kept.arguments, ["sh", "-c", "echo 'a b'"]);
+    assert_eq!(kept.json()["arguments"], json!(["sh", "-c", "echo 'a b'"]));
+    assert!(store.job("j2").unwrap().unwrap().arguments.is_empty());
+    let listed = store.jobs(10).unwrap();
+    assert!(listed.iter().any(|job| job.arguments.len() == 3));
 }
 
 fn a_store_is_up_to_date_and_says_what_it_is(place: &Place) {
@@ -1310,6 +1336,7 @@ fn filled(store: &Store) {
             action: "apply".into(),
             token: Some("t-1".into()),
             stopped_by: Some("ops".into()),
+            arguments: vec!["psql".into(), "-U".into(), "app".into()],
         })
         .unwrap();
     store

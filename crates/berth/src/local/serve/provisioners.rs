@@ -177,6 +177,7 @@ pub async fn provisioner_act(
         }));
     }
     let mut request = Request::new(Subject::Provisioner(name), &action);
+    request.arguments = berth_api::Argument::shown(&found.arguments, &act.arguments);
     request.token = act.token;
     request.role = found.role;
     request.secrets = acting.secrets();

@@ -7,10 +7,11 @@ use super::client::Client;
 use super::fail::{Fail, Result};
 use super::out::{self, Style};
 use berth_api::portal::Piece;
+use berth_tui::theme::Role;
 use ratatui::{
     Terminal, TerminalOptions, Viewport,
     backend::CrosstermBackend,
-    style::{Color, Modifier, Style as Look},
+    style::{Modifier, Style as Look},
     text::{Line, Span},
     widgets::Paragraph,
 };
@@ -99,20 +100,14 @@ impl Inline {
         let _ = self.terminal.draw(|f| {
             let width = f.area().width as usize;
             let mut shown = vec![Line::from(vec![
-                Span::styled(SPINNER[frame], Look::new().fg(Color::Cyan)),
+                Span::styled(SPINNER[frame], out::look(Role::Accent)),
                 Span::raw(" "),
                 Span::styled(title.to_owned(), Look::new().add_modifier(Modifier::BOLD)),
-                Span::styled(
-                    format!("  {}", elapsed(since)),
-                    Look::new().add_modifier(Modifier::DIM),
-                ),
+                Span::styled(format!("  {}", elapsed(since)), out::look(Role::Muted)),
             ])];
             for line in &tail {
                 let cut: String = line.chars().take(width.saturating_sub(4)).collect();
-                shown.push(Line::styled(
-                    format!("  {cut}"),
-                    Look::new().add_modifier(Modifier::DIM),
-                ));
+                shown.push(Line::styled(format!("  {cut}"), out::look(Role::Muted)));
             }
             f.render_widget(Paragraph::new(shown), f.area());
         });
@@ -228,7 +223,7 @@ pub fn job(client: &Client, id: &str, title: &str, own: bool) -> Result<Ended> {
                                 Some(inline) => {
                                     let said = say.clone();
                                     let _ = inline.terminal.insert_before(1, |buffer| {
-                                        Paragraph::new(Line::styled(said, Look::new().fg(Color::Yellow))).render(buffer.area, buffer);
+                                        Paragraph::new(Line::styled(said, out::look(Role::Warn))).render(buffer.area, buffer);
                                     });
                                 }
                                 None => out::warn(say),

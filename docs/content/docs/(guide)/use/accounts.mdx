@@ -129,11 +129,18 @@ When sshd closes the connection before the login, berth says the host is turning
 
 ### Host keys
 
-berth records each host's SSH host key in its store and gives ssh a known-hosts file of its own for each host, under `known_hosts/` of the data directory, written from the store. So a restored installation knows its hosts. The first login records the key. A key that changes later is refused:
+berth records each host's SSH host key in its store and gives ssh a known-hosts file of its own for each host, under `known_hosts/` of the data directory, written from the store. So a restored installation knows its hosts. The first login records the key and prints its fingerprint. A key that changes later is refused:
 
 ```text
 The SSH host key of studio is not the one berth recorded: the machine was set up again or replaced, or something is in between. If you know which, accept the new key with: berth host verify studio --accept
 ```
+
+Where the first key comes from depends on where the server runs:
+
+| You run berth | The first host key |
+| --- | --- |
+| With no server set, or with a `berth serve` of your own on this machine | The key `~/.ssh/known_hosts` of the server's user has for the host's address, when it has one. Otherwise the key the host shows at the first login |
+| With a server elsewhere | The key the host shows the server at the first login. Nothing of your own files is sent to the server. Compare the fingerprint it prints, or `berth host verify studio`, with the host's own |
 
 `berth host verify studio` shows the recorded key. When berth itself creates a host's machine again, it forgets the old key and records the new one without asking. When a profile of berth 0.4 is converted, a host keeps the key your `~/.ssh/known_hosts` has for its address.
 

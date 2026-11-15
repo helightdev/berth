@@ -1,6 +1,6 @@
 ---
 title: The command line
-description: berth's commands by task. Each one is a call of the server's API, so a script does what the screens do.
+description: berth's commands by what they do. Each one is a call of the server's API, so a script does what the screens do.
 icon: Terminal
 ---
 
@@ -39,7 +39,7 @@ The token comes from a [setup key](/docs/use/server#with-a-setup-key), from `--t
 
 <Screen name="list" alt="Output of berth ls with three hosts" />
 
-| Task | Command |
+| What | Command |
 | --- | --- |
 | See the hosts | `berth ls` |
 | See the type, address, state and actions of one host | `berth host show studio` |
@@ -68,7 +68,7 @@ berth host create studio --method cloud-seed --set operator_username=ops \
 
 ## Installing
 
-| Task | Command |
+| What | Command |
 | --- | --- |
 | Write the cloud seed | `berth host seed studio > user-data`, or `--file user-data` |
 | Build the USB installer | `berth host iso studio`, with `--write /dev/sdX` to write it to a drive |
@@ -79,13 +79,13 @@ berth host create studio --method cloud-seed --set operator_username=ops \
 | Check the host's SSH host key, or accept a changed one | `berth host verify studio`, `berth host verify studio --accept` |
 | The passwords berth made for the accounts | `berth host credentials studio` |
 
-For a host whose sudo takes a password, berth asks for it at the terminal. A script gives it with `--sudo-password-stdin`, or keeps it as the secret `sudo/HOST`.
+For a host whose sudo takes a password, berth asks for it at the terminal, once in a command, and keeps it only while the command runs. A script gives it with `--sudo-password-stdin`, which every command takes, or keeps it as the secret `sudo/HOST`. A `berth serve` asks for it on its own terminal when it starts, or takes the kept secret.
 
 ## Jobs
 
 What changes a host runs as a job of the server, such as an apply or a roll-out. berth follows the job with a line that shows the step it is at and the last lines of its log, and ends with one line that says how it went. `Ctrl+C` stops following. The job goes on in a `berth serve`.
 
-| Task | Command |
+| What | Command |
 | --- | --- |
 | Start a job and leave it running | `berth apply studio --detach`, which needs a `berth serve` |
 | See the jobs | `berth job list` |
@@ -95,7 +95,7 @@ What changes a host runs as a job of the server, such as an apply or a roll-out.
 
 ## Actions
 
-<Screen name="tasks" alt="Output of berth action list studio, with the actions of studio and whether each can run now" />
+<Screen name="actions" alt="Output of berth action list studio, with the actions of studio and whether each can run now" />
 
 ```bash
 berth action list studio                     # what the host can do
@@ -125,7 +125,7 @@ berth ssh studio                             # plain SSH as the SSH user
 
 ## Secrets, registries and keys
 
-| Task | Command |
+| What | Command |
 | --- | --- |
 | Keep a secret | `berth secret set github`, which reads the value at a prompt or on standard input |
 | Give it to a host as a variable | `berth host set studio secret.github=GH_TOKEN` |
@@ -142,7 +142,7 @@ See [Secrets](/docs/use/secrets) and [Registries](/docs/use/registries).
 
 ## Provisioners and resources
 
-| Task | Command |
+| What | Command |
 | --- | --- |
 | See the provisioners | `berth provisioner list` |
 | See the types the plugins bring | `berth provisioner types` |
@@ -157,7 +157,7 @@ See [Secrets](/docs/use/secrets) and [Registries](/docs/use/registries).
 
 ## Plugins
 
-| Task | Command |
+| What | Command |
 | --- | --- |
 | See the plugins | `berth plugin list` |
 | See what one brings | `berth plugin show claude` |
@@ -167,7 +167,7 @@ See [Secrets](/docs/use/secrets) and [Registries](/docs/use/registries).
 
 ## Ports, services and messages
 
-| Task | Command |
+| What | Command |
 | --- | --- |
 | Reach a port of a host from this machine | `berth port forward studio 8080`, or `8080:3000` for another local port |
 | Call a service a plugin runs | `berth service call studio notes/store list` |
@@ -177,7 +177,7 @@ See [Secrets](/docs/use/secrets) and [Registries](/docs/use/registries).
 
 ## The server of this machine
 
-| Task | Command |
+| What | Command |
 | --- | --- |
 | Run it | `berth serve`, with `--listen ADDRESS:PORT [--expose]` for the network ([berth serve](/docs/extend/serve)) |
 | Make a setup key for the first user | `berth server setup-key` ([A berth server](/docs/use/server#with-a-setup-key)) |
