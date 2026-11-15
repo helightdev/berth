@@ -94,7 +94,8 @@ class RolePath(unittest.TestCase):
         task = node_named('Require SSH keys, and keep root\'s login as berth uses it')
         content = task['ansible.builtin.copy']['content']
         self.assertIn('PasswordAuthentication no', content)
-        self.assertIn("PermitRootLogin {{ 'prohibit-password' if devbox_node_user == 'root' else 'no' }}", content)
+        self.assertIn("PermitRootLogin {{ 'prohibit-password' if devbox_node_user == 'root' or", content)
+        self.assertNotIn("'yes' if", content)
         # Only when the SSH user has a key, which berth's own is, so no apply locks berth out.
         self.assertEqual(task['when'], 'devbox_harden_ssh and devbox_node_keys.rc == 0')
         given = node_named('Give the SSH user the keys of the berth that applies this')
@@ -286,6 +287,64 @@ class Firewall(unittest.TestCase):
         self.state.write_text(json.dumps({'rules': ["allow 22 comment 'berth'"], 'active': True, 'calls': []}))
         self.run_firewall('allow 22/tcp')
         self.assertIn("allow 22/tcp comment 'berth'", self.kept()['rules'])
+
+
+@unittest.skipUnless(yaml and PLAYBOOK, 'Run with the Ansible venv Python for the playbook')
+class TakingIn(unittest.TestCase):
+    """What a node keeps of a machine set up before: the firewall's rules for
+    SSH and root's login with keys, as the role's own expressions make them."""
+
+    def render(self, facts, wanted):
+        """`wanted` as the role's tasks make it from these facts, run by ansible-playbook."""
+        limited = node_named('Keep SSH as limited as it was')
+        firewall = node_named("Set the node's firewall")
+        sshd = node_named("Require SSH keys, and keep root's login as berth uses it")
+        scratch = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, scratch)
+        tasks = [{'name': 'Facts', 'ansible.builtin.set_fact': facts},
+                 {'name': limited['name'], 'ansible.builtin.set_fact': limited['ansible.builtin.set_fact']},
+                 {'name': 'Show', 'ansible.builtin.copy': {'dest': str(scratch / 'shown.json'), 'content': (
+                     '{{ {"firewall": devbox_node_firewall, "sshd": sshd} | to_json }}')},
+                  'vars': dict(firewall['vars'], sshd=sshd['ansible.builtin.copy']['content'])}]
+        playbook = scratch / 'play.yml'
+        playbook.write_text(yaml.safe_dump([{'hosts': 'all', 'gather_facts': False, 'vars': {
+            'devbox_manage_firewall': True, 'devbox_ssh_from': 'any', 'devbox_apply_from': '192.0.2.5',
+            'devbox_bootstrap_ssh_cidr': '', 'devbox_install_tailscale': False, 'devbox_firewall_rules': [],
+            'devbox_node_user': 'berth'}, 'tasks': tasks}]))
+        done = subprocess.run([PLAYBOOK, '-i', 'localhost,', '--connection', 'local', str(playbook)],
+                              capture_output=True, text=True, timeout=120,
+                              env=dict(os.environ, ANSIBLE_LOCALHOST_WARNING='0'))
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        return json.loads((scratch / 'shown.json').read_text())[wanted]
+
+    def test_ssh_that_was_limited_by_hand_is_not_opened(self):
+        added = {'stdout_lines': ["Added user rules (see 'ufw status' for running firewall):",
+                                  'ufw allow from 198.51.100.7 to any port 22 proto tcp',
+                                  'ufw allow in on incusbr0']}
+        rules = self.render({'devbox_node_ufw_added': added}, 'firewall')
+        self.assertNotIn('allow 22/tcp', rules)
+        self.assertIn('allow from 192.0.2.5 to any port 22 proto tcp', rules)
+        # One rule that opens SSH to all is no limit to keep.
+        added['stdout_lines'].append('ufw allow 22/tcp')
+        self.assertIn('allow 22/tcp', self.render({'devbox_node_ufw_added': added}, 'firewall'))
+        # A machine with no rules gets the profile's.
+        self.assertIn('allow 22/tcp', self.render({'devbox_node_ufw_added': {'stdout_lines': []}}, 'firewall'))
+
+    def test_root_keeps_a_login_with_keys_it_had(self):
+        for found, kept in (('prohibit-password', 'prohibit-password'), ('yes', 'prohibit-password'),
+                            ('without-password', 'prohibit-password'), ('no', 'no'), ('', 'no')):
+            facts = {'devbox_node_ufw_added': {'stdout_lines': []}, 'devbox_node_root_login': {'stdout': found}}
+            self.assertIn(f'PermitRootLogin {kept}\n', self.render(facts, 'sshd'), found)
+        facts = {'devbox_node_ufw_added': {'stdout_lines': []}, 'devbox_node_root_login': {'stdout': 'no'},
+                 'devbox_node_user': 'root'}
+        self.assertIn('PermitRootLogin prohibit-password\n', self.render(facts, 'sshd'))
+
+    def test_the_facts_are_read_before_they_are_used(self):
+        names = [task['name'] for task in node_tasks()]
+        self.assertLess(names.index('See whether root logs in with keys here already'),
+                        names.index("Require SSH keys, and keep root's login as berth uses it"))
+        self.assertLess(names.index("Read the firewall's rules"), names.index('Keep SSH as limited as it was'))
+        self.assertLess(names.index('Keep SSH as limited as it was'), names.index("Set the node's firewall"))
 
 
 FAKE_DOCKER = r'''#!/usr/bin/env python3

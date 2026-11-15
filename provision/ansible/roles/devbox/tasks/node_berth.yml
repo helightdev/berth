@@ -46,6 +46,26 @@
     dest: /usr/local/sbin/devbox-node-firewall
     mode: '0755'
   when: devbox_manage_firewall
+# A machine taken in may let SSH in from some addresses only, by rules made by
+# hand such as those of the incus-host recipe of 0.5. Those stay and are not
+# widened: SSH stays open to them and to where this apply came from.
+- name: Read the firewall's rules
+  ansible.builtin.command: ufw show added
+  register: devbox_node_ufw_added
+  changed_when: false
+  failed_when: false
+  when: devbox_manage_firewall
+- name: Keep SSH as limited as it was
+  ansible.builtin.set_fact:
+    devbox_node_ssh_limited: >-
+      {{ devbox_ssh_from == 'any'
+         and (devbox_node_ufw_added.stdout_lines | default([]) | select('match', '^ufw allow from [^ ]+ to any port 22( proto tcp)?$') | list | length > 0)
+         and (devbox_node_ufw_added.stdout_lines | default([]) | select('match', '^ufw allow (in )?(22|22/tcp|ssh|OpenSSH)( |$)') | list | length == 0) }}
+  when: devbox_manage_firewall
+- name: Say that SSH stays limited
+  ansible.builtin.debug:
+    msg: SSH stays open only to the addresses the firewall's own rules name, and to the address this apply came from. Delete those rules by hand to open it to every address.
+  when: devbox_manage_firewall and devbox_node_ssh_limited | bool
 - name: Set the node's firewall
   ansible.builtin.command: /usr/local/sbin/devbox-node-firewall
   args:
@@ -55,8 +75,8 @@
   when: devbox_manage_firewall
   vars:
     devbox_node_firewall: >-
-      {{ ([('allow 22/tcp' if devbox_ssh_from == 'any' else 'allow from ' ~ devbox_ssh_from ~ ' to any port 22 proto tcp')]
-          + (['allow from ' ~ devbox_apply_from ~ ' to any port 22 proto tcp'] if devbox_apply_from | length > 0 and devbox_ssh_from != 'any' else [])
+      {{ (([] if devbox_node_ssh_limited | bool else [('allow 22/tcp' if devbox_ssh_from == 'any' else 'allow from ' ~ devbox_ssh_from ~ ' to any port 22 proto tcp')])
+          + (['allow from ' ~ devbox_apply_from ~ ' to any port 22 proto tcp'] if devbox_apply_from | length > 0 and (devbox_ssh_from != 'any' or devbox_node_ssh_limited | bool) else [])
           + (['allow from ' ~ devbox_bootstrap_ssh_cidr ~ ' to any port 22 proto tcp'] if devbox_bootstrap_ssh_cidr | length > 0 else [])
           + (['allow in on tailscale0 to any port 22 proto tcp', 'allow 41641/udp'] if devbox_install_tailscale else [])
           + devbox_firewall_rules) | unique }}
