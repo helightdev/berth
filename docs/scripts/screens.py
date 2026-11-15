@@ -562,7 +562,7 @@ def pictures(env):
         "terminal": (True, lambda: tui(env, "terminal", ["studio"],
                                        [2.5, "<down>", "<enter>", 1.5, "id\r", "ls --color=never /srv/agent\r", 3.0],
                                        "berth studio: terminal", rows=20)),
-        "tasks": (True, lambda: command(env, "tasks", ["action", "list", "studio"])),
+        "actions": (True, lambda: command(env, "actions", ["action", "list", "studio"])),
         "exec": (True, lambda: command(env, "exec", ["exec", "studio", "--", "id"])),
         "sessions": (True, lambda: command(env, "sessions", ["session", "list", "studio"])),
         "host": (False, lambda: command(env, "host", ["host", "show", "studio"])),
