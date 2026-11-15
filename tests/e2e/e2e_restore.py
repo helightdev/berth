@@ -93,7 +93,7 @@ class Restore(unittest.TestCase):
         host = cls.worker.read_profile()
         host['access']['auth'] = 'berth'
         host['ansible_vars'] = light_vars()
-        for key in ('secrets', 'registries', 'tailscale_auto_key', 'tailscale_auth_key', 'tailscale_login_server'):
+        for key in ('secrets', 'registries'):
             host.pop(key, None)
         serve.call('PUT', f'/v1/hosts/{HOST}/profile', host)
         wait_for('the host answering through the server', lambda: [

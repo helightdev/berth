@@ -366,7 +366,7 @@ def served():
     # The server logs in with its own key; the SSH configuration is its own account's.
     host['access']['auth'] = 'berth'
     host['ansible_vars'] = light_vars()
-    for key in ('secrets', 'registries', 'tailscale_auto_key', 'tailscale_auth_key', 'tailscale_login_server'):
+    for key in ('secrets', 'registries'):
         host.pop(key, None)
     serve.call('PUT', f'/v1/hosts/{HOST}/profile', host)
     _provisioned['serve'] = serve
@@ -500,7 +500,7 @@ def _enter_extended():
     station.berth('config', 'tailnet_login_server', headscale().url)
     station.berth('config', 'tailnet_user', headscale().user)
     station.berth('secret', 'set', 'tailnet_api_key', input=headscale().api_key + '\n')
-    station.write_profile(joining({**kept, 'ansible_vars': light_vars(EXTENDED_FEATURES)}, tailscale_auto_key=True))
+    station.write_profile(joining({**kept, 'ansible_vars': light_vars(EXTENDED_FEATURES)}))
     before = last_key_id()
     first = station.berth('apply', HOST, timeout=900)
     after_first = last_key_id()
@@ -520,10 +520,22 @@ def _enter_extended():
 
 def plain():
     """The host applied from the workstation again without the extended
-    state's plugins, joining the tailnet with a key made by hand and pasted
-    into the profile. `first` is the apply, `before` the newest Headscale key
-    before the key was made."""
+    state's plugins, as an older berth left it: joined to the tailnet by hand,
+    with that berth's profile, which held a pasted key and had berth's keys
+    switched off, and no API key of the tailnet. `first` is that apply,
+    `nodes` and `after` Headscale's nodes before and after it, and `before`
+    the newest Headscale key after the host joined. Then the host leaves the tailnet, and `refused` is
+    the apply that finds it off the tailnet with no way to a key."""
     return state('plain', _enter_plain)
+
+
+def join_by_hand(station):
+    """Join the host to Headscale with a key made by hand, as one did before
+    berth made the keys."""
+    key = headscale().new_key()
+    station.root_on_host(f"umask 077; printf %s {shell_quote(key)} > /run/e2e-key; "
+                         f"tailscale up --timeout=60s --auth-key=file:/run/e2e-key "
+                         f"--login-server={shell_quote(headscale().url)}; status=$?; rm -f /run/e2e-key; exit $status")
 
 
 def _enter_plain():
@@ -533,15 +545,25 @@ def _enter_plain():
             station.berth('plugins', 'remove', package)
     kept = station.read_profile()
     leave_the_tailnet(station)
-    before = last_key_id()
+    join_by_hand(station)
+    station.berth('config', 'tailnet_login_server', headscale().url)
+    station.berth('config', 'tailnet_user', headscale().user)
     station.write_profile(joining({**kept, 'ansible_vars': light_vars()}, tailscale_auth_key=headscale().new_key(),
-                                  tailscale_login_server=headscale().url))
+                                  tailscale_auto_key=False, tailscale_login_server=headscale().url))
+    nodes, before = headscale().nodes(), last_key_id()
     first = station.berth('apply', HOST, timeout=900)
+    after = headscale().nodes()
+    saved = station.read_profile()
+    leave_the_tailnet(station)
+    refused = station.berth('apply', HOST, timeout=900, check=False)
 
     def leave():
         leave_the_tailnet(station)
         station.write_profile(kept)
-    return Applied(station=station, kept=kept, first=first, before=before), leave
+        for key in ('tailnet_login_server', 'tailnet_user'):
+            station.berth('config', key)
+    return Applied(station=station, kept=kept, first=first, saved=saved, nodes=nodes, after=after,
+                   before=before, refused=refused), leave
 
 
 def served_extended():
@@ -569,7 +591,7 @@ def _enter_served_extended():
     client.berth('secret', 'set', 'tailnet_api_key', input=headscale().api_key + '\n')
     kept = serve.call('GET', f'/v1/hosts/{HOST}/profile')
     serve.call('PUT', f'/v1/hosts/{HOST}/profile',
-               joining({**kept, 'ansible_vars': light_vars(['served/main'])}, tailscale_auto_key=True))
+               joining({**kept, 'ansible_vars': light_vars(['served/main'])}))
     before = last_key_id()
     first = client.berth('apply', HOST, timeout=900)
     after_first = last_key_id()

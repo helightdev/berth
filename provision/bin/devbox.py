@@ -157,7 +157,31 @@ def take_old_names(c):
     if isinstance(c.get('profile'), str):
         c.setdefault('target', c.pop('profile'))
         c.pop('profile', None)
+    # berth makes a host's key to join the tailnet and gives it to the seed
+    # itself; what older berths kept of joining in other ways is not read.
+    for key in ('tailscale_auth_key', 'tailscale_auto_key', 'tailscale_login_server'):
+        c.pop(key, None)
     return c
+
+
+# The role's variables of joining the tailnet, which berth sets and a profile cannot.
+TAILNET_VARS = ('devbox_tailscale_auth_key', 'devbox_tailscale_login_server',
+                'devbox_tailscale_key_command', 'devbox_tailnet_problem')
+
+
+def tailnet_given():
+    """The key berth made for this seed to join the tailnet with, and the login
+    server, from the private file named in BERTH_TAILNET_FILE; empty without one."""
+    path = os.environ.get('BERTH_TAILNET_FILE', '')
+    if not path:
+        return {}
+    given = json.loads(Path(path).read_text())
+    key, server = given.get('key'), given.get('login_server') or ''
+    if not isinstance(key, str) or not key or any(ch in key for ch in '\n\r "\''):
+        raise ValueError('BERTH_TAILNET_FILE holds no usable key')
+    if server and not re.fullmatch(r'https?://[^\s/]+(/[^\s]*)?', server):
+        raise ValueError('The login server of BERTH_TAILNET_FILE must be an http:// or https:// address')
+    return {'key': key, 'login_server': server}
 
 
 def retire_qemu(c):
@@ -215,15 +239,14 @@ def checked_config(path, kind):
     variables = c.setdefault('ansible_vars', {})
     if not isinstance(variables, dict) or any(not k.startswith('devbox_') for k in variables):
         raise ValueError('ansible_vars must contain only devbox_ settings')
-    text(c, 'tailscale_auth_key')
-    login_server = text(c, 'tailscale_login_server')
-    if login_server and not re.fullmatch(r'https?://[^\s/]+(/[^\s]*)?', login_server):
-        raise ValueError('tailscale_login_server must be an http:// or https:// address')
-    # berth puts a new key into the profile it renders; without berth there is none.
-    if flag(c, 'tailscale_auto_key', False) and not c.get('tailscale_auth_key') \
-            and variables.get('devbox_install_tailscale', True):
-        raise ValueError('tailscale_auto_key needs berth to create the key: render the seed with berth, '
-                         'or paste a key into tailscale_auth_key')
+    for name in TAILNET_VARS:
+        variables.pop(name, None)
+    # berth makes the key when it renders a seed; without berth there is none,
+    # and a host would come up off the tailnet it was meant to be on.
+    if variables.get('devbox_install_tailscale', True) and not tailnet_given():
+        raise ValueError('The host joins the tailnet, and the seed has no key for it: render the seed with berth, '
+                         'which makes one from the secret tailnet_api_key, or set '
+                         'ansible_vars.devbox_install_tailscale to false')
 
     if kind == 'usb':
         c['target_disk_mode'] = disk_guard.policy(c)['mode']
@@ -314,10 +337,11 @@ def deployment(c, sha):
     """Everything the first-boot provisioner needs, read by bootstrap.sh on the target."""
     variables = dict(c.get('ansible_vars') or {})
     variables.update(account_vars(c))
-    if c.get('tailscale_auth_key'):
-        variables['devbox_tailscale_auth_key'] = c['tailscale_auth_key']
-    if c.get('tailscale_login_server'):
-        variables['devbox_tailscale_login_server'] = c['tailscale_login_server']
+    tailnet = tailnet_given() if variables.get('devbox_install_tailscale', True) else {}
+    if tailnet:
+        variables['devbox_tailscale_auth_key'] = tailnet['key']
+    if tailnet.get('login_server'):
+        variables['devbox_tailscale_login_server'] = tailnet['login_server']
     # berth hands over the profile as the host keeps it, and the role writes it.
     if isinstance(c.get('berth_profile'), dict):
         variables['devbox_berth_profile'] = c['berth_profile']
