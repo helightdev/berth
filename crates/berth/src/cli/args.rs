@@ -524,6 +524,8 @@ pub enum Provisioner {
         #[arg(value_name = "NAME=VALUE", required = true)]
         settings: Vec<String>,
     },
+    /// Give a provisioner another name in berth, with its settings, secrets and what it made.
+    Rename { name: String, new: String },
     /// Forget a provisioner that holds nothing.
     #[command(visible_alias = "rm")]
     Remove { name: String },
@@ -652,6 +654,18 @@ pub enum Job {
     List {
         #[arg(long, default_value_t = 20)]
         limit: u32,
+        /// Only the jobs about this host.
+        #[arg(long)]
+        host: Option<String>,
+        /// Only the jobs of this subject, such as provisioner:NAME or installation.
+        #[arg(long)]
+        subject: Option<String>,
+        /// Only the jobs that are still running.
+        #[arg(long)]
+        running: bool,
+        /// Only the jobs that started before this one, to see the next page.
+        #[arg(long, value_name = "ID")]
+        before: Option<String>,
     },
     /// One job's state.
     Show { id: String },
@@ -854,7 +868,14 @@ pub enum Inbox {
         /// Done ones as well.
         #[arg(long)]
         all: bool,
+        /// Only those taken in before this one, by the number the list ends with.
+        #[arg(long, value_name = "SEQ")]
+        before: Option<i64>,
     },
+    /// Mark a message done, so the list leaves it out.
+    Done { host: String, id: u64 },
+    /// Mark a done message as open again.
+    Reopen { host: String, id: u64 },
 }
 
 #[derive(Subcommand, Debug)]

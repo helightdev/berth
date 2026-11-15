@@ -4254,11 +4254,45 @@
     {
       "args": [
         {
+          "description": "Only the jobs of this subject: `host:NAME`, `provisioner:NAME`, `resource:ID` or `installation`.",
+          "header": null,
+          "in": "query",
+          "name": "subject",
+          "required": false
+        },
+        {
+          "description": "Only the jobs about this host, alone or among others, as a roll-out is.",
+          "header": null,
+          "in": "query",
+          "name": "host",
+          "required": false
+        },
+        {
+          "description": "Only the jobs that have not ended, or with `false` only those that have.",
+          "header": null,
+          "in": "query",
+          "name": "running",
+          "required": false
+        },
+        {
+          "description": "Only the jobs that started before the job of this id: the next page after it.",
+          "header": null,
+          "in": "query",
+          "name": "before",
+          "required": false
+        },
+        {
           "description": "At most this many (default 100, at most 1,000).",
           "header": null,
           "in": "query",
           "name": "limit",
           "required": false
+        }
+      ],
+      "errors": [
+        {
+          "description": "`before` names no job",
+          "status": "404"
         }
       ],
       "group": "jobs",

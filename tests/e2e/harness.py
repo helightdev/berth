@@ -144,7 +144,7 @@ def follows_a_job(args):
                                    ('host', 'rename'), ('host', 'start'), ('host', 'stop'), ('key', 'trust'),
                                    ('key', 'rotate'), ('resource', 'create'), ('resource', 'set'),
                                    ('resource', 'remove'), ('resource', 'run'), ('provisioner', 'run'),
-                                   ('provisioner', 'set')})
+                                   ('provisioner', 'set'), ('provisioner', 'rename')})
 
 
 class Workstation:
