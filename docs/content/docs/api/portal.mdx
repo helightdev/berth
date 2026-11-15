@@ -99,6 +99,24 @@ Bytes in input or a result are `{"base64": "…"}`, and a result adds `content_t
 ← {"id": 11, "result": {"ok": true}}
 ```
 
+## Limits
+
+The server keeps a fixed amount of memory for each portal, so a caller that sends without reading can't fill it. berthd and `berth serve` keep to the same limits:
+
+| Limit | Value | Past it |
+| --- | --- | --- |
+| One message | The 8 MB of an operation as base64, and 1 MB more | The portal closes |
+| The name of an operation | 128 bytes | A `400` error that doesn't repeat the name |
+| An error's message | 2 KB | The message is cut short |
+| Calls in flight | 256 | A `429` error with the code `limit` |
+| Streams open | 256, such as the connections of a forwarded port | A `429` error with the code `limit` |
+| Calls, their answers until they are sent, and input waiting for its stream | 64 MB | A call is refused with a `429` error with the code `limit`, and a stream ends with that error in its last frame |
+| The portal's own frames waiting to be sent, such as errors and credits | 64 KB | The server reads nothing more from the caller until they are sent |
+
+A caller that keeps to its windows and reads what comes never reaches these limits.
+
+berth's client holds up to 16 MB of a stream that it has not read. A server that sends more ends that stream with an error.
+
 ## When to use HTTP instead
 
 - One-off calls from a shell, with `curl`.

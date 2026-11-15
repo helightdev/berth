@@ -17,7 +17,10 @@ use crate::{
 use berth_api::{HostType, Offer};
 use serde_json::{Value, json};
 use sha2::Digest;
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    net::{IpAddr, ToSocketAddrs},
+};
 
 /// The plugin features a profile names, as `PLUGIN/FEATURE`. A node names
 /// none unless its profile does; a workstation's role has defaults of its own.
@@ -207,11 +210,85 @@ fn server_of(value: &str) -> String {
     rest.trim().to_lowercase()
 }
 
-/// How surely a provisioner registered by hand reaches the server an offer
-/// is of, 0 when it does not: it pins the same certificate as its own (4),
-/// names the server the same way (2), or is given the same certificate that
-/// all of its type share (1), which says less when several share it.
-fn same_server(store: &Store, name: &str, entry: &Entry, offer: &Offer, host: &Host) -> u8 {
+/// The host and the port of what [`server_of`] gives, without brackets.
+fn host_port(server: &str) -> (&str, &str) {
+    if let Some(rest) = server.strip_prefix('[') {
+        let (host, rest) = rest.split_once(']').unwrap_or((rest, ""));
+        return (host, rest.strip_prefix(':').unwrap_or(""));
+    }
+    match server.matches(':').count() {
+        1 => server.split_once(':').unwrap_or((server, "")),
+        _ => (server, ""),
+    }
+}
+
+/// How berth finds the addresses of a name: as it would connect to it.
+type Resolve<'a> = &'a dyn Fn(&str) -> Vec<IpAddr>;
+
+/// The addresses a name has where berth runs.
+fn resolve(name: &str) -> Vec<IpAddr> {
+    if let Ok(address) = name.parse::<IpAddr>() {
+        return vec![address];
+    }
+    (name, 0)
+        .to_socket_addrs()
+        .map(|found| found.map(|address| address.ip()).collect())
+        .unwrap_or_default()
+}
+
+/// Whether the hosts `one` and `other` are the same machine to berth: the
+/// same name, or names that berth's own lookup gives an address in common,
+/// as `node` and `incus-host` both name the gateway of a server's container.
+fn same_machine(one: &str, other: &str, resolve: Resolve) -> bool {
+    let (one, other) = (one.trim().to_lowercase(), other.trim().to_lowercase());
+    if one.is_empty() || other.is_empty() {
+        return false;
+    }
+    if one == other {
+        return true;
+    }
+    let theirs = resolve(&other);
+    resolve(&one).iter().any(|address| theirs.contains(address))
+}
+
+/// Whether berth reaches the node `host` at the URL or address `value`.
+fn on_node(value: &str, host: &Host, resolve: Resolve) -> bool {
+    let server = server_of(value);
+    same_machine(host_port(&server).0, &host.access().address, resolve)
+}
+
+/// Whether berth itself can tell that the provisioner `entry`, registered by
+/// hand, reaches the server the node offers: a setting of it names the same
+/// port on the same machine as the offer does, and that machine is where
+/// berth reaches the node. Nothing else the node reports counts, as it could
+/// name any server.
+fn reaches_node(
+    entry: &Entry,
+    settings: &BTreeMap<String, String>,
+    host: &Host,
+    resolve: Resolve,
+) -> bool {
+    settings.iter().any(|(argument, offered)| {
+        let kept = entry.settings.get(argument).map_or("", String::as_str);
+        let (offered, kept) = (server_of(offered), server_of(kept));
+        let ((offered_host, offered_port), (kept_host, kept_port)) =
+            (host_port(&offered), host_port(&kept));
+        offered_port == kept_port
+            && same_machine(offered_host, &host.access().address, resolve)
+            && same_machine(kept_host, &host.access().address, resolve)
+    })
+}
+
+/// Why the node says the provisioner `entry` reaches the server it offers,
+/// which berth cannot check: it pins the certificate the node reports, which
+/// is public, or names a server the node gives as its own.
+fn said_same(
+    store: &Store,
+    name: &str,
+    entry: &Entry,
+    offer: &Offer,
+    host: &Host,
+) -> Option<&'static str> {
     let pins = |secret: &str, value: &str| {
         store
             .secret(secret)
@@ -219,18 +296,18 @@ fn same_server(store: &Store, name: &str, entry: &Entry, offer: &Offer, host: &H
             .flatten()
             .is_some_and(|kept| !kept.trim().is_empty() && kept.trim() == value.trim())
     };
-    let own = offer
-        .secrets
-        .iter()
-        .any(|(secret, value)| pins(&provisioner::secret_name(name, secret), value));
-    let shared = offer.secrets.iter().any(|(secret, value)| {
-        store
-            .secret(&provisioner::secret_name(name, secret))
-            .ok()
-            .flatten()
-            .is_none()
-            && pins(secret, value)
+    let pinned = offer.secrets.iter().any(|(secret, value)| {
+        pins(&provisioner::secret_name(name, secret), value)
+            || (store
+                .secret(&provisioner::secret_name(name, secret))
+                .ok()
+                .flatten()
+                .is_none()
+                && pins(secret, value))
     });
+    if pinned {
+        return Some("it pins the certificate the node reports");
+    }
     let named = offer.settings.iter().any(|(argument, wanted)| {
         let kept = entry.settings.get(argument).map_or("", String::as_str);
         let mut reaches = vec![fill(wanted, host)];
@@ -251,30 +328,62 @@ fn same_server(store: &Store, name: &str, entry: &Entry, offer: &Offer, host: &H
                 _ => false,
             })
     });
-    4 * u8::from(own) + 2 * u8::from(named) + u8::from(shared)
+    named.then_some("it names a server the node gives as its own")
 }
 
 /// Register the provisioners the node `host` offers, as its last apply
 /// reported them: one berth registered for the node before is brought up to
-/// date, one registered by hand that reaches the same server is taken over,
-/// and any other is registered under a new name. Those of the node no
+/// date, one registered by hand that berth can tell reaches the node is taken
+/// over, and any other is registered under a new name. Those of the node no
 /// feature offers any more are forgotten, unless they still hold resources.
 /// Says what it did, a line each.
+///
+/// What a node reports comes from a machine berth manages, so it touches
+/// only the node's own provisioners: an offer is taken only from a feature
+/// its profile names, of the provisioners that feature's manifest offers,
+/// with that provisioner's own arguments and secrets, and with URLs that
+/// name the node.
 pub fn register(
     paths: &Paths,
     store: &Store,
     host: &Host,
     offers: &[Offer],
 ) -> Result<Vec<String>> {
+    register_by(paths, store, host, offers, &resolve)
+}
+
+fn register_by(
+    paths: &Paths,
+    store: &Store,
+    host: &Host,
+    offers: &[Offer],
+    resolve: Resolve,
+) -> Result<Vec<String>> {
     let plugins = provision_plugins(paths);
+    let wanted = features(&host.config);
     let mut said = vec![];
     let mut kept: Vec<String> = vec![];
     for offer in offers {
         let Some((plugin_id, _)) = offer.feature.split_once('/') else {
             continue;
         };
+        let hosting = feature(&plugins, &offer.feature);
+        let Some(hosting) = hosting.filter(|_| wanted.contains(&offer.feature)) else {
+            said.push(format!(
+                "! {} reports what {} offers, which is not among its features; it is left out",
+                host.name, offer.feature
+            ));
+            continue;
+        };
         for id in &offer.provisioners {
             let kind = format!("{plugin_id}/{id}");
+            if !hosting.offers.contains(id) {
+                said.push(format!(
+                    "! {} offers {kind}, which {} does not offer; it is left out",
+                    host.name, offer.feature
+                ));
+                continue;
+            }
             let Ok((_, declared)) = crate::provision::find(&plugins, &kind) else {
                 said.push(format!(
                     "! {} offers {kind}, which no plugin here has",
@@ -290,20 +399,56 @@ pub fn register(
                 // An empty value is the argument's default, as berth keeps no empty settings.
                 .filter(|(_, value)| !value.is_empty())
                 .collect();
+            if let Some((argument, value)) = settings
+                .iter()
+                .find(|(_, value)| value.contains("://") && !on_node(value, host, resolve))
+            {
+                said.push(format!(
+                    "! {} offers {kind} with {argument}={value}, which is not where berth reaches {}; it is left out",
+                    host.name, host.name
+                ));
+                continue;
+            }
             let registered = provisioner::entries(paths)?;
             let ours = registered
                 .iter()
                 .find(|(_, entry)| entry.node == host.name && entry.kind == kind);
-            let theirs = || {
-                registered
-                    .iter()
-                    .filter(|(_, entry)| entry.node.is_empty() && entry.kind == kind)
-                    .map(|found| (same_server(store, &found.0, &found.1, offer, host), found))
-                    .filter(|(score, _)| *score > 0)
-                    .max_by_key(|(score, _)| *score)
-                    .map(|(_, found)| found)
+            let by_hand = || {
+                registered.iter().find(|(_, entry)| {
+                    entry.node.is_empty()
+                        && entry.kind == kind
+                        && reaches_node(entry, &settings, host, resolve)
+                })
             };
-            let (name, how) = match ours.or_else(theirs) {
+            let found = ours.or_else(by_hand);
+            if found.is_none() {
+                // One the node only says is the same is left to its owner, and no second one is made beside it.
+                let doubt = registered.iter().find_map(|(name, entry)| {
+                    (entry.kind == kind && entry.node != host.name)
+                        .then(|| {
+                            said_same(store, name, entry, offer, host).map(|why| (name, entry, why))
+                        })
+                        .flatten()
+                });
+                match doubt {
+                    Some((name, entry, _)) if !entry.node.is_empty() => {
+                        said.push(format!(
+                            "! {} offers {kind}, and says it is the server of {name}, which is {}'s; both are left as they are",
+                            host.name, entry.node
+                        ));
+                        continue;
+                    }
+                    Some((name, _, why)) => {
+                        said.push(format!(
+                            "! {} offers {kind}, and {name} may reach the same server ({why}), which berth cannot check; both are left as they are. To make {name} {}'s: berth provisioner run {name} adopt node={}",
+                            host.name, host.name, host.name
+                        ));
+                        continue;
+                    }
+                    None => {}
+                }
+            }
+            let (name, how) = match found {
                 Some((name, entry)) if entry.node.is_empty() => (name.clone(), "took over"),
                 Some((name, _)) => (name.clone(), "kept"),
                 None => (free_name(&registered, &host.name, &kind), "registered"),
@@ -373,6 +518,59 @@ pub fn register(
         }
     }
     Ok(said)
+}
+
+/// Make the provisioner `name`, registered by hand, the node `node`'s, on
+/// the word of the person who knows it reaches the node's server: the next
+/// apply of the node brings its settings and pinned certificate up to date.
+pub fn adopt(paths: &Paths, name: &str, node: &str) -> Result<String> {
+    let mut entry = provisioner::entry(paths, name)?
+        .ok_or_else(|| format!("No provisioner {name} is registered"))?;
+    if !entry.node.is_empty() {
+        return Err(format!("{name} is the node {}'s already", entry.node).into());
+    }
+    let host = Host::all(paths)
+        .into_iter()
+        .find(|host| host.name == node)
+        .ok_or_else(|| format!("No host {node}"))?;
+    if crate::host_type::of(&host.config) != HostType::Node {
+        return Err(format!("{node} is not a node").into());
+    }
+    let plugins = provision_plugins(paths);
+    let (plugin_id, id) = entry
+        .kind
+        .split_once('/')
+        .unwrap_or((entry.kind.as_str(), ""));
+    let offering = features(&host.config).into_iter().find(|wanted| {
+        wanted
+            .split_once('/')
+            .is_some_and(|(plugin, _)| plugin == plugin_id)
+            && feature(&plugins, wanted)
+                .is_some_and(|found| found.offers.iter().any(|offered| offered == id))
+    });
+    let Some(offering) = offering else {
+        return Err(format!(
+            "No feature of {node} offers {}: add the one that does to its features first",
+            entry.kind
+        )
+        .into());
+    };
+    if let Some((other, _)) = provisioner::entries(paths)?
+        .into_iter()
+        .find(|(_, known)| known.node == node && known.kind == entry.kind)
+    {
+        return Err(format!(
+            "{node} has the provisioner {other} of the type {} already. Remove it first: berth provisioner run {other} remove",
+            entry.kind
+        )
+        .into());
+    }
+    entry.node = node.to_owned();
+    entry.feature = offering;
+    provisioner::save_entry(paths, name, &entry)?;
+    Ok(format!(
+        "{name} is {node}'s now. The next apply of {node} brings its settings and the certificate it pins up to date: berth apply {node}"
+    ))
 }
 
 /// The plugins whose provisioners berth runs here.
@@ -582,7 +780,7 @@ mod tests {
         assert_eq!(said.len(), 2, "{said:?}");
         assert!(said[0].starts_with("✓ Registered the provisioner big-fake-vm (fake/vm) of big, which pins the server's certificate ab12"));
         assert!(
-            said[1].contains("fake/gone, which no plugin here has"),
+            said[1] == "! big offers fake/gone, which fake/engine does not offer; it is left out",
             "{said:?}"
         );
         let entry = provisioner::entry(&world.paths, "big-fake-vm")
@@ -621,40 +819,55 @@ mod tests {
         );
     }
 
+    /// The lookup of a server's container on the node, where `node` and
+    /// `incus-host` both name the node's address.
+    fn lookup(name: &str) -> Vec<IpAddr> {
+        match name {
+            "node" | "incus-host" => vec!["192.0.2.20".parse().unwrap()],
+            "other.example" => vec!["192.0.2.30".parse().unwrap()],
+            other => other.parse().into_iter().collect(),
+        }
+    }
+
+    fn hand(world: &World, name: &str, server: &str) {
+        let entry = Entry {
+            kind: "fake/vm".into(),
+            settings: [("server".into(), server.into())].into(),
+            ..Entry::default()
+        };
+        provisioner::save_entry(&world.paths, name, &entry).unwrap();
+    }
+
+    fn names(world: &World) -> Vec<String> {
+        provisioner::entries(&world.paths)
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    }
+
     #[test]
-    fn one_registered_by_hand_for_the_same_server_is_taken_over() {
+    fn one_registered_by_hand_for_the_node_is_taken_over() {
         let world = World::new();
         let host = world.host(&["fake/engine"]);
         // As the recipe registered it: its own name and setting, the shared certificate.
-        let hand = Entry {
-            kind: "fake/vm".into(),
-            settings: [("server".into(), "https://incus-host:8444".into())].into(),
-            ..Entry::default()
-        };
-        provisioner::save_entry(&world.paths, "incus-vm", &hand).unwrap();
+        hand(&world, "incus-vm", "https://incus-host:8444");
         world.store.set_secret("server_cert", Some("CERT")).unwrap();
-        let other = Entry {
-            kind: "fake/vm".into(),
-            settings: [("server".into(), "https://192.0.2.99:8444".into())].into(),
-            ..Entry::default()
-        };
-        provisioner::save_entry(&world.paths, "elsewhere", &other).unwrap();
-        let said = register(&world.paths, &world.store, &host, &[offer()]).unwrap();
+        hand(&world, "elsewhere", "https://192.0.2.99:8444");
+        let said = register_by(&world.paths, &world.store, &host, &[offer()], &lookup).unwrap();
         assert!(
             said.iter()
                 .any(|line| line.contains("incus-vm reaches the same server, and is big's now")),
             "{said:?}"
         );
-        let names: Vec<String> = provisioner::entries(&world.paths)
-            .unwrap()
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect();
-        assert_eq!(names, ["elsewhere", "incus-vm"]);
+        assert_eq!(names(&world), ["elsewhere", "incus-vm"]);
         let taken = provisioner::entry(&world.paths, "incus-vm")
             .unwrap()
             .unwrap();
-        assert_eq!(taken.node, "big");
+        assert_eq!(
+            (taken.node.as_str(), taken.feature.as_str()),
+            ("big", "fake/engine")
+        );
         // Its setting reaches the server already, and stays.
         assert_eq!(taken.settings["server"], "https://incus-host:8444");
         assert!(
@@ -665,19 +878,14 @@ mod tests {
                 .is_empty()
         );
 
-        // Without a certificate to compare, the address it names is enough.
+        // The address berth reaches the node at is enough, with or without a certificate.
         let world = World::new();
         let host = world.host(&["fake/engine"]);
-        let named = Entry {
-            kind: "fake/vm".into(),
-            settings: [("server".into(), "https://192.0.2.20:8444/".into())].into(),
-            ..Entry::default()
-        };
-        provisioner::save_entry(&world.paths, "by-address", &named).unwrap();
+        hand(&world, "by-address", "https://192.0.2.20:8444/");
         let mut unpinned = offer();
         unpinned.secrets.clear();
-        register(&world.paths, &world.store, &host, &[unpinned]).unwrap();
-        assert_eq!(provisioner::entries(&world.paths).unwrap().len(), 1);
+        register_by(&world.paths, &world.store, &host, &[unpinned], &lookup).unwrap();
+        assert_eq!(names(&world), ["by-address"]);
         assert_eq!(
             provisioner::entry(&world.paths, "by-address")
                 .unwrap()
@@ -686,7 +894,83 @@ mod tests {
             "big"
         );
 
-        // An engine where berth runs is the node's only when the node says so.
+        // Another port of the same machine is another server.
+        let world = World::new();
+        let host = world.host(&["fake/engine"]);
+        hand(&world, "other-port", "https://192.0.2.20:9000");
+        register_by(&world.paths, &world.store, &host, &[offer()], &lookup).unwrap();
+        assert_eq!(names(&world), ["big-fake-vm", "other-port"]);
+    }
+
+    #[test]
+    fn one_the_node_alone_says_is_the_same_waits_for_its_owner() {
+        let world = World::new();
+        // Reached by its tailnet name, which berth does not find at incus-host.
+        let mut host = world.host(&["fake/engine"]);
+        host.config["access"]["address"] = json!("big.example.org");
+        hand(&world, "incus-vm", "https://incus-host:8444");
+        world.store.set_secret("server_cert", Some("CERT")).unwrap();
+        let mut aliased = offer();
+        aliased
+            .aliases
+            .insert("server".into(), vec!["https://incus-host:8444".into()]);
+        let said = register_by(
+            &world.paths,
+            &world.store,
+            &host,
+            &[aliased.clone()],
+            &lookup,
+        )
+        .unwrap();
+        assert!(
+            said.iter().any(|line| line
+                == "! big offers fake/vm, and incus-vm may reach the same server (it pins the certificate the node reports), which berth cannot check; both are left as they are. To make incus-vm big's: berth provisioner run incus-vm adopt node=big"),
+            "{said:?}"
+        );
+        // Nothing changed, and there is no second one beside it.
+        assert_eq!(names(&world), ["incus-vm"]);
+        let left = provisioner::entry(&world.paths, "incus-vm")
+            .unwrap()
+            .unwrap();
+        assert!(left.node.is_empty());
+        assert_eq!(
+            world
+                .store
+                .secret("provisioner/incus-vm/server_cert")
+                .unwrap(),
+            None
+        );
+
+        // The owner's word makes it the node's, and the next apply brings it up to date.
+        let message = adopt(&world.paths, "incus-vm", "big").unwrap();
+        assert!(message.starts_with("incus-vm is big's now."), "{message}");
+        let adopted = provisioner::entry(&world.paths, "incus-vm")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (adopted.node.as_str(), adopted.feature.as_str()),
+            ("big", "fake/engine")
+        );
+        let said = register_by(&world.paths, &world.store, &host, &[aliased], &lookup).unwrap();
+        assert!(
+            said.iter()
+                .any(|line| line == "✓ Updated the provisioner incus-vm of big"),
+            "{said:?}"
+        );
+        let updated = provisioner::entry(&world.paths, "incus-vm")
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.settings["server"], "https://big.example.org:8444");
+        assert_eq!(
+            world
+                .store
+                .secret("provisioner/incus-vm/server_cert")
+                .unwrap()
+                .as_deref(),
+            Some("CERT")
+        );
+
+        // A local engine is the node's only on the owner's word, too.
         let world = World::new();
         let host = world.host(&["fake/engine"]);
         provisioner::save_entry(
@@ -700,7 +984,15 @@ mod tests {
         .unwrap();
         let mut local = offer();
         local.secrets.clear();
-        register(&world.paths, &world.store, &host, &[local.clone()]).unwrap();
+        local.aliases.insert("server".into(), vec![String::new()]);
+        let said = register_by(&world.paths, &world.store, &host, &[local], &lookup).unwrap();
+        assert!(
+            said.iter().any(|line| line.contains(
+                "local may reach the same server (it names a server the node gives as its own)"
+            )),
+            "{said:?}"
+        );
+        assert_eq!(names(&world), ["local"]);
         assert!(
             provisioner::entry(&world.paths, "local")
                 .unwrap()
@@ -708,27 +1000,229 @@ mod tests {
                 .node
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_node_does_not_reach_a_provisioner_of_another_server() {
+        let world = World::new();
+        let host = world.host(&["fake/engine"]);
+        hand(&world, "other", "https://other.example:8444");
+        world
+            .store
+            .set_secret("provisioner/other/server_cert", Some("REAL-CERT"))
+            .unwrap();
+        let untouched = |world: &World| {
+            let other = provisioner::entry(&world.paths, "other").unwrap().unwrap();
+            assert!(other.node.is_empty());
+            assert_eq!(other.settings["server"], "https://other.example:8444");
+            assert_eq!(
+                world
+                    .store
+                    .secret("provisioner/other/server_cert")
+                    .unwrap()
+                    .as_deref(),
+                Some("REAL-CERT")
+            );
+        };
+        // It names the other server among its aliases, with a certificate of its own.
+        let mut hostile = offer();
+        hostile
+            .aliases
+            .insert("server".into(), vec!["https://other.example:8444".into()]);
+        hostile.secrets = [("server_cert".into(), "FORGED-CERT".into())].into();
+        let said = register_by(
+            &world.paths,
+            &world.store,
+            &host,
+            &[hostile.clone()],
+            &lookup,
+        )
+        .unwrap();
+        assert!(
+            said.iter().any(|line| line
+                .starts_with("! big offers fake/vm, and other may reach the same server")),
+            "{said:?}"
+        );
+        untouched(&world);
+        // It reports the other server's certificate, which is public.
+        hostile.secrets = [("server_cert".into(), "REAL-CERT".into())].into();
+        register_by(
+            &world.paths,
+            &world.store,
+            &host,
+            &[hostile.clone()],
+            &lookup,
+        )
+        .unwrap();
+        untouched(&world);
+        // It names the other server as its own.
+        hostile.aliases.clear();
+        hostile.settings = [("server".into(), "https://other.example:8444".into())].into();
+        let said = register_by(&world.paths, &world.store, &host, &[hostile], &lookup).unwrap();
+        assert!(
+            said.iter().any(|line| line
+                == "! big offers fake/vm with server=https://other.example:8444, which is not where berth reaches big; it is left out"),
+            "{said:?}"
+        );
+        untouched(&world);
+        // Dropping the feature removes only what is the node's.
+        let said = register_by(&world.paths, &world.store, &host, &[], &lookup).unwrap();
+        assert!(said.is_empty(), "{said:?}");
+        untouched(&world);
+        assert_eq!(names(&world), ["other"]);
+
+        // One of another node is that node's.
         let world = World::new();
         let host = world.host(&["fake/engine"]);
         provisioner::save_entry(
             &world.paths,
-            "local",
+            "dock-fake-vm",
             &Entry {
                 kind: "fake/vm".into(),
-                ..Entry::default()
+                settings: [("server".into(), "https://192.0.2.40:8444".into())].into(),
+                node: "dock".into(),
+                feature: "fake/engine".into(),
             },
         )
         .unwrap();
-        local.aliases.insert("server".into(), vec![String::new()]);
-        register(&world.paths, &world.store, &host, &[local]).unwrap();
-        assert_eq!(
-            provisioner::entry(&world.paths, "local")
-                .unwrap()
-                .unwrap()
-                .node,
-            "big"
+        let mut claims = offer();
+        claims
+            .aliases
+            .insert("server".into(), vec!["https://192.0.2.40:8444".into()]);
+        let said = register_by(&world.paths, &world.store, &host, &[claims], &lookup).unwrap();
+        assert!(
+            said.iter().any(|line| line
+                == "! big offers fake/vm, and says it is the server of dock-fake-vm, which is dock's; both are left as they are"),
+            "{said:?}"
         );
-        assert_eq!(provisioner::entries(&world.paths).unwrap().len(), 1);
+        assert_eq!(names(&world), ["dock-fake-vm"]);
+        let theirs = provisioner::entry(&world.paths, "dock-fake-vm")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (theirs.node.as_str(), theirs.settings["server"].as_str()),
+            ("dock", "https://192.0.2.40:8444")
+        );
+    }
+
+    #[test]
+    fn an_offer_holds_what_the_features_manifest_offers() {
+        let world = World::new();
+        let host = world.host(&["fake/engine"]);
+        // A feature the profile does not name.
+        let mut unnamed = offer();
+        unnamed.feature = "fake/desk".into();
+        let said = register_by(&world.paths, &world.store, &host, &[unnamed], &lookup).unwrap();
+        assert_eq!(
+            said,
+            [
+                "! big reports what fake/desk offers, which is not among its features; it is left out"
+            ]
+        );
+        // Settings that are not the provisioner's own arguments.
+        let mut extra = offer();
+        extra.provisioners = vec!["vm".into()];
+        extra.settings.insert("command".into(), "/bin/sh".into());
+        extra.secrets.insert("other_secret".into(), "x".into());
+        register_by(&world.paths, &world.store, &host, &[extra], &lookup).unwrap();
+        let entry = provisioner::entry(&world.paths, "big-fake-vm")
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.settings.keys().collect::<Vec<_>>(), ["server"]);
+        assert_eq!(
+            world
+                .store
+                .secret("provisioner/big-fake-vm/other_secret")
+                .unwrap(),
+            None
+        );
+        assert_eq!(names(&world), ["big-fake-vm"]);
+    }
+
+    #[test]
+    fn a_provisioner_is_made_a_nodes_only_where_that_fits() {
+        let world = World::new();
+        world.host(&["fake/engine"]);
+        hand(&world, "incus-vm", "https://incus.example.net:8444");
+        assert_eq!(
+            adopt(&world.paths, "nothing", "big")
+                .unwrap_err()
+                .to_string(),
+            "No provisioner nothing is registered"
+        );
+        assert_eq!(
+            adopt(&world.paths, "incus-vm", "dock")
+                .unwrap_err()
+                .to_string(),
+            "No host dock"
+        );
+        world.host(&[]);
+        assert!(
+            adopt(&world.paths, "incus-vm", "big")
+                .unwrap_err()
+                .to_string()
+                .starts_with("No feature of big offers fake/vm")
+        );
+        let host = world.host(&["fake/engine"]);
+        register_by(&world.paths, &world.store, &host, &[offer()], &lookup).unwrap();
+        assert_eq!(
+            adopt(&world.paths, "incus-vm", "big")
+                .unwrap_err()
+                .to_string(),
+            "big has the provisioner big-fake-vm of the type fake/vm already. Remove it first: berth provisioner run big-fake-vm remove"
+        );
+        assert_eq!(
+            adopt(&world.paths, "big-fake-vm", "big")
+                .unwrap_err()
+                .to_string(),
+            "big-fake-vm is the node big's already"
+        );
+        let mut station = world.host(&["fake/engine"]);
+        station.config["type"] = json!("workstation");
+        station.place.save(&world.paths, &station.config).unwrap();
+        assert_eq!(
+            adopt(&world.paths, "incus-vm", "big")
+                .unwrap_err()
+                .to_string(),
+            "big is not a node"
+        );
+    }
+
+    #[test]
+    fn one_registered_by_hand_has_the_action_that_makes_it_a_nodes() {
+        let world = World::new();
+        world.host(&["fake/engine"]);
+        hand(&world, "incus-vm", "https://incus.example.net:8444");
+        let listed = provisioner::actions(&world.paths, &world.store, "incus-vm").unwrap();
+        let found = listed
+            .iter()
+            .find(|action| action.name == provisioner::ADOPT)
+            .unwrap();
+        assert_eq!(found.role, berth_api::ops::Role::Admin);
+        let given = [("node".to_owned(), "big".to_owned())].into();
+        let acting = provisioner::prepare(
+            &world.paths,
+            &world.store,
+            "incus-vm",
+            provisioner::ADOPT,
+            &given,
+        )
+        .unwrap();
+        let answered = acting
+            .run(
+                &world.paths,
+                &crate::provision::Options::default(),
+                &mut std::io::sink(),
+            )
+            .unwrap();
+        assert!(answered.message.starts_with("incus-vm is big's now"));
+        // A node's provisioner has no such action.
+        let listed = provisioner::actions(&world.paths, &world.store, "incus-vm").unwrap();
+        assert!(
+            listed
+                .iter()
+                .all(|action| action.name != provisioner::ADOPT)
+        );
     }
 
     #[test]

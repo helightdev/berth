@@ -343,6 +343,9 @@ impl Target for Live<'_> {
         }
         let mut prepared = apply::prepare(self.paths, &self.host, self.password.as_deref())
             .map_err(|error| error.to_string())?;
+        for note in &prepared.notes {
+            let _ = writeln!(out, "{note}");
+        }
         let (reader, writer) = std::io::pipe().map_err(|error| error.to_string())?;
         let copy = writer.try_clone().map_err(|error| error.to_string())?;
         crate::runner::own_group(&mut prepared.command);

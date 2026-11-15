@@ -63,7 +63,7 @@ The listing is shortened here. A secret marked *not set* is required and has no 
 
 In the terminal UI, `a` on the **Provisioners** tab adds one. It asks for the name and then the type.
 
-`berth provisioner remove NAME` forgets a provisioner, with its settings and its own secrets. berth refuses while it holds anything, so remove what it made first. The action `remove` on its page does the same.
+`berth provisioner remove NAME` forgets a provisioner, with its settings and its own secrets. berth refuses while it holds anything, so remove what it made first. The action `remove` on its page does the same. The action `adopt` makes one you registered the provisioner of a [node](/docs/use/nodes#take-in-a-server-that-exists) that reaches the same server.
 
 ### From an earlier version
 
@@ -97,6 +97,7 @@ Actions (berth provisioner run docker ACTION)
     new-instance       New container from an image
   Set-Up
     settings           Change settings
+    adopt              Make it a node's
     remove             Remove provisioner
   Engine
     engine             Check the engine

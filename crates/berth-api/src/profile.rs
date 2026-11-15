@@ -423,8 +423,96 @@ pub fn take_old_names(config: &mut Value) -> bool {
     changed
 }
 
+/// Whether `name` can be a setting of the role in a profile's
+/// `ansible_vars`: `devbox_` and a word. Ansible's own variables, such as
+/// `ansible_connection` or `ansible_ssh_common_args`, say how and where
+/// commands run, which berth sets itself from `access`.
+pub fn role_variable(name: &str) -> bool {
+    name.strip_prefix("devbox_").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+    })
+}
+
+/// Whether `name` can be a plugin's feature, as `PLUGIN/FEATURE`.
+pub fn feature_name(name: &str) -> bool {
+    let part = |part: &str| {
+        part.starts_with(|ch: char| ch.is_ascii_lowercase())
+            && part
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
+    };
+    name.split_once('/')
+        .is_some_and(|(plugin, feature)| part(plugin) && part(feature))
+}
+
+/// What of a profile's `ansible_vars` an apply leaves out: names that are
+/// not settings of the role, and features that are not `PLUGIN/FEATURE`.
+pub fn left_out(config: &Value) -> Vec<String> {
+    let Some(vars) = config["ansible_vars"].as_object() else {
+        return vec![];
+    };
+    let mut out: Vec<String> = vars
+        .keys()
+        .filter(|name| !role_variable(name))
+        .cloned()
+        .collect();
+    out.extend(
+        vars.get("devbox_plugin_features")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|feature| !feature.as_str().is_some_and(feature_name))
+            .map(|feature| format!("the feature {feature}")),
+    );
+    out
+}
+
+/// What is wrong with a profile's `ansible_vars`, in sentences.
+fn vars_problems(config: &Value) -> Vec<String> {
+    let vars = &config["ansible_vars"];
+    if vars.is_null() {
+        return vec![];
+    }
+    let Some(vars) = vars.as_object() else {
+        return vec!["ansible_vars must be an object".into()];
+    };
+    let mut problems = vec![];
+    let foreign: Vec<&str> = vars
+        .keys()
+        .filter(|name| !role_variable(name))
+        .map(String::as_str)
+        .collect();
+    if !foreign.is_empty() {
+        problems.push(format!(
+            "ansible_vars holds settings of the role, whose names start with devbox_, not {}. berth sets how it reaches the host from access",
+            foreign.join(", ")
+        ));
+    }
+    match vars.get("devbox_plugin_features") {
+        None => {}
+        Some(Value::Array(features)) => {
+            let bad: Vec<String> = features
+                .iter()
+                .filter(|feature| !feature.as_str().is_some_and(feature_name))
+                .map(Value::to_string)
+                .collect();
+            if !bad.is_empty() {
+                problems.push(format!(
+                    "devbox_plugin_features names features as PLUGIN/FEATURE, not {}",
+                    bad.join(", ")
+                ));
+            }
+        }
+        Some(_) => problems.push("devbox_plugin_features must be a list".into()),
+    }
+    problems
+}
+
 /// What is wrong with a profile as a whole, in sentences: its type, its
-/// `access`, and for a workstation the `builder` its set-up keeps. A host
+/// `access` and `ansible_vars`, and for a workstation the `builder` its set-up keeps. A host
 /// of another type needs only to be reachable.
 pub fn problems(config: &Value) -> Vec<String> {
     if !config.is_object() {
@@ -444,6 +532,7 @@ pub fn problems(config: &Value) -> Vec<String> {
         )];
     };
     problems.extend(Access::problems(config));
+    problems.extend(vars_problems(config));
     match host_type {
         crate::HostType::Workstation if !config["builder"].is_object() => {
             problems.push("A workstation's profile has a builder object".into())
@@ -987,5 +1076,43 @@ mod tests {
             retire_qemu(&mut profile);
             assert_eq!(profile, kept);
         }
+    }
+
+    #[test]
+    fn ansible_vars_hold_settings_of_the_role_alone() {
+        let with = |vars: Value| problems(&json!({"builder": {}, "ansible_vars": vars}));
+        assert!(
+            with(json!({"devbox_geometry": "1x1", "devbox_plugin_features": ["claude/cli"]}))
+                .is_empty()
+        );
+        assert_eq!(
+            with(
+                json!({"ansible_become_exe": "/tmp/x", "ansible_python_interpreter": "/tmp/y", "devbox_ok": 1})
+            ),
+            [
+                "ansible_vars holds settings of the role, whose names start with devbox_, not ansible_become_exe, ansible_python_interpreter. berth sets how it reaches the host from access"
+            ]
+        );
+        for name in [
+            "devbox_",
+            "devbox_X",
+            "devbox_a-b",
+            "other",
+            "ansible_shell_executable",
+        ] {
+            assert!(!role_variable(name), "{name}");
+        }
+        assert_eq!(with(json!([])), ["ansible_vars must be an object"]);
+        assert_eq!(
+            with(json!({"devbox_plugin_features": ["claude/cli", "../x/y", "a/../b", "plain"]})),
+            [
+                r#"devbox_plugin_features names features as PLUGIN/FEATURE, not "../x/y", "a/../b", "plain""#
+            ]
+        );
+        assert_eq!(
+            with(json!({"devbox_plugin_features": "claude/cli"})),
+            ["devbox_plugin_features must be a list"]
+        );
+        assert!(feature_name("t3/server") && feature_name("my_plugin/a-b"));
     }
 }

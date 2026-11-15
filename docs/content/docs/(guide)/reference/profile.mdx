@@ -109,6 +109,10 @@ Any `devbox_` setting of the role. The ones the terminal UI edits:
 
 Others, such as `devbox_tailscale_serve`, the agent versions and the backup settings, are described where they are used. berth sets the variables of joining the tailnet itself, and a profile's `ansible_vars` can't: `devbox_tailscale_auth_key`, `devbox_tailscale_login_server`, `devbox_tailscale_key_command` and `devbox_tailnet_problem`.
 
+Only `devbox_` settings are taken. Ansible's own variables, such as `ansible_connection`, `ansible_ssh_common_args` or `ansible_python_interpreter`, would change how and where Ansible runs commands. berth sets the connection itself from `access`, so it refuses them in a profile from any caller. Each entry of `devbox_plugin_features` is `PLUGIN/FEATURE`. A profile saved before still loads, and its apply leaves such variables out and says so in a line.
+
+berth marks the values it gives Ansible as text, so `{{ … }}` in a setting is never a template.
+
 A profile of an older berth may still hold `tailscale_auth_key`, `tailscale_auto_key` or `tailscale_login_server`. berth drops them when it reads the profile, and says so once. The host then joins the tailnet on its next apply, with a key berth makes, unless it's on the tailnet already. All defaults are in [`defaults/main.yml`](https://github.com/helightdev/berth/blob/main/ansible/roles/devbox/defaults/main.yml).
 
 ## Type
