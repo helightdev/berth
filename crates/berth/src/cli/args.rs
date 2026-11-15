@@ -371,6 +371,8 @@ pub struct HostAdopt {
     /// Replace a host of that name.
     #[arg(long)]
     pub force: bool,
+    #[command(flatten)]
+    pub detach: Detach,
 }
 
 #[derive(Args, Debug, Clone)]

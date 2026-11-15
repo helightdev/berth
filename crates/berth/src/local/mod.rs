@@ -130,8 +130,8 @@ pub fn merge_inventory(hosts: &[(String, Value)]) -> Value {
 
 /// `berth host inventory [NAME…]`: the hosts as an Ansible inventory, with
 /// the installation's key as a file of this machine.
-pub fn inventory(names: &[String]) -> Done<()> {
-    let paths = here_only(&Global::default(), "berth host inventory")?;
+pub fn inventory(global: &Global, names: &[String]) -> Done<()> {
+    let paths = here_only(global, "berth host inventory")?;
     let hosts = match names {
         [] => Host::all(&paths)
             .into_iter()

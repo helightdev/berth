@@ -380,7 +380,7 @@ berth host remove NAME [--destroy]
 Take in a host berth set up before, from the profile it keeps.
 
 ```text
-berth host adopt NAME [ADDRESS] [--port PORT] [--key FILE] [--force]
+berth host adopt NAME [ADDRESS] [--port PORT] [--key FILE] [--force] [--detach]
 ```
 
 | Argument | What it is |
@@ -390,6 +390,7 @@ berth host adopt NAME [ADDRESS] [--port PORT] [--key FILE] [--force]
 | `--port PORT` |  |
 | `--key FILE` | A private key file where the server runs, offered as well for reading the profile only. |
 | `--force` | Replace a host of that name. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
 
 ### berth host credentials
 

@@ -41,7 +41,7 @@ pub fn command(global: &Global, command: Host) -> Result<()> {
         Host::Start(power) => self::power(&open()?, &power, "start"),
         Host::Stop(power) => self::power(&open()?, &power, "stop"),
         #[cfg(target_os = "linux")]
-        Host::Inventory { names } => crate::local::inventory(&names),
+        Host::Inventory { names } => crate::local::inventory(global, &names),
     }
 }
 
@@ -86,11 +86,7 @@ pub fn show(client: &Client, name: &str) -> Result<()> {
     // The profile needs the role admin, and the actions a host that answers: each is left out without.
     let given = profile_of(client, name).ok();
     let actions = client.actions(&Subject::Host(name.to_owned())).ok();
-    let mut shown = host.clone();
-    if let Some(machine) = &machine {
-        shown["resource"] = machine.clone();
-    }
-    out::data(&shown, || {
+    out::data(&host, || {
         let text = |key: &str| host[key].as_str().unwrap_or("").to_owned();
         let behind = match &host["behind"] {
             Value::Null => String::new(),
@@ -643,7 +639,7 @@ fn adopt(client: &Client, adopt: &args::HostAdopt) -> Result<()> {
         client,
         acted,
         &format!("Adopting {}", adopt.name),
-        false,
+        adopt.detach.detach,
         false,
     )?;
     Ok(())
