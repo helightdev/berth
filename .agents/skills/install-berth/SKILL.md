@@ -111,7 +111,8 @@ port 7777 on this machine only, Tailscale, `tailscale serve` with TLS and a
 
 ```bash
 curl -fsSL https://github.com/helightdev/berth/archive/refs/heads/main.tar.gz \
-  | tar xz --strip-components=1 --wildcards '*/recipes'
+  | tar xz --strip-components=1 --wildcards '*/recipes' \
+    '*/provision/ansible/roles/devbox/files/berth-server-upgrade.py'
 cd recipes/berth-server
 sudo ./install.sh -e tailscale_auth_key=tskey-auth-EXAMPLE
 ```
@@ -123,11 +124,16 @@ socket. Add the
 node from the server with `berth host add big node --user root --type node`,
 then as in the node's section above.
 
-A second run changes nothing in place. It leaves the container `berth` as it
-is and starts it when it was stopped. On a node, the node's action
-`upgrade-server` updates it to the version of the berth that asks. Elsewhere,
-run `sudo docker pull ghcr.io/helightdev/berth`, `sudo docker rm -f berth`,
-then `sudo ./install.sh`. The data in `/srv/berth` stays.
+A second run changes nothing in place. The container `berth` keeps its image,
+its data and its options, and starts when it was stopped. To update the
+server, fetch the recipe of the new version and run
+`sudo ./install.sh -e berth_server_update=true`. It makes the container again
+from the new image with the options of the old one, and starts the old one
+again if the new one fails. On a node, the node's action `upgrade-server` does
+the same. Never update with `docker rm -f berth`: a new container loses the
+options passed by hand, such as the name `incus-host` the provisioners of
+berth 0.5 reach. A server of berth 0.5 is updated before its clients and hosts:
+the page Upgrading from 0.5 in the docs has the order.
 
 ## Things that go wrong
 

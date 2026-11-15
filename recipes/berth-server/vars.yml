@@ -12,12 +12,17 @@ berth_server_port: 7777
 # It needs the tailnet's HTTPS certificates switched on, and does nothing
 # on a machine that is on no tailnet.
 berth_server_tailscale_serve: true
+# Pull berth_server_image and run the server from it when it is newer. A
+# container that is there keeps its data and its options either way, and
+# gets those of this file that it lacks.
+#   ./install.sh -e berth_server_update=true
+berth_server_update: false
 
 # Make this machine a node of the server, a server berth applies itself:
 # the server gets root's login here with its own key, reaches this machine by
 # the name `node`, and gets the socket of its Docker engine. Then add it from
-# the server, as the README says. A container from an earlier run keeps its
-# options: remove it first (the data stays) to give it these.
+# the server, as the README says. A container from an earlier run gets these
+# and keeps its own.
 berth_server_node: false
 
 # ── The tailnet ───────────────────────────────────────────────────────────
