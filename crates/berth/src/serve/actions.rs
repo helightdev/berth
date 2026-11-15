@@ -647,8 +647,9 @@ fn seed(state: Arc<Serve>, name: String, _: Act) -> Run {
         .await
         .map_err(internal)?
         .map_err(|error| Fail::new(code::BAD_REQUEST, error))?;
+        // A seed's key joins the tailnet for a day, which whoever starts the machine needs to know.
         Ok(Acted {
-            result: Some(json!({"user_data": seed.user_data})),
+            result: Some(json!({"user_data": seed.user_data, "tailnet": seed.tailnet})),
             ..Acted::default()
         })
     })

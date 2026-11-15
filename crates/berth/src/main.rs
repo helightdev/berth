@@ -129,8 +129,9 @@ Usage:
   berth registry remove NAME
   berth secret [set NAME | remove NAME]
                              secret values, kept in berth's store (see berth store);
-                             tailnet_api_key is the control server's API key, for
-                             enrollment keys
+                             tailnet_api_key is the control server's API key, or a
+                             Tailscale OAuth client as CLIENT_ID:CLIENT_SECRET, with
+                             which berth makes the keys hosts join the tailnet with
   berth tailnet-key HOST     create a one-use enrollment key for HOST, valid for an
                              hour, at the control server of the tailnet_ settings
                              (HOST may also be the path of its profile)

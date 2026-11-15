@@ -39,6 +39,13 @@ pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: &[String]) -> Valu
     if !vars.is_object() {
         vars = json!({});
     }
+    // How the host joins the tailnet is berth's to say, not the profile's:
+    // the key command runs on this machine.
+    if let Some(vars) = vars.as_object_mut() {
+        for berths in crate::tailnet::ROLE_VARS {
+            vars.remove(*berths);
+        }
+    }
     for (source, dest) in [
         ("agent_username", "devbox_user"),
         ("agent_password_hash", "devbox_agent_password_hash"),
@@ -65,23 +72,11 @@ pub fn ansible_vars(config: &Value, plugin_dirs: &Value, own: &[String]) -> Valu
     // The role names the target by its older name.
     vars["devbox_profile"] = config["target"].clone();
     vars["devbox_plugin_dirs"] = plugin_dirs.clone();
-    if let Some(key) = config["tailscale_auth_key"]
-        .as_str()
-        .filter(|key| !key.is_empty())
-    {
-        vars["devbox_tailscale_auth_key"] = json!(key);
-    }
-    if let Some(server) = config["tailscale_login_server"]
-        .as_str()
-        .filter(|server| !server.is_empty())
-    {
-        vars["devbox_tailscale_login_server"] = json!(server);
-    }
     vars
 }
 
 /// Add what joining the tailnet needs from this machine: berth's login
-/// server, and for a host that joins automatically the way to a key, which
+/// server, and the way to a key or why there is none, which
 /// names the host as `berth tailnet-key` finds it again: by its name, or by
 /// the path of its file. That command runs as a child of the apply, with its
 /// environment, so it looks in the same store.
@@ -364,7 +359,7 @@ mod tests {
     fn variables_come_from_the_profile() {
         let config = json!({
             "target": "cloud", "agent_username": "bot", "agent_privileges": "limited",
-            "tailscale_auth_key": "tskey", "ansible_vars": {"devbox_geometry": "1x1"},
+            "ansible_vars": {"devbox_geometry": "1x1", "devbox_tailscale_key_command": ["sh", "-c", "id"]},
             "operator_ssh_public_key": "ssh-ed25519 ME",
         });
         let vars = ansible_vars(
@@ -388,23 +383,14 @@ mod tests {
         assert_eq!(vars["devbox_profile"], "cloud");
         assert_eq!(vars["devbox_geometry"], "1x1");
         assert_eq!(vars["devbox_plugin_dirs"]["demo"], "/p/demo");
-        assert_eq!(vars["devbox_tailscale_auth_key"], "tskey");
-        // A pasted key without a login server goes to Tailscale, as always.
-        assert!(vars.get("devbox_tailscale_login_server").is_none());
         // A profile of the qemu target there once was is applied as cloud, reached from the QEMU host.
         let qemu = ansible_vars(&json!({"target": "qemu"}), &json!({}), &[]);
         assert_eq!(qemu["devbox_profile"], "cloud");
         assert_eq!(qemu["devbox_bootstrap_ssh_cidr"], "10.0.2.2/32");
-        let headscale = json!({"tailscale_login_server": "https://hs.example.org"});
-        assert_eq!(
-            ansible_vars(&headscale, &json!({}), &[])["devbox_tailscale_login_server"],
-            "https://hs.example.org"
-        );
-        assert!(
-            ansible_vars(&json!({}), &json!({}), &[])
-                .get("devbox_tailscale_auth_key")
-                .is_none()
-        );
+        // The tailnet's variables are berth's, not the profile's.
+        assert!(vars.get("devbox_tailscale_key_command").is_none());
+        assert!(vars.get("devbox_tailscale_auth_key").is_none());
+        assert!(vars.get("devbox_tailscale_login_server").is_none());
     }
 
     #[test]

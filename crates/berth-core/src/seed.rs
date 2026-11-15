@@ -19,6 +19,8 @@ pub struct Seed {
     /// The release archive the machine is given instead of downloading
     /// one, when it was asked for.
     pub archive: Option<Archive>,
+    /// Until when the seed's key joins the tailnet, for a host that joins it.
+    pub tailnet: Option<String>,
 }
 
 pub struct Archive {
@@ -35,6 +37,10 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
     let host = Host::load(paths, name)?;
     // A seed installs a whole workstation.
     crate::host_type::guard(&host, crate::host_type::Capability::Apply)?;
+    // Nothing is published or made for a host that could not join.
+    if let Some(problem) = tailnet::problem(paths, &host.config, name) {
+        return Err(problem.into());
+    }
     let source = paths.source()?;
     let dirs = apply::plugin_dirs(&plugins::found(
         &source,
@@ -51,13 +57,14 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
         profile["release_url"] = json!(url);
         host.place.save(paths, &profile)?;
     }
-    // The seed is rendered from a private copy of the profile, which holds a
-    // new enrollment key for a host that joins the tailnet automatically.
+    // The seed is rendered from a private copy of the profile, and a host
+    // that joins the tailnet gets a new key in a private file of its own.
     let saved: Value = host
         .place
         .load(paths)?
         .ok_or_else(|| format!("No host {name}"))?;
-    let mut config = named(tailnet::seed_profile(paths, &saved, name)?, name);
+    let key = tailnet::seed_key(paths, &saved, name)?;
+    let mut config = named(saved.clone(), name);
     crate::kept_profile::for_seed(&mut config, &host.place.title(), &saved);
     let seeded = tailnet::profile_file(&config)?;
     // The machine's operator takes these keys, so that berth can always reach it.
@@ -74,6 +81,9 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
         .stdin(std::process::Stdio::null());
     if delivered {
         command.env("BERTH_RELEASE_DELIVERED", "1");
+    }
+    if let Some(key) = &key {
+        key.pass(&mut command);
     }
     // A release that is not public: the seed carries the login of the registry it is in.
     let private = host.config["release_private"].as_bool().unwrap_or(false);
@@ -109,7 +119,11 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
         true => Some(archive(&build, name)?),
         false => None,
     };
-    Ok(Seed { user_data, archive })
+    Ok(Seed {
+        user_data,
+        archive,
+        tailnet: key.as_ref().map(tailnet::SeedKey::note),
+    })
 }
 
 /// A copy of the release archive that was just built, for this host alone,

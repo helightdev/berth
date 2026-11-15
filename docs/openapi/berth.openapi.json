@@ -658,7 +658,7 @@
             ]
           },
           "what": {
-            "description": "`hostname`, `password` or `tailscale_key`.",
+            "description": "`hostname` or `password`.",
             "type": "string"
           }
         },
@@ -681,7 +681,7 @@
             ]
           },
           "value": {
-            "description": "The host name, the password's hash, or the key.",
+            "description": "The host name or the password's hash.",
             "type": "string"
           }
         },
@@ -7959,7 +7959,7 @@
             "description": "It could not be made; the message says why"
           }
         },
-        "summary": "Make up a host name, hash or make up a password, or create a one-use enrollment key at the tailnet's control server.",
+        "summary": "Make up a host name, or hash or make up a password.",
         "tags": [
           "set-up"
         ]

@@ -327,6 +327,8 @@ impl App {
             secrets: &self.secret_names,
             own_key: &self.own_public,
             named: setup::valid_hostname(&self.name()),
+            // Seeds and applies check the tailnet's key themselves.
+            tailnet_key: true,
         }
     }
 
@@ -1066,23 +1068,6 @@ impl App {
             self.fetching_iso = true;
         } else if field == Field::Hostname {
             self.set(field, json!(credentials::hostname()?));
-        } else if field == Field::TailscaleKey {
-            let host = self.text(Field::Hostname).to_owned();
-            // A server's host gets its key from the server's control server.
-            let (key, note) = match self.host_profile().served(&self.paths) {
-                Some(server) => {
-                    let made = server.call(
-                        "setup.generate",
-                        json!({}),
-                        Some(json!({"what": "tailscale_key", "host": self.name()})),
-                    )?;
-                    let text = |key: &str| made[key].as_str().unwrap_or("").to_owned();
-                    (text("value"), text("note"))
-                }
-                None => berth_core::tailnet::generate(&self.paths, &self.config, &host)?,
-            };
-            self.set(field, json!(key));
-            self.status = note;
         } else if field == Field::IsoSha {
             self.hash_iso()?;
         } else if field.is_password_hash() {
@@ -1955,16 +1940,17 @@ impl App {
         // Secrets go to private files rather than argv. They live until the command ends.
         let mut extra = tempfile::NamedTempFile::new()?;
         let inventory = tempfile::NamedTempFile::new()?;
-        // The profile a seed is rendered from, with a new enrollment key in it
-        // for a host that joins the tailnet automatically.
+        // The profile a seed is rendered from, and a new key in a file of its
+        // own for a host that joins the tailnet.
+        let mut tailnet_key = None;
         let seeded = match action {
             Action::UsbSeed | Action::CloudSeed | Action::Iso => {
                 let saved = self
                     .place
                     .load(&self.paths)?
                     .ok_or("The profile is not saved")?;
-                let config = berth_core::tailnet::seed_profile(&self.paths, &saved, &self.name())?;
-                let mut config = berth_core::seed::named(config, &self.name());
+                tailnet_key = berth_core::tailnet::seed_key(&self.paths, &saved, &self.name())?;
+                let mut config = berth_core::seed::named(saved.clone(), &self.name());
                 berth_core::kept_profile::for_seed(&mut config, &self.name(), &saved);
                 Some(berth_core::tailnet::profile_file(&config)?)
             }
@@ -2083,6 +2069,11 @@ impl App {
         command.env("BERTH_SSH_PUBLIC_KEY", self.own_keys().join("\n"));
         let mut files = vec![extra, inventory];
         files.extend(seeded);
+        if let Some(key) = tailnet_key {
+            key.pass(&mut command);
+            eprintln!("{}", key.note());
+            files.push(key.file);
+        }
         Ok((command, files))
     }
 
