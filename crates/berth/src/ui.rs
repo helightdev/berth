@@ -318,7 +318,7 @@ fn draw(frame: &mut Frame, app: &mut App, rows: &[Row], display: &mut ListState,
         (app.links, app.words) = draw_session(frame, session, &app.status);
     }
     if let Some(view) = &app.host.view {
-        (app.links, app.words) = draw_view(frame, view, &app.status, "Ctrl+Q");
+        (app.links, app.words) = draw_view(frame, view, &app.status);
     }
     if let Some((question, _)) = &app.host.question {
         draw_question(frame, question);

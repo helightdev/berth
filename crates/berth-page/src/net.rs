@@ -53,7 +53,7 @@ pub fn serve_here(dial: client::Dial) {
 
 /// Where `path` of `server` is: `http(s)://HOST[:PORT]`, `unix:/path` or `here:`.
 pub fn target(server: &str, path: &str) -> Result<Target, String> {
-    if server == berth_page::device::HERE {
+    if server == crate::device::HERE {
         return Ok(Target {
             way: Way::Here,
             authority: "berth".into(),

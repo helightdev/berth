@@ -169,7 +169,6 @@ dependencies = [
  "berth-core",
  "berth-page",
  "berth-pty",
- "berth-remote",
  "berth-tui",
  "berthd",
  "crossterm",
@@ -234,9 +233,17 @@ version = "0.5.2"
 dependencies = [
  "berth-api",
  "berth-tui",
+ "crossterm",
+ "futures-util",
  "ratatui",
+ "rustls",
+ "rustls-native-certs",
  "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
  "tui-input",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -252,17 +259,6 @@ version = "0.5.2"
 dependencies = [
  "berth-api",
  "berth-page",
- "berth-tui",
- "crossterm",
- "futures-util",
- "ratatui",
- "rustls",
- "rustls-native-certs",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "webpki-roots",
 ]
 
 [[package]]

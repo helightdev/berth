@@ -1,7 +1,7 @@
 //! The screens in a terminal: drawing, and the keys and mouse taken in.
 
 use crate::keys;
-use crossterm::event::{self, Event as Native, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event;
 use std::time::Duration;
 
 /// Stop the mouse and paste reports, which ratatui's own restore leaves on.
@@ -13,7 +13,7 @@ fn stop_reports() {
     );
 }
 
-/// The screens in this terminal until Ctrl+Q, opening the host `open` once
+/// The screens in this terminal until they are left, opening the host `open` once
 /// the server has listed it.
 pub fn run(open: Option<String>) -> std::io::Result<()> {
     let mut terminal = ratatui::init();
@@ -36,7 +36,7 @@ pub fn run(open: Option<String>) -> std::io::Result<()> {
 }
 
 fn screens(terminal: &mut ratatui::DefaultTerminal, open: Option<String>) -> std::io::Result<()> {
-    let mut app = berth_page::App::new();
+    let mut app = crate::App::new();
     if let Some(host) = open {
         app.open_when_listed(&host);
     }
@@ -49,19 +49,11 @@ fn screens(terminal: &mut ratatui::DefaultTerminal, open: Option<String>) -> std
             continue;
         }
         loop {
-            match keys::read()? {
-                Native::Key(key)
-                    if key.kind != KeyEventKind::Release
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                        && matches!(key.code, KeyCode::Char('q' | 'Q')) =>
-                {
-                    return Ok(());
-                }
-                native => {
-                    if let Some(event) = keys::event(&native) {
-                        app.event(event);
-                    }
-                }
+            if let Some(event) = keys::event(&keys::read()?) {
+                app.event(event);
+            }
+            if app.quit() {
+                return Ok(());
             }
             if !keys::poll(Duration::ZERO)? {
                 break;

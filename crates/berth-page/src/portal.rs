@@ -1,7 +1,7 @@
 //! The server's portal over the device's WebSocket: calls that are answered
 //! once, and streams that send frames until either side ends them.
 
-use crate::device::{self, Said, Socket};
+use crate::socket::{self, Said, Socket};
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -175,6 +175,17 @@ impl Portal {
     /// Open the portal of `server`, showing the token as the WebSocket's
     /// protocol.
     pub fn open(server: &str, token: &str) -> Result<Portal, String> {
+        Portal::attach(|said| {
+            let socket = socket::open(server, berth_api::ops::PORTAL, token, said)?;
+            Ok(Box::new(socket) as Box<dyn Socket>)
+        })
+    }
+
+    /// The portal over the socket `connect` opens, which tells `said` what
+    /// it hears.
+    pub fn attach(
+        connect: impl FnOnce(Box<dyn Fn(Said)>) -> Result<Box<dyn Socket>, String>,
+    ) -> Result<Portal, String> {
         let inner = Rc::new(Inner {
             socket: RefCell::default(),
             link: Cell::new(Link::Connecting),
@@ -184,16 +195,11 @@ impl Portal {
             streams: RefCell::default(),
         });
         let weak: Weak<Inner> = Rc::downgrade(&inner);
-        let socket = device::device().connect(
-            server,
-            berth_api::ops::PORTAL,
-            token,
-            Box::new(move |said| {
-                if let Some(inner) = weak.upgrade() {
-                    inner.said(said);
-                }
-            }),
-        )?;
+        let socket = connect(Box::new(move |said| {
+            if let Some(inner) = weak.upgrade() {
+                inner.said(said);
+            }
+        }))?;
         *inner.socket.borrow_mut() = Some(socket);
         Ok(Portal(inner))
     }
@@ -269,11 +275,10 @@ impl Portal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device::{Answer, Device, Kept, Linked};
 
     type Hears = Box<dyn Fn(Said)>;
 
-    /// A device whose socket the test speaks for.
+    /// A socket the test speaks for.
     #[derive(Clone, Default)]
     struct Wire {
         sent: Rc<RefCell<Vec<String>>>,
@@ -307,49 +312,14 @@ mod tests {
         }
     }
 
-    impl Device for Wire {
-        fn copy(&self, _: &str) -> bool {
-            false
-        }
-        fn paste(&self) -> Option<String> {
-            None
-        }
-        fn open(&self, _: &str) -> Result<(), String> {
-            Err("no".into())
-        }
-        fn choose_file(&self, _: &str, _: Box<dyn FnOnce(String, Vec<u8>)>) -> Result<(), String> {
-            Err("no".into())
-        }
-        fn stored(&self, _: Kept) -> Option<String> {
-            None
-        }
-        fn store(&self, _: Kept, _: &str) {}
-        fn linked(&self) -> Linked {
-            Linked::default()
-        }
-        fn request(&self, _: &str, _: &str, _: &str, _: &str, then: Answer) {
-            then(Err("no".into()))
-        }
-        fn connect(
-            &self,
-            server: &str,
-            path: &str,
-            token: &str,
-            said: Box<dyn Fn(Said)>,
-        ) -> Result<Box<dyn Socket>, String> {
-            assert_eq!(
-                (server, path, token),
-                ("http://192.0.2.10:7878", "/v1/portal", "the-token")
-            );
-            *self.said.borrow_mut() = Some(said);
-            Ok(Box::new(WireSocket(self.sent.clone())))
-        }
-    }
-
     fn portal() -> (Wire, Portal) {
         let wire = Wire::default();
-        device::install(wire.clone());
-        let portal = Portal::open("http://192.0.2.10:7878", "the-token").unwrap();
+        let speaking = wire.clone();
+        let portal = Portal::attach(move |said| {
+            *speaking.said.borrow_mut() = Some(said);
+            Ok(Box::new(WireSocket(speaking.sent.clone())))
+        })
+        .unwrap();
         (wire, portal)
     }
 

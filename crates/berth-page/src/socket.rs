@@ -3,12 +3,26 @@
 
 use crate::net;
 use berth_api::client::{self, Frame as Message};
-use berth_page::device::{Said, Socket};
 use futures_util::{SinkExt, StreamExt};
 use std::cell::RefCell;
 use std::sync::mpsc;
 use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+
+/// What the portal's socket says, handed over on the thread that draws.
+pub enum Said {
+    Open,
+    Text(String),
+    Bytes(Vec<u8>),
+    /// The socket is closed, or never opened.
+    Closed,
+}
+
+/// An open socket; dropping it closes it.
+pub trait Socket {
+    fn send_text(&self, text: &str) -> bool;
+    fn send_bytes(&self, bytes: &[u8]) -> bool;
+}
 
 /// What a socket says goes to its listener here, a turn at a time.
 struct Heard {

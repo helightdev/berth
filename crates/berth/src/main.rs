@@ -547,41 +547,39 @@ fn no_terminal(paths: &Paths, word: Option<&str>) -> String {
     }
 }
 
-/// `berth ui [HOST]`: the screens of a server, as `berth-remote` shows
-/// them: the server this berth is set to use, a `berth serve` of this user
-/// on this machine, or else one in this process for as long as they are open.
-fn screens(paths: &Paths, host: Option<&str>) -> Result<()> {
+/// `berth ui [HOST]`: the screens of a server: the one this berth is set to
+/// use, a `berth serve` of this user on this machine, or else one in this
+/// process for as long as they are open.
+fn screens(host: Option<&str>) -> Result<()> {
+    use berth_page::settings::{self, Settings};
     use std::io::IsTerminal;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        return Err(no_terminal(paths, host).into());
+        return Err("berth's screens need a terminal, and there is none here. `berth help` lists the commands that need none".into());
     }
+    let var = |name: &str| std::env::var(name).ok();
+    let settings = Settings::new(settings::folder(var));
+    match settings.take_in(settings::old_folder(var).as_deref()) {
+        Ok(Some(server)) => eprintln!("berth: berth-remote's server is berth's now: {server}"),
+        Ok(None) => {}
+        Err(error) => eprintln!("berth: berth-remote's settings were not taken in: {error}"),
+    }
+    let mut linked = berth_page::device::Linked::from(var);
     let mut here = None;
-    let (server, token) = match berth_core::server::Server::configured(paths) {
-        Some(server) => (server.url, server.token),
-        None => {
-            let socket = serve::here::socket();
-            if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
-                (format!("unix:{}", socket.display()), None)
-            } else {
-                let started = serve::here::Here::start(paths)?;
-                berth_remote::net::serve_here(started.dial());
+    if linked.local(&settings) {
+        let socket = serve::here::socket();
+        linked.server = Some(match std::os::unix::net::UnixStream::connect(&socket) {
+            Ok(_) => format!("unix:{}", socket.display()),
+            Err(_) => {
+                let paths = Paths::locate()?;
+                let started = serve::here::Here::start(&paths)?;
+                berth_page::net::serve_here(started.dial());
                 here = Some(started);
-                (berth_page::device::HERE.to_owned(), None)
+                berth_page::device::HERE.to_owned()
             }
-        }
-    };
-    let linked = berth_page::device::Linked {
-        server: Some(server),
-        token,
-        setup_key: None,
-    };
-    let device = berth_remote::device::Terminal::new(
-        linked,
-        berth_remote::settings::Settings::new(None),
-        false,
-    )?;
-    berth_page::device::install(device);
-    let shown = berth_remote::screens::run(host.map(str::to_owned));
+        });
+    }
+    berth_page::device::install(linked, settings);
+    let shown = berth_page::screens::run(host.map(str::to_owned));
     if let Some(here) = &here {
         here.wait_for_jobs(|jobs| {
             let names: Vec<String> = jobs
@@ -760,8 +758,8 @@ fn run() -> Result<()> {
         }
         ["update", ref rest @ ..] => return update::command(rest),
         ["serve", ref rest @ ..] => return serve::command(&paths, rest),
-        ["ui"] => return screens(&paths, None),
-        ["ui", host] => return screens(&paths, Some(host)),
+        ["ui"] => return screens(None),
+        ["ui", host] => return screens(Some(host)),
         ["setup-key", ref rest @ ..] => return serve::setup_key::command(&paths, rest),
         ["connect", url] => return commands::connect(&paths, url),
         ["inbox", ref rest @ ..] => return serve::inbox_command(&paths, rest),

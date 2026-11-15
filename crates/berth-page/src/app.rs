@@ -35,8 +35,8 @@ const RETRY: Duration = Duration::from_secs(3);
 const SAID_FOR: Duration = Duration::from_secs(5);
 /// What the status line says while the server is away.
 const AWAY: &str = "The berth server does not answer; trying again…";
-/// The key that leaves a running session, as Ctrl+Q quits the program.
-const LEAVE: &str = "Alt+Q";
+/// The key that leaves a running session, and elsewhere quits.
+const LEAVE: &str = "Ctrl+Q";
 
 #[derive(PartialEq)]
 enum Screen {
@@ -146,6 +146,8 @@ pub struct App {
     installed: Option<Installed>,
     /// A host to open once the server has listed its hosts.
     wanted: Option<String>,
+    /// The screens are left.
+    quit: bool,
 }
 
 impl App {
@@ -213,6 +215,7 @@ impl App {
             qr: None,
             installed: None,
             wanted: None,
+            quit: false,
         };
         // A setup key signs in with the token it collects, whatever was kept.
         if let (Some(key), false) = (linked.setup_key, app.server.is_empty()) {
@@ -229,6 +232,11 @@ impl App {
     /// The server is on this machine, and the screens need no token for it.
     fn local(&self) -> bool {
         device::local(&self.server)
+    }
+
+    /// Whether the screens were left, with Ctrl+Q or q on the list of hosts.
+    pub fn quit(&self) -> bool {
+        self.quit
     }
 
     /// Open the host `name` once the server has listed it.
@@ -1031,7 +1039,7 @@ impl App {
         };
         draw_footer(frame, footer, keys, &self.status, theme::ACCENT);
         (self.links, self.words) = match &self.host.view {
-            Some(view) => draw_view(frame, view, &self.status, LEAVE),
+            Some(view) => draw_view(frame, view, &self.status),
             None => (vec![], vec![]),
         };
         if let Some((question, _)) = &self.host.question {
@@ -1167,6 +1175,7 @@ impl App {
                 _ => {}
             },
             Code::Char('o') if !self.local() => self.sign_out(""),
+            Code::Char('q') => self.quit = true,
             _ => {}
         }
     }
@@ -1459,12 +1468,12 @@ impl App {
         let keys = match (admin, self.naming.is_some(), self.local()) {
             (_, true, _) => "Enter create · Esc cancel · Ctrl+O copy",
             (true, false, true) => {
-                "↑↓ select · Enter open · n new host · d default · x remove · r refresh"
+                "↑↓ select · Enter open · n new host · d default · x remove · r refresh · q quit"
             }
             (true, false, false) => {
-                "↑↓ select · Enter open · n new host · d default · x remove · r refresh · o sign out"
+                "↑↓ select · Enter open · n new host · d default · x remove · r refresh · o sign out · q quit"
             }
-            (false, false, _) => "↑↓ select · Enter open · r refresh · o sign out",
+            (false, false, _) => "↑↓ select · Enter open · r refresh · o sign out · q quit",
         };
         draw_footer(frame, footer, keys, &self.status, theme::ACCENT);
     }
@@ -1738,6 +1747,15 @@ impl App {
 
     pub fn event(&mut self, event: Event) {
         let event = hint_click(event);
+        // Over a session, Ctrl+Q leaves the session; everywhere else it quits.
+        let in_session = self.screen == Screen::Host && self.host.view.is_some();
+        if let Event::Key(key) = &event
+            && key.is_ctrl('q')
+            && !in_session
+        {
+            self.quit = true;
+            return;
+        }
         // Alt+R over a panel shows its links as QR codes.
         let over = self.seed.is_some() || self.data.borrow().job.is_some();
         let links = match (

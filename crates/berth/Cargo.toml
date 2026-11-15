@@ -29,7 +29,6 @@ jsonwebtoken = { version = "11", default-features = false, features = ["rust_cry
 
 tui-input = { workspace = true, features = ["crossterm"] }
 berth-page.workspace = true
-berth-remote = { path = "../berth-remote" }
 
 [dev-dependencies]
 # Signs the access tokens of the tests.

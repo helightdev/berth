@@ -199,18 +199,7 @@ impl Setup {
     /// Every problem, each on the tab of what it is about.
     fn problems(&self) -> Vec<Problem> {
         let view = self.view();
-        // The keys that make these up are other ones here.
-        let mut problems: Vec<Problem> = view
-            .problems_with(&self.machine)
-            .into_iter()
-            .map(|problem| Problem {
-                text: problem
-                    .text
-                    .replace("(F4 generates)", "(g generates)")
-                    .replace("(F4 or F5)", "(g or p)"),
-                ..problem
-            })
-            .collect();
+        let mut problems: Vec<Problem> = view.problems_with(&self.machine);
         if self.action == Action::Ssh && view.text(Field::SshHost).is_empty() {
             problems.push(Problem::new(
                 Step::Install,
@@ -253,8 +242,7 @@ impl Setup {
 
     fn help(&self) -> String {
         match self.selected() {
-            // g and p do what berth's F4 and F5 do.
-            Some(Entry::Field(field)) => field.spec().help.replace("F4", "g").replace("F5", "p"),
+            Some(Entry::Field(field)) => field.spec().help.into(),
             Some(Entry::Key(Account::Operator, Some(_))) => Field::OperatorKey.spec().help.into(),
             Some(Entry::Key(Account::Agent, Some(_))) => Field::AgentKey.spec().help.into(),
             Some(Entry::Key(_, None)) => setup::ADD_KEY_HELP.into(),
@@ -557,14 +545,11 @@ impl Setup {
         match key.code {
             Code::Up => self.move_selection(true),
             Code::Down => self.move_selection(false),
-            // g and p do what berth's F4 and F5 do.
-            Code::Char('g') | Code::F(4)
-                if self.selected_field().is_some_and(Field::can_generate) =>
-            {
+            Code::F(4) if self.selected_field().is_some_and(Field::can_generate) => {
                 let field = self.selected_field().unwrap();
                 say(self.generate(field, admin));
             }
-            Code::Char('p') if self.selected_field().is_some_and(Field::is_password_hash) => {
+            Code::F(5) if self.selected_field().is_some_and(Field::is_password_hash) => {
                 self.password_entry = true;
                 self.editing = Some(Input::default());
             }
@@ -770,10 +755,10 @@ impl Setup {
         let keys = match (&self.editing, field) {
             (Some(_), _) => "Enter accept · Esc cancel · Ctrl+O copy · Ctrl+S save".to_owned(),
             (None, Some(field)) if field.is_password_hash() => {
-                "↑↓ select · g generate · p type a password · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned()
+                "↑↓ select · F4 generate · F5 type a password · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned()
             }
             (None, Some(field)) if field.can_generate() => {
-                "↑↓ select · Enter change · g generate · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned()
+                "↑↓ select · Enter change · F4 generate · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned()
             }
             _ => "↑↓ select · Enter change · Space switch · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned(),
         };
