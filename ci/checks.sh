@@ -1,15 +1,42 @@
 #!/usr/bin/env bash
-# The checks of CI, run inside the dev container by ci/run.sh. Given
-# names, only those run: ci/run.sh check clippy vale
+# The checks of CI, run inside the dev container by ci/run.sh, or as they
+# are on a machine with the tools, as CI does. Given names, only those run:
+# ci/run.sh check clippy vale
 set -euo pipefail
-cd /src
+cd "$(dirname "$0")/.."
 
 crates=(-p berth-api -p berth-pty -p berth-core -p berth-tui -p berth -p berthd -p box -p berth-page)
 
 # Each runs as the condition of an if, where set -e does not stop it: the
 # steps are joined with && instead.
-rust-tests() { cargo test --locked; }
-python-tests() { python3 -m unittest discover -s tests -v; }
+# nextest runs the test programs side by side; cargo test one after the other.
+rust-tests() {
+  if cargo nextest --version >/dev/null 2>&1; then
+    cargo nextest run --locked --no-fail-fast
+  else
+    cargo test --locked
+  fi
+}
+# Each file in a process of its own, side by side, its output when it is done.
+python-tests() {
+  local file out=build/python-tests pids=() bad=0
+  rm -rf "$out" && mkdir -p "$out"
+  for file in tests/test_*.py; do
+    file=$(basename "$file")
+    python3 -m unittest discover -s tests -p "$file" -v >"$out/$file.log" 2>&1 &
+    pids+=("$!:$file")
+  done
+  for entry in "${pids[@]}"; do
+    if wait "${entry%%:*}"; then
+      grep -E '^(Ran|OK)' "$out/${entry#*:}.log" | paste -sd ' ' | sed "s|^|${entry#*:}: |"
+    else
+      cat "$out/${entry#*:}.log"
+      echo "${entry#*:} failed" >&2
+      bad=1
+    fi
+  done
+  return "$bad"
+}
 shell-syntax() {
   local script bad=0
   for script in install.sh provision/bin/*.sh provision/bootstrap/*.sh container/*.sh ci/*.sh \

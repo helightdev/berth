@@ -11,126 +11,222 @@ permissions:
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
-# The checks and the end-to-end tests run ci/run.sh, as on a developer's
-# machine. Image layers are kept in GitHub's cache; cargo's downloads and the
-# target directory are a directory the cache action keeps.
+# The checks run on the runner as they are; the end-to-end tests run
+# ci/run.sh in containers, as on a developer's machine. ci/plan.py says
+# which units a run needs: one that passed with the same files is skipped.
+# Started by hand, everything runs.
 env:
   BERTH_CI_NO_BUILD: '1'
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
 jobs:
-  checks:
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v7
-      - run: echo "BERTH_CI_CACHE=$RUNNER_TEMP/berth-ci-cache" >> "$GITHUB_ENV"
-      - uses: docker/setup-buildx-action@v4
-      - name: Build the dev image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ci/dev.Dockerfile
-          tags: berth-ci-dev
-          load: true
-          cache-from: type=gha,scope=berth-ci-dev
-          cache-to: type=gha,scope=berth-ci-dev,mode=max
-      - uses: actions/cache@v4
-        with:
-          path: ${{ env.BERTH_CI_CACHE }}
-          key: checks-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-${{ github.sha }}
-          restore-keys: checks-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-
-      - name: Checks
-        run: ci/run.sh check
-      - name: Keep the cache small
-        if: always()
-        run: rm -rf "$BERTH_CI_CACHE/target/debug/incremental" "$BERTH_CI_CACHE/target/tmp"
-
-  # berth is built once, here, and each shard of the end-to-end tests, the
-  # tests of one test host (tests/e2e/run.py), runs it in a job of its own.
-  # Only this job saves the cargo cache and the test host's image layers, so
-  # the shards do not race to save the same keys.
-  e2e-build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # The list of the cache's keys, where the markers are.
+      actions: read
     outputs:
-      shards: ${{ steps.shards.outputs.shards }}
+      rust-tests: ${{ steps.plan.outputs.rust-tests }}
+      clippy: ${{ steps.plan.outputs.clippy }}
+      python-tests: ${{ steps.plan.outputs.python-tests }}
+      shards: ${{ steps.plan.outputs.shards }}
     steps:
       - uses: actions/checkout@v7
-      - run: echo "BERTH_CI_CACHE=$RUNNER_TEMP/berth-ci-cache" >> "$GITHUB_ENV"
-      - id: shards
-        run: echo "shards=$(python3 tests/e2e/run.py --shards)" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v4
-      - name: Build the dev image
-        uses: docker/build-push-action@v6
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BERTH_CI_PR: ${{ github.event.pull_request.number }}
+          ALL: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
+        run: python3 ci/plan.py ${ALL:+--all}
+
+  # Quick enough to run always.
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VALE_VERSION: 3.25.1
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
         with:
-          context: .
-          file: ci/dev.Dockerfile
-          tags: berth-ci-dev
-          load: true
-          cache-from: type=gha,scope=berth-ci-dev
-      - name: Build the test host's image
-        uses: docker/build-push-action@v6
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: provision/requirements.txt
+      - name: Install Ansible and Vale
+        run: |
+          pip install --quiet -r provision/requirements.txt
+          curl -fsSL "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP" vale
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Install the toolchain
+        run: |
+          version=$(sed -n 's/^FROM rust:\([0-9.]*\)-.*/\1/p' ci/dev.Dockerfile)
+          rustup toolchain install "$version" --profile minimal \
+            --component clippy,rustfmt --target x86_64-unknown-linux-musl --no-self-update
+          echo "RUSTUP_TOOLCHAIN=$version" >> "$GITHUB_ENV"
+      - run: ci/checks.sh fmt shell-syntax ansible-syntax vale
+
+  rust-tests:
+    needs: plan
+    if: needs.plan.outputs.rust-tests != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The store's tests run on PostgreSQL too. The password is made up: the
+    # database is reachable from this job alone.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: berth
+          POSTGRES_PASSWORD: berth-ci
+          POSTGRES_DB: berth
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U berth" --health-interval 1s --health-retries 60
+    env:
+      BERTH_TEST_POSTGRES: postgres://berth:berth-ci@localhost:5432/berth
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/rust
         with:
-          context: .
-          file: ci/host.Dockerfile
-          tags: berth-ci-host
-          cache-from: type=gha,scope=berth-ci-host
-          cache-to: type=gha,scope=berth-ci-host,mode=max
-      - uses: actions/cache@v4
+          cache: test
+      - uses: taiki-e/install-action@v2
         with:
-          path: ${{ env.BERTH_CI_CACHE }}
-          key: e2e-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-${{ github.sha }}
-          restore-keys: e2e-${{ hashFiles('Cargo.lock', 'ci/dev.Dockerfile') }}-
-      - name: Build berth
-        run: ci/run.sh run cargo build --locked -p berth
+          tool: nextest
+      # The SSH tests start an sshd of their own.
+      - name: Install sshd
+        run: command -v sshd >/dev/null || [ -x /usr/sbin/sshd ] || { sudo apt-get update -q && sudo apt-get install -y --no-install-recommends openssh-server; }
+      - run: ci/checks.sh rust-tests
+      - uses: ./.github/actions/rust-save
+        with:
+          cache: test
+      - uses: ./.github/actions/green
+        with:
+          unit: ${{ needs.plan.outputs.rust-tests }}
+
+  clippy:
+    needs: plan
+    if: needs.plan.outputs.clippy != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/rust
+        with:
+          cache: clippy
+      - run: ci/checks.sh clippy
+      - uses: ./.github/actions/rust-save
+        with:
+          cache: clippy
+      - uses: ./.github/actions/green
+        with:
+          unit: ${{ needs.plan.outputs.clippy }}
+
+  python-tests:
+    needs: plan
+    if: needs.plan.outputs.python-tests != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: provision/requirements.txt
+      - run: pip install --quiet -r provision/requirements.txt
+      # The checks of the role's sshd configuration ask sshd itself.
+      - name: Install sshd
+        run: command -v sshd >/dev/null || [ -x /usr/sbin/sshd ] || { sudo apt-get update -q && sudo apt-get install -y --no-install-recommends openssh-server; }
+      - run: ci/checks.sh python-tests
+      - uses: ./.github/actions/green
+        with:
+          unit: ${{ needs.plan.outputs.python-tests }}
+
+  # berth is built once, here, for the shards of the end-to-end tests.
+  build:
+    needs: plan
+    if: needs.plan.outputs.shards != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/rust
+        with:
+          cache: build
+      - run: cargo build --locked -p berth
       # berth, and the berthd and box it puts into the role's files. A tar
       # keeps their modes, which an artifact does not.
       - name: Pack what the shards test
-        run: |
-          tar -cf "$RUNNER_TEMP/e2e-berth.tar" -C "$BERTH_CI_CACHE" target/debug/berth \
-            -C "$GITHUB_WORKSPACE" provision/ansible/roles/devbox/files/bin
+        run: tar -cf "$RUNNER_TEMP/e2e-berth.tar" target/debug/berth provision/ansible/roles/devbox/files/bin
       - uses: actions/upload-artifact@v4
         with:
           name: e2e-berth
           path: ${{ runner.temp }}/e2e-berth.tar
           retention-days: 1
           if-no-files-found: error
-      - name: Keep the cache small
-        if: always()
-        run: rm -rf "$BERTH_CI_CACHE/target/debug/incremental" "$BERTH_CI_CACHE/target/tmp"
+      - uses: ./.github/actions/rust-save
+        with:
+          cache: build
 
-  e2e-shard:
-    needs: e2e-build
+  # The test host's and the runner's images, built beside berth. Only this
+  # job saves their layers, so the shards do not race to save the same keys.
+  images:
+    needs: plan
+    if: needs.plan.outputs.shards != '[]'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ci/host.Dockerfile
+          cache-from: type=gha,scope=berth-ci-host
+          cache-to: type=gha,scope=berth-ci-host,mode=max
+          outputs: type=cacheonly
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ci/runner.Dockerfile
+          cache-from: type=gha,scope=berth-ci-runner
+          cache-to: type=gha,scope=berth-ci-runner,mode=max
+          outputs: type=cacheonly
+
+  # Each shard of the end-to-end tests (SHARDS of tests/e2e/run.py) on a
+  # fresh test host, in a job of its own.
+  e2e:
+    needs: [plan, build, images]
+    if: needs.plan.outputs.shards != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.e2e-build.outputs.shards) }}
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    name: e2e (${{ matrix.shard.shard }})
     env:
       BERTH_CI_PREBUILT: '1'
-      # The Docker engine of the tests has no way out; ci/run.sh loads this
-      # image into it when the shard holds the Docker plugin's tests.
-      BERTH_CI_DIND_IMAGES: busybox:1.37
     steps:
       - uses: actions/checkout@v7
       - run: echo "BERTH_CI_CACHE=$RUNNER_TEMP/berth-ci-cache" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@v4
-      - name: Build the dev image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ci/dev.Dockerfile
-          tags: berth-ci-dev
-          load: true
-          cache-from: type=gha,scope=berth-ci-dev
-      - name: Build the test host's image
-        uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v6
         with:
           context: .
           file: ci/host.Dockerfile
           tags: berth-ci-host
           load: true
           cache-from: type=gha,scope=berth-ci-host
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ci/runner.Dockerfile
+          tags: berth-ci-runner
+          load: true
+          cache-from: type=gha,scope=berth-ci-runner
       - uses: actions/download-artifact@v4
         with:
           name: e2e-berth
@@ -140,22 +236,36 @@ jobs:
           mkdir -p "$BERTH_CI_CACHE"
           tar -xf "$RUNNER_TEMP/e2e-berth.tar" -C "$BERTH_CI_CACHE" target
           tar -xf "$RUNNER_TEMP/e2e-berth.tar" provision
+      # The tests' Docker engine has no way out; ci/run.sh loads this image
+      # into it for a shard with the Docker plugin's tests.
       - name: Pull the images the tests' Docker engine is given
-        run: docker pull --quiet "$BERTH_CI_DIND_IMAGES"
+        env:
+          SHARD: ${{ matrix.shard.shard }}
+        run: |
+          if python3 tests/e2e/run.py --tests-of "$SHARD" | grep -q '^e2e_provisioners'; then
+            docker pull --quiet busybox:1.37
+            echo "BERTH_CI_DIND_IMAGES=busybox:1.37" >> "$GITHUB_ENV"
+          fi
       - name: End-to-end tests
-        run: ci/run.sh e2e --shard "${{ matrix.shard }}"
+        env:
+          SHARD: ${{ matrix.shard.shard }}
+        run: ci/run.sh e2e --shard "$SHARD"
       - name: Upload the test host's logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-logs-${{ matrix.shard }}
+          name: e2e-logs-${{ matrix.shard.shard }}
           path: build/ci/logs
           if-no-files-found: ignore
+      - uses: ./.github/actions/green
+        with:
+          unit: ${{ toJSON(matrix.shard) }}
 
-  # The check that branch protection requires. A job that was skipped would
-  # count as passed, so this one runs always and looks at every result.
-  e2e:
-    needs: [e2e-build, e2e-shard]
+  # The check that branch protection can require. A unit that was skipped
+  # passed with the same files before; one that failed or was cancelled fails
+  # this.
+  ci:
+    needs: [plan, lint, rust-tests, clippy, python-tests, build, images, e2e]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -165,19 +275,5 @@ jobs:
         run: |
           echo "Results: $RESULTS"
           for result in $RESULTS; do
-            [[ $result == success ]] || exit 1
+            [[ $result == success || $result == skipped ]] || exit 1
           done
-
-  prose:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      VALE_VERSION: 3.25.1
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install Vale
-        run: |
-          curl -fsSL "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz" \
-            | tar -xz -C "$RUNNER_TEMP" vale
-          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-      - run: vale --minAlertLevel=warning README.md docs/content/docs plugins/*/guide.md

@@ -63,7 +63,7 @@ With only Docker or Podman, `ci/run.sh` runs the same checks in an image that ha
 ```bash
 ci/run.sh check [CHECK…]   # fmt, shell-syntax, ansible-syntax, vale, python-tests, rust-tests, clippy
 ci/run.sh e2e [TEST…]      # the end-to-end tests, such as e2e_serve.Roles
-ci/run.sh e2e --shard HOST # the tests of one test host, as a CI job runs them
+ci/run.sh e2e --shard NAME # the tests of one shard on a fresh host, as a CI job runs them
 ci/run.sh shell            # a shell in the dev container
 ci/run.sh boot cloud|iso   # real installs in QEMU, with KVM; slow
 ```
@@ -83,7 +83,20 @@ That engine starts with Docker when the run is complete, names `e2e_provisioners
 
 `tests/e2e/run.py` says which test cases run on which host and in what order. Test cases that look at the same state of a host follow each other, so the state is applied once (see the shared states in `tests/e2e/harness.py`). A run ends with the time of each test and test case and the number of playbook runs. The test hosts' logs from a failed run are in `build/ci/logs/`.
 
-CI builds berth once and runs the tests of each test host as a shard, in a job of its own on a machine of its own. Each shard is its host's list in `HOSTS` of `tests/e2e/run.py`, so no state of a host is applied twice. A test case in none of the lists stops the run before it starts.
+CI runs the checks on the runner itself, each in a job of its own, and the end-to-end tests as shards. A shard is a part of a host's list that keeps the test cases of each shared state together (`SHARDS` in `tests/e2e/run.py`). Each runs in a job of its own on a fresh host, where its first test case makes the state it needs. A test case in no list, or in no shard, stops the run before it starts.
+
+`ci/plan.py` decides what a run does. Each unit has a key, a hash of the files it depends on and of the week. A unit that passed leaves a marker under its key in GitHub's cache, and a later run with the same files skips it. The lint job always runs.
+
+| Unit | Runs for a change to |
+| --- | --- |
+| `rust-tests`, `clippy` | anything but the docs site, the recipes and the other workflows |
+| `python-tests` | anything but the Rust code and the docs site |
+| The shards `studio` and `dock` | anything berth is built from: they apply only once |
+| The other shards | the role, the plugins, the end-to-end tests, or the Rust code in `SEAM` of `ci/plan.py` (on main: anything berth is built from) |
+
+`SEAM` is the Rust code that decides what the role is given or finds on a host. The test `ansible_contract` in `crates/berth-core/src/apply.rs` compares the variables of made-up profiles with the files in `crates/berth-core/tests/fixtures/ansible/`, which are in `SEAM` too. A change elsewhere that alters them makes the test fail, and writing them again runs the shards. Code that moves into a new file that feeds the role belongs in `SEAM`.
+
+The Rust jobs restore the target directory from main's cache. `ci/mtimes.py` sets the files that did not change since that build to a time long past, so cargo builds only what changed. Only main saves the caches. Started by hand, CI runs everything.
 
 `ci/run.sh boot` boots berth's cloud seed and its USB installer in QEMU, lets the first boot set the host up, and then runs `tests/e2e/boot_*.py` and part of the container suite against it. Each takes 10 to 15 minutes on a machine with KVM, so run it when a change touches provisioning, the role or first boot. CI boots only the cloud image for such a change. The installer is booted once a week and when the Boot workflow is started by hand. CI runs both for changes to provisioning (the Boot workflow, on a hosted runner with KVM). Logs, timings and disk use are in `build/boot/`.
 

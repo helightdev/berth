@@ -1,0 +1,3 @@
+# The image takes only the Python requirements; the checkout is mounted.
+*
+!provision/requirements.txt

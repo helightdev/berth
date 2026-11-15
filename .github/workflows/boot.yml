@@ -11,8 +11,11 @@ on:
     paths:
       - 'provision/**'
       - 'plugins/**'
-      - 'ci/**'
-      - 'tests/e2e/boot_*'
+      - 'ci/boot*'
+      - 'ci/run.sh'
+      - 'ci/dev.Dockerfile*'
+      - 'tests/e2e/boot*'
+      - 'tests/e2e/vm.py'
       - 'container/**'
       - '.github/workflows/boot.yml'
   push:
@@ -20,8 +23,11 @@ on:
     paths:
       - 'provision/**'
       - 'plugins/**'
-      - 'ci/**'
-      - 'tests/e2e/boot_*'
+      - 'ci/boot*'
+      - 'ci/run.sh'
+      - 'ci/dev.Dockerfile*'
+      - 'tests/e2e/boot*'
+      - 'tests/e2e/vm.py'
       - 'container/**'
       - '.github/workflows/boot.yml'
   workflow_dispatch:

@@ -53,8 +53,14 @@ services:
       POSTGRES_DB: berth
     tmpfs: [/var/lib/postgresql/data]
 
+  # The tests' side: berth as it was built, Ansible and SSH, without the
+  # toolchain of the dev image (ci/runner.Dockerfile).
   runner:
     <<: *dev
+    image: ${BERTH_CI_RUNNER_IMAGE:-berth-ci-runner}
+    build:
+      context: ..
+      dockerfile: ci/runner.Dockerfile
     profiles: [e2e]
     # Root, for the key it hands the test host in /seed. It writes nothing to
     # the checkout, which is mounted read-only.
