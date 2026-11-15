@@ -642,6 +642,7 @@ impl Prepared {
             &self.kept.record,
             &self.kept.record.arguments,
             &self.secrets,
+            &crate::provisioner::node_of(paths, &self.name),
         );
         request["token"] = json!(self.kept.record.token);
         match self.provisioner.setup {
@@ -763,6 +764,7 @@ impl Prepared {
             &self.kept.record,
             &self.kept.record.arguments,
             &self.secrets,
+            &crate::provisioner::node_of(paths, &self.name),
         );
         let mut log = resource::request(
             "logs",
@@ -770,6 +772,7 @@ impl Prepared {
             &self.kept.record,
             &self.kept.record.arguments,
             &self.secrets,
+            &crate::provisioner::node_of(paths, &self.name),
         );
         (log["tail"], log["follow"]) = (json!(CONSOLE_LINES), json!(false));
         let logs = self

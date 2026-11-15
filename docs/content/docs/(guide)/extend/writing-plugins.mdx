@@ -407,6 +407,7 @@ A verb about one resource also gets these. `status` without an `id`, `list` and 
 | `host` | The host's name, for a machine |
 | `id` | The id `create` answered with, once it has |
 | `labels` | For a machine, `berth-host` with the host's name and `berth-instance` with the token. For another kind, `berth-resource` with berth's id of the resource and `berth-token` with the token |
+| `node` | The node the provisioner is on, when a node's apply registered it. The node's controller dials its endpoints |
 
 The verbs about a resource get the `arguments` that `create` was given, with defaults for any argument added since. A resource of any other kind gets the provisioner's own arguments and its kind's.
 
@@ -450,9 +451,9 @@ An answer about one resource may report where it is reached, as `endpoints`. ber
 | `port` | 1 to 65535 |
 | `protocol` | `tcp`, the default, or `udp` |
 | `hint` | What speaks there, such as `http` or `postgres`. berth shows it to people and doesn't read it |
-| `local` | `true` when your engine runs on the machine berth runs on |
+| `local` | `true` when your engine runs on the machine that dials: the one berth runs on, or the node in the request |
 
-berth leaves out an endpoint that does not fit, and the first of two with the same name stands. `resources.connect` dials only what you report, from the server. Report `local` only for an engine on the server's own machine, as a loopback address is then the server's. For an engine elsewhere, report addresses that other machines can connect to, such as a port published on the engine's own name. Leave out the addresses only its machine routes to.
+berth leaves out an endpoint that does not fit, and the first of two with the same name stands. `resources.connect` dials only what you report. It dials from the server, or from the node when the request has `node`. Report `local` only for an engine on the server's own machine or on that node, as a loopback address is then the dialling machine's. With `node`, report addresses as the node sees them: `127.0.0.1` for a port published on every address, and the addresses of the node's bridges. For an engine elsewhere, report addresses that other machines can connect to, such as a port published on the engine's own name. Leave out the addresses only its machine routes to.
 
 ### Commands
 

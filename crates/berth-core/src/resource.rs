@@ -391,6 +391,8 @@ pub(crate) struct Called {
     pub dir: PathBuf,
     pub provisioner: Provisioner,
     pub secrets: Map<String, Value>,
+    /// The node its provisioner lives on, or nothing.
+    pub node: String,
 }
 
 impl Called {
@@ -411,6 +413,7 @@ impl Called {
             dir: plugin.dir.clone(),
             provisioner: provisioner.clone(),
             secrets,
+            node: crate::provisioner::node_of(paths, &kept.record.provisioner),
             kept,
         })
     }
@@ -435,6 +438,7 @@ impl Called {
             &self.kept.record,
             arguments,
             &self.secrets,
+            &self.node,
         )
     }
 
@@ -455,9 +459,14 @@ pub(crate) fn request(
     record: &Record,
     arguments: &BTreeMap<String, String>,
     secrets: &Map<String, Value>,
+    node: &str,
 ) -> Value {
     let mut request = provision::request(verb, provisioner, arguments, secrets);
     request["kind"] = json!(record.kind);
+    // Its endpoints are dialled from the node, so the plugin reports them as the node sees them.
+    if !node.is_empty() {
+        request["node"] = json!(node);
+    }
     request["name"] = json!(record.name);
     if record.kind == plugins::MACHINE {
         // A machine's labels are those of berth before resources, which
@@ -790,6 +799,7 @@ pub fn prepare(paths: &Paths, store: &Store, asked: &berth_api::NewResource) -> 
         &kept.record,
         &kept.record.arguments,
         &secrets,
+        &crate::provisioner::node_of(paths, &asked.provisioner),
     );
     request["token"] = json!(kept.record.token);
     if let Some(spec) = spec {

@@ -2181,7 +2181,7 @@
       }
     }
   },
-  "description": "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME/controller. Only the controller's own `secrets` action is refused; the server's `secrets` action of the host sends the server's secrets. An action's own role is asked when it runs. Each operation names the least role a caller over TCP needs: view, operate or admin.",
+  "description": "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME/controller. Only the controller's own `secrets` action is refused, for which the server's `secrets` action of the host sends the server's secrets, and `endpoints.connect`, which the server opens itself for `resources.connect`. An action's own role is asked when it runs. Each operation names the least role a caller over TCP needs: view, operate or admin.",
   "hosts": true,
   "operations": [
     {

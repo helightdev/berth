@@ -3191,7 +3191,7 @@
     }
   },
   "info": {
-    "description": "One API over all hosts, with the inbox and a key-value store. Everything under /v1/hosts/{name}/controller/ is that host's own API, passed through unchanged; only the controller's own `secrets` action is refused, which the server's `secrets` action of the host stands in for. What can be done to a host or to the installation is listed at /v1/hosts/{name}/actions and /v1/installation/actions, and run by POST to an action's name there. Over TCP every request carries the server's token or an OAuth 2.0 access token as a bearer, and needs the role its operation names. The routes of the setup key take that key as the bearer instead.",
+    "description": "One API over all hosts, with the inbox and a key-value store. Everything under /v1/hosts/{name}/controller/ is that host's own API, passed through unchanged; only the controller's own `secrets` action is refused, which the server's `secrets` action of the host stands in for, and `endpoints.connect`, which the server opens itself for `resources.connect`. What can be done to a host or to the installation is listed at /v1/hosts/{name}/actions and /v1/installation/actions, and run by POST to an action's name there. Over TCP every request carries the server's token or an OAuth 2.0 access token as a bearer, and needs the role its operation names. The routes of the setup key take that key as the bearer instead.",
     "title": "berth serve",
     "version": "0.5.2"
   },

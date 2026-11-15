@@ -406,6 +406,9 @@ async fn portal(
         };
         let op = ops::find(table, name)
             .ok_or_else(|| (code::NOT_FOUND, format!("No operation {name}")))?;
+        if !op.server_only.is_empty() {
+            return Err((code::FORBIDDEN, op.server_only.into()));
+        }
         asked.auth.allows(&access, op)?;
         Ok(berthd::portal::Target { op, prefix })
     });
@@ -1137,6 +1140,15 @@ async fn proxy(
     ws: Ws,
     body: Bytes,
 ) -> Answer<Response> {
+    // What the server calls on a host for itself is not passed through, however it is spelt.
+    let asked = format!("/v1/{rest}");
+    for kind in [ops::Kind::Call, ops::Kind::Stream] {
+        if let Some((op, _)) = ops::recognise(ops::HOST, kind, method.as_str(), &asked)
+            && !op.server_only.is_empty()
+        {
+            return Err(Fail::new(code::FORBIDDEN, op.server_only));
+        }
+    }
     let remote = remote(&state, &name)?;
     // A host of the type ssh has no controller to pass this to; say what installs one.
     let (host_type, _) = known(&state, &name);

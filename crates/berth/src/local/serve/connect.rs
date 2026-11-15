@@ -3,10 +3,14 @@
 //! and its address is resolved and checked when it is dialled, so the
 //! tunnel is no way to an address of the caller's choosing.
 
+use super::Serve;
 use super::api::{Answer, App, Fail, Ws};
 use axum::{extract::Path, response::Response};
-use berth_api::{Endpoint, code};
-use berth_core::resource::{self, Kept};
+use berth_api::{Endpoint, client, code, tunnel::Tunnel};
+use berth_core::{
+    paths::Paths,
+    resource::{self, Kept},
+};
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     time::Duration,
@@ -15,6 +19,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 /// How long resolving and dialling an endpoint may take.
 const DIAL_FOR: Duration = Duration::from_secs(10);
+
+/// The API number of the first berthd with `endpoints.connect`.
+pub const NODE_API: u32 = 2;
 
 /// A connection to an endpoint, whichever way it was dialled.
 pub trait Connection: AsyncRead + AsyncWrite + Send + Unpin + 'static {}
@@ -27,22 +34,121 @@ pub enum Dialler {
     /// The server, from its own machine: right for an engine there or on a
     /// network the server routes to.
     Server,
+    /// The controller of the node the provisioner lives on, whose engine
+    /// hands out addresses that often only the node routes to.
+    Node(String),
 }
 
 impl Dialler {
     /// The dialler for the provisioner that made a resource.
-    pub fn of(_kept: &Kept) -> Dialler {
-        Dialler::Server
+    pub fn of(paths: &Paths, kept: &Kept) -> Dialler {
+        match berth_core::provisioner::entry(paths, &kept.record.provisioner) {
+            Ok(Some(entry)) if !entry.node.is_empty() => Dialler::Node(entry.node),
+            _ => Dialler::Server,
+        }
     }
 
     /// Resolve, check and dial an endpoint.
-    pub async fn dial(&self, endpoint: &Endpoint) -> Answer<Box<dyn Connection>> {
+    pub async fn dial(&self, state: &Serve, endpoint: &Endpoint) -> Answer<Box<dyn Connection>> {
         match self {
             Dialler::Server => {
                 let addresses = resolve(endpoint).await?;
                 Ok(Box::new(dial_first(endpoint, &addresses).await?))
             }
+            Dialler::Node(node) => through_node(state, node, endpoint).await,
         }
+    }
+}
+
+/// How a node's controller reaches an endpoint its engine reported: the
+/// node's loopback through `ports.connect`, anything else through
+/// `endpoints.connect`, which checks the address on the node.
+pub fn on_node(endpoint: &Endpoint) -> Result<String, String> {
+    let place = format!("{}:{}", endpoint.address, endpoint.port);
+    let Ok(ip) = endpoint.address.parse::<IpAddr>().map(canonical) else {
+        return Ok(match endpoint.address.eq_ignore_ascii_case("localhost") {
+            true => format!("/v1/ports/{}", endpoint.port),
+            false => format!(
+                "/v1/endpoints/{}/{}",
+                client::encode(&endpoint.address),
+                endpoint.port
+            ),
+        });
+    };
+    if metadata(ip) {
+        return Err(format!(
+            "{place} is a cloud's metadata address, which berth never dials"
+        ));
+    }
+    // An engine on the node means the node's own loopback, which ports.connect dials as 127.0.0.1.
+    if ip == IpAddr::V4(Ipv4Addr::LOCALHOST) {
+        return Ok(format!("/v1/ports/{}", endpoint.port));
+    }
+    if own_machine(ip) {
+        return Err(format!(
+            "{place} is a loopback or link-local address that the node's controller does not dial: only 127.0.0.1 of its loopback"
+        ));
+    }
+    Ok(format!("/v1/endpoints/{ip}/{}", endpoint.port))
+}
+
+/// An endpoint dialled by the controller of `node`, over the link the
+/// server has to it.
+async fn through_node(
+    state: &Serve,
+    node: &str,
+    endpoint: &Endpoint,
+) -> Answer<Box<dyn Connection>> {
+    let path = on_node(endpoint).map_err(|why| Fail::new(code::FORBIDDEN, why))?;
+    let remote = state.host(node).ok_or_else(|| {
+        Fail::new(
+            code::UNREACHABLE,
+            format!("The provisioner lives on the node {node}, which is not a host of this server"),
+        )
+    })?;
+    let Some(link) = &remote.link else {
+        let problem = remote.problem.clone().unwrap_or_else(|| "no link".into());
+        return Err(Fail::new(
+            code::UNREACHABLE,
+            format!("The node {node} cannot be reached: {problem}"),
+        ));
+    };
+    let too_old = |said: &str| {
+        Fail::new(
+            code::NOT_AVAILABLE,
+            format!(
+                "The controller of the node {node} is {said}, which cannot reach a resource's endpoint: update its controller or apply {node}"
+            ),
+        )
+    };
+    match remote.version().await {
+        Err(why) => {
+            return Err(Fail::new(
+                code::UNREACHABLE,
+                format!("The node {node} does not answer: {why}"),
+            ));
+        }
+        Ok(version) if version.api < NODE_API => {
+            return Err(too_old(&format!(
+                "berthd {} with API {}",
+                version.version, version.api
+            )));
+        }
+        Ok(_) => {}
+    }
+    let opened = tokio::time::timeout(DIAL_FOR * 2, link.stream(&path)).await;
+    match opened {
+        Ok(Ok(stream)) => Ok(Box::new(Tunnel::new(stream))),
+        // Only a controller without the route answers so: the stream itself never does.
+        Ok(Err(error)) if error.status() == 404 => Err(too_old("older than endpoints.connect")),
+        Ok(Err(error)) => Err(error.into()),
+        Err(_) => Err(Fail::new(
+            code::TIMEOUT,
+            format!(
+                "The node {node} did not open the endpoint {} in time",
+                endpoint.name
+            ),
+        )),
     }
 }
 
@@ -238,7 +344,9 @@ pub async fn connect(
             ),
         ));
     }
-    let connection = Dialler::of(&kept).dial(&endpoint).await?;
+    let connection = Dialler::of(&state.paths, &kept)
+        .dial(&state, &endpoint)
+        .await?;
     Ok(ws.on_upgrade(move |socket| berthd::ports::tunnel(socket, connection)))
 }
 
@@ -285,6 +393,41 @@ mod tests {
             assert!(refused.contains("metadata"), "{refused}");
         }
         assert!(allowed(&endpoint("169.254.10.1", false), ip("169.254.10.1")).is_err());
+    }
+
+    #[test]
+    fn a_nodes_controller_dials_its_loopback_as_a_port_and_the_rest_as_an_address() {
+        let path = |address: &str, local: bool| on_node(&endpoint(address, local));
+        // Reported by the engine on the node, the loopback is the node's, whatever `local` says.
+        for local in [true, false] {
+            assert_eq!(path("127.0.0.1", local).unwrap(), "/v1/ports/5432");
+        }
+        assert_eq!(path("localhost", true).unwrap(), "/v1/ports/5432");
+        assert_eq!(
+            path("10.12.0.57", true).unwrap(),
+            "/v1/endpoints/10.12.0.57/5432"
+        );
+        assert_eq!(
+            path("::ffff:10.12.0.57", true).unwrap(),
+            "/v1/endpoints/10.12.0.57/5432"
+        );
+        assert_eq!(
+            path("db.example", false).unwrap(),
+            "/v1/endpoints/db.example/5432"
+        );
+        assert!(
+            path("169.254.169.254", true)
+                .unwrap_err()
+                .contains("metadata")
+        );
+        assert!(
+            path("fd00:ec2::254", true)
+                .unwrap_err()
+                .contains("metadata")
+        );
+        for refused in ["127.0.0.2", "::1", "fe80::1", "169.254.3.4"] {
+            assert!(path(refused, true).is_err(), "{refused}");
+        }
     }
 
     #[test]

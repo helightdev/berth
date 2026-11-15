@@ -172,7 +172,9 @@ that leads into the instance, such as `listen: tcp:0.0.0.0:8080`. A device that
 listens on every address is reported at the server's host name from `server`.
 An instance's own address is its address; Incus does not say which of its
 ports serve anything, so those are no endpoints. berth opens a tunnel to an
-endpoint with `resources.connect`.
+endpoint with `resources.connect`. For a provisioner a node registers, berth
+names the node in each request. The node's controller then dials, so a device
+that listens on every address is reported at the node's `127.0.0.1`.
 
 An instance also takes the action `exec`. Incus runs the command and records
 its output, which the plugin then gives as the job's and removes from the

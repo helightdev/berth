@@ -66,6 +66,8 @@ class Incus:
         self.host = url.hostname
         self.port = url.port or 8443
         self.project = project or 'default'
+        # The node the server runs on, whose controller dials the endpoints, when berth names one.
+        self.node = ''
         cert, key = secrets.get('incus_client_cert') or '', secrets.get('incus_client_key') or ''
         if not cert.strip() or not key.strip():
             raise Failure('The secrets incus_client_cert and incus_client_key are needed to talk to Incus.')
@@ -261,8 +263,9 @@ def split_address(text):
 
 def endpoints_of(incus, instance):
     """The instance's proxy devices, each a port of the Incus server that leads into it. An instance's
-    own address is its address; berth is not told which of its ports serve anything."""
-    local = incus.host in LOOPBACK
+    own address is its address; berth is not told which of its ports serve anything. On a node
+    berth names, its controller dials, so the server's loopback is the node's."""
+    local = incus.host in LOOPBACK or bool(incus.node)
     found = []
     for name, device in sorted(((instance or {}).get('expanded_devices') or {}).items()):
         if (device or {}).get('type') != 'proxy':
@@ -800,6 +803,7 @@ def main():
         arguments = request.get('arguments') or {}
         with tempfile.TemporaryDirectory(prefix='berth-incus-') as scratch:
             incus = Incus(arguments.get('server') or '', arguments.get('project'), request.get('secrets') or {}, scratch)
+            incus.node = request.get('node') or ''
             incus.check_trust()
             answer = VERBS[verb](incus, request, arguments)
     except Failure as exc:

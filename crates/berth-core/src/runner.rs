@@ -676,10 +676,15 @@ impl Runner {
                 _ => Stopping::NotHere,
             });
         };
+        if let Some(before) = stop.asked() {
+            return Ok(Stopping::AskedBefore(before));
+        }
+        // The record comes first: once its programs are signalled the job
+        // may end, and one that has ended takes no such note.
+        self.store.stop_job(id, by)?;
         if !stop.request(by) {
             return Ok(Stopping::AskedBefore(stop.asked().unwrap_or_default()));
         }
-        self.store.stop_job(id, by)?;
         Ok(Stopping::Asked)
     }
 
