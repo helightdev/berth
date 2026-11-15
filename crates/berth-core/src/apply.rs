@@ -770,4 +770,43 @@ mod tests {
             std::fs::write(format!("{dir}/inventory"), untemplated(&inventory)).unwrap();
         }
     }
+
+    /// What the role is given for the made-up profiles in
+    /// tests/fixtures/ansible, kept beside them. CI applies the role on a pull
+    /// request only for changes there or to the role, so a change to what it
+    /// gets has to show there.
+    #[test]
+    fn ansible_contract() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ansible");
+        let mut names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| {
+                let name = entry.unwrap().file_name().into_string().unwrap();
+                name.strip_suffix(".profile.json").map(str::to_owned)
+            })
+            .collect();
+        names.sort();
+        assert!(!names.is_empty());
+        let update = std::env::var_os("BERTH_UPDATE_DOCS").is_some();
+        for name in names {
+            let profile = read_back(&dir.join(format!("{name}.profile.json")));
+            let vars = ansible_vars(
+                &profile,
+                &json!({"docker": "/usr/lib/berth/plugins/docker", "incus": "/usr/lib/berth/plugins/incus"}),
+                &["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBERTH berth@studio".to_owned()],
+            );
+            let written = serde_json::to_string_pretty(&vars).unwrap() + "\n";
+            let path = dir.join(format!("{name}.vars.json"));
+            if update {
+                std::fs::write(&path, &written).unwrap();
+                continue;
+            }
+            let kept = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(
+                kept == written,
+                "{} is stale: write it again with BERTH_UPDATE_DOCS=1 cargo test -p berth-core ansible_contract",
+                path.display()
+            );
+        }
+    }
 }

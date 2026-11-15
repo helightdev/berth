@@ -1,0 +1,15 @@
+{
+  "devbox_agent_password_hash": "",
+  "devbox_agent_privileges": "full",
+  "devbox_agent_ssh_public_key": "",
+  "devbox_berth_ssh_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBERTH berth@studio",
+  "devbox_operator_password_hash": "$6$made-up$hash",
+  "devbox_operator_ssh_public_key": "",
+  "devbox_operator_user": "ops",
+  "devbox_plugin_dirs": {
+    "docker": "/usr/lib/berth/plugins/docker",
+    "incus": "/usr/lib/berth/plugins/incus"
+  },
+  "devbox_profile": "laptop",
+  "devbox_user": "agent"
+}

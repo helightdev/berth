@@ -1,0 +1,15 @@
+{
+  "hostname": "desk",
+  "target": "laptop",
+  "operator_username": "ops",
+  "operator_ssh_public_keys": [],
+  "operator_password_hash": "$6$made-up$hash",
+  "agent_username": "agent",
+  "agent_ssh_public_keys": [],
+  "agent_password_hash": "",
+  "agent_privileges": "full",
+  "keyboard": "de",
+  "wifi_enabled": false,
+  "ansible_vars": {},
+  "access": {"auth": "berth"}
+}

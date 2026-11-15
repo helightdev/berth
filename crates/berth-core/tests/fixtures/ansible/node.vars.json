@@ -1,0 +1,15 @@
+{
+  "devbox_agent_ssh_public_key": "",
+  "devbox_berth_ssh_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBERTH berth@studio",
+  "devbox_level": "node",
+  "devbox_node_user": "admin",
+  "devbox_operator_ssh_public_key": "",
+  "devbox_plugin_dirs": {
+    "docker": "/usr/lib/berth/plugins/docker",
+    "incus": "/usr/lib/berth/plugins/incus"
+  },
+  "devbox_plugin_features": [
+    "incus/host"
+  ],
+  "devbox_profile": "cloud"
+}
