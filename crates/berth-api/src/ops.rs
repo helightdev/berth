@@ -344,6 +344,8 @@ pub static SERVE: &[Op] = &[
     call("jobs.get", "GET", "/v1/jobs/{id}"),
     role(stream("jobs.follow", "/v1/jobs/{id}"), Role::View),
     call("jobs.output", "GET", "/v1/jobs/{id}/output"),
+    // Anyone let in may ask; the role that starts a job of its kind is checked.
+    role(call("jobs.stop", "POST", "/v1/jobs/{id}/stop"), Role::View),
     call("inbox.list", "GET", "/v1/inbox"),
     role(stream("inbox.follow", "/v1/inbox"), Role::View),
     call("inbox.done", "POST", "/v1/inbox/{host}/{id}/done"),

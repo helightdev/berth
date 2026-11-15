@@ -656,6 +656,9 @@ pub struct JobInfo {
     /// How a roll-out went, host by host, once it has ended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<RolloutReport>,
+    /// Who stopped it before it ended by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_by: Option<String>,
 }
 
 // ── System ──────────────────────────────────────────────────────────────────

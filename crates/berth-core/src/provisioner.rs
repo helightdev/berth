@@ -1037,6 +1037,7 @@ pub(crate) fn stream(
         .spawn()
         .map_err(|error| format!("{}: {error}", provisioner.command.display()))?;
     let group = child.id() as i32;
+    let _stopped = crate::runner::watch(&child);
     let mut input = serde_json::to_vec(asked)?;
     input.push(b'\n');
     let mut stdin = child.stdin.take().ok_or("no standard input")?;

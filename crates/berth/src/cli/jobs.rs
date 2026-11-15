@@ -70,6 +70,15 @@ pub fn command(client: &Client, command: Job) -> Result<()> {
             Ok(())
         }
         Job::Logs { id, follow } => logs(client, &id, follow),
+        Job::Stop { id } => {
+            let job = client.call("jobs.stop", json!({"id": id}), None)?;
+            out::data(&job, || {
+                out::done(format!(
+                    "Asked {id} to stop. berth job wait {id} waits for its end"
+                ))
+            });
+            Ok(())
+        }
         Job::Wait { id } => {
             let job = client.call("jobs.get", json!({"id": id}), None)?;
             let title = format!(

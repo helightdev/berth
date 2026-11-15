@@ -130,11 +130,48 @@ fn exit_of(said: &Value) -> Option<i32> {
         .map(|exited| exited["exit_code"].as_i64().unwrap_or(1) as i32)
 }
 
+/// What following a job came to before it ended.
+enum Watched {
+    Ended,
+    /// Ctrl+C: stop watching.
+    Interrupted,
+}
+
+/// Ask whether Ctrl+C stops a job the server keeps, or only the watching.
+fn stop_or_keep(id: &str) -> bool {
+    let question = berth_tui::flow::Question {
+        step: berth_tui::fields::Step::Run,
+        label: "Stop the job, or keep it running?".into(),
+        help: format!("It goes on where the server runs; berth job stop {id} stops it later."),
+        flag: String::new(),
+        asked: berth_tui::flow::Asked::Choice {
+            options: vec![
+                berth_tui::flow::Choice {
+                    key: "keep".into(),
+                    label: "keep it running".into(),
+                    help: format!("Stop watching. berth job logs {id} -f follows it again."),
+                },
+                berth_tui::flow::Choice {
+                    key: "stop".into(),
+                    label: "stop the job".into(),
+                    help: "Its programs end, and its record says who stopped it.".into(),
+                },
+            ],
+            default: 0,
+        },
+        required: false,
+    };
+    matches!(
+        super::ask::ask(&question),
+        Ok(berth_tui::flow::Answer::Choice(1))
+    )
+}
+
 /// Follow the job `id` to its end, shown as `title`. With `own` the job's
 /// output is what the command is for, such as an action of a host, and goes
-/// to standard output whole.
+/// to standard output whole. Ctrl+C asks whether to stop a job that a
+/// server keeps, at a terminal; elsewhere it stops watching.
 pub fn job(client: &Client, id: &str, title: &str, own: bool) -> Result<Ended> {
-    let mut stream = client.stream("jobs.follow", None, json!({"id": id}))?;
     let shown = out::get();
     let colour = shown.colour.1;
     let mut inline = match shown.terminal.1 && !shown.quiet && !own {
@@ -145,59 +182,84 @@ pub fn job(client: &Client, id: &str, title: &str, own: bool) -> Result<Ended> {
     let mut lines = Lines::default();
     let mut code = None;
     let mut warned = false;
+    let mut offset = 0u64;
+    let mut asked_to_stop = false;
     let in_process = client.in_process();
-    let stopped = client.wait(async {
-        let mut tick = tokio::time::interval(Duration::from_millis(100));
-        loop {
-            tokio::select! {
-                piece = stream.recv() => match piece {
-                    Some(Ok(Piece::Binary(bytes))) => {
-                        lines.take(&bytes);
-                        if own {
-                            let mut stdout = std::io::stdout().lock();
-                            let _ = stdout.write_all(&bytes);
-                            let _ = stdout.flush();
-                        } else if inline.is_none() && !shown.quiet {
-                            let text = String::from_utf8_lossy(&bytes);
-                            let text = match colour { true => text.into_owned(), false => out::strip_ansi(&text) };
-                            let mut stderr = std::io::stderr().lock();
-                            let _ = stderr.write_all(text.as_bytes());
-                            let _ = stderr.flush();
+    let stopped = loop {
+        let mut stream = client.stream("jobs.follow", None, json!({"id": id, "since": offset}))?;
+        let watched = client.wait(async {
+            let mut tick = tokio::time::interval(Duration::from_millis(100));
+            loop {
+                tokio::select! {
+                    piece = stream.recv() => match piece {
+                        Some(Ok(Piece::Binary(bytes))) => {
+                            offset += bytes.len() as u64;
+                            lines.take(&bytes);
+                            if own {
+                                let mut stdout = std::io::stdout().lock();
+                                let _ = stdout.write_all(&bytes);
+                                let _ = stdout.flush();
+                            } else if inline.is_none() && !shown.quiet {
+                                let text = String::from_utf8_lossy(&bytes);
+                                let text = match colour { true => text.into_owned(), false => out::strip_ansi(&text) };
+                                let mut stderr = std::io::stderr().lock();
+                                let _ = stderr.write_all(text.as_bytes());
+                                let _ = stderr.flush();
+                            }
+                        }
+                        Some(Ok(Piece::Text(said))) => {
+                            if let Some(exit) = exit_of(&said) {
+                                code = Some(exit);
+                            }
+                        }
+                        Some(Err(error)) => return Err(Fail::from(error)),
+                        None => return Ok(Watched::Ended),
+                    },
+                    _ = tick.tick() => {
+                        if let Some(inline) = &mut inline {
+                            inline.draw(title, since, &lines);
                         }
                     }
-                    Some(Ok(Piece::Text(said))) => {
-                        if let Some(exit) = exit_of(&said) {
-                            code = Some(exit);
+                    _ = tokio::signal::ctrl_c() => {
+                        if in_process && !warned {
+                            warned = true;
+                            let say = format!("{title} runs in this berth and stops when it ends. Ctrl+C again stops it; berth serve keeps jobs running after berth ends");
+                            match &mut inline {
+                                Some(inline) => {
+                                    let said = say.clone();
+                                    let _ = inline.terminal.insert_before(1, |buffer| {
+                                        Paragraph::new(Line::styled(said, Look::new().fg(Color::Yellow))).render(buffer.area, buffer);
+                                    });
+                                }
+                                None => out::warn(say),
+                            }
+                            continue;
                         }
-                    }
-                    Some(Err(error)) => return Err(Fail::from(error)),
-                    None => return Ok(false),
-                },
-                _ = tick.tick() => {
-                    if let Some(inline) = &mut inline {
-                        inline.draw(title, since, &lines);
+                        return Ok(Watched::Interrupted);
                     }
                 }
-                _ = tokio::signal::ctrl_c() => {
-                    if in_process && !warned {
-                        warned = true;
-                        let say = format!("{title} runs in this berth and stops when it ends. Ctrl+C again stops it; berth serve keeps jobs running after berth ends");
-                        match &mut inline {
-                            Some(inline) => {
-                                let said = say.clone();
-                                let _ = inline.terminal.insert_before(1, |buffer| {
-                                    Paragraph::new(Line::styled(said, Look::new().fg(Color::Yellow))).render(buffer.area, buffer);
-                                });
-                            }
-                            None => out::warn(say),
-                        }
-                        continue;
-                    }
-                    return Ok(true);
+            }
+        })?;
+        match watched {
+            Watched::Ended => break false,
+            Watched::Interrupted if in_process || asked_to_stop || !shown.ask => break true,
+            Watched::Interrupted => {
+                // The question needs the terminal's lines to itself.
+                if let Some(drawn) = inline.take() {
+                    drawn.end();
+                }
+                if !stop_or_keep(id) {
+                    break true;
+                }
+                asked_to_stop = true;
+                client.call("jobs.stop", json!({"id": id}), None)?;
+                out::note(format!("Asked {id} to stop. Ctrl+C again stops watching"));
+                if !shown.quiet && !own {
+                    inline = Inline::start();
                 }
             }
         }
-    })?;
+    };
     let drew = inline.is_some();
     if let Some(inline) = inline {
         inline.end();
@@ -241,15 +303,18 @@ pub fn job(client: &Client, id: &str, title: &str, own: bool) -> Result<Ended> {
                         let _ = writeln!(stderr, "  {line}");
                     }
                 }
+                let said = match job["stopped_by"].as_str() {
+                    Some(by) => {
+                        format!("stopped by {by} after {took}. Its log: berth job logs {id}")
+                    }
+                    None => format!(
+                        "failed with exit status {code} after {took}. Its log: berth job logs {id}"
+                    ),
+                };
                 eprintln!(
                     "{} {title} {}",
                     out::styled_err("✗", Style::Bad),
-                    out::styled_err(
-                        &format!(
-                            "failed with exit status {code} after {took}. Its log: berth job logs {id}"
-                        ),
-                        Style::Dim
-                    )
+                    out::styled_err(&said, Style::Dim)
                 );
             }
         }

@@ -643,6 +643,8 @@ pub enum Job {
     },
     /// Wait for a job to end and exit with its result.
     Wait { id: String },
+    /// Stop a running job: its programs end, and its record says who stopped it.
+    Stop { id: String },
 }
 
 // ── keys, secrets, registries, plugins, settings ────────────────────────────

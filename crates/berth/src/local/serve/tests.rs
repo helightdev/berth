@@ -373,6 +373,7 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
         subject: "host:broken".into(),
         action: "apply".into(),
         token: None,
+        stopped_by: None,
     };
     served.state.store.add_job(&job).unwrap();
     let jobs: Value = client.get("/v1/jobs").await.unwrap();
@@ -4280,4 +4281,50 @@ async fn a_command_runs_in_a_resource_as_a_job_that_ends_as_it_did() {
     )
     .await;
     assert_eq!(status, 404, "{said}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_running_job_is_stopped_through_the_api() {
+    use berth_core::runner::{Program, Request, Subject, Work};
+    let served = served().await;
+    let mut command = std::process::Command::new("sh");
+    command.args(["-c", "echo started; sleep 30"]);
+    let work = Work::Program(Box::new(Program {
+        command,
+        input: None,
+        files: vec![],
+    }));
+    let job = served
+        .state
+        .runner
+        .start(Request::new(Subject::Installation, "rollout"), work)
+        .unwrap();
+    let mut client = served.client().await;
+    let (status, stopping) = send(
+        &mut client,
+        "POST",
+        &format!("/v1/jobs/{}/stop", job.id),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 202, "{stopping}");
+    assert_eq!(stopping["stopped_by"], "the server's own user");
+    let (output, code) = job_ended(&served.socket, &job.id).await;
+    assert_eq!(code, 130, "{output}");
+    assert!(
+        output.contains("✗ Stopped by the server's own user"),
+        "{output}"
+    );
+    // One that has ended is not stopped again.
+    let (status, refused) = send(
+        &mut client,
+        "POST",
+        &format!("/v1/jobs/{}/stop", job.id),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        (status, &refused["error"]["code"]),
+        (409, &json!("conflict"))
+    );
 }

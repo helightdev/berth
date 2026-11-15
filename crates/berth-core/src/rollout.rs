@@ -87,7 +87,9 @@ pub fn run(
             name: target.name().to_owned(),
             ..Default::default()
         };
-        if stopped {
+        // A roll-out that was stopped starts no other host.
+        if stopped || crate::runner::stopped().is_some() {
+            stopped = true;
             hosts.push(host);
             continue;
         }
@@ -343,6 +345,7 @@ impl Target for Live<'_> {
             .map_err(|error| error.to_string())?;
         let (reader, writer) = std::io::pipe().map_err(|error| error.to_string())?;
         let copy = writer.try_clone().map_err(|error| error.to_string())?;
+        crate::runner::own_group(&mut prepared.command);
         let mut child = prepared
             .command
             .stdin(std::process::Stdio::null())
@@ -350,6 +353,7 @@ impl Target for Live<'_> {
             .stderr(copy)
             .spawn()
             .map_err(|error| format!("ansible-playbook: {error}"))?;
+        let _group = crate::runner::watch(&child);
         // The command holds the pipe's other ends; they close when it is dropped.
         drop(prepared.command);
         for line in std::io::BufReader::new(reader).lines() {

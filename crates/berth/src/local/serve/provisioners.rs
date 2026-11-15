@@ -178,6 +178,7 @@ pub async fn provisioner_act(
     }
     let mut request = Request::new(Subject::Provisioner(name), &action);
     request.token = act.token;
+    request.role = found.role;
     request.secrets = acting.secrets();
     let work = Work::Function(Box::new(move |out| {
         match acting.run(&paths, &options, out) {

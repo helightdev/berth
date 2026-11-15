@@ -1309,6 +1309,7 @@ fn filled(store: &Store) {
             subject: "host:studio".into(),
             action: "apply".into(),
             token: Some("t-1".into()),
+            stopped_by: Some("ops".into()),
         })
         .unwrap();
     store

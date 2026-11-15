@@ -361,6 +361,7 @@ pub(crate) fn call(
         .spawn()
         .map_err(|error| format!("{}: {error}", provisioner.command.display()))?;
     let group = child.id() as i32;
+    let _stopped = crate::runner::watch(&child);
     let mut input = serde_json::to_vec(request)?;
     input.push(b'\n');
     let mut stdin = child.stdin.take().ok_or("no standard input")?;
@@ -1201,6 +1202,7 @@ fn finish(paths: &Paths, host: &Host, setup: Setup, out: &mut dyn Write) -> Resu
             let mut prepared = apply::prepare(paths, host, password.as_deref())?;
             let (reader, writer) = std::io::pipe()?;
             let copy = writer.try_clone()?;
+            crate::runner::own_group(&mut prepared.command);
             let mut child = prepared
                 .command
                 .stdin(Stdio::null())
@@ -1208,6 +1210,7 @@ fn finish(paths: &Paths, host: &Host, setup: Setup, out: &mut dyn Write) -> Resu
                 .stderr(copy)
                 .spawn()
                 .map_err(|error| format!("ansible-playbook: {error}"))?;
+            let _group = crate::runner::watch(&child);
             // The command holds the pipe's other ends; they close when it is dropped.
             drop(prepared.command);
             for line in std::io::BufReader::new(reader).lines() {

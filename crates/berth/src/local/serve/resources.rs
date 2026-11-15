@@ -251,6 +251,10 @@ async fn run_action(
         });
     }
     let mut request = Request::new(kept.subject(), &action);
+    request.role = resource::actions(&state.paths, &store(&state), &kept)
+        .iter()
+        .find(|known| known.name == action)
+        .map_or(berth_api::ops::Role::Admin, |known| known.role);
     request.host = kept.record.host.clone();
     request.token = token;
     request.held = acting.take_lock();

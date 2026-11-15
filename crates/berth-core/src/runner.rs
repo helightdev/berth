@@ -12,16 +12,130 @@
 //! has forgotten the session.
 
 use crate::{Result, paths::Paths, profiles::Place, store};
+use berth_api::ops::Role;
 use serde_json::Value;
 use std::{
+    cell::RefCell,
+    collections::HashMap,
     fs,
     io::{Read, Write},
-    os::unix::fs::OpenOptionsExt,
+    os::unix::{fs::OpenOptionsExt, process::CommandExt},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+
+// ── Stopping a job ──────────────────────────────────────────────────────────
+
+/// How long a stopped job's programs have to end after SIGTERM before
+/// they are killed.
+const GRACE: Duration = Duration::from_secs(10);
+
+/// What stops a running job: the process groups its programs run in, and
+/// who asked it to stop.
+#[derive(Default)]
+pub struct Stop {
+    by: Mutex<Option<String>>,
+    groups: Mutex<Vec<u32>>,
+}
+
+impl Stop {
+    /// Who asked the job to stop, once someone has.
+    pub fn asked(&self) -> Option<String> {
+        self.by.lock().unwrap().clone()
+    }
+
+    fn signal(&self, signal: i32) {
+        for group in self.groups.lock().unwrap().iter() {
+            // SAFETY: a signal to a process group of this job's, by number.
+            unsafe {
+                libc::kill(-(*group as i32), signal);
+            }
+        }
+    }
+
+    /// Ask for the stop: its programs get SIGTERM, and SIGKILL when they
+    /// outlast the grace. Says whether this was the first to ask.
+    fn request(self: &Arc<Self>, by: &str) -> bool {
+        {
+            let mut asked = self.by.lock().unwrap();
+            if asked.is_some() {
+                return false;
+            }
+            *asked = Some(by.to_owned());
+        }
+        self.signal(libc::SIGTERM);
+        let stop = self.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(GRACE);
+            stop.signal(libc::SIGKILL);
+        });
+        true
+    }
+}
+
+thread_local! {
+    /// The stop of the job this thread runs, when it runs one.
+    static CURRENT: RefCell<Option<Arc<Stop>>> = const { RefCell::new(None) };
+}
+
+/// Who asked the job this thread runs to stop, for work that looks
+/// between its steps.
+pub fn stopped() -> Option<String> {
+    CURRENT.with(|current| current.borrow().as_ref().and_then(|stop| stop.asked()))
+}
+
+/// Give a program a process group of its own when this thread runs a job,
+/// so that stopping the job ends it with what it started. A program of a
+/// berth that keeps no jobs stays in the terminal's group.
+pub fn own_group(command: &mut Command) {
+    if CURRENT.with(|current| current.borrow().is_some()) {
+        command.process_group(0);
+    }
+}
+
+/// A program of a job, ended with the job when it is stopped, for as long
+/// as this is held.
+pub struct Group(Option<(Arc<Stop>, u32)>);
+
+impl Drop for Group {
+    fn drop(&mut self) {
+        if let Some((stop, pid)) = self.0.take() {
+            stop.groups.lock().unwrap().retain(|known| *known != pid);
+        }
+    }
+}
+
+/// Have a program started with [`own_group`] stopped with the job this
+/// thread runs. One started after the stop was asked for is ended at once.
+pub fn watch(child: &Child) -> Group {
+    let Some(stop) = CURRENT.with(|current| current.borrow().clone()) else {
+        return Group(None);
+    };
+    let pid = child.id();
+    stop.groups.lock().unwrap().push(pid);
+    if stop.asked().is_some() {
+        // SAFETY: a signal to the process group of the program just started.
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGTERM);
+        }
+    }
+    Group(Some((stop, pid)))
+}
+
+/// What came of asking a job to stop.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Stopping {
+    /// It is being stopped now.
+    Asked,
+    /// Someone asked before; it is ending.
+    AskedBefore(String),
+    /// It has ended already.
+    Ended,
+    /// No job of that id runs in this process: it ran elsewhere or never was.
+    NotHere,
+}
 
 /// What a job is done to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -275,6 +389,10 @@ impl Drop for Output<'_> {
 /// server's link and a test's double are each one.
 pub trait Controller: Send {
     fn get(&mut self, path: &str) -> std::result::Result<Value, String>;
+    /// End a session on the host, for a job that is stopped.
+    fn stop(&mut self, _id: &str) -> std::result::Result<(), String> {
+        Err("this controller cannot stop sessions".into())
+    }
 }
 
 /// A program and what it is given: its standard output and error are the
@@ -316,6 +434,8 @@ pub struct Request {
     pub held: Option<Lock>,
     /// Texts that never reach the output, such as a password the work is given.
     pub secrets: Vec<String>,
+    /// The role that may start it, which may also stop it.
+    pub role: Role,
 }
 
 impl Request {
@@ -332,6 +452,7 @@ impl Request {
             changes: true,
             held: None,
             secrets: vec![],
+            role: Role::Admin,
         }
     }
 
@@ -388,11 +509,13 @@ pub fn run_program(program: Program, out: &mut Output) -> Option<i32> {
         })
         .stdout(writer)
         .stderr(copy);
+    own_group(&mut command);
     let program_name = command.get_program().to_string_lossy().into_owned();
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => return fail(out, format!("{program_name}: {error}")),
     };
+    let _group = watch(&child);
     // The command holds the pipe's other ends; they close when it is dropped.
     drop(command);
     if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
@@ -416,7 +539,19 @@ pub fn run_program(program: Program, out: &mut Output) -> Option<i32> {
 /// Copy a session's output as it comes, until it has ended: its exit code.
 fn follow(mut controller: Box<dyn Controller>, id: &str, out: &mut Output) -> Option<i32> {
     let (mut since, mut answered) = (0u64, Instant::now());
+    let mut ending = false;
     loop {
+        // A stopped job ends its session on the host, and follows it to its end.
+        if !ending && let Some(by) = stopped() {
+            ending = true;
+            if let Err(error) = controller.stop(id) {
+                let _ = writeln!(
+                    out,
+                    "\n✗ Stopped by {by}, but the host did not end the session {id}: {error}"
+                );
+                return None;
+            }
+        }
         let asked = controller.get(&format!("/v1/sessions/{id}/output?since={since}"));
         let output: berth_api::Output = match asked
             .and_then(|value| serde_json::from_value(value).map_err(|error| error.to_string()))
@@ -454,6 +589,9 @@ fn follow(mut controller: Box<dyn Controller>, id: &str, out: &mut Output) -> Op
 
 // ── The runner ──────────────────────────────────────────────────────────────
 
+/// A running job's stop, with the role that may use it.
+type Stoppable = (Role, Arc<Stop>);
+
 /// Told of a job when it starts and when it ends.
 pub type Notify = Arc<dyn Fn(&store::Job) + Send + Sync>;
 
@@ -466,6 +604,8 @@ pub struct Runner {
     notify: Notify,
     /// The jobs this process runs now, which end with it.
     running: Arc<Mutex<Vec<store::Job>>>,
+    /// What stops each of them, with the role that may.
+    stops: Arc<Mutex<HashMap<String, Stoppable>>>,
 }
 
 /// Where an installation keeps the output of the jobs it runs.
@@ -517,7 +657,30 @@ impl Runner {
             jobs_dir,
             notify,
             running: Arc::default(),
+            stops: Arc::default(),
         }
+    }
+
+    /// The role that may stop a job this process runs.
+    pub fn stop_role(&self, id: &str) -> Option<Role> {
+        self.stops.lock().unwrap().get(id).map(|(role, _)| *role)
+    }
+
+    /// Stop a job this process runs, as `by` asks: its programs end, a
+    /// session of a host ends there, and its record says who stopped it.
+    pub fn stop(&self, id: &str, by: &str) -> Result<Stopping> {
+        let found = self.stops.lock().unwrap().get(id).cloned();
+        let Some((_, stop)) = found else {
+            return Ok(match self.store.job(id)? {
+                Some(job) if job.ended.is_some() => Stopping::Ended,
+                _ => Stopping::NotHere,
+            });
+        };
+        if !stop.request(by) {
+            return Ok(Stopping::AskedBefore(stop.asked().unwrap_or_default()));
+        }
+        self.store.stop_job(id, by)?;
+        Ok(Stopping::Asked)
     }
 
     /// The jobs that run in this process now, as they started.
@@ -561,6 +724,7 @@ impl Runner {
             subject,
             action,
             token: request.token.clone(),
+            stopped_by: None,
         };
         let job = self.store.add_job(&asked)?;
         // Another caller with the same token was first.
@@ -587,6 +751,7 @@ impl Runner {
             file,
             path,
             hidden: hidden(request.secrets.iter().map(String::as_str)),
+            role: request.role,
         }))
     }
 }
@@ -607,6 +772,7 @@ pub struct Ticket {
     file: fs::File,
     path: PathBuf,
     hidden: Vec<String>,
+    role: Role,
 }
 
 impl Ticket {
@@ -618,6 +784,12 @@ impl Ticket {
     pub fn run(self, work: Work) -> store::Job {
         let job = self.job.clone();
         self.runner.running.lock().unwrap().push(job.clone());
+        let stop = Arc::new(Stop::default());
+        self.runner
+            .stops
+            .lock()
+            .unwrap()
+            .insert(job.id.clone(), (self.role, stop.clone()));
         std::thread::spawn(move || {
             let Ticket {
                 runner,
@@ -626,13 +798,25 @@ impl Ticket {
                 mut file,
                 path,
                 hidden,
+                ..
             } = self;
-            let exit_code = {
+            CURRENT.with(|current| *current.borrow_mut() = Some(stop.clone()));
+            let mut exit_code = {
                 let mut out = Output::new(&mut file, hidden);
                 out.log = Some(path);
-                execute(work, &mut out)
+                let code = execute(work, &mut out);
+                // A stopped job says so last, and ends as one that was interrupted.
+                if let Some(by) = stop.asked() {
+                    let _ = writeln!(out, "✗ Stopped by {by}");
+                }
+                code
             };
+            CURRENT.with(|current| *current.borrow_mut() = None);
+            if stop.asked().is_some() {
+                exit_code = Some(130);
+            }
             drop(lock);
+            runner.stops.lock().unwrap().remove(&job.id);
             runner.end(&job.id, exit_code);
             runner
                 .running
@@ -884,6 +1068,48 @@ mod tests {
         let job = ended(&world, &job.id);
         assert_eq!(job.exit_code, None);
         assert!(log(&job).contains("/nonexistent/program"));
+    }
+
+    #[test]
+    fn a_stopped_job_ends_its_programs_and_says_who_stopped_it() {
+        let world = world();
+        // A program that starts another, which the stop ends as well.
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo started; sleep 30 & wait"]);
+        let work = Work::Program(Box::new(Program {
+            command,
+            input: None,
+            files: vec![],
+        }));
+        let mut request = Request::new(Subject::Host("studio".into()), "apply");
+        request.role = Role::Operate;
+        let job = world.runner.start(request, work).unwrap();
+        assert_eq!(world.runner.stop_role(&job.id), Some(Role::Operate));
+        for _ in 0..200 {
+            if fs::read_to_string(&job.output_path)
+                .unwrap_or_default()
+                .contains("started")
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let begun = Instant::now();
+        assert_eq!(world.runner.stop(&job.id, "ops").unwrap(), Stopping::Asked);
+        assert_eq!(
+            world.runner.stop(&job.id, "olga").unwrap(),
+            Stopping::AskedBefore("ops".into())
+        );
+        let ended = ended(&world, &job.id);
+        assert!(begun.elapsed() < GRACE, "it waited for the grace");
+        assert_eq!(ended.exit_code, Some(130));
+        assert_eq!(ended.stopped_by.as_deref(), Some("ops"));
+        assert!(log(&ended).contains("✗ Stopped by ops"), "{}", log(&ended));
+        assert_eq!(world.runner.stop(&job.id, "ops").unwrap(), Stopping::Ended);
+        assert_eq!(
+            world.runner.stop("jnothing", "ops").unwrap(),
+            Stopping::NotHere
+        );
     }
 
     /// A host's controller that has one session, whose output comes in pieces.

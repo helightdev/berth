@@ -448,6 +448,16 @@ impl Controller for Through {
             .block_on(link.get::<Value>(path))
             .map_err(|error| error.to_string())
     }
+
+    fn stop(&mut self, id: &str) -> Result<(), String> {
+        let link = self.remote.link.as_ref().ok_or("no link to the host")?;
+        // TERM, so the session ends as it would and its transcript stays.
+        let path = format!("/v1/sessions/{}/signal", client::encode(id));
+        self.runtime
+            .block_on(link.post::<Value>(&path, &json!({"signal": "TERM"})))
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
 }
 
 /// Run an action of the host as a session there, with `input` on its standard
@@ -482,6 +492,7 @@ async fn run_action(
     }
     let mut request = Request::new(Subject::Host(remote.name.clone()), &action.name);
     request.token = act.token;
+    request.role = action.role;
     // An action is the host's own session, and runs beside the others there.
     request.changes = false;
     // The job is written first, so that of the callers with one token only
