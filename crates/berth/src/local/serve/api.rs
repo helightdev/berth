@@ -412,7 +412,8 @@ async fn portal(
         asked.auth.allows(&access, op)?;
         Ok(berthd::portal::Target { op, prefix })
     });
-    ws.on_upgrade(move |socket| berthd::portal::run(socket, inner, resolve))
+    berthd::portal::upgrade(ws)
+        .on_upgrade(move |socket| berthd::portal::run(socket, inner, resolve))
 }
 
 #[derive(Serialize, ToSchema)]

@@ -1509,3 +1509,50 @@ async fn a_node_says_it_is_one_and_what_its_features_offer() {
     let version: api::Version = host.get("/v1/version").await.unwrap();
     assert_eq!(version.host_type, Some(api::HostType::Workstation));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_floods_its_portal_does_not_stop_berthd() {
+    use berth_api::portal::Portal;
+    let daemon = Daemon::start(&[]);
+    let (mut sink, mut source) = daemon.stream("agent", "/v1/portal").await.split();
+    // A long name it sends is not sent back.
+    let name = "x".repeat(60_000);
+    sink.send(Frame::Text(json!({"id": 0, "op": name}).to_string().into()))
+        .await
+        .unwrap();
+    let back = loop {
+        if let Some(Ok(Frame::Text(text))) = source.next().await {
+            break text.to_string();
+        }
+    };
+    assert!(back.len() < 300, "{back}");
+    assert!(back.contains("\"code\":\"bad_request\""), "{back}");
+    // It sends calls and never reads their answers.
+    let flood = tokio::spawn(async move {
+        for id in 1..200_000u64 {
+            let frame = json!({"id": id, "op": "no-such-operation"}).to_string();
+            if sink.send(Frame::Text(frame.into())).await.is_err() {
+                break;
+            }
+        }
+        sink
+    });
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Every other caller is answered meanwhile, the agent's other portals too.
+    for level in ["agent", "control"] {
+        let portal = Portal::over(daemon.stream(level, "/v1/portal").await);
+        let version = tokio::time::timeout(
+            Duration::from_secs(10),
+            portal.call("version", None, Value::Null, None),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(version["version"], api::VERSION, "{version}");
+    }
+    let mut host = daemon.host().await;
+    let version: api::Version = host.get("/v1/version").await.unwrap();
+    assert_eq!(version.version, api::VERSION);
+    flood.abort();
+    drop(source);
+}

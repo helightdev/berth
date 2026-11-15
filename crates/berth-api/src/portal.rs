@@ -9,7 +9,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicUsize, Ordering},
     },
     task::{Context, Poll},
 };
@@ -27,7 +27,8 @@ pub enum Piece {
 }
 
 enum Event {
-    Piece(Piece),
+    /// A frame, with the bytes it counts as unread.
+    Piece(Piece, usize),
     End(Option<Error>),
 }
 
@@ -38,6 +39,43 @@ pub const WINDOW: u32 = 256 * 1024;
 
 /// The least and the most window a server takes.
 pub const WINDOWS: (u32, u32) = (16 * 1024, 4 << 20);
+
+/// The most bytes of one message on the portal: an operation's bytes as
+/// base64, and room for the rest of the frame.
+pub const FRAME_BYTES: usize = crate::ops::PORTAL_BYTES / 3 * 4 + (1 << 20);
+
+/// The most bytes a server holds for one portal's calls in flight, their
+/// answers until they are written, and input waiting for its stream.
+pub const HELD_BYTES: usize = 64 << 20;
+
+/// The most calls in flight on one portal.
+pub const CALLS: usize = 256;
+
+/// The most streams open on one portal.
+pub const STREAMS: usize = 256;
+
+/// The most bytes of a stream a client holds that it has not read yet. A
+/// server within the window sends far less; one that sends more ends the
+/// stream.
+pub const UNREAD_BYTES: usize = 16 << 20;
+
+/// The longest name of an operation a server takes.
+pub const NAME_BYTES: usize = 128;
+
+/// The longest message of an error a server sends back.
+pub const MESSAGE_BYTES: usize = 2048;
+
+/// A message cut to [`MESSAGE_BYTES`], at a character.
+pub fn shorten(message: &str) -> String {
+    if message.len() <= MESSAGE_BYTES {
+        return message.to_owned();
+    }
+    let mut end = MESSAGE_BYTES - 3;
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &message[..end])
+}
 
 /// What one side of a stream may still send, by what the other side said it
 /// took. Without a window it may always send.
@@ -124,6 +162,8 @@ impl Taken {
 struct Open {
     frames: mpsc::UnboundedSender<Event>,
     credit: Arc<Credit>,
+    /// Bytes of its frames that are not read yet.
+    unread: Arc<AtomicUsize>,
 }
 
 #[derive(Default)]
@@ -198,21 +238,20 @@ impl Portal {
             let _ = sink.close().await;
         });
         let reader = shared.clone();
+        let answer = out.clone();
         tokio::spawn(async move {
             let reason = loop {
                 match source.next().await {
                     Some(Ok(Message::Text(text))) => {
+                        let size = text.len();
                         if let Ok(frame) = serde_json::from_str::<Value>(text.as_str()) {
-                            reader.take(frame);
+                            reader.take(frame, size, &answer);
                         }
                     }
                     Some(Ok(Message::Binary(bytes))) => {
-                        if let Some((id, bytes)) = untagged(&bytes)
-                            && let Some(stream) = reader.streams.lock().unwrap().get(&id)
-                        {
-                            let _ = stream
-                                .frames
-                                .send(Event::Piece(Piece::Binary(bytes.to_vec())));
+                        if let Some((id, bytes)) = untagged(&bytes) {
+                            let piece = Piece::Binary(bytes.to_vec());
+                            reader.give(id, piece, bytes.len(), &answer);
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break "The connection closed".to_owned(),
@@ -291,6 +330,7 @@ impl Portal {
     pub async fn open(&self, op: &str, host: Option<&str>, args: Value) -> Result<PortalStream> {
         let (frames, incoming) = mpsc::unbounded_channel();
         let credit = Arc::new(Credit::default());
+        let unread = Arc::new(AtomicUsize::new(0));
         let (id, waiting) = {
             // Registered before the request leaves, so no frame can come too early.
             let mut streams = self.shared.streams.lock().unwrap();
@@ -298,6 +338,7 @@ impl Portal {
             let open = Open {
                 frames,
                 credit: credit.clone(),
+                unread: unread.clone(),
             };
             streams.insert(id, open);
             (id, waiting)
@@ -327,6 +368,7 @@ impl Portal {
             ended: false,
             credit,
             taken: Taken::new(window),
+            unread,
         })
     }
 
@@ -361,7 +403,28 @@ impl Portal {
 }
 
 impl Shared {
-    fn take(&self, frame: Value) {
+    /// A frame of the stream `id`, unless the server sent it more than the
+    /// client holds unread, which ends the stream.
+    fn give(&self, id: u32, piece: Piece, size: usize, out: &mpsc::UnboundedSender<Message>) {
+        let mut streams = self.streams.lock().unwrap();
+        let Some(stream) = streams.get(&id) else {
+            return;
+        };
+        let size = size.max(1);
+        if stream.unread.fetch_add(size, Ordering::SeqCst) + size <= UNREAD_BYTES {
+            let _ = stream.frames.send(Event::Piece(piece, size));
+            return;
+        }
+        if let Some(stream) = streams.remove(&id) {
+            let _ = stream.frames.send(Event::End(Some(Error::Transport(format!(
+                "The server sent more than {UNREAD_BYTES} bytes of the stream that were not read yet"
+            )))));
+            let end = json!({"sub": id, "end": true}).to_string();
+            let _ = out.send(Message::Text(end.into()));
+        }
+    }
+
+    fn take(&self, frame: Value, size: usize, out: &mpsc::UnboundedSender<Message>) {
         if let Some(id) = frame["id"].as_u64() {
             if let Some(call) = self.calls.lock().unwrap().remove(&(id as u32)) {
                 let _ = call.send(match frame.get("error") {
@@ -383,7 +446,8 @@ impl Shared {
                     Some(bytes) => stream.credit.grant(bytes),
                     None => {
                         let piece = Piece::Text(frame["data"].clone());
-                        let _ = stream.frames.send(Event::Piece(piece));
+                        drop(streams);
+                        self.give(id, piece, size, out);
                     }
                 }
             }
@@ -402,6 +466,8 @@ pub struct PortalStream {
     credit: Arc<Credit>,
     /// What this side took and has not said yet.
     taken: Taken,
+    /// Bytes of its frames that came and are not read yet.
+    unread: Arc<AtomicUsize>,
 }
 
 impl PortalStream {
@@ -415,7 +481,8 @@ impl PortalStream {
             return Poll::Ready(None);
         }
         match self.incoming.poll_recv(cx) {
-            Poll::Ready(Some(Event::Piece(piece))) => {
+            Poll::Ready(Some(Event::Piece(piece, size))) => {
+                self.unread.fetch_sub(size, Ordering::SeqCst);
                 if let Piece::Binary(bytes) = &piece
                     && let Some(credit) = self.taken.took(self.id, bytes.len())
                 {
@@ -524,5 +591,72 @@ impl Sink<Message> for PortalStream {
         _: &mut Context<'_>,
     ) -> Poll<std::result::Result<(), WsError>> {
         Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_server_that_floods_a_stream_ends_it() {
+        let (ours, theirs) = tokio::io::duplex(1 << 20);
+        let client = WebSocketStream::from_raw_socket(ours, Role::Client, None).await;
+        let mut server = WebSocketStream::from_raw_socket(theirs, Role::Server, None).await;
+        let portal = Portal::over(client);
+        let serving = tokio::spawn(async move {
+            let asked = loop {
+                if let Some(Ok(Message::Text(text))) = server.next().await {
+                    break serde_json::from_str::<Value>(text.as_str()).unwrap();
+                }
+            };
+            let id = asked["id"].as_u64().unwrap() as u32;
+            let opened = json!({"id": id, "result": {"open": true, "window": WINDOWS.0}});
+            server
+                .send(Message::Text(opened.to_string().into()))
+                .await
+                .unwrap();
+            // Far past its window, and past what the client holds unread.
+            let chunk = vec![1u8; 64 * 1024];
+            for _ in 0..(UNREAD_BYTES / chunk.len() + 8) {
+                if server
+                    .send(Message::Binary(tagged(id, &chunk).into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            // The client says it ended the stream.
+            loop {
+                match server.next().await {
+                    Some(Ok(Message::Text(text))) => {
+                        let frame: Value = serde_json::from_str(text.as_str()).unwrap();
+                        if frame["end"] == json!(true) {
+                            return (frame, server);
+                        }
+                    }
+                    Some(Ok(_)) => {}
+                    other => panic!("{other:?}"),
+                }
+            }
+        });
+        let mut stream = portal.open("flood", None, Value::Null).await.unwrap();
+        let (ended, _server) = serving.await.unwrap();
+        assert_eq!(ended["sub"], json!(stream.id));
+        let mut read = 0;
+        let error = loop {
+            match stream.recv().await {
+                Some(Ok(Piece::Binary(bytes))) => read += bytes.len(),
+                Some(Ok(Piece::Text(_))) => {}
+                Some(Err(error)) => break error,
+                None => panic!("it ended without an error"),
+            }
+        };
+        assert!(read <= UNREAD_BYTES, "{read}");
+        assert!(error.to_string().contains("not read yet"), "{error}");
+        // The portal itself goes on.
+        assert!(portal.usable());
     }
 }

@@ -153,7 +153,7 @@ async fn portal(
     upgrade: axum::extract::ws::WebSocketUpgrade,
 ) -> Response {
     let inner = router(state).layer(Extension(caller));
-    upgrade.on_upgrade(move |socket| {
+    crate::portal::upgrade(upgrade).on_upgrade(move |socket| {
         crate::portal::run(socket, inner, crate::portal::host_operations())
     })
 }
