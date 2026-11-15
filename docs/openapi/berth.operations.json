@@ -209,6 +209,17 @@
               "$ref": "#/components/schemas/AppliedPlugin"
             },
             "type": "array"
+          },
+          "tailnet": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TailnetDevice",
+                "description": "The host's device on the tailnet, as its Tailscale client saw it at\nthe end of the apply, when it is on one."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -247,7 +258,15 @@
             "description": "A command whose lines are the values to offer.",
             "type": "string"
           },
+          "confirm": {
+            "description": "For a yes or no: the question to answer yes to before the action\nruns with it on, instead of the action's own.",
+            "type": "string"
+          },
           "default": {
+            "type": "string"
+          },
+          "fixed": {
+            "description": "Why it keeps its default here and cannot be given another value,\nsuch as destroying a machine no provisioner made. The screens show\nit greyed and say this instead of changing it. Empty when it can be\nchanged.",
             "type": "string"
           },
           "help": {
@@ -255,7 +274,7 @@
             "type": "string"
           },
           "kind": {
-            "description": "`resource` for an argument of a provisioner that sizes the machine:\nits CPUs, memory or disk. `text` for one whose value has several\nlines. Empty for any other argument.",
+            "description": "`resource` for an argument of a provisioner that sizes the machine:\nits CPUs, memory or disk. `text` for one whose value has several\nlines. `boolean` for a yes or no, which the screens show as a switch.\nEmpty for any other argument.",
             "type": "string"
           },
           "label": {
@@ -2424,6 +2443,38 @@
         ],
         "type": "object"
       },
+      "TailnetDevice": {
+        "description": "A host's device on the tailnet, from `tailscale status --json`. It\nholds public values only, which the control server's API finds it by.",
+        "properties": {
+          "addresses": {
+            "description": "Its addresses on the tailnet.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "dns_name": {
+            "description": "Its MagicDNS name, such as `studio.example.ts.net`, without the final dot.",
+            "type": "string"
+          },
+          "host_name": {
+            "description": "The machine's own hostname, as the client reports it.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The device's stable id: Tailscale's `nodeId`, or the number of\nHeadscale's node.",
+            "type": "string"
+          },
+          "tailnet": {
+            "description": "The tailnet's name, when the client knows it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
       "Version": {
         "properties": {
           "api": {
@@ -2445,6 +2496,10 @@
           "mode": {
             "description": "`system` or `single`.",
             "type": "string"
+          },
+          "simulated": {
+            "description": "Whether it is simulated, as `berth serve --simulate` and its hosts\nare: nothing it does reaches a real machine.",
+            "type": "boolean"
           },
           "type": {
             "oneOf": [
@@ -4254,11 +4309,45 @@
     {
       "args": [
         {
+          "description": "Only the jobs of this subject: `host:NAME`, `provisioner:NAME`, `resource:ID` or `installation`.",
+          "header": null,
+          "in": "query",
+          "name": "subject",
+          "required": false
+        },
+        {
+          "description": "Only the jobs about this host, alone or among others, as a roll-out is.",
+          "header": null,
+          "in": "query",
+          "name": "host",
+          "required": false
+        },
+        {
+          "description": "Only the jobs that have not ended, or with `false` only those that have.",
+          "header": null,
+          "in": "query",
+          "name": "running",
+          "required": false
+        },
+        {
+          "description": "Only the jobs that started before the job of this id: the next page after it.",
+          "header": null,
+          "in": "query",
+          "name": "before",
+          "required": false
+        },
+        {
           "description": "At most this many (default 100, at most 1,000).",
           "header": null,
           "in": "query",
           "name": "limit",
           "required": false
+        }
+      ],
+      "errors": [
+        {
+          "description": "`before` names no job",
+          "status": "404"
         }
       ],
       "group": "jobs",

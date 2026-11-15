@@ -233,6 +233,13 @@ pub(crate) fn values_of(
             .or_else(|| settings.get(&argument.name))
             .cloned()
             .unwrap_or_else(|| argument.default.clone());
+        // A yes or no is taken in any of its spellings, as the value it declares.
+        let value = match argument.is_boolean() && !value.trim().is_empty() {
+            true => argument
+                .read_switch(&value)
+                .map_err(|error| format!("{name}: {error}"))?,
+            false => value,
+        };
         if argument.required && value.is_empty() {
             return Err(format!("{name} needs {}=VALUE", argument.name).into());
         }
@@ -2244,8 +2251,22 @@ print(out)
         assert_eq!(of(&none, &given("yes")).unwrap()["keep_volume"], "yes");
         let kept = given("yes");
         assert_eq!(of(&given("no"), &kept).unwrap()["keep_volume"], "no");
+        // A yes or no is taken in any spelling, as the value declared.
+        assert_eq!(of(&given("TRUE"), &none).unwrap()["keep_volume"], "yes");
+        assert_eq!(of(&given("off"), &none).unwrap()["keep_volume"], "no");
         let said = of(&given("maybe"), &none).unwrap_err().to_string();
-        assert_eq!(said, "lab/box takes keep_volume=no or yes only");
+        assert_eq!(
+            said,
+            "lab/box: keep_volume is yes or no (or true/false, on/off, 1/0), not maybe"
+        );
+        let restart = [berth_api::Argument {
+            name: "restart".into(),
+            values: vec!["no".into(), "always".into()],
+            ..Default::default()
+        }];
+        let given = BTreeMap::from([("restart".to_owned(), "yes".to_owned())]);
+        let said = values_of("lab/box", &restart, &given, &none).unwrap_err();
+        assert_eq!(said.to_string(), "lab/box takes restart=no or always only");
     }
 
     #[test]

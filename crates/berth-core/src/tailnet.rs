@@ -11,9 +11,21 @@
 //! - `tailnet_tags`: tags for new hosts, comma separated
 //! - the secret `tailnet_api_key`: a Tailscale API access token, a Tailscale
 //!   OAuth client as `CLIENT_ID:CLIENT_SECRET`, or a Headscale API key
+//!
+//! The same key looks after the hosts' devices: each apply records the
+//! device's id in the store, destroying a host's machine deletes its device,
+//! and the next apply after a rename with the hostname renames it.
 
-use crate::{Result, paths::Paths, registry::Store};
+use crate::{
+    Result,
+    paths::Paths,
+    profiles::Place,
+    registry::Store,
+    store::{self, kind},
+};
+use berth_api::TailnetDevice;
 use berth_api::profile::{self, TAILNET_API_KEY};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     io::Write,
@@ -145,6 +157,9 @@ impl Control {
     /// Why berth cannot create keys at this control server, if it cannot.
     /// Only what berth knows without asking the server.
     pub fn problem(&self) -> Option<String> {
+        if crate::simulate::active().is_some() {
+            return None;
+        }
         let credential = match &self.credential {
             Ok(credential) => credential,
             Err(why) => return Some(why.clone()),
@@ -170,22 +185,175 @@ impl Control {
 
     /// A new pre-approved key that joins one host, once, within `lifetime` seconds.
     pub fn create_key(&self, description: &str, lifetime: u64) -> Result<String> {
+        // A simulated server's keys join nothing.
+        if crate::simulate::active().is_some() {
+            return Ok(format!(
+                "tskey-auth-simulated-{}",
+                crate::provision::new_token()?
+            ));
+        }
         if let Some(problem) = self.problem() {
             return Err(problem.into());
         }
+        let login = self.login()?;
+        match &self.headscale {
+            Some(url) => self.headscale_key(url, &login, lifetime),
+            None => self.tailscale_key(&login, description, lifetime),
+        }
+    }
+
+    /// How curl logs in to the API: a line of its configuration. An OAuth
+    /// client is exchanged for an access token first.
+    fn login(&self) -> Result<String> {
         let credential = self.credential.as_ref().map_err(String::clone)?;
         match (&self.headscale, credential) {
-            (Some(url), Credential::Token(token)) => self.headscale_key(url, token, lifetime),
-            (None, Credential::Token(token)) => {
-                self.tailscale_key(&format!("user = \"{token}:\""), description, lifetime)
+            (Some(_), Credential::Token(token)) => {
+                Ok(format!("header = \"Authorization: Bearer {token}\""))
             }
+            // The access token is the user name of HTTP basic authentication.
+            (None, Credential::Token(token)) => Ok(format!("user = \"{token}:\"")),
             (None, Credential::Client { id, secret }) => {
                 let token = self.exchange(id, secret)?;
-                let login = format!("header = \"Authorization: Bearer {token}\"");
-                self.tailscale_key(&login, description, lifetime)
+                Ok(format!("header = \"Authorization: Bearer {token}\""))
             }
             (Some(_), Credential::Client { .. }) => Err("Headscale has no OAuth clients".into()),
         }
+    }
+
+    /// Why berth cannot change devices at this control server, if it cannot:
+    /// that needs the key alone, not the user or tags of new hosts.
+    pub fn device_problem(&self) -> Option<String> {
+        match (&self.headscale, &self.credential) {
+            (_, Err(why)) => Some(why.clone()),
+            (Some(_), Ok(Credential::Client { .. })) => Some(format!(
+                "Headscale has no OAuth clients: the secret {TAILNET_API_KEY} is one of its API keys (headscale apikeys create)"
+            )),
+            _ => None,
+        }
+    }
+
+    /// What the key needs to change devices, for a message after a refusal.
+    fn permission(&self) -> String {
+        match (&self.headscale, &self.credential) {
+            (Some(_), _) => "Every Headscale API key may do this, so check that the key has not expired: headscale apikeys list".into(),
+            (None, Ok(Credential::Client { .. })) => format!(
+                "The OAuth client in {TAILNET_API_KEY} needs the devices:core scope, besides auth_keys"
+            ),
+            (None, _) => format!(
+                "An API access token in {TAILNET_API_KEY} has the permissions of the user who made it, who has to be allowed to manage the tailnet's devices. An OAuth client with the scopes auth_keys and devices:core needs no user"
+            ),
+        }
+    }
+
+    /// Remove the device with this id from the tailnet: `Ok(false)` when
+    /// there is no such device.
+    pub fn delete_device(&self, id: &str) -> Result<bool> {
+        let id = device_id(id)?;
+        let url = match &self.headscale {
+            Some(url) => format!("{url}/api/v1/node/{id}"),
+            None => format!("{}/api/v2/device/{id}", self.tailscale_api),
+        };
+        let (status, reply) = request("DELETE", &url, &self.login()?, None)?;
+        self.done(status, &reply, "remove the device")
+    }
+
+    /// Give the device with this id another name on the tailnet: `Ok(false)`
+    /// when there is no such device.
+    pub fn rename_device(&self, id: &str, name: &str) -> Result<bool> {
+        let id = device_id(id)?;
+        if !device_name(name) {
+            return Err(format!("{name} is no name for a device on the tailnet").into());
+        }
+        let login = self.login()?;
+        let (status, reply) = match &self.headscale {
+            Some(url) => request(
+                "POST",
+                &format!("{url}/api/v1/node/{id}/rename/{name}"),
+                &login,
+                Some(Body::Json(json!({}))),
+            )?,
+            None => request(
+                "POST",
+                &format!("{}/api/v2/device/{id}/name", self.tailscale_api),
+                &login,
+                Some(Body::Json(json!({"name": name}))),
+            )?,
+        };
+        self.done(status, &reply, "rename the device")
+    }
+
+    /// Whether a change of a device was done, was of no device, or was refused.
+    fn done(&self, status: u16, reply: &Value, what: &str) -> Result<bool> {
+        let not_found = status == 404
+            || reply["message"]
+                .as_str()
+                .is_some_and(|message| message.to_ascii_lowercase().contains("not found"));
+        match status {
+            200..=299 => Ok(true),
+            _ if not_found => Ok(false),
+            401 | 403 => Err(format!(
+                "{}. {}",
+                refused_to(&self.name(), what, status, reply),
+                self.permission()
+            )
+            .into()),
+            _ => Err(refused_to(&self.name(), what, status, reply)),
+        }
+    }
+
+    /// The devices on the tailnet, as berth compares them with a host.
+    pub fn devices(&self) -> Result<Vec<TailnetDevice>> {
+        let login = self.login()?;
+        let (url, list, field) = match &self.headscale {
+            Some(url) => (format!("{url}/api/v1/node"), "nodes", "id"),
+            None => (
+                format!("{}/api/v2/tailnet/-/devices", self.tailscale_api),
+                "devices",
+                "nodeId",
+            ),
+        };
+        let (status, reply) = call(&url, &login, None)?;
+        if status != 200 {
+            let refused = refused_to(&self.name(), "list the devices", status, &reply);
+            return Err(match status {
+                401 | 403 => format!("{refused}. {}", self.permission()).into(),
+                _ => refused,
+            });
+        }
+        let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
+        let found = reply[list].as_array().cloned().unwrap_or_default();
+        Ok(found
+            .iter()
+            .map(|device| {
+                let (dns_name, host_name, addresses) = match self.headscale {
+                    // Headscale's name for the node on the tailnet is its given name.
+                    Some(_) => (
+                        text(&device["givenName"]),
+                        text(&device["name"]),
+                        &device["ipAddresses"],
+                    ),
+                    None => (
+                        text(&device["name"]).trim_end_matches('.').to_owned(),
+                        text(&device["hostname"]),
+                        &device["addresses"],
+                    ),
+                };
+                let id = match text(&device[field]) {
+                    id if id.is_empty() => text(&device["id"]),
+                    id => id,
+                };
+                TailnetDevice {
+                    id,
+                    dns_name,
+                    host_name,
+                    addresses: addresses
+                        .as_array()
+                        .map(|all| all.iter().map(text).collect())
+                        .unwrap_or_default(),
+                    tailnet: String::new(),
+                }
+            })
+            .collect())
     }
 
     /// An access token for an OAuth client, by the client credentials grant.
@@ -248,8 +416,7 @@ impl Control {
         }
     }
 
-    fn headscale_key(&self, url: &str, token: &str, lifetime: u64) -> Result<String> {
-        let login = format!("header = \"Authorization: Bearer {token}\"");
+    fn headscale_key(&self, url: &str, login: &str, lifetime: u64) -> Result<String> {
         let mut request = json!({
             "reusable": false,
             "ephemeral": false,
@@ -266,7 +433,7 @@ impl Control {
             }
             user => {
                 let lookup = format!("{url}/api/v1/user?name={}", query(user));
-                let (status, reply) = call(&lookup, &login, None)?;
+                let (status, reply) = call(&lookup, login, None)?;
                 if status != 200 {
                     return Err(refused("Headscale", status, &reply));
                 }
@@ -280,7 +447,7 @@ impl Control {
         }
         let (status, reply) = call(
             &format!("{url}/api/v1/preauthkey"),
-            &login,
+            login,
             Some(Body::Json(request)),
         )?;
         match reply["preAuthKey"]["key"].as_str() {
@@ -291,12 +458,35 @@ impl Control {
 }
 
 fn refused(who: &str, status: u16, reply: &Value) -> Box<dyn std::error::Error> {
+    refused_to(who, "create a key", status, reply)
+}
+
+fn refused_to(who: &str, what: &str, status: u16, reply: &Value) -> Box<dyn std::error::Error> {
     let reason = match (reply["message"].as_str(), reply.as_str()) {
         (Some(message), _) => message.to_owned(),
         (None, Some(text)) if !text.trim().is_empty() => text.trim().chars().take(200).collect(),
         _ => "no reason given".into(),
     };
-    format!("{who} refused to create a key (HTTP {status}): {reason}").into()
+    format!("{who} refused to {what} (HTTP {status}): {reason}").into()
+}
+
+/// Whether a name can be a device's on the tailnet, and a part of a path: a
+/// DNS label of lower-case letters, digits and `-`.
+fn device_name(name: &str) -> bool {
+    (1..=63).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && !name.starts_with('-')
+        && !name.ends_with('-')
+}
+
+/// A device's id as it goes into a path: letters and digits only.
+fn device_id(id: &str) -> Result<&str> {
+    match !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        true => Ok(id),
+        false => Err(format!("{id:?} is not the id of a device on the tailnet").into()),
+    }
 }
 
 fn query(text: &str) -> String {
@@ -320,6 +510,18 @@ enum Body {
 /// login is a line of curl's configuration, given on its standard input, and
 /// the body is a private file, so neither appears in the process list.
 fn call(url: &str, login: &str, body: Option<Body>) -> Result<(u16, Value)> {
+    let method = match body {
+        Some(_) => "POST",
+        None => "GET",
+    };
+    request(method, url, login, body)
+}
+
+/// [`call`] with another method than the one its body implies.
+fn request(method: &str, url: &str, login: &str, body: Option<Body>) -> Result<(u16, Value)> {
+    if crate::simulate::active().is_some() {
+        return Err("A simulated server reaches no tailnet".into());
+    }
     let mut file = tempfile::NamedTempFile::new()?;
     let mut command = Command::new("curl");
     command.args([
@@ -345,11 +547,12 @@ fn call(url: &str, login: &str, body: Option<Body>) -> Result<(u16, Value)> {
         };
         file.flush()?;
         command
-            .args(["--request", "POST", "--header"])
+            .arg("--header")
             .arg(format!("Content-Type: {kind}"))
             .arg("--data-binary")
             .arg(format!("@{}", file.path().display()));
     }
+    command.args(["--request", method]);
     let mut child = command
         .arg(url)
         .stdin(Stdio::piped())
@@ -501,6 +704,261 @@ pub fn apply_vars(paths: &Paths, config: &Value, host: &str, berth: &Path) -> Va
         None => vars["devbox_tailscale_key_command"] = json!([berth, "tailnet-key", host]),
     }
     vars
+}
+
+/// What berth keeps of a host's device on the tailnet, in the store with
+/// the host: what the last apply found, and the name a rename with the
+/// hostname gave it, which the next apply gives the device.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Kept {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<TailnetDevice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rename: Option<String>,
+}
+
+impl Kept {
+    /// What the store keeps of the host `name` in `scope`; nothing when it has nothing.
+    pub fn read(store: &store::Store, scope: &str, name: &str) -> Result<Kept> {
+        Ok(match store.read_json(kind::TAILNET, scope, name)? {
+            Some(value) => serde_json::from_value(value)
+                .map_err(|error| format!("The record of {name} on the tailnet: {error}"))?,
+            None => Kept::default(),
+        })
+    }
+
+    /// What the store keeps of the host at `place`.
+    pub fn of(paths: &Paths, place: &Place) -> Result<Kept> {
+        let (scope, name) = place.side();
+        Kept::read(store::shared(paths)?.as_ref(), &scope, &name)
+    }
+
+    fn save(&self, paths: &Paths, place: &Place) -> Result<()> {
+        let (scope, name) = place.side();
+        store::shared(paths)?.write_json(
+            kind::TAILNET,
+            &scope,
+            &name,
+            &serde_json::to_value(self)?,
+        )?;
+        Ok(())
+    }
+}
+
+/// A device for people: its MagicDNS name, or its id.
+fn label(device: &TailnetDevice) -> String {
+    match device.dns_name.as_str() {
+        "" => device.id.clone(),
+        name => name.to_owned(),
+    }
+}
+
+/// The devices of `devices` that can be the host of this profile: those at
+/// its address, or else those with its hostname, as its device's name or as
+/// the machine's own.
+fn matching<'a>(
+    devices: &'a [TailnetDevice],
+    config: &Value,
+    name: &str,
+) -> Vec<&'a TailnetDevice> {
+    let same = |one: &str, other: &str| {
+        let (one, other) = (one.trim_end_matches('.'), other.trim_end_matches('.'));
+        !one.is_empty() && one.eq_ignore_ascii_case(other)
+    };
+    let address = profile::Access::of(config).address;
+    let at: Vec<_> = devices
+        .iter()
+        .filter(|device| {
+            // Headscale lists a node's name without the tailnet's domain.
+            let short = !device.dns_name.contains('.')
+                && address.parse::<std::net::IpAddr>().is_err()
+                && address
+                    .split_once('.')
+                    .is_some_and(|(first, _)| same(first, &device.dns_name));
+            short
+                || same(&device.dns_name, &address)
+                || device.addresses.iter().any(|known| same(known, &address))
+        })
+        .collect();
+    if !at.is_empty() {
+        return at;
+    }
+    let hostname = config["hostname"]
+        .as_str()
+        .filter(|hostname| !hostname.is_empty())
+        .unwrap_or(name);
+    devices
+        .iter()
+        .filter(|device| same(device.name(), hostname) || same(&device.host_name, hostname))
+        .collect()
+}
+
+/// The device of a host berth has no record of, when exactly one device on
+/// the tailnet can be it; otherwise the line that says why berth does nothing.
+fn look_up(
+    control: &Control,
+    config: &Value,
+    name: &str,
+) -> std::result::Result<TailnetDevice, String> {
+    let devices = control.devices().map_err(|error| {
+        format!("! berth has no record of {name}'s device on the tailnet, and could not look for it: {error}. Remove it there if it is there")
+    })?;
+    match matching(&devices, config, name).as_slice() {
+        [device] => Ok((*device).clone()),
+        [] => Err(format!(
+            "berth has no record of {name}'s device on the tailnet, and none there has its address or hostname: nothing is removed"
+        )),
+        several => Err(format!(
+            "! berth has no record of {name}'s device on the tailnet, and {} devices there could be it: {}. It removes none of them: remove the right one there",
+            several.len(),
+            several
+                .iter()
+                .map(|device| label(device))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// After the machine of the host at `place` was destroyed: remove its
+/// device from the tailnet, the one the last apply recorded or the one
+/// that alone has the host's address or hostname. Says what it did, or why
+/// it did not; it never fails, as the machine is gone either way. `None`
+/// for a host that was never on the tailnet.
+pub fn remove_device(paths: &Paths, place: &Place, config: &Value) -> Option<String> {
+    remove_device_at(&Control::configured(paths), paths, place, config)
+}
+
+fn remove_device_at(
+    control: &Control,
+    paths: &Paths,
+    place: &Place,
+    config: &Value,
+) -> Option<String> {
+    let name = place.title();
+    let kept = match Kept::of(paths, place) {
+        Ok(kept) => kept,
+        Err(error) => return Some(format!("! {name}'s device on the tailnet stays: {error}")),
+    };
+    if kept.device.is_none() && !profile::joins_tailnet(config) {
+        return None;
+    }
+    let at = control.name();
+    if let Some(why) = control.device_problem() {
+        return Some(format!(
+            "! {name}'s device on the tailnet at {at} stays, as berth cannot remove it: {why}. Remove it there"
+        ));
+    }
+    let device = match kept.device {
+        Some(device) => device,
+        None => match look_up(control, config, &name) {
+            Ok(device) => device,
+            Err(line) => return Some(line),
+        },
+    };
+    let shown = label(&device);
+    Some(match control.delete_device(&device.id) {
+        Ok(true) => format!("✓ Removed {name}'s device {shown} from the tailnet at {at}"),
+        Ok(false) => format!("{name}'s device {shown} is not on the tailnet at {at} any more"),
+        Err(error) => {
+            format!("! {name}'s device {shown} stays on the tailnet: {error}. Remove it there")
+        }
+    })
+}
+
+/// A MagicDNS name with its first label replaced.
+fn renamed(dns_name: &str, to: &str) -> String {
+    match dns_name.split_once('.') {
+        Some((_, rest)) => format!("{to}.{rest}"),
+        None => to.to_owned(),
+    }
+}
+
+/// After an apply of `host` that joins the tailnet: keep the device it
+/// reported, and give the device the name a rename with the hostname asked
+/// for, now that the machine has that hostname. A profile that reaches the
+/// host by the device's old name is given the new one. Says what it did, a
+/// line each.
+pub fn after_apply(
+    paths: &Paths,
+    host: &crate::host::Host,
+    reported: Option<TailnetDevice>,
+) -> Result<Vec<String>> {
+    after_apply_at(&Control::configured(paths), paths, host, reported)
+}
+
+fn after_apply_at(
+    control: &Control,
+    paths: &Paths,
+    host: &crate::host::Host,
+    reported: Option<TailnetDevice>,
+) -> Result<Vec<String>> {
+    let name = &host.name;
+    let mut kept = Kept::of(paths, &host.place)?;
+    let Some(mut device) = reported else {
+        return Ok(match &kept.rename {
+            Some(to) => vec![format!(
+                "! {name} did not say which device it is on the tailnet, so its device is named {to} at a later apply"
+            )],
+            None => vec![],
+        });
+    };
+    let mut lines = vec![];
+    if let Some(to) = kept.rename.clone() {
+        let old = label(&device);
+        if device.name() == to {
+            kept.rename = None;
+        } else if let Some(why) = control.device_problem() {
+            lines.push(format!(
+                "! {name}'s device on the tailnet is still {old}, as berth cannot rename it: {why}. berth renames it at the next apply"
+            ));
+        } else {
+            match control.rename_device(&device.id, &to) {
+                Ok(true) => {
+                    let was = device.dns_name.clone();
+                    device.dns_name = renamed(&was, &to);
+                    kept.rename = None;
+                    lines.push(format!(
+                        "✓ Renamed {name}'s device on the tailnet from {old} to {}",
+                        label(&device)
+                    ));
+                    if let Some(line) = follow(paths, host, &was, &device.dns_name)? {
+                        lines.push(line);
+                    }
+                }
+                Ok(false) => lines.push(format!(
+                    "! {name}'s device {old} is not on the tailnet at {} any more, so berth renames it at the next apply",
+                    control.name()
+                )),
+                Err(error) => lines.push(format!(
+                    "! {name}'s device on the tailnet is still {old}: {error}. berth renames it at the next apply"
+                )),
+            }
+        }
+    }
+    kept.device = Some(device);
+    kept.save(paths, &host.place)?;
+    Ok(lines)
+}
+
+/// Reach the host by the device's new name when its profile named the old
+/// one, the whole MagicDNS name or its first label.
+fn follow(paths: &Paths, host: &crate::host::Host, was: &str, now: &str) -> Result<Option<String>> {
+    let Some(mut config) = host.place.load(paths)? else {
+        return Ok(None);
+    };
+    let address = profile::Access::of(&config).address;
+    let short = |name: &str| name.split('.').next().unwrap_or_default().to_owned();
+    let new = if !was.is_empty() && address.trim_end_matches('.').eq_ignore_ascii_case(was) {
+        now.to_owned()
+    } else if !was.is_empty() && address.eq_ignore_ascii_case(&short(was)) {
+        short(now)
+    } else {
+        return Ok(None);
+    };
+    config["access"]["address"] = json!(new);
+    host.place.save(paths, &config)?;
+    Ok(Some(format!("{} is reached at {new} now", host.name)))
 }
 
 #[cfg(test)]
@@ -975,5 +1433,343 @@ mod tests {
             crate::profiles::Place::resolve(&paths, &by_path).unwrap(),
             file
         );
+    }
+
+    fn device(id: &str, dns_name: &str, addresses: &[&str]) -> TailnetDevice {
+        TailnetDevice {
+            id: id.into(),
+            dns_name: dns_name.into(),
+            host_name: dns_name.split('.').next().unwrap().into(),
+            addresses: addresses
+                .iter()
+                .map(|address| address.to_string())
+                .collect(),
+            tailnet: String::new(),
+        }
+    }
+
+    /// The host `studio`, saved with this profile.
+    fn studio(paths: &Paths, config: Value) -> crate::host::Host {
+        let place = Place::own("studio").unwrap();
+        place.save(paths, &config).unwrap();
+        crate::host::Host {
+            name: "studio".into(),
+            place,
+            config,
+        }
+    }
+
+    fn record(paths: &Paths, place: &Place, kept: &Kept) {
+        kept.save(paths, place).unwrap();
+    }
+
+    #[test]
+    fn a_destroyed_hosts_recorded_device_is_removed_from_tailscale_and_headscale() {
+        let (_home, paths) = paths();
+        let host = studio(&paths, json!({"hostname": "studio"}));
+        let recorded = |id: &str| Kept {
+            device: Some(device(id, "studio.example.ts.net", &["100.64.0.7"])),
+            rename: None,
+        };
+        record(&paths, &host.place, &recorded("nFAKE1CNTRL"));
+        let (url, seen) = fake(vec![(200, json!({}))]);
+        let said =
+            remove_device_at(&control(None, &url), &paths, &host.place, &host.config).unwrap();
+        assert_eq!(
+            said,
+            "✓ Removed studio's device studio.example.ts.net from the tailnet at Tailscale"
+        );
+        let asked = seen.recv().unwrap();
+        assert_eq!(asked.line, "DELETE /api/v2/device/nFAKE1CNTRL HTTP/1.1");
+        assert_eq!(
+            asked.authorization,
+            format!("Basic {}", crate::registry::base64(b"secret-token:"))
+        );
+
+        record(&paths, &host.place, &recorded("12"));
+        let (url, seen) = fake(vec![(200, json!({}))]);
+        let said =
+            remove_device_at(&control(Some(&url), ""), &paths, &host.place, &host.config).unwrap();
+        assert!(said.starts_with("✓ Removed studio's device"), "{said}");
+        let asked = seen.recv().unwrap();
+        assert_eq!(asked.line, "DELETE /api/v1/node/12 HTTP/1.1");
+        assert_eq!(asked.authorization, "Bearer secret-token");
+    }
+
+    #[test]
+    fn a_device_gone_already_or_one_berth_may_not_remove_is_said_and_never_fails() {
+        let (_home, paths) = paths();
+        let host = studio(&paths, json!({"hostname": "studio"}));
+        let kept = Kept {
+            device: Some(device("nFAKE1CNTRL", "studio.example.ts.net", &[])),
+            rename: None,
+        };
+        record(&paths, &host.place, &kept);
+        let (url, _seen) = fake(vec![
+            (404, json!({"message": "not found"})),
+            (
+                403,
+                json!({"message": "calling actor does not have enough permissions to perform this function"}),
+            ),
+        ]);
+        let mut tailscale = control(None, &url);
+        let said = remove_device_at(&tailscale, &paths, &host.place, &host.config).unwrap();
+        assert_eq!(
+            said,
+            "studio's device studio.example.ts.net is not on the tailnet at Tailscale any more"
+        );
+        tailscale.credential = Ok(Credential::parse("kFAKE:tskey-client-kFAKE-0000").unwrap());
+        // The client's token comes first; the fake answers it with the 403 of the next call.
+        let (url, _seen) = fake(vec![
+            (200, json!({"access_token": "tskey-access-FAKE"})),
+            (
+                403,
+                json!({"message": "calling actor does not have enough permissions to perform this function"}),
+            ),
+        ]);
+        tailscale.tailscale_api = url;
+        let said = remove_device_at(&tailscale, &paths, &host.place, &host.config).unwrap();
+        assert!(said.starts_with("! studio's device studio.example.ts.net stays on the tailnet: Tailscale refused to remove the device (HTTP 403)"), "{said}");
+        assert!(said.contains("needs the devices:core scope"), "{said}");
+        assert!(said.ends_with("Remove it there"), "{said}");
+        // A refused Headscale key is named as such.
+        let (url, _seen) = fake(vec![(401, json!("Unauthorized"))]);
+        let said =
+            remove_device_at(&control(Some(&url), ""), &paths, &host.place, &host.config).unwrap();
+        assert!(
+            said.contains("HTTP 401") && said.contains("headscale apikeys list"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn without_the_key_or_the_tailnet_berth_removes_nothing() {
+        let (_home, paths) = paths();
+        // A host that never joined, with no record, has nothing on the tailnet.
+        let off = studio(
+            &paths,
+            json!({"ansible_vars": {"devbox_install_tailscale": false}}),
+        );
+        assert_eq!(remove_device(&paths, &off.place, &off.config), None);
+        let host = studio(&paths, json!({"hostname": "studio"}));
+        let said = remove_device(&paths, &host.place, &host.config).unwrap();
+        assert!(
+            said.starts_with("! studio's device on the tailnet at Tailscale stays, as berth cannot remove it: berth has no API key"),
+            "{said}"
+        );
+        assert!(said.contains("berth secret set tailnet_api_key"), "{said}");
+    }
+
+    #[test]
+    fn a_host_without_a_record_is_looked_up_and_its_device_removed_only_when_alone() {
+        let (_home, paths) = paths();
+        let tailscale_list = |devices: Value| (200, json!({"devices": devices}));
+        let listed = json!([
+            {"id": "111", "nodeId": "nSTUDIO", "name": "studio.example.ts.net", "hostname": "studio", "addresses": ["100.64.0.7"]},
+            {"id": "222", "nodeId": "nSTUDIO1", "name": "studio-1.example.ts.net", "hostname": "studio", "addresses": ["100.64.0.9"]},
+            {"id": "333", "nodeId": "nDOCK", "name": "dock.example.ts.net", "hostname": "dock", "addresses": ["100.64.0.8"]},
+        ]);
+
+        // At its address: that device alone, though two have its hostname.
+        let host = studio(
+            &paths,
+            json!({"hostname": "studio", "access": {"address": "100.64.0.9"}}),
+        );
+        let (url, seen) = fake(vec![tailscale_list(listed.clone()), (200, json!({}))]);
+        let said =
+            remove_device_at(&control(None, &url), &paths, &host.place, &host.config).unwrap();
+        assert_eq!(
+            seen.recv().unwrap().line,
+            "GET /api/v2/tailnet/-/devices HTTP/1.1"
+        );
+        assert_eq!(
+            seen.recv().unwrap().line,
+            "DELETE /api/v2/device/nSTUDIO1 HTTP/1.1"
+        );
+        assert!(said.contains("studio-1.example.ts.net"), "{said}");
+
+        // By its hostname, two devices could be it: berth removes neither.
+        let host = studio(
+            &paths,
+            json!({"hostname": "studio", "access": {"address": "192.0.2.10"}}),
+        );
+        let (url, seen) = fake(vec![tailscale_list(listed.clone())]);
+        let said =
+            remove_device_at(&control(None, &url), &paths, &host.place, &host.config).unwrap();
+        assert!(
+            said.contains(
+                "2 devices there could be it: studio.example.ts.net, studio-1.example.ts.net"
+            ),
+            "{said}"
+        );
+        assert!(said.contains("removes none of them"), "{said}");
+        seen.recv().unwrap();
+        assert!(
+            seen.recv_timeout(std::time::Duration::from_millis(300))
+                .is_err()
+        );
+
+        // None has its address or hostname: nothing to remove.
+        let host = studio(
+            &paths,
+            json!({"hostname": "pier", "access": {"address": "192.0.2.10"}}),
+        );
+        let (url, _seen) = fake(vec![tailscale_list(listed)]);
+        let said =
+            remove_device_at(&control(None, &url), &paths, &host.place, &host.config).unwrap();
+        assert!(
+            said.contains("none there has its address or hostname"),
+            "{said}"
+        );
+
+        // On Headscale, by its MagicDNS name, the node's given name.
+        let host = studio(
+            &paths,
+            json!({"hostname": "pier", "access": {"address": "studio.hs.example.org"}}),
+        );
+        let (url, seen) = fake(vec![
+            (
+                200,
+                json!({"nodes": [
+                    {"id": "12", "name": "studio", "givenName": "studio", "ipAddresses": ["100.64.0.7"]},
+                    {"id": "13", "name": "dock", "givenName": "dock", "ipAddresses": ["100.64.0.8"]},
+                ]}),
+            ),
+            (200, json!({})),
+        ]);
+        let said =
+            remove_device_at(&control(Some(&url), ""), &paths, &host.place, &host.config).unwrap();
+        assert_eq!(seen.recv().unwrap().line, "GET /api/v1/node HTTP/1.1");
+        assert_eq!(seen.recv().unwrap().line, "DELETE /api/v1/node/12 HTTP/1.1");
+        assert!(said.starts_with("✓ Removed studio's device"), "{said}");
+    }
+
+    #[test]
+    fn an_apply_records_the_device_and_renames_it_after_a_rename_with_the_hostname() {
+        let (_home, paths) = paths();
+        let reported = device("nFAKE1CNTRL", "studio.example.ts.net", &["100.64.0.7"]);
+        let host = studio(
+            &paths,
+            json!({"hostname": "studio", "access": {"address": "studio.example.ts.net"}}),
+        );
+        // Nothing to rename: the device is recorded and nothing is asked.
+        let lines = after_apply_at(
+            &control(None, "http://127.0.0.1:9"),
+            &paths,
+            &host,
+            Some(reported.clone()),
+        )
+        .unwrap();
+        assert!(lines.is_empty(), "{lines:?}");
+        let kept = Kept::of(&paths, &host.place).unwrap();
+        assert_eq!(
+            kept,
+            Kept {
+                device: Some(reported.clone()),
+                rename: None
+            }
+        );
+
+        // A rename with the hostname leaves the device for the apply.
+        let place = crate::profiles::rename(&paths, &host.place, "pier", true).unwrap();
+        let kept = Kept::of(&paths, &place).unwrap();
+        assert_eq!(kept.rename.as_deref(), Some("pier"));
+        assert_eq!(kept.device.as_ref(), Some(&reported));
+        assert_eq!(Kept::of(&paths, &host.place).unwrap(), Kept::default());
+        let pier = crate::host::Host::load_at(&paths, place.clone()).unwrap();
+
+        // A refusal keeps the rename for the next apply.
+        let (url, _seen) = fake(vec![(403, json!({"message": "not enough permissions"}))]);
+        let lines =
+            after_apply_at(&control(None, &url), &paths, &pier, Some(reported.clone())).unwrap();
+        assert!(lines[0].starts_with("! pier's device on the tailnet is still studio.example.ts.net: Tailscale refused to rename the device (HTTP 403)"), "{lines:?}");
+        assert_eq!(
+            Kept::of(&paths, &place).unwrap().rename.as_deref(),
+            Some("pier")
+        );
+
+        let (url, seen) = fake(vec![(200, json!({}))]);
+        let lines =
+            after_apply_at(&control(None, &url), &paths, &pier, Some(reported.clone())).unwrap();
+        let asked = seen.recv().unwrap();
+        assert_eq!(asked.line, "POST /api/v2/device/nFAKE1CNTRL/name HTTP/1.1");
+        assert_eq!(asked.body, json!({"name": "pier"}));
+        assert_eq!(
+            lines,
+            [
+                "✓ Renamed pier's device on the tailnet from studio.example.ts.net to pier.example.ts.net",
+                "pier is reached at pier.example.ts.net now",
+            ]
+        );
+        let kept = Kept::of(&paths, &place).unwrap();
+        assert_eq!(kept.rename, None);
+        assert_eq!(kept.device.unwrap().dns_name, "pier.example.ts.net");
+        assert_eq!(
+            place.load(&paths).unwrap().unwrap()["access"]["address"],
+            "pier.example.ts.net"
+        );
+
+        // On Headscale the new name is in the path.
+        let place = crate::profiles::rename(&paths, &place, "attic", true).unwrap();
+        let attic = crate::host::Host::load_at(&paths, place.clone()).unwrap();
+        let (url, seen) = fake(vec![(
+            200,
+            json!({"node": {"id": "12", "givenName": "attic"}}),
+        )]);
+        after_apply_at(
+            &control(Some(&url), ""),
+            &paths,
+            &attic,
+            Some(device("12", "pier.hs.example.org", &[])),
+        )
+        .unwrap();
+        assert_eq!(
+            seen.recv().unwrap().line,
+            "POST /api/v1/node/12/rename/attic HTTP/1.1"
+        );
+        assert_eq!(Kept::of(&paths, &place).unwrap().rename, None);
+    }
+
+    #[test]
+    fn a_rename_without_the_hostname_a_copy_and_a_forgotten_host_leave_the_tailnet_alone() {
+        let (_home, paths) = paths();
+        let host = studio(&paths, json!({"hostname": "studio"}));
+        let reported = device("nFAKE1CNTRL", "studio.example.ts.net", &[]);
+        let kept = Kept {
+            device: Some(reported.clone()),
+            rename: None,
+        };
+        record(&paths, &host.place, &kept);
+        let place = crate::profiles::rename(&paths, &host.place, "pier", false).unwrap();
+        assert_eq!(Kept::of(&paths, &place).unwrap(), kept);
+        // Nothing is asked of the control server: its address goes nowhere.
+        let pier = crate::host::Host::load_at(&paths, place.clone()).unwrap();
+        let lines = after_apply_at(
+            &control(None, "http://127.0.0.1:9"),
+            &paths,
+            &pier,
+            Some(reported),
+        )
+        .unwrap();
+        assert!(lines.is_empty(), "{lines:?}");
+        // A copy starts with no device of its own.
+        let (copy, _) = crate::profiles::duplicate(&paths, &place, "lab").unwrap();
+        assert_eq!(Kept::of(&paths, &copy).unwrap(), Kept::default());
+        // Forgetting the host forgets its record, and asks nothing of the tailnet.
+        crate::profiles::remove(&paths, &place).unwrap();
+        assert_eq!(Kept::of(&paths, &place).unwrap(), Kept::default());
+    }
+
+    #[test]
+    fn names_and_ids_are_checked_before_they_go_into_a_path() {
+        let control = control(None, "http://127.0.0.1:9");
+        assert!(control.delete_device("../keys").is_err());
+        assert!(control.rename_device("nFAKE", "Pier/x").is_err());
+        assert!(control.rename_device("nFAKE", "-pier").is_err());
+        assert_eq!(
+            renamed("studio.example.ts.net", "pier"),
+            "pier.example.ts.net"
+        );
+        assert_eq!(renamed("studio", "pier"), "pier");
     }
 }

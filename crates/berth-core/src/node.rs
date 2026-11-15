@@ -652,6 +652,14 @@ pub fn rename(paths: &Paths, old: &str, new: &str) -> Result<()> {
 /// What the node `host` reported at the end of its last apply, asked of its
 /// controller until it answers: the provisioners its features offer.
 pub fn reported(paths: &Paths, host: &Host) -> Result<Vec<Offer>> {
+    Ok(applied(paths, host)?
+        .map(|applied| applied.offers)
+        .unwrap_or_default())
+}
+
+/// The record the last apply left on `host`, asked of its controller until
+/// it answers, as the controller may restart at the end of an apply.
+pub fn applied(paths: &Paths, host: &Host) -> Result<Option<berth_api::Applied>> {
     let password = host.kept_sudo_password(paths);
     let link = crate::link::Link::new(host.link(paths, password.as_deref())?);
     let runtime = crate::link::runtime()?;
@@ -662,12 +670,7 @@ pub fn reported(paths: &Paths, host: &Host) -> Result<Vec<Offer>> {
             tokio::time::timeout(std::time::Duration::from_secs(15), link.version()).await
         });
         match asked {
-            Ok(Ok(version)) => {
-                return Ok(version
-                    .applied
-                    .map(|applied| applied.offers)
-                    .unwrap_or_default());
-            }
+            Ok(Ok(version)) => return Ok(version.applied),
             Ok(Err(error)) if started.elapsed() >= patience => {
                 return Err(error.to_string().into());
             }

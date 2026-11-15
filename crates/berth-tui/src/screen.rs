@@ -64,6 +64,14 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
 }
 
 /// The top line: the name, the tabs and what is open. Returns the tabs' areas.
+/// Whether the server the screens use is a simulated one, which the header says.
+static SIMULATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Say in the header, from now on, whether the server is simulated.
+pub fn mark_simulated(simulated: bool) {
+    SIMULATED.store(simulated, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn draw_header(
     frame: &mut Frame,
     area: Rect,
@@ -78,6 +86,13 @@ pub fn draw_header(
         Span::styled(" berth  ", Style::new().fg(theme::TEXT).bold()),
     ];
     let mut x = area.x + 11;
+    if SIMULATED.load(std::sync::atomic::Ordering::Relaxed) {
+        spans.push(Span::styled(
+            "simulated  ",
+            Style::new().fg(theme::WARN).bold(),
+        ));
+        x += 11;
+    }
     let mut areas = vec![];
     for (index, tab) in tabs.iter().enumerate() {
         let width = tab.len() as u16 + 4;
@@ -242,9 +257,14 @@ fn draw_said(frame: &mut Frame, footer: Rect, status: &str, colour: Color) {
 }
 
 /// A small centred box over the rest of the screen. Returns its area.
-pub fn dialog(frame: &mut Frame, title: &str, keys: &str, lines: Vec<Line>) -> Rect {
+pub fn dialog(frame: &mut Frame, title: &str, keys: &str, mut lines: Vec<Line>) -> Rect {
     let screen = frame.area();
     let width = 62.min(screen.width);
+    // The keys are the last line inside the box, under a blank one, so no
+    // border runs through them at any width.
+    let keys = keys.trim();
+    lines.push(Line::raw(""));
+    lines.push(theme::hints(keys));
     let height = (lines.len() as u16 + 2).min(screen.height);
     let area = Rect::new(
         screen.x + (screen.width - width) / 2,
@@ -252,17 +272,11 @@ pub fn dialog(frame: &mut Frame, title: &str, keys: &str, lines: Vec<Line>) -> R
         width,
         height,
     );
-    note_hints(
-        keys.trim(),
-        area.x + 1,
-        area.bottom().saturating_sub(1),
-        true,
-    );
+    // Inside the border and its padding of one column.
+    note_hints(keys, area.x + 2, area.bottom().saturating_sub(2), true);
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(lines).block(
-            theme::popup(title.trim(), theme::ACCENT).title_bottom(theme::hints(keys.trim())),
-        ),
+        Paragraph::new(lines).block(theme::popup(title.trim(), theme::ACCENT)),
         area,
     );
     area
@@ -800,6 +814,45 @@ mod tests {
                     .to_owned()
             })
             .collect()
+    }
+
+    fn question_at(width: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+        terminal
+            .draw(|frame| draw_question(frame, "Remove studio? Its sessions end."))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..12)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_owned())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_dialog_has_its_keys_inside_the_box_at_any_width() {
+        for width in [80, 62, 40] {
+            let rows = question_at(width);
+            let bottom = rows.iter().position(|row| row.contains('╰')).unwrap();
+            let keys = rows.iter().position(|row| row.contains("y yes")).unwrap();
+            assert_eq!(keys + 1, bottom, "{rows:#?}");
+            // The keys sit between the box's sides, and the border is unbroken.
+            let row = &rows[keys];
+            assert!(
+                row.trim().starts_with('│') && row.trim().ends_with('│'),
+                "{rows:#?}"
+            );
+            assert!(!rows[bottom].contains("yes"), "{rows:#?}");
+            assert!(rows[keys - 1].trim().trim_matches('│').trim().is_empty());
+        }
+        // A click on a key's hint is that key.
+        let rows = question_at(80);
+        let y = rows.iter().position(|row| row.contains("y yes")).unwrap() as u16;
+        let x = rows[y as usize].find("y yes").unwrap();
+        let x = rows[y as usize][..x].chars().count() as u16;
+        assert_eq!(hint_at(x, y), Some(Key::plain(Code::Char('y'))));
     }
 
     #[test]

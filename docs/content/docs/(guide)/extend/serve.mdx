@@ -10,7 +10,7 @@ icon: Plug
 berth serve
 ```
 
-It prints where it listens and how many hosts it knows. Only one runs per user. To use its hosts from another machine's berth, see [A berth server](/docs/use/server).
+It prints where it listens and how many hosts it knows. Only one runs per user. To use its hosts from another machine's berth, see [A berth server](/docs/use/server). To test an application against the API without machines, see [Testing against a simulated server](/docs/api/testing).
 
 ## What it adds
 
@@ -61,6 +61,7 @@ The inbox, jobs and key-value store are kept in berth's store for `retention_day
 
 ```bash
 berth inbox list studio --topic ask/        # what is open; --all includes what is done
+berth inbox done studio 12                  # marks message 12 of studio done
 berth kv set ui layout '{"columns": 2}'
 berth kv list ui
 ```

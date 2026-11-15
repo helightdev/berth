@@ -301,6 +301,53 @@ pub fn text(label: &str, help: &str, flag: &str) -> Result<String> {
     }
 }
 
+/// Ask a yes or no that starts at `default`, or say which flag gives it.
+pub fn yes_no(label: &str, help: &str, flag: &str, default: bool) -> Result<bool> {
+    let question = Question {
+        step: berth_tui::fields::Step::Install,
+        label: label.into(),
+        help: help.into(),
+        flag: flag.into(),
+        asked: Asked::Confirm { default },
+        required: true,
+    };
+    match ask(&question)? {
+        Answer::Confirm(on) => Ok(on),
+        _ => Err(Fail::usage(format!("{label} is missing: pass {flag}"))),
+    }
+}
+
+/// Ask for one of `values`, starting at `default`, or say which flag gives it.
+pub fn choice(
+    label: &str,
+    help: &str,
+    flag: &str,
+    values: &[String],
+    default: &str,
+) -> Result<usize> {
+    let question = Question {
+        step: berth_tui::fields::Step::Install,
+        label: label.into(),
+        help: help.into(),
+        flag: flag.into(),
+        asked: Asked::Choice {
+            options: values
+                .iter()
+                .map(|value| Choice::new(value, value, ""))
+                .collect(),
+            default: values
+                .iter()
+                .position(|value| value == default)
+                .unwrap_or(0),
+        },
+        required: true,
+    };
+    match ask(&question)? {
+        Answer::Choice(index) if index < values.len() => Ok(index),
+        _ => Err(Fail::usage(format!("{label} is missing: pass {flag}"))),
+    }
+}
+
 /// Ask for a secret without showing it, or say which flag gives it.
 pub fn secret(label: &str, flag: &str) -> Result<String> {
     let question = Question {

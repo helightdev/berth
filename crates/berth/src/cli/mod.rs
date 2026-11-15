@@ -327,6 +327,8 @@ fn run(cli: Cli) -> Result<()> {
         )),
         #[cfg(target_os = "linux")]
         Command::TailnetKey { host } => crate::local::tailnet_key(&host),
+        #[cfg(target_os = "linux")]
+        Command::SimulatedProvisioner { verb } => crate::local::simulated_provisioner(&verb),
     }
 }
 

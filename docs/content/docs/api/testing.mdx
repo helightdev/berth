@@ -1,0 +1,168 @@
+---
+title: Testing against a simulated server
+description: Run berth serve with hosts and provisioners that reach no machine, so an application's tests can use the real API in CI.
+icon: FlaskConical
+---
+
+`berth serve --simulate` runs the real server on a scratch store. Its routes, roles, tokens, jobs, events and portal are the ones a real server has. The hosts, the provisioners and the tailnet are simulated, so nothing connects to another machine. An application's tests go through a host's whole life in seconds, with no SSH, Ansible or cloud account.
+
+```bash
+berth serve --simulate --listen 127.0.0.1:7777
+```
+
+It prints where its state is, where it listens, its token and a setup key:
+
+```text
+Simulated berth server: its hosts and provisioners reach no machine. State in /tmp/berth-simulated-x1Yz, removed when it ends
+Listening on /tmp/berth-simulated-x1Yz/run/berth/serve.sock
+Listening on http://127.0.0.1:7777 for the token (token in /tmp/berth-simulated-x1Yz/data/berth/serve.token)
+Token: 3f9c…
+Setup key: 81ad…
+```
+
+Send the token as `Authorization: Bearer TOKEN`, as with any [berth server](/docs/extend/serve). The token and the setup key belong to this throw-away server alone, so it prints them. `berth login http://127.0.0.1:7777` with the setup key works too, and `berth ui` then shows **simulated** in its header.
+
+## Telling it apart
+
+Nobody should take a simulated server for a real one:
+
+| Where | What it says |
+| --- | --- |
+| Every HTTP answer, refusals included | The header `berth-simulated: 1` |
+| `version` of the server | `"simulated": true` |
+| `version` of each host's controller | `"simulated": true` |
+| The output of an apply | `applying, simulated: nothing is installed` |
+| The screens | **simulated** beside the name in the header |
+
+## Options
+
+| Option | Environment | Means |
+| --- | --- | --- |
+| `--simulate` | `BERTH_SIMULATE=1` | Run a simulated server |
+| `--listen ADDRESS:PORT` | | Listen over HTTP too. Any address is allowed without `--expose` |
+| `--seed FILE` | `BERTH_SIMULATE_SEED` holds the JSON itself | The world it starts with. See [The seed](#the-seed) |
+| `--delay SECONDS` | `BERTH_SIMULATE_DELAY` | How long one step takes. `2` by default, `0` for none, and fractions such as `0.1` work |
+| `--data DIR` | | Keep the state in `DIR` and leave it there. `DIR` is empty or holds an earlier simulation |
+| `--keep` | | Leave the scratch directory when the server ends |
+
+The state is a new directory under `TMPDIR`. The server removes it when it ends on `Ctrl+C` or `SIGTERM`. It never reads or writes your own configuration. `--data` refuses berth's own configuration and data directories, any directory that holds them or lies in them, and a directory with files of something else in it. The server's socket is in its scratch directory, so your own `berth` commands keep using your own server.
+
+## The seed
+
+A seed is a JSON file that a test starts from. Every field can be left out.
+
+```json title="seed.json"
+{
+  "token": "made-up-token-for-the-tests-0123456789",
+  "hosts": {
+    "studio": {"applied": true},
+    "dock": {"profile": {"type": "node", "access": {"address": "192.0.2.7", "user": "ops"}}}
+  },
+  "provisioners": {"sim": {"type": "sim/cloud", "settings": {"region": "sim-2"}}},
+  "secrets": {"api_token": "made-up"}
+}
+```
+
+| Field | Holds |
+| --- | --- |
+| `token` | The token for HTTP, at least 32 characters. Without it the server makes one |
+| `hosts` | Saved hosts by name. `profile` is the host's profile as `hosts.save` takes it, and `applied: true` makes the host start applied at this berth's version |
+| `provisioners` | Registered provisioners by name, as `provisioners.save` takes them. Without any, `sim` is registered as `sim/cloud` |
+| `secrets` | Secrets by name |
+
+A host without an address gets one of `192.0.2.0/24`, and one without `access.user` gets `ops`. A workstation without `builder` gets an empty one.
+
+## What is real and what is simulated
+
+| Part | Real or simulated |
+| --- | --- |
+| Routes, the portal, roles, tokens, setup keys | Real |
+| The store, secrets, registries, settings, the key-value store, the inbox | Real, on the scratch store |
+| Jobs and their output, the events stream | Real |
+| A host's actions, sessions and files | Real berthd in single-user mode, one per host in the scratch directory. Its commands run through a [shell of its own](#a-hosts-shell) |
+| A host's processes | Only what its berthd started |
+| A host's ports | Refused, as they would be the ports of the machine the server runs on |
+| A host's units, logs and power | Not there, as on any berthd in single-user mode |
+| Applying a host, and installing its controller | Simulated. Progress lines come over a few steps, then the records a real apply leaves |
+| A host before its first apply | Has no controller, as a fresh machine has none |
+| Provisioners | The built-in `sim/cloud`. Other plugins' provisioners run as they are |
+| The tailnet | Simulated. Its keys are made up and join nothing |
+| Rolling out, rotating keys and adopting | Not simulated, and their actions say they are unavailable |
+| First contact over SSH, seeds and installers | Not simulated, and unavailable too |
+
+### A host's shell
+
+A session or an action on a simulated host doesn't run programs of the machine. Its shell knows these commands and answers any other with exit code 127:
+
+| Command | Does |
+| --- | --- |
+| `echo`, `hostname`, `whoami` | What they do on Linux, as the host `NAME` and the user `agent` |
+| `id`, `uname`, `pwd`, `date` | The same |
+| `ls`, `cat` | Read the host's home in the scratch directory. A path outside it is refused |
+| `sleep N`, `true`, `false`, `exit N` | As in a shell |
+| `status`, `smoke`, `update`, `reboot`, `secrets` | The host's actions, with made-up output |
+| `fail` | Fails with exit code 3, to test how failures are shown |
+| `help` | Lists them |
+
+`;` separates commands in one line. A terminal session gets a prompt and runs each line typed.
+
+### The provisioner `sim/cloud`
+
+It makes nothing, and keeps what it made in the scratch directory.
+
+| Kind | Verbs | Answers |
+| --- | --- | --- |
+| `machine` | create, start, stop, logs and destroy | An address of `192.0.2.0/24`. berth then applies the host, as with a provisioner of the `apply` set-up. The host's controller does not answer when the machine is stopped |
+| `service` | create, start, stop, change, logs, exec and destroy | An endpoint `http` on port 80 of an address of `192.0.2.0/24`. `exec` runs `echo`, `hostname`, `true` and `false`. Its action `restart` restarts it |
+
+The provisioner lists what it made, and its page has a collection `images` of three images. Its actions `images` and `inspect` read them. Endpoints of `192.0.2.0/24` lead nowhere, and `resources.connect` refuses every endpoint of a simulated server.
+
+## Timings
+
+Each step takes the delay, two seconds by default:
+
+| What | Steps |
+| --- | --- |
+| Create a machine or a service | 2, and a machine's apply after them |
+| Apply a host | 1.5 for a node or a managed host, 2.5 for a workstation |
+| Start, stop, change, remove, `restart` | 1 |
+
+The server looks at a simulated host again after one step, where a real server waits up to ten seconds. A test that polls `hosts.get` sees a host stop or start within a step. With `--delay 0` everything is as fast as the store, and the order of jobs and events stays the same.
+
+## Running it in continuous integration
+
+GitHub Actions starts a service container before the job's steps and cannot change its command. The environment turns the published image into a simulated server instead:
+
+```yaml title=".github/workflows/test.yml"
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      berth:
+        image: ghcr.io/helightdev/berth:VERSION
+        env:
+          BERTH_SIMULATE: "1"
+          BERTH_SIMULATE_DELAY: "0.2"
+          BERTH_SIMULATE_SEED: >-
+            {"token": "made-up-token-for-the-tests-0123456789",
+             "hosts": {"studio": {"applied": true}}}
+        ports:
+          - 7777:7777
+        options: >-
+          --health-cmd "curl -fsS http://127.0.0.1:7777/"
+          --health-interval 2s --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm test
+        env:
+          BERTH_URL: http://127.0.0.1:7777
+          BERTH_TOKEN: made-up-token-for-the-tests-0123456789
+```
+
+The token is made up for the tests and opens nothing else, so it can stay in the workflow. Elsewhere, start the image with its command:
+
+```bash
+docker run --rm -p 7777:7777 ghcr.io/helightdev/berth:VERSION serve --simulate --listen 0.0.0.0:7777
+```
+
+A test on a machine with berth installed starts `berth serve --simulate` itself and reads the token from its output. `SIGTERM` ends it. berth's own test of this, `crates/berth/tests/simulate.rs`, does that and goes through a host's whole life.

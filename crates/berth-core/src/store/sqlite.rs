@@ -1,8 +1,8 @@
 //! The store in a SQLite file.
 
 use super::{
-    Backend, CursorRow, Entry, Error, Filter, Job, KvRow, MessageRow, Result, Rows, StateRow,
-    Stored, Table, When, json_value, keep_from, keep_name,
+    Backend, CursorRow, Entry, Error, Filter, Job, JobFilter, KvRow, MessageRow, Result, Rows,
+    StateRow, Stored, Table, When, json_value, keep_from, keep_name,
 };
 use berth_api::{From, Level, Message};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -477,11 +477,25 @@ impl Backend for SqliteBackend {
         Ok(found)
     }
 
-    fn jobs(&mut self, limit: usize) -> Result<Vec<Job>> {
+    fn jobs(&mut self, filter: &JobFilter<'_>) -> Result<Vec<Job>> {
         let mut statement = self.db.prepare(&format!(
-            "SELECT {JOB_COLUMNS} FROM jobs ORDER BY started DESC, id DESC LIMIT ?1"
+            "SELECT {JOB_COLUMNS} FROM jobs
+             WHERE (?1 IS NULL OR subject = ?1)
+               AND (?2 IS NULL OR instr(', ' || host || ', ', ', ' || ?2 || ', ') > 0)
+               AND (?3 IS NULL OR (ended IS NULL) = ?3)
+               AND (?4 IS NULL OR (started, id) < (SELECT started, id FROM jobs WHERE id = ?4))
+             ORDER BY started DESC, id DESC LIMIT ?5"
         ))?;
-        let rows = statement.query_map([limit as i64], job)?;
+        let rows = statement.query_map(
+            params![
+                filter.subject,
+                filter.host,
+                filter.running,
+                filter.before,
+                filter.limit as i64
+            ],
+            job,
+        )?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -613,6 +627,34 @@ impl Backend for SqliteBackend {
         transaction.execute(
             "UPDATE jobs SET subject = ?2 WHERE subject = ?1",
             [&old_subject, &new_subject],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn rename_subject(
+        &mut self,
+        old: &str,
+        new: &str,
+        writes: &[StateRow],
+        removals: &[(String, String, String)],
+    ) -> Result<()> {
+        let transaction = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        for row in writes {
+            put_state(&transaction, row)?;
+        }
+        for (kind, scope, name) in removals {
+            transaction.execute(
+                "DELETE FROM state WHERE kind = ?1 AND scope = ?2 AND name = ?3",
+                [kind, scope, name],
+            )?;
+        }
+        transaction.execute("UPDATE jobs SET token = NULL WHERE subject = ?1", [new])?;
+        transaction.execute(
+            "UPDATE jobs SET subject = ?2 WHERE subject = ?1",
+            [old, new],
         )?;
         transaction.commit()?;
         Ok(())

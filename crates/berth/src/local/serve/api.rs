@@ -362,6 +362,9 @@ fn guarded_routes() -> OpenApiRouter<Arc<Serve>> {
         .routes(routes!(kv_get, kv_put, kv_delete))
 }
 
+/// The header on every answer of a simulated server.
+pub const SIMULATED: &str = "berth-simulated";
+
 /// Where a host's controller's operations are passed through: berthd's
 /// `/v1/PATH` is `/v1/hosts/NAME/controller/PATH` here.
 pub const HOST_PREFIX: &str = "/v1/hosts/{name}/controller/{*rest}";
@@ -395,6 +398,15 @@ pub fn router(state: Arc<Serve>, guarded: bool) -> Router {
     router = router.route("/", get(front));
     // Added after the guard, which they are not behind: they check their key themselves.
     router = router.merge(keyed_routes().split_for_parts().0);
+    // Every answer of a simulated server says so, refusals included.
+    if berth_core::simulate::active().is_some() {
+        router = router.layer(middleware::map_response(async |mut response: Response| {
+            response
+                .headers_mut()
+                .insert(SIMULATED, HeaderValue::from_static("1"));
+            response
+        }));
+    }
     router
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state)
@@ -659,6 +671,7 @@ async fn version() -> Json<Version> {
         mode: "serve".into(),
         applied: None,
         host_type: None,
+        simulated: berth_core::simulate::active().is_some(),
     })
 }
 
@@ -693,15 +706,33 @@ async fn host(State(state): App, Path(name): Path<String>) -> Answer<Json<HostIn
 
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
-struct Limit {
+struct JobsQuery {
+    /// Only the jobs of this subject: `host:NAME`, `provisioner:NAME`, `resource:ID` or `installation`.
+    subject: Option<String>,
+    /// Only the jobs about this host, alone or among others, as a roll-out is.
+    host: Option<String>,
+    /// Only the jobs that have not ended, or with `false` only those that have.
+    running: Option<bool>,
+    /// Only the jobs that started before the job of this id: the next page after it.
+    before: Option<String>,
     /// At most this many (default 100, at most 1,000).
     limit: Option<usize>,
 }
 
-#[utoipa::path(get, path = "/v1/jobs", summary = "The jobs, newest first.", tag = "jobs", params(Limit),
-    responses((status = 200, description = "Jobs, newest first", body = Vec<JobInfo>)))]
-async fn jobs(State(state): App, Query(query): Query<Limit>) -> Answer<Json<Vec<JobInfo>>> {
-    let jobs = state.store.jobs(query.limit.unwrap_or(100))?;
+#[utoipa::path(get, path = "/v1/jobs", summary = "The jobs, newest first.", tag = "jobs", params(JobsQuery),
+    responses((status = 200, description = "Jobs, newest first", body = Vec<JobInfo>),
+              (status = 404, description = "`before` names no job", body = ErrorBody)))]
+async fn jobs(State(state): App, Query(query): Query<JobsQuery>) -> Answer<Json<Vec<JobInfo>>> {
+    if let Some(before) = &query.before {
+        find_job(&state, before)?;
+    }
+    let jobs = state.store.find_jobs(&store::JobFilter {
+        subject: query.subject.as_deref(),
+        host: query.host.as_deref(),
+        running: query.running,
+        before: query.before.as_deref(),
+        limit: query.limit.unwrap_or(100),
+    })?;
     Ok(Json(
         jobs.into_iter()
             .map(|job| job_info(&state.paths, job))

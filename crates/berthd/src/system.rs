@@ -443,7 +443,43 @@ pub async fn logs(
     }))
 }
 
-pub async fn processes() -> Json<Vec<api::Process>> {
+/// Whether a simulated host shows and signals only what berthd started: the
+/// rest of the machine is not the host's.
+fn own_tree(state: &State) -> bool {
+    state.config().berthd.simulated
+}
+
+/// berthd and what descends from it, as /proc says now.
+fn descendants() -> std::collections::BTreeSet<u32> {
+    let parents: Vec<(u32, u32)> = std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse::<u32>().ok()?;
+            let stat = read(&format!("/proc/{pid}/stat"));
+            let rest = &stat[stat.rfind(')')? + 1..];
+            let parent = rest.split_whitespace().nth(1)?.parse().ok()?;
+            Some((pid, parent))
+        })
+        .collect();
+    let mut tree = std::collections::BTreeSet::from([std::process::id()]);
+    // Each pass takes in the children of what is in already.
+    loop {
+        let before = tree.len();
+        for (pid, parent) in &parents {
+            if tree.contains(parent) {
+                tree.insert(*pid);
+            }
+        }
+        if tree.len() == before {
+            return tree;
+        }
+    }
+}
+
+pub async fn processes(AppState(state): AppState<Arc<State>>) -> Json<Vec<api::Process>> {
+    let only = own_tree(&state).then(descendants);
     // SAFETY: sysconf only reads.
     let (tick, page) = unsafe {
         (
@@ -461,6 +497,9 @@ pub async fn processes() -> Json<Vec<api::Process>> {
         else {
             continue;
         };
+        if only.as_ref().is_some_and(|only| !only.contains(&pid)) {
+            continue;
+        }
         let stat = read(&format!("/proc/{pid}/stat"));
         // The name is in brackets and may itself contain brackets and spaces.
         let (Some(open), Some(close)) = (stat.find('('), stat.rfind(')')) else {
@@ -504,6 +543,7 @@ pub async fn processes() -> Json<Vec<api::Process>> {
 }
 
 pub async fn process_signal(
+    AppState(state): AppState<Arc<State>>,
     Path(pid): Path<i32>,
     Json(signal): Json<api::Signal>,
 ) -> R<Json<api::Done>> {
@@ -524,6 +564,9 @@ pub async fn process_signal(
     };
     if pid <= 1 || pid as u32 == std::process::id() {
         return Err(E::bad("Not a process to signal"));
+    }
+    if own_tree(&state) && !descendants().contains(&(pid as u32)) {
+        return Err(E::missing(format!("process {pid}")));
     }
     // SAFETY: a plain system call.
     if unsafe { libc::kill(pid, number) } != 0 {

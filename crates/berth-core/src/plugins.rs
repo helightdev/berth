@@ -415,9 +415,11 @@ fn provisioner_arguments(entries: &Value) -> Vec<berth_api::Argument> {
         .filter(|argument| valid_name(&argument.name))
         .map(|argument| berth_api::Argument {
             choices: String::new(),
-            kind: match argument.is_resource() || argument.kind == berth_api::Argument::TEXT {
-                true => argument.kind.clone(),
-                false => String::new(),
+            kind: match argument.kind.as_str() {
+                berth_api::Argument::RESOURCE
+                | berth_api::Argument::TEXT
+                | berth_api::Argument::BOOLEAN => argument.kind.clone(),
+                _ => String::new(),
             },
             ..argument
         })

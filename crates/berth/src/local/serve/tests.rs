@@ -2344,6 +2344,7 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
             "restart",
             "secrets",
             "adopt",
+            "rename",
             "remove"
         ]
     );
@@ -2609,6 +2610,184 @@ async fn a_provisioner_has_a_page_and_actions_that_run_as_jobs() {
             .iter()
             .any(|known| known["type"] == "fake/vm" && known["id"] == "fake/vm"),
         "{types}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_provisioner_is_renamed_with_everything_that_names_it() {
+    use berth_core::resource::{Kept, Record};
+    let served = served_with(quick).await;
+    fake_provisioner(&served);
+    let mut client = served.client().await;
+    let client = &mut client;
+    register_fake(client).await;
+    served.state.paths.prepare().unwrap();
+    let paths = &served.state.paths;
+    let registries = berth_core::registry::Store::own(served.state.store.clone());
+    let message = |said: &Value| said["error"]["message"].as_str().unwrap_or("").to_owned();
+    let (status, acted) = send(
+        client,
+        "POST",
+        "/v1/provisioners/vm/actions/settings",
+        json!({"arguments": {"server": "https://192.0.2.10:8443"}}),
+    )
+    .await;
+    assert_eq!(status, 202, "{acted}");
+    let before = acted["job"]["id"].as_str().unwrap().to_owned();
+    job_ended(&served.socket, &before).await;
+    let own = berth_core::provisioner::secret_name("vm", "api_token");
+    registries.set_secret(&own, Some("tok-own")).unwrap();
+    // One left by a provisioner of the new name before is not taken over.
+    let stale = berth_core::provisioner::secret_name("lab", "other");
+    registries.set_secret(&stale, Some("tok-stale")).unwrap();
+    let record = |id: &str, kind: &str, provisioner: &str, host: &str, state: &str| Kept {
+        scope: String::new(),
+        record: Record {
+            id: id.into(),
+            provisioner: provisioner.into(),
+            kind: kind.into(),
+            name: id.into(),
+            host: host.into(),
+            state: state.into(),
+            ..Record::default()
+        },
+    };
+    record("r-wiki", "deployment", "vm", "", "running")
+        .save(paths)
+        .unwrap();
+    record(
+        "r-plan",
+        "machine",
+        "vm",
+        "studio",
+        berth_core::resource::PLANNED,
+    )
+    .save(paths)
+    .unwrap();
+    record("r-other", "deployment", "old", "", "running")
+        .save(paths)
+        .unwrap();
+    // A node's provisioner stays the node's.
+    let mut offered = berth_core::provisioner::entry(paths, "vm")
+        .unwrap()
+        .unwrap();
+    offered.node = "dock".into();
+    berth_core::provisioner::save_entry(paths, "vm", &offered).unwrap();
+
+    // A name that is taken or no name is refused before anything starts.
+    for (wanted, said) in [
+        ("old", "There is a provisioner old already"),
+        ("Not A Name", "is not a name for a provisioner"),
+        ("vm", "vm has that name already"),
+    ] {
+        let (status, refused) = send(
+            client,
+            "POST",
+            "/v1/provisioners/vm/actions/rename",
+            json!({"arguments": {"name": wanted}}),
+        )
+        .await;
+        assert_eq!(status, 400, "{refused}");
+        assert!(message(&refused).contains(said), "{refused}");
+    }
+
+    let (status, acted) = send(
+        client,
+        "POST",
+        "/v1/provisioners/vm/actions/rename",
+        json!({"arguments": {"name": "lab"}}),
+    )
+    .await;
+    assert_eq!(status, 202, "{acted}");
+    let id = acted["job"]["id"].as_str().unwrap().to_owned();
+    let (output, code) = job_ended(&served.socket, &id).await;
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains("vm is called lab now"), "{output}");
+
+    assert_eq!(
+        send(client, "GET", "/v1/provisioners/vm", Value::Null)
+            .await
+            .0,
+        404
+    );
+    let entry = berth_core::provisioner::entry(paths, "lab")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (entry.kind.as_str(), entry.node.as_str()),
+        ("fake/vm", "dock")
+    );
+    assert_eq!(entry.settings["server"], "https://192.0.2.10:8443");
+    assert_eq!(
+        registries
+            .secret(&berth_core::provisioner::secret_name("lab", "api_token"))
+            .unwrap()
+            .as_deref(),
+        Some("tok-own")
+    );
+    assert_eq!(registries.secret(&own).unwrap(), None);
+    assert_eq!(registries.secret(&stale).unwrap(), None);
+    let by: std::collections::BTreeMap<String, String> = berth_core::resource::list(paths)
+        .unwrap()
+        .into_iter()
+        .map(|kept| (kept.record.id, kept.record.provisioner))
+        .collect();
+    assert_eq!(
+        by,
+        std::collections::BTreeMap::from([
+            ("r-other".to_owned(), "old".to_owned()),
+            ("r-plan".to_owned(), "lab".to_owned()),
+            ("r-wiki".to_owned(), "lab".to_owned()),
+        ])
+    );
+    // Its jobs are the renamed one's, the rename among them.
+    for job in [&before, &id] {
+        let (_, found) = send(client, "GET", &format!("/v1/jobs/{job}"), Value::Null).await;
+        assert_eq!(found["subject"], "provisioner:lab", "{found}");
+    }
+    // They are listed by their subject, a page at a time.
+    let listed = |found: &Value| -> Vec<String> {
+        found
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|job| job["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let (_, found) = send(
+        client,
+        "GET",
+        "/v1/jobs?subject=provisioner:lab",
+        Value::Null,
+    )
+    .await;
+    // Both started in the same second, so either may be first.
+    let both = listed(&found);
+    let mut sorted = both.clone();
+    sorted.sort();
+    let mut expected = vec![id.clone(), before.clone()];
+    expected.sort();
+    assert_eq!(sorted, expected);
+    let (_, found) = send(
+        client,
+        "GET",
+        "/v1/jobs?subject=provisioner:vm",
+        Value::Null,
+    )
+    .await;
+    assert!(listed(&found).is_empty(), "{found}");
+    let path = format!("/v1/jobs?subject=provisioner:lab&before={}", both[0]);
+    let (_, found) = send(client, "GET", &path, Value::Null).await;
+    assert_eq!(listed(&found), [both[1].clone()]);
+    let (_, found) = send(client, "GET", "/v1/jobs?running=true", Value::Null).await;
+    assert!(listed(&found).is_empty(), "{found}");
+    let (status, _) = send(client, "GET", "/v1/jobs?before=nothing", Value::Null).await;
+    assert_eq!(status, 404);
+    let (status, page) = send(client, "GET", "/v1/provisioners/lab", Value::Null).await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(
+        page["provisioner"]["settings"]["server"],
+        "https://192.0.2.10:8443"
     );
 }
 
@@ -4950,10 +5129,10 @@ async fn a_host_is_started_stopped_duplicated_and_removed_by_its_actions() {
     assert_eq!(status, 501, "{said}");
     let remove = host_action(client, "studio", "remove").await;
     assert!(
-        remove["confirm"]
+        remove["arguments"][0]["confirm"]
             .as_str()
             .unwrap()
-            .contains("vm destroys its machine vm-1 and the disk it has"),
+            .contains("destroy its machine vm-1 with vm, with its disk"),
         "{remove}"
     );
     let (status, acted) = send(client, "POST", &act("studio/actions/start"), Value::Null).await;
@@ -5156,4 +5335,215 @@ async fn a_host_that_declares_its_controller_stops_it_asks_the_controller() {
     assert_eq!(stop["role"], "operate");
     let (status, said) = send(client, "POST", "/v1/hosts/dock/actions/stop", Value::Null).await;
     assert_eq!(status, 501, "{said}");
+}
+
+/// A control server that gives every request the same answer, and tells
+/// the request lines it was sent.
+fn fake_control(status: u16, answer: Value) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let asked = Arc::new(std::sync::Mutex::new(vec![]));
+    let seen = asked.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let mut length = 0;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                let header = header.trim_end();
+                if header.is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = header.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            seen.lock().unwrap().push(line.trim_end().to_owned());
+            let text = answer.to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                text.len()
+            );
+        }
+    });
+    (url, asked)
+}
+
+/// Point berth at a Headscale server, with an API key.
+fn on_headscale(paths: &berth_core::paths::Paths, url: &str) {
+    paths.set("tailnet_login_server", url).unwrap();
+    paths.set("tailnet_user", "1").unwrap();
+    berth_core::registry::Store::own(store::shared(paths).unwrap())
+        .set_secret(berth_api::profile::TAILNET_API_KEY, Some("hskey-api-FAKE"))
+        .unwrap();
+}
+
+fn tailnet_device(id: &str, dns_name: &str) -> berth_api::TailnetDevice {
+    berth_api::TailnetDevice {
+        id: id.into(),
+        dns_name: dns_name.into(),
+        host_name: dns_name.split('.').next().unwrap().into(),
+        addresses: vec!["100.64.0.7".into()],
+        tailnet: String::new(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn destroying_a_host_removes_its_device_from_the_tailnet_and_forgetting_it_does_not() {
+    let served = served_with(quick).await;
+    let fake = fake_provisioner(&served);
+    let mut client = served.client().await;
+    let client = &mut client;
+    register_fake(client).await;
+    send(
+        client,
+        "PUT",
+        "/v1/secrets/api_token",
+        json!({"value": "tok-s3cret"}),
+    )
+    .await;
+    let paths = &served.state.paths;
+    paths.prepare().unwrap();
+    // The key refuses: the destroy goes on, and says so.
+    let (url, asked) = fake_control(403, json!({"message": "Unauthorized"}));
+    on_headscale(paths, &url);
+    let done = async |client: &mut Client, acted: &Value| {
+        let id = acted["job"]["id"].as_str().unwrap();
+        let job = job_done(client, id).await;
+        (job, job_ended(&served.socket, id).await.0)
+    };
+    for (name, id, address) in [
+        ("studio", "vm-1", "192.0.2.20"),
+        ("attic", "vm-2", "192.0.2.21"),
+    ] {
+        let place = berth_core::profiles::Place::own(name).unwrap();
+        place
+            .save(paths, &json!({"hostname": name, "builder": {}, "access": {"user": "ops", "link": ["sh", "-c", "exit 1"]}}))
+            .unwrap();
+        std::fs::write(
+            fake.join("answer.create"),
+            json!({"id": id, "address": address}).to_string(),
+        )
+        .unwrap();
+        let asked = json!({"provisioner": "vm", "host": name, "arguments": {"server": "https://192.0.2.10:8443"}});
+        let (status, created) = send(client, "POST", "/v1/resources", asked).await;
+        assert_eq!(status, 202, "{created}");
+        let (job, output) = done(client, &created).await;
+        assert_eq!(job["exit_code"], 0, "{output}");
+        let device = tailnet_device(
+            if name == "studio" { "12" } else { "13" },
+            &format!("{name}.hs.example.org"),
+        );
+        store::shared(paths)
+            .unwrap()
+            .write_json(kind::TAILNET, store::OWN, name, &json!({"device": device}))
+            .unwrap();
+    }
+    asked.lock().unwrap().clear();
+
+    // Forgotten, the host's device stays on the tailnet.
+    let (status, acted) = send(
+        client,
+        "POST",
+        "/v1/hosts/attic/actions/remove",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 202, "{acted}");
+    let (job, output) = done(client, &acted).await;
+    assert_eq!(job["exit_code"], 0, "{output}");
+    assert!(
+        asked.lock().unwrap().is_empty(),
+        "{:?}",
+        asked.lock().unwrap()
+    );
+
+    // Destroyed, its device is removed, or berth says why not.
+    let (status, acted) = send(
+        client,
+        "POST",
+        "/v1/hosts/studio/actions/remove",
+        json!({"arguments": {"destroy": "yes"}}),
+    )
+    .await;
+    assert_eq!(status, 202, "{acted}");
+    let (job, output) = done(client, &acted).await;
+    assert_eq!(job["exit_code"], 0, "{output}");
+    assert!(output.contains("vm destroyed vm-1"), "{output}");
+    assert_eq!(*asked.lock().unwrap(), ["DELETE /api/v1/node/12 HTTP/1.1"]);
+    assert!(
+        output
+            .contains("! studio's device studio.hs.example.org stays on the tailnet: Headscale at")
+            && output.contains("refused to remove the device (HTTP 403)")
+            && output.contains("headscale apikeys list"),
+        "{output}"
+    );
+    assert!(!output.contains("hskey-api-FAKE"), "{output}");
+    assert_eq!(
+        send(client, "GET", "/v1/hosts/studio", Value::Null).await.0,
+        404
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_apply_records_the_device_its_host_reports_on_the_tailnet() {
+    let Some(host) = Berthd::start().await else {
+        return;
+    };
+    std::fs::write(
+        host.dir.path().join("etc/applied.json"),
+        json!({"berth": "0.9.0", "plugins": [], "tailnet": {
+            "id": "12", "dns_name": "studio.hs.example.org", "host_name": "studio",
+            "addresses": ["100.64.0.7"], "tailnet": ""}})
+        .to_string(),
+    )
+    .unwrap();
+    let served = served().await;
+    let paths = served.state.paths.clone();
+    paths.prepare().unwrap();
+    let link = host.link();
+    let mut command = vec![link.program.clone()];
+    command.extend(link.args.clone());
+    let place = berth_core::profiles::Place::own("studio").unwrap();
+    let config =
+        json!({"hostname": "studio", "builder": {}, "access": {"user": "ops", "link": command}});
+    place.save(&paths, &config).unwrap();
+    // A rename with the hostname waits for this apply.
+    let (url, asked) = fake_control(200, json!({"node": {"id": "12", "givenName": "pier"}}));
+    on_headscale(&paths, &url);
+    let place = berth_core::profiles::rename(&paths, &place, "pier", true).unwrap();
+    let pier = berth_core::host::Host::load_at(&paths, place.clone()).unwrap();
+    let mut out = vec![];
+    let settled = {
+        let paths = paths.clone();
+        tokio::task::spawn_blocking(move || {
+            berth_core::apply::settle_with(&paths, &pier, &mut out)
+                .map(|_| out)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .unwrap()
+    };
+    let out = String::from_utf8(settled.unwrap()).unwrap();
+    assert!(
+        out.contains("✓ Renamed pier's device on the tailnet from studio.hs.example.org to pier.hs.example.org"),
+        "{out}"
+    );
+    assert_eq!(
+        *asked.lock().unwrap(),
+        ["POST /api/v1/node/12/rename/pier HTTP/1.1"]
+    );
+    let kept = berth_core::tailnet::Kept::of(&paths, &place).unwrap();
+    assert_eq!(kept.rename, None);
+    assert_eq!(kept.device.unwrap().dns_name, "pier.hs.example.org");
 }

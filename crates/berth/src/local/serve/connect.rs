@@ -344,6 +344,16 @@ pub async fn connect(
             ),
         ));
     }
+    if berth_core::simulate::active().is_some() {
+        return Err(Fail::new(
+            code::NOT_AVAILABLE,
+            format!(
+                "berth serve --simulate dials no endpoint: {} of {} leads nowhere",
+                endpoint.name,
+                kept.title()
+            ),
+        ));
+    }
     let connection = Dialler::of(&state.paths, &kept)
         .dial(&state, &endpoint)
         .await?;

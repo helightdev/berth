@@ -58,6 +58,7 @@ This saves a copy of studio's profile as the host `attic`. The copy leaves out w
 | The hashes of the passwords berth generated, and those passwords | No. A hash you typed stays |
 | The host keys berth recorded, the passwords it logs in with, its jobs and messages | No |
 | The record of what was applied to it | No. That stays on the machine |
+| Its device on the tailnet | No. The copy joins as a device of its own |
 
 The disk isn't cloned. The new host is installed from its profile, as any other.
 
@@ -79,6 +80,8 @@ When a provisioner made the host's machine, removing it without `--destroy` keep
 berth host remove studio --destroy
 ```
 
-With `--destroy`, or `destroy=yes`, the provisioner destroys the machine with its disk first, and then berth forgets the host. The question before it says which provisioner and which machine. For a host no provisioner made, `--destroy` is refused, as there is nothing for berth to destroy. If destroying fails, the host and its machine's record stay, so you can try again. A node of the host on a tailnet stays: remove it there.
+With `--destroy`, or `destroy=yes`, the provisioner destroys the machine with its disk first, and then berth forgets the host. The question before it says which provisioner and which machine. For a host no provisioner made, `--destroy` is refused, as there is nothing for berth to destroy. If destroying fails, the host and its machine's record stay, so you can try again.
+
+Once the machine is destroyed, berth also removes its [device on the tailnet](/docs/use/access#the-hosts-device). When it can't, such as without the API key or with a key that may not remove devices, the job says why and berth forgets the host all the same. Remove the device in the tailnet's admin console then. Without `--destroy`, the device stays.
 
 On the home screen, `x` asks the same. For a host a provisioner made, `f` forgets it and leaves the machine, and `d` destroys the machine too, after asking once more.

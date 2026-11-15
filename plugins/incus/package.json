@@ -227,7 +227,7 @@
            "arguments": [
              {"name": "instance", "label": "Instance", "default": "", "help": "The instance's name as the server lists it, such as berth-studio for the host studio."},
              {"name": "size", "label": "Size", "default": "", "help": "The new size of its root disk, larger than it is now, such as 80GiB."},
-             {"name": "restart", "label": "Restart", "default": "no", "values": ["no", "yes"], "help": "Whether to restart a running virtual machine so that its guest sees the new size. A container needs no restart."}
+             {"name": "restart", "label": "Restart", "default": "no", "kind": "boolean", "values": ["no", "yes"], "help": "Whether to restart a running virtual machine so that its guest sees the new size. A container needs no restart."}
            ]}
         ]
       },
@@ -271,7 +271,7 @@
               {"name": "disk", "label": "Disk size", "default": "20GiB", "kind": "resource", "help": "The size of its root disk, such as 20GiB."},
               {"name": "pool", "label": "Storage pool", "default": "default", "help": "The storage pool of the Incus server its disk is in."},
               {"name": "network", "label": "Network", "default": "", "help": "The network it is attached to. Empty takes the network of the default profile."},
-              {"name": "nesting", "label": "Nesting", "default": "yes", "values": ["yes", "no"], "help": "Whether containers can run in it, such as Docker's. yes also lets the guest's systemd come up in an unprivileged container."}
+              {"name": "nesting", "label": "Nesting", "default": "yes", "kind": "boolean", "values": ["yes", "no"], "help": "Whether containers can run in it, such as Docker's. yes also lets the guest's systemd come up in an unprivileged container."}
             ]
           }
         ],
@@ -411,7 +411,7 @@
            "arguments": [
              {"name": "instance", "label": "Instance", "default": "", "help": "The instance's name as the server lists it, such as berth-studio for the host studio."},
              {"name": "size", "label": "Size", "default": "", "help": "The new size of its root disk, larger than it is now, such as 80GiB."},
-             {"name": "restart", "label": "Restart", "default": "no", "values": ["no", "yes"], "help": "Whether to restart a running virtual machine so that its guest sees the new size. A container needs no restart."}
+             {"name": "restart", "label": "Restart", "default": "no", "kind": "boolean", "values": ["no", "yes"], "help": "Whether to restart a running virtual machine so that its guest sees the new size. A container needs no restart."}
            ]}
         ]
       }

@@ -113,6 +113,7 @@ async fn version(AppState(state): AppState<Arc<State>>) -> Json<api::Version> {
         mode: mode.into(),
         applied,
         host_type,
+        simulated: state.config().berthd.simulated,
     })
 }
 
@@ -165,6 +166,34 @@ async fn host_only(Extension(caller): Extension<Caller>, request: Request, next:
     next.run(request).await
 }
 
+/// In the folder of a simulated host while its machine is stopped.
+const STOPPED: &str = "stopped";
+
+/// A simulated host whose machine is stopped answers nothing, as a stopped
+/// machine would not. Its ports would be those of the machine it runs on,
+/// which is not the host, so none are reached.
+async fn simulated(
+    AppState(state): AppState<Arc<State>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !state.config().berthd.simulated {
+        return next.run(request).await;
+    }
+    let stopped = state
+        .state_dir
+        .parent()
+        .is_some_and(|dir| dir.join(STOPPED).exists());
+    if stopped {
+        return E::unavailable("The simulated machine is stopped").into_response();
+    }
+    let path = request.uri().path();
+    if path.starts_with("/v1/ports/") || path.starts_with("/v1/endpoints/") {
+        return E::unavailable("A simulated host has no ports to reach").into_response();
+    }
+    next.run(request).await
+}
+
 pub fn router(state: Arc<State>) -> Router {
     let mut router = Router::new();
     for route in ROUTES {
@@ -210,6 +239,10 @@ pub fn router(state: Arc<State>) -> Router {
     router
         .route(ops::PORTAL, get(portal))
         .fallback(|| async { E::missing("such call") })
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            simulated,
+        ))
         .layer(axum::extract::DefaultBodyLimit::disable())
         .with_state(state)
 }

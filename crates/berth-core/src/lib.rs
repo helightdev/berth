@@ -28,6 +28,7 @@ pub mod seal;
 pub mod seed;
 pub mod server;
 pub mod server_image;
+pub mod simulate;
 pub mod store;
 pub mod tailnet;
 

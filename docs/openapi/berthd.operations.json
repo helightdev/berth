@@ -18,6 +18,17 @@
               "$ref": "#/components/schemas/AppliedPlugin"
             },
             "type": "array"
+          },
+          "tailnet": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TailnetDevice",
+                "description": "The host's device on the tailnet, as its Tailscale client saw it at\nthe end of the apply, when it is on one."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -56,7 +67,15 @@
             "description": "A command whose lines are the values to offer.",
             "type": "string"
           },
+          "confirm": {
+            "description": "For a yes or no: the question to answer yes to before the action\nruns with it on, instead of the action's own.",
+            "type": "string"
+          },
           "default": {
+            "type": "string"
+          },
+          "fixed": {
+            "description": "Why it keeps its default here and cannot be given another value,\nsuch as destroying a machine no provisioner made. The screens show\nit greyed and say this instead of changing it. Empty when it can be\nchanged.",
             "type": "string"
           },
           "help": {
@@ -64,7 +83,7 @@
             "type": "string"
           },
           "kind": {
-            "description": "`resource` for an argument of a provisioner that sizes the machine:\nits CPUs, memory or disk. `text` for one whose value has several\nlines. Empty for any other argument.",
+            "description": "`resource` for an argument of a provisioner that sizes the machine:\nits CPUs, memory or disk. `text` for one whose value has several\nlines. `boolean` for a yes or no, which the screens show as a switch.\nEmpty for any other argument.",
             "type": "string"
           },
           "label": {
@@ -170,6 +189,11 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "simulated": {
+            "default": false,
+            "description": "Whether the host is simulated: in single-user mode its commands then\nrun through `agent_env` too, and its version says so.",
+            "type": "boolean"
           },
           "systemd": {
             "default": null,
@@ -1380,6 +1404,38 @@
         ],
         "type": "object"
       },
+      "TailnetDevice": {
+        "description": "A host's device on the tailnet, from `tailscale status --json`. It\nholds public values only, which the control server's API finds it by.",
+        "properties": {
+          "addresses": {
+            "description": "Its addresses on the tailnet.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "dns_name": {
+            "description": "Its MagicDNS name, such as `studio.example.ts.net`, without the final dot.",
+            "type": "string"
+          },
+          "host_name": {
+            "description": "The machine's own hostname, as the client reports it.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The device's stable id: Tailscale's `nodeId`, or the number of\nHeadscale's node.",
+            "type": "string"
+          },
+          "tailnet": {
+            "description": "The tailnet's name, when the client knows it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
       "Topic": {
         "description": "An entry of `/etc/berth/channels.json`.",
         "properties": {
@@ -1481,6 +1537,10 @@
           "mode": {
             "description": "`system` or `single`.",
             "type": "string"
+          },
+          "simulated": {
+            "description": "Whether it is simulated, as `berth serve --simulate` and its hosts\nare: nothing it does reaches a real machine.",
+            "type": "boolean"
           },
           "type": {
             "oneOf": [

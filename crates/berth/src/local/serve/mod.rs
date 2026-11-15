@@ -12,6 +12,7 @@ mod provisioners;
 mod resources;
 mod setup;
 pub mod setup_key;
+pub mod simulate;
 #[cfg(test)]
 mod tests;
 
@@ -215,8 +216,13 @@ impl Remote {
         let Some(link) = &self.link else {
             return Err(self.problem.clone().unwrap_or_else(|| "no link".into()));
         };
+        // A simulated host changes within a step, which tests wait for.
+        let fresh = match berth_core::simulate::active() {
+            Some(_) => berth_core::simulate::delay().min(SEEN_FOR),
+            None => SEEN_FOR,
+        };
         if let Some((when, answer)) = &*self.seen.lock().unwrap()
-            && when.elapsed() < SEEN_FOR
+            && when.elapsed() < fresh
         {
             return answer.clone();
         }
@@ -586,9 +592,7 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
     let listen = match listen {
         None => None,
         Some(address) => {
-            let address: std::net::SocketAddr = address
-                .parse()
-                .map_err(|_| format!("Not an address and port: {address}"))?;
+            let address = parse_listen(address)?;
             if !address.ip().is_loopback() && !expose {
                 return Err(format!(
                     "{address} can be reached from other machines, over plain HTTP: add --expose to allow it, or use 127.0.0.1 or [::1]"
@@ -598,6 +602,22 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
             Some(address)
         }
     };
+    run(paths, listen, false)
+}
+
+pub(crate) fn parse_listen(address: &str) -> Result<std::net::SocketAddr> {
+    Ok(address
+        .parse()
+        .map_err(|_| format!("Not an address and port: {address}"))?)
+}
+
+/// Serve until told to stop. A simulated server says how to log in to it,
+/// and its machines are those of the simulation.
+pub(crate) fn run(
+    paths: &Paths,
+    listen: Option<std::net::SocketAddr>,
+    simulated: bool,
+) -> Result<()> {
     let _lock = lock(paths)?;
     let store = open_store(paths)?;
     store.end_lost_jobs()?;
@@ -612,9 +632,14 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
         Some(_) => Some(token(paths)?),
         None => None,
     };
-    let auth = auth::Auth::configured(paths, token)?;
+    let auth = auth::Auth::configured(paths, token.clone())?;
     let admitted = auth.describe();
-    let state = Serve::with(paths.clone(), store, auth);
+    let mut state = Serve::with(paths.clone(), store, auth);
+    if simulated {
+        let serving = Arc::get_mut(&mut state).expect("nothing else holds it yet");
+        serving.provision = berth_core::simulate::options;
+        serving.known_hosts = Mutex::new(None);
+    }
     std::fs::create_dir_all(&state.jobs_dir)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -658,6 +683,12 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
                     tcp.local_addr()?,
                     state.paths.data_dir.join("serve.token").display()
                 );
+                // A simulated server's token is a throw-away one, for the tests that use it.
+                if let (true, Some(token)) = (simulated, &token) {
+                    println!("Token: {token}");
+                    let (key, _) = setup_key::make(&state.paths)?;
+                    println!("Setup key: {key}");
+                }
                 let guarded = api::router(state.clone(), true);
                 Some(tokio::spawn(async move { axum::serve(tcp, guarded).await }))
             }
@@ -665,8 +696,16 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
         };
         let known = state.hosts.read().unwrap().len();
         println!("{known} host{}", if known == 1 { "" } else { "s" });
+        // A simulated server cleans up after itself when a test ends it.
+        let mut terminate = match simulated {
+            true => Some(tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::terminate(),
+            )?),
+            false => None,
+        };
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}
+            _ = async { match &mut terminate { Some(signal) => { signal.recv().await; } None => std::future::pending().await } } => {}
             _ = over_unix => {}
             _ = async { match over_tcp { Some(task) => { let _ = task.await; } None => std::future::pending().await } } => {}
         }

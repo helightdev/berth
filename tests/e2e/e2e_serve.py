@@ -80,6 +80,13 @@ class Routes(unittest.TestCase):
         self.assertTrue(arrived()[0]['done'])
         self.serve.call('DELETE', f'/v1/inbox/{HOST}/{number}/done')
         self.assertFalse(arrived()[0]['done'])
+        # The command line marks it the same way.
+        berth = self.serve.station.berth
+        self.assertIn(f'Message {number} of {HOST} is done', berth('inbox', 'done', HOST, str(number)).stdout)
+        self.assertTrue(arrived()[0]['done'])
+        self.assertNotIn(body['note'], berth('inbox', 'list', HOST, '--topic', 'e2e/inbox').stdout)
+        berth('inbox', 'reopen', HOST, str(number))
+        self.assertFalse(arrived()[0]['done'])
 
 
 @needs_e2e

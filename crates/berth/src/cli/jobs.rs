@@ -24,8 +24,23 @@ fn state_of(job: &Value) -> String {
 
 pub fn command(client: &Client, command: Job) -> Result<()> {
     match command {
-        Job::List { limit } => {
-            let found = client.call("jobs.list", json!({"limit": limit}), None)?;
+        Job::List {
+            limit,
+            host,
+            subject,
+            running,
+            before,
+        } => {
+            let mut args = json!({"limit": limit});
+            for (key, value) in [("host", host), ("subject", subject), ("before", before)] {
+                if let Some(value) = value {
+                    args[key] = json!(value);
+                }
+            }
+            if running {
+                args["running"] = json!(true);
+            }
+            let found = client.call("jobs.list", args, None)?;
             out::data(&found, || {
                 let mut table = Table::new(&["id", "action", "subject", "state", "started"]);
                 for job in found.as_array().into_iter().flatten() {

@@ -751,7 +751,7 @@ impl Page {
                 }
                 Asked::Nothing(None)
             }
-            Begin::Arguments(_) if form::wants_form(&self.actions[index]) => {
+            Begin::Arguments(_) if form::takes(&self.actions[index]) => {
                 let form = Form::of(&self.id, index, &self.actions[index], self.narrowed());
                 self.form = Some(form);
                 Asked::Nothing(None)
@@ -2428,25 +2428,25 @@ mod tests {
             panic!("not run");
         };
         assert_eq!((action.name.as_str(), values.len()), ("images", 0));
-        // The next asks first, then offers what its argument takes.
+        // A switch opens the form, which asks the question when it is run.
         tab.key(key(Code::Down), &list, &mut Nowhere);
         assert_eq!(
             tab.key(key(Code::Enter), &list, &mut Nowhere),
             Asked::Nothing(None)
         );
-        assert_eq!(tab.question(), Some("Prune?"));
-        assert!(tab.typing());
+        assert!(tab.question().is_none() && tab.typing());
+        let form = tab.form().unwrap();
+        assert_eq!(form.context(), "docker/container › prune");
+        tab.key(key(Code::Char(' ')), &list, &mut Nowhere);
+        tab.key(key(Code::Down), &list, &mut Nowhere);
+        tab.key(key(Code::Enter), &list, &mut Nowhere);
+        assert_eq!(tab.form().unwrap().asking(), Some("Prune? volumes is on."));
         assert_eq!(
             tab.key(key(Code::Char('n')), &list, &mut Nowhere),
             Asked::Nothing(Some("Not run".into()))
         );
         tab.key(key(Code::Enter), &list, &mut Nowhere);
-        tab.key(key(Code::Char('y')), &list, &mut Nowhere);
-        let (_, dialog) = tab.arguments().unwrap();
-        assert_eq!(dialog.choices, ["no", "yes"]);
-        tab.key(key(Code::Down), &list, &mut Nowhere);
-        tab.key(key(Code::Down), &list, &mut Nowhere);
-        let Asked::Run { action, values, .. } = tab.key(key(Code::Enter), &list, &mut Nowhere)
+        let Asked::Run { action, values, .. } = tab.key(key(Code::Char('y')), &list, &mut Nowhere)
         else {
             panic!("not run");
         };

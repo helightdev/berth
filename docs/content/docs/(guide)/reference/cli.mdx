@@ -359,7 +359,7 @@ berth host rename NAME NEW [--hostname]
 | --- | --- |
 | `NAME` | Its name. |
 | `NEW` | Its new name. |
-| `--hostname` | Make NEW its profile's hostname as well, for the next apply. |
+| `--hostname` | Make NEW its profile's hostname as well, and its device's name on the tailnet, for the next apply. |
 
 ### berth host remove
 
@@ -374,7 +374,7 @@ berth host remove NAME [--destroy]
 | Argument | What it is |
 | --- | --- |
 | `NAME` | Its name. |
-| `--destroy` | Destroy the machine a provisioner made for it as well, with its disk. |
+| `--destroy` | Destroy the machine a provisioner made for it as well, with its disk, and remove its device from the tailnet. |
 
 ### berth host duplicate
 
@@ -629,6 +629,19 @@ berth provisioner set NAME NAME=VALUE…
 | `NAME` | Its name. |
 | `NAME=VALUE…` | A setting and its new value. |
 
+### berth provisioner rename
+
+Give a provisioner another name in berth, with its settings, secrets and what it made.
+
+```text
+berth provisioner rename NAME NEW
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `NEW` | Its new name. |
+
 ### berth provisioner remove
 
 Forget a provisioner that holds nothing.
@@ -818,12 +831,16 @@ The jobs, newest first.
 `berth job ls` is the same.
 
 ```text
-berth job list [--limit LIMIT]
+berth job list [--limit LIMIT] [--host HOST] [--subject SUBJECT] [--running] [--before ID]
 ```
 
 | Argument | What it is |
 | --- | --- |
 | `--limit LIMIT` | By default `20`. |
+| `--host HOST` | Only the jobs about this host. |
+| `--subject SUBJECT` | Only the jobs of this subject, such as provisioner:NAME or installation. |
+| `--running` | Only the jobs that are still running. |
+| `--before ID` | Only the jobs that started before this one, to see the next page. |
 
 ### berth job show
 
@@ -1265,7 +1282,7 @@ The messages, oldest first.
 `berth inbox ls` is the same.
 
 ```text
-berth inbox list [HOST] [--topic PREFIX] [--all]
+berth inbox list [HOST] [--topic PREFIX] [--all] [--before SEQ]
 ```
 
 | Argument | What it is |
@@ -1273,6 +1290,33 @@ berth inbox list [HOST] [--topic PREFIX] [--all]
 | `HOST` | A host's name. |
 | `--topic PREFIX` | Only topics that start with PREFIX. |
 | `--all` | Done ones as well. |
+| `--before SEQ` | Only those taken in before this one, by the number the list ends with. |
+
+### berth inbox done
+
+Mark a message done, so the list leaves it out.
+
+```text
+berth inbox done HOST ID
+```
+
+| Argument | What it is |
+| --- | --- |
+| `HOST` | A host's name. |
+| `ID` | Its id. |
+
+### berth inbox reopen
+
+Mark a done message as open again.
+
+```text
+berth inbox reopen HOST ID
+```
+
+| Argument | What it is |
+| --- | --- |
+| `HOST` | A host's name. |
+| `ID` | Its id. |
 
 ## berth kv
 
@@ -1380,13 +1424,18 @@ The berth server of this machine: running it, its setup key, its store and its A
 Serve the API over all hosts on a socket of this user, and over HTTP with --listen.
 
 ```text
-berth server run [--listen ADDRESS:PORT] [--expose]
+berth server run [--listen ADDRESS:PORT] [--expose] [--simulate] [--seed FILE] [--delay SECONDS] [--data DIR] [--keep]
 ```
 
 | Argument | What it is |
 | --- | --- |
 | `--listen ADDRESS:PORT` | Also listen over HTTP, behind a token. |
 | `--expose` | Allow an address other than this machine's own. |
+| `--simulate` | Run a simulated server to test an application against: the real API on a scratch store, with hosts and provisioners that reach no machine. |
+| `--seed FILE` | A JSON file with the hosts, provisioners, secrets and token the simulated server starts with. |
+| `--delay SECONDS` | Seconds a simulated step takes, 2 unless given; 0 for none. |
+| `--data DIR` | Keep the simulated server's state in DIR, an empty one or one of an earlier simulation, instead of a scratch directory. |
+| `--keep` | Leave the scratch directory when the simulated server ends. |
 
 ### berth server setup-key
 
@@ -1510,13 +1559,18 @@ berth server deploy [USER@]HOST [--container NAME] [--port PORT] [--release VERS
 Short for berth server run.
 
 ```text
-berth serve [--listen ADDRESS:PORT] [--expose]
+berth serve [--listen ADDRESS:PORT] [--expose] [--simulate] [--seed FILE] [--delay SECONDS] [--data DIR] [--keep]
 ```
 
 | Argument | What it is |
 | --- | --- |
 | `--listen ADDRESS:PORT` | Also listen over HTTP, behind a token. |
 | `--expose` | Allow an address other than this machine's own. |
+| `--simulate` | Run a simulated server to test an application against: the real API on a scratch store, with hosts and provisioners that reach no machine. |
+| `--seed FILE` | A JSON file with the hosts, provisioners, secrets and token the simulated server starts with. |
+| `--delay SECONDS` | Seconds a simulated step takes, 2 unless given; 0 for none. |
+| `--data DIR` | Keep the simulated server's state in DIR, an empty one or one of an earlier simulation, instead of a scratch directory. |
+| `--keep` | Leave the scratch directory when the simulated server ends. |
 
 ## berth login
 
