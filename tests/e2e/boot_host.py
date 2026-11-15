@@ -78,7 +78,7 @@ class FirstBoot(unittest.TestCase):
         unit = show(self.station, SERVICE, 'ActiveState', 'UnitFileState', 'User')
         self.assertEqual((unit['ActiveState'], unit['UnitFileState'], unit['User']), ('active', 'enabled', AGENT))
         answer = wait_for('the service answering', lambda: (done := self.station.berth(
-            'call', HOST, 'e2e/echo', 'say', '{"text": "hi"}', check=False)).returncode == 0 and done, timeout=60)
+            'service', 'call', HOST, 'e2e/echo', 'say', '{"text": "hi"}', check=False)).returncode == 0 and done, timeout=60)
         self.assertEqual(json.loads(answer.stdout), {'method': 'say', 'body': {'text': 'hi'}, 'level': 'host'})
 
     def test_ssh_takes_keys_only_and_no_root(self):
@@ -159,7 +159,7 @@ class Units(unittest.TestCase):
         before = self.state(SERVICE)['MainPID']
         self.link.post(f'/v1/units/{SERVICE}/stop')
         self.assertEqual(self.state(SERVICE)['ActiveState'], 'inactive')
-        refused = self.station.berth('call', HOST, 'e2e/echo', 'say', '{}', check=False)
+        refused = self.station.berth('service', 'call', HOST, 'e2e/echo', 'say', '{}', check=False)
         self.assertNotEqual(refused.returncode, 0)
         self.link.post(f'/v1/units/{SERVICE}/start')
         self.assertEqual(self.state(SERVICE)['ActiveState'], 'active')
@@ -168,7 +168,7 @@ class Units(unittest.TestCase):
         restarted = self.state(SERVICE)['MainPID']
         self.assertEqual(len({before, started, restarted}), 3, (before, started, restarted))
         wait_for('the service answering again', lambda: self.station.berth(
-            'call', HOST, 'e2e/echo', 'say', '{}', check=False).returncode == 0, timeout=60)
+            'service', 'call', HOST, 'e2e/echo', 'say', '{}', check=False).returncode == 0, timeout=60)
         status, answer = self.link.request('POST', f'/v1/units/{SERVICE}/mask', {})
         self.assertEqual(status, 400, answer)
 
@@ -213,7 +213,7 @@ class Reboot(unittest.TestCase):
         sleeper = self.link.post('/v1/sessions', {'kind': 'process', 'title': 'busy', 'command': ['sleep', '900']})
         boot = station.root_on_host('cat /proc/sys/kernel/random/boot_id').stdout
         try:
-            refused = station.berth('apply', '--all', '--reboot', check=False, timeout=1800)
+            refused = station.berth('rollout', '--all', '--reboot', check=False, timeout=1800)
             self.assertEqual(refused.returncode, 1, refused.stdout)
             self.assertRegex(refused.stdout, rf'(?m)^{HOST}: failed: needs a reboot, but 1 session is running there')
             self.assertEqual(station.root_on_host('cat /proc/sys/kernel/random/boot_id').stdout, boot)
@@ -224,7 +224,7 @@ class Reboot(unittest.TestCase):
         station = self.station
         station.root_on_host('touch /var/run/reboot-required')
         boot = station.root_on_host('cat /proc/sys/kernel/random/boot_id').stdout
-        done = station.berth('apply', '--all', '--reboot', check=False, timeout=2400)
+        done = station.berth('rollout', '--all', '--reboot', check=False, timeout=2400)
         self.assertEqual(done.returncode, 0, done.stdout[-3000:] + done.stderr[-2000:])
         self.assertIn(f'▸ {HOST}: rebooting', done.stdout)
         self.assertIn(f'✓ {HOST} is up to date', done.stdout)

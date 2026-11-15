@@ -68,16 +68,16 @@ class Adopt(unittest.TestCase):
         old_own = self.station.own_public()
         self.assertEqual(block(self.station, marker(old_own)), [old_own])
         # Its keys are not on the host yet, and it says the ways in.
-        refused = adopter.berth('adopt', HOST, f'{OPERATOR}@{HOST}', check=False)
+        refused = adopter.berth('host', 'adopt', HOST, f'{OPERATOR}@{HOST}', check=False)
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn('berth key show', refused.stderr)
-        self.assertIn('--key', refused.stderr)
-        self.assertNotEqual(adopter.berth('profile', HOST, check=False).returncode, 0)
+        self.assertIn('berth key show', refused.output)
+        self.assertIn('--key', refused.output)
+        self.assertNotEqual(adopter.berth('host', 'export', HOST, check=False).returncode, 0)
         # Its public key put into authorized_keys by hand, as from the console.
         self.station.ssh(OPERATOR, f'echo {shell_quote(own)} >> ~/.ssh/authorized_keys')
         self.station.root_on_host('mv /usr/local/bin/berthd /usr/local/bin/berthd.away')
         try:
-            adopted = adopter.berth('adopt', HOST, f'{OPERATOR}@{HOST}')
+            adopted = adopter.berth('host', 'adopt', HOST, f'{OPERATOR}@{HOST}')
         except AssertionError:
             self.station.root_on_host('mv /usr/local/bin/berthd.away /usr/local/bin/berthd')
             raise
@@ -88,10 +88,10 @@ class Adopt(unittest.TestCase):
         profile = adopter.read_profile()
         self.assertEqual(profile['access'], {'address': HOST, 'user': OPERATOR, 'auth': 'berth'})
         # Once there, it is not replaced without being asked.
-        again = adopter.berth('adopt', HOST, f'{OPERATOR}@{HOST}', check=False)
+        again = adopter.berth('host', 'adopt', HOST, f'{OPERATOR}@{HOST}', check=False)
         self.assertNotEqual(again.returncode, 0)
-        self.assertIn('--force', again.stderr)
-        adopter.berth('adopt', HOST, f'{OPERATOR}@{HOST}', '--force')
+        self.assertIn('--force', again.output)
+        adopter.berth('host', 'adopt', HOST, f'{OPERATOR}@{HOST}', '--force')
 
         # Its apply repairs berthd and gives its key a block of its own.
         adopter.berth('apply', HOST, timeout=900)

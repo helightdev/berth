@@ -20,7 +20,9 @@ class Plugin(unittest.TestCase):
         cls.link = cls.station.link()
 
     def test_berth_lists_it_with_what_it_brings(self):
-        listed = self.station.berth('plugins').stdout
+        plugins = json.loads(self.station.berth('plugin', 'list', '-o', 'json').stdout)['plugins']
+        self.assertIn(('e2e', PACKAGE, '1.0.0'), [(p['id'], p['package'], p['version']) for p in plugins])
+        listed = self.station.berth('plugin', 'show', 'e2e').stdout
         self.assertRegex(listed, rf'(?m)^e2e  {PACKAGE} 1\.0\.0  ')
         self.assertIn('e2e/hello  Hello (Testing)', listed)
         self.assertIn('action   e2e:hello  Say hello (as agent; the agent may run it; asks name)', listed)
@@ -28,11 +30,14 @@ class Plugin(unittest.TestCase):
         self.assertIn('channel  e2e/notes', listed)
 
     def test_its_task_runs_with_an_argument(self):
-        self.assertRegex(self.station.berth('actions', HOST).stdout, r'e2e:hello\s+Say hello\s+name=…')
+        listed = json.loads(self.station.berth('action', 'list', HOST, '-o', 'json').stdout)
+        hello = next(action for action in listed if action['name'] == 'e2e:hello')
+        self.assertEqual((hello['label'], [argument['name'] for argument in hello['arguments']]), ('Say hello', ['name']))
         done = self.station.berth('run', HOST, 'e2e:hello', 'name=ada')
         self.assertEqual(done.stdout.strip(), f'hello ada from {AGENT}')
         missing = self.station.berth('run', HOST, 'e2e:hello', check=False)
-        self.assertIn('e2e:hello needs name=VALUE', missing.stderr)
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn('is missing: pass name=VALUE', missing.stderr)
         choices = self.link.get('/v1/actions/e2e:hello/choices/name')
         self.assertEqual(choices['choices'], ['ada', 'grace'])
         # The agent may run it too.
@@ -49,7 +54,7 @@ class Plugin(unittest.TestCase):
         self.assertIn('box run e2e:hello', guide)
 
     def test_its_service_answers_once_something_serves_it(self):
-        refused = self.station.berth('call', HOST, 'e2e/echo', 'say', '{}', check=False)
+        refused = self.station.berth('service', 'call', HOST, 'e2e/echo', 'say', '{}', check=False)
         self.assertNotEqual(refused.returncode, 0)
         # systemd would run the service; here the tests do, as the agent.
         served = self.link.post('/v1/sessions', {
@@ -57,7 +62,7 @@ class Plugin(unittest.TestCase):
             'command': ['bash', '/usr/local/lib/berth/services/e2e-echo.sh']})
         try:
             def answered():
-                done = self.station.berth('call', HOST, 'e2e/echo', 'say', '{"text": "hi"}', check=False)
+                done = self.station.berth('service', 'call', HOST, 'e2e/echo', 'say', '{"text": "hi"}', check=False)
                 return done.returncode == 0 and json.loads(done.stdout)
             self.assertEqual(wait_for('the service answering', answered),
                              {'method': 'say', 'body': {'text': 'hi'}, 'level': 'host'})
@@ -85,7 +90,7 @@ class PluginRemoved(unittest.TestCase):
         cls.station = plain().station
 
     def test_its_tasks_are_gone_from_berth_and_the_host(self):
-        self.assertNotIn('e2e/hello', self.station.berth('plugins').stdout)
-        self.assertNotIn('e2e:hello', self.station.berth('actions', HOST).stdout)
+        self.assertNotIn('e2e', self.station.berth('plugin', 'list').stdout.split())
+        self.assertNotIn('e2e:hello', self.station.berth('action', 'list', HOST).stdout)
         services = json.loads(self.station.root_on_host('cat /etc/berth/services.json').stdout)
         self.assertEqual(services, [])

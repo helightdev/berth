@@ -14,15 +14,17 @@ class Commands(unittest.TestCase):
         cls.station = provisioned()
 
     def test_tasks_are_listed_by_group(self):
-        listed = self.station.berth('actions', HOST).stdout
-        for line in ('System', 'Sync', 'Sign-In'):
-            self.assertRegex(listed, rf'(?m)^{line}$')
-        self.assertRegex(listed, r'(?m)^  secrets\s+Secrets and registry logins')
+        listed = json.loads(self.station.berth('action', 'list', HOST, '-o', 'json').stdout)
+        groups = {action['group'] or 'System' for action in listed}
+        self.assertLessEqual({'System', 'Sync', 'Sign-In'}, groups)
+        secrets = next(action for action in listed if action['name'] == 'secrets')
+        self.assertEqual(secrets['label'], 'Secrets and registry logins')
+        self.assertRegex(self.station.berth('action', 'list', HOST).stdout, r'(?m)^secrets\s+')
 
     def test_a_task_runs_and_its_exit_code_is_berths(self):
         self.assertEqual(self.station.berth('run', HOST, 'sign-in:status').returncode, 0)
         missing = self.station.berth('run', HOST, 'nothing-like-this', check=False)
-        self.assertEqual(missing.returncode, 1)
+        self.assertEqual(missing.returncode, 2)
         self.assertIn('has no action nothing-like-this', missing.stderr)
 
     def test_the_status_task_copes_without_systemd(self):
@@ -45,16 +47,16 @@ class Commands(unittest.TestCase):
     def test_a_kept_session_is_listed_with_its_output(self):
         marker = random_text('kept')
         self.station.berth('exec', HOST, '--keep', '--', 'echo', marker)
-        listed = self.station.berth('sessions', HOST).stdout
+        listed = self.station.berth('session', 'list', HOST).stdout
         line = next(line for line in listed.splitlines() if marker in line)
         self.assertIn('exit 0', line)
         session = line.split()[0]
-        output = self.station.berth('output', HOST, session).stdout
+        output = self.station.berth('session', 'logs', HOST, session).stdout
         self.assertEqual(output.strip(), marker)
-        self.assertEqual(self.station.berth('output', HOST, session, '--tail', '1').stdout.strip(), marker)
+        self.assertEqual(self.station.berth('session', 'logs', HOST, session, '--tail', '1').stdout.strip(), marker)
 
     def test_attach_is_a_terminal_on_the_host(self):
-        terminal = self.station.terminal('attach', HOST)
+        terminal = self.station.terminal('session', 'attach', HOST)
         try:
             terminal.pump(2)
             terminal.send('echo "$(id -un) $((6 * 7))"\r')

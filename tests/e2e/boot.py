@@ -165,13 +165,12 @@ def boot_cloud(run, side, station):
     with run.phase('fetch the cloud image'):
         image = vm.cloud_image()
     with run.phase('render the seed'):
-        station.berth('plugins', 'add', str(FIXTURE))
+        station.berth('plugin', 'add', str(FIXTURE))
         station.write_profile(boot_profile(station, 'cloud', release_url=f'https://{vm.GATEWAY}/devbox-release.tar.gz'))
-        station.berth('seed', HOST, timeout=300)
+        user_data = station.berth('host', 'seed', HOST, timeout=300).stdout
         build = station.data / 'berth/build'
         side.publish(build / 'devbox-release.tar.gz')
-        user_data = (build / HOST / 'cloud/user-data').read_text()
-        shutil.copyfile(build / HOST / 'cloud/user-data', run.logs / 'user-data')
+        (run.logs / 'user-data').write_text(user_data)
     machine = vm.Machine(HOST, run)
     # The provider's part: the instance's name, and trust in the test side's
     # certificate authority, which the release server's certificate is from.
@@ -208,11 +207,11 @@ def install_iso(run, side, station):
     with run.phase('fetch the installer ISO'):
         iso, sha = vm.server_iso()
     with run.phase('build the installer'):
-        station.berth('plugins', 'add', str(FIXTURE))
+        station.berth('plugin', 'add', str(FIXTURE))
         station.write_profile(boot_profile(station, 'iso', target_disk_mode='serial', target_disk_serial=TARGET,
                                            builder={'shipped_plugins': True, 'iso': str(iso),
                                                     'iso_sha256': sha}))
-        station.berth('iso', HOST, timeout=1800)
+        station.berth('host', 'iso', HOST, timeout=1800)
         built = station.data / 'berth/build' / f'{HOST}-autoinstall.iso'
         run.facts['installer_gb'] = round(built.stat().st_size / 2**30, 2)
 

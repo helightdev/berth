@@ -135,8 +135,7 @@ class ThroughTheServer(Joined, unittest.TestCase):
         self.serve.call('PUT', '/v1/hosts/cloud-5/profile', joining(draft))
         try:
             before = last_key_id()
-            written = self.client.berth('seed', 'cloud-5').stdout.strip()
-            seed = open(written).read()
+            seed = self.client.berth('host', 'seed', 'cloud-5').stdout
             made = [key for key in headscale().keys() if int(key['id']) > before]
             self.assertEqual(len(made), 1)
             self.assertFalse(made[0]['used'])
