@@ -91,6 +91,90 @@
             ]
           }
         ],
+        "collections": [
+          {
+            "id": "pools",
+            "label": "Storage pool",
+            "plural": "Storage pools",
+            "group": "Storage",
+            "help": "The storage pools of the server, which hold the disks of machines, the cached images and the custom volumes.",
+            "key": ["pool"],
+            "columns": [
+              {"name": "driver", "label": "Driver"},
+              {"name": "source", "label": "Source"},
+              {"name": "size", "label": "Size"},
+              {"name": "used", "label": "Used"},
+              {"name": "free", "label": "Free"}
+            ],
+            "new": [
+              {"action": "create-pool"}
+            ],
+            "item": [
+              {"action": "resize-pool", "label": "Grow"},
+              {"action": "set-pool", "label": "Change a setting"},
+              {"action": "remove-pool", "label": "Remove", "arguments": {"pool": "name"}}
+            ],
+            "remove": "remove-pool",
+            "show": "pools"
+          },
+          {
+            "id": "volumes",
+            "label": "Volume",
+            "plural": "Volumes",
+            "group": "Storage",
+            "help": "The custom volumes of the storage pools in the project, which an instance can mount.",
+            "key": ["pool", "volume"],
+            "within": "pools",
+            "columns": [
+              {"name": "pool", "label": "Pool"},
+              {"name": "type", "label": "Type"},
+              {"name": "size", "label": "Size"},
+              {"name": "used", "label": "Used"},
+              {"name": "used_by", "label": "Used by"}
+            ],
+            "new": [
+              {"action": "create-volume"}
+            ],
+            "item": [
+              {"action": "resize-volume", "label": "Resize"},
+              {"action": "remove-volume", "label": "Remove", "arguments": {"volume": "name"}}
+            ],
+            "remove": "remove-volume",
+            "show": "volumes"
+          },
+          {
+            "id": "images",
+            "label": "Cached image",
+            "plural": "Cached images",
+            "group": "Storage",
+            "help": "The images the server keeps in its project. Incus fetches one from images.linuxcontainers.org when a machine first needs it, and again after it is removed.",
+            "key": ["image"],
+            "columns": [
+              {"name": "fingerprint", "label": "Fingerprint"},
+              {"name": "type", "label": "Type"},
+              {"name": "size", "label": "Size"},
+              {"name": "cached", "label": "Cached"},
+              {"name": "uploaded", "label": "Uploaded"}
+            ],
+            "item": [
+              {"action": "remove-image", "label": "Remove"}
+            ],
+            "remove": "remove-image",
+            "show": "images"
+          },
+          {
+            "id": "instances",
+            "label": "Instance",
+            "plural": "Instances",
+            "group": "Storage",
+            "help": "The machines and instances berth made with the provisioner, whose actions are on the page of each.",
+            "key": ["instance"],
+            "kinds": ["machine", "instance"],
+            "item": [
+              {"action": "resize-disk"}
+            ]
+          }
+        ],
         "actions": [
           {"name": "server", "label": "Check the server", "group": "Server", "changes": false, "help": "Ask the Incus server for its version, its kernel and its storage drivers, and whether it trusts berth's client certificate."},
           {"name": "pools", "label": "Storage pools", "group": "Storage", "changes": false, "help": "The storage pools of the server as a table: each one's driver, source, size, used and free space, and whether it can grow, or why not."},
@@ -188,6 +272,90 @@
               {"name": "pool", "label": "Storage pool", "default": "default", "help": "The storage pool of the Incus server its disk is in."},
               {"name": "network", "label": "Network", "default": "", "help": "The network it is attached to. Empty takes the network of the default profile."},
               {"name": "nesting", "label": "Nesting", "default": "yes", "values": ["yes", "no"], "help": "Whether containers can run in it, such as Docker's. yes also lets the guest's systemd come up in an unprivileged container."}
+            ]
+          }
+        ],
+        "collections": [
+          {
+            "id": "pools",
+            "label": "Storage pool",
+            "plural": "Storage pools",
+            "group": "Storage",
+            "help": "The storage pools of the server, which hold the disks of machines, the cached images and the custom volumes.",
+            "key": ["pool"],
+            "columns": [
+              {"name": "driver", "label": "Driver"},
+              {"name": "source", "label": "Source"},
+              {"name": "size", "label": "Size"},
+              {"name": "used", "label": "Used"},
+              {"name": "free", "label": "Free"}
+            ],
+            "new": [
+              {"action": "create-pool"}
+            ],
+            "item": [
+              {"action": "resize-pool", "label": "Grow"},
+              {"action": "set-pool", "label": "Change a setting"},
+              {"action": "remove-pool", "label": "Remove", "arguments": {"pool": "name"}}
+            ],
+            "remove": "remove-pool",
+            "show": "pools"
+          },
+          {
+            "id": "volumes",
+            "label": "Volume",
+            "plural": "Volumes",
+            "group": "Storage",
+            "help": "The custom volumes of the storage pools in the project, which an instance can mount.",
+            "key": ["pool", "volume"],
+            "within": "pools",
+            "columns": [
+              {"name": "pool", "label": "Pool"},
+              {"name": "type", "label": "Type"},
+              {"name": "size", "label": "Size"},
+              {"name": "used", "label": "Used"},
+              {"name": "used_by", "label": "Used by"}
+            ],
+            "new": [
+              {"action": "create-volume"}
+            ],
+            "item": [
+              {"action": "resize-volume", "label": "Resize"},
+              {"action": "remove-volume", "label": "Remove", "arguments": {"volume": "name"}}
+            ],
+            "remove": "remove-volume",
+            "show": "volumes"
+          },
+          {
+            "id": "images",
+            "label": "Cached image",
+            "plural": "Cached images",
+            "group": "Storage",
+            "help": "The images the server keeps in its project. Incus fetches one from images.linuxcontainers.org when a machine first needs it, and again after it is removed.",
+            "key": ["image"],
+            "columns": [
+              {"name": "fingerprint", "label": "Fingerprint"},
+              {"name": "type", "label": "Type"},
+              {"name": "size", "label": "Size"},
+              {"name": "cached", "label": "Cached"},
+              {"name": "uploaded", "label": "Uploaded"}
+            ],
+            "item": [
+              {"action": "remove-image", "label": "Remove"}
+            ],
+            "remove": "remove-image",
+            "show": "images"
+          },
+          {
+            "id": "instances",
+            "label": "Instance",
+            "plural": "Instances",
+            "group": "Storage",
+            "help": "The machines and instances berth made with the provisioner, whose actions are on the page of each.",
+            "key": ["instance"],
+            "kinds": ["machine", "instance"],
+            "item": [
+              {"action": "resize-disk"}
             ]
           }
         ],

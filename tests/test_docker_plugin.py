@@ -382,6 +382,57 @@ class Provision(Harness):
         self.assertEqual(done.returncode, 1)
         self.assertIn('not reachable', done.stderr)
 
+    def test_status_gives_the_images_and_volumes_as_rows_with_what_uses_them(self):
+        lines = lambda *rows: [0, ''.join(json.dumps(row) + '\n' for row in rows), '']
+        rules = [{'prefix': ['ps', '--all', '--no-trunc'], 'results': [lines(
+                     {'Names': 'berth-studio', 'Image': 'berth-docker:0.2.0', 'Mounts': 'berth-studio-home'},
+                     {'Names': 'web', 'Image': 'debian', 'Mounts': ''})]},
+                 {'prefix': ['image', 'ls'], 'results': [lines(
+                     {'Repository': 'berth-docker', 'Tag': '0.2.0', 'ID': 'sha256:1111aaaa2222bbbb', 'Size': '812MB',
+                      'CreatedSince': '2 days ago'},
+                     {'Repository': 'debian', 'Tag': 'latest', 'ID': '3333cccc4444', 'Size': '117MB',
+                      'CreatedSince': '3 weeks ago'},
+                     {'Repository': '<none>', 'Tag': '<none>', 'ID': '5555dddd6666', 'Size': '80MB',
+                      'CreatedSince': '2 months ago'})]},
+                 {'prefix': ['volume', 'ls'], 'results': [lines(
+                     {'Name': 'berth-studio-home', 'Driver': 'local', 'Labels': 'berth-host=studio'},
+                     {'Name': 'wiki-data', 'Driver': 'local', 'Labels': ''})]},
+                 {'prefix': ['system', 'df'], 'results': [[0, json.dumps(
+                     {'Volumes': [{'Name': 'berth-studio-home', 'Size': '2.4GB'}]}), '']]}]
+        done = self.run_verb('status', rules=rules)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        collections = json.loads(done.stdout)['collections']
+        images = {row['name']: row for row in collections['images']}
+        self.assertEqual(sorted(images), ['5555dddd6666', 'berth-docker:0.2.0', 'debian:latest'])
+        self.assertEqual(images['berth-docker:0.2.0']['columns'],
+                         {'id': '1111aaaa2222', 'size': '812MB', 'created': '2 days ago', 'used_by': 'berth-studio'})
+        self.assertEqual(images['berth-docker:0.2.0']['key'], {'image': 'berth-docker:0.2.0'})
+        # A container that names debian uses debian:latest, which cannot be removed while it does.
+        self.assertEqual(images['debian:latest']['unavailable'],
+                         {'remove-image': 'Docker refuses it while web uses it'})
+        self.assertEqual(images['5555dddd6666']['unavailable'], {})
+        volumes = {row['name']: row for row in collections['volumes']}
+        self.assertEqual(volumes['berth-studio-home']['columns'],
+                         {'driver': 'local', 'size': '2.4GB', 'made_for': 'studio', 'used_by': 'berth-studio'})
+        self.assertIn('remove-volume', volumes['berth-studio-home']['unavailable'])
+        self.assertEqual(volumes['wiki-data']['columns']['used_by'], 'nothing')
+        self.assertEqual(volumes['wiki-data']['unavailable'], {})
+
+    def test_the_manifest_puts_the_list_and_change_actions_in_collections(self):
+        [entry] = json.loads((PLUGIN / 'package.json').read_text())['berth']['provisioners']
+        collections = {collection['id']: collection for collection in entry['collections']}
+        self.assertEqual(sorted(collections), ['images', 'volumes'])
+        images, volumes = collections['images'], collections['volumes']
+        self.assertEqual([used['action'] for used in images['new']], ['pull-image', 'build'])
+        self.assertEqual([used['action'] for used in images['list']], ['prune'])
+        self.assertEqual((images['remove'], images['show']), ('remove-image', 'images'))
+        self.assertEqual(volumes['item'], [{'action': 'remove-volume', 'label': 'Remove',
+                                            'arguments': {'volume': 'name'}}])
+        named = {used['action'] for collection in collections.values() for sort in ('new', 'item', 'list')
+                 for used in collection.get(sort, [])} | {collection['show'] for collection in collections.values()}
+        # Only checking the engine stays a loose action of the page.
+        self.assertEqual([action['name'] for action in entry['actions'] if action['name'] not in named], ['engine'])
+
     def test_change_sets_new_limits(self):
         rules = [{'prefix': ['container', 'inspect'], 'results': [inspect(OURS)]}]
         done = self.run_verb('change', {'id': 'berth-studio'}, arguments={'cpus': '2', 'memory': '1GiB'}, rules=rules)
