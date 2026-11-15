@@ -109,9 +109,9 @@ A pull request is ready when:
   vale --minAlertLevel=warning "docs/content/docs/(guide)" README.md AGENTS.md
   ```
 
-- berth and berth-remote do the same things with a server's hosts. A feature
-  added to one is added to the other, with the shared part in
-  `crates/berth-tui`.
+- The screens do everything through the API of a server, whichever it is. A
+  feature of theirs is an operation or an action of the server first, and
+  then their part in `crates/berth-page` and `crates/berth-tui`.
 - Commits follow [Conventional Commits](https://www.conventionalcommits.org/),
   with a short subject that says what changed.
 - The pull request links its issue and stays within it. Leave unrelated

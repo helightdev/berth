@@ -82,8 +82,8 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
             println!("{key}");
             eprintln!(
                 "This setup key lets the first user collect the token of this berth server, until {} or until they are done.\n\
-                 With berth:         berth connect URL   and paste the key when asked.\n\
-                 With berth-remote:  berth-remote --server URL   with the key in BERTH_SETUP_KEY.\n\
+                 With berth:  berth connect URL   and paste the key when asked,\n\
+                 or open the screens with the key in BERTH_SETUP_KEY: BERTH_SERVER=URL berth\n\
                  URL is the server's address, such as https://studio.example.ts.net.",
                 rfc3339(expires)
             );

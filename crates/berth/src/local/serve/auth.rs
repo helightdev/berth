@@ -78,6 +78,16 @@ impl Auth {
         })
     }
 
+    /// Nobody over the network, for a server that has no listener there:
+    /// its one caller is the owner, who sets it up.
+    pub fn nobody() -> Auth {
+        Auth {
+            token: None,
+            setup: true,
+            oauth: None,
+        }
+    }
+
     /// Only the server's own token, with set-up open.
     #[cfg(test)]
     pub fn token(token: Option<String>) -> Auth {

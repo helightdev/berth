@@ -2,9 +2,8 @@
 //! with whether it can be used here, and the page of one, built with
 //! [`crate::page`]: how it is now, what it says of itself, what it holds by
 //! kind, and its actions. A resource berth made with it has a page of its own
-//! with its state, its actions and its log. berth shows those of this machine or of its
-//! berth server, berth-remote those of the server it is signed in to. What
-//! the tab asks for, each of them does its own way, and tells the tab what
+//! with its state, its actions and its log: those of the server the screens
+//! use. What the tab asks for goes to the server, which tells the tab what
 //! came back.
 
 use crate::event::{Code, Event, Key};

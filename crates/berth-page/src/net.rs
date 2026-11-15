@@ -5,13 +5,9 @@ use berth_api::client::{self, Error};
 use std::cell::RefCell;
 use std::future::Future;
 use std::sync::{Arc, OnceLock, mpsc};
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
-/// A connection, over TLS or not.
-pub trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
-impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
-pub type Stream = Box<dyn Io>;
+pub use berth_api::client::Stream;
 
 /// The runtime the connections run on; the screens stay on the main thread.
 pub fn runtime() -> &'static tokio::runtime::Runtime {
@@ -25,34 +21,65 @@ pub fn runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
-/// Where an address goes: the name and port to connect to, the authority to
-/// name in requests, the path after it, and whether over TLS.
-pub struct Target {
-    pub name: String,
-    pub port: u16,
-    pub authority: String,
-    pub path: String,
-    pub secure: bool,
+/// How a server is reached.
+pub enum Way {
+    /// Over TCP, with TLS when `secure`.
+    Network {
+        name: String,
+        port: u16,
+        secure: bool,
+    },
+    /// The socket of a `berth serve` on this machine.
+    Socket(std::path::PathBuf),
+    /// The server in this process.
+    Here,
 }
 
-/// Take an `http(s)://` or `ws(s)://` address apart.
-pub fn target(url: &str) -> Result<Target, String> {
-    let (secure, rest) = if let Some(rest) = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("wss://"))
-    {
+/// Where a request goes: how the server is reached, the authority to name in
+/// requests, and the path.
+pub struct Target {
+    pub way: Way,
+    pub authority: String,
+    pub path: String,
+}
+
+/// The server in this process, when the program runs one.
+static HERE: std::sync::RwLock<Option<client::Dial>> = std::sync::RwLock::new(None);
+
+/// Reach `here:` through `dial`, until another is given.
+pub fn serve_here(dial: client::Dial) {
+    *HERE
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(dial);
+}
+
+/// Where `path` of `server` is: `http(s)://HOST[:PORT]`, `unix:/path` or `here:`.
+pub fn target(server: &str, path: &str) -> Result<Target, String> {
+    if server == crate::device::HERE {
+        return Ok(Target {
+            way: Way::Here,
+            authority: "berth".into(),
+            path: path.to_owned(),
+        });
+    }
+    if let Some(socket) = server.strip_prefix("unix:") {
+        return Ok(Target {
+            way: Way::Socket(socket.into()),
+            authority: "berth".into(),
+            path: path.to_owned(),
+        });
+    }
+    let (secure, rest) = if let Some(rest) = server.strip_prefix("https://") {
         (true, rest)
-    } else if let Some(rest) = url
-        .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("ws://"))
-    {
+    } else if let Some(rest) = server.strip_prefix("http://") {
         (false, rest)
     } else {
-        return Err(format!("{url} is no http:// or https:// address"));
+        return Err(format!("{server} is no http:// or https:// address"));
     };
-    let (authority, path) = match rest.find('/') {
-        Some(at) => (&rest[..at], &rest[at..]),
-        None => (rest, "/"),
+    // What follows the authority is the server's own prefix, before the path.
+    let (authority, prefix) = match rest.find('/') {
+        Some(at) => (&rest[..at], rest[at..].trim_end_matches('/')),
+        None => (rest, ""),
     };
     let default = if secure { 443 } else { 80 };
     let (host, port) = match authority.rsplit_once(':') {
@@ -64,14 +91,16 @@ pub fn target(url: &str) -> Result<Target, String> {
         _ => (authority, default),
     };
     if host.is_empty() {
-        return Err(format!("{url} names no host"));
+        return Err(format!("{server} names no host"));
     }
     Ok(Target {
-        name: host.trim_matches(['[', ']']).to_owned(),
-        port,
+        way: Way::Network {
+            name: host.trim_matches(['[', ']']).to_owned(),
+            port,
+            secure,
+        },
         authority: format!("{host}:{port}"),
-        path: path.to_owned(),
-        secure,
+        path: format!("{prefix}{path}"),
     })
 }
 
@@ -98,15 +127,40 @@ fn tls() -> Arc<rustls::ClientConfig> {
 
 /// Connect to where `target` points, with TLS when it says so.
 pub async fn connect(target: &Target) -> Result<Stream, String> {
-    let stream = TcpStream::connect((target.name.as_str(), target.port))
+    let (name, port, secure) = match &target.way {
+        Way::Here => {
+            let dial = HERE
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+                .ok_or("There is no server in this program")?;
+            return dial().await.map_err(|error| describe(&error));
+        }
+        #[cfg(unix)]
+        Way::Socket(path) => {
+            let stream = tokio::net::UnixStream::connect(path)
+                .await
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            return Ok(Box::new(stream));
+        }
+        #[cfg(not(unix))]
+        Way::Socket(path) => {
+            return Err(format!(
+                "{} is a socket, which this system has none of",
+                path.display()
+            ));
+        }
+        Way::Network { name, port, secure } => (name, *port, *secure),
+    };
+    let stream = TcpStream::connect((name.as_str(), port))
         .await
         .map_err(|error| format!("{}: {error}", target.authority))?;
     let _ = stream.set_nodelay(true);
-    if !target.secure {
+    if !secure {
         return Ok(Box::new(stream));
     }
-    let name = rustls::pki_types::ServerName::try_from(target.name.clone())
-        .map_err(|error| error.to_string())?;
+    let name =
+        rustls::pki_types::ServerName::try_from(name.clone()).map_err(|error| error.to_string())?;
     let stream = tokio_rustls::TlsConnector::from(tls())
         .connect(name, stream)
         .await
@@ -115,8 +169,13 @@ pub async fn connect(target: &Target) -> Result<Stream, String> {
 }
 
 /// One request with a bearer: the status and the body of the answer.
-pub async fn http(method: &str, url: &str, bearer: &str) -> Result<(u16, String), String> {
-    let target = target(url)?;
+pub async fn http(
+    method: &str,
+    server: &str,
+    path: &str,
+    bearer: &str,
+) -> Result<(u16, String), String> {
+    let target = target(server, path)?;
     let stream = connect(&target).await?;
     let mut client = client::Client::over(stream)
         .await
@@ -208,28 +267,41 @@ pub fn pump() {
 mod tests {
     use super::*;
 
+    fn network(target: &Target) -> (&str, u16, bool) {
+        match &target.way {
+            Way::Network { name, port, secure } => (name, *port, *secure),
+            _ => panic!("not over the network"),
+        }
+    }
+
     #[test]
     fn addresses_are_taken_apart() {
-        let at = target("wss://studio.example/v1/portal").unwrap();
+        let at = target("https://studio.example", "/v1/portal").unwrap();
+        assert_eq!(network(&at), ("studio.example", 443, true));
         assert_eq!(
-            (at.name.as_str(), at.port, at.authority.as_str()),
-            ("studio.example", 443, "studio.example:443")
+            (at.authority.as_str(), at.path.as_str()),
+            ("studio.example:443", "/v1/portal")
         );
-        assert_eq!((at.path.as_str(), at.secure), ("/v1/portal", true));
-        let at = target("http://192.0.2.10:7878").unwrap();
-        assert_eq!((at.name.as_str(), at.port), ("192.0.2.10", 7878));
-        assert_eq!((at.path.as_str(), at.secure), ("/", false));
-        let at = target("ws://[2001:db8::1]:7878/v1/portal").unwrap();
-        assert_eq!((at.name.as_str(), at.port), ("2001:db8::1", 7878));
-        let at = target("https://[2001:db8::1]/").unwrap();
-        assert_eq!((at.name.as_str(), at.port), ("2001:db8::1", 443));
+        let at = target("http://192.0.2.10:7878", "/v1/access").unwrap();
+        assert_eq!(network(&at), ("192.0.2.10", 7878, false));
+        let at = target("http://[2001:db8::1]:7878/berth/", "/v1/portal").unwrap();
+        assert_eq!(network(&at), ("2001:db8::1", 7878, false));
+        assert_eq!(at.path, "/berth/v1/portal");
+        let at = target("https://[2001:db8::1]", "/").unwrap();
+        assert_eq!(network(&at).1, 443);
+        let at = target("unix:/run/user/1000/berth/serve.sock", "/v1/portal").unwrap();
+        assert!(matches!(&at.way, Way::Socket(path) if path.ends_with("serve.sock")));
+        assert!(matches!(
+            target("here:", "/v1/portal").unwrap().way,
+            Way::Here
+        ));
         for wrong in [
             "studio.example",
             "ftp://studio.example",
             "https://",
             "http://studio:port",
         ] {
-            assert!(target(wrong).is_err(), "{wrong}");
+            assert!(target(wrong, "/").is_err(), "{wrong}");
         }
     }
 }

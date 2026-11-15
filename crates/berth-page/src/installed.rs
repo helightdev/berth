@@ -49,12 +49,8 @@ impl Installed {
     pub fn claim(server: &str, key: String) -> Installed {
         let claim = Rc::new(RefCell::new(Claim::Asking));
         let answered = claim.clone();
-        device::request(
-            "POST",
-            &format!("{server}/v1/setup-key"),
-            &key,
-            move |answer| {
-                *answered.borrow_mut() = match answer {
+        device::request("POST", server, "/v1/setup-key", &key, move |answer| {
+            *answered.borrow_mut() = match answer {
                     Ok((200, body)) => {
                         let said: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
                         let text = |name: &str| said[name].as_str().unwrap_or("").to_owned();
@@ -79,8 +75,7 @@ impl Installed {
                     }
                     Err(error) => Claim::Failed(format!("The server did not answer: {error}")),
                 };
-            },
-        );
+        });
         Installed {
             server: server.to_owned(),
             key,
@@ -140,7 +135,8 @@ impl Installed {
     pub fn done(&self, then: impl FnOnce(Option<String>) + 'static) {
         device::request(
             "DELETE",
-            &format!("{}/v1/setup-key", self.server),
+            &self.server,
+            "/v1/setup-key",
             &self.key,
             move |answer| {
                 then(match answer {

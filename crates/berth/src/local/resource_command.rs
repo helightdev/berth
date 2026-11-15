@@ -4,8 +4,8 @@
 //! otherwise here, with this berth's secrets.
 
 use crate::Result;
-use crate::commands::{parse_arguments, ready};
-use crate::provisioner_command::{Change, Ran, Source, answer_lines};
+use crate::local::commands::{parse_arguments, ready};
+use crate::local::provisioner_command::{Change, Ran, Source, answer_lines};
 use berth_api::{Action, NewResource, Resource, ResourceSecret};
 use berth_core::{paths::Paths, resource};
 use std::io::{IsTerminal, Read, Write};

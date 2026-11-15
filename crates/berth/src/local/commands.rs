@@ -1,10 +1,7 @@
 //! The commands that talk to a host's controller: sessions, actions, the
 //! channel and services. Each is a plain program that waits on a runtime.
 
-use crate::{
-    Result,
-    remote::{exited, list},
-};
+use crate::Result;
 use berth_api::{
     self as api,
     client::{Error, Frame, encode, encode_path},
@@ -17,11 +14,17 @@ use berth_core::{
     profiles::Place,
     provision, registry, runner,
 };
+use berth_tui::host::list;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, Write};
 use tokio::io::AsyncReadExt;
+
+/// The exit code an `exited` frame carries, when the text is one.
+fn exited(text: &str) -> Option<Option<i32>> {
+    berth_tui::host::exited(&serde_json::from_str(text).ok()?)
+}
 
 /// Ctrl+Q, which leaves a terminal session without ending it.
 const DETACH: u8 = 0x11;
@@ -906,7 +909,7 @@ pub fn add_host(paths: &Paths, name: &str, address: &str, args: &[&str]) -> Resu
     if !contact {
         return Ok(());
     }
-    crate::key_command::trust(paths, name, &[]).map_err(|error| -> Box<dyn std::error::Error> {
+    crate::local::key_command::trust(paths, name, &[]).map_err(|error| -> Box<dyn std::error::Error> {
         format!("{name} is saved, but logging in to it did not work yet: {error}. Try again with: berth key trust {name}").into()
     })?;
     offer_found_type(paths, name, host_type)
@@ -1037,29 +1040,79 @@ pub fn call(
 /// is a job of the server, whose output is shown as it comes.
 pub fn apply(paths: &Paths, name: &str) -> Result<()> {
     let host = Host::load(paths, name)?;
-    let Some(server) = host.served(paths) else {
-        let password = host.sudo_password(paths)?;
-        let prepared = berth_core::apply::prepare(paths, &host, password.as_deref())?;
-        let work = runner::Work::Program(Box::new(runner::Program {
-            command: prepared.command,
-            input: None,
-            files: prepared.files,
-        }));
-        let request = runner::Request::new(runner::Subject::Host(name.to_owned()), "apply");
-        let code = runner::here(paths, request, work, &mut std::io::stdout())?;
-        if code == Some(0) {
-            berth_core::apply::settle(paths, &host)?;
-        }
-        std::process::exit(code.unwrap_or(1));
-    };
     // The server has no terminal to ask on: a password it needs is asked for here.
     let act = api::Act {
         sudo_password: host.sudo_password(paths)?,
         ..api::Act::default()
     };
+    let (server, here) = crate::local::serve::here::server(paths)?;
     let acted = act_on(&server, Some(name), "apply", &act)?;
     let code = follow_acted(&server, None, acted, &mut std::io::stdout())?;
+    crate::local::serve::here::finish(here);
     std::process::exit(code);
+}
+
+/// `berth iso HOST [--write DEVICE]`: build the host's USB installer on the
+/// server of this machine, and write it to the USB drive `device`, which is
+/// erased, after asking.
+pub fn installer(paths: &Paths, name: &str, device: Option<&str>) -> Result<()> {
+    let mut arguments = BTreeMap::new();
+    if let Some(device) = device {
+        print!("Erase {device} and write the installer to it? [y/N] ");
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            return Err("Not written".into());
+        }
+        let password = registry::read_secret("Your sudo password (empty when sudo needs none)")?;
+        arguments.insert("device".to_owned(), device.to_owned());
+        arguments.insert("password".to_owned(), password);
+    }
+    let act = api::Act {
+        arguments,
+        ..api::Act::default()
+    };
+    let (server, here) = crate::local::serve::here::server(paths)?;
+    let acted = act_on(&server, Some(name), "installer", &act)?;
+    let code = follow_acted(&server, None, acted, &mut std::io::stdout())?;
+    crate::local::serve::here::finish(here);
+    std::process::exit(code);
+}
+
+/// `ssh` to the host as its profile says, running `remote` there, or a shell.
+pub fn terminal(paths: &Paths, name: &str, remote: &[&str]) -> Result<std::process::Command> {
+    let host = Host::load(paths, name)?;
+    if !host.access().reachable() {
+        return Err(format!("{name} has no SSH address yet").into());
+    }
+    let mut command = host.ssh(paths)?;
+    command.arg(host.target()).args(remote);
+    Ok(command)
+}
+
+/// An interactive shell as the agent. Root login and the agent's own key are
+/// not a given, so it goes through the SSH user and sudo. `agent-env` adds the
+/// display and tool paths; a host without it still gets a login shell.
+pub fn agent_terminal(paths: &Paths, name: &str) -> Result<std::process::Command> {
+    let host = Host::load(paths, name)?;
+    let agent = match host.config["agent_username"].as_str().unwrap_or("") {
+        "" => "agent",
+        user => user,
+    };
+    // It ends up in a shell command on the host.
+    if agent.starts_with('-')
+        || !agent
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        return Err("The agent's account name is not a valid one".into());
+    }
+    let mut command = terminal(paths, name, &[])?;
+    command.arg("-t").arg(format!(
+        "sudo -iu {agent} sh -c 'command -v agent-env >/dev/null && exec agent-env; exec bash -l'"
+    ));
+    Ok(command)
 }
 
 /// Run an action of a berth server's: of the host `host`, or of the
@@ -1115,7 +1168,10 @@ fn follow_acted(
     if let Some(job) = &acted.job {
         return link::runtime()?.block_on(async {
             let portal = server.portal().await?;
-            eprintln!("Job {} on the berth server at {}", job.id, server.url);
+            match server.url.as_str() {
+                berth_core::server::HERE => eprintln!("Job {}", job.id),
+                url => eprintln!("Job {} on the berth server at {url}", job.id),
+            }
             follow_job(&portal, &job.id, out).await
         });
     }
@@ -1286,11 +1342,11 @@ pub fn update_plugins(paths: &Paths, args: &[&str]) -> Result<()> {
 /// `berth seed HOST` with a berth server: the server renders the seed, and it
 /// is written here.
 pub fn seed(paths: &Paths, name: &str) -> Result<()> {
-    let host = Host::load(paths, name)?;
-    let server = host.served(paths).ok_or("Not a host of a berth server")?;
+    let (server, here) = crate::local::serve::here::server(paths)?;
     let seed = act_on(&server, Some(name), "seed", &api::Act::default())?
         .result
         .unwrap_or_default();
+    drop(here);
     let dir = paths.build_dir().join(name).join("cloud");
     {
         use std::os::unix::fs::DirBuilderExt;
@@ -1407,7 +1463,8 @@ pub fn set_profile(paths: &Paths, name: &str, file: &str) -> Result<()> {
         }
         file => std::fs::read(file).map_err(|error| format!("{file}: {error}"))?,
     };
-    crate::app::parse_config(&data).map_err(|error| format!("Not a profile: {error}"))?;
+    crate::local::profile::parse_config(&data)
+        .map_err(|error| format!("Not a profile: {error}"))?;
     let mut profile: Value = serde_json::from_slice(&data)?;
     let place = Place::resolve(paths, name)?;
     // A profile of an older layout is kept in the one of now.
@@ -1705,80 +1762,6 @@ pub fn provisioners(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
-/// `berth connect URL`: use the berth server at URL, with the token a setup
-/// key collects. The key comes on standard input, so it is in no argv.
-pub fn connect(paths: &Paths, url: &str) -> Result<()> {
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
-        return Err(format!(
-            "{url} is no address of a berth server: https://HOST or http://HOST:PORT"
-        )
-        .into());
-    }
-    let key = registry::read_secret("Setup key")?;
-    connect_with(paths, url, key.trim())
-}
-
-/// [`connect`] with the key in hand. Nothing is saved unless all of it works.
-pub fn connect_with(paths: &Paths, url: &str, key: &str) -> Result<()> {
-    use berth_core::server::{Server, http_as};
-    let url = url.trim().trim_end_matches('/').to_owned();
-    let key = key.to_owned();
-    let at = format!("{url}/v1/setup-key");
-    let ask = |method: &'static str| {
-        let (at, key) = (at.clone(), key.clone());
-        async move {
-            let (status, body) = http_as(method, &at, Some(&key), None, vec![]).await?;
-            match status {
-                200 => Ok(serde_json::from_slice::<Value>(&body)?),
-                401 => Err(
-                    "The server did not take the setup key: it is wrong, used up or expired. Make a new one where the server runs: berth setup-key".into(),
-                ),
-                404 | 405 => Err("The server knows no setup keys: it is an older berth".into()),
-                _ => Err(answer_error(status, &body)),
-            }
-        }
-    };
-    let (version, token) = link::runtime()?.block_on(async {
-        let checked: api::SetupKey = serde_json::from_value(ask("GET").await?)?;
-        let claimed: api::SetupClaim = serde_json::from_value(ask("POST").await?)?;
-        // Saved only once the token is seen to open the server.
-        Server {
-            url: url.clone(),
-            token: Some(claimed.token.clone()),
-        }
-        .portal()
-        .await?
-        .call("access", None, Value::Null, None)
-        .await?;
-        Ok::<_, Box<dyn std::error::Error>>((checked.version, claimed.token))
-    })?;
-    let before = paths.setting("server");
-    paths.set("server", &url)?;
-    if let Err(error) = paths.set("server_token", &token) {
-        paths.set("server", before.as_deref().unwrap_or(""))?;
-        return Err(error);
-    }
-    if let Err(error) = link::runtime()?.block_on(ask("DELETE")) {
-        eprintln!(
-            "The setup key could not be ended ({error}). It stops by itself within a day, or with berth setup-key --remove where the server runs."
-        );
-    }
-    println!("This berth now uses the berth server at {url}, berth {version}");
-    if std::env::var_os("BERTH_SERVER").is_some() {
-        eprintln!("BERTH_SERVER is set in this shell and is used before the setting");
-    }
-    Ok(())
-}
-
-/// What an answer that is not a 200 says.
-fn answer_error(status: u16, body: &[u8]) -> Box<dyn std::error::Error> {
-    let said: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
-    match said["error"]["message"].as_str() {
-        Some(message) => format!("HTTP {status}: {message}").into(),
-        None => format!("HTTP {status}").into(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1926,17 +1909,18 @@ mod tests {
         set_profile(&paths, "studio", file.to_str().unwrap()).unwrap();
         let place = Place::own("studio").unwrap();
         let kept = place.load(&paths).unwrap().unwrap();
-        let config = crate::app::parse_config(kept.to_string().as_bytes()).unwrap();
-        let mut app = crate::app::App::new(paths.clone(), place.clone(), config);
-        app.save().unwrap();
+        let config = crate::local::profile::parse_config(kept.to_string().as_bytes()).unwrap();
+        crate::local::profile::save(&paths, &place, config).unwrap();
         let saved = place.load(&paths).unwrap().unwrap();
         assert_eq!(
             saved["ansible_vars"]["devbox_plugin_features"],
             json!(["codex/cli"])
         );
         // One of the old layout is still converted.
-        let old = crate::app::parse_config(br#"{"ansible_vars": {"devbox_agent_codex": false}}"#)
-            .unwrap();
+        let old = crate::local::profile::parse_config(
+            br#"{"ansible_vars": {"devbox_agent_codex": false}}"#,
+        )
+        .unwrap();
         assert!(
             !old["ansible_vars"]["devbox_plugin_features"]
                 .as_array()
