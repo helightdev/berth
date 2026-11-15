@@ -424,7 +424,7 @@ The screens show it as a switch, which Space, Enter or a click turns on or off. 
 | --- | --- |
 | `yes`, `true`, `on`, `1` | `no`, `false`, `off`, `0` |
 
-An action's `confirm` question names each switch that is on.
+An action's `confirm` question names each switch that is on. Give the argument a `confirm` of its own, such as `"confirm": "Remove the deployment and its volumes?"`, and berth asks that question instead of the action's while the switch is on.
 
 A provisioner's `status`, described below, lists the values an argument takes. berth does not run a `choices` command for a provisioner.
 
