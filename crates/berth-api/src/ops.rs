@@ -121,6 +121,10 @@ pub struct Op {
     /// What the caller shows instead of a token with a role, for an
     /// operation that checks a key of its own; empty for the others.
     pub key: &'static str,
+    /// Why only `berth serve` calls it on a host, for itself; empty for the
+    /// others. It passes none of these through for a caller, and no portal
+    /// carries them.
+    pub server_only: &'static str,
 }
 
 const fn call(name: &'static str, method: &'static str, path: &'static str) -> Op {
@@ -138,6 +142,7 @@ const fn call(name: &'static str, method: &'static str, path: &'static str) -> O
             _ => Role::Operate,
         },
         key: "",
+        server_only: "",
     }
 }
 
@@ -152,6 +157,7 @@ const fn stream(name: &'static str, path: &'static str) -> Op {
         http_only: "",
         role: Role::Operate,
         key: "",
+        server_only: "",
     }
 }
 
@@ -174,6 +180,14 @@ const fn bytes(mut op: Op) -> Op {
 const fn keyed(mut op: Op, key: &'static str) -> Op {
     op.key = key;
     op.http_only = "it is for a caller that has no token yet";
+    op
+}
+
+/// An operation of berthd that `berth serve` calls itself after checks of
+/// its own, and that no caller reaches through it.
+const fn server_only(mut op: Op, why: &'static str) -> Op {
+    op.server_only = why;
+    op.http_only = why;
     op
 }
 
@@ -229,6 +243,10 @@ pub static HOST: &[Op] = &[
     ),
     stream("services.serve", "/v1/services/{plugin}/{name}/serve"),
     stream("ports.connect", "/v1/ports/{port}"),
+    server_only(
+        stream("endpoints.connect", "/v1/endpoints/{address}/{port}"),
+        "berth serve dials it itself, only for an endpoint a provisioner reported: open the endpoint with resources.connect",
+    ),
 ];
 
 const IF_MATCH: (&str, &str) = ("if_match", "if-match");

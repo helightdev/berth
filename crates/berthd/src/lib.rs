@@ -3,6 +3,7 @@
 
 mod actions;
 mod channel;
+pub mod endpoints;
 mod error;
 mod files;
 pub mod http;

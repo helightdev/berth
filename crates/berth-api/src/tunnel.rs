@@ -39,6 +39,21 @@ where
     Ok(Tunnel::new(stream))
 }
 
+/// Open `address` and `port` on a network of the host at the other end of
+/// `io`, a connection to its berthd, as `berth serve` does for an endpoint.
+pub async fn address_tunnel<S>(
+    io: S,
+    address: &str,
+    port: u16,
+) -> Result<Tunnel<WebSocketStream<S>>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let path = format!("/v1/endpoints/{}/{port}", crate::client::encode(address));
+    let stream = websocket(io, &path, "").await?;
+    Ok(Tunnel::new(stream))
+}
+
 /// Open an endpoint of a resource, by its name or its port, through the
 /// `berth serve` at the other end of `io`. `protocols` carries a bearer for
 /// a server over the network, as the portal's handshake does.

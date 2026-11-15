@@ -42,6 +42,10 @@ pub type Resolve = Arc<dyn Fn(&str, Option<&str>) -> Result<Target, Problem> + S
 pub fn host_operations() -> Resolve {
     Arc::new(|name, host| match (ops::find(ops::HOST, name), host) {
         (_, Some(_)) => Err((code::BAD_REQUEST, "A host has no hosts".into())),
+        // berth serve opens these at their own path, never through a portal.
+        (Some(op), None) if !op.server_only.is_empty() => {
+            Err((code::FORBIDDEN, op.server_only.into()))
+        }
         (Some(op), None) => Ok(Target {
             op,
             prefix: String::new(),

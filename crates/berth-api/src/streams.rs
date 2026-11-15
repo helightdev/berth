@@ -185,6 +185,30 @@ pub const HOST: &[Stream] = &[
             ),
         ],
     },
+    Stream {
+        id: "endpoint",
+        path: "/v1/endpoints/{address}/{port}",
+        summary: "For berth serve alone: a TCP connection to an address on a network of the host's own interfaces, such as a container on a bridge. The address is resolved once, every address it has is checked, and the one checked is dialled first, so one that nothing answers on is an error and not a stream.",
+        level: "host",
+        parameters: &[],
+        resumable: false,
+        server: &[
+            binary("bytes", "What the endpoint sent."),
+            text(
+                "eof",
+                "The endpoint closed its side. Bytes sent towards it still arrive. The stream ends once both sides have sent this.",
+                EOF,
+            ),
+        ],
+        client: &[
+            binary("bytes", "Bytes for the endpoint."),
+            text(
+                "eof",
+                "The client sends no more, and the endpoint reads the end. What it sends still comes back.",
+                EOF,
+            ),
+        ],
+    },
 ];
 
 /// The frame by which one side of a stream of a port or an endpoint says it sends no more.

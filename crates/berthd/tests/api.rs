@@ -1361,6 +1361,100 @@ async fn a_port_on_the_loopback_is_a_stream() {
     assert_eq!(agent.status(), 403);
 }
 
+/// A listener like `echo`, on an address of one of the host's own networks,
+/// or nothing when the machine has none but the loopback.
+async fn echo_on_a_network() -> Option<(String, u16)> {
+    for network in berthd::endpoints::networks() {
+        let Ok(listener) = tokio::net::TcpListener::bind((network.address, 0)).await else {
+            continue;
+        };
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((connection, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    use tokio::io::AsyncWriteExt;
+                    let (mut reading, mut writing) = connection.into_split();
+                    let _ = tokio::io::copy(&mut reading, &mut writing).await;
+                    let _ = writing.shutdown().await;
+                });
+            }
+        });
+        return Some((network.address.to_string(), port));
+    }
+    None
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_address_on_the_hosts_own_networks_is_a_stream_for_the_server_alone() {
+    use berth_api::{portal::Portal, tunnel};
+    let daemon = Daemon::start(&[]);
+    let control = || tokio::net::UnixStream::connect(daemon.socket("control"));
+    let open = |address: String, port: u16| async move {
+        let io = control().await.unwrap();
+        tunnel::address_tunnel(io, &address, port).await
+    };
+
+    match echo_on_a_network().await {
+        Some((address, port)) => {
+            let data: Vec<u8> = (0..3_000_000u32).map(|n| (n % 251) as u8).collect();
+            let opened = open(address.clone(), port).await.unwrap();
+            assert_eq!(through(opened, b"hello").await, b"hello");
+            let opened = open(address.clone(), port).await.unwrap();
+            assert!(through(opened, &data).await == data);
+            // A port nothing listens on there is an error before the stream opens.
+            let closed = {
+                let listener = std::net::TcpListener::bind((address.as_str(), 0)).unwrap();
+                listener.local_addr().unwrap().port()
+            };
+            let refused = open(address.clone(), closed).await.err().unwrap();
+            assert_eq!((refused.status(), refused.code()), (503, "not_served"));
+        }
+        None => eprintln!("skipped the round trip: this machine has no network but the loopback"),
+    }
+
+    // Off the host's networks, its loopback, a metadata address, and a name for the loopback.
+    let port = echo().await;
+    for (address, why) in [
+        ("192.0.2.1", "no network"),
+        ("127.0.0.1", "ports.connect"),
+        ("169.254.169.254", "metadata"),
+        ("fd00:ec2::254", "metadata"),
+        ("fe80::1", "no address"),
+        ("localhost", "ports.connect"),
+    ] {
+        let refused = open(address.into(), port).await.err().unwrap();
+        assert_eq!(refused.status(), 403, "{address}: {refused}");
+        assert!(refused.to_string().contains(why), "{address}: {refused}");
+    }
+    for wrong in ["0", "65536", "http"] {
+        let path = format!("/v1/endpoints/192.0.2.1/{wrong}");
+        let refused = client::websocket_unix(&daemon.socket("control"), &path)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(refused.status(), 400, "{wrong}");
+    }
+
+    // The agent may not open it, and no portal carries it.
+    let agent = client::websocket_unix(&daemon.socket("agent"), "/v1/endpoints/192.0.2.1/80")
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(agent.status(), 403);
+    let portal = Portal::over(daemon.stream("control", "/v1/portal").await);
+    let args = json!({"address": "192.0.2.1", "port": 80});
+    let refused = portal
+        .open("endpoints.connect", None, args)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(refused.status(), 403, "{refused}");
+    assert!(
+        refused.to_string().contains("resources.connect"),
+        "{refused}"
+    );
+}
+
 /// The committed API documents are what the program generates. Run with
 /// BERTH_UPDATE_DOCS=1 to write them after a change to the API.
 #[test]
