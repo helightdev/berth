@@ -180,6 +180,9 @@ pub fn wrapped_rows<E>(
     drawn
 }
 
+/// Characters of a line, each with its style.
+type Cells = Vec<(String, Style)>;
+
 /// A line broken at spaces into lines `width` cells wide. Its lines after
 /// the first are indented as far as its text begins, past a mark such as
 /// `✗ ` or `! `, so they read as one item.
@@ -207,7 +210,7 @@ pub fn wrap_line(line: &Line<'static>, width: usize) -> Vec<Line<'static>> {
     }
     let indent = indent.min(width / 2);
     // Words with the spaces before them.
-    let mut words: Vec<(Vec<(String, Style)>, Vec<(String, Style)>)> = vec![];
+    let mut words: Vec<(Cells, Cells)> = vec![];
     let mut spaces = vec![];
     let mut word = vec![];
     for cell in cells {
