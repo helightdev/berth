@@ -5,13 +5,20 @@
 //! with its state, its actions and its log: those of the server the screens
 //! use. What the tab asks for goes to the server, which tells the tab what
 //! came back.
+//!
+//! What a provisioner holds, such as storage pools, is listed as its
+//! collections: each is a table of its items, and each item has a page with
+//! the actions on it, whose arguments its key fills.
 
 use crate::event::{Code, Event, Key};
 use crate::form::{self, Did, Form};
 use crate::page::{self, Accepted, Arguments, Begin, Group, Item, Tone};
 use crate::screen::{self, Platform};
 use crate::theme;
-use berth_api::{Action, ProvisionerInfo, ProvisionerState, Resource};
+use berth_api::{
+    Action, Collection, CollectionAction, CollectionItem, ProvisionerInfo, ProvisionerState,
+    Resource,
+};
 use ratatui::{
     style::Style,
     text::{Line, Span},
@@ -67,6 +74,10 @@ pub enum Asked {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Entry {
     Action(usize),
+    /// A collection, by its place among the provisioner's.
+    Collection(usize),
+    /// An item of the table shown, by its place in it.
+    Item(usize),
     /// What the provisioner holds, by its place on the page.
     Resource(usize),
     /// A resource's log.
@@ -81,6 +92,30 @@ pub struct ResourcePart {
     pub seen: Option<Result<Resource, String>>,
 }
 
+/// What is known of an action before it is asked for: the values a key
+/// fills, and the provisioner it runs on when it is offered on a resource's
+/// page.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Filled {
+    provisioner: Option<String>,
+    values: BTreeMap<String, String>,
+    /// What its job is called, with the item it acts on.
+    title: String,
+}
+
+/// A collection's table, or the page of one of its items, over the
+/// provisioner's page.
+#[derive(Clone, Debug, PartialEq)]
+struct View {
+    collection: String,
+    /// On an item's page its key; on a table the key of the item it lists
+    /// the items of, or nothing for all.
+    key: BTreeMap<String, String>,
+    item: bool,
+    /// The cursor of what it covers, for going back.
+    back: usize,
+}
+
 /// The page of one provisioner, or of one resource it made, as it was last
 /// heard of.
 pub struct Page {
@@ -90,7 +125,20 @@ pub struct Page {
     pub resource: Option<ResourcePart>,
     /// None while it is asked.
     pub state: Option<Result<ProvisionerState, String>>,
+    /// The actions of what is shown: of the subject, or of a collection's
+    /// table or item with what their keys fill in `filled`.
     pub actions: Vec<Action>,
+    filled: Vec<Filled>,
+    /// Every action of the subject, as it was given.
+    base: Vec<Action>,
+    /// On a resource's page, the provisioner's actions on it as an item.
+    extra: Vec<(Action, Filled)>,
+    /// The tables and items shown over the provisioner's page, the last on top.
+    views: Vec<View>,
+    /// How many of a table's actions make a new item; they come first.
+    making: usize,
+    /// It is asked again, and what it said last is shown till it answers.
+    asking: bool,
     /// The page it was opened from, which Esc goes back to.
     back: Option<Box<Page>>,
     cursor: usize,
@@ -277,8 +325,25 @@ pub fn help(provisioner: Option<&ProvisionerInfo>, place: &str) -> String {
     if !kinds.is_empty() {
         text += &format!("It makes {}.\n\n", kinds.join(" and "));
     }
-    if !provisioner.actions.is_empty() {
-        let names: Vec<&str> = provisioner.actions.iter().map(Action::title).collect();
+    let held: Vec<String> = provisioner
+        .collections
+        .iter()
+        .filter(|collection| collection.kinds.is_empty())
+        .map(|collection| collection.plural.to_lowercase())
+        .collect();
+    if !held.is_empty() {
+        text += &format!(
+            "Its page lists its {}, each with its actions.\n\n",
+            held.join(", ")
+        );
+    }
+    let names: Vec<&str> = provisioner
+        .actions
+        .iter()
+        .filter(|action| action.collection.is_empty())
+        .map(Action::title)
+        .collect();
+    if !names.is_empty() {
         text += &format!("Its actions: {}.\n\n", names.join(", "));
     }
     if !provisioner.own.is_empty() {
@@ -306,6 +371,12 @@ impl Page {
             back: None,
             state: None,
             actions: vec![],
+            filled: vec![],
+            base: vec![],
+            extra: vec![],
+            views: vec![],
+            making: 0,
+            asking: false,
             cursor: 0,
             question: None,
             arguments: None,
@@ -498,9 +569,30 @@ impl Page {
     }
 
     /// The rows: how it is, its actions in their groups, and on a
-    /// provisioner's page what it holds, by kind.
+    /// provisioner's page its collections and what it holds, by kind. Over
+    /// it, the table or item shown.
     fn items(&self) -> Vec<Item<Entry>> {
-        let mut groups = page::groups(&self.actions, Entry::Action);
+        match self.views.last() {
+            Some(view) if view.item => return self.item_items(view),
+            Some(view) => return self.table_items(view),
+            None => {}
+        }
+        let mut groups = match self.resource {
+            Some(_) => page::groups(&self.actions, Entry::Action),
+            None => self.collection_groups(),
+        };
+        for group in page::groups(&self.actions, Entry::Action) {
+            if self.resource.is_some() {
+                break;
+            }
+            match groups
+                .iter_mut()
+                .find(|known| known.title.eq_ignore_ascii_case(&group.title))
+            {
+                Some(known) => known.rows.extend(group.rows),
+                None => groups.push(group),
+            }
+        }
         if self.resource.is_some() {
             let logs = matches!(&self.resource, Some(ResourcePart { seen: Some(Ok(seen)), .. }) if seen.verbs.iter().any(|verb| verb == "logs"));
             if logs {
@@ -596,24 +688,38 @@ impl Page {
         }
     }
 
-    fn launch(&mut self, (index, values): page::Launch) -> Asked {
-        match self.actions.get(index) {
-            Some(action) if !action.available => Asked::Nothing(Some(format!(
+    fn launch(&mut self, (index, mut values): page::Launch) -> Asked {
+        let filled = self.filled.get(index).cloned().unwrap_or_default();
+        values.extend(filled.values);
+        let action = self.actions.get(index).map(|action| {
+            let mut action = action.clone();
+            if !filled.title.is_empty() {
+                action.label = filled.title.clone();
+            }
+            Box::new(action)
+        });
+        match (action, filled.provisioner) {
+            (Some(action), _) if !action.available => Asked::Nothing(Some(format!(
                 "{} cannot run now: {}",
                 action.title(),
                 action.why
             ))),
-            Some(action) if self.resource.is_some() => Asked::RunResource {
+            (Some(action), Some(provisioner)) => Asked::Run {
+                provisioner,
+                action,
+                values,
+            },
+            (Some(action), None) if self.resource.is_some() => Asked::RunResource {
                 resource: self.id.clone(),
-                action: Box::new(action.clone()),
+                action,
                 values,
             },
-            Some(action) => Asked::Run {
+            (Some(action), None) => Asked::Run {
                 provisioner: self.id.clone(),
-                action: Box::new(action.clone()),
+                action,
                 values,
             },
-            None => Asked::Nothing(None),
+            (None, _) => Asked::Nothing(None),
         }
     }
 
@@ -657,6 +763,653 @@ impl Page {
             }
             Begin::Run(launch) => self.launch(launch),
             Begin::Nothing => Asked::Nothing(None),
+        }
+    }
+}
+
+/// An action of a collection where some of its key is known: the arguments
+/// that key fills are given, and not asked for again. On an item, it says
+/// why it cannot run on that one, and its question names it.
+fn derive(
+    base: &[Action],
+    collection: &Collection,
+    used: &CollectionAction,
+    known: &BTreeMap<String, String>,
+    item: Option<&CollectionItem>,
+    group: Option<&str>,
+) -> Option<(Action, Filled)> {
+    let original = base.iter().find(|action| action.name == used.action)?;
+    let mut action = original.clone();
+    let mut values = BTreeMap::new();
+    for (part, value) in known {
+        let argument = used.argument(part);
+        if action.arguments.iter().any(|known| known.name == argument) {
+            values.insert(argument.to_owned(), value.clone());
+            action.arguments.retain(|known| known.name != argument);
+        }
+    }
+    if !used.label.is_empty() {
+        action.label = used.label.clone();
+    }
+    if let Some(group) = group {
+        action.group = group.to_owned();
+    }
+    let mut title = original.title().to_owned();
+    if let Some(item) = item {
+        title = format!("{title} {}", item.name);
+        if let Some(why) = item.unavailable.get(&used.action)
+            && action.available
+        {
+            action.available = false;
+            action.why = why.clone();
+        }
+        let named = format!("{} {}", collection.label, item.name);
+        action.confirm = match (&action.confirm, used.action == collection.remove) {
+            (Some(question), _) => Some(format!("{named}: {question}")),
+            (None, true) => Some(format!("{named}: {}?", original.title())),
+            (None, false) => None,
+        };
+    }
+    Some((
+        action,
+        Filled {
+            provisioner: None,
+            values,
+            title,
+        },
+    ))
+}
+
+/// The line of an action's row over a provisioner's page: one that cannot
+/// run says why.
+fn view_line(action: &Action) -> String {
+    match action.available {
+        true => format!("  ▸ {}", action.title()),
+        false => format!(
+            "  ▸ {} · {}",
+            action.title(),
+            screen::ellipsize(&action.why, 70)
+        ),
+    }
+}
+
+/// Lines of cells in columns as wide as their widest, at most `limit`.
+fn columns(cells: &[Vec<String>], limit: usize) -> Vec<String> {
+    let count = cells.iter().map(Vec::len).max().unwrap_or(0);
+    let widths: Vec<usize> = (0..count)
+        .map(|column| {
+            cells
+                .iter()
+                .filter_map(|row| row.get(column))
+                .map(|cell| cell.chars().count().min(limit))
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    cells
+        .iter()
+        .map(|row| {
+            let line: Vec<String> = row
+                .iter()
+                .enumerate()
+                .map(|(column, cell)| {
+                    format!(
+                        "{:<width$}",
+                        screen::ellipsize(cell, limit),
+                        width = widths[column]
+                    )
+                })
+                .collect();
+            format!("  {}", line.join("  ")).trim_end().to_owned()
+        })
+        .collect()
+}
+
+impl Page {
+    /// What the provisioner is, on its own page once it answered.
+    fn info(&self) -> Option<&ProvisionerInfo> {
+        match (&self.resource, &self.state) {
+            (None, Some(Ok(state))) => Some(&state.provisioner),
+            _ => None,
+        }
+    }
+
+    fn collection(&self, id: &str) -> Option<&Collection> {
+        self.info()?
+            .collections
+            .iter()
+            .find(|collection| collection.id == id)
+    }
+
+    /// The items of a collection within the item whose key is `within`, or
+    /// all; none when the provisioner did not give them.
+    fn rows(&self, id: &str, within: &BTreeMap<String, String>) -> Option<Vec<&CollectionItem>> {
+        let Some(Ok(state)) = &self.state else {
+            return None;
+        };
+        let all = state.collections.get(id)?;
+        Some(
+            all.iter()
+                .filter(|row| {
+                    within
+                        .iter()
+                        .all(|(part, value)| row.key.get(part) == Some(value))
+                })
+                .collect(),
+        )
+    }
+
+    /// The item of a collection with this key.
+    fn found(&self, id: &str, key: &BTreeMap<String, String>) -> Option<&CollectionItem> {
+        let Some(Ok(state)) = &self.state else {
+            return None;
+        };
+        state
+            .collections
+            .get(id)?
+            .iter()
+            .find(|row| &row.key == key)
+    }
+
+    /// How many items a collection has within `within`, as its row says it.
+    fn count(&self, id: &str, within: &BTreeMap<String, String>) -> String {
+        match self.rows(id, within) {
+            Some(rows) => rows.len().to_string(),
+            None => "?".into(),
+        }
+    }
+
+    /// The rows of collections, as `(title, entries)` groups: those of the
+    /// provisioner's page, or those within the item `within` is the key of.
+    fn collection_rows(
+        &self,
+        parent: &str,
+        within: &BTreeMap<String, String>,
+    ) -> Vec<Group<Entry>> {
+        let Some(info) = self.info() else {
+            return vec![];
+        };
+        let shown: Vec<(usize, &Collection)> = info
+            .collections
+            .iter()
+            .enumerate()
+            .filter(|(_, collection)| collection.kinds.is_empty())
+            .filter(|(_, collection)| parent.is_empty() || collection.within == parent)
+            .collect();
+        let width = shown
+            .iter()
+            .map(|(_, collection)| collection.plural.chars().count())
+            .max()
+            .unwrap_or(0);
+        let mut groups: Vec<Group<Entry>> = vec![];
+        for (index, collection) in shown {
+            let title = match (parent.is_empty(), collection.group.is_empty()) {
+                (false, _) => format!("In this {}", self.label_of(parent).to_lowercase()),
+                (true, true) => "Collections".to_owned(),
+                (true, false) => collection.group.clone(),
+            };
+            let row = (
+                format!(
+                    "  ▸ {:<width$}  {}",
+                    collection.plural,
+                    self.count(&collection.id, within)
+                ),
+                Entry::Collection(index),
+            );
+            match groups
+                .iter_mut()
+                .find(|known| known.title.eq_ignore_ascii_case(&title))
+            {
+                Some(group) => group.rows.push(row),
+                None => groups.push(Group {
+                    title,
+                    rows: vec![row],
+                }),
+            }
+        }
+        groups
+    }
+
+    fn collection_groups(&self) -> Vec<Group<Entry>> {
+        self.collection_rows("", &BTreeMap::new())
+    }
+
+    fn label_of(&self, id: &str) -> String {
+        self.collection(id)
+            .map_or_else(|| id.to_owned(), |collection| collection.label.clone())
+    }
+
+    /// What the lines over a view say while the provisioner is asked, or
+    /// when it could not be.
+    fn waiting(&self) -> Option<(String, Tone)> {
+        match &self.state {
+            _ if self.asking => Some((format!("Asking {}…", self.id), Tone::Muted)),
+            None => Some((format!("Asking {}…", self.id), Tone::Muted)),
+            Some(Err(error)) => Some((format!("✗ {error}"), Tone::Bad)),
+            Some(Ok(_)) => None,
+        }
+    }
+
+    /// The rows of the actions shown over the provisioner's page, in groups.
+    fn view_groups(&self) -> Vec<Group<Entry>> {
+        let mut groups: Vec<Group<Entry>> = vec![];
+        for (index, action) in self.actions.iter().enumerate() {
+            let title = page::group_of(action);
+            let row = (view_line(action), Entry::Action(index));
+            match groups.iter_mut().find(|known| known.title == title) {
+                Some(group) => group.rows.push(row),
+                None => groups.push(Group {
+                    title: title.to_owned(),
+                    rows: vec![row],
+                }),
+            }
+        }
+        groups
+    }
+
+    /// A collection's table: what it lists, a row for each item, and the
+    /// actions that make one or act on them all.
+    fn table_items(&self, view: &View) -> Vec<Item<Entry>> {
+        let Some(collection) = self.collection(&view.collection) else {
+            let line = self.waiting().unwrap_or_else(|| {
+                (
+                    format!("{} has no {}", self.id, view.collection),
+                    Tone::Warn,
+                )
+            });
+            return page::items(&[line], vec![]);
+        };
+        let mut title = format!("{} · {}", collection.plural, self.id);
+        if !view.key.is_empty() {
+            let name = self
+                .found(&collection.within, &view.key)
+                .map(|item| item.name.clone())
+                .unwrap_or_else(|| view.key.values().cloned().collect::<Vec<_>>().join("/"));
+            title += &format!(
+                " · in the {} {name}",
+                self.label_of(&collection.within).to_lowercase()
+            );
+        }
+        let mut items = vec![Item::Note(title, Tone::Plain)];
+        if let Some(line) = self.waiting() {
+            items.push(Item::Note(line.0, line.1));
+        }
+        let rows = self.rows(&collection.id, &view.key);
+        match &rows {
+            None if self.waiting().is_none() => items.push(Item::Note(
+                "○ The provisioner did not list them. r asks again".into(),
+                Tone::Warn,
+            )),
+            None => {}
+            Some(rows) if rows.is_empty() => items.push(Item::Note(
+                format!("No {} yet", collection.plural.to_lowercase()),
+                Tone::Muted,
+            )),
+            Some(rows) => {
+                // A part of the key that is the table's own is not repeated.
+                let shown: Vec<&berth_api::CollectionColumn> = collection
+                    .columns
+                    .iter()
+                    .filter(|column| !view.key.contains_key(&column.name))
+                    .collect();
+                let mut cells = vec![
+                    std::iter::once(collection.label.clone())
+                        .chain(
+                            shown
+                                .iter()
+                                .map(|column| collection.column_label(column).to_owned()),
+                        )
+                        .collect::<Vec<_>>(),
+                ];
+                for row in rows {
+                    cells.push(
+                        std::iter::once(row.name.clone())
+                            .chain(shown.iter().map(|column| {
+                                row.columns.get(&column.name).cloned().unwrap_or_default()
+                            }))
+                            .collect(),
+                    );
+                }
+                let lines = columns(&cells, 32);
+                items.push(Item::Blank);
+                items.push(Item::Heading(lines[0].clone()));
+                items.extend(
+                    lines[1..]
+                        .iter()
+                        .enumerate()
+                        .map(|(index, line)| Item::Pick(line.clone(), Entry::Item(index))),
+                );
+            }
+        }
+        for group in self.view_groups() {
+            items.push(Item::Blank);
+            items.push(Item::Heading(group.title));
+            items.extend(
+                group
+                    .rows
+                    .into_iter()
+                    .map(|(line, entry)| Item::Pick(line, entry)),
+            );
+        }
+        items
+    }
+
+    /// An item's page: its values, its actions, and the collections within it.
+    fn item_items(&self, view: &View) -> Vec<Item<Entry>> {
+        let (Some(collection), Some(item)) = (
+            self.collection(&view.collection),
+            self.found(&view.collection, &view.key),
+        ) else {
+            let line = self.waiting().unwrap_or_else(|| {
+                (
+                    format!(
+                        "{} {} is no longer listed",
+                        self.label_of(&view.collection),
+                        view.key.values().cloned().collect::<Vec<_>>().join("/")
+                    ),
+                    Tone::Warn,
+                )
+            });
+            return page::items(&[line], vec![]);
+        };
+        let mut lines = vec![(
+            format!("{} {} · {}", collection.label, item.name, self.id),
+            Tone::Plain,
+        )];
+        if let Some(line) = self.waiting() {
+            lines.push(line);
+        }
+        let width = collection
+            .columns
+            .iter()
+            .map(|column| collection.column_label(column).chars().count())
+            .max()
+            .unwrap_or(0);
+        for column in &collection.columns {
+            let value = item.columns.get(&column.name).cloned().unwrap_or_default();
+            if !value.is_empty() {
+                lines.push((
+                    format!("  {:<width$}  {value}", collection.column_label(column)),
+                    Tone::Muted,
+                ));
+            }
+        }
+        let mut groups = self.view_groups();
+        groups.extend(self.collection_rows(&collection.id, &view.key));
+        page::items(&lines, groups)
+    }
+
+    /// Work out the actions of what is shown from those of the subject: the
+    /// loose ones on the provisioner's page, a table's that make an item or
+    /// act on all, an item's own with its key, or a resource's with the
+    /// provisioner's that act on it.
+    fn arrange(&mut self) {
+        let (actions, filled, making) = self.arranged();
+        self.actions = actions;
+        self.filled = filled;
+        self.making = making;
+    }
+
+    fn arranged(&self) -> (Vec<Action>, Vec<Filled>, usize) {
+        if self.resource.is_some() {
+            let mut actions = self.base.clone();
+            let mut filled = vec![Filled::default(); actions.len()];
+            for (action, known) in &self.extra {
+                actions.push(action.clone());
+                filled.push(known.clone());
+            }
+            return (actions, filled, 0);
+        }
+        let Some(view) = self.views.last() else {
+            let actions: Vec<Action> = self
+                .base
+                .iter()
+                .filter(|action| action.collection.is_empty())
+                .cloned()
+                .collect();
+            let filled = vec![Filled::default(); actions.len()];
+            return (actions, filled, 0);
+        };
+        let Some(collection) = self.collection(&view.collection) else {
+            return (vec![], vec![], 0);
+        };
+        let derived: Vec<(Action, Filled)> = match view.item {
+            true => {
+                let item = self.found(&collection.id, &view.key);
+                collection
+                    .item
+                    .iter()
+                    .filter_map(|used| {
+                        derive(
+                            &self.base,
+                            collection,
+                            used,
+                            &view.key,
+                            item,
+                            Some(&collection.label),
+                        )
+                    })
+                    .collect()
+            }
+            false => {
+                let all = format!("All {}", collection.plural.to_lowercase());
+                collection
+                    .new
+                    .iter()
+                    .filter_map(|used| {
+                        derive(&self.base, collection, used, &view.key, None, Some("New"))
+                    })
+                    .chain(collection.list.iter().filter_map(|used| {
+                        derive(&self.base, collection, used, &view.key, None, Some(&all))
+                    }))
+                    .collect()
+            }
+        };
+        let making = match view.item {
+            true => 0,
+            false => derived
+                .iter()
+                .filter(|(action, _)| collection.new.iter().any(|used| used.action == action.name))
+                .count(),
+        };
+        let (actions, filled) = derived.into_iter().unzip();
+        (actions, filled, making)
+    }
+
+    /// Show `view` over what is shown now.
+    fn push(&mut self, collection: String, key: BTreeMap<String, String>, item: bool) {
+        self.views.push(View {
+            collection,
+            key,
+            item,
+            back: self.cursor,
+        });
+        self.cursor = 0;
+        self.kept = None;
+        self.arrange();
+    }
+
+    /// Go back from the view on top to what it covers.
+    fn pop(&mut self) {
+        if let Some(view) = self.views.pop() {
+            self.cursor = view.back;
+        }
+        self.kept = None;
+        self.arrange();
+    }
+
+    /// Leave the pages of items that are no longer listed, as after one is removed.
+    fn prune(&mut self) {
+        if !matches!(self.state, Some(Ok(_))) {
+            return;
+        }
+        let gone = self.views.iter().position(|view| {
+            self.collection(&view.collection).is_none()
+                || (view.item && self.found(&view.collection, &view.key).is_none())
+        });
+        if let Some(gone) = gone {
+            self.cursor = self.views[gone].back;
+            self.views.truncate(gone);
+            self.kept = None;
+            // The table it was opened from selects the item that took its place.
+            let count = self
+                .table()
+                .and_then(|view| self.rows(&view.collection, &view.key))
+                .map_or(0, |rows| rows.len());
+            if count > 0 {
+                self.cursor = self.cursor.min(count - 1);
+            }
+        }
+    }
+
+    /// The provisioner's actions on a resource it made of a kind one of its
+    /// collections has as items, with the resource's id as their key.
+    fn on_resource(&self, held: &berth_api::ListedResource) -> Vec<(Action, Filled)> {
+        let Some(info) = self.info() else {
+            return vec![];
+        };
+        let mut found = vec![];
+        for collection in info
+            .collections
+            .iter()
+            .filter(|collection| collection.kinds.contains(&held.kind))
+        {
+            let key: BTreeMap<String, String> = collection
+                .key
+                .iter()
+                .map(|part| (part.clone(), held.id.clone()))
+                .collect();
+            for used in &collection.item {
+                if let Some((action, mut filled)) =
+                    derive(&self.base, collection, used, &key, None, None)
+                {
+                    filled.provisioner = Some(self.id.clone());
+                    let name = match held.host.is_empty() {
+                        true => &held.name,
+                        false => &held.host,
+                    };
+                    filled.title = format!("{} · {name}", action.title());
+                    found.push((action, filled));
+                }
+            }
+        }
+        found
+    }
+
+    /// The table shown, if one is.
+    fn table(&self) -> Option<&View> {
+        self.views.last().filter(|view| !view.item)
+    }
+
+    /// `n` on a table: its one way to make an item, or the rows of those
+    /// there are to choose from.
+    fn make(&mut self) -> Asked {
+        let Some(collection) = self
+            .table()
+            .and_then(|view| self.collection(&view.collection))
+            .cloned()
+        else {
+            return Asked::Other;
+        };
+        match self.making {
+            0 => Asked::Nothing(Some(format!("{} are not made here", collection.plural))),
+            1 => self.begin(0, false),
+            _ => {
+                if let Some(at) = self
+                    .entries()
+                    .iter()
+                    .position(|entry| *entry == Entry::Action(0))
+                {
+                    self.cursor = at;
+                }
+                let ways: Vec<&str> = self.actions[..self.making]
+                    .iter()
+                    .map(Action::title)
+                    .collect();
+                Asked::Nothing(Some(format!(
+                    "Choose how to make one: {}",
+                    ways.join(" or ")
+                )))
+            }
+        }
+    }
+
+    /// `x`: remove the item selected in a table, or the item shown, after
+    /// a question that names it.
+    fn remove(&mut self) -> Asked {
+        let Some(view) = self.views.last().cloned() else {
+            return Asked::Other;
+        };
+        let Some(collection) = self.collection(&view.collection).cloned() else {
+            return Asked::Nothing(None);
+        };
+        if collection.remove.is_empty() {
+            return Asked::Nothing(Some(format!("{} are not removed here", collection.plural)));
+        }
+        if view.item {
+            let index = self
+                .actions
+                .iter()
+                .position(|action| action.name == collection.remove);
+            return match index {
+                Some(index) => self.begin(index, false),
+                None => Asked::Nothing(None),
+            };
+        }
+        let Some(Entry::Item(index)) = self.selected() else {
+            return Asked::Nothing(Some(format!(
+                "Choose the {} to remove",
+                collection.label.to_lowercase()
+            )));
+        };
+        let Some(item) = self
+            .rows(&collection.id, &view.key)
+            .and_then(|rows| rows.get(index).map(|row| (*row).clone()))
+        else {
+            return Asked::Nothing(None);
+        };
+        let Some(used) = collection
+            .item
+            .iter()
+            .find(|used| used.action == collection.remove)
+        else {
+            return Asked::Nothing(None);
+        };
+        let Some((action, filled)) = derive(
+            &self.base,
+            &collection,
+            used,
+            &item.key,
+            Some(&item),
+            Some(&collection.label),
+        ) else {
+            return Asked::Nothing(None);
+        };
+        self.arrange();
+        self.actions.push(action);
+        self.filled.push(filled);
+        self.begin(self.actions.len() - 1, false)
+    }
+
+    /// Take in what the provisioner or the resource said, and its actions.
+    fn take(
+        &mut self,
+        state: Result<ProvisionerState, String>,
+        actions: Result<Vec<Action>, String>,
+    ) {
+        self.asking = false;
+        self.state = Some(match (state, &actions) {
+            (Ok(state), Err(error)) => Err(format!(
+                "{} answered, but not with its actions: {error}",
+                state.provisioner.id
+            )),
+            (state, _) => state,
+        });
+        self.base = actions.unwrap_or_default();
+        self.prune();
+        // An action being asked for keeps its place until it runs.
+        if self.question.is_none() && self.arguments.is_none() || self.views.is_empty() {
+            self.arrange();
         }
     }
 }
@@ -782,17 +1535,21 @@ impl Tab {
         state: Result<ProvisionerState, String>,
         actions: Result<Vec<Action>, String>,
     ) {
+        // A resource's page keeps its provisioner's page, as after an action of
+        // the provisioner run there.
+        if let Some(back) = self
+            .page
+            .as_mut()
+            .filter(|page| page.id != id)
+            .and_then(|page| page.back.as_mut())
+            .filter(|back| back.id == id)
+        {
+            return back.take(state, actions);
+        }
         let Some(page) = self.page.as_mut().filter(|page| page.id == id) else {
             return;
         };
-        page.state = Some(match (state, &actions) {
-            (Ok(state), Err(error)) => Err(format!(
-                "{} answered, but not with its actions: {error}",
-                state.provisioner.id
-            )),
-            (state, _) => state,
-        });
-        page.actions = actions.unwrap_or_default();
+        page.take(state, actions);
         // A form that waits for the provisioner's action takes it now.
         let narrowed = match &page.state {
             Some(Ok(state)) => state.values.clone(),
@@ -847,7 +1604,8 @@ impl Tab {
             )),
             (seen, _) => seen,
         });
-        page.actions = actions.unwrap_or_default();
+        page.base = actions.unwrap_or_default();
+        page.arrange();
     }
 
     /// The question waiting for an answer, for the screen to draw.
@@ -940,23 +1698,91 @@ impl Tab {
                 {
                     Line::styled(text.clone(), muted)
                 }
+                // What cannot run now is greyed over a provisioner's page, with why.
+                Item::Pick(text, Entry::Action(index))
+                    if !page.views.is_empty()
+                        && page
+                            .actions
+                            .get(*index)
+                            .is_some_and(|action| !action.available) =>
+                {
+                    Line::styled(text.clone(), muted)
+                }
                 Item::Pick(text, _) => Line::styled(text.clone(), Style::new().fg(theme::TEXT)),
             })
             .collect();
         let help = match page.selected() {
-            Some(Entry::Action(index)) => page::help(
-                &page.actions[index],
-                &match &page.resource {
-                    Some(_) => format!(
-                        "berth resource run {} {}",
-                        page.id, page.actions[index].name
-                    ),
-                    None => format!(
-                        "berth provisioner run {} {}",
-                        page.id, page.actions[index].name
-                    ),
-                },
-            ),
+            Some(Entry::Action(index)) => {
+                let filled = page.filled.get(index).cloned().unwrap_or_default();
+                let given: String = filled
+                    .values
+                    .iter()
+                    .map(|(key, value)| format!(" {key}={value}"))
+                    .collect();
+                let name = &page.actions[index].name;
+                page::help(
+                    &page.actions[index],
+                    &match (&page.resource, &filled.provisioner) {
+                        (_, Some(provisioner)) => {
+                            format!("berth provisioner run {provisioner} {name}{given}")
+                        }
+                        (Some(_), None) => format!("berth resource run {} {name}", page.id),
+                        (None, None) => format!("berth provisioner run {} {name}{given}", page.id),
+                    },
+                )
+            }
+            Some(Entry::Collection(index)) => {
+                let collection = &page.info().expect("a collection is listed").collections[index];
+                let mut text = collection.help.clone();
+                if !text.is_empty() {
+                    text += "\n\n";
+                }
+                text += "Enter opens them as a table, and each of them with its actions.";
+                let mut keys = vec![];
+                if !collection.new.is_empty() {
+                    keys.push("n makes one");
+                }
+                if !collection.remove.is_empty() {
+                    keys.push("x removes the one selected");
+                }
+                if !keys.is_empty() {
+                    text += &format!(" There, {}.", keys.join(" and "));
+                }
+                text += &format!(
+                    "\n\nFrom the command line: `berth provisioner show {}`",
+                    page.id
+                );
+                if !collection.show.is_empty() {
+                    text += &format!(
+                        ", or `berth provisioner run {} {}` for these alone",
+                        page.id, collection.show
+                    );
+                }
+                text
+            }
+            Some(Entry::Item(index)) => {
+                let view = page.table().expect("an item is in a table");
+                let collection = page.collection(&view.collection).expect("it is listed");
+                let row = page
+                    .rows(&view.collection, &view.key)
+                    .and_then(|rows| rows.get(index).copied());
+                match row {
+                    Some(row) => {
+                        let mut text =
+                            format!("The {} {}.", collection.label.to_lowercase(), row.name);
+                        for (action, why) in &row.unavailable {
+                            let title = page
+                                .base
+                                .iter()
+                                .find(|known| &known.name == action)
+                                .map_or(action.as_str(), Action::title);
+                            text += &format!("\n\n{title} cannot run on it: {why}");
+                        }
+                        text + "\n\nEnter opens it with its actions."
+                    }
+                    None => String::new(),
+                }
+            }
             Some(Entry::Resource(index)) => {
                 let held = &page.held()[index];
                 match (held.resource.is_empty(), held.kind.as_str()) {
@@ -987,11 +1813,32 @@ impl Tab {
                 page.id
             ),
         };
+        let collection = page
+            .views
+            .last()
+            .and_then(|view| page.collection(&view.collection));
+        let removes = collection.is_some_and(|collection| !collection.remove.is_empty());
+        let keys = match (page.views.last(), page.making, removes) {
+            (None, _, _) if page.resource.is_none() => {
+                "↑↓ select · Enter open or run · r ask again · Esc back"
+            }
+            (None, _, _) => "↑↓ select · Enter run · r ask again · Esc back",
+            (Some(view), _, true) if view.item => {
+                "↑↓ select · Enter run · x remove · r refresh · Esc back"
+            }
+            (Some(view), _, false) if view.item => "↑↓ select · Enter run · r refresh · Esc back",
+            (Some(_), 0, true) => "↑↓ select · Enter open · x remove · r refresh · Esc back",
+            (Some(_), 0, false) => "↑↓ select · Enter open · r refresh · Esc back",
+            (Some(_), _, true) => {
+                "↑↓ select · Enter open · n new · x remove · r refresh · Esc back"
+            }
+            (Some(_), _, false) => "↑↓ select · Enter open · n new · r refresh · Esc back",
+        };
         Shown {
             rows,
             selected: self.selected_row(),
             help,
-            keys: "↑↓ select · Enter run · r ask again · Esc back",
+            keys,
         }
     }
 
@@ -1122,6 +1969,7 @@ impl Tab {
                     if held.resource.is_empty() {
                         return Asked::Nothing(Some(format!("berth has no record of {}", held.id)));
                     }
+                    let extra = page.on_resource(&held);
                     let back = self.page.take().map(Box::new);
                     let provisioner = back
                         .as_ref()
@@ -1133,13 +1981,47 @@ impl Tab {
                             seen: None,
                         }),
                         back,
+                        extra,
                         ..Page::new(&held.resource)
                     });
                     return Asked::OpenResource(held.resource);
                 }
                 Some(Entry::Logs) => return Asked::Logs(page.id.clone()),
+                Some(Entry::Collection(index)) => {
+                    let Some(collection) = page.info().and_then(|info| info.collections.get(index))
+                    else {
+                        return Asked::Nothing(None);
+                    };
+                    let id = collection.id.clone();
+                    // Within an item, the table lists what that item holds.
+                    let within = page
+                        .views
+                        .last()
+                        .filter(|view| view.item)
+                        .map(|view| view.key.clone())
+                        .unwrap_or_default();
+                    page.push(id, within, false);
+                }
+                Some(Entry::Item(index)) => {
+                    let Some(view) = page.table().cloned() else {
+                        return Asked::Nothing(None);
+                    };
+                    let key = page
+                        .rows(&view.collection, &view.key)
+                        .and_then(|rows| rows.get(index).map(|row| row.key.clone()));
+                    if let Some(key) = key {
+                        page.push(view.collection, key, true);
+                    }
+                }
                 None => {}
             },
+            Code::Char('n') if page.table().is_some() => return page.make(),
+            Code::Char('x') | Code::Delete if !page.views.is_empty() => return page.remove(),
+            // Over the provisioner's page, what it said stays till it answers.
+            Code::Char('r') if !page.views.is_empty() => {
+                page.asking = true;
+                return Asked::Open(page.id.clone());
+            }
             Code::Char('r') => {
                 let id = page.id.clone();
                 page.state = None;
@@ -1149,6 +2031,7 @@ impl Tab {
                 }
                 return Asked::Open(id);
             }
+            Code::Esc | Code::Backspace | Code::Left if !page.views.is_empty() => page.pop(),
             Code::Esc | Code::Backspace | Code::Left => {
                 // A resource's page goes back to its provisioner's, which is asked again.
                 if let Some(back) = page.back.take() {
@@ -1513,6 +2396,7 @@ mod tests {
                     ..ListedResource::default()
                 },
             ],
+            ..ProvisionerState::default()
         };
         // What arrives for another page is not taken.
         tab.opened("lab/old", Err("no".into()), Ok(vec![]));
@@ -1717,5 +2601,617 @@ mod tests {
                 .as_ref()
                 .is_some_and(|page| page.resource.is_none())
         );
+    }
+
+    // ── Collections ─────────────────────────────────────────────────────────
+
+    fn argument(name: &str) -> Argument {
+        Argument {
+            name: name.into(),
+            label: name.into(),
+            ..Argument::default()
+        }
+    }
+
+    fn act(name: &str, label: &str, collection: &str, arguments: &[&str]) -> Action {
+        Action {
+            name: name.into(),
+            label: label.into(),
+            group: "Storage".into(),
+            collection: collection.into(),
+            arguments: arguments.iter().map(|name| argument(name)).collect(),
+            ..Action::default()
+        }
+    }
+
+    fn used(action: &str, label: &str, arguments: &[(&str, &str)]) -> CollectionAction {
+        CollectionAction {
+            action: action.into(),
+            label: label.into(),
+            arguments: arguments
+                .iter()
+                .map(|(part, argument)| (part.to_string(), argument.to_string()))
+                .collect(),
+        }
+    }
+
+    fn row(name: &str, key: &[(&str, &str)], columns: &[(&str, &str)]) -> CollectionItem {
+        let pairs = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect()
+        };
+        CollectionItem {
+            name: name.into(),
+            key: pairs(key),
+            columns: pairs(columns),
+            unavailable: BTreeMap::new(),
+        }
+    }
+
+    fn column(name: &str, label: &str) -> berth_api::CollectionColumn {
+        berth_api::CollectionColumn {
+            name: name.into(),
+            label: label.into(),
+        }
+    }
+
+    /// The actions of a made-up Incus server, those of its collections among them.
+    fn server_actions() -> Vec<Action> {
+        let mut remove = act("remove-pool", "Remove storage pool", "pools", &["name"]);
+        remove.confirm = Some("Remove this storage pool?".into());
+        vec![
+            Action {
+                changes: false,
+                ..act("server", "Check the server", "", &[])
+            },
+            Action {
+                changes: false,
+                ..act("pools", "Storage pools", "pools", &[])
+            },
+            act(
+                "create-pool",
+                "New storage pool",
+                "pools",
+                &["name", "driver"],
+            ),
+            act(
+                "resize-pool",
+                "Grow storage pool",
+                "pools",
+                &["pool", "size"],
+            ),
+            act(
+                "set-pool",
+                "Change storage pool",
+                "pools",
+                &["pool", "key", "value"],
+            ),
+            remove,
+            act(
+                "create-volume",
+                "New volume",
+                "volumes",
+                &["pool", "name", "size"],
+            ),
+            act(
+                "remove-volume",
+                "Remove volume",
+                "volumes",
+                &["pool", "name"],
+            ),
+            act(
+                "resize-disk",
+                "Grow root disk",
+                "instances",
+                &["instance", "size"],
+            ),
+        ]
+    }
+
+    fn server_collections() -> Vec<Collection> {
+        vec![
+            Collection {
+                id: "pools".into(),
+                label: "Storage pool".into(),
+                plural: "Storage pools".into(),
+                group: "Storage".into(),
+                key: vec!["pool".into()],
+                columns: vec![column("driver", "Driver"), column("size", "Size")],
+                new: vec![used("create-pool", "", &[])],
+                item: vec![
+                    used("resize-pool", "Grow", &[]),
+                    used("set-pool", "Change a setting", &[]),
+                    used("remove-pool", "Remove", &[("pool", "name")]),
+                ],
+                remove: "remove-pool".into(),
+                show: "pools".into(),
+                ..Collection::default()
+            },
+            Collection {
+                id: "volumes".into(),
+                label: "Volume".into(),
+                plural: "Volumes".into(),
+                group: "Storage".into(),
+                key: vec!["pool".into(), "volume".into()],
+                within: "pools".into(),
+                columns: vec![column("pool", "Pool"), column("size", "Size")],
+                new: vec![used("create-volume", "", &[])],
+                item: vec![used("remove-volume", "Remove", &[("volume", "name")])],
+                remove: "remove-volume".into(),
+                ..Collection::default()
+            },
+            Collection {
+                id: "instances".into(),
+                label: "Instance".into(),
+                plural: "Instances".into(),
+                key: vec!["instance".into()],
+                kinds: vec!["machine".into()],
+                item: vec![used("resize-disk", "", &[])],
+                ..Collection::default()
+            },
+        ]
+    }
+
+    fn server_state(pools: &[&str]) -> ProvisionerState {
+        let mut fast = row(
+            "fast",
+            &[("pool", "fast")],
+            &[("driver", "dir"), ("size", "200.0 GiB")],
+        );
+        fast.unavailable.insert(
+            "resize-pool".into(),
+            "A dir pool has no size of its own".into(),
+        );
+        let all = vec![
+            row(
+                "default",
+                &[("pool", "default")],
+                &[("driver", "zfs"), ("size", "100.0 GiB")],
+            ),
+            fast,
+        ];
+        ProvisionerState {
+            provisioner: ProvisionerInfo {
+                id: "incus-vm".into(),
+                label: "Incus virtual machine".into(),
+                collections: server_collections(),
+                ..ProvisionerInfo::default()
+            },
+            state: "ready".into(),
+            collections: [
+                (
+                    "pools".to_owned(),
+                    all.into_iter()
+                        .filter(|row| pools.contains(&row.name.as_str()))
+                        .collect(),
+                ),
+                (
+                    "volumes".to_owned(),
+                    vec![
+                        row(
+                            "data",
+                            &[("pool", "default"), ("volume", "data")],
+                            &[("pool", "default"), ("size", "10GiB")],
+                        ),
+                        row(
+                            "scratch",
+                            &[("pool", "fast"), ("volume", "scratch")],
+                            &[("pool", "fast"), ("size", "no set size")],
+                        ),
+                    ],
+                ),
+            ]
+            .into(),
+            resources: vec![ListedResource {
+                id: "berth-studio".into(),
+                kind: "machine".into(),
+                name: "studio".into(),
+                host: "studio".into(),
+                state: "running".into(),
+                resource: "r-studio".into(),
+            }],
+            ..ProvisionerState::default()
+        }
+    }
+
+    /// A tab on the page of the made-up server, as it answered.
+    fn on_server() -> (Tab, Vec<ProvisionerInfo>) {
+        let list = vec![ProvisionerInfo {
+            id: "incus-vm".into(),
+            ..ProvisionerInfo::default()
+        }];
+        let mut tab = Tab::default();
+        assert_eq!(
+            tab.key(key(Code::Enter), &list, &mut Nowhere),
+            Asked::Open("incus-vm".into())
+        );
+        tab.opened(
+            "incus-vm",
+            Ok(server_state(&["default", "fast"])),
+            Ok(server_actions()),
+        );
+        (tab, list)
+    }
+
+    /// Select the row that reads `line`.
+    fn choose(tab: &mut Tab, list: &[ProvisionerInfo], line: &str) {
+        let rows = text(&tab.shown(list, "here"));
+        let at = rows
+            .iter()
+            .position(|row| row.trim_end() == line)
+            .unwrap_or_else(|| panic!("{line:?} in {rows:?}"));
+        tab.select_row(at);
+        assert_eq!(tab.selected_row(), at, "{line:?} can be chosen");
+    }
+
+    fn typed(tab: &mut Tab, list: &[ProvisionerInfo], words: &str) {
+        for ch in words.chars() {
+            tab.key(key(Code::Char(ch)), list, &mut Nowhere);
+        }
+    }
+
+    #[test]
+    fn a_collection_is_one_row_with_its_count_and_its_actions_are_not_loose() {
+        let (tab, list) = on_server();
+        let shown = tab.shown(&list, "here");
+        let rows = text(&shown);
+        let storage = rows.iter().position(|row| row == "Storage").unwrap();
+        assert_eq!(
+            rows[storage + 1..storage + 4],
+            [
+                "  ▸ Storage pools  2",
+                "  ▸ Volumes        2",
+                "  ▸ Check the server"
+            ]
+        );
+        // Neither the actions of a collection nor the collection of resources is a row.
+        for gone in [
+            "Grow",
+            "New storage pool",
+            "Grow root disk",
+            "Instances",
+            "▸ Storage pools  ",
+        ] {
+            assert!(
+                !rows
+                    .iter()
+                    .any(|row| row.contains(gone) && !row.ends_with("pools  2")),
+                "{gone:?} in {rows:?}"
+            );
+        }
+        assert_eq!(rows[shown.selected], "  ▸ Storage pools  2");
+        assert!(
+            shown.help.contains("x removes the one selected"),
+            "{}",
+            shown.help
+        );
+        assert!(shown.help.contains("berth provisioner run incus-vm pools"));
+        assert!(shown.keys.contains("Enter open"));
+    }
+
+    #[test]
+    fn a_table_opens_an_item_whose_actions_have_its_key_and_say_why_not() {
+        let (mut tab, list) = on_server();
+        choose(&mut tab, &list, "  ▸ Storage pools  2");
+        assert_eq!(
+            tab.key(key(Code::Enter), &list, &mut Nowhere),
+            Asked::Nothing(None)
+        );
+        let shown = tab.shown(&list, "here");
+        let rows = text(&shown);
+        assert_eq!(rows[0], "Storage pools · incus-vm");
+        for line in [
+            "  Storage pool  Driver  Size",
+            "  default       zfs     100.0 GiB",
+            "  fast          dir     200.0 GiB",
+            "New",
+            "  ▸ New storage pool",
+        ] {
+            assert!(rows.iter().any(|row| row == line), "{line:?} in {rows:?}");
+        }
+        // The first item is selected, and Enter opens it.
+        assert_eq!(rows[shown.selected], "  default       zfs     100.0 GiB");
+        assert!(shown.keys.contains("n new") && shown.keys.contains("x remove"));
+        tab.key(key(Code::Down), &list, &mut Nowhere);
+        tab.key(key(Code::Enter), &list, &mut Nowhere);
+        let shown = tab.shown(&list, "here");
+        let rows = text(&shown);
+        assert_eq!(rows[0], "Storage pool fast · incus-vm");
+        assert!(rows.contains(&"  Driver  dir".to_owned()), "{rows:?}");
+        assert!(
+            rows.contains(&"  ▸ Grow · A dir pool has no size of its own".to_owned()),
+            "{rows:?}"
+        );
+        // What cannot run on it is greyed, and says why when it is chosen.
+        let grow = rows
+            .iter()
+            .position(|row| row.starts_with("  ▸ Grow"))
+            .unwrap();
+        assert_eq!(shown.rows[grow].style.fg, Some(theme::MUTED));
+        assert_eq!(rows[shown.selected], rows[grow]);
+        assert_eq!(
+            tab.key(key(Code::Enter), &list, &mut Nowhere),
+            Asked::Nothing(Some(
+                "Grow cannot run now: A dir pool has no size of its own".into()
+            ))
+        );
+        // Its other action asks only for what the pool does not fill.
+        tab.key(key(Code::Down), &list, &mut Nowhere);
+        let help = tab.shown(&list, "here").help;
+        assert!(
+            help.contains("berth provisioner run incus-vm set-pool pool=fast"),
+            "{help}"
+        );
+        tab.key(key(Code::Enter), &list, &mut Nowhere);
+        let (actions, dialog) = tab.arguments().unwrap();
+        assert_eq!(actions[dialog.action].arguments[dialog.index].name, "key");
+        typed(&mut tab, &list, "description");
+        tab.key(key(Code::Enter), &list, &mut Nowhere);
+        typed(&mut tab, &list, "fast disks");
+        let Asked::Run {
+            provisioner,
+            action,
+            values,
+        } = tab.key(key(Code::Enter), &list, &mut Nowhere)
+        else {
+            panic!("not run");
+        };
+        assert_eq!(
+            (provisioner.as_str(), action.name.as_str(), action.title()),
+            ("incus-vm", "set-pool", "Change storage pool fast")
+        );
+        assert_eq!(
+            values,
+            [
+                ("key".to_owned(), "description".to_owned()),
+                ("pool".to_owned(), "fast".to_owned()),
+                ("value".to_owned(), "fast disks".to_owned())
+            ]
+            .into()
+        );
+        // Esc goes back to the table, with its row selected, and then to the page.
+        tab.key(key(Code::Esc), &list, &mut Nowhere);
+        let shown = tab.shown(&list, "here");
+        assert_eq!(
+            text(&shown)[shown.selected],
+            "  fast          dir     200.0 GiB"
+        );
+        tab.key(key(Code::Esc), &list, &mut Nowhere);
+        let shown = tab.shown(&list, "here");
+        assert_eq!(text(&shown)[shown.selected], "  ▸ Storage pools  2");
+    }
+
+    #[test]
+    fn x_removes_the_item_selected_after_a_question_that_names_it() {
+        let (mut tab, list) = on_server();
+        choose(&mut tab, &list, "  ▸ Storage pools  2");
+        tab.key(key(Code::Enter), &list, &mut Nowhere);
+        tab.key(key(Code::Down), &list, &mut Nowhere);
+        assert_eq!(
+            tab.key(key(Code::Char('x')), &list, &mut Nowhere),
+            Asked::Nothing(None)
+        );
+        assert_eq!(
+            tab.question(),
+            Some("Storage pool fast: Remove this storage pool?")
+        );
+        let Asked::Run { action, values, .. } = tab.key(key(Code::Char('y')), &list, &mut Nowhere)
+        else {
+            panic!("not run");
+        };
+        assert_eq!(action.name, "remove-pool");
+        assert_eq!(values, [("name".to_owned(), "fast".to_owned())].into());
+        // After its job the provisioner is asked again: the table has one fewer.
+        tab.opened(
+            "incus-vm",
+            Ok(server_state(&["default"])),
+            Ok(server_actions()),
+        );
+        let rows = text(&tab.shown(&list, "here"));
+        assert!(
+            !rows.iter().any(|row| row.starts_with("  fast")),
+            "{rows:?}"
+        );
+        // On a row that is no item, x says what to choose.
+        choose(&mut tab, &list, "  ▸ New storage pool");
+        assert_eq!(
+            tab.key(key(Code::Char('x')), &list, &mut Nowhere),
+            Asked::Nothing(Some("Choose the storage pool to remove".into()))
+        );
+    }
+
+    #[test]
+    fn the_page_of_an_item_that_is_gone_goes_back_to_its_table_when_asked_again() {
+        let (mut tab, list) = on_server();
+        choose(&mut tab, &list, "  ▸ Storage pools  2");
+        tab.key(key(Code::Enter), &list, &mut Nowhere);
+        tab.key(key(Code::Down), &list, &mut Nowhere);
+        tab.key(key(Code::Enter), &list, &mut Nowhere);
+        // r asks the provisioner again and keeps what is shown.
+        assert_eq!(
+            tab.key(key(Code::Char('r')), &list, &mut Nowhere),
+            Asked::Open("incus-vm".into())
+        );
+        assert_eq!(text(&tab.shown(&list, "here"))[1], "Asking incus-vm…");
+        tab.opened(
+            "incus-vm",
+            Ok(server_state(&["default"])),
+            Ok(server_actions()),
+        );
+        let shown = tab.shown(&list, "here");
+        let rows = text(&shown);
+        assert_eq!(rows[0], "Storage pools · incus-vm");
+        assert_eq!(rows[shown.selected], "  default       zfs     100.0 GiB");
+    }
+
+    #[test]
+    fn the_volumes_of_a_pool_are_listed_on_its_page_and_made_there_without_asking_for_it() {
+        let (mut tab, list) = on_server();
+        choose(&mut tab, &list, "  ▸ Storage pools  2");
+        tab.key(key(Code::Enter), &list, &mut Nowhere);
+        tab.key(key(Code::Enter), &list, &mut Nowhere);
+        let rows = text(&tab.shown(&list, "here"));
+        assert_eq!(rows[0], "Storage pool default · incus-vm");
+        let at = rows
+            .iter()
+            .position(|row| row == "In this storage pool")
+            .unwrap();
+        assert_eq!(rows[at + 1], "  ▸ Volumes  1");
+        tab.select_row(at + 1);
+        tab.key(key(Code::Enter), &list, &mut Nowhere);
+        let rows = text(&tab.shown(&list, "here"));
+        assert_eq!(rows[0], "Volumes · incus-vm · in the storage pool default");
+        // The pool is the table's own, so it is no column, and the other pool's volume is not there.
+        assert!(rows.contains(&"  Volume  Size".to_owned()), "{rows:?}");
+        assert!(rows.contains(&"  data    10GiB".to_owned()), "{rows:?}");
+        assert!(!rows.iter().any(|row| row.contains("scratch")));
+        // n asks for the name and size, not the pool.
+        tab.key(key(Code::Char('n')), &list, &mut Nowhere);
+        let (actions, dialog) = tab.arguments().unwrap();
+        assert_eq!(actions[dialog.action].arguments[dialog.index].name, "name");
+        typed(&mut tab, &list, "logs");
+        tab.key(key(Code::Enter), &list, &mut Nowhere);
+        let Asked::Run { action, values, .. } = tab.key(key(Code::Enter), &list, &mut Nowhere)
+        else {
+            panic!("not run");
+        };
+        assert_eq!(action.name, "create-volume");
+        assert_eq!(
+            (values["pool"].as_str(), values["name"].as_str()),
+            ("default", "logs")
+        );
+        // A volume's page removes it with both parts of its key.
+        tab.key(key(Code::Enter), &list, &mut Nowhere);
+        assert_eq!(text(&tab.shown(&list, "here"))[0], "Volume data · incus-vm");
+        tab.key(key(Code::Char('x')), &list, &mut Nowhere);
+        assert_eq!(tab.question(), Some("Volume data: Remove volume?"));
+        let Asked::Run { values, .. } = tab.key(key(Code::Char('y')), &list, &mut Nowhere) else {
+            panic!("not run");
+        };
+        assert_eq!(
+            values,
+            [
+                ("name".to_owned(), "data".to_owned()),
+                ("pool".to_owned(), "default".to_owned())
+            ]
+            .into()
+        );
+    }
+
+    #[test]
+    fn all_volumes_are_a_table_too_and_a_new_one_there_asks_for_its_pool() {
+        let (mut tab, list) = on_server();
+        choose(&mut tab, &list, "  ▸ Volumes        2");
+        tab.key(key(Code::Enter), &list, &mut Nowhere);
+        let rows = text(&tab.shown(&list, "here"));
+        assert_eq!(rows[0], "Volumes · incus-vm");
+        for line in [
+            "  Volume   Pool     Size",
+            "  data     default  10GiB",
+            "  scratch  fast     no set size",
+        ] {
+            assert!(rows.contains(&line.to_owned()), "{line:?} in {rows:?}");
+        }
+        // With the pool to ask for too it takes a form, which starts with the pool.
+        tab.key(key(Code::Char('n')), &list, &mut Nowhere);
+        let form = tab.form().expect("a form");
+        assert_eq!(form.wanted(), "create-volume");
+        assert!(tab.arguments().is_none());
+    }
+
+    #[test]
+    fn n_on_a_table_with_several_ways_to_make_one_selects_them() {
+        let (mut tab, list) = on_server();
+        let mut actions = server_actions();
+        actions.push(act("build", "Build the image", "pools", &[]));
+        let mut state = server_state(&["default"]);
+        state.provisioner.collections[0]
+            .new
+            .push(used("build", "Build one", &[]));
+        state.provisioner.collections[0].remove.clear();
+        tab.opened("incus-vm", Ok(state), Ok(actions));
+        choose(&mut tab, &list, "  ▸ Storage pools  1");
+        tab.key(key(Code::Enter), &list, &mut Nowhere);
+        assert_eq!(
+            tab.key(key(Code::Char('n')), &list, &mut Nowhere),
+            Asked::Nothing(Some(
+                "Choose how to make one: New storage pool or Build one".into()
+            ))
+        );
+        let shown = tab.shown(&list, "here");
+        assert_eq!(text(&shown)[shown.selected], "  ▸ New storage pool");
+        assert!(shown.keys.contains("n new") && !shown.keys.contains("x remove"));
+        tab.key(key(Code::Down), &list, &mut Nowhere);
+        let Asked::Run { action, .. } = tab.key(key(Code::Enter), &list, &mut Nowhere) else {
+            panic!("not run");
+        };
+        assert_eq!(action.name, "build");
+        tab.key(key(Code::Up), &list, &mut Nowhere);
+        tab.key(key(Code::Up), &list, &mut Nowhere);
+        assert_eq!(
+            tab.key(key(Code::Char('x')), &list, &mut Nowhere),
+            Asked::Nothing(Some("Storage pools are not removed here".into()))
+        );
+    }
+
+    #[test]
+    fn a_machine_has_the_provisioners_actions_on_it_on_its_page() {
+        let (mut tab, list) = on_server();
+        choose(
+            &mut tab,
+            &list,
+            "  studio             berth-studio  running",
+        );
+        assert_eq!(
+            tab.key(key(Code::Enter), &list, &mut Nowhere),
+            Asked::OpenResource("r-studio".into())
+        );
+        let seen = Resource {
+            id: "r-studio".into(),
+            provisioner: "incus-vm".into(),
+            kind: "machine".into(),
+            name: "studio".into(),
+            state: "running".into(),
+            ..Resource::default()
+        };
+        tab.opened_resource("r-studio", Ok(seen), Ok(vec![]));
+        let rows = text(&tab.shown(&list, "here"));
+        assert!(rows.contains(&"  ▸ Grow root disk".to_owned()), "{rows:?}");
+        choose(&mut tab, &list, "  ▸ Grow root disk");
+        assert!(
+            tab.shown(&list, "here")
+                .help
+                .contains("berth provisioner run incus-vm resize-disk instance=berth-studio")
+        );
+        tab.key(key(Code::Enter), &list, &mut Nowhere);
+        let (actions, dialog) = tab.arguments().unwrap();
+        assert_eq!(actions[dialog.action].arguments[dialog.index].name, "size");
+        typed(&mut tab, &list, "80GiB");
+        let Asked::Run {
+            provisioner,
+            action,
+            values,
+        } = tab.key(key(Code::Enter), &list, &mut Nowhere)
+        else {
+            panic!("not run");
+        };
+        assert_eq!(
+            (provisioner.as_str(), action.title()),
+            ("incus-vm", "Grow root disk · studio")
+        );
+        assert_eq!(values["instance"], "berth-studio");
+        // The provisioner's answer after its job is kept for its page.
+        tab.opened(
+            "incus-vm",
+            Ok(server_state(&["default"])),
+            Ok(server_actions()),
+        );
+        assert_eq!(
+            tab.key(key(Code::Esc), &list, &mut Nowhere),
+            Asked::Open("incus-vm".into())
+        );
+        assert!(text(&tab.shown(&list, "here")).contains(&"  ▸ Storage pools  1".to_owned()));
     }
 }

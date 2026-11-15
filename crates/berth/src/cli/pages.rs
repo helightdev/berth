@@ -220,9 +220,18 @@ pub fn provisioner(
             text += &format!("  {name:<16} {id}  {}\n", notes.join(" · "));
         }
     }
+    text += &collections(state);
     let mut groups: Vec<(&str, Vec<&Action>)> = vec![];
     for action in actions {
-        let title = berth_tui::page::group_of(action);
+        // The actions of a collection are listed under its name.
+        let title = info
+            .collections
+            .iter()
+            .find(|collection| collection.id == action.collection)
+            .map_or_else(
+                || berth_tui::page::group_of(action),
+                |collection| collection.plural.as_str(),
+            );
         match groups
             .iter_mut()
             .find(|(known, _)| known.eq_ignore_ascii_case(title))
@@ -242,6 +251,72 @@ pub fn provisioner(
                 false => format!("  ({})", action.why),
             };
             text += &format!("    {:<18} {}{why}\n", action.name, action.title());
+        }
+    }
+    text
+}
+
+/// Each collection of a provisioner as a table of its items, with what
+/// cannot be done to each and why.
+fn collections(state: &ProvisionerState) -> String {
+    let mut text = String::new();
+    for collection in &state.provisioner.collections {
+        if !collection.kinds.is_empty() {
+            continue;
+        }
+        let Some(items) = state.collections.get(&collection.id) else {
+            if state.state == "ready" {
+                text += &format!("\n{}\n  not listed\n", collection.plural);
+            }
+            continue;
+        };
+        text += &format!("\n{} ({})\n", collection.plural, items.len());
+        if items.is_empty() {
+            text += "  none\n";
+            continue;
+        }
+        let mut cells: Vec<Vec<String>> = vec![
+            std::iter::once(collection.label.to_uppercase())
+                .chain(
+                    collection
+                        .columns
+                        .iter()
+                        .map(|column| collection.column_label(column).to_uppercase()),
+                )
+                .collect(),
+        ];
+        for item in items {
+            cells.push(
+                std::iter::once(item.name.clone())
+                    .chain(
+                        collection.columns.iter().map(|column| {
+                            item.columns.get(&column.name).cloned().unwrap_or_default()
+                        }),
+                    )
+                    .collect(),
+            );
+        }
+        let widths: Vec<usize> = (0..cells[0].len())
+            .map(|column| {
+                cells
+                    .iter()
+                    .map(|row| row[column].chars().count())
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        for row in &cells {
+            let line: Vec<String> = row
+                .iter()
+                .zip(&widths)
+                .map(|(cell, width)| format!("{cell:<width$}"))
+                .collect();
+            text += &format!("  {}\n", line.join("  ").trim_end());
+        }
+        for item in items {
+            for (action, why) in &item.unavailable {
+                text += &format!("  {}: no {action}: {why}\n", item.name);
+            }
         }
     }
     text
@@ -411,6 +486,89 @@ mod tests {
         let lines = answer_lines(&json!({"message": "2 pools", "details": [
             {"label": "default", "value": "zfs"}, {"label": "fast-ssd", "value": "dir"}]}));
         assert_eq!(lines, ["2 pools", "  default   zfs", "  fast-ssd  dir"]);
+    }
+
+    #[test]
+    fn a_provisioners_collections_are_tables_and_their_actions_listed_under_them() {
+        let pools = berth_api::Collection {
+            id: "pools".into(),
+            label: "Pool".into(),
+            plural: "Storage pools".into(),
+            key: vec!["pool".into()],
+            columns: vec![
+                berth_api::CollectionColumn {
+                    name: "driver".into(),
+                    label: "Driver".into(),
+                },
+                berth_api::CollectionColumn {
+                    name: "size".into(),
+                    label: "Size".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let disks = berth_api::Collection {
+            id: "disks".into(),
+            plural: "Disks".into(),
+            kinds: vec!["machine".into()],
+            ..Default::default()
+        };
+        let item = |name: &str, driver: &str, size: &str| berth_api::CollectionItem {
+            name: name.into(),
+            columns: [
+                ("driver".to_owned(), driver.to_owned()),
+                ("size".to_owned(), size.to_owned()),
+            ]
+            .into(),
+            ..Default::default()
+        };
+        let mut fast = item("fast", "dir", "200.0 GiB");
+        fast.unavailable.insert(
+            "resize-pool".into(),
+            "a dir pool has no size of its own".into(),
+        );
+        let state = ProvisionerState {
+            provisioner: ProvisionerInfo {
+                id: "incus-vm".into(),
+                collections: vec![pools, disks],
+                ..Default::default()
+            },
+            state: "ready".into(),
+            collections: [(
+                "pools".to_owned(),
+                vec![item("default", "zfs", "100.0 GiB"), fast],
+            )]
+            .into(),
+            ..Default::default()
+        };
+        let actions = [
+            Action {
+                name: "resize-pool".into(),
+                label: "Grow storage pool".into(),
+                group: "Storage".into(),
+                collection: "pools".into(),
+                ..Action::default()
+            },
+            Action {
+                name: "server".into(),
+                label: "Check the server".into(),
+                group: "Server".into(),
+                ..Action::default()
+            },
+        ];
+        let text = provisioner(&state, &actions, &BTreeMap::new());
+        for line in [
+            "\nStorage pools (2)\n",
+            "  POOL     DRIVER  SIZE\n",
+            "  default  zfs     100.0 GiB\n",
+            "  fast     dir     200.0 GiB\n",
+            "  fast: no resize-pool: a dir pool has no size of its own\n",
+            "  Storage pools\n    resize-pool        Grow storage pool\n",
+            "  Server\n    server             Check the server\n",
+        ] {
+            assert!(text.contains(line), "{line:?} in\n{text}");
+        }
+        assert!(!text.contains("Disks"), "{text}");
     }
 
     #[test]
