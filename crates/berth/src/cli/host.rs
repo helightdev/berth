@@ -146,7 +146,7 @@ pub fn show(client: &Client, name: &str) -> Result<()> {
         out::fields(&pairs);
         if let Some(actions) = &actions {
             println!();
-            super::things::action_table(actions).print("Nothing to do");
+            super::things::print_actions(actions);
         }
         out::hint(format!(
             "Run an action with berth run {name} ACTION. Its profile: berth host export {name}"
