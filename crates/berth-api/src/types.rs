@@ -588,7 +588,7 @@ pub struct Action {
     pub label: String,
     #[serde(default)]
     pub help: String,
-    /// The group of the page it is listed in; `System` when empty.
+    /// The group of the page it is listed in; `Host` when empty.
     #[serde(default)]
     pub group: String,
     #[serde(default)]

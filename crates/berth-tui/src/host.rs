@@ -638,9 +638,12 @@ pub fn groups(host: &HostView, terminal_user: &str) -> Vec<(String, Vec<(String,
             .map(|group| (group.title, group.rows))
             .collect();
     let terminal = (format!("  ▸ Terminal · as {terminal_user}"), Pick::Terminal);
-    match groups.iter_mut().find(|(title, _)| title == "System") {
+    match groups
+        .iter_mut()
+        .find(|(title, _)| title == page::HOST_GROUP)
+    {
         Some((_, rows)) => rows.insert(1.min(rows.len()), terminal),
-        None => groups.insert(0, ("System".to_owned(), vec![terminal])),
+        None => groups.insert(0, (page::HOST_GROUP.to_owned(), vec![terminal])),
     }
     if !host.sessions.is_empty() {
         let rows = host

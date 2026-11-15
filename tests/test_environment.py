@@ -146,7 +146,7 @@ class EnvironmentTests(unittest.TestCase):
     def test_core_tasks_name_installed_scripts(self):
         tasks = yaml.safe_load((ROLE / 'vars/main.yml').read_text())['devbox_core_tasks']
         names = [task['name'] for task in tasks]
-        self.assertEqual(names, ['status', 'smoke', 'update', 'reboot', 'access', 'publish', 'pair',
+        self.assertEqual(names, ['status', 'smoke', 'reboot', 'update', 'access', 'publish', 'pair',
                                  'secrets', 'sign-in:status'])
         for task in tasks:
             with self.subTest(task=task['name']):

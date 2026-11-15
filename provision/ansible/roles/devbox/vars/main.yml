@@ -5,30 +5,30 @@ devbox_task_dir: /usr/local/lib/berth/tasks
 devbox_core_tasks:
   - name: status
     label: Status
-    group: System
+    group: Host
     user: root
     help: Provisioning state, services, graphics renderer, disk space and failed units, followed by the access links and what the plugins of this host report.
     run: "{{ devbox_task_dir }}/status.sh"
   - name: smoke
     label: Self-Test
-    group: System
+    group: Host
     user: agent
     agent: true
     help: "Run devbox-smoke as the agent: graphics, browser, office tools and the coding agents. The plugins of this host add their own checks."
     run: devbox-smoke
-  - name: update
-    label: Update
-    group: System
-    user: root
-    help: apt update and dist-upgrade on the host, then what the plugins of this host keep up to date. Says whether a reboot is needed afterwards.
-    run: "{{ devbox_task_dir }}/update.sh"
   - name: reboot
     label: Reboot
-    group: System
+    group: Power
     user: root
     confirm: Restart the host? Everything running on it ends, sessions included.
     help: Restart the host.
     run: "{{ devbox_task_dir }}/reboot.sh"
+  - name: update
+    label: Update
+    group: Sync
+    user: root
+    help: apt update and dist-upgrade on the host, then what the plugins of this host keep up to date. Says whether a reboot is needed afterwards.
+    run: "{{ devbox_task_dir }}/update.sh"
   - name: access
     label: Access links and desktop password
     group: Access
@@ -66,23 +66,23 @@ devbox_core_tasks:
 devbox_controller_tasks:
   - name: status
     label: Status
-    group: System
+    group: Host
     user: root
     help: The host, how long it has been up, the state of SSH and berthd, disk space and failed units.
     run: "{{ devbox_task_dir }}/status.sh controller"
-  - name: update
-    label: Update
-    group: System
-    user: root
-    help: apt update and dist-upgrade on the host. Says whether a reboot is needed afterwards.
-    run: "{{ devbox_task_dir }}/update.sh"
   - name: reboot
     label: Reboot
-    group: System
+    group: Power
     user: root
     confirm: Restart the host? Everything running on it ends, sessions included.
     help: Restart the host.
     run: "{{ devbox_task_dir }}/reboot.sh"
+  - name: update
+    label: Update
+    group: Sync
+    user: root
+    help: apt update and dist-upgrade on the host. Says whether a reboot is needed afterwards.
+    run: "{{ devbox_task_dir }}/update.sh"
   - name: secrets
     label: Secrets and registry logins
     group: Sync
@@ -96,23 +96,23 @@ devbox_controller_tasks:
 devbox_node_tasks:
   - name: status
     label: Status
-    group: System
+    group: Host
     user: root
     help: The node, how long it has been up, the state of SSH, berthd, the firewall and the tailnet, disk space and failed units, followed by what its features report.
     run: "{{ devbox_task_dir }}/status.sh node"
-  - name: update
-    label: Update
-    group: System
-    user: root
-    help: apt update and dist-upgrade on the node, then what its features keep up to date. Says whether a reboot is needed afterwards.
-    run: "{{ devbox_task_dir }}/update.sh"
   - name: reboot
     label: Reboot
-    group: System
+    group: Power
     user: root
     confirm: Restart the node? Everything running on it ends, sessions and the machines it hosts included.
     help: Restart the node.
     run: "{{ devbox_task_dir }}/reboot.sh"
+  - name: update
+    label: Update
+    group: Sync
+    user: root
+    help: apt update and dist-upgrade on the node, then what its features keep up to date. Says whether a reboot is needed afterwards.
+    run: "{{ devbox_task_dir }}/update.sh"
   - name: secrets
     label: Secrets and registry logins
     group: Sync

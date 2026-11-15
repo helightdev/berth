@@ -131,7 +131,7 @@
             ]
           },
           "group": {
-            "description": "The group of the page it is listed in; `System` when empty.",
+            "description": "The group of the page it is listed in; `Host` when empty.",
             "type": "string"
           },
           "help": {

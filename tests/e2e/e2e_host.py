@@ -15,8 +15,8 @@ class Commands(unittest.TestCase):
 
     def test_tasks_are_listed_by_group(self):
         listed = json.loads(self.station.berth('action', 'list', HOST, '-o', 'json').stdout)
-        groups = {action['group'] or 'System' for action in listed}
-        self.assertLessEqual({'System', 'Sync', 'Sign-In'}, groups)
+        groups = {action['group'] or 'Host' for action in listed}
+        self.assertLessEqual({'Host', 'Power', 'Sync', 'Sign-In'}, groups)
         secrets = next(action for action in listed if action['name'] == 'secrets')
         self.assertEqual(secrets['label'], 'Secrets and registry logins')
         self.assertRegex(self.station.berth('action', 'list', HOST).stdout, r'(?m)^secrets\s+')

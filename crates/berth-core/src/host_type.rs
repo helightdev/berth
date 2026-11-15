@@ -280,7 +280,7 @@ pub fn rename_action() -> Action {
         name: "rename".into(),
         label: "Rename".into(),
         help: "Give the host another name in berth. Its profile, passwords, host keys, machine record, messages and jobs go with it. The machine itself stays as it is and keeps running, and so does its hostname unless hostname says otherwise.".into(),
-        group: "Set-Up".into(),
+        group: "Host".into(),
         role: Role::Admin,
         arguments: vec![
             berth_api::Argument {

@@ -36,11 +36,15 @@ pub struct Group<E> {
 
 /// The group an action is listed in.
 pub fn group_of(action: &Action) -> &str {
-    match action.group.is_empty() {
-        true => "System",
-        false => &action.group,
+    match action.group.as_str() {
+        // A controller applied by an earlier berth says System for these.
+        "" | "System" => HOST_GROUP,
+        group => group,
     }
 }
+
+/// The group of what a host does that belongs to no other group.
+pub const HOST_GROUP: &str = "Host";
 
 /// What a row says of an action that cannot run now; its help says why.
 pub const UNAVAILABLE: &str = " · not now";

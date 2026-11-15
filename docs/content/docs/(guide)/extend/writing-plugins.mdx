@@ -115,7 +115,7 @@ An action becomes an action of the host's controller named `PLUGIN:ACTION`. Appl
     arguments: { type: 'Argument[]', description: 'Values asked for before it runs: {name, label, required, default, choices}.' },
     confirm: { type: 'string', description: 'A sentence to confirm before it runs, for something that cannot be taken back.' },
     terminal: { type: 'boolean', default: 'false', description: 'For a command that asks something or shows a link to follow, such as a sign-in.' },
-    group: { type: 'string', description: 'The overview group: System, Access, Sync, Sign-In, or your own. Default: a group named after the plugin.' },
+    group: { type: 'string', description: 'The overview group: Host, Power, Access, Sync, Sign-In, or your own. Default: a group named after the plugin.' },
     extends: { type: 'string | string[]', description: 'Run as a step after status, smoke, update, secrets or sign-in:status instead of having a row of its own.' },
   }}
 />
