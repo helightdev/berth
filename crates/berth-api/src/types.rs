@@ -32,6 +32,19 @@ pub struct ErrorDetail {
 /// the body: a WebSocket handshake that was refused shows only its head.
 pub const ERROR_HEADER: &str = "berth-error";
 
+/// The header that repeats an error's message for the same caller, escaped
+/// as a part of a path is and cut short.
+pub const ERROR_MESSAGE_HEADER: &str = "berth-error-message";
+
+/// What [`ERROR_MESSAGE_HEADER`] says of `message`.
+pub fn error_message_header(message: &str) -> String {
+    let end = (0..=message.len().min(512))
+        .rev()
+        .find(|at| message.is_char_boundary(*at))
+        .unwrap_or(0);
+    crate::escape::encode(&message[..end])
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ErrorBody {
     pub error: ErrorDetail,
