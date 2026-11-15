@@ -1314,8 +1314,11 @@ impl<'a> Profile<'a> {
                 ));
             }
             // What the profile says that a node has not got, such as accounts.
+            // Its address is the SSH address's own problem.
             for problem in berth_api::profile::problems(self.config) {
-                problems.push(Problem::new(Step::Install, problem));
+                if !problem.contains("needs access.address") {
+                    problems.push(Problem::new(Step::Install, problem));
+                }
             }
             return problems;
         }

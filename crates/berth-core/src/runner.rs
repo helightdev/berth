@@ -816,8 +816,9 @@ impl Ticket {
                 exit_code = Some(130);
             }
             drop(lock);
-            runner.stops.lock().unwrap().remove(&job.id);
+            // Ended in the store before it leaves the stops, so that a stop asked between finds one or the other.
             runner.end(&job.id, exit_code);
+            runner.stops.lock().unwrap().remove(&job.id);
             runner
                 .running
                 .lock()
@@ -1075,7 +1076,11 @@ mod tests {
         let world = world();
         // A program that starts another, which the stop ends as well.
         let mut command = Command::new("sh");
-        command.args(["-c", "echo started; sleep 30 & wait"]);
+        // It takes a moment to end once stopped, as a program that cleans up does.
+        command.args([
+            "-c",
+            "trap 'sleep 0.5; exit 1' TERM; echo started; sleep 30 & wait",
+        ]);
         let work = Work::Program(Box::new(Program {
             command,
             input: None,
