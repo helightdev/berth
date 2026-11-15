@@ -258,6 +258,10 @@ pub struct Serve {
     /// Whether the hosts' channels are taken in, which only `berth serve`
     /// does, holding its lock.
     pub follows: bool,
+    /// The known-hosts file of the user the server runs as, which a first
+    /// login from a caller on this machine takes a host's key from. Tests
+    /// leave it out or name one of their own.
+    pub known_hosts: Mutex<Option<PathBuf>>,
     watch: Arc<Watch>,
 }
 
@@ -297,6 +301,11 @@ impl Serve {
             passwords: Mutex::new(BTreeMap::new()),
             provision: Default::default,
             follows: true,
+            known_hosts: Mutex::new(match cfg!(test) {
+                true => None,
+                false => std::env::var_os("HOME")
+                    .map(|home| PathBuf::from(home).join(".ssh/known_hosts")),
+            }),
             watch,
         })
     }

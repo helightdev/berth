@@ -3502,6 +3502,68 @@ mod keys;
 mod remote;
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_caller_on_this_machine_takes_the_host_key_its_user_knows() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state_in(dir.path(), Some("s3cret-token"));
+    let known_hosts = dir.path().join("known_hosts");
+    std::fs::write(&known_hosts, "192.0.2.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEdockdockdockdockdockdockdockdockdockdockdo\n").unwrap();
+    *state.known_hosts.lock().unwrap() = Some(known_hosts);
+    for name in ["dock", "studio"] {
+        berth_core::profiles::Place::own(name)
+            .unwrap()
+            .save(
+                &state.paths,
+                &json!({"builder": {}, "access": {"address": "192.0.2.8"}}),
+            )
+            .unwrap();
+    }
+    // Over the network nothing of the server's user's files is taken.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = api::router(state.clone(), true);
+    tokio::spawn(async move { axum::serve(listener, router).await });
+    let mut far = Client::over(tokio::net::TcpStream::connect(address).await.unwrap())
+        .await
+        .unwrap();
+    let answer = far
+        .send(
+            "POST",
+            "/v1/hosts/dock/actions/host-key",
+            &[("authorization", "Bearer s3cret-token")],
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(answer.status, 200);
+    let acted: Value = serde_json::from_slice(&answer.body).unwrap();
+    assert_eq!(acted["result"]["host_keys"], json!([]), "{acted}");
+    // On the socket the key that file has for the address is the host's.
+    let socket = dir.path().join("serve.sock");
+    let unix = tokio::net::UnixListener::bind(&socket).unwrap();
+    let router = api::router(state.clone(), false);
+    tokio::spawn(async move { axum::serve(unix, router).await });
+    let mut client = Client::unix(&socket).await.unwrap();
+    let (status, acted) = send(
+        &mut client,
+        "POST",
+        "/v1/hosts/studio/actions/host-key",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{acted}");
+    let keys = acted["result"]["host_keys"].as_array().unwrap();
+    assert_eq!(keys.len(), 1, "{acted}");
+    assert_eq!(keys[0]["type"], "ssh-ed25519");
+    assert!(
+        keys[0]["fingerprint"]
+            .as_str()
+            .unwrap()
+            .starts_with("SHA256:"),
+        "{acted}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn first_contact_and_keys_are_actions_of_the_server() {
     let served = served().await;
     let mut client = served.client().await;
