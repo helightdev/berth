@@ -525,7 +525,7 @@ impl Flow {
 
     /// The provisioner and the arguments it requires, as the Install tab
     /// asks for them when a provisioner makes the host.
-    fn machine_questions(&mut self, given: &Given, asker: &mut dyn Asker) -> Result<(), Stop> {
+    pub fn machine_questions(&mut self, given: &Given, asker: &mut dyn Asker) -> Result<(), Stop> {
         match &given.provisioner {
             Some(name) => {
                 if !self

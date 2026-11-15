@@ -110,13 +110,6 @@ pub fn trust_key(
     once: Option<Once>,
     keep_password: bool,
 ) -> Result<Trusted> {
-    if host.served(paths).is_some() {
-        return Err(format!(
-            "{} is a host of a berth server, which logs in to it: ask there",
-            host.name
-        )
-        .into());
-    }
     let access = Access::of(&host.config);
     if access.link.is_some() {
         return Err(format!(
@@ -198,7 +191,7 @@ pub fn trust_key(
     })
 }
 
-/// What `berth key host HOST` shows, and with `accept` does: the recorded
+/// What `berth host verify HOST` shows, and with `accept` does: the recorded
 /// host keys, or, accepting a changed key, the ones the host has now.
 pub fn host_key(paths: &Paths, host: &Host, accept: bool) -> Result<Vec<String>> {
     let store = crate::store::shared(paths)?;

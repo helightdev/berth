@@ -421,7 +421,7 @@ impl Home {
                 match setting["open"] == true {
                     true => format!("{meaning}.\n\nLeave it empty to use the default."),
                     false => format!(
-                        "{meaning}.\n\nIt says who gets in or where the server's files are, so it is set on the server itself: `berth config {} VALUE`. A token is never shown.",
+                        "{meaning}.\n\nIt says who gets in or where the server's files are, so it is set on the server itself: `berth config set {} VALUE`. A token is never shown.",
                         setting["key"].as_str().unwrap_or("")
                     ),
                 }

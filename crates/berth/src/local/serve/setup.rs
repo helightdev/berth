@@ -99,7 +99,9 @@ pub async fn save_profile(
         let store = berth_core::store::shared(&state.paths).map_err(internal)?;
         let known = berth_core::keys::ring::names(&store).map_err(internal)?;
         if key != berth_api::profile::BERTH_KEY && !known.iter().any(|known| known == key) {
-            return Err(bad(format!("The server has no key {key}. See: berth key")));
+            return Err(bad(format!(
+                "The server has no key {key}. See: berth key list"
+            )));
         }
     }
     // How the caller reached this server is not part of the host.
@@ -145,7 +147,7 @@ pub async fn remove_host(State(state): App, Path(name): Path<String>) -> Answer<
         return Err(Fail::new(
             code::CONFLICT,
             format!(
-                "{name} has a machine berth created, {} of {}. Delete it first: berth resource {} remove",
+                "{name} has a machine berth created, {} of {}. Delete it first: berth resource remove {}",
                 kept.record.external_id, kept.record.provisioner, kept.record.id
             ),
         ));
@@ -372,7 +374,7 @@ pub async fn settings(
     State(state): App,
     access: Option<Extension<Access>>,
 ) -> Answer<Json<Vec<Setting>>> {
-    // The user the server runs as changes any of them, as berth config does.
+    // The user the server runs as changes any of them, as berth config set does.
     let local = access.is_none();
     let saved = state.paths.settings().map_err(internal)?;
     let settings = SETTINGS
@@ -406,7 +408,7 @@ pub async fn set_setting(
     if access.is_some() && !OPEN_SETTINGS.contains(&key.as_str()) {
         return Err(Fail::new(
             code::FORBIDDEN,
-            format!("{key} is set on the server itself, with berth config"),
+            format!("{key} is set on the server itself, with berth config set"),
         ));
     }
     state.paths.set(&key, &setting.value).map_err(bad)?;
@@ -665,7 +667,7 @@ pub async fn generate(State(state): App, Json(asked): Json<Generate>) -> Answer<
                     Ok(Generated {
                         value,
                         note: format!(
-                            "Generated password kept in the server's store; see it with: berth credentials {}",
+                            "Generated password kept in the server's store; see it with: berth host credentials {}",
                             place.argument()
                         ),
                         password: Some(password),

@@ -24,7 +24,7 @@
       {{ inventory_hostname }} is a workstation that berth set up, and its
       profile here says otherwise. Installing the controller alone would take
       its controller apart, so nothing was changed. To adopt it from the
-      profile it keeps: berth adopt NAME.
+      profile it keeps: berth host adopt NAME.
   when: >-
     devbox_controller_kept.stat.exists
     or (devbox_controller_recorded | length > 0
@@ -36,7 +36,7 @@
       {{ devbox_controller_config.agent }}, not the SSH user
       {{ devbox_controller_user }}: berth set it up as a workstation, and its
       profile here says otherwise. Nothing was changed. To adopt it from the
-      profile it keeps: berth adopt NAME.
+      profile it keeps: berth host adopt NAME.
   when:
     - devbox_controller_config.agent | default('') | length > 0
     - devbox_controller_config.agent != devbox_controller_user

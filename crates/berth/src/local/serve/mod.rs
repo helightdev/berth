@@ -547,21 +547,6 @@ fn lock(paths: &Paths) -> Result<std::fs::File> {
 
 const USAGE: &str = "Usage: berth serve [--listen ADDRESS:PORT [--expose]]";
 
-/// A berth set to use a berth server keeps that server's hosts, so its
-/// commands, and the ones a serve starts, would take a host's name for one of
-/// those. berth serve serves this installation's own hosts, and does not
-/// start like that.
-fn refuse_a_server(paths: &Paths) -> Result<()> {
-    match berth_core::server::Server::configured(paths) {
-        Some(server) => Err(format!(
-            "This berth uses the berth server at {}, so its hosts are that server's. berth serve serves the hosts of this machine: stop using the other server with berth config server \"\" (and unset BERTH_SERVER), then start berth serve again",
-            server.url
-        )
-        .into()),
-        None => Ok(()),
-    }
-}
-
 /// `berth serve [--listen ADDRESS:PORT [--expose]]`
 ///
 /// Over TCP every request shows the token, but the connection is plain HTTP,
@@ -595,14 +580,13 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
             Some(address)
         }
     };
-    refuse_a_server(paths)?;
     let _lock = lock(paths)?;
     let store = open_store(paths)?;
     store.end_lost_jobs()?;
     // From the next step on the store holds keys and passwords.
     if store.backend_name() == "postgres" && !store.encrypted() {
         eprintln!(
-            "berth serve: the PostgreSQL database holds this installation's keys and passwords readable; berth store encrypt seals them"
+            "berth serve: the PostgreSQL database holds this installation's keys and passwords readable; berth server store encrypt seals them"
         );
     }
     crate::local::restore_plugins(paths);

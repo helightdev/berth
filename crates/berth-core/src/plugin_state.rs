@@ -399,7 +399,7 @@ pub fn carry_out(own: &Path, plan: &Plan) -> Result<Vec<String>> {
             .map(|(name, _)| name.as_str())
             .collect();
         notices.push(format!(
-            "berth: {} came from a file or folder of the machine they were added on, and are not installed here; add them again with berth plugins add",
+            "berth: {} came from a file or folder of the machine they were added on, and are not installed here; add them again with berth plugin add",
             names.join(", ")
         ));
     }

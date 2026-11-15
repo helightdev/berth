@@ -332,7 +332,7 @@ pub fn info(paths: &Paths, kept: &Kept, plugins: &[Plugin], busy: bool) -> Resou
         (true, false) => (
             "unknown".to_owned(),
             format!(
-                "Creating it did not end. Asking again finds the same one; removing it forgets it: berth resource {} remove",
+                "Creating it did not end. Asking again finds the same one; removing it forgets it: berth resource remove {}",
                 record.id
             ),
         ),
@@ -477,7 +477,7 @@ pub(crate) fn environment(store: &Store, wanted: &[ResourceSecret]) -> Result<Ma
     for secret in wanted {
         match store
             .secret(&secret.name)?
-            .filter(|value| !value.is_empty() && value != crate::server::KEPT)
+            .filter(|value| !value.is_empty())
         {
             Some(value) => {
                 given.insert(secret.variable().to_owned(), json!(value));
@@ -705,7 +705,7 @@ pub fn prepare(paths: &Paths, store: &Store, asked: &berth_api::NewResource) -> 
         .filter(|kept| !kept.record.external_id.is_empty())
     {
         return Err(format!(
-            "There is a {kind} {name} of {} already, {}. Change it with: berth resource {} change, or remove it first",
+            "There is a {kind} {name} of {} already, {}. Change it with: berth resource set {}, or remove it first",
             asked.provisioner, existing.record.id, existing.record.id
         )
         .into());
@@ -956,7 +956,7 @@ pub fn actions(paths: &Paths, store: &Store, kept: &Kept) -> Vec<Action> {
             .collect();
         let help = match kind.spec.is_some() {
             true => {
-                "Give it other values of its arguments, and its specification, which berth keeps and opens in the editor. From the command line a new one is given with: berth resource ID change --spec FILE"
+                "Give it other values of its arguments, and its specification, which berth keeps and opens in the editor. From the command line a new one is given with: berth resource set ID --spec FILE"
             }
             false => "Give it other values of its arguments, as its provisioner can.",
         };

@@ -211,7 +211,7 @@ pub fn remove_entry(paths: &Paths, store: &Store, name: &str) -> Result<()> {
         .collect();
     if !held.is_empty() {
         return Err(format!(
-            "{name} still holds {}. Remove {} first: berth resource ID remove",
+            "{name} still holds {}. Remove {} first: berth resource remove ID",
             held.join(", "),
             if held.len() == 1 { "it" } else { "them" }
         )
@@ -313,7 +313,7 @@ fn problem(
     match unset.is_empty() {
         true => String::new(),
         false => format!(
-            "{name} needs {}: berth provisioner {name} run {SETTINGS} {}",
+            "{name} needs {}: berth provisioner set {name} {}",
             unset.join(" and "),
             unset
                 .iter()
@@ -597,7 +597,7 @@ fn new_action(
             },
             match kind.id == "deployment" {
                 true =>
-                    " From the command line also: berth deploy NAME --provisioner PROVISIONER --spec FILE",
+                    " From the command line also: berth resource create NAME --provisioner PROVISIONER --spec FILE",
                 false => "",
             }
         ),
@@ -966,7 +966,7 @@ impl Acting {
                 let title = creating.kept().title();
                 creating.run(paths, &store, options, out)?;
                 Ok(Answered {
-                    message: format!("{title} is made. Its page: berth resource {id}"),
+                    message: format!("{title} is made. Its page: berth resource show {id}"),
                     details: vec![],
                 })
             }

@@ -334,7 +334,6 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
             "echo 'bash: berthd: command not found' >&2; exit 127".into(),
         ],
         first_line: None,
-        via: None,
         ..LinkSpec::default()
     };
     served.state.add(Remote::new("broken", "192.0.2.1", broken));
@@ -662,7 +661,6 @@ impl Berthd {
             program: self.program.to_string_lossy().into_owned(),
             args: vec!["connect".into(), "--dir".into(), dir],
             first_line: None,
-            via: None,
             ..LinkSpec::default()
         }
     }
@@ -2719,7 +2717,7 @@ async fn machines_are_created_and_deleted_through_the_api() {
     let (status, said) = send(client, "DELETE", "/v1/hosts/studio", Value::Null).await;
     assert_eq!(status, 409, "{said}");
     assert!(
-        message(&said).contains(&format!("berth resource {id} remove")),
+        message(&said).contains(&format!("berth resource remove {id}")),
         "{said}"
     );
 
@@ -3409,7 +3407,7 @@ fn generated_passwords_are_kept_where_the_host_is_and_shown_to_an_admin() {
         made["note"]
             .as_str()
             .unwrap()
-            .contains("berth credentials studio"),
+            .contains("berth host credentials studio"),
         "{made}"
     );
     let (status, kept) = ask("GET", "/v1/hosts/studio/credentials", Value::Null);
@@ -3426,19 +3424,6 @@ fn generated_passwords_are_kept_where_the_host_is_and_shown_to_an_admin() {
     assert_eq!(status, 404);
 
     runtime.shutdown_background();
-}
-
-#[test]
-fn a_serve_of_a_berth_that_uses_a_berth_server_does_not_start() {
-    let dir = tempfile::tempdir().unwrap();
-    let paths = Paths {
-        config_dir: dir.path().join("config"),
-        data_dir: dir.path().join("data"),
-    };
-    paths.set("server", "http://192.0.2.7:7777").unwrap();
-    let said = super::command(&paths, &[]).unwrap_err().to_string();
-    assert!(said.contains("berth config server \"\""), "{said}");
-    assert!(!paths.data_dir.join("serve.lock").exists());
 }
 
 #[test]
@@ -3662,7 +3647,7 @@ async fn a_host_added_by_its_address_has_a_type_and_actions_to_match() {
     for (name, why) in [
         ("apply", "not a workstation"),
         ("seed", "not a workstation"),
-        ("secrets", "berth host install dock"),
+        ("secrets", "berth run dock install-controller"),
     ] {
         let action = find(name);
         assert_eq!(action["available"], false, "{action}");
@@ -3778,7 +3763,7 @@ async fn a_host_seen_to_be_a_workstation_never_gets_the_controller_alone() {
     let why = install["why"].as_str().unwrap();
     assert!(
         why.starts_with("box is a workstation; its profile here says ssh")
-            && why.contains("berth adopt box"),
+            && why.contains("berth host adopt box"),
         "{why}"
     );
     let (status, said) = send(
@@ -3906,7 +3891,7 @@ async fn a_host_removed_or_changed_in_the_store_by_another_process_is_not_listed
     let (_, hosts) = send(client, "GET", "/v1/hosts", Value::Null).await;
     assert_eq!(hosts[0]["address"], "192.0.2.40", "{hosts}");
 
-    // `berth remove` there takes it off the list, without a restart.
+    // `berth host remove` there takes it off the list, without a restart.
     berth_core::profiles::remove(paths, &place).unwrap();
     let (status, hosts) = send(client, "GET", "/v1/hosts", Value::Null).await;
     assert_eq!((status, hosts), (200, json!([])));

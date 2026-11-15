@@ -1,6 +1,6 @@
 //! A host as its profile describes it: where it is and how it is reached.
 
-use crate::{Result, link::LinkSpec, paths::Paths, profiles::Place, server::Server};
+use crate::{Result, link::LinkSpec, paths::Paths, profiles::Place};
 use berth_api::profile::Access;
 use serde_json::Value;
 use std::process::Command;
@@ -62,18 +62,6 @@ impl Host {
         berth_api::profile::asks_become_pass(&self.config)
     }
 
-    /// The `berth serve` this host is reached through, for a profile written
-    /// from a server's list of hosts. The token is a setting of `paths`, not
-    /// part of a profile.
-    pub fn served(&self, paths: &Paths) -> Option<Server> {
-        let url = self.config["builder"]["served"].as_str()?;
-        let configured = Server::configured(paths).filter(|server| server.url == url);
-        Some(configured.unwrap_or(Server {
-            url: url.to_owned(),
-            token: std::env::var("BERTH_TOKEN").ok(),
-        }))
-    }
-
     pub fn agent(&self) -> &str {
         match self.config["agent_username"].as_str() {
             None | Some("") => "agent",
@@ -102,9 +90,6 @@ impl Host {
     /// The sudo password kept as the secret `sudo/HOST`, for a host whose
     /// user chose to keep it.
     pub fn kept_sudo_password(&self, paths: &Paths) -> Option<String> {
-        if self.served(paths).is_some() {
-            return None;
-        }
         let store = crate::store::shared(paths).ok()?;
         crate::registry::Store::own(store)
             .secret(&crate::keys::sudo_secret(&self.place))
@@ -131,13 +116,6 @@ impl Host {
     /// How to open a connection to the host's berthd. `password` is the SSH
     /// user's sudo password, for a host that asks for one.
     pub fn link(&self, paths: &Paths, password: Option<&str>) -> Result<LinkSpec> {
-        if let Some(server) = self.served(paths) {
-            return Ok(LinkSpec {
-                via: Some((server, self.name.clone())),
-                name: self.name.clone(),
-                ..LinkSpec::default()
-            });
-        }
         // A profile can name the command itself, as for a container:
         // ["docker", "exec", "-i", "NAME", "berthd", "connect"].
         if let Some(command) = self.access().link {

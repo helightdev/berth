@@ -71,7 +71,7 @@ impl Control {
             .and_then(|store| store.secret(TAILNET_API_KEY))
             .ok()
             .flatten()
-            .filter(|token| !token.is_empty() && token != crate::server::KEPT);
+            .filter(|token| !token.is_empty());
         Control {
             headscale,
             user: setting("tailnet_user"),
@@ -152,7 +152,7 @@ impl Control {
         }
         match (self.user.as_str(), self.tags.is_empty()) {
             ("", true) => {
-                return Err("Headscale needs a user or tags for a new host's key: berth config tailnet_user NAME, or berth config tailnet_tags TAG".into());
+                return Err("Headscale needs a user or tags for a new host's key: berth config set tailnet_user NAME, or berth config set tailnet_tags TAG".into());
             }
             ("", false) => {}
             // Headscale's API names the user by its number.
@@ -707,11 +707,6 @@ mod tests {
             assert!(seen.recv().unwrap().line.starts_with("POST"));
         }
         assert_eq!(keys, ["hskey-auth-named", "hskey-auth-file"]);
-        // A berth that uses a berth server has none of its own hosts by name;
-        // berth serve refuses to start like that, so its children never do.
-        paths.set("server", "http://192.0.2.7:7777").unwrap();
-        let said = key_for(&paths, "studio").unwrap_err().to_string();
-        assert_eq!(said, "No host studio");
         let by_path = file.argument();
         assert_eq!(
             crate::profiles::Place::resolve(&paths, &by_path).unwrap(),

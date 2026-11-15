@@ -137,7 +137,7 @@ pub fn check(
         },
         (_, HostType::Ssh) if capability.allowed(HostType::Managed) => Refusal {
             why: format!(
-                "{name} is a host of the type ssh: berth's controller is not installed there, and {what} needs it. Install it with: berth host install {name}"
+                "{name} is a host of the type ssh: berth's controller is not installed there, and {what} needs it. Install it with: berth run {name} install-controller"
             ),
             raise: "install-controller",
         },
@@ -327,7 +327,7 @@ mod tests {
     fn a_refusal_names_the_action_that_changes_the_type() {
         let refused = check("studio", HostType::Ssh, Capability::Sessions).unwrap_err();
         assert_eq!(refused.raise, "install-controller");
-        assert!(refused.why.contains("berth host install studio"));
+        assert!(refused.why.contains("berth run studio install-controller"));
         let refused = check("studio", HostType::Ssh, Capability::Apply).unwrap_err();
         assert_eq!(refused.raise, "setup");
         assert!(refused.why.contains("of the type ssh, not a workstation"));
@@ -401,11 +401,11 @@ mod tests {
                 "{}",
                 action.why
             );
-            assert!(action.why.contains("berth adopt dock"));
+            assert!(action.why.contains("berth host adopt dock"));
         }
         assert_eq!(
             mismatch("dock", HostType::Ssh, Some(HostType::Managed)).unwrap(),
-            "dock has berth's controller; its profile here says ssh. To adopt it: berth host type dock managed"
+            "dock has berth's controller; its profile here says ssh. To adopt it: berth host set dock type=managed"
         );
         assert!(mismatch("dock", HostType::Workstation, Some(HostType::Managed)).is_none());
         assert!(mismatch("dock", HostType::Managed, None).is_none());

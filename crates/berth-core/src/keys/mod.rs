@@ -414,7 +414,6 @@ impl Login {
             program: "ssh".into(),
             args,
             first_line: password.map(str::to_owned),
-            via: None,
             env: self.env(),
             name: self.name.clone(),
             guard: self.guard.clone(),

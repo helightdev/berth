@@ -448,7 +448,7 @@ pub(crate) fn convert_access(
             }
             Err(error) => {
                 converted.notices.push(format!(
-                    "{title} named the key file {}, which berth could not take into its key ring ({error}). It logs in with your SSH configuration now. Add the key with: berth key add NAME FILE, and choose it as the host's login",
+                    "{title} named the key file {}, which berth could not take into its key ring ({error}). It logs in with your SSH configuration now. Add the key with: berth key import NAME FILE, and choose it as the host's login",
                     file.display()
                 ));
                 Auth::Ssh

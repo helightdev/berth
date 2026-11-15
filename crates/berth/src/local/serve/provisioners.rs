@@ -52,7 +52,11 @@ fn known(state: &Serve, store: &Store, name: &str) -> Answer<ProvisionerInfo> {
     provision::list(&state.paths, store)
         .into_iter()
         .find(|known| known.id == name)
-        .ok_or_else(|| missing(format!("No provisioner {name}. See: berth provisioners")))
+        .ok_or_else(|| {
+            missing(format!(
+                "No provisioner {name}. See: berth provisioner list"
+            ))
+        })
 }
 
 #[utoipa::path(get, path = "/v1/provisioners", summary = "What the plugins can create machines and other resources with, what each asks for and can do, and whether it can be used here.", tag = "set-up",

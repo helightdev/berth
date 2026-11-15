@@ -287,7 +287,7 @@ pub fn help(provisioner: Option<&ProvisionerInfo>, place: &str) -> String {
         text += &format!("Its settings: {}.\n\n", set.join(", "));
     }
     text + &format!(
-        "Enter opens its page, which asks it how it is.\n\nThe provisioners of {place}. From the command line: `berth provisioner {}`",
+        "Enter opens its page, which asks it how it is.\n\nThe provisioners of {place}. From the command line: `berth provisioner show {}`",
         provisioner.id
     )
 }
@@ -907,11 +907,11 @@ impl Tab {
                 &page.actions[index],
                 &match &page.resource {
                     Some(_) => format!(
-                        "berth resource {} run {}",
+                        "berth resource run {} {}",
                         page.id, page.actions[index].name
                     ),
                     None => format!(
-                        "berth provisioner {} run {}",
+                        "berth provisioner run {} {}",
                         page.id, page.actions[index].name
                     ),
                 },
@@ -920,11 +920,11 @@ impl Tab {
                 let held = &page.held()[index];
                 match (held.resource.is_empty(), held.kind.as_str()) {
                     (false, "machine") if !held.host.is_empty() => format!(
-                        "The machine of {}, {} as the provisioner calls it. Enter opens its page, with its state, its actions and its log. It is looked after as that host too, on the host's page. From the command line: `berth resource {}`",
+                        "The machine of {}, {} as the provisioner calls it. Enter opens its page, with its state, its actions and its log. It is looked after as that host too, on the host's page. From the command line: `berth resource show {}`",
                         held.host, held.id, held.resource
                     ),
                     (false, _) => format!(
-                        "The {} {}, {} as the provisioner calls it. Enter opens its page, with its state, its actions and its log. From the command line: `berth resource {}`",
+                        "The {} {}, {} as the provisioner calls it. Enter opens its page, with its state, its actions and its log. From the command line: `berth resource show {}`",
                         held.kind, held.name, held.id, held.resource
                     ),
                     (true, _) => format!(
@@ -934,15 +934,15 @@ impl Tab {
                 }
             }
             Some(Entry::Logs) => format!(
-                "Its log as its provisioner gives it, the last lines and then what follows, with secrets masked. From the command line: `berth resource {} logs --follow`",
+                "Its log as its provisioner gives it, the last lines and then what follows, with secrets masked. From the command line: `berth resource logs {} -f`",
                 page.id
             ),
             None if page.resource.is_some() => format!(
-                "Asking about the resource. From the command line: `berth resource {}`",
+                "Asking about the resource. From the command line: `berth resource show {}`",
                 page.id
             ),
             None => format!(
-                "Asking the provisioner how it is. From the command line: `berth provisioner {}`",
+                "Asking the provisioner how it is. From the command line: `berth provisioner show {}`",
                 page.id
             ),
         };
@@ -1496,7 +1496,7 @@ mod tests {
         assert!(
             shown
                 .help
-                .contains("berth provisioner docker/container run images")
+                .contains("berth provisioner run docker/container images")
         );
         let Asked::Run { action, values, .. } = tab.key(key(Code::Enter), &list, &mut Nowhere)
         else {
@@ -1640,7 +1640,7 @@ mod tests {
         let rows = text(&shown);
         assert_eq!(rows[0], "wiki · deployment of docker/container");
         assert!(rows.contains(&"  ▸ Show its log".to_owned()), "{rows:?}");
-        assert!(shown.help.contains("berth resource r-wiki run remove"));
+        assert!(shown.help.contains("berth resource run r-wiki remove"));
         // Removing asks first, and then runs as the resource's.
         tab.key(key(Code::Enter), &list, &mut Nowhere);
         assert_eq!(

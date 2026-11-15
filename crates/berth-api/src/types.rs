@@ -157,10 +157,10 @@ pub fn type_mismatch(name: &str, intended: HostType, observed: Option<HostType>)
     let observed = observed.filter(|observed| *observed > intended)?;
     Some(match observed {
         HostType::Workstation => format!(
-            "{name} is a workstation; its profile here says {intended}. To adopt it from the profile it keeps: berth adopt {name}"
+            "{name} is a workstation; its profile here says {intended}. To adopt it from the profile it keeps: berth host adopt {name}"
         ),
         _ => format!(
-            "{name} has berth's controller; its profile here says {intended}. To adopt it: berth host type {name} managed"
+            "{name} has berth's controller; its profile here says {intended}. To adopt it: berth host set {name} type=managed"
         ),
     })
 }

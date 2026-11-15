@@ -10,7 +10,7 @@
     content: "{{ ({'berth': devbox_berth_applied.berth, 'plugins': devbox_berth_applied.plugins | selectattr('id', 'in', devbox_plugin_features | map('regex_replace', '/.*$', '') | list) | list} | combine({'level': devbox_level} if devbox_level != 'workstation' else {})) | to_nice_json }}\n"
   when: devbox_berth_applied is defined
 # The profile itself, as berth holds it, so that a berth without it can take
-# the host over: berth adopt reads it over SSH, and berthd serves it to an
+# the host over: berth host adopt reads it over SSH, and berthd serves it to an
 # administrator. It holds the accounts' password hashes, so only root reads it.
 # The time of the write leaves the comparison, so applying the same profile
 # again changes nothing.

@@ -145,9 +145,12 @@ pub fn create(client: &Client, create: &args::HostCreate) -> Result<()> {
         .call("hosts.get", json!({"name": name}), None)
         .is_ok()
     {
-        return Err(Fail::failed(format!(
-            "There is a host {name} already. Change it with berth host set {name} KEY=VALUE, or berth ui {name}"
-        )));
+        return match &create.provisioner {
+            Some(_) => make_saved(client, create),
+            None => Err(Fail::failed(format!(
+                "There is a host {name} already. Change it with berth host set {name} KEY=VALUE, or berth ui {name}"
+            ))),
+        };
     }
     let mut catalogue = catalogue(client)?;
     if let Some(from) = &create.from {
@@ -161,13 +164,7 @@ pub fn create(client: &Client, create: &args::HostCreate) -> Result<()> {
         None => None,
     };
     if method.is_none_or(|method| method == Action::Machine) {
-        let listed = client.call("provisioners.list", json!({}), None)?;
-        catalogue.provisioners = serde_json::from_value::<Vec<berth_api::ProvisionerInfo>>(listed)?
-            .into_iter()
-            .filter(|known| {
-                known.kinds.is_empty() || known.kinds.iter().any(|kind| kind.id == "machine")
-            })
-            .collect();
+        catalogue.provisioners = provisioners(client)?;
     }
     let mut given = Given {
         method,
@@ -205,6 +202,46 @@ pub fn create(client: &Client, create: &args::HostCreate) -> Result<()> {
     if maker.1 {
         out::hint(format!("Its passwords: berth host credentials {name}"));
     }
+    run_way(client, &flow, create)
+}
+
+/// The provisioners that can make a host, as the Install tab lists them.
+fn provisioners(client: &Client) -> Result<Vec<berth_api::ProvisionerInfo>> {
+    let listed = client.call("provisioners.list", json!({}), None)?;
+    Ok(serde_json::from_value(listed)?)
+}
+
+/// Make the machine of a host that is saved and has none, with its profile
+/// as it is, as the Run tab of its set-up does.
+fn make_saved(client: &Client, create: &args::HostCreate) -> Result<()> {
+    let name = &create.name;
+    if let Some(machine) = host::machine_of(client, name)? {
+        return Err(Fail::failed(format!(
+            "{name} has a machine already, {} of {}. berth host show {name} says how it is",
+            machine["external_id"].as_str().unwrap_or(""),
+            machine["provisioner"].as_str().unwrap_or("")
+        )));
+    }
+    let catalogue = Catalogue {
+        provisioners: provisioners(client)?,
+        ..Catalogue::default()
+    };
+    let mut flow = Flow::new(name, catalogue);
+    flow.config = host::profile_of(client, name)?;
+    let mut given = Given {
+        provisioner: create.provisioner.clone(),
+        ..Given::default()
+    };
+    for word in &create.arguments {
+        let (key, value) = word.split_once('=').ok_or_else(|| {
+            Fail::usage(format!(
+                "The provisioner's arguments are NAME=VALUE, not {word}"
+            ))
+        })?;
+        given.arguments.push((key.to_owned(), value.to_owned()));
+    }
+    flow.machine_questions(&given, &mut ask::asker())
+        .map_err(stopped)?;
     run_way(client, &flow, create)
 }
 
@@ -677,7 +714,23 @@ pub fn plugin(client: &Client, command: Plugin) -> Result<()> {
             Ok(())
         }
         Plugin::Add { spec } => {
-            report(&client.call("plugins.add", json!({}), Some(json!({"spec": spec})))?);
+            let local = std::path::Path::new(spec.strip_prefix("file:").unwrap_or(&spec));
+            if !local.exists() {
+                report(&client.call("plugins.add", json!({}), Some(json!({"spec": spec})))?);
+                return Ok(());
+            }
+            // A file or folder of this machine is sent as the .tgz npm packs.
+            let package = match local.is_dir() {
+                true => pack(local)?,
+                false => std::fs::read(local)?,
+            };
+            if package.len() > berth_api::ops::PORTAL_BYTES {
+                return Err(Fail::usage(format!(
+                    "{spec} is larger than the 8 MiB a server is sent"
+                )));
+            }
+            let data = json!({"base64": berth_api::b64(&package)});
+            report(&client.call("plugins.upload", json!({}), Some(data))?);
             Ok(())
         }
         Plugin::Remove { id } => {
@@ -720,6 +773,32 @@ pub fn plugin(client: &Client, command: Plugin) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// A folder as the .tgz `npm pack` makes of it, without running its scripts.
+fn pack(folder: &std::path::Path) -> Result<Vec<u8>> {
+    let into = tempfile::tempdir()?;
+    let output = std::process::Command::new("npm")
+        .args(["pack", "--ignore-scripts", "--silent", "--pack-destination"])
+        .arg(into.path())
+        .arg("--")
+        .arg(folder)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| Fail::failed(format!("npm could not be started: {error}")))?;
+    if !output.status.success() {
+        return Err(Fail::failed(format!(
+            "npm pack {}: {}",
+            folder.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let packed = std::fs::read_dir(into.path())?
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|end| end == "tgz"))
+        .ok_or_else(|| Fail::failed("npm pack made no .tgz"))?;
+    Ok(std::fs::read(packed)?)
 }
 
 // ── settings ────────────────────────────────────────────────────────────────

@@ -31,8 +31,7 @@ pub fn local(paths: &Paths, ask: bool) -> Result<(String, Option<Here>)> {
         return Ok((format!("unix:{}", socket.display()), None));
     }
     let here = Here::start(paths, ask)?;
-    berth_core::server::serve_here(here.dial());
-    Ok((berth_core::server::HERE.to_owned(), Some(here)))
+    Ok((berth_page::device::HERE.to_owned(), Some(here)))
 }
 
 /// Wait for the jobs a command started in its own server, saying on

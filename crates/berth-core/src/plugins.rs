@@ -4,7 +4,7 @@
 //! A plugin can also bring provisioners, programs that create the machine a
 //! profile describes; berth runs those itself (see [`crate::provision`]).
 
-use crate::{Result, paths::Paths, server::Server};
+use crate::{Result, paths::Paths};
 use berth_api::{
     AppliedPlugin, PluginAction as ListedAction, PluginFeature, PluginInfo, PluginList as Listing,
     PluginOrigin, PluginReport as Report, PluginService, PluginUpdate, PluginUpdates,
@@ -615,7 +615,7 @@ impl Plugin {
     }
 }
 
-/// The listing of `berth plugins`: each plugin with what its features add.
+/// The listing of `berth plugin list`: each plugin with what its features add.
 pub fn describe(plugins: &[PluginInfo]) -> String {
     let mut text = String::new();
     for plugin in plugins {
@@ -1013,7 +1013,7 @@ pub fn update(paths: &Paths, plugins: &[Plugin], name: Option<&str>) -> Result<V
             .iter()
             .find(|plugin| plugin.id == name || plugin.package == name)
         else {
-            return Err(format!("No plugin {name}. See: berth plugins").into());
+            return Err(format!("No plugin {name}. See: berth plugin list").into());
         };
         match updates.iter().find(|update| update.id == plugin.id) {
             None => {
@@ -1111,13 +1111,11 @@ pub fn local_spec(spec: &str) -> bool {
             .any(|end| spec.ends_with(end))
 }
 
-/// Where plugins are managed: this machine's plugin directory, or that of
-/// the berth server berth is set to use.
+/// Where plugins are managed: this machine's plugin directory.
 pub struct Manager {
     paths: Paths,
     source: Option<PathBuf>,
     own: PathBuf,
-    server: Option<Server>,
 }
 
 impl Manager {
@@ -1126,12 +1124,7 @@ impl Manager {
             paths: paths.clone(),
             source: paths.source().ok(),
             own: own_dir(&paths.config_dir),
-            server: Server::configured(paths),
         }
-    }
-
-    pub fn server(&self) -> Option<&Server> {
-        self.server.as_ref()
     }
 
     fn found(&self) -> Vec<Plugin> {
@@ -1143,13 +1136,6 @@ impl Manager {
 
     /// The plugins there are, and where the user's own are kept.
     pub fn list(&self) -> Result<Listing> {
-        if let Some(server) = &self.server {
-            return Ok(serde_json::from_value(server.call(
-                "plugins.list",
-                Value::Null,
-                None,
-            )?)?);
-        }
         Ok(Listing {
             plugins: self
                 .found()
@@ -1160,118 +1146,41 @@ impl Manager {
         })
     }
 
-    /// Install a plugin. A server installs a package of a registry itself,
-    /// and is sent a .tgz or a folder of this machine as a .tgz.
+    /// Install a plugin: a package of a registry, or a file or folder of
+    /// this machine.
     pub fn add(&self, spec: &str) -> Result<Vec<String>> {
-        let local = local_spec(spec);
-        let path = match local {
-            true => fs::canonicalize(crate::discovery::expand_path(
-                spec.strip_prefix("file:").unwrap_or(spec),
-            ))
-            .map_err(|error| format!("{spec}: {error}"))?,
-            false => PathBuf::new(),
-        };
-        let Some(server) = &self.server else {
-            return install(
-                &self.paths,
-                match local {
-                    true => path.to_str().unwrap_or(spec),
-                    false => spec,
-                },
-            );
-        };
-        if !local {
-            let report = server.call("plugins.add", Value::Null, Some(json!({"spec": spec})))?;
-            return Ok(serde_json::from_value::<Report>(report)?.lines);
+        if !local_spec(spec) {
+            return install(&self.paths, spec);
         }
-        let package = match path.is_dir() {
-            true => pack(&path)?,
-            false => fs::read(&path)?,
-        };
-        if package.len() > berth_api::ops::PORTAL_BYTES {
-            return Err(format!("{spec} is larger than the 8 MiB a server is sent").into());
-        }
-        let data = json!({"base64": berth_api::b64(&package)});
-        let report = server.call("plugins.upload", Value::Null, Some(data))?;
-        Ok(serde_json::from_value::<Report>(report)?.lines)
+        let path = fs::canonicalize(crate::discovery::expand_path(
+            spec.strip_prefix("file:").unwrap_or(spec),
+        ))
+        .map_err(|error| format!("{spec}: {error}"))?;
+        install(&self.paths, path.to_str().unwrap_or(spec))
     }
 
     /// Remove a plugin by its id or its npm name.
     pub fn remove(&self, name: &str) -> Result<Vec<String>> {
-        let listing = self.list()?;
-        let plugin = listing
-            .plugins
+        let found = self.found();
+        let plugin = found
             .iter()
-            .find(|plugin| plugin.id == name || plugin.package == name);
-        match (&self.server, plugin) {
-            (_, None) => Err(format!("No plugin {name}. See: berth plugins").into()),
-            (Some(server), Some(plugin)) => {
-                let report = server.call("plugins.remove", json!({"id": plugin.id}), None)?;
-                Ok(serde_json::from_value::<Report>(report)?.lines)
-            }
-            (None, Some(plugin)) => {
-                let found = self.found();
-                let plugin = found
-                    .iter()
-                    .find(|known| known.id == plugin.id)
-                    .ok_or("The plugin is gone")?;
-                remove(&self.paths, plugin)
-            }
-        }
+            .find(|plugin| plugin.id == name || plugin.package == name)
+            .ok_or_else(|| format!("No plugin {name}. See: berth plugin list"))?;
+        remove(&self.paths, plugin)
     }
 
     /// Which of the user's plugins have a newer version.
     pub fn check(&self) -> Result<PluginUpdates> {
-        if let Some(server) = &self.server {
-            return Ok(serde_json::from_value(server.call(
-                "plugins.check",
-                Value::Null,
-                None,
-            )?)?);
-        }
         check(&self.own, &self.found())
     }
 
-    /// Update one plugin, by its id or npm name, or all. A server says which
-    /// of its hosts are behind afterwards.
+    /// Update one plugin, by its id or npm name, or all.
     pub fn update(&self, name: Option<&str>) -> Result<Report> {
-        if let Some(server) = &self.server {
-            let data = json!({"id": name});
-            let report = server.call("plugins.update", Value::Null, Some(data))?;
-            return Ok(serde_json::from_value(report)?);
-        }
         Ok(Report {
             lines: update(&self.paths, &self.found(), name)?,
             behind: vec![],
         })
     }
-}
-
-/// A folder as the .tgz `npm pack` makes of it, without running its scripts.
-fn pack(folder: &Path) -> Result<Vec<u8>> {
-    let into = tempfile::tempdir()?;
-    let output = std::process::Command::new("npm")
-        .args(["pack", "--ignore-scripts", "--silent", "--pack-destination"])
-        .arg(into.path())
-        .arg("--")
-        .arg(folder)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|error| format!("npm could not be started: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "npm pack {}: {}",
-            folder.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )
-        .into());
-    }
-    let packed = fs::read_dir(into.path())?
-        .flatten()
-        .map(|entry| entry.path())
-        .find(|path| path.extension().is_some_and(|end| end == "tgz"))
-        .ok_or("npm pack made no .tgz")?;
-    Ok(fs::read(packed)?)
 }
 
 #[cfg(test)]

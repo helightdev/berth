@@ -674,7 +674,9 @@ fn seed(state: Arc<Serve>, name: String, _: Act) -> Run {
 /// Why an action that works with this machine's own drives and files is
 /// not offered to a caller elsewhere.
 fn only_here(what: &str) -> String {
-    format!("{what} is done on the machine berth serve runs on: there, with berth ui or berth iso")
+    format!(
+        "{what} is done on the machine berth serve runs on: there, with berth ui or berth host iso"
+    )
 }
 
 fn installer_action(seen: &Seen) -> Action {
@@ -1104,7 +1106,10 @@ fn trust_key(state: Arc<Serve>, name: String, act: Act) -> Run {
                 let store = berth_core::store::shared(&state.paths).map_err(internal)?;
                 let halves = ring::read(&store, key, false).map_err(internal)?;
                 let halves = halves.ok_or_else(|| {
-                    Fail::new(code::NOT_FOUND, format!("No key {key}. See: berth key"))
+                    Fail::new(
+                        code::NOT_FOUND,
+                        format!("No key {key}. See: berth key list"),
+                    )
                 })?;
                 Some(Once::Key(halves))
             }

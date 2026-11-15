@@ -158,7 +158,7 @@ pub fn public(paths: &Paths, store: &Store, name: &str) -> Result<Public> {
 }
 
 fn no_key(name: &str) -> Box<dyn std::error::Error> {
-    format!("No key {name} in berth's key ring. See: berth key").into()
+    format!("No key {name} in berth's key ring. See: berth key list").into()
 }
 
 /// The key `berth`, made the first time it is asked for. Under a lock, so

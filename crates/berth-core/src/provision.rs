@@ -18,9 +18,7 @@ use crate::{
     plugins::{self, Plugin, Provisioner, Setup},
     profiles::Place,
     registry::Store,
-    relay, seed,
-    server::KEPT,
-    store,
+    relay, seed, store,
 };
 use berth_api::{NewResource, ProvisionerInfo};
 use serde_json::{Map, Value, json};
@@ -138,7 +136,7 @@ pub(crate) fn find<'a>(plugins: &'a [Plugin], name: &str) -> Result<(&'a Plugin,
             let provisioner = known.provisioners.iter().find(|known| known.id == id)?;
             Some((known, provisioner))
         })
-        .ok_or_else(|| format!("No provisioner {name}. See: berth provisioners").into())
+        .ok_or_else(|| format!("No provisioner {name}. See: berth provisioner list").into())
 }
 
 /// The provisioner a name stands for: a registered entry's type, or the
@@ -159,7 +157,7 @@ fn secret(store: &Store, name: &str) -> Option<String> {
         .secret(name)
         .ok()
         .flatten()
-        .filter(|value| !value.is_empty() && value != KEPT)
+        .filter(|value| !value.is_empty())
 }
 
 /// The secrets of the provisioner registered as `name`, under the names its
@@ -484,7 +482,7 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) ->
         .filter(|kept| !kept.record.external_id.is_empty())
     {
         return Err(format!(
-            "{host} has a machine already, {} of {}. See it with: berth resource {}; delete it with: berth resource {} remove",
+            "{host} has a machine already, {} of {}. See it with: berth resource show {}; delete it with: berth resource remove {}",
             kept.record.external_id, kept.record.provisioner, kept.record.id, kept.record.id
         )
         .into());
@@ -494,7 +492,7 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) ->
         .filter(|kept| kept.record.provisioner != asked.provisioner)
     {
         return Err(format!(
-            "A machine for {host} was asked of {}, which did not say it made one. Forget it with: berth resource {} remove",
+            "A machine for {host} was asked of {}, which did not say it made one. Forget it with: berth resource remove {}",
             kept.record.provisioner, kept.record.id
         )
         .into());
@@ -687,7 +685,7 @@ impl Prepared {
         let id = answer["id"].as_str().unwrap_or("").to_owned();
         if id.is_empty() {
             return Err(format!(
-                "{name} create said no id. Asking again finds the same machine: berth provision {host} {name}"
+                "{name} create said no id. Asking again finds the same machine: berth host create {host} --provisioner {name}"
             )
             .into());
         }
@@ -702,7 +700,7 @@ impl Prepared {
         let resource = self.kept.record.id.clone();
         let exists = |error: Box<dyn std::error::Error>| -> Box<dyn std::error::Error> {
             format!(
-                "{error}. The machine {id} exists and stays: berth resource {resource} remove deletes it"
+                "{error}. The machine {id} exists and stays: berth resource remove {resource} deletes it"
             )
             .into()
         };
@@ -1471,7 +1469,7 @@ print(out)
             .unwrap_err()
             .to_string();
         assert!(
-            said.contains(&format!("berth resource {} remove", kept.id)),
+            said.contains(&format!("berth resource remove {}", kept.id)),
             "{said}"
         );
 
@@ -1813,7 +1811,7 @@ print(out)
         .unwrap_err()
         .to_string();
         assert!(
-            said.contains("gone") && said.contains("berth resource r-") && said.contains(" remove"),
+            said.contains("gone") && said.contains("berth resource remove r-"),
             "{said}"
         );
         assert_eq!(world.record().unwrap().external_id, "seeded-1");
@@ -1969,10 +1967,7 @@ print(out)
         let said = done.unwrap_err().to_string();
         assert!(started.elapsed() < Duration::from_secs(20));
         assert!(said.contains("studio's first boot failed"), "{said}");
-        assert!(
-            said.contains("berth resource r-") && said.contains(" remove"),
-            "{said}"
-        );
+        assert!(said.contains("berth resource remove r-"), "{said}");
         let end = out
             .split_once("! studio: its first boot failed. The end of its log:\n")
             .unwrap()
@@ -2225,7 +2220,7 @@ print(out)
         assert!(
             listed[0]
                 .problem
-                .contains("berth provisioner lab run settings server=VALUE"),
+                .contains("berth provisioner set lab server=VALUE"),
             "{}",
             listed[0].problem
         );

@@ -83,7 +83,7 @@ pub fn hash(password: &str) -> Result<String> {
 }
 
 /// Keep a generated password of a host's account in berth's store, beside
-/// the host's profile, for `berth credentials` to show.
+/// the host's profile, for `berth host credentials` to show.
 pub fn save(paths: &Paths, place: &Place, user: &str, password: &str) -> Result<()> {
     let (scope, name) = place.side();
     let store = store::shared(paths)?;

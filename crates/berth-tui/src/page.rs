@@ -338,11 +338,11 @@ mod tests {
             items.last(),
             Some(&Item::Pick("  ▸ Resize a pool · not now".into(), 2))
         );
-        let said = help(&actions[2], "berth provisioner incus/vm resize");
+        let said = help(&actions[2], "berth provisioner run incus/vm resize");
         assert!(said.starts_with("Grows the pool.") && said.contains("Asks for: pool, New size."));
         assert!(said.contains("- **Check**: Says how full it is."));
         assert!(said.contains("It cannot run now: The pool is busy"));
-        assert!(said.ends_with("`berth provisioner incus/vm resize`"));
+        assert!(said.ends_with("`berth provisioner run incus/vm resize`"));
     }
 
     #[test]
