@@ -336,7 +336,11 @@ pub(crate) fn tailnet_message(taken: &TakenTailnet, store: &Store) -> Result<Opt
             false => format!(
                 " {names} {} the tailnet once the secret {secret} is set: berth secret set {secret}. Until then an apply leaves {} off the tailnet, as berth 0.5 did.",
                 joins(&taken.optional),
-                if taken.optional.len() == 1 { "it" } else { "them" }
+                if taken.optional.len() == 1 {
+                    "it"
+                } else {
+                    "them"
+                }
             ),
         };
     }

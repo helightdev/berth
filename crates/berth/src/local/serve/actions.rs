@@ -6,9 +6,7 @@
 
 use super::{
     Remote, Serve,
-    api::{
-        Answer, App, Fail, Said, caller, internal, job_info, remote, report_path, turned_down,
-    },
+    api::{Answer, App, Fail, Said, caller, internal, job_info, remote, report_path, turned_down},
     auth::Access,
     setup::{own_place, saved_profile},
 };
@@ -202,13 +200,13 @@ async fn controller_actions(
     let link = remote.link.as_ref().ok_or_else(|| {
         Unlisted::Unanswered(remote.problem.clone().unwrap_or_else(|| "no link".into()))
     })?;
-    let error = match tokio::time::timeout(Duration::from_secs(15), link.get::<Value>("/v1/actions"))
-        .await
-    {
-        Ok(Ok(listed)) => return Ok(berth_tui::host::list(listed, "actions")),
-        Ok(Err(error)) => error.to_string(),
-        Err(_) => return Err(Unlisted::Unanswered("no answer in time".into())),
-    };
+    let error =
+        match tokio::time::timeout(Duration::from_secs(15), link.get::<Value>("/v1/actions")).await
+        {
+            Ok(Ok(listed)) => return Ok(berth_tui::host::list(listed, "actions")),
+            Ok(Err(error)) => error.to_string(),
+            Err(_) => return Err(Unlisted::Unanswered("no answer in time".into())),
+        };
     Err(match remote.version().await {
         Ok(version) => berth_api::compat::older_controller(
             &remote.name,
@@ -645,8 +643,7 @@ fn install_controller_action(seen: &Seen) -> Action {
 fn install_controller(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let remote = remote(&state, &name)?;
-        let bad =
-            |error: Box<dyn std::error::Error>| turned_down(error);
+        let bad = |error: Box<dyn std::error::Error>| turned_down(error);
         let host =
             own_place(&name).and_then(|place| Host::load_at(&state.paths, place).map_err(bad))?;
         let password = act
@@ -677,8 +674,7 @@ fn install_controller(state: Arc<Serve>, name: String, act: Act) -> Run {
 fn apply(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let remote = remote(&state, &name)?;
-        let bad =
-            |error: Box<dyn std::error::Error>| turned_down(error);
+        let bad = |error: Box<dyn std::error::Error>| turned_down(error);
         let host =
             own_place(&name).and_then(|place| Host::load_at(&state.paths, place).map_err(bad))?;
         let password = act
@@ -819,8 +815,7 @@ fn installer_action(seen: &Seen) -> Action {
 
 fn installer(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
-        let bad =
-            |error: Box<dyn std::error::Error>| turned_down(error);
+        let bad = |error: Box<dyn std::error::Error>| turned_down(error);
         let text = |key: &str| act.arguments.get(key).map_or("", |value| value.trim());
         let device = text("device").to_owned();
         let password = act.arguments.get("password").cloned().unwrap_or_default();
@@ -983,8 +978,7 @@ fn secrets_action(seen: &Seen) -> Action {
 fn secrets(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let remote = remote(&state, &name)?;
-        let bad =
-            |error: Box<dyn std::error::Error>| turned_down(error);
+        let bad = |error: Box<dyn std::error::Error>| turned_down(error);
         let host = Host::load_at(&state.paths, own_place(&name)?).map_err(bad)?;
         let payload = Store::own(state.store.clone())
             .host_payload(&host.config)
@@ -1709,15 +1703,24 @@ mod tests {
 
     #[test]
     fn a_controller_that_is_too_old_is_said_to_be_old() {
-        let profile = json!({"type": "managed", "access": {"address": "192.0.2.12", "user": "root"}});
-        let said = berth_api::compat::older_controller("big", "0.5.2", 1, HostType::Managed).unwrap();
+        let profile =
+            json!({"type": "managed", "access": {"address": "192.0.2.12", "user": "root"}});
+        let said =
+            berth_api::compat::older_controller("big", "0.5.2", 1, HostType::Managed).unwrap();
         let mut old = seen(HostType::Managed, None, &profile);
         old.older = Some(&said);
         let actions = host_list(&old);
-        let secrets = actions.iter().find(|action| action.name == "secrets").unwrap();
+        let secrets = actions
+            .iter()
+            .find(|action| action.name == "secrets")
+            .unwrap();
         assert!(!secrets.available);
         assert_eq!(secrets.why, said);
-        assert!(secrets.why.ends_with("berth run big install-controller"), "{}", secrets.why);
+        assert!(
+            secrets.why.ends_with("berth run big install-controller"),
+            "{}",
+            secrets.why
+        );
         let install = actions
             .iter()
             .find(|action| action.name == "install-controller")

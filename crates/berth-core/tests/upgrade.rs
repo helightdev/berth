@@ -59,20 +59,34 @@ fn a_store_of_berth_0_5_2_is_copied_then_converted_once() {
 
     // The store itself is converted: names of now, no pasted key, every marker.
     assert!(store.schema_version().unwrap() > 4);
-    let studio = store.read_json(kind::PROFILE, store::OWN, "studio").unwrap().unwrap();
+    let studio = store
+        .read_json(kind::PROFILE, store::OWN, "studio")
+        .unwrap()
+        .unwrap();
     assert_eq!(
         berth_api::profile::host_type(&studio),
         berth_api::HostType::Workstation
     );
     assert!(studio.get("level").is_none() && studio.get("tailscale_auth_key").is_none());
-    let pier = store.read_json(kind::PROFILE, store::OWN, "pier").unwrap().unwrap();
+    let pier = store
+        .read_json(kind::PROFILE, store::OWN, "pier")
+        .unwrap()
+        .unwrap();
     assert_eq!(
         berth_api::profile::host_type(&pier),
         berth_api::HostType::Managed
     );
     // dock had berth 0.5 make its key, so it joins as before; pier never joined.
-    let dock = store.read_json(kind::PROFILE, store::OWN, "dock").unwrap().unwrap();
-    assert!(dock["ansible_vars"].get("devbox_tailnet_optional").is_none(), "{dock}");
+    let dock = store
+        .read_json(kind::PROFILE, store::OWN, "dock")
+        .unwrap()
+        .unwrap();
+    assert!(
+        dock["ansible_vars"]
+            .get("devbox_tailnet_optional")
+            .is_none(),
+        "{dock}"
+    );
     assert_eq!(pier["ansible_vars"]["devbox_tailnet_optional"], true);
     let names = store.names(kind::META, store::OWN).unwrap();
     for marker in berth_core::import::MARKERS {
@@ -104,9 +118,17 @@ fn only_the_latest_copy_is_kept() {
     let said = store::keep_before_converting(&paths.data_dir.join("berth.db"))
         .unwrap()
         .unwrap();
-    assert!(said.contains("berth 0.5.2 needs that copy to go back"), "{said}");
+    assert!(
+        said.contains("berth 0.5.2 needs that copy to go back"),
+        "{said}"
+    );
     assert!(!earlier.exists());
-    assert!(paths.data_dir.join("berth.db.berth-0.5.2-schema-4").is_file());
+    assert!(
+        paths
+            .data_dir
+            .join("berth.db.berth-0.5.2-schema-4")
+            .is_file()
+    );
     // A store of this berth needs no copy.
     store::open_converting(&paths).unwrap();
     assert_eq!(

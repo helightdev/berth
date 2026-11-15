@@ -131,7 +131,8 @@ impl Settings {
         if server.is_empty() {
             return Ok(TakenIn::Nothing);
         }
-        let same = |one: &str, other: &str| one.trim_end_matches('/') == other.trim_end_matches('/');
+        let same =
+            |one: &str, other: &str| one.trim_end_matches('/') == other.trim_end_matches('/');
         let taken = match (self.get(SERVER), self.get(TOKEN)) {
             (None, _) => {
                 self.set(&[(SERVER, &server), (TOKEN, &token)])?;
@@ -143,7 +144,8 @@ impl Settings {
             }
             // Its contents are berth's already.
             (Some(ours), ours_token)
-                if same(&ours, &server) && (token.is_empty() || ours_token.as_deref() == Some(&token)) =>
+                if same(&ours, &server)
+                    && (token.is_empty() || ours_token.as_deref() == Some(&token)) =>
             {
                 TakenIn::Same
             }
@@ -328,8 +330,11 @@ mod tests {
             let old = remote(scratch.path(), other);
             let file = old.join("settings.json");
             let taken = settings.take_in(Some(&old)).unwrap();
-            assert!(matches!(&taken, TakenIn::Left { file: left, ours, .. }
-                if *left == file && ours == "https://studio.example"), "{taken:?}");
+            assert!(
+                matches!(&taken, TakenIn::Left { file: left, ours, .. }
+                if *left == file && ours == "https://studio.example"),
+                "{taken:?}"
+            );
             // The file stays, and is not spoken of again.
             assert!(file.exists());
             assert_eq!(settings.take_in(Some(&old)).unwrap(), TakenIn::Nothing);

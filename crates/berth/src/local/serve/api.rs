@@ -372,11 +372,7 @@ A link that ends in #setup-key=KEY holds a setup key: berth login asks for it.
 ";
 
 async fn front() -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        FRONT,
-    )
-        .into_response()
+    ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], FRONT).into_response()
 }
 
 /// What a request shows to be let in: a bearer, and the protocols of a

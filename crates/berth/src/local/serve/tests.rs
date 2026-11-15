@@ -1484,7 +1484,10 @@ async fn the_server_is_set_up_through_the_api() {
     // It is a refusal before anything began, which the command line exits 3 for.
     let (status, said) = send(client, "POST", "/v1/hosts/studio/actions/seed", Value::Null).await;
     assert_eq!(status, 412, "{said}");
-    assert_eq!(crate::cli::fail::status_of(status), crate::cli::fail::REFUSED);
+    assert_eq!(
+        crate::cli::fail::status_of(status),
+        crate::cli::fail::REFUSED
+    );
     let message = said["error"]["message"].as_str().unwrap();
     assert!(
         message.contains("berth secret set tailnet_api_key")

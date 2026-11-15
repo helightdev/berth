@@ -36,7 +36,12 @@ pub fn controller_update(host: &str, host_type: HostType) -> String {
 
 /// What a host says when its controller is berth `version` of `api`, too
 /// old for this berth; `None` when it is new enough.
-pub fn older_controller(host: &str, version: &str, api: u32, host_type: HostType) -> Option<String> {
+pub fn older_controller(
+    host: &str,
+    version: &str,
+    api: u32,
+    host_type: HostType,
+) -> Option<String> {
     (api < NEEDS_HOST_API).then(|| controller_is_older(host, version, host_type))
 }
 
@@ -69,7 +74,10 @@ mod tests {
         assert_eq!(older_server("https://pier.example", VERSION, API), None);
         let said = older_server("https://pier.example", "0.5.2", 1).unwrap();
         assert!(said.contains("is berth 0.5.2 (API 1)"), "{said}");
-        assert!(said.contains(&format!("this berth {VERSION} (API {API})")), "{said}");
+        assert!(
+            said.contains(&format!("this berth {VERSION} (API {API})")),
+            "{said}"
+        );
         assert!(said.contains("Update the server first"), "{said}");
         assert!(said.ends_with(UPGRADE_DOCS), "{said}");
     }
@@ -82,11 +90,17 @@ mod tests {
         );
         let said = older_controller("studio", "0.5.2", 1, HostType::Workstation).unwrap();
         assert!(said.starts_with("The controller on studio is berth 0.5.2, older than this berth"));
-        assert!(said.ends_with("Update it with berth apply studio"), "{said}");
+        assert!(
+            said.ends_with("Update it with berth apply studio"),
+            "{said}"
+        );
         let said = older_controller("big", "0.5.2", 1, HostType::Node).unwrap();
         assert!(said.ends_with("berth apply big"), "{said}");
         let said = older_controller("pier", "0.5.2", 1, HostType::Managed).unwrap();
-        assert!(said.ends_with("berth run pier install-controller"), "{said}");
+        assert!(
+            said.ends_with("berth run pier install-controller"),
+            "{said}"
+        );
     }
 
     #[test]
@@ -95,7 +109,10 @@ mod tests {
         assert!(no_operation("tasks.list").contains("a call of berth 0.5"));
         // None of them is an operation now.
         for name in OLDER_OPS {
-            assert!(crate::ops::find(crate::ops::SERVE, name).is_none(), "{name}");
+            assert!(
+                crate::ops::find(crate::ops::SERVE, name).is_none(),
+                "{name}"
+            );
             assert!(crate::ops::find(crate::ops::HOST, name).is_none(), "{name}");
         }
     }

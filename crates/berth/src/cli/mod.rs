@@ -278,7 +278,9 @@ fn run(cli: Cli) -> Result<()> {
 fn version(global: &args::Global) -> Result<()> {
     use serde_json::json;
     let server = client::named(global).map(|url| {
-        match Client::open_any(global, &client::settings()).and_then(|client| client.server_version()) {
+        match Client::open_any(global, &client::settings())
+            .and_then(|client| client.server_version())
+        {
             Ok((version, api)) => json!({"url": url, "version": version, "api": api}),
             Err(fail) => json!({"url": url, "error": fail.message}),
         }

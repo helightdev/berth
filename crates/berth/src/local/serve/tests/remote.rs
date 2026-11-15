@@ -152,7 +152,9 @@ async fn a_client_refuses_an_older_server_and_still_reads_its_version() {
     let refused = opened.unwrap_err();
     assert_eq!(refused.status, fail::REFUSED);
     assert!(
-        refused.message.contains("is berth 0.5.2 (API 1), older than this berth")
+        refused
+            .message
+            .contains("is berth 0.5.2 (API 1), older than this berth")
             && refused.message.contains("Update the server first"),
         "{}",
         refused.message
@@ -208,7 +210,10 @@ async fn the_screens_keep_the_token_of_a_server_that_does_not_answer_or_refuses_
         berth_page::pump();
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert_eq!(settings.get(settings::TOKEN).as_deref(), Some("s3cret-kept"));
+    assert_eq!(
+        settings.get(settings::TOKEN).as_deref(),
+        Some("s3cret-kept")
+    );
     drop(app);
 
     // A server that refuses it asks for another, and the kept one stays until then.
@@ -232,5 +237,8 @@ async fn the_screens_keep_the_token_of_a_server_that_does_not_answer_or_refuses_
         app.tick();
         screen(&mut app).contains("did not take that token")
     });
-    assert_eq!(settings.get(settings::TOKEN).as_deref(), Some("s3cret-kept"));
+    assert_eq!(
+        settings.get(settings::TOKEN).as_deref(),
+        Some("s3cret-kept")
+    );
 }

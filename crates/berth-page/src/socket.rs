@@ -103,7 +103,9 @@ async fn run(
 ) {
     // Whether the server itself refused the handshake, beside why it failed.
     let opened = async {
-        let stream = net::connect(&target).await.map_err(|error| (false, error))?;
+        let stream = net::connect(&target)
+            .await
+            .map_err(|error| (false, error))?;
         client::websocket_at(stream, &target.authority, &target.path, &token)
             .await
             .map_err(|error| (matches!(error.status(), 401 | 403), net::describe(&error)))
