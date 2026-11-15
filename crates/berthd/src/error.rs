@@ -38,12 +38,17 @@ impl From<std::io::Error> for E {
 impl IntoResponse for E {
     fn into_response(self) -> Response {
         let status = StatusCode::from_u16(self.0.0).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let message = berth_api::error_message_header(&self.1);
         let body = ErrorBody {
             error: ErrorDetail {
                 code: self.0.1.into(),
                 message: self.1,
             },
         };
-        (status, Json(body)).into_response()
+        let headers = [
+            (berth_api::ERROR_HEADER, self.0.1.to_owned()),
+            (berth_api::ERROR_MESSAGE_HEADER, message),
+        ];
+        (status, headers, Json(body)).into_response()
     }
 }

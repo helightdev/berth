@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "crates/berth-tui", "crates/berth", "crates/berthd", "crates/box", "crates/berth-page", "crates/berth-web", "crates/berth-remote"]
+members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "crates/berth-tui", "crates/berth", "crates/berthd", "crates/box", "crates/berth-page"]
 # The vendored crate is a member because it lives inside; it is left out of what
 # is built, tested and linted by default.
-default-members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "crates/berth-tui", "crates/berth", "crates/berthd", "crates/box", "crates/berth-page", "crates/berth-remote"]
+default-members = ["crates/berth-api", "crates/berth-pty", "crates/berth-core", "crates/berth-tui", "crates/berth", "crates/berthd", "crates/box", "crates/berth-page"]
 
 [workspace.package]
 version = "0.5.2"
@@ -12,7 +12,7 @@ rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-# Members that talk to a server ask for the client; the browser build does not.
+# Members that talk to a server ask for the client; the screens alone do not.
 berth-api = { path = "crates/berth-api", default-features = false }
 berth-pty = { path = "crates/berth-pty" }
 berth-core = { path = "crates/berth-core" }
@@ -51,25 +51,10 @@ debug = false
 [profile.release]
 strip = true
 
-# The page of berth serve: small rather than fast, since it is carried in berth.
-[profile.web]
-inherits = "release"
-opt-level = "s"
-lto = "fat"
-codegen-units = 1
-
 # What a development or test build of berth carries. berthd and box are built
-# incrementally, and small, as berth packs them. The page keeps its
-# optimisation without the whole-program link that takes most of its build
-# time after a change.
+# incrementally, and small, as berth packs them.
 [profile.host-dev]
 inherits = "dev"
 opt-level = "s"
 debug = false
 strip = true
-
-[profile.web-dev]
-inherits = "web"
-lto = false
-codegen-units = 16
-incremental = true

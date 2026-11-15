@@ -1,15 +1,16 @@
 //! The tailnet hosts join: Tailscale's own service, or a Headscale server.
 //!
 //! Both take the same `tailscale` client; a Headscale host is pointed at its
-//! server with `--login-server`. With an API key for the control server berth
-//! creates the one-use enrollment keys itself, at the moment a host needs one.
+//! server with `--login-server`. A host joins with a one-use key berth makes
+//! through the control server's API, at the moment the host needs one: when
+//! an apply finds it off the tailnet, or when a seed or installer is written.
 //!
 //! - `tailnet_login_server`: empty for Tailscale, the address of a Headscale
-//!   server otherwise. A profile's `tailscale_login_server` wins for its host
+//!   server otherwise
 //! - `tailnet_user`: the Headscale user a new host belongs to
 //! - `tailnet_tags`: tags for new hosts, comma separated
-//! - the secret `tailnet_api_key`: Tailscale API access token or Headscale API
-//!   key. `TS_API_KEY` in the environment works for Tailscale too
+//! - the secret `tailnet_api_key`: a Tailscale API access token, a Tailscale
+//!   OAuth client as `CLIENT_ID:CLIENT_SECRET`, or a Headscale API key
 
 use crate::{Result, paths::Paths, registry::Store};
 use berth_api::profile::{self, TAILNET_API_KEY};
@@ -18,7 +19,6 @@ use std::{
     io::Write,
     path::Path,
     process::{Command, Stdio},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 /// How long a key lives that goes into a seed or an installer: long enough to
@@ -29,8 +29,53 @@ pub const APPLY_LIFETIME: u64 = 60 * 60;
 
 const TAILSCALE_API: &str = "https://api.tailscale.com";
 
+/// The role's variables of joining the tailnet, which berth sets and a
+/// profile cannot.
+pub const ROLE_VARS: &[&str] = &[
+    "devbox_tailscale_auth_key",
+    "devbox_tailscale_login_server",
+    "devbox_tailscale_key_command",
+    "devbox_tailnet_problem",
+];
+
 /// The settings of the tailnet, in the order the Settings tab lists them.
 pub const SETTINGS: &[&str] = &["tailnet_login_server", "tailnet_user", "tailnet_tags"];
+
+/// How to set the secret, for messages that ask for it.
+fn set_the_secret() -> String {
+    format!(
+        "set the secret {TAILNET_API_KEY} with berth secret set {TAILNET_API_KEY}, or on the Secrets tab of the home screen"
+    )
+}
+
+/// What berth logs in to the control server's API with.
+#[derive(Debug, Clone, PartialEq)]
+enum Credential {
+    /// A Tailscale API access token or a Headscale API key.
+    Token(String),
+    /// A Tailscale OAuth client, which is exchanged for an access token of an
+    /// hour whenever a key is made, as its own does not expire.
+    Client { id: String, secret: String },
+}
+
+impl Credential {
+    /// The secret as it is stored: an OAuth client is its id and secret with
+    /// a colon between, which neither API keys nor client ids contain.
+    fn parse(text: &str) -> Option<Credential> {
+        let text = text.trim();
+        if text.is_empty() || text.contains(['"', '\\', '\n', '\r', ' ']) {
+            return None;
+        }
+        Some(match text.split_once(':') {
+            Some((id, secret)) if !id.is_empty() && !secret.is_empty() => Credential::Client {
+                id: id.to_owned(),
+                secret: secret.to_owned(),
+            },
+            Some(_) => return None,
+            None => Credential::Token(text.to_owned()),
+        })
+    }
+}
 
 /// The control server berth creates keys at, and what it needs for that.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,7 +84,8 @@ pub struct Control {
     pub headscale: Option<String>,
     pub user: String,
     pub tags: Vec<String>,
-    token: Option<String>,
+    /// The secret, or what is wrong with it.
+    credential: std::result::Result<Credential, String>,
     /// Where Tailscale's API is, other than in tests.
     tailscale_api: String,
 }
@@ -65,25 +111,25 @@ impl Control {
     /// The control server of berth's settings, with its credential.
     pub fn configured(paths: &Paths) -> Control {
         let setting = |key: &str| paths.setting(key).unwrap_or_default();
-        let headscale = server_address(&setting("tailnet_login_server"));
-        let mut tags = tags(&setting("tailnet_tags"));
-        let mut token = Store::new(paths)
+        let secret = Store::new(paths)
             .and_then(|store| store.secret(TAILNET_API_KEY))
             .ok()
             .flatten()
-            .filter(|token| !token.is_empty() && token != crate::server::KEPT);
-        if headscale.is_none() {
-            let variable = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
-            token = token.or_else(|| variable("TS_API_KEY"));
-            if tags.is_empty() {
-                tags = self::tags(&variable("DEVBOX_TAILSCALE_TAGS").unwrap_or_default());
-            }
-        }
+            .filter(|secret| !secret.is_empty());
+        let credential = match secret {
+            None => Err(format!("berth has no API key of the tailnet: {}", set_the_secret())),
+            Some(secret) => Credential::parse(&secret).ok_or_else(|| {
+                format!(
+                    "The secret {TAILNET_API_KEY} is neither an API key nor an OAuth client as CLIENT_ID:CLIENT_SECRET: {}",
+                    set_the_secret()
+                )
+            }),
+        };
         Control {
-            headscale,
+            headscale: server_address(&setting("tailnet_login_server")),
             user: setting("tailnet_user"),
-            tags,
-            token,
+            tags: tags(&setting("tailnet_tags")),
+            credential,
             tailscale_api: TAILSCALE_API.into(),
         }
     }
@@ -96,31 +142,86 @@ impl Control {
         }
     }
 
+    /// Why berth cannot create keys at this control server, if it cannot.
+    /// Only what berth knows without asking the server.
+    pub fn problem(&self) -> Option<String> {
+        let credential = match &self.credential {
+            Ok(credential) => credential,
+            Err(why) => return Some(why.clone()),
+        };
+        match (&self.headscale, credential) {
+            (Some(_), Credential::Client { .. }) => Some(format!(
+                "Headscale has no OAuth clients: the secret {TAILNET_API_KEY} is one of its API keys (headscale apikeys create)"
+            )),
+            (Some(_), _) if self.user.is_empty() && self.tags.is_empty() => Some(
+                "Headscale needs a user or tags for a new host's key: berth config set tailnet_user NAME, or berth config set tailnet_tags TAG".into(),
+            ),
+            (None, Credential::Client { .. }) if self.tags.is_empty() => Some(
+                "Keys made by a Tailscale OAuth client carry tags: berth config set tailnet_tags with the client's tags, such as tag:berth".into(),
+            ),
+            _ => None,
+        }
+    }
+
     /// Whether berth has what it needs to create keys.
     pub fn can_create(&self) -> bool {
-        self.token.is_some()
+        self.problem().is_none()
     }
 
     /// A new pre-approved key that joins one host, once, within `lifetime` seconds.
     pub fn create_key(&self, description: &str, lifetime: u64) -> Result<String> {
-        let token = self.token.as_deref().ok_or_else(|| match &self.headscale {
-            Some(_) => format!(
-                "berth needs an API key of Headscale to create enrollment keys: berth secret set {TAILNET_API_KEY} (make one with: headscale apikeys create)"
-            ),
-            None => format!(
-                "berth needs a Tailscale API access token to create enrollment keys: berth secret set {TAILNET_API_KEY}, or TS_API_KEY in the environment"
-            ),
-        })?;
-        if token.contains(['"', '\\', '\n', '\r']) {
-            return Err(format!("The secret {TAILNET_API_KEY} is not a usable API key").into());
+        if let Some(problem) = self.problem() {
+            return Err(problem.into());
         }
-        match &self.headscale {
-            Some(url) => self.headscale_key(url, token, lifetime),
-            None => self.tailscale_key(token, description, lifetime),
+        let credential = self.credential.as_ref().map_err(String::clone)?;
+        match (&self.headscale, credential) {
+            (Some(url), Credential::Token(token)) => self.headscale_key(url, token, lifetime),
+            (None, Credential::Token(token)) => {
+                self.tailscale_key(&format!("user = \"{token}:\""), description, lifetime)
+            }
+            (None, Credential::Client { id, secret }) => {
+                let token = self.exchange(id, secret)?;
+                let login = format!("header = \"Authorization: Bearer {token}\"");
+                self.tailscale_key(&login, description, lifetime)
+            }
+            (Some(_), Credential::Client { .. }) => Err("Headscale has no OAuth clients".into()),
         }
     }
 
-    fn tailscale_key(&self, token: &str, description: &str, lifetime: u64) -> Result<String> {
+    /// An access token for an OAuth client, by the client credentials grant.
+    fn exchange(&self, id: &str, secret: &str) -> Result<String> {
+        let form = format!(
+            "grant_type=client_credentials&client_id={}&client_secret={}",
+            query(id),
+            query(secret)
+        );
+        let url = format!("{}/api/v2/oauth/token", self.tailscale_api);
+        let (status, reply) = call(&url, "", Some(Body::Form(form)))?;
+        match reply["access_token"].as_str() {
+            Some(token)
+                if status == 200
+                    && !token.is_empty()
+                    && !token.contains(['"', '\\', '\n', '\r']) =>
+            {
+                Ok(token.to_owned())
+            }
+            _ => {
+                let reason = reply["error_description"]
+                    .as_str()
+                    .or(reply["error"].as_str())
+                    .map(str::to_owned);
+                Err(match reason {
+                    Some(reason) => format!(
+                        "Tailscale refused the OAuth client of {TAILNET_API_KEY} (HTTP {status}): {reason}"
+                    )
+                    .into(),
+                    None => refused("Tailscale", status, &reply),
+                })
+            }
+        }
+    }
+
+    fn tailscale_key(&self, login: &str, description: &str, lifetime: u64) -> Result<String> {
         let mut create = json!({"reusable": false, "ephemeral": false, "preauthorized": true});
         if !self.tags.is_empty() {
             create["tags"] = json!(self.tags);
@@ -140,7 +241,7 @@ impl Control {
             "description": description,
         });
         let url = format!("{}/api/v2/tailnet/-/keys", self.tailscale_api);
-        let (status, reply) = call(&url, &format!("user = \"{token}:\""), Some(&request))?;
+        let (status, reply) = call(&url, login, Some(Body::Json(request)))?;
         match reply["key"].as_str() {
             Some(key) if status == 200 && !key.is_empty() => Ok(key.to_owned()),
             _ => Err(refused("Tailscale", status, &reply)),
@@ -152,21 +253,18 @@ impl Control {
         let mut request = json!({
             "reusable": false,
             "ephemeral": false,
-            "expiration": rfc3339(now() + lifetime),
+            "expiration": berth_api::rfc3339(berth_api::unix_now() + lifetime),
         });
         if !self.tags.is_empty() {
             request["aclTags"] = json!(self.tags);
         }
-        match (self.user.as_str(), self.tags.is_empty()) {
-            ("", true) => {
-                return Err("Headscale needs a user or tags for a new host's key: berth config tailnet_user NAME, or berth config tailnet_tags TAG".into());
-            }
-            ("", false) => {}
+        match self.user.as_str() {
+            "" => {}
             // Headscale's API names the user by its number.
-            (user, _) if user.bytes().all(|byte| byte.is_ascii_digit()) => {
+            user if user.bytes().all(|byte| byte.is_ascii_digit()) => {
                 request["user"] = json!(user);
             }
-            (user, _) => {
+            user => {
                 let lookup = format!("{url}/api/v1/user?name={}", query(user));
                 let (status, reply) = call(&lookup, &login, None)?;
                 if status != 200 {
@@ -180,7 +278,11 @@ impl Control {
                 request["user"] = json!(id);
             }
         }
-        let (status, reply) = call(&format!("{url}/api/v1/preauthkey"), &login, Some(&request))?;
+        let (status, reply) = call(
+            &format!("{url}/api/v1/preauthkey"),
+            &login,
+            Some(Body::Json(request)),
+        )?;
         match reply["preAuthKey"]["key"].as_str() {
             Some(key) if status == 200 && !key.is_empty() => Ok(key.to_owned()),
             _ => Err(refused("Headscale", status, &reply)),
@@ -208,11 +310,17 @@ fn query(text: &str) -> String {
         .collect()
 }
 
+/// What a request sends.
+enum Body {
+    Json(Value),
+    Form(String),
+}
+
 /// One request with curl: the status, and the answer as JSON or as text. The
-/// login is a line of curl's configuration, given on its standard input so it
-/// never appears in the process list.
-fn call(url: &str, login: &str, body: Option<&Value>) -> Result<(u16, Value)> {
-    let file = tempfile::NamedTempFile::new()?;
+/// login is a line of curl's configuration, given on its standard input, and
+/// the body is a private file, so neither appears in the process list.
+fn call(url: &str, login: &str, body: Option<Body>) -> Result<(u16, Value)> {
+    let mut file = tempfile::NamedTempFile::new()?;
     let mut command = Command::new("curl");
     command.args([
         "--silent",
@@ -225,14 +333,20 @@ fn call(url: &str, login: &str, body: Option<&Value>) -> Result<(u16, Value)> {
         "\n%{http_code}",
     ]);
     if let Some(body) = body {
-        serde_json::to_writer(&file, body)?;
+        let kind = match body {
+            Body::Json(value) => {
+                serde_json::to_writer(&mut file, &value)?;
+                "application/json"
+            }
+            Body::Form(text) => {
+                file.write_all(text.as_bytes())?;
+                "application/x-www-form-urlencoded"
+            }
+        };
+        file.flush()?;
         command
-            .args([
-                "--request",
-                "POST",
-                "--header",
-                "Content-Type: application/json",
-            ])
+            .args(["--request", "POST", "--header"])
+            .arg(format!("Content-Type: {kind}"))
             .arg("--data-binary")
             .arg(format!("@{}", file.path().display()));
     }
@@ -259,40 +373,10 @@ fn call(url: &str, login: &str, body: Option<&Value>) -> Result<(u16, Value)> {
     Ok((status, answer))
 }
 
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|since| since.as_secs())
-        .unwrap_or(0)
-}
-
-/// Seconds since 1970 as an RFC 3339 time in UTC.
-fn rfc3339(seconds: u64) -> String {
-    let (days, rest) = ((seconds / 86400) as i64, seconds % 86400);
-    // Howard Hinnant's days_from_civil, the other way round.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        rest / 3600,
-        rest / 60 % 60,
-        rest % 60
-    )
-}
-
-/// The login server a host's client is pointed at: the profile's own, or
-/// berth's. Empty for Tailscale's service.
-pub fn login_server(paths: &Paths, config: &Value) -> String {
-    server_address(config["tailscale_login_server"].as_str().unwrap_or(""))
-        .or_else(|| server_address(&paths.setting("tailnet_login_server").unwrap_or_default()))
-        .unwrap_or_default()
+/// The login server hosts are pointed at: berth's setting. Empty for
+/// Tailscale's service.
+pub fn login_server(paths: &Paths) -> String {
+    server_address(&paths.setting("tailnet_login_server").unwrap_or_default()).unwrap_or_default()
 }
 
 /// What a key is described as at the control server.
@@ -303,34 +387,28 @@ fn description(host: &str) -> String {
     }
 }
 
-/// A key for a host to join with, from the control server of berth's
-/// settings. A host whose profile names another login server gets none, as
-/// that server would not take it.
-pub fn create_key(paths: &Paths, config: &Value, host: &str, lifetime: u64) -> Result<String> {
-    let control = Control::configured(paths);
-    let wanted = login_server(paths, config);
-    if control.headscale.as_deref().unwrap_or("") != wanted {
-        return Err(format!(
-            "{host} joins the tailnet at {}, and berth creates keys at {}: set tailnet_login_server to the same server, or paste a key",
-            match wanted.as_str() {
-                "" => "Tailscale",
-                other => other,
-            },
-            control.name()
-        )
-        .into());
+/// Why a host of this profile cannot join the tailnet, in words that say
+/// what to do, or `None` when it can or does not join at all. It is asked
+/// before anything runs, so a host is not set up halfway.
+pub fn problem(paths: &Paths, config: &Value, host: &str) -> Option<String> {
+    if !profile::joins_tailnet(config) {
+        return None;
     }
-    control.create_key(&description(host), lifetime)
+    let control = Control::configured(paths);
+    let why = control.problem()?;
+    let host = match host {
+        "" => "The host".to_owned(),
+        host => host.to_owned(),
+    };
+    Some(format!(
+        "{host} joins the tailnet at {}, and berth cannot make its key. {why}. Or switch Tailscale off in its profile, and berth reaches it over SSH at its address",
+        control.name()
+    ))
 }
 
-/// A key for the profile's key field, as F4 makes one, and what to say of it.
-pub fn generate(paths: &Paths, config: &Value, host: &str) -> Result<(String, String)> {
-    let key = create_key(paths, config, host, SEED_LIFETIME)?;
-    let note = format!(
-        "One-use key created at {} · valid for 24 hours",
-        Control::configured(paths).name()
-    );
-    Ok((key, note))
+/// A key for a host to join with, from the control server of berth's settings.
+pub fn create_key(paths: &Paths, host: &str, lifetime: u64) -> Result<String> {
+    Control::configured(paths).create_key(&description(host), lifetime)
 }
 
 /// The key `berth tailnet-key WHAT` prints. An apply runs that on this
@@ -338,25 +416,59 @@ pub fn generate(paths: &Paths, config: &Value, host: &str) -> Result<(String, St
 /// path [`apply_vars`] was given, so it finds the host in the same place.
 pub fn key_for(paths: &Paths, what: &str) -> Result<String> {
     let host = crate::host::Host::load(paths, what)?;
-    create_key(paths, &host.config, &host.place.title(), APPLY_LIFETIME)
+    create_key(paths, &host.place.title(), APPLY_LIFETIME)
 }
 
-/// The profile as a seed carries it: the login server filled in, and for a
-/// host that joins automatically a new key. Keys are created only here, when
-/// a seed is written, and live for [`SEED_LIFETIME`].
-pub fn seed_profile(paths: &Paths, config: &Value, host: &str) -> Result<Value> {
-    let mut config = config.clone();
-    if !profile::installs_tailscale(&config) {
-        return Ok(config);
+/// What a seed or an installer is given to join the tailnet with: a private
+/// file for the seed builder, which names it in `BERTH_TAILNET_FILE`, and
+/// until when its key works.
+pub struct SeedKey {
+    pub file: tempfile::NamedTempFile,
+    /// Seconds since 1970.
+    pub until: u64,
+}
+
+impl SeedKey {
+    /// What to tell whoever writes the seed or installer.
+    pub fn note(&self) -> String {
+        until_note(self.until)
     }
-    if profile::joins_automatically(&config) {
-        config["tailscale_auth_key"] = json!(create_key(paths, &config, host, SEED_LIFETIME)?);
+
+    /// Give the seed builder the key.
+    pub fn pass(&self, command: &mut Command) {
+        command.env("BERTH_TAILNET_FILE", self.file.path());
     }
-    let server = login_server(paths, &config);
-    if !server.is_empty() {
-        config["tailscale_login_server"] = json!(server);
+}
+
+/// Until when a seed or installer can join the tailnet, and what happens after.
+pub fn until_note(until: u64) -> String {
+    let time = berth_api::rfc3339(until);
+    let shown = time
+        .get(..16)
+        .map(|minutes| minutes.replace('T', " "))
+        .unwrap_or(time);
+    format!(
+        "Its key joins the tailnet until {shown} UTC, 24 hours from now. A machine first started later is set up without the tailnet; applying it from berth then joins it"
+    )
+}
+
+/// A new key for a seed or an installer of a host that joins the tailnet,
+/// living for [`SEED_LIFETIME`], with the login server. Keys are made only
+/// here, when a seed is written, and never kept in the profile.
+pub fn seed_key(paths: &Paths, config: &Value, host: &str) -> Result<Option<SeedKey>> {
+    if !profile::joins_tailnet(config) {
+        return Ok(None);
     }
-    Ok(config)
+    if let Some(problem) = problem(paths, config, host) {
+        return Err(problem.into());
+    }
+    let key = create_key(paths, host, SEED_LIFETIME)?;
+    let until = berth_api::unix_now() + SEED_LIFETIME;
+    let mut file = tempfile::NamedTempFile::new()?;
+    let given = json!({"key": key, "login_server": login_server(paths)});
+    serde_json::to_writer(&mut file, &given)?;
+    file.flush()?;
+    Ok(Some(SeedKey { file, until }))
 }
 
 /// A private copy of a profile for the seed builder, which reads a file.
@@ -367,21 +479,26 @@ pub fn profile_file(config: &Value) -> Result<tempfile::NamedTempFile> {
     Ok(file)
 }
 
-/// What an apply adds to the role's variables: the login server, and for a
-/// host that joins automatically the command the role runs on this machine
-/// for a key, only when the host is not on the tailnet yet. `berth` is this
-/// program.
+/// What an apply adds to the role's variables for a host that joins the
+/// tailnet: the login server, and the command the role runs on this machine
+/// for a key, only when the host is not on the tailnet yet. When berth cannot
+/// make keys the role is given why instead, and stops before it changes
+/// anything on a host that is not on the tailnet. `berth` is this program.
 pub fn apply_vars(paths: &Paths, config: &Value, host: &str, berth: &Path) -> Value {
     let mut vars = json!({});
-    if !profile::installs_tailscale(config) {
+    if !profile::joins_tailnet(config) {
         return vars;
     }
-    let server = login_server(paths, config);
+    let server = login_server(paths);
     if !server.is_empty() {
         vars["devbox_tailscale_login_server"] = json!(server);
     }
-    if profile::joins_automatically(config) {
-        vars["devbox_tailscale_key_command"] = json!([berth, "tailnet-key", host]);
+    let name = crate::profiles::Place::resolve(paths, host)
+        .map(|place| place.title())
+        .unwrap_or_else(|_| host.to_owned());
+    match problem(paths, config, &name) {
+        Some(problem) => vars["devbox_tailnet_problem"] = json!(problem),
+        None => vars["devbox_tailscale_key_command"] = json!([berth, "tailnet-key", host]),
     }
     vars
 }
@@ -400,6 +517,8 @@ mod tests {
     struct Seen {
         line: String,
         authorization: String,
+        kind: String,
+        text: String,
         body: Value,
     }
 
@@ -415,7 +534,7 @@ mod tests {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
-                let (mut length, mut authorization) = (0, String::new());
+                let (mut length, mut authorization, mut kind) = (0, String::new(), String::new());
                 loop {
                     let mut header = String::new();
                     reader.read_line(&mut header).unwrap();
@@ -427,6 +546,7 @@ mod tests {
                     match name.to_ascii_lowercase().as_str() {
                         "content-length" => length = value.trim().parse().unwrap(),
                         "authorization" => authorization = value.trim().to_owned(),
+                        "content-type" => kind = value.trim().to_owned(),
                         _ => {}
                     }
                 }
@@ -436,6 +556,8 @@ mod tests {
                     .send(Seen {
                         line: line.trim_end().to_owned(),
                         authorization,
+                        kind,
+                        text: String::from_utf8_lossy(&body).into_owned(),
                         body: serde_json::from_slice(&body).unwrap_or(Value::Null),
                     })
                     .unwrap();
@@ -457,7 +579,7 @@ mod tests {
             headscale: headscale.map(str::to_owned),
             user: String::new(),
             tags: vec![],
-            token: Some("secret-token".into()),
+            credential: Ok(Credential::Token("secret-token".into())),
             tailscale_api: tailscale_api.into(),
         }
     }
@@ -497,6 +619,81 @@ mod tests {
     }
 
     #[test]
+    fn an_oauth_client_is_exchanged_for_a_token_of_its_own_each_time() {
+        let (url, seen) = fake(vec![
+            (
+                200,
+                json!({"access_token": "tskey-access-FAKE", "token_type": "Bearer", "expires_in": 3600}),
+            ),
+            (200, json!({"key": "tskey-auth-by-client"})),
+        ]);
+        let mut control = control(None, &url);
+        control.credential =
+            Ok(Credential::parse("kFAKE1CNTRL:tskey-client-kFAKE1CNTRL-0000").unwrap());
+        // Its keys carry tags, and berth says so before it asks.
+        let said = control.create_key("berth studio", 60).unwrap_err();
+        assert!(said.to_string().contains("tailnet_tags"), "{said}");
+        control.tags = tags("berth");
+        assert_eq!(
+            control.create_key("berth studio", 60).unwrap(),
+            "tskey-auth-by-client"
+        );
+        let exchange = seen.recv().unwrap();
+        assert_eq!(exchange.line, "POST /api/v2/oauth/token HTTP/1.1");
+        assert_eq!(exchange.kind, "application/x-www-form-urlencoded");
+        assert_eq!(
+            exchange.text,
+            "grant_type=client_credentials&client_id=kFAKE1CNTRL&client_secret=tskey-client-kFAKE1CNTRL-0000"
+        );
+        assert_eq!(exchange.authorization, "");
+        let create = seen.recv().unwrap();
+        assert_eq!(create.line, "POST /api/v2/tailnet/-/keys HTTP/1.1");
+        assert_eq!(create.authorization, "Bearer tskey-access-FAKE");
+        assert_eq!(
+            create.body["capabilities"]["devices"]["create"]["tags"],
+            json!(["tag:berth"])
+        );
+    }
+
+    #[test]
+    fn a_refused_oauth_client_says_why() {
+        let (url, _seen) = fake(vec![(
+            401,
+            json!({"error": "invalid_client", "error_description": "client secret is invalid"}),
+        )]);
+        let mut control = control(None, &url);
+        control.credential = Ok(Credential::parse("kFAKE:tskey-client-kFAKE-0000").unwrap());
+        control.tags = tags("berth");
+        let said = control.create_key("berth", 60).unwrap_err().to_string();
+        assert!(
+            said.contains("HTTP 401") && said.contains("client secret is invalid"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn the_secret_is_a_token_or_a_client_and_nothing_else() {
+        assert_eq!(
+            Credential::parse(" tskey-api-kFAKE-0000\n"),
+            Some(Credential::Token("tskey-api-kFAKE-0000".into()))
+        );
+        assert_eq!(
+            Credential::parse("hsFAKE.0000"),
+            Some(Credential::Token("hsFAKE.0000".into()))
+        );
+        assert_eq!(
+            Credential::parse("kFAKE:tskey-client-kFAKE-0000"),
+            Some(Credential::Client {
+                id: "kFAKE".into(),
+                secret: "tskey-client-kFAKE-0000".into()
+            })
+        );
+        for bad in ["", ":secret", "id:", "two words", "a\"b"] {
+            assert_eq!(Credential::parse(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
     fn headscale_finds_the_user_and_makes_a_one_use_key() {
         let (url, seen) = fake(vec![
             (200, json!({"users": [{"id": "7", "name": "agents"}]})),
@@ -508,7 +705,7 @@ mod tests {
         let mut control = control(Some(&url), "http://127.0.0.1:9");
         control.user = "agents".into();
         control.tags = tags("berth");
-        let before = now();
+        let before = berth_api::unix_now();
         assert_eq!(
             control.create_key("berth studio", 3600).unwrap(),
             "hskey-auth-new"
@@ -525,7 +722,11 @@ mod tests {
         assert_eq!(create.body["aclTags"], json!(["tag:berth"]));
         let expiry = create.body["expiration"].as_str().unwrap();
         assert!(
-            [rfc3339(before + 3600), rfc3339(before + 3601)].contains(&expiry.to_owned()),
+            [
+                berth_api::rfc3339(before + 3600),
+                berth_api::rfc3339(before + 3601)
+            ]
+            .contains(&expiry.to_owned()),
             "{expiry}"
         );
     }
@@ -546,6 +747,14 @@ mod tests {
         );
         let create = seen.recv().unwrap();
         assert!(create.body.get("user").is_none(), "{:?}", create.body);
+        // An OAuth client is Tailscale's alone.
+        control.credential = Ok(Credential::parse("kFAKE:tskey-client-kFAKE-0000").unwrap());
+        assert!(
+            control
+                .problem()
+                .unwrap()
+                .contains("Headscale has no OAuth clients")
+        );
     }
 
     #[test]
@@ -564,13 +773,6 @@ mod tests {
         assert!(said.to_string().contains("Unauthorized"), "{said}");
     }
 
-    #[test]
-    fn times_are_written_as_rfc3339() {
-        assert_eq!(rfc3339(0), "1970-01-01T00:00:00Z");
-        assert_eq!(rfc3339(951_782_400), "2000-02-29T00:00:00Z");
-        assert_eq!(rfc3339(1_798_761_599), "2026-12-31T23:59:59Z");
-    }
-
     fn paths() -> (tempfile::TempDir, Paths) {
         let home = tempfile::tempdir().unwrap();
         let paths = Paths {
@@ -579,6 +781,13 @@ mod tests {
         };
         paths.prepare().unwrap();
         (home, paths)
+    }
+
+    fn set_secret(paths: &Paths, value: Option<&str>) {
+        Store::new(paths)
+            .unwrap()
+            .set_secret(TAILNET_API_KEY, value)
+            .unwrap();
     }
 
     #[test]
@@ -602,60 +811,82 @@ mod tests {
                 .contains("berth secret set tailnet_api_key"),
             "{said}"
         );
-        Store::new(&paths)
-            .unwrap()
-            .set_secret(TAILNET_API_KEY, Some("hskey-api-x"))
-            .unwrap();
+        set_secret(&paths, Some("hskey-api-x"));
         assert!(Control::configured(&paths).can_create());
         assert_eq!(
-            Control::configured(&paths).token.as_deref(),
-            Some("hskey-api-x")
+            Control::configured(&paths).credential,
+            Ok(Credential::Token("hskey-api-x".into()))
+        );
+        set_secret(&paths, Some("not one"));
+        assert!(
+            Control::configured(&paths)
+                .problem()
+                .unwrap()
+                .contains("CLIENT_ID:CLIENT_SECRET")
         );
     }
 
     #[test]
-    fn hosts_join_the_login_server_of_their_profile_or_of_berth() {
+    fn a_missing_api_key_is_a_problem_before_anything_runs() {
         let (_home, paths) = paths();
-        let auto = json!({"tailscale_auto_key": true});
-        assert_eq!(login_server(&paths, &json!({})), "");
+        let joins = json!({"hostname": "studio"});
+        let said = problem(&paths, &joins, "studio").unwrap();
+        assert!(
+            said.starts_with("studio joins the tailnet at Tailscale"),
+            "{said}"
+        );
+        assert!(said.contains("berth secret set tailnet_api_key"), "{said}");
+        assert!(said.contains("Secrets tab"), "{said}");
+        assert!(said.contains("over SSH at its address"), "{said}");
+        // A host that does not join needs nothing.
+        let off = json!({"ansible_vars": {"devbox_install_tailscale": false}});
+        assert_eq!(problem(&paths, &off, "studio"), None);
+        // An apply gives the role the problem in place of the way to a key.
+        let vars = apply_vars(&paths, &joins, "studio", Path::new("/b"));
+        assert_eq!(vars["devbox_tailnet_problem"], json!(said));
+        assert!(vars.get("devbox_tailscale_key_command").is_none());
+        // A seed is not written at all.
+        let said = seed_key(&paths, &joins, "studio")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(said.contains("berth secret set tailnet_api_key"), "{said}");
+        assert!(seed_key(&paths, &off, "studio").unwrap().is_none());
+        set_secret(&paths, Some("tskey-api-kFAKE-0000"));
+        assert_eq!(problem(&paths, &joins, "studio"), None);
+    }
+
+    #[test]
+    fn hosts_join_the_login_server_of_berth() {
+        let (_home, paths) = paths();
+        set_secret(&paths, Some("hskey-api-x"));
+        assert_eq!(login_server(&paths), "");
         assert_eq!(
-            apply_vars(
-                &paths,
-                &json!({"tailscale_auth_key": "k"}),
-                "studio",
-                Path::new("/b")
-            ),
-            json!({})
+            apply_vars(&paths, &json!({}), "studio", Path::new("/usr/bin/berth")),
+            json!({"devbox_tailscale_key_command": ["/usr/bin/berth", "tailnet-key", "studio"]})
         );
         paths
             .set("tailnet_login_server", "http://hs.test:8080")
             .unwrap();
-        assert_eq!(login_server(&paths, &json!({})), "http://hs.test:8080");
-        let own = json!({"tailscale_login_server": "https://other.test/"});
-        assert_eq!(login_server(&paths, &own), "https://other.test");
+        paths.set("tailnet_user", "1").unwrap();
+        assert_eq!(login_server(&paths), "http://hs.test:8080");
         assert_eq!(
-            apply_vars(&paths, &auto, "studio", Path::new("/usr/bin/berth")),
+            apply_vars(&paths, &json!({}), "studio", Path::new("/usr/bin/berth")),
             json!({
                 "devbox_tailscale_login_server": "http://hs.test:8080",
                 "devbox_tailscale_key_command": ["/usr/bin/berth", "tailnet-key", "studio"],
             })
         );
-        // berth makes no key a host's own login server would not take.
-        let mut other = own.clone();
-        other["tailscale_auto_key"] = json!(true);
-        let said = create_key(&paths, &other, "studio", 60).unwrap_err();
-        assert!(said.to_string().contains("https://other.test"), "{said}");
         // Without Tailscale there is nothing to join.
-        let off = json!({"tailscale_auto_key": true, "ansible_vars": {"devbox_install_tailscale": false}});
+        let off = json!({"ansible_vars": {"devbox_install_tailscale": false}});
         assert_eq!(
             apply_vars(&paths, &off, "studio", Path::new("/b")),
             json!({})
         );
-        assert_eq!(seed_profile(&paths, &off, "studio").unwrap(), off);
     }
 
     #[test]
-    fn a_seed_carries_a_new_key_and_the_login_server() {
+    fn a_seed_gets_a_new_key_in_a_private_file_and_says_until_when() {
         let (_home, paths) = paths();
         let (url, seen) = fake(vec![(
             200,
@@ -663,25 +894,53 @@ mod tests {
         )]);
         paths.set("tailnet_login_server", &url).unwrap();
         paths.set("tailnet_user", "5").unwrap();
-        Store::new(&paths)
+        set_secret(&paths, Some("hskey-api-x"));
+        let before = berth_api::unix_now();
+        let given = seed_key(&paths, &json!({"hostname": "studio"}), "studio")
             .unwrap()
-            .set_secret(TAILNET_API_KEY, Some("hskey-api-x"))
             .unwrap();
-        let config = json!({"hostname": "studio", "tailscale_auto_key": true});
-        let seeded = seed_profile(&paths, &config, "studio").unwrap();
-        assert_eq!(seeded["tailscale_auth_key"], "hskey-auth-seed");
-        assert_eq!(seeded["tailscale_login_server"], json!(url));
         let asked = seen.recv().unwrap();
         assert_eq!(asked.body["user"], "5");
-        // A pasted key is used as it is, and no key is created for it.
-        let pasted = json!({"tailscale_auto_key": true, "tailscale_auth_key": "hskey-auth-pasted"});
-        let seeded = seed_profile(&paths, &pasted, "studio").unwrap();
-        assert_eq!(seeded["tailscale_auth_key"], "hskey-auth-pasted");
-        let file = profile_file(&seeded).unwrap();
+        let expiry = asked.body["expiration"].as_str().unwrap().to_owned();
+        assert!(
+            [
+                berth_api::rfc3339(before + SEED_LIFETIME),
+                berth_api::rfc3339(before + SEED_LIFETIME + 1)
+            ]
+            .contains(&expiry),
+            "{expiry}"
+        );
+        assert!((before + SEED_LIFETIME..=before + SEED_LIFETIME + 1).contains(&given.until));
+        let file: Value =
+            serde_json::from_slice(&std::fs::read(given.file.path()).unwrap()).unwrap();
+        assert_eq!(file, json!({"key": "hskey-auth-seed", "login_server": url}));
         let mode = std::os::unix::fs::PermissionsExt::mode(
-            &file.as_file().metadata().unwrap().permissions(),
+            &given.file.as_file().metadata().unwrap().permissions(),
         );
         assert_eq!(mode & 0o077, 0);
+        let mut command = Command::new("true");
+        given.pass(&mut command);
+        assert!(
+            command
+                .get_envs()
+                .any(|(name, value)| name == "BERTH_TAILNET_FILE"
+                    && value == Some(given.file.path().as_os_str()))
+        );
+    }
+
+    #[test]
+    fn the_note_of_an_installer_says_until_when_it_can_join() {
+        // 2026-11-16 10:30:00 UTC.
+        let note = until_note(1_794_825_000);
+        assert!(
+            note.starts_with("Its key joins the tailnet until 2026-11-16 10:30 UTC"),
+            "{note}"
+        );
+        assert!(note.contains("24 hours"), "{note}");
+        assert!(
+            note.contains("applying it from berth then joins it"),
+            "{note}"
+        );
     }
 
     #[test]
@@ -693,11 +952,8 @@ mod tests {
         ]);
         paths.set("tailnet_login_server", &url).unwrap();
         paths.set("tailnet_user", "5").unwrap();
-        Store::new(&paths)
-            .unwrap()
-            .set_secret(TAILNET_API_KEY, Some("hskey-api-x"))
-            .unwrap();
-        let config = json!({"hostname": "studio", "tailscale_auto_key": true});
+        set_secret(&paths, Some("hskey-api-x"));
+        let config = json!({"hostname": "studio"});
         let stored = crate::profiles::Place::own("studio").unwrap();
         let file = crate::profiles::Place::File(home.path().join("attic.json"));
         let mut keys = vec![];
@@ -714,11 +970,6 @@ mod tests {
             assert!(seen.recv().unwrap().line.starts_with("POST"));
         }
         assert_eq!(keys, ["hskey-auth-named", "hskey-auth-file"]);
-        // A berth that uses a berth server has none of its own hosts by name;
-        // berth serve refuses to start like that, so its children never do.
-        paths.set("server", "http://192.0.2.7:7777").unwrap();
-        let said = key_for(&paths, "studio").unwrap_err().to_string();
-        assert_eq!(said, "No host studio");
         let by_path = file.argument();
         assert_eq!(
             crate::profiles::Place::resolve(&paths, &by_path).unwrap(),

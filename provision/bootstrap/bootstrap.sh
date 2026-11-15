@@ -90,7 +90,8 @@ import json, os
 from pathlib import Path
 d=json.loads(Path('/opt/devbox-bootstrap/deployment.json').read_text())
 p=Path('/etc/devbox'); p.mkdir(parents=True,exist_ok=True)
-v=d['ansible_vars']; v['devbox_profile']=d['profile']
+# The role names the target by its older name, as did the seeds of berth 0.5.
+v=d['ansible_vars']; v['devbox_profile']=d.get('target', d.get('profile'))
 # A seed of the qemu kind there once was is a cloud host that SSH reaches only from the QEMU host.
 if v['devbox_profile']=='qemu':
     v['devbox_profile']='cloud'
@@ -107,10 +108,10 @@ step 'Applying the role'
 ln -sfn "$release" /opt/devbox/current
 printf '%s\n' "$digest" > "$state/ready"
 chmod 0644 "$state/ready"
-set_state configured-needs-enrollment
+set_state configured
 step 'The role is applied'
-# Successful enrollment consumes the temporary key. The original USB/cloud user data
-# may still contain it; use short-lived one-use keys, never a reusable credential.
+# Successful enrollment consumes the key. The original USB/cloud user data may
+# still contain it, which is why berth makes it for one use and a day.
 python3 - <<'PY'
 import json
 from pathlib import Path

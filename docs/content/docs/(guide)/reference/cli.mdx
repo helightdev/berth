@@ -1,0 +1,1530 @@
+---
+title: Command reference
+description: Every command of berth with its arguments, made from the same definition as berth --help.
+icon: SquareTerminal
+---
+
+This page is generated from the commands themselves. [The command line](/docs/use/cli) explains them by what they do.
+
+## Flags of every command
+
+| Flag | What it does |
+| --- | --- |
+| `--server URL` | Use this berth server for this command: https://HOST, http://HOST:PORT or unix:/path. berth login keeps one. |
+| `--token-file FILE` | Read the server's token from this file. |
+| `--token-stdin` | Read the server's token from standard input. |
+| `-o, --output OUTPUT` | What is printed on standard output: a table for people, or the API's own JSON. One of `table`, `json`. By default `table`. |
+| `--no-input` | Never ask. What is missing is an error that names the flag to pass. |
+| `-y, --yes` | Answer yes to a confirmation. |
+| `-q, --quiet` | Print only the result. |
+| `--sudo-password-stdin` | Read the SSH user's sudo password from standard input, for a host whose sudo asks for one. |
+| `--color WHEN` | Colours: on a terminal, always or never. NO_COLOR turns them off as well. One of `auto`, `always`, `never`. By default `auto`. |
+
+Flags go before or after the names, as `--tail 50` or `--tail=50`. `--` ends the flags; what follows it is passed on as it is.
+
+## Exit statuses
+
+| Status | Means |
+| --- | --- |
+| 0 | done |
+| 1 | the work failed: a job failed, or a host did not answer |
+| 2 | the command line was wrong: an unknown word, a missing value, a bad flag |
+| 3 | refused: the role is too low, the host or this server cannot do it now, or a confirmation was declined |
+| 4 | the server could not be reached |
+
+A command run on a host, such as `berth exec`, ends with that command's own status.
+
+## Environment
+
+| Variable | What it does |
+| --- | --- |
+| `BERTH_SERVER` | The server, when no --server is given. It wins over the one berth login kept. |
+| `BERTH_TOKEN` | Its token, when no --token-file or --token-stdin is given. For containers and CI. |
+| `NO_COLOR` | No colours, as --color never. |
+| `BERTH_ and a setting's name` | A setting of the server, in capitals, such as BERTH_RETENTION_DAYS, for a server in a container. |
+| `XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_RUNTIME_DIR` | Where berth keeps its settings, its data and its socket. |
+| `VISUAL, EDITOR` | The editor of berth host edit. |
+
+## berth ls
+
+Short for berth host list.
+
+```text
+berth ls
+```
+
+## berth apply
+
+Short for berth host apply.
+
+```text
+berth apply NAME [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
+
+## berth exec
+
+Run a command on a host and pass its exit status through.
+
+```text
+berth exec HOST [--user USER] [--detach] [--keep] -- COMMAND…
+```
+
+| Argument | What it is |
+| --- | --- |
+| `HOST` | A host's name. |
+| `--user USER` | The account it runs as: agent, operator or root. By default `agent`. |
+| `--detach` | Start it and return; berth session logs HOST ID shows what it writes. |
+| `--keep` | Keep the session once it has ended, for berth session logs. |
+| `COMMAND…` | The command and its arguments, after --. |
+
+## berth ssh
+
+A shell on a host over plain SSH, or a command run there. Needs the installation on this machine.
+
+```text
+berth ssh HOST [--agent] [-- COMMAND…]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `HOST` | A host's name. |
+| `--agent` | Log in as the agent account. |
+| `COMMAND…` | A command to run there, after --. |
+
+## berth run
+
+Run one of a host's actions: berth action list HOST names them.
+
+```text
+berth run HOST ACTION [NAME=VALUE…] [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `HOST` | A host's name. |
+| `ACTION` | The action's name. |
+| `NAME=VALUE…` | The action's arguments. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
+
+## berth ui
+
+Open berth's screens: the home screen, or the page of one host.
+
+```text
+berth ui [HOST]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `HOST` | The host to open. |
+
+## berth host
+
+The hosts: list, create, add, change, install and remove them.
+
+### berth host list
+
+The hosts, with their address and whether each answers.
+
+`berth host ls` is the same.
+
+```text
+berth host list
+```
+
+### berth host show
+
+One host: its type, address, state and actions.
+
+```text
+berth host show NAME
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+
+### berth host create
+
+Describe a new host, then install it. Asks what is missing on a terminal.
+
+```text
+berth host create NAME [--method METHOD] [--from PROFILE] [--type TYPE] [--feature FEATURE] [--no-feature FEATURE] [--set KEY=VALUE] [--generate-passwords] [--provisioner PROVISIONER] [NAME=VALUE…] [--run] [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `--method METHOD` | How it is installed: provisioner, iso, cloud-seed, ssh or ssh-only. |
+| `--from PROFILE` | Start from a profile: a host's name, a JSON file, or - for standard input. |
+| `--type TYPE` | What berth does with it: workstation, or node for a server of machines, applied over SSH. |
+| `--feature FEATURE` | Switch on a plugin's feature, PLUGIN/FEATURE. Again for more. |
+| `--no-feature FEATURE` | Switch off a plugin's feature. |
+| `--set KEY=VALUE` | Set a field of the profile. Again for more; the keys are listed below. |
+| `--generate-passwords` | Generate the accounts' passwords; berth host credentials NAME shows them. |
+| `--provisioner PROVISIONER` | Make the machine with this provisioner, which also sets it up. |
+| `NAME=VALUE…` | The provisioner's arguments, such as cpus=2. |
+| `--run` | Install it once it is saved: apply, render the seed or build the installer. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
+
+The ways to install, for `--method`:
+
+| Method | What it is |
+| --- | --- |
+| `provisioner` | From a provisioner |
+| `iso` | USB installer |
+| `cloud-seed` | Cloud-init seed |
+| `ssh` | Existing host over SSH |
+| `ssh-only` | Existing host, SSH only |
+
+The fields of a profile, for `--set KEY=VALUE` here and `berth host set`. A switch takes `on` or `off`. `feature.PLUGIN/FEATURE=on`, `secret.NAME=VARIABLE` and `registry.NAME=on` give a host those as well.
+
+| Key | Field |
+| --- | --- |
+| `type` | Type |
+| `target` | Target |
+| `address` | SSH address |
+| `user` | SSH user |
+| `port` | SSH port |
+| `auth` | Log in with |
+| `sudo` | Ask for sudo password |
+| `hostname` | Hostname |
+| `install_tailscale` | Tailscale |
+| `tools_web` | JavaScript runtimes |
+| `tools_native` | Native development |
+| `tools_jvm` | JVM development |
+| `tools_dotnet` | .NET development |
+| `tools_scripting` | Scripting languages |
+| `tools_scientific` | Scientific computing |
+| `tools_chrome` | Google Chrome |
+| `install_playwright` | Playwright |
+| `software_rendering` | Software graphics |
+| `install_cockpit` | Cockpit web console |
+| `install_docker` | Docker on host |
+| `operator_username` | Operator username |
+| `operator_ssh_public_keys` | SSH key |
+| `operator_password_hash` | Operator password hash |
+| `agent_username` | Agent username |
+| `agent_password_hash` | Agent password hash |
+| `agent_ssh_public_keys` | SSH key |
+| `agent_privileges` | Agent privileges |
+| `agent_passwordless_sudo` | Agent passwordless sudo |
+| `harden_ssh` | SSH hardening |
+| `bootstrap_ssh_cidr` | Recovery SSH CIDR |
+| `geometry` | Desktop size |
+| `target_disk_mode` | Disk selection |
+| `target_disk_serial` | Target disk serial |
+| `target_disk_model` | Disk model pattern |
+| `target_disk_path` | Disk path pattern |
+| `target_disk_ssd` | Disk type filter |
+| `keyboard` | Keyboard layout |
+| `wifi_enabled` | Wi-Fi |
+| `wifi_ssid` | Wi-Fi SSID |
+| `wifi_password` | Wi-Fi password |
+| `wifi_interface` | Wi-Fi interface |
+| `release_store` | Publish release to |
+| `release_url` | Release HTTPS URL |
+| `release_private` | Download with login |
+| `iso` | Source ISO |
+| `iso_sha256` | ISO SHA256 |
+| `usb_device` | Then write to USB drive |
+| `inventory` | Ansible inventory |
+
+### berth host add
+
+Take in a machine that exists, by its address, and log in to it once.
+
+```text
+berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH] [--type TYPE] [--feature FEATURE] [--no-contact] [--password-stdin]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `ADDRESS` | Its name or IP address, or a Host alias of the server's SSH configuration. |
+| `--user USER` | The account berth logs in as. |
+| `--port PORT` | Its SSH port, when not 22. |
+| `--auth AUTH` | How berth logs in: berth, key:NAME, password or ssh. |
+| `--type TYPE` | What berth does with it: ssh, managed, node or workstation. By default `ssh`. |
+| `--feature FEATURE` | Switch on a plugin's feature of a node or a workstation, PLUGIN/FEATURE, such as incus/server. Again for more. |
+| `--no-contact` | Save it without logging in to it. |
+| `--password-stdin` | Read a password from standard input that installs berth's key on it, once. |
+
+### berth host set
+
+Change settings of a host's profile: KEY=VALUE, as berth host create --help lists the keys.
+
+```text
+berth host set NAME KEY=VALUE…
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `KEY=VALUE…` | KEY=VALUE, where KEY is a field (berth host create --help), feature.PLUGIN/FEATURE, secret.NAME or registry.NAME. |
+
+### berth host edit
+
+Change a host's profile in $EDITOR.
+
+```text
+berth host edit NAME
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+
+### berth host export
+
+A host's profile as JSON on standard output.
+
+```text
+berth host export NAME
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+
+### berth host import
+
+Save the profile in FILE (- for standard input) as the host's, new or changed.
+
+```text
+berth host import NAME FILE
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `FILE` | The profile as JSON, such as berth host export wrote; - for standard input. |
+
+### berth host apply
+
+Apply the host's profile to it over SSH, or install its controller alone when it is managed.
+
+```text
+berth host apply NAME [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
+
+### berth host seed
+
+The cloud-init user data that installs the host on first boot, on standard output.
+
+```text
+berth host seed NAME [--file FILE]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `--file FILE` | Write it to FILE instead. |
+
+### berth host iso
+
+Build the host's unattended USB installer where the server runs, and write it to a drive.
+
+```text
+berth host iso NAME [--write DEVICE] [--password-stdin] [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `--write DEVICE` | Write it to this USB drive, which is erased, such as /dev/sdb. |
+| `--password-stdin` | Read your sudo password for writing the drive from standard input. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
+
+### berth host rename
+
+Give a host another name in berth. The machine is left as it is.
+
+```text
+berth host rename NAME NEW [--hostname]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `NEW` | Its new name. |
+| `--hostname` | Make NEW its profile's hostname as well, for the next apply. |
+
+### berth host remove
+
+Forget a host. The machine is left as it is, unless --destroy.
+
+`berth host rm` is the same.
+
+```text
+berth host remove NAME [--destroy]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `--destroy` | Delete the machine a provisioner made for it as well. |
+
+### berth host adopt
+
+Take in a host berth set up before, from the profile it keeps.
+
+```text
+berth host adopt NAME [ADDRESS] [--port PORT] [--key FILE] [--force] [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `ADDRESS` | [USER@]ADDRESS; without it, the saved host of that name. |
+| `--port PORT` | Its SSH port, when not 22. |
+| `--key FILE` | A private key file where the server runs, offered as well for reading the profile only. |
+| `--force` | Replace a host of that name. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
+
+### berth host credentials
+
+The passwords berth generated for a host's accounts.
+
+```text
+berth host credentials NAME [--show]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `--show` | Print them even when standard output is no terminal. |
+
+### berth host verify
+
+Check the host's SSH host key, and accept a new one.
+
+```text
+berth host verify NAME [--accept]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `--accept` | Accept the key the host shows now. |
+
+### berth host start
+
+Start the machine a provisioner made for the host.
+
+```text
+berth host start NAME [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
+
+### berth host stop
+
+Stop the machine a provisioner made for the host.
+
+```text
+berth host stop NAME [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
+
+### berth host inventory
+
+The hosts as an Ansible inventory. Needs the installation on this machine.
+
+```text
+berth host inventory [NAMES…]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAMES…` | The hosts; all with an address when none is named. |
+
+## berth rollout
+
+Bring the hosts up to date, one at a time.
+
+```text
+berth rollout [--only HOST] [--except HOST] [--all] [--update] [--reboot] [--force] [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `--only HOST` | Only these hosts. Again for more. |
+| `--except HOST` | Leave these hosts out. Again for more. |
+| `--all` | Take hosts that are up to date as well. |
+| `--update` | Run each host's update action as well. |
+| `--reboot` | Reboot the hosts that need it, unless sessions run there. |
+| `--force` | With --reboot: even when sessions run. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
+
+## berth action
+
+What a host can do.
+
+### berth action list
+
+What a host can do, or the installation without a host.
+
+`berth action ls` is the same.
+
+```text
+berth action list [HOST]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `HOST` | A host's name. |
+
+## berth session
+
+The terminal and process sessions of a host.
+
+### berth session list
+
+A host's sessions, running and ended.
+
+`berth session ls` is the same.
+
+```text
+berth session list HOST
+```
+
+| Argument | What it is |
+| --- | --- |
+| `HOST` | A host's name. |
+
+### berth session attach
+
+This terminal onto a terminal session, or onto a new shell as the agent. Ctrl+Q leaves it running.
+
+```text
+berth session attach HOST [ID]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `HOST` | A host's name. |
+| `ID` | Its id. |
+
+### berth session logs
+
+What a session wrote.
+
+```text
+berth session logs HOST ID [-f, --follow] [--tail N]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `HOST` | A host's name. |
+| `ID` | Its id. |
+| `-f, --follow` | Go on as it writes more. |
+| `--tail N` | Only the last N lines. |
+
+### berth session stop
+
+End a session.
+
+```text
+berth session stop HOST ID
+```
+
+| Argument | What it is |
+| --- | --- |
+| `HOST` | A host's name. |
+| `ID` | Its id. |
+
+## berth provisioner
+
+What can make hosts and resources, such as Incus or Docker.
+
+### berth provisioner list
+
+The provisioners, and whether each can be used here.
+
+`berth provisioner ls` is the same.
+
+```text
+berth provisioner list
+```
+
+### berth provisioner types
+
+The types of provisioner the plugins bring.
+
+```text
+berth provisioner types
+```
+
+### berth provisioner add
+
+Register a provisioner of a type, such as incus/vm, under a name of its own.
+
+```text
+berth provisioner add NAME TYPE [NAME=VALUE…]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `TYPE` | Its type, as berth provisioner types lists them. |
+| `NAME=VALUE…` | Its settings. |
+
+### berth provisioner show
+
+How it is now and what it holds. NAME=VALUE gives one of its settings another value for this once.
+
+```text
+berth provisioner show NAME [NAME=VALUE…]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `NAME=VALUE…` | A setting with another value for this once. |
+
+### berth provisioner set
+
+Change its settings.
+
+```text
+berth provisioner set NAME NAME=VALUE…
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `NAME=VALUE…` | A setting and its new value. |
+
+### berth provisioner remove
+
+Forget a provisioner that holds nothing.
+
+`berth provisioner rm` is the same.
+
+```text
+berth provisioner remove NAME
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+
+### berth provisioner actions
+
+What it can do.
+
+```text
+berth provisioner actions NAME
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+
+### berth provisioner run
+
+Run one of its actions.
+
+```text
+berth provisioner run NAME ACTION [NAME=VALUE…] [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `ACTION` | The action's name. |
+| `NAME=VALUE…` | The action's arguments; a required one that is missing is asked for. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
+
+## berth resource
+
+What provisioners made that is not a host, such as a deployment.
+
+### berth resource list
+
+What provisioners made.
+
+`berth resource ls` is the same.
+
+```text
+berth resource list [--kind KIND] [--provisioner PROVISIONER] [--host HOST]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `--kind KIND` | Only those of this kind, such as deployment or machine. |
+| `--provisioner PROVISIONER` | Only those this provisioner made. |
+| `--host HOST` | Only the machine of this host. |
+
+### berth resource show
+
+One of them as its provisioner says it is now.
+
+```text
+berth resource show ID
+```
+
+| Argument | What it is |
+| --- | --- |
+| `ID` | Its id. |
+
+### berth resource create
+
+Make a resource, such as a deployment from a Compose file.
+
+```text
+berth resource create NAME --provisioner PROVISIONER [--kind KIND] [--spec FILE] [--secret NAME[:VARIABLE]] [NAME=VALUE…] [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `--provisioner PROVISIONER` | The provisioner that makes it. |
+| `--kind KIND` | Its kind, where the provisioner makes several. |
+| `--spec FILE` | The specification, such as a Compose file; - for standard input. |
+| `--secret NAME[:VARIABLE]` | A secret it gets, NAME or NAME:VARIABLE. Again for more. |
+| `NAME=VALUE…` | The arguments of its kind. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
+
+### berth resource set
+
+Change a resource: other arguments, a new specification, other secrets.
+
+```text
+berth resource set ID [--spec FILE] [--secret NAME[:VARIABLE]] [NAME=VALUE…] [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `ID` | Its id. |
+| `--spec FILE` | A new specification; - for standard input. |
+| `--secret NAME[:VARIABLE]` | The secrets it gets from now on, NAME or NAME:VARIABLE. Again for more. |
+| `NAME=VALUE…` | Arguments with new values. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
+
+### berth resource remove
+
+Remove a resource with its provisioner.
+
+`berth resource rm` is the same.
+
+```text
+berth resource remove ID [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `ID` | Its id. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
+
+### berth resource logs
+
+What it wrote.
+
+```text
+berth resource logs ID [-f, --follow] [--tail N]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `ID` | Its id. |
+| `-f, --follow` | Go on as it writes more. |
+| `--tail N` | Only the last N lines. |
+
+### berth resource exec
+
+Run a command in it, for a kind that has exec, and exit with its exit status.
+
+```text
+berth resource exec ID [--stdin] -- COMMAND… [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `ID` | Its id. |
+| `--stdin` | Give the command what berth reads on standard input, to its end. |
+| `COMMAND…` | The command and its arguments, after --. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
+
+### berth resource actions
+
+What it can do.
+
+```text
+berth resource actions ID
+```
+
+| Argument | What it is |
+| --- | --- |
+| `ID` | Its id. |
+
+### berth resource run
+
+Run one of its actions.
+
+```text
+berth resource run ID ACTION [NAME=VALUE…] [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `ID` | Its id. |
+| `ACTION` | The action's name. |
+| `NAME=VALUE…` | The action's arguments; a required one that is missing is asked for. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
+
+## berth job
+
+The work the server does: applies, installers, roll-outs.
+
+### berth job list
+
+The jobs, newest first.
+
+`berth job ls` is the same.
+
+```text
+berth job list [--limit LIMIT]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `--limit LIMIT` | By default `20`. |
+
+### berth job show
+
+One job's state.
+
+```text
+berth job show ID
+```
+
+| Argument | What it is |
+| --- | --- |
+| `ID` | Its id. |
+
+### berth job logs
+
+What a job wrote.
+
+```text
+berth job logs ID [-f, --follow]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `ID` | Its id. |
+| `-f, --follow` | Go on as it writes more, until it ends. |
+
+### berth job wait
+
+Wait for a job to end and exit with its result.
+
+```text
+berth job wait ID
+```
+
+| Argument | What it is |
+| --- | --- |
+| `ID` | Its id. |
+
+### berth job stop
+
+Stop a running job: its programs end, and its record says who stopped it.
+
+```text
+berth job stop ID
+```
+
+| Argument | What it is |
+| --- | --- |
+| `ID` | Its id. |
+
+## berth key
+
+The SSH keys berth logs in to hosts with.
+
+### berth key list
+
+The keys of berth's key ring, by their public halves.
+
+`berth key ls` is the same.
+
+```text
+berth key list
+```
+
+### berth key show
+
+One key's public half, which a host's operator takes.
+
+```text
+berth key show [NAME]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. By default `berth`. |
+
+### berth key create
+
+Make a new ed25519 key.
+
+```text
+berth key create NAME
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+
+### berth key import
+
+Add an OpenSSH private key without a passphrase from FILE (- for standard input).
+
+```text
+berth key import NAME FILE
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `FILE` | The private key file, in OpenSSH format. |
+
+### berth key remove
+
+Remove a key no host logs in with.
+
+`berth key rm` is the same.
+
+```text
+berth key remove NAME
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+
+### berth key rotate
+
+Replace a key on every host that takes it.
+
+```text
+berth key rotate NAME [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
+
+### berth key trust
+
+Install a key on a host that does not take it yet, with a password used once.
+
+```text
+berth key trust HOST [--key NAME] [--password-stdin]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `HOST` | A host's name. |
+| `--key NAME` | Log in once with this key of the ring, to install the one the host logs in with. |
+| `--password-stdin` | Read the password from standard input. |
+
+## berth secret
+
+Secret values the server keeps and gives to hosts.
+
+### berth secret list
+
+The names of the secrets.
+
+`berth secret ls` is the same.
+
+```text
+berth secret list
+```
+
+### berth secret set
+
+Set a secret's value: asked for, or read from a file or standard input.
+
+```text
+berth secret set NAME [--value-file FILE]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `--value-file FILE` | Read the value from FILE. |
+
+### berth secret remove
+
+Remove a secret.
+
+`berth secret rm` is the same.
+
+```text
+berth secret remove NAME
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+
+## berth registry
+
+Registries: Nexus servers, npm, file and Docker registries.
+
+### berth registry list
+
+The registries.
+
+`berth registry ls` is the same.
+
+```text
+berth registry list
+```
+
+### berth registry add
+
+Add a registry, or change its address or user.
+
+```text
+berth registry add NAME TYPE URL [--user USER]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `TYPE` | nexus, npm, raw or docker. |
+| `URL` | The address. |
+| `--user USER` | The user of its login; without one the login is a token. |
+
+### berth registry add-repo
+
+Add a repository of a Nexus registry.
+
+```text
+berth registry add-repo NAME FORMAT REPOSITORY [--address ADDRESS]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `FORMAT` | npm, raw or docker. |
+| `REPOSITORY` | The repository's name on the registry. |
+| `--address ADDRESS` | Its own address, HOST[:PORT], for a Docker repository. |
+
+### berth registry login
+
+Keep the password or token of a registry.
+
+```text
+berth registry login NAME [--password-stdin]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+| `--password-stdin` | Read it from standard input. |
+
+### berth registry check
+
+Whether a registry answers and takes its login.
+
+```text
+berth registry check [NAME]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+
+### berth registry remove
+
+Remove a registry with its login.
+
+`berth registry rm` is the same.
+
+```text
+berth registry remove NAME
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | Its name. |
+
+### berth registry publish
+
+Upload the release archive to a raw repository or file server, and use it as HOST's release address.
+
+```text
+berth registry publish DESTINATION [--host HOST] [--login REGISTRY]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `DESTINATION` | REGISTRY or REGISTRY/REPOSITORY. |
+| `--host HOST` | A host's name. |
+| `--login REGISTRY` | The cloud seed carries this registry's login; the destination's without a name. |
+
+### berth registry push-image
+
+Push berth's container image.
+
+```text
+berth registry push-image DESTINATION [TAG]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `DESTINATION` | REGISTRY or REGISTRY/REPOSITORY. |
+| `TAG` | By default `latest`. |
+
+## berth plugin
+
+Plugins and what they install.
+
+### berth plugin list
+
+The plugins and where they come from.
+
+`berth plugin ls` is the same.
+
+```text
+berth plugin list
+```
+
+### berth plugin show
+
+What a plugin brings: its features with their actions, services and channels, and its provisioners.
+
+```text
+berth plugin show ID
+```
+
+| Argument | What it is |
+| --- | --- |
+| `ID` | Its id. |
+
+### berth plugin add
+
+Install a plugin with npm: a name, or the address of a tarball.
+
+```text
+berth plugin add SPEC
+```
+
+| Argument | What it is |
+| --- | --- |
+| `SPEC` | A plugin's npm name, or the address of its .tgz. |
+
+### berth plugin remove
+
+Remove one of the server's own plugins.
+
+`berth plugin rm` is the same.
+
+```text
+berth plugin remove ID
+```
+
+| Argument | What it is |
+| --- | --- |
+| `ID` | Its id. |
+
+### berth plugin update
+
+Update one plugin or all to their registry's latest version.
+
+```text
+berth plugin update [ID] [--check]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `ID` | Its id. |
+| `--check` | Only say which have a newer version. |
+
+## berth config
+
+The settings: the server's, and this berth's own, such as the server it uses.
+
+### berth config list
+
+The settings, with what each means and where it is kept.
+
+`berth config ls` is the same.
+
+```text
+berth config list
+```
+
+### berth config get
+
+One setting's value.
+
+```text
+berth config get KEY
+```
+
+| Argument | What it is |
+| --- | --- |
+| `KEY` | The setting or key. |
+
+### berth config set
+
+Change a setting.
+
+```text
+berth config set KEY VALUE
+```
+
+| Argument | What it is |
+| --- | --- |
+| `KEY` | The setting or key. |
+| `VALUE` | The value. |
+
+### berth config unset
+
+Set a setting back to its default.
+
+```text
+berth config unset KEY
+```
+
+| Argument | What it is |
+| --- | --- |
+| `KEY` | The setting or key. |
+
+## berth port
+
+Reach a port of a host, or an endpoint of a resource, from this machine.
+
+### berth port forward
+
+Listen on this machine and pass each connection to a port of a host, or to an endpoint of a resource.
+
+TARGET is a host's name. A resource's id or name is taken when no host has that name, or always with --resource.
+
+```text
+berth port forward TARGET [LOCAL:]PORT|ENDPOINT… [--resource] [--address ADDRESS]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `TARGET` | A host's name, or a resource's id or name. |
+| `[LOCAL:]PORT|ENDPOINT…` | [LOCAL:]PORT for a host's port. For a resource, [LOCAL:]ENDPOINT, an endpoint's name or port; LOCAL is the endpoint's port unless given. |
+| `--resource` | TARGET is a resource, even where a host has the same name. |
+| `--address ADDRESS` | The address to listen on. By default `127.0.0.1`. |
+
+## berth inbox
+
+Messages taken in from the hosts' channels.
+
+### berth inbox list
+
+The messages, oldest first.
+
+`berth inbox ls` is the same.
+
+```text
+berth inbox list [HOST] [--topic PREFIX] [--all]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `HOST` | A host's name. |
+| `--topic PREFIX` | Only topics that start with PREFIX. |
+| `--all` | Done ones as well. |
+
+## berth kv
+
+The server's key-value store.
+
+### berth kv list
+
+The keys of a namespace with their values.
+
+`berth kv ls` is the same.
+
+```text
+berth kv list NAMESPACE
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAMESPACE` | The namespace. |
+
+### berth kv get
+
+One key's value.
+
+```text
+berth kv get NAMESPACE KEY
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAMESPACE` | The namespace. |
+| `KEY` | The setting or key. |
+
+### berth kv set
+
+Write a key: JSON, or else text.
+
+```text
+berth kv set NAMESPACE KEY VALUE
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAMESPACE` | The namespace. |
+| `KEY` | The setting or key. |
+| `VALUE` | The value. |
+
+### berth kv remove
+
+Remove a key.
+
+`berth kv rm` is the same.
+
+```text
+berth kv remove NAMESPACE KEY
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAMESPACE` | The namespace. |
+| `KEY` | The setting or key. |
+
+## berth channel
+
+A host's channel.
+
+### berth channel listen
+
+Messages on a host's channel as they come, one JSON object per line.
+
+```text
+berth channel listen HOST [--topic PREFIX] [--since ID]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `HOST` | A host's name. |
+| `--topic PREFIX` | Only topics that start with PREFIX. |
+| `--since ID` | From after this message on. |
+
+## berth service
+
+Services that plugins run on a host.
+
+### berth service call
+
+Call a method of a service a plugin runs on the host.
+
+```text
+berth service call HOST SERVICE METHOD [BODY]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `HOST` | A host's name. |
+| `SERVICE` | PLUGIN/NAME of the service. |
+| `METHOD` | The service's method. |
+| `BODY` | The body, as JSON. |
+
+## berth server
+
+The berth server of this machine: running it, its setup key, its store and its API documents.
+
+### berth server run
+
+Serve the API over all hosts on a socket of this user, and over HTTP with --listen.
+
+```text
+berth server run [--listen ADDRESS:PORT] [--expose]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `--listen ADDRESS:PORT` | Also listen over HTTP, behind a token. |
+| `--expose` | Allow an address other than this machine's own. |
+
+### berth server setup-key
+
+Make a key, valid for a day, that lets the first user collect the server's token.
+
+```text
+berth server setup-key [--revoke]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `--revoke` | End the key that is open. |
+
+### berth server store
+
+Where the server keeps its state, and sealing it.
+
+#### berth server store status
+
+Where the store is, and whether it is sealed.
+
+```text
+berth server store status
+```
+
+#### berth server store encrypt
+
+Seal the store's values with a new key file.
+
+```text
+berth server store encrypt
+```
+
+#### berth server store rekey
+
+Seal them with another key.
+
+```text
+berth server store rekey
+```
+
+#### berth server store decrypt
+
+Write them plain again.
+
+```text
+berth server store decrypt
+```
+
+#### berth server store copy
+
+Copy the store into another SQLite file or PostgreSQL database, and switch to it.
+
+```text
+berth server store copy [TARGET] [--target-file FILE] [--into-existing]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `TARGET` | A file, a PostgreSQL URL, or - to read it from standard input. |
+| `--target-file FILE` | Read the target from FILE. |
+| `--into-existing` | Copy into a database that holds a store already. |
+
+### berth server api
+
+The server's API documents.
+
+#### berth server api openapi
+
+The OpenAPI document.
+
+```text
+berth server api openapi
+```
+
+#### berth server api asyncapi
+
+The AsyncAPI document of the streams.
+
+```text
+berth server api asyncapi
+```
+
+#### berth server api operations
+
+The operations, with their routes and roles.
+
+```text
+berth server api operations
+```
+
+## berth serve
+
+Short for berth server run.
+
+```text
+berth serve [--listen ADDRESS:PORT] [--expose]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `--listen ADDRESS:PORT` | Also listen over HTTP, behind a token. |
+| `--expose` | Allow an address other than this machine's own. |
+
+## berth login
+
+Use the berth server at URL, with a setup key made there.
+
+```text
+berth login URL [--setup-key-stdin]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `URL` | https://HOST or http://HOST:PORT. |
+| `--setup-key-stdin` | Read the setup key from standard input. |
+
+## berth logout
+
+Stop using the berth server berth login kept.
+
+```text
+berth logout
+```
+
+## berth update
+
+Install the latest release in this program's place.
+
+```text
+berth update [--check] [--from URL]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `--check` | Only say whether there is a newer release. |
+| `--from URL` | Where releases are, instead of berth's own. |
+
+## berth version
+
+The version of this berth, and of the server it uses.
+
+```text
+berth version
+```
+
+## berth completion
+
+The completions of a shell, to source from its start-up file.
+
+```text
+berth completion SHELL
+```
+
+| Argument | What it is |
+| --- | --- |
+| `SHELL` | bash, zsh, fish, elvish or powershell. One of `bash`, `elvish`, `fish`, `powershell`, `zsh`. |

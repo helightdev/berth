@@ -1,8 +1,8 @@
 //! The page of a subject: lines that say how it is, what can be done to it
 //! in groups, and the dialogs before an action runs, its question and then
 //! its arguments one after another. A host's page is one. A page of another
-//! subject is its state and its actions given to the same functions; the
-//! terminal and the browser draw the rows each their own way.
+//! subject is its state and its actions given to the same functions, which
+//! the screens draw the rows of.
 
 use berth_api::{Action, Argument};
 use std::collections::BTreeMap;
@@ -338,11 +338,11 @@ mod tests {
             items.last(),
             Some(&Item::Pick("  ▸ Resize a pool · not now".into(), 2))
         );
-        let said = help(&actions[2], "berth provisioner incus/vm resize");
+        let said = help(&actions[2], "berth provisioner run incus/vm resize");
         assert!(said.starts_with("Grows the pool.") && said.contains("Asks for: pool, New size."));
         assert!(said.contains("- **Check**: Says how full it is."));
         assert!(said.contains("It cannot run now: The pool is busy"));
-        assert!(said.ends_with("`berth provisioner incus/vm resize`"));
+        assert!(said.ends_with("`berth provisioner run incus/vm resize`"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 {
   "hostname": "",
-  "profile": "laptop",
+  "target": "laptop",
   "operator_username": "ops",
   "operator_ssh_public_keys": [],
   "operator_password_hash": "",
@@ -14,7 +14,6 @@
   "target_disk_serial": "",
   "keyboard": "de",
   "release_url": "",
-  "tailscale_auth_key": "",
   "wifi_enabled": false,
   "wifi": null,
   "ansible_vars": {},

@@ -1,5 +1,5 @@
 {
   "title": "Reference",
   "icon": "Library",
-  "pages": ["tools", "graphics", "box", "on-the-host", "profile", "validation", "building"]
+  "pages": ["cli", "tools", "graphics", "box", "on-the-host", "profile", "validation", "building"]
 }

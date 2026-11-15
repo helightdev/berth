@@ -23,20 +23,33 @@
 
 # Its port stays on this machine: the token gives full control of every host.
 - name: Start the berth server in a container
-  ansible.builtin.command: >-
-    docker run --detach --name berth --restart unless-stopped
-    --publish 127.0.0.1:{{ berth_server_port }}:7777
-    --volume {{ berth_server_dir }}/config:/config
-    --volume {{ berth_server_dir }}/data:/data
-    --volume {{ berth_server_dir }}/ssh:/home/berth/.ssh
-    {{ berth_server_run_options | default('') }}
-    {{ berth_server_image | quote }}
+  ansible.builtin.command:
+    argv: "{{ ['docker', 'run', '--detach', '--name', 'berth', '--restart', 'unless-stopped']
+              + berth_server_options + [berth_server_image] }}"
   when: berth_container.rc != 0
   changed_when: true
 
+# A container from an earlier run, by this recipe or by hand, keeps its data
+# and every option of its own, such as a socket or a name it reaches: the
+# helper makes it again only when the image or the options above differ, and
+# starts the old one again when the new one does not come up.
+- name: Bring the berth server's container up to date, with its options
+  ansible.builtin.script:
+    cmd: >-
+      {{ berth_server_helper | quote }} berth --image {{ berth_server_image | quote }}
+      {{ '--pull' if berth_server_update | bool else '--keep-image' }}
+      {% for flag in berth_server_options | batch(2) %}{{ flag[0] }} {{ flag[1] | quote }} {% endfor %}
+    executable: python3
+  register: berth_container_remade
+  changed_when: "'is unchanged' not in berth_container_remade.stdout"
+  when: berth_container.rc == 0
+
 - name: Start a berth server that was stopped
   ansible.builtin.command: docker start berth
-  when: berth_container.rc == 0 and berth_container.stdout | trim != 'true'
+  when:
+    - berth_container.rc == 0
+    - berth_container_remade is not changed
+    - berth_container.stdout | trim != 'true'
   changed_when: true
 
 - name: See whether the tailnet serves the berth server
@@ -61,12 +74,12 @@
     host: 127.0.0.1
     port: "{{ berth_server_port }}"
     timeout: 60
-  when: berth_container.rc != 0
+  when: berth_container.rc != 0 or berth_container_remade is changed
 
 # The first user collects the token with this key, so whoever ran the
 # recipe hands on the key and never the token. Later runs leave it be.
 - name: Make a setup key for the first user of the new berth server
-  ansible.builtin.command: docker exec berth berth setup-key
+  ansible.builtin.command: docker exec berth berth server setup-key
   register: berth_setup_key
   when: berth_container.rc != 0
   changed_when: berth_setup_key.rc == 0
@@ -99,11 +112,10 @@
     with_key:
       - "berth server: {{ berth_url }}{{ berth_here }}"
       - "Setup key for the first user, valid for 24 hours: {{ berth_key }}"
-      - "In a terminal: berth connect {{ berth_url }} and paste the setup key when asked"
-      - "In a browser: {{ berth_url }}/#setup-key={{ berth_key }}"
-      - "The key ends when the user chooses Done. A new one: sudo docker exec berth berth setup-key"
+      - "With berth: berth login {{ berth_url }} and paste the setup key when asked"
+      - "The key ends once berth login has the token. A new one: sudo docker exec berth berth server setup-key"
     without_key:
       - "berth server: {{ berth_url }}{{ berth_here }}"
-      - "A setup key for a user to collect the token: sudo docker exec berth berth setup-key"
-      - "With it: berth connect {{ berth_url }}, or open {{ berth_url }}/#setup-key=KEY in a browser"
+      - "A setup key for a user to collect the token: sudo docker exec berth berth server setup-key"
+      - "With it: berth login {{ berth_url }}"
       - "Or the token itself: sudo cat {{ berth_server_dir }}/data/berth/serve.token"

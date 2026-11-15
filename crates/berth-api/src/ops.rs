@@ -29,6 +29,16 @@
 //! ↔ {"sub": 7, "end": true}             the last frame; from the server it may carry "error"
 //! ```
 //!
+//! A request to open a stream may add `"window": BYTES`. A server that keeps
+//! to it says so in its answer, `{"open": true, "window": BYTES}`, with the
+//! window it took. Each side then sends at most that many bytes of binary
+//! frames of the stream that the other side has not yet said it took, and
+//! says what it took as it goes:
+//!
+//! ```text
+//! ↔ {"sub": 7, "credit": 131072}        so many more bytes may come
+//! ```
+//!
 //! Bytes in a result or as input are `{"base64": "…"}` (a result adds
 //! `content_type`), up to [`PORTAL_BYTES`]; larger transfers are HTTP's.
 
@@ -72,7 +82,7 @@ pub enum Body {
 pub enum Role {
     /// Look: hosts, sessions and their output, logs, the inbox, the store.
     View,
-    /// Use the hosts: run tasks and commands, write files, control units.
+    /// Use the hosts: run actions and commands, write files, control units.
     Operate,
     /// Set up: profiles, secrets, registries, plugins, and applying them to hosts.
     Admin,
@@ -111,6 +121,10 @@ pub struct Op {
     /// What the caller shows instead of a token with a role, for an
     /// operation that checks a key of its own; empty for the others.
     pub key: &'static str,
+    /// Why only `berth serve` calls it on a host, for itself; empty for the
+    /// others. It passes none of these through for a caller, and no portal
+    /// carries them.
+    pub server_only: &'static str,
 }
 
 const fn call(name: &'static str, method: &'static str, path: &'static str) -> Op {
@@ -128,6 +142,7 @@ const fn call(name: &'static str, method: &'static str, path: &'static str) -> O
             _ => Role::Operate,
         },
         key: "",
+        server_only: "",
     }
 }
 
@@ -142,6 +157,7 @@ const fn stream(name: &'static str, path: &'static str) -> Op {
         http_only: "",
         role: Role::Operate,
         key: "",
+        server_only: "",
     }
 }
 
@@ -167,6 +183,14 @@ const fn keyed(mut op: Op, key: &'static str) -> Op {
     op
 }
 
+/// An operation of berthd that `berth serve` calls itself after checks of
+/// its own, and that no caller reaches through it.
+const fn server_only(mut op: Op, why: &'static str) -> Op {
+    op.server_only = why;
+    op.http_only = why;
+    op
+}
+
 const fn headers(mut op: Op, headers: &'static [(&'static str, &'static str)]) -> Op {
     op.headers = headers;
     op
@@ -188,12 +212,12 @@ pub static HOST: &[Op] = &[
     call("sessions.input", "POST", "/v1/sessions/{id}/input"),
     call("sessions.resize", "POST", "/v1/sessions/{id}/resize"),
     call("sessions.signal", "POST", "/v1/sessions/{id}/signal"),
-    call("tasks.list", "GET", "/v1/tasks"),
-    call("tasks.run", "POST", "/v1/tasks/{name}"),
+    call("actions.list", "GET", "/v1/actions"),
+    call("actions.run", "POST", "/v1/actions/{action}"),
     call(
-        "tasks.choices",
+        "actions.choices",
         "GET",
-        "/v1/tasks/{name}/choices/{argument}",
+        "/v1/actions/{action}/choices/{argument}",
     ),
     call("system.stats", "GET", "/v1/stats"),
     call("system.power", "POST", "/v1/power/{verb}"),
@@ -218,6 +242,11 @@ pub static HOST: &[Op] = &[
         "/v1/services/{plugin}/{name}/{method}",
     ),
     stream("services.serve", "/v1/services/{plugin}/{name}/serve"),
+    stream("ports.connect", "/v1/ports/{port}"),
+    server_only(
+        stream("endpoints.connect", "/v1/endpoints/{address}/{port}"),
+        "berth serve dials it itself, only for an endpoint a provisioner reported: open the endpoint with resources.connect",
+    ),
 ];
 
 const IF_MATCH: (&str, &str) = ("if_match", "if-match");
@@ -248,9 +277,13 @@ pub static SERVE: &[Op] = &[
         call("hosts.act", "POST", "/v1/hosts/{name}/actions/{action}"),
         Role::View,
     ),
-    call("actions.list", "GET", "/v1/actions"),
+    call("installation.actions", "GET", "/v1/installation/actions"),
     role(
-        call("actions.act", "POST", "/v1/actions/{action}"),
+        call(
+            "installation.act",
+            "POST",
+            "/v1/installation/actions/{action}",
+        ),
         Role::View,
     ),
     admin(call("secrets.list", "GET", "/v1/secrets")),
@@ -321,10 +354,16 @@ pub static SERVE: &[Op] = &[
         Role::Operate,
     ),
     stream("resources.follow", "/v1/resources/{id}/logs"),
+    stream(
+        "resources.connect",
+        "/v1/resources/{id}/endpoints/{endpoint}",
+    ),
     call("jobs.list", "GET", "/v1/jobs"),
     call("jobs.get", "GET", "/v1/jobs/{id}"),
     role(stream("jobs.follow", "/v1/jobs/{id}"), Role::View),
     call("jobs.output", "GET", "/v1/jobs/{id}/output"),
+    // Anyone let in may ask; the role that starts a job of its kind is checked.
+    role(call("jobs.stop", "POST", "/v1/jobs/{id}/stop"), Role::View),
     call("inbox.list", "GET", "/v1/inbox"),
     role(stream("inbox.follow", "/v1/inbox"), Role::View),
     call("inbox.done", "POST", "/v1/inbox/{host}/{id}/done"),
@@ -445,6 +484,7 @@ mod tests {
         assert_eq!(role(HOST, "files.read"), Role::Operate);
         assert_eq!(role(HOST, "applied.profile"), Role::Admin);
         assert_eq!(role(HOST, "sessions.attach"), Role::Operate);
+        assert_eq!(role(HOST, "ports.connect"), Role::Operate);
         assert_eq!(role(SERVE, "hosts.save"), Role::Admin);
         assert_eq!(role(SERVE, "hosts.act"), Role::View);
         assert_eq!(role(SERVE, "provisioners.get"), Role::View);
@@ -456,6 +496,7 @@ mod tests {
         assert_eq!(role(SERVE, "resources.act"), Role::View);
         assert_eq!(role(SERVE, "resources.logs"), Role::Operate);
         assert_eq!(role(SERVE, "resources.follow"), Role::Operate);
+        assert_eq!(role(SERVE, "resources.connect"), Role::Operate);
         let (op, args) = recognise(
             SERVE,
             Kind::Call,

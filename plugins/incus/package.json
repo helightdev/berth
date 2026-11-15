@@ -9,9 +9,44 @@
   ],
   "files": [
     "bin",
+    "tasks",
     "guide.md"
   ],
   "berth": {
+    "features": [
+      {
+        "id": "server",
+        "group": "Servers",
+        "label": "Incus server",
+        "description": "Install Incus on a node and set it up for berth's machines: the bridge incusbr0 for the guests, a storage pool in a directory, and the API on port 8444 for clients it trusts by certificate. berth's own client certificate is trusted, and berth registers the provisioners incus/vm and incus/container of this node after the apply. An Incus that is set up already keeps its pools, networks and trust. The settings are devbox_incus_* in the profile's ansible_vars; the guide has them.",
+        "summary": "Incus (`incus`) hosts virtual machines and containers here, on the bridge `incusbr0`.",
+        "types": [
+          "node"
+        ],
+        "offers": [
+          "vm",
+          "container"
+        ],
+        "trusts": {
+          "certificate": "incus_client_cert",
+          "key": "incus_client_key"
+        },
+        "commands": [
+          "incus"
+        ],
+        "tasks": "tasks/server.yml",
+        "actions": [
+          {
+            "name": "server-status",
+            "label": "Incus",
+            "user": "root",
+            "extends": "status",
+            "help": "The version of Incus, its storage pools and its instances. Part of Status.",
+            "run": "echo; echo '── Incus'; incus version; incus storage list --format compact; incus list --format compact --columns nst"
+          }
+        ]
+      }
+    ],
     "provisioners": [
       {
         "id": "vm",
@@ -43,8 +78,8 @@
           },
           {
             "id": "instance",
-            "label": "Instance",
-            "verbs": ["start", "stop", "change", "logs"],
+            "label": "Virtual machine from an image",
+            "verbs": ["start", "stop", "change", "logs", "exec"],
             "arguments": [
               {"name": "image", "label": "Image", "default": "ubuntu/24.04", "help": "The image on images.linuxcontainers.org to start from, such as debian/12 or alpine/3.20. It becomes no berth host: nothing of berth is put in it."},
               {"name": "user_data", "label": "Cloud-init user data", "kind": "text", "help": "What cloud-init does on its first boot, such as packages to install and users to add, for an image that has cloud-init. Empty leaves the image as it is."},
@@ -119,8 +154,8 @@
           },
           {
             "id": "instance",
-            "label": "Instance",
-            "verbs": ["start", "stop", "change", "logs"],
+            "label": "Container from an image",
+            "verbs": ["start", "stop", "change", "logs", "exec"],
             "arguments": [
               {"name": "image", "label": "Image", "default": "ubuntu/24.04", "help": "The image on images.linuxcontainers.org to start from, such as debian/12 or alpine/3.20. It becomes no berth host: nothing of berth is put in it."},
               {"name": "user_data", "label": "Cloud-init user data", "kind": "text", "help": "What cloud-init does on its first boot, such as packages to install and users to add, for an image that has cloud-init. Empty leaves the image as it is."},

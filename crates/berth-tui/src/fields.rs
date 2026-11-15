@@ -1,6 +1,7 @@
 //! The settings the UI can edit, and the wizard steps and actions around them.
 
-pub const PROFILES: &[&str] = &["laptop", "cloud"];
+/// What a host can be installed on, as its profile's `target` says.
+pub const TARGETS: &[&str] = &["laptop", "cloud"];
 pub const DISK_MODES: &[&str] = &[
     "auto", "serial", "model", "path", "largest", "smallest", "ssd", "hdd",
 ];
@@ -8,8 +9,8 @@ pub const DISK_TYPES: &[&str] = &["any", "ssd", "hdd"];
 /// The ways to log in that are not a key of the ring; `key:NAME` is offered
 /// for each of those.
 pub const LOGINS: &[&str] = &["berth", "password", "ssh"];
-/// The levels a host can be meant to have, the whole profile first.
-pub const LEVELS: &[&str] = &["workstation", "controller", "reachable"];
+/// The types a host can be meant to be, the whole profile first.
+pub const TYPES: &[&str] = &["workstation", "node", "managed", "ssh"];
 
 /// The pages of a host: its overview (`Manage`) and the tabs of the set-up
 /// flow. Each tab depends only on the ones before it.
@@ -50,12 +51,12 @@ impl Step {
 }
 
 /// The rows of a host's overview that are berth's own: name, label and help.
-/// Everything else there is a task the host lists itself.
-pub const TASKS: &[(&str, &str, &str)] = &[
+/// Everything else there is an action the host lists itself.
+pub const OFFERS: &[(&str, &str, &str)] = &[
     (
         "terminal",
         "Terminal",
-        "A shell on the host, in a panel here. Space switches between the agent account, with its tools on the PATH and the virtual desktop as its display, and the SSH user. It is a session of the host: Ctrl+Q leaves it running and it can be opened again from Sessions; exit or Ctrl+D ends it. The mouse wheel scrolls back. From the command line: `berth attach HOST`.",
+        "A shell on the host, in a panel here. Space switches between the agent account, with its tools on the PATH and the virtual desktop as its display, and the SSH user. It is a session of the host: Ctrl+Q leaves it running and it can be opened again from Sessions; exit or Ctrl+D ends it. The mouse wheel scrolls back. From the command line: `berth session attach HOST`.",
     ),
     (
         "apply",
@@ -75,7 +76,7 @@ pub const TASKS: &[(&str, &str, &str)] = &[
     (
         "install-controller",
         "Install the controller",
-        "Put berthd and box on the host and start berth's controller, so that sessions, tasks and files work there, without the rest of a workstation. The host's level becomes controller. Continues in the terminal. From the command line: `berth host install HOST`.",
+        "Put berthd and box on the host and start berth's controller, so that sessions, actions and files work there, without the rest of a workstation. The host's type becomes managed. Continues in the terminal. From the command line: `berth run HOST install-controller`.",
     ),
     (
         "ssh",
@@ -98,7 +99,7 @@ pub enum Action {
     Docker,
     Ssh,
     /// An existing host berth only logs in to: a way offered on the Install
-    /// tab that chooses [`Action::Ssh`] at the level reachable.
+    /// tab that chooses [`Action::Ssh`] for a host of the type ssh.
     Reach,
     Manage,
 }
@@ -115,19 +116,78 @@ impl Action {
         Action::Docker,
     ];
 
-    /// The action a way of the Install tab sets, with the level it gives the
-    /// profile when it gives one.
+    /// The ways a berth server installs a host itself, as the screens and
+    /// `berth host create` offer them. The USB installer is built on the
+    /// machine the server runs on.
+    pub const SERVED: [Action; 5] = [
+        Action::Machine,
+        Action::Iso,
+        Action::CloudSeed,
+        Action::Ssh,
+        Action::Reach,
+    ];
+
+    /// The way's name on the command line, as `--method` takes it.
+    pub fn key(self) -> &'static str {
+        match self {
+            Action::Save => "save",
+            Action::Release => "release",
+            Action::UsbSeed => "usb-seed",
+            Action::Iso => "iso",
+            Action::CloudSeed => "cloud-seed",
+            Action::Machine => "provisioner",
+            Action::Apply => "inventory",
+            Action::Docker => "container",
+            Action::Ssh => "ssh",
+            Action::Reach => "ssh-only",
+            Action::Manage => "manage",
+        }
+    }
+
+    /// The way of [`Action::SERVED`] a name on the command line means.
+    pub fn by_key(key: &str) -> Option<Action> {
+        Action::SERVED
+            .into_iter()
+            .find(|action| action.key() == key)
+    }
+
+    /// The types a host installed this way can have. Only over SSH can berth
+    /// install less than a workstation: an installer, a seed or a provisioner
+    /// installs the whole profile from a blank machine.
+    pub fn types(self) -> &'static [berth_api::HostType] {
+        use berth_api::HostType::*;
+        match self {
+            Action::Reach => &[Ssh],
+            Action::Ssh | Action::Manage => &[Managed, Node, Workstation],
+            _ => &[Workstation],
+        }
+    }
+
+    /// Whether the Install tab offers this way to a host of `host_type`:
+    /// the ways its type allows, and the two over SSH, which move a host
+    /// between the type ssh and the types berth installs.
+    pub fn offered(self, host_type: berth_api::HostType) -> bool {
+        matches!(self, Action::Ssh | Action::Reach) || self.types().contains(&host_type)
+    }
+
+    /// The action a way of the Install tab sets, with the type it gives the
+    /// profile when it implies one.
     pub fn choose(self, config: &mut serde_json::Value) -> Action {
-        let level = berth_api::profile::level(config);
+        use berth_api::HostType;
+        let host_type = berth_api::profile::host_type(config);
         match self {
             Action::Reach => {
-                berth_api::profile::set_level(config, berth_api::HostLevel::Reachable);
+                berth_api::profile::set_host_type(config, HostType::Ssh);
                 Action::Ssh
             }
             // Installing over SSH installs something: the whole profile, unless the controller is chosen.
-            Action::Ssh if level == berth_api::HostLevel::Reachable => {
-                berth_api::profile::set_level(config, berth_api::HostLevel::Workstation);
+            Action::Ssh if host_type == HostType::Ssh => {
+                berth_api::profile::set_host_type(config, HostType::Workstation);
                 Action::Ssh
+            }
+            action if !action.types().contains(&host_type) => {
+                berth_api::profile::set_host_type(config, HostType::Workstation);
+                action
             }
             action => action,
         }
@@ -140,7 +200,7 @@ impl Action {
             Action::UsbSeed => "Render USB seed",
             Action::Iso => "USB installer",
             Action::CloudSeed => "Cloud-init seed",
-            Action::Machine => "Create a machine",
+            Action::Machine => "From a provisioner",
             Action::Apply => "This machine or an inventory",
             Action::Docker => "Container image",
             Action::Ssh => "Existing host over SSH",
@@ -157,13 +217,13 @@ impl Action {
                 "Generate the NoCloud files and provisioning bundle for an unattended installer."
             }
             Action::Iso => {
-                "For a blank machine: build an installer image from the Ubuntu Server ISO that installs and sets up the host without questions, and write it to a USB drive. F4 on the ISO field downloads the ISO."
+                "For a blank machine: build an installer image from the Ubuntu Server ISO that installs and sets up the host without questions, and write it to a USB drive. Without an ISO the current one is downloaded and checked first. It is built on the machine berth serve runs on."
             }
             Action::CloudSeed => {
                 "Generate cloud-init user data. Upload the generated release archive to the configured URL."
             }
             Action::Machine => {
-                "Have a provisioner create the machine, such as a container or a virtual machine on a server, and set it up as this host. Choose the provisioner below; plugins bring them. Its size is on the Settings tab, and Create is on the Run tab."
+                "Have a provisioner make the host, such as a container or a virtual machine on a server, and set it up. Choose the provisioner below; plugins bring them. Its size is on the Settings tab, and Create is on the Run tab."
             }
             Action::Apply => {
                 "Provision a dedicated Ubuntu host using Ansible. Blank inventory applies to this machine."
@@ -172,13 +232,13 @@ impl Action {
                 "Build the desktop image using Docker Compose. Start it afterwards with docker compose."
             }
             Action::Manage => {
-                "Look after a host that is already set up, over SSH: show its status and access links, publish the desktop on the tailnet, run the smoke test, install updates or reboot. Pick the task on the overview."
+                "Look after a host that is already set up, over SSH: show its status and access links, publish the desktop on the tailnet, run the smoke test, install updates or reboot. Pick the action on the overview."
             }
             Action::Ssh => {
-                "Install on an existing Ubuntu host over SSH. Enter a hostname, IP address or SSH config alias, and how berth logs in: its own key by default. A host that does not take that key yet gets it with berth key trust HOST and a password used once. Sudo prompts use the normal terminal."
+                "Install on an existing Ubuntu host over SSH. Enter a hostname, IP address or SSH config alias, and how berth logs in: its own key by default. A host that does not take that key yet gets it with berth key trust HOST and a password used once."
             }
             Action::Reach => {
-                "Add a host berth only logs in to over SSH, such as a server that stays as it is: nothing is installed on it. Enter a hostname, IP address or SSH config alias, and how berth logs in. Run saves it; a host that does not take berth's key yet gets it with berth key trust HOST. Its page can install the controller later, for sessions, tasks and files."
+                "Add a host berth only logs in to over SSH, such as a server that stays as it is: nothing is installed on it. Enter a hostname, IP address or SSH config alias, and how berth logs in. Run saves it; a host that does not take berth's key yet gets it with berth key trust HOST. Its page can install the controller later, for sessions, actions and files."
             }
         }
     }
@@ -219,7 +279,7 @@ pub struct Spec {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Field {
-    Profile,
+    Target,
     Hostname,
     Keyboard,
     Geometry,
@@ -227,9 +287,6 @@ pub enum Field {
     RecoveryCidr,
     ReleaseStore,
     ReleasePrivate,
-    TailscaleKey,
-    TailscaleAuto,
-    TailscaleLoginServer,
     DiskMode,
     DiskSerial,
     DiskModel,
@@ -269,25 +326,114 @@ pub enum Field {
     SshUser,
     SshPort,
     Login,
-    Level,
+    Type,
 }
 
 impl Field {
+    /// Every field, in the order of the set-up tabs.
+    pub const ALL: [Field; 48] = {
+        use Field::*;
+        [
+            Type,
+            Target,
+            SshHost,
+            SshUser,
+            SshPort,
+            Login,
+            AskBecomePass,
+            Hostname,
+            Tailscale,
+            ToolsWeb,
+            ToolsNative,
+            ToolsJvm,
+            ToolsDotnet,
+            ToolsScripting,
+            ToolsScientific,
+            ToolsChrome,
+            Playwright,
+            SoftwareRendering,
+            Cockpit,
+            Docker,
+            OperatorUser,
+            OperatorKey,
+            OperatorHash,
+            AgentUser,
+            AgentHash,
+            AgentKey,
+            AgentPrivileges,
+            AgentSudo,
+            HardenSsh,
+            RecoveryCidr,
+            Geometry,
+            DiskMode,
+            DiskSerial,
+            DiskModel,
+            DiskPath,
+            DiskType,
+            Keyboard,
+            Wifi,
+            WifiSsid,
+            WifiPassword,
+            WifiInterface,
+            ReleaseStore,
+            ReleaseUrl,
+            ReleasePrivate,
+            Iso,
+            IsoSha,
+            UsbDevice,
+            Inventory,
+        ]
+    };
+
+    /// The field's name on the command line, as `--set KEY=VALUE` takes it:
+    /// its place in the profile, without the parts every field of a kind
+    /// shares.
+    pub fn key(self) -> String {
+        let pointer = self.spec().pointer.trim_start_matches('/');
+        for (part, instead) in [
+            ("access/", ""),
+            ("builder/", ""),
+            ("ansible_vars/devbox_", ""),
+            ("wifi/", "wifi_"),
+        ] {
+            if let Some(rest) = pointer.strip_prefix(part) {
+                return format!("{instead}{rest}");
+            }
+        }
+        pointer.to_owned()
+    }
+
+    /// The field a name on the command line means.
+    pub fn by_key(key: &str) -> Option<Field> {
+        Field::ALL.into_iter().find(|field| field.key() == key)
+    }
+
+    /// Whether `berth host create` asks for the field when it is shown and
+    /// not given: a choice most hosts make. Others are asked for only when
+    /// a problem names them.
+    pub fn asked(self) -> bool {
+        use Field::*;
+        matches!(
+            self,
+            Target | Type | SshHost | SshUser | OperatorUser | AgentUser
+        )
+    }
+
     pub fn spec(self) -> Spec {
         use Field::*;
         use Kind::*;
         let (label, pointer, kind, help) = match self {
-            Profile => (
-                "Host profile",
-                "/profile",
-                Choice(PROFILES),
-                "Choose laptop or cloud provisioning defaults. Only laptop adds a physical login and power settings. Cloud leaves SSH open to any address when no recovery SSH CIDR is set; for a QEMU guest, set that to 10.0.2.2/32.",
+            Target => (
+                "Target",
+                "/target",
+                Choice(TARGETS),
+                "What the host is installed on: laptop or cloud, with their provisioning defaults. Only laptop adds a physical login and power settings. Cloud leaves SSH open to any address when no recovery SSH CIDR is set; for a QEMU guest, set that to 10.0.2.2/32.",
             ),
             Hostname => (
                 "Hostname",
                 "/hostname",
                 Text,
-                "Hostname assigned to the installed target. Lowercase letters, numbers and hyphens, starting with a letter. F4 generates one.",
+                "Hostname assigned to the installed target. Lowercase letters, numbers and hyphens, starting with a letter. Left empty, the host's name is used when it can be one.",
             ),
             Keyboard => (
                 "Keyboard layout",
@@ -324,24 +470,6 @@ impl Field {
                 "/ansible_vars/devbox_bootstrap_ssh_cidr",
                 Text,
                 "Network allowed to use SSH from outside the tailnet, such as your admin IP with /32. Left empty, a cloud host accepts SSH from any address, and other hosts only from the tailnet and the session used for installing.",
-            ),
-            TailscaleKey => (
-                "Tailscale enrollment key",
-                "/tailscale_auth_key",
-                Secret,
-                "Optional enrollment key from Tailscale or Headscale. Prefer a short-lived, one-use key. With the API key of the control server in the secret tailnet_api_key (or a Tailscale token in TS_API_KEY), F4 creates a one-use key valid for 24 hours.",
-            ),
-            TailscaleAuto => (
-                "Automatic enrollment key",
-                "/tailscale_auto_key",
-                Toggle,
-                "berth creates a one-use key whenever this host is about to join the tailnet: when a seed or installer is made (valid for 24 hours) and when an apply finds the host not on the tailnet yet (valid for an hour). It needs the control server's API key in the secret tailnet_api_key and, for Headscale, the tailnet_ settings. A host on the tailnet already needs no key.",
-            ),
-            TailscaleLoginServer => (
-                "Login server",
-                "/tailscale_login_server",
-                Text,
-                "The Headscale server this host joins, such as https://hs.example.org. Leave it empty for berth's tailnet_login_server setting, or Tailscale's own service when that is empty too. It takes effect when the host joins.",
             ),
             DiskMode => (
                 "Disk selection",
@@ -389,7 +517,7 @@ impl Field {
                 "Wi-Fi SSID",
                 "/wifi/ssid",
                 Text,
-                "Wireless network name. Networks saved on this machine are listed in Suggestions. F5 unlocks their saved passwords, so choosing one also fills in its password.",
+                "Wireless network name. Networks saved on this machine are listed in Suggestions, and choosing one with its saved password fills that in too.",
             ),
             WifiPassword => (
                 "Wi-Fi password",
@@ -413,7 +541,7 @@ impl Field {
                 "Operator password hash",
                 "/operator_password_hash",
                 Secret,
-                "SHA-512 crypt or yescrypt hash of the operator password. F4 generates a password and hash, and berth credentials HOST shows the password later. F5 hashes a password you enter.",
+                "SHA-512 crypt or yescrypt hash of the operator password. Generate a password and hash, and berth host credentials HOST shows the password later, or enter a password to hash.",
             ),
             AgentUser => (
                 "Agent username",
@@ -431,7 +559,7 @@ impl Field {
                 "Agent password hash",
                 "/agent_password_hash",
                 Secret,
-                "Optional local password for the agent. F4 generates a password and hash, and berth credentials HOST shows the password later. F5 hashes a password you enter. Empty locks password login.",
+                "Optional local password for the agent. Generate a password and hash, and berth host credentials HOST shows the password later, or enter a password to hash. Empty locks password login.",
             ),
             AgentPrivileges => (
                 "Agent privileges",
@@ -521,19 +649,19 @@ impl Field {
                 "Tailscale",
                 "/ansible_vars/devbox_install_tailscale",
                 Toggle,
-                "Install Tailscale on the target host and enable optional enrollment.",
+                "Install Tailscale and join the tailnet with a one-use key berth makes through the control server's API, from the secret tailnet_api_key and the tailnet_ settings. A host on the tailnet already is left on it. Off, berth reaches the host over SSH at its address, and the desktop and T3 through an SSH tunnel.",
             ),
             Iso => (
                 "Source ISO",
                 "/builder/iso",
                 Path,
-                "Ubuntu Server 26.04 amd64 installer ISO to build from. F4 downloads the current one and checks it against Ubuntu's published SHA256SUMS.",
+                "Ubuntu Server 26.04 amd64 installer ISO to build from, a path on the machine berth serve runs on. Left empty, the build downloads the current one and checks it against Ubuntu's published SHA256SUMS.",
             ),
             IsoSha => (
                 "ISO SHA256",
                 "/builder/iso_sha256",
                 Text,
-                "SHA-256 the source ISO must have. Filled in from the file when you choose the ISO, and F4 recomputes it. Compare it with Ubuntu's published SHA256SUMS before trusting the image.",
+                "SHA-256 the source ISO must have, which the build checks. Take it from Ubuntu's published SHA256SUMS.",
             ),
             Inventory => (
                 "Ansible inventory",
@@ -571,17 +699,17 @@ impl Field {
                 Choice(LOGINS),
                 "How berth logs in. berth: the installation's own key, which hosts it sets up take. key:NAME: another key of berth's key ring (the Settings tab of the home screen lists them). password: a password, kept as the secret ssh/HOST or asked for. ssh: your own SSH configuration and agent, with berth's key offered after them. A host that does not take its key yet gets it with: berth key trust HOST.",
             ),
-            Level => (
-                "Level",
-                "/level",
-                Choice(LEVELS),
-                "How much of berth the host gets. workstation: the whole profile, with the desktop, the agents and plugins. controller: berthd and box alone, for sessions, tasks and files on a machine that stays as it is. reachable: nothing is installed; berth logs in over SSH. A lower level can be raised later: install the controller, or set workstation and apply.",
+            Type => (
+                "Type",
+                "/type",
+                Choice(TYPES),
+                "What berth does with the host. workstation: the whole profile, with the desktop, the agents and plugins. node: a server for machines, applied without a desktop or accounts, with the plugin features that install Incus or Docker and register their provisioners. managed: berthd and box alone, for sessions, actions and files on a machine that stays as it is. ssh: nothing is installed; berth logs in over SSH. The type can change later: install the controller, or set workstation and apply.",
             ),
             UsbDevice => (
                 "Then write to USB drive",
                 "/builder/usb_device",
                 Text,
-                "Enter switches between not writing and each connected USB drive. The chosen drive is erased and gets the finished ISO; that asks for confirmation and your sudo password. You can also press w after the build instead.",
+                "The USB drive the finished ISO is written to, such as /dev/sdb, on the machine berth serve runs on. It is erased. The host's overview asks for it again, with your sudo password, when the installer is built.",
             ),
         };
         Spec {
@@ -604,7 +732,6 @@ impl Field {
             | ToolsChrome => Group::Heading("Development Tools"),
             DiskSerial | DiskModel | DiskPath | DiskType => Group::Under(DiskMode),
             WifiInterface | WifiSsid | WifiPassword => Group::Under(Wifi),
-            TailscaleKey | TailscaleAuto | TailscaleLoginServer => Group::Under(Tailscale),
             ReleaseUrl | ReleasePrivate => Group::Under(ReleaseStore),
             IsoSha | UsbDevice => Group::Under(Iso),
             SshUser | SshPort | Login => Group::Under(SshHost),
@@ -626,11 +753,8 @@ impl Field {
         matches!(self.spec().kind, Kind::Text | Kind::Secret | Kind::Path)
     }
 
-    /// Fields with a Generate (F4) action.
+    /// Fields with a Generate action.
     pub fn can_generate(self) -> bool {
-        matches!(
-            self,
-            Field::Hostname | Field::Iso | Field::IsoSha | Field::TailscaleKey
-        ) || self.is_password_hash()
+        matches!(self, Field::Hostname) || self.is_password_hash()
     }
 }

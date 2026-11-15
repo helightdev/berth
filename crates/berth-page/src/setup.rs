@@ -21,18 +21,18 @@ use serde_json::{Value, json};
 use tui_input::Input;
 
 /// The ways the server installs a host itself.
-const METHODS: [Action; 4] = [
-    Action::Machine,
-    Action::CloudSeed,
-    Action::Ssh,
-    Action::Reach,
-];
+const METHODS: [Action; 5] = Action::SERVED;
+
+/// The action of the host that builds its USB installer.
+pub const INSTALLER: &str = "installer";
 
 /// What a key on the set-up pages leads to.
 pub enum Flow {
     Stay,
     /// Back to the host's overview, or to the hosts for one never saved.
     Leave,
+    /// To the host's overview, to run its action of this name there.
+    Act(&'static str),
 }
 
 pub struct Setup {
@@ -48,10 +48,15 @@ pub struct Setup {
     features: Vec<Feature>,
     registries: Vec<String>,
     secrets: Vec<String>,
+    /// The accounts of a workstation, kept while the type says node, which
+    /// has none, so that choosing workstation again brings them back.
+    accounts: serde_json::Map<String, Value>,
     /// Where a release can be published.
     stores: Vec<String>,
     /// The server's own SSH public key.
     own_key: String,
+    /// Whether the server has the API key of the tailnet.
+    tailnet_key: bool,
     /// The names of the keys of the server's key ring.
     ring_keys: Vec<String>,
     list: ListState,
@@ -66,14 +71,19 @@ pub struct Setup {
     pub panel: (u16, u16),
     /// The machine the server creates for the host, on the set-up tabs.
     pub machine: Machine,
+    /// The server runs on this machine, which builds what is made of its drives.
+    local: bool,
+    /// An action of the host to run once the profile is saved.
+    then: Option<&'static str>,
 }
 
 impl Setup {
     /// The set-up of a host the server has: its profile is on its way.
-    pub fn open(name: &str, admin: &Admin) -> Setup {
+    pub fn open(name: &str, admin: &Admin, local: bool) -> Setup {
         admin.profile(name);
         let mut setup = Setup {
             loading: true,
+            local,
             ..Setup::with(name, Value::Null, Value::Null)
         };
         setup.ask_machine(admin);
@@ -81,9 +91,12 @@ impl Setup {
     }
 
     /// The set-up of a new host, from the server's starting profile.
-    pub fn new(name: &str, template: Value, admin: &Admin) -> Setup {
-        let mut setup = Setup::with(name, template, Value::Null);
-        setup::fit_profile(&mut setup.config, setup.action);
+    pub fn new(name: &str, template: Value, admin: &Admin, local: bool) -> Setup {
+        let mut setup = Setup {
+            local,
+            ..Setup::with(name, template, Value::Null)
+        };
+        setup::fit_target(&mut setup.config, setup.action);
         setup.ask_machine(admin);
         setup
     }
@@ -109,7 +122,9 @@ impl Setup {
             secrets: vec![],
             stores: vec![],
             own_key: String::new(),
+            tailnet_key: false,
             ring_keys: vec![],
+            accounts: serde_json::Map::new(),
             list: ListState::default().with_selected(Some(0)),
             display: ListState::default(),
             editing: None,
@@ -119,6 +134,8 @@ impl Setup {
             tabs: vec![],
             panel: (24, 80),
             machine: Machine::default(),
+            local: false,
+            then: None,
         }
     }
 
@@ -139,12 +156,13 @@ impl Setup {
                 berth_api::profile::retire_qemu(&mut profile);
                 self.config = profile.clone();
                 self.saved = profile;
-                // A host with an address is one to install over SSH.
-                if !self.view().text(Field::SshHost).is_empty() {
+                // A host with an address, or of a type only SSH installs, is one to install over SSH.
+                let host_type = berth_api::profile::host_type(&self.config);
+                if !self.view().text(Field::SshHost).is_empty() || !self.action.offered(host_type) {
                     self.action = Action::Ssh;
                 }
                 // A profile saved with another kind opens as the machine's.
-                setup::fit_profile(&mut self.config, self.action);
+                setup::fit_target(&mut self.config, self.action);
             }
             Err(error) => self.failed = Some(error),
         }
@@ -167,6 +185,9 @@ impl Setup {
         if !self.loading {
             setup::default_enrollment(&mut self.config, &names);
         }
+        self.tailnet_key = names
+            .iter()
+            .any(|name| name == berth_api::profile::TAILNET_API_KEY);
         self.secrets = setup::host_secrets(names);
         self.stores = setup::release_stores(&data.registries);
         self.own_key = data.own_key.clone();
@@ -193,28 +214,18 @@ impl Setup {
             secrets: &self.secrets,
             own_key: &self.own_key,
             named: setup::valid_hostname(&self.name),
+            tailnet_key: self.tailnet_key,
         }
     }
 
     /// Every problem, each on the tab of what it is about.
     fn problems(&self) -> Vec<Problem> {
         let view = self.view();
-        // The keys that make these up are other ones here.
-        let mut problems: Vec<Problem> = view
-            .problems_with(&self.machine)
-            .into_iter()
-            .map(|problem| Problem {
-                text: problem
-                    .text
-                    .replace("(F4 generates)", "(g generates)")
-                    .replace("(F4 or F5)", "(g or p)"),
-                ..problem
-            })
-            .collect();
-        if self.action == Action::Ssh && view.text(Field::SshHost).is_empty() {
+        let mut problems: Vec<Problem> = view.problems_with(&self.machine);
+        if self.action == Action::Iso && !self.local {
             problems.push(Problem::new(
                 Step::Install,
-                "The host's address is required: its name, IP address or tailnet name",
+                "The USB installer is built where berth serve runs, with berth ui there",
             ));
         }
         problems
@@ -253,8 +264,7 @@ impl Setup {
 
     fn help(&self) -> String {
         match self.selected() {
-            // F5 is the browser's own, so the letters do what berth's F4 and F5 do.
-            Some(Entry::Field(field)) => field.spec().help.replace("F4", "g").replace("F5", "p"),
+            Some(Entry::Field(field)) => field.spec().help.into(),
             Some(Entry::Key(Account::Operator, Some(_))) => Field::OperatorKey.spec().help.into(),
             Some(Entry::Key(Account::Agent, Some(_))) => Field::AgentKey.spec().help.into(),
             Some(Entry::Key(_, None)) => setup::ADD_KEY_HELP.into(),
@@ -265,10 +275,10 @@ impl Setup {
             Some(Entry::Feature(index)) => self.features[index].help.clone(),
             Some(Entry::Registry(_)) => setup::REGISTRY_HELP.into(),
             Some(Entry::Secret(_)) => setup::SECRET_HELP.into(),
-            Some(Entry::Run) => match (self.action, berth_api::profile::level(&self.config)) {
+            Some(Entry::Run) => match (self.action, berth_api::profile::host_type(&self.config)) {
                 (Action::CloudSeed, _) => "Saves the profile on the server and renders the seed. Paste it into the provider's user data field when creating the machine.".into(),
-                (Action::Ssh, berth_api::HostLevel::Reachable) => "Saves the host on the server. Nothing is installed: the server logs in to it over SSH, with a key of its own that the host takes.".into(),
-                (Action::Ssh, berth_api::HostLevel::Controller) => "Saves the profile on the server and installs berth's controller alone on the host from there.".into(),
+                (Action::Ssh, berth_api::HostType::Ssh) => "Saves the host on the server. Nothing is installed: the server logs in to it over SSH, with a key of its own that the host takes.".into(),
+                (Action::Ssh, berth_api::HostType::Managed) => "Saves the profile on the server and installs berth's controller alone on the host from there.".into(),
                 _ => "Saves the profile on the server and applies it to the host from there.".into(),
             },
             Some(Entry::Machine(pick)) => self.machine.help(pick),
@@ -328,6 +338,26 @@ impl Setup {
         setup::set_pointer(&mut self.config, field.spec().pointer, value);
     }
 
+    /// Give the profile another type, as `setup::commit` does, keeping a
+    /// workstation's accounts aside while it is a node.
+    fn choose_type(&mut self, name: &str) {
+        if name == berth_api::HostType::Node.name() {
+            for field in berth_api::profile::ACCOUNT_FIELDS {
+                if let Some(value) = self.config.get(*field) {
+                    self.accounts.insert((*field).to_owned(), value.clone());
+                }
+            }
+        }
+        let _ = setup::commit(&mut self.config, Field::Type, name);
+        if name == berth_api::HostType::Workstation.name()
+            && let Some(profile) = self.config.as_object_mut()
+        {
+            for (field, value) in std::mem::take(&mut self.accounts) {
+                profile.entry(field).or_insert(value);
+            }
+        }
+    }
+
     /// Toggle or cycle the field, or open the editor for free text.
     fn activate(&mut self, field: Field) -> Option<String> {
         if field == Field::Login {
@@ -346,6 +376,16 @@ impl Setup {
             return self.stores.is_empty().then(|| {
                 "No file server or raw repository yet. Add one on the Registries tab of the home screen.".into()
             });
+        }
+        if field == Field::Type {
+            let types = berth_tui::fields::TYPES;
+            let current = self.view().text(field);
+            let next = types
+                .iter()
+                .position(|known| *known == current)
+                .map_or(0, |index| (index + 1) % types.len());
+            self.choose_type(types[next]);
+            return None;
         }
         match field.spec().kind {
             Kind::Toggle => {
@@ -402,9 +442,6 @@ impl Setup {
         let view = self.view();
         let asked = match field {
             Field::Hostname => json!({"what": "hostname"}),
-            Field::TailscaleKey => {
-                json!({"what": "tailscale_key", "host": view.text(Field::Hostname)})
-            }
             _ if field.is_password_hash() => {
                 let user = match field {
                     Field::OperatorHash => Field::OperatorUser,
@@ -429,23 +466,29 @@ impl Setup {
             return Some("Fix the listed problems first".into());
         }
         let (name, action, size) = (self.name.clone(), self.action, self.panel);
-        // Over SSH a host below a workstation gets the controller alone, or nothing.
-        let level = berth_api::profile::level(&self.config);
+        // Over SSH a host that is not a workstation gets the controller alone, or nothing.
+        let host_type = berth_api::profile::host_type(&self.config);
         let install = berth_api::Action {
             name: "install-controller".into(),
             label: "Install the controller".into(),
             ..berth_api::Action::default()
         };
         admin.save(&self.name, &self.config, move |admin| {
-            match (action, level) {
+            match (action, host_type) {
                 (Action::CloudSeed, _) => admin.seed(&name),
-                (Action::Ssh, berth_api::HostLevel::Controller) => {
+                // Its drive and sudo password are asked for on the host's
+                // overview, once the server lists the host's actions.
+                (Action::Iso, _) => admin.actions(&name),
+                (Action::Ssh, berth_api::HostType::Managed) => {
                     admin.act(&name, &install, &Default::default(), size)
                 }
-                (Action::Ssh, berth_api::HostLevel::Reachable) => {}
+                (Action::Ssh, berth_api::HostType::Ssh) => {}
                 _ => admin.apply(&name, None, size),
             }
         });
+        if action == Action::Iso {
+            self.then = Some(INSTALLER);
+        }
         Some("Saving…".into())
     }
 
@@ -453,7 +496,7 @@ impl Setup {
         match entry {
             Entry::Action(action) => {
                 self.action = action.choose(&mut self.config);
-                setup::fit_profile(&mut self.config, self.action);
+                setup::fit_target(&mut self.config, self.action);
             }
             Entry::Field(field) => return self.activate(field),
             Entry::Registry(index) => {
@@ -472,7 +515,7 @@ impl Setup {
                 // The machine is made from the profile, which has to be whole
                 // first, and of the kind a created machine is.
                 if pick == machine::Pick::Create {
-                    setup::fit_profile(&mut self.config, Action::Machine);
+                    setup::fit_target(&mut self.config, Action::Machine);
                 }
                 if pick == machine::Pick::Create && !self.problems().is_empty() {
                     return Some("Fix the listed problems first".into());
@@ -557,14 +600,11 @@ impl Setup {
         match key.code {
             Code::Up => self.move_selection(true),
             Code::Down => self.move_selection(false),
-            // F5 is the browser's own, so the letters do what berth's F4 and F5 do.
-            Code::Char('g') | Code::F(4)
-                if self.selected_field().is_some_and(Field::can_generate) =>
-            {
+            Code::F(4) if self.selected_field().is_some_and(Field::can_generate) => {
                 let field = self.selected_field().unwrap();
                 say(self.generate(field, admin));
             }
-            Code::Char('p') if self.selected_field().is_some_and(Field::is_password_hash) => {
+            Code::F(5) if self.selected_field().is_some_and(Field::is_password_hash) => {
                 self.password_entry = true;
                 self.editing = Some(Input::default());
             }
@@ -617,6 +657,14 @@ impl Setup {
     }
 
     pub fn event(&mut self, event: Event, admin: &Admin, status: &mut String) -> Flow {
+        let flow = self.take(event, admin, status);
+        match self.then.take() {
+            Some(action) => Flow::Act(action),
+            None => flow,
+        }
+    }
+
+    fn take(&mut self, event: Event, admin: &Admin, status: &mut String) -> Flow {
         match event {
             Event::Key(key) => {
                 status.clear();
@@ -721,7 +769,7 @@ impl Setup {
         ])
         .areas(left);
         // The cursor only stops on rows that do something.
-        let rows = self.rows();
+        let rows = berth_tui::setup::wrapped(self.rows(), body.width);
         let positions: Vec<usize> = rows
             .iter()
             .enumerate()
@@ -770,10 +818,10 @@ impl Setup {
         let keys = match (&self.editing, field) {
             (Some(_), _) => "Enter accept · Esc cancel · Ctrl+O copy · Ctrl+S save".to_owned(),
             (None, Some(field)) if field.is_password_hash() => {
-                "↑↓ select · g generate · p type a password · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned()
+                "↑↓ select · F4 generate · F5 type a password · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned()
             }
             (None, Some(field)) if field.can_generate() => {
-                "↑↓ select · Enter change · g generate · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned()
+                "↑↓ select · Enter change · F4 generate · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned()
             }
             _ => "↑↓ select · Enter change · Space switch · x clear · 1-4 tab · Ctrl+S save · Esc back".to_owned(),
         };

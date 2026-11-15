@@ -1,5 +1,5 @@
 // The API reference, by operation, from the committed operation documents in
-// docs/openapi (`berthd operations`, `berth operations`). One folder per
+// docs/openapi (`berthd operations`, `berth server api operations`). One folder per
 // program under content/docs/api, one page per group of operations. The
 // overview and the portal page beside them are written by hand.
 // Plain Node, no packages.
@@ -29,7 +29,7 @@ const programs = [
 const groups = {
   general: ['General', 'The version, and reading the configuration again.'],
   sessions: ['Sessions', 'Commands and terminals on the host, their output and input.'],
-  tasks: ['Tasks', "The host's tasks and their arguments."],
+  applied: ['Applied', 'The profile the host keeps of itself, as the last apply wrote it.'],
   system: ['System', 'Load, memory and disks, and power.'],
   desktop: ['Desktop', 'The shared desktop of the agent.'],
   files: ['Files', 'Files under the configured roots, as the agent.'],
@@ -38,17 +38,29 @@ const groups = {
   processes: ['Processes', 'The processes of the host.'],
   channel: ['Channel', 'Messages between programs on the host and berth.'],
   services: ['Services', 'Programs of plugins that answer calls.'],
+  ports: ['Ports', "TCP connections to ports on the host's loopback."],
+  endpoints: ['Endpoints', "TCP connections to addresses on the host's own networks, which only berth serve opens, for a resource's endpoint."],
   setup_key: ['Setup key', 'Collecting the token with a short-lived key, after an install.'],
   hosts: ['Hosts', 'The hosts berth serve knows, their profiles, and what can be done to each.'],
-  actions: ['Actions', 'What can be done to the installation as a whole, such as a roll-out.'],
+  installation: ['Installation', 'What can be done to the installation as a whole, such as a roll-out.'],
+  keys: ['Keys', 'The SSH keys berth logs in to hosts with.'],
+  secrets: ['Secrets', 'Secret values the server keeps and gives to hosts.'],
+  registries: ['Registries', 'Package registries, their logins and their repositories.'],
+  plugins: ['Plugins', 'The plugins the server has, and updating them.'],
+  settings: ['Settings', "The server's settings."],
+  setup: ['Set-up', 'What the set-up of a new host starts from: the starting profile and the features.'],
   provisioners: ['Provisioners', 'What the plugins can create machines and deployments with, their pages and their actions.'],
-  resources: ['Resources', 'What provisioners made for berth, a host\'s machine among them: creating, changing, removing, their actions and logs.'],
+  resources: ['Resources', 'What provisioners made for berth, a host\'s machine among them: creating, changing, removing, their actions, logs and endpoints.'],
   jobs: ['Jobs', 'Long-running work of berth serve, such as an apply: one run of an action.'],
   inbox: ['Inbox', "Messages taken in from the hosts' channels."],
   kv: ['Key-value store', 'Small JSON values with revisions, for user interfaces.'],
-  events: ['Events', 'One stream for channel messages, jobs and key-value changes.'],
+  events: ['Events', 'One stream for channel messages, jobs, key-value changes and changes to hosts and resources.'],
 };
-const groupOrder = Object.keys(groups);
+// A group of the same name means something else in each program.
+const hostGroups = {
+  actions: ['Actions', "The host's actions and their arguments."],
+};
+const groupOrder = [...Object.keys(hostGroups), ...Object.keys(groups)];
 
 // ---------------------------------------------------------------------------
 // Text
@@ -400,7 +412,7 @@ function typesSection(names, schemas) {
 }
 
 function groupPage(group, ops, program, schemas) {
-  const [title, description] = groups[group] ?? [group, ''];
+  const [title, description] = (program.serve ? undefined : hostGroups[group]) ?? groups[group] ?? [group, ''];
   const used = new Set();
   let body = '';
   for (const op of ops) body += operationSection(op, program, schemas, used);

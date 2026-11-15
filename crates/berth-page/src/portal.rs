@@ -1,7 +1,7 @@
 //! The server's portal over the device's WebSocket: calls that are answered
 //! once, and streams that send frames until either side ends them.
 
-use crate::device::{self, Said, Socket};
+use crate::socket::{self, Said, Socket};
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -12,8 +12,11 @@ use std::rc::{Rc, Weak};
 pub enum Link {
     Connecting,
     Open,
-    /// It closed before it was open: a wrong token, or nobody there.
+    /// The server refused the token.
     Refused,
+    /// It closed before it was open, and not by the server's refusal: nobody
+    /// answered there, or not in time.
+    Unreached,
     /// It was open and is not any more.
     Lost,
 }
@@ -89,6 +92,10 @@ impl Inner {
                 }
             }
             Said::Closed => self.closed(),
+            Said::Refused => {
+                self.link.set(Link::Refused);
+                self.closed();
+            }
         }
     }
 
@@ -115,7 +122,8 @@ impl Inner {
     fn closed(&self) {
         self.link.set(match self.link.get() {
             Link::Open | Link::Lost => Link::Lost,
-            _ => Link::Refused,
+            Link::Refused => Link::Refused,
+            Link::Connecting | Link::Unreached => Link::Unreached,
         });
         let calls: Vec<Answer> = self
             .calls
@@ -172,9 +180,20 @@ fn request(id: u32, op: &str, host: Option<&str>, args: Value, data: Value) -> V
 }
 
 impl Portal {
-    /// Open the portal at `url`, showing the token the way a browser can: as
-    /// the WebSocket's protocol.
-    pub fn open(url: &str, token: &str) -> Result<Portal, String> {
+    /// Open the portal of `server`, showing the token as the WebSocket's
+    /// protocol.
+    pub fn open(server: &str, token: &str) -> Result<Portal, String> {
+        Portal::attach(|said| {
+            let socket = socket::open(server, berth_api::ops::PORTAL, token, said)?;
+            Ok(Box::new(socket) as Box<dyn Socket>)
+        })
+    }
+
+    /// The portal over the socket `connect` opens, which tells `said` what
+    /// it hears.
+    pub fn attach(
+        connect: impl FnOnce(Box<dyn Fn(Said)>) -> Result<Box<dyn Socket>, String>,
+    ) -> Result<Portal, String> {
         let inner = Rc::new(Inner {
             socket: RefCell::default(),
             link: Cell::new(Link::Connecting),
@@ -184,15 +203,11 @@ impl Portal {
             streams: RefCell::default(),
         });
         let weak: Weak<Inner> = Rc::downgrade(&inner);
-        let socket = device::device().connect(
-            url,
-            token,
-            Box::new(move |said| {
-                if let Some(inner) = weak.upgrade() {
-                    inner.said(said);
-                }
-            }),
-        )?;
+        let socket = connect(Box::new(move |said| {
+            if let Some(inner) = weak.upgrade() {
+                inner.said(said);
+            }
+        }))?;
         *inner.socket.borrow_mut() = Some(socket);
         Ok(Portal(inner))
     }
@@ -268,11 +283,10 @@ impl Portal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device::{Answer, Device, Kept, Linked};
 
     type Hears = Box<dyn Fn(Said)>;
 
-    /// A device whose socket the test speaks for.
+    /// A socket the test speaks for.
     #[derive(Clone, Default)]
     struct Wire {
         sent: Rc<RefCell<Vec<String>>>,
@@ -306,57 +320,14 @@ mod tests {
         }
     }
 
-    impl Device for Wire {
-        fn copy(&self, _: &str) -> bool {
-            false
-        }
-        fn paste(&self) -> Option<String> {
-            None
-        }
-        fn open(&self, _: &str) -> Result<(), String> {
-            Err("no".into())
-        }
-        fn choose_file(&self, _: &str, _: Box<dyn FnOnce(String, Vec<u8>)>) -> Result<(), String> {
-            Err("no".into())
-        }
-        fn stored(&self, _: Kept) -> Option<String> {
-            None
-        }
-        fn store(&self, _: Kept, _: &str) {}
-        fn embedded(&self) -> bool {
-            false
-        }
-        fn linked(&self) -> Linked {
-            Linked::default()
-        }
-        fn origin(&self) -> String {
-            String::new()
-        }
-        fn page(&self) -> String {
-            String::new()
-        }
-        fn request(&self, _: &str, _: &str, _: &str, then: Answer) {
-            then(Err("no".into()))
-        }
-        fn connect(
-            &self,
-            url: &str,
-            token: &str,
-            said: Box<dyn Fn(Said)>,
-        ) -> Result<Box<dyn Socket>, String> {
-            assert_eq!(
-                (url, token),
-                ("ws://192.0.2.10:7878/v1/portal", "the-token")
-            );
-            *self.said.borrow_mut() = Some(said);
-            Ok(Box::new(WireSocket(self.sent.clone())))
-        }
-    }
-
     fn portal() -> (Wire, Portal) {
         let wire = Wire::default();
-        device::install(wire.clone());
-        let portal = Portal::open("ws://192.0.2.10:7878/v1/portal", "the-token").unwrap();
+        let speaking = wire.clone();
+        let portal = Portal::attach(move |said| {
+            *speaking.said.borrow_mut() = Some(said);
+            Ok(Box::new(WireSocket(speaking.sent.clone())))
+        })
+        .unwrap();
         (wire, portal)
     }
 
@@ -409,9 +380,12 @@ mod tests {
     }
 
     #[test]
-    fn a_socket_that_never_opens_is_refused() {
+    fn a_socket_that_never_opens_is_unreached_unless_the_server_refused_it() {
         let (wire, portal) = portal();
         wire.say(Said::Closed);
+        assert_eq!(portal.link(), Link::Unreached);
+        let (wire, portal) = self::portal();
+        wire.say(Said::Refused);
         assert_eq!(portal.link(), Link::Refused);
     }
 }

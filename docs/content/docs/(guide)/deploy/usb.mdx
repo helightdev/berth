@@ -27,16 +27,16 @@ The USB installer is the Ubuntu Server 26.04 ISO with the host's profile built i
 berth garage-laptop
 ```
 
-It opens on **Install**. Choose **USB installer** under **How To Install**, and keep **Host profile** at `laptop`. **Hostname** is the name the machine gets. F4 generates one.
+It opens on **Install**. Choose **USB installer** under **How To Install**, and keep **Target** at `laptop`. **Hostname** is the name the machine gets. F4 generates one.
 
 </Step>
 <Step>
 
 ### Optionally, join the tailnet
 
-The Tailscale settings are on **Install** too. Give a short-lived, one-use Tailscale key in **Tailscale enrollment key**. Or switch on **Automatic enrollment key**: with the control server's API key in the secret `tailnet_api_key`, berth creates a one-use key valid for 24 hours each time it builds the installer. F4 on the key field does the same for a key to paste. Tailnets that require tags take them from `berth config tailnet_tags tag:devbox`. For a Headscale server, see [Headscale](/docs/use/access#headscale).
+**Tailscale** is on **Install** too. With it on, berth makes a one-use key through the control server's API each time it builds the installer, from the secret `tailnet_api_key` ([joining the tailnet](/docs/use/access#joining-the-tailnet)). Tailnets that require tags take them from `berth config set tailnet_tags tag:devbox`. For a Headscale server, see [Headscale](/docs/use/access#headscale).
 
-Reusable keys and existing machine identities do not belong in installer images.
+The key lasts 24 hours. When berth builds the image, it says until when the image can join the tailnet. A machine installed later is set up without the tailnet, and the next apply from berth joins it.
 
 </Step>
 <Step>
@@ -57,21 +57,23 @@ Under **Installer** on **Settings**, set **Disk selection**. `auto`, the default
 
 ### Set up the network
 
-Wired DHCP is always configured. To add Wi-Fi, switch **Wi-Fi** on under **Installer** and give the SSID and password. Networks saved in NetworkManager on your machine are suggested, and F5 unlocks their saved passwords so choosing one fills in its password. Leave the interface blank: the installer finds the wireless interface on the target and falls back to wired networking when there is none.
+Wired DHCP is always configured. To add Wi-Fi, switch **Wi-Fi** on under **Installer** and give the SSID and password. Leave the interface blank: the installer finds the wireless interface on the target and falls back to wired networking when there is none.
 
 </Step>
 <Step>
 
 ### Choose the ISO
 
-On **Run**, F4 on **Source ISO** downloads the current Ubuntu Server ISO and checks it against Ubuntu's `SHA256SUMS`. When you choose a file you already have, berth computes its SHA-256. Compare that with Ubuntu's signed `SHA256SUMS`, because a checksum taken from the file only proves it has not changed since.
+**Source ISO** on **Run** is the Ubuntu Server ISO to build from, a path on the machine the server runs on. Left empty, the build downloads the current one and checks it against Ubuntu's `SHA256SUMS`. For a file you already have, put the SHA-256 from Ubuntu's signed `SHA256SUMS` in **ISO SHA256**. The build checks the file against it.
 
 </Step>
 <Step>
 
 ### Build and write
 
-Choose the drive under **Then write to USB drive** on **Run**, or press `w` when the build has finished. Then press Enter on **Run · USB installer**. berth asks which drive to use when several are connected and asks you to confirm erasing it. It then asks for your `sudo` password and writes the image with a progress bar.
+Press Enter on **Run · USB installer**. berth saves the profile and opens the host's overview with its action **Build the USB installer**. Its dialog takes the drive to write and your `sudo` password for writing it. The help of the drive lists the USB drives connected now. When one drive is connected, it's filled in. Leave the drive empty to build the ISO alone. The build and the writing run as a job, whose output fills a panel.
+
+The installer is built on the machine the server runs on, which writes one of its own drives. berth on your machine does it with the server inside berth, or with a `berth serve` of yours there. From another machine the action is listed as unavailable, with that reason.
 
 </Step>
 </Steps>
@@ -79,8 +81,8 @@ Choose the drive under **Then write to USB drive** on **Run**, or press `w` when
 The same from the command line:
 
 ```bash
-berth iso garage-laptop                     # downloads the ISO when none is set
-berth iso garage-laptop --write /dev/sdX    # and writes it, after asking
+berth host iso garage-laptop                     # downloads the ISO when none is set
+berth host iso garage-laptop --write /dev/sdX    # and writes it, after asking
 ```
 
 The image is `~/.local/share/berth/build/HOSTNAME-autoinstall.iso`. To write it by hand, use the script from the provisioning source. It accepts only a whole USB disk that is large enough and has no system mount on it, and unmounts anything else first:
@@ -101,10 +103,10 @@ cat /var/lib/devbox/provision-state
 sudo systemctl start devbox-provision.service     # start it again after a failure
 ```
 
-`configured-needs-enrollment` means the role finished but nobody has signed in yet. The `ready` marker means Ansible converged, not that every acceptance test passed. If a dependency fails, the state is `failed` and a timer retries. The success marker is only written after a successful run.
+`configured` means the role finished. The `ready` marker means Ansible converged, not that every acceptance test passed. If a dependency fails, the state is `failed` and a timer retries. The success marker is only written after a successful run.
 
 <Callout type="warn" title="Without a tailnet or recovery CIDR">
-  The installed machine accepts SSH only from the tailnet, unless you set a Tailscale key or a **Recovery SSH CIDR**. Set one of them, or be ready to use the console.
+  The installed machine accepts SSH only from the tailnet, unless you set a **Recovery SSH CIDR**. Keep **Tailscale** on with the secret `tailnet_api_key` set, set the CIDR, or be ready to use the console.
 </Callout>
 
 ## Disk selection
@@ -120,7 +122,7 @@ sudo systemctl start devbox-provision.service     # start it again after a failu
 | `largest` / `smallest` | By capacity among eligible disks |
 | `ssd` / `hdd` | The only eligible non-rotating or rotating disk |
 
-For `auto`, `model`, `path`, `largest` and `smallest`, `target_disk_ssd` narrows the candidates to `any`, `ssd` or `hdd`. Each mode needs exactly one final candidate, including when capacities tie. The Settings tab shows the fields of the chosen mode and offers the values in Suggestions.
+For `auto`, `model`, `path`, `largest` and `smallest`, `target_disk_ssd` narrows the candidates to `any`, `ssd` or `hdd`. Each mode needs exactly one final candidate, including when capacities tie. The Settings tab shows the fields of the chosen mode.
 
 ```json title="In the host profile"
 {
@@ -135,7 +137,7 @@ A serial comes from `udevadm info --query=property --name=/dev/nvme0n1`. The dis
 
 The ISO keeps the source image's boot configuration through `xorriso` replay and patches GRUB to install automatically. It embeds the seed and the release archive. The bootstrap checks the archive against the digest in the seed.
 
-The USB drive and its seed can still hold credentials after the installed copies have been used. One-use enrollment keys limit how long they are useful. Secure Boot with the remastered image has not been qualified.
+The USB drive and its seed can still hold credentials after the installed copies have been used. The enrollment key berth puts in it works once and for 24 hours. Secure Boot with the remastered image has not been qualified.
 
 ## Without berth
 

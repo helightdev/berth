@@ -19,6 +19,8 @@ pub struct Seed {
     /// The release archive the machine is given instead of downloading
     /// one, when it was asked for.
     pub archive: Option<Archive>,
+    /// Until when the seed's key joins the tailnet, for a host that joins it.
+    pub tailnet: Option<String>,
 }
 
 pub struct Archive {
@@ -34,7 +36,11 @@ pub struct Archive {
 pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Result<Seed> {
     let host = Host::load(paths, name)?;
     // A seed installs a whole workstation.
-    crate::level::guard(&host, crate::level::Capability::Apply)?;
+    crate::host_type::guard(&host, crate::host_type::Capability::Seed)?;
+    // Nothing is published or made for a host that could not join.
+    if let Some(problem) = tailnet::problem(paths, &host.config, name) {
+        return Err(crate::Refused(problem).into());
+    }
     let source = paths.source()?;
     let dirs = apply::plugin_dirs(&plugins::found(
         &source,
@@ -51,13 +57,14 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
         profile["release_url"] = json!(url);
         host.place.save(paths, &profile)?;
     }
-    // The seed is rendered from a private copy of the profile, which holds a
-    // new enrollment key for a host that joins the tailnet automatically.
+    // The seed is rendered from a private copy of the profile, and a host
+    // that joins the tailnet gets a new key in a private file of its own.
     let saved: Value = host
         .place
         .load(paths)?
         .ok_or_else(|| format!("No host {name}"))?;
-    let mut config = named(tailnet::seed_profile(paths, &saved, name)?, name);
+    let key = tailnet::seed_key(paths, &saved, name)?;
+    let mut config = named(saved.clone(), name);
     crate::kept_profile::for_seed(&mut config, &host.place.title(), &saved);
     let seeded = tailnet::profile_file(&config)?;
     // The machine's operator takes these keys, so that berth can always reach it.
@@ -74,6 +81,9 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
         .stdin(std::process::Stdio::null());
     if delivered {
         command.env("BERTH_RELEASE_DELIVERED", "1");
+    }
+    if let Some(key) = &key {
+        key.pass(&mut command);
     }
     // A release that is not public: the seed carries the login of the registry it is in.
     let private = host.config["release_private"].as_bool().unwrap_or(false);
@@ -109,7 +119,11 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
         true => Some(archive(&build, name)?),
         false => None,
     };
-    Ok(Seed { user_data, archive })
+    Ok(Seed {
+        user_data,
+        archive,
+        tailnet: key.as_ref().map(tailnet::SeedKey::note),
+    })
 }
 
 /// A copy of the release archive that was just built, for this host alone,
@@ -156,4 +170,106 @@ pub fn named(mut config: Value, name: &str) -> Value {
         config["hostname"] = json!(name);
     }
     config
+}
+
+/// The unattended installer of a saved host: an ISO built from Ubuntu's
+/// installer with the host's seed in it, ready to write to a USB drive.
+pub struct Installer {
+    /// The builder, run in the provisioning source.
+    pub command: Command,
+    /// The private copy of the profile it reads, removed once it has run.
+    pub profile: tempfile::NamedTempFile,
+    /// What it joins the tailnet with, read by the command while it runs.
+    pub key: Option<tailnet::SeedKey>,
+    /// The ISO it writes.
+    pub iso: PathBuf,
+}
+
+/// The builder of `name`'s installer from Ubuntu's ISO at `ubuntu`, which
+/// is checked against the profile's `iso_sha256` when it has one.
+pub fn installer(paths: &Paths, name: &str, ubuntu: &std::path::Path) -> Result<Installer> {
+    let host = Host::load(paths, name)?;
+    crate::host_type::guard(&host, crate::host_type::Capability::Apply)?;
+    let source = paths.source()?;
+    let dirs = apply::plugin_dirs(&plugins::found(
+        &source,
+        &plugins::own_dir(&paths.config_dir),
+    ));
+    let saved = host.config.clone();
+    let key = tailnet::seed_key(paths, &saved, name)?;
+    let mut config = named(saved.clone(), name);
+    crate::kept_profile::for_seed(&mut config, &host.place.title(), &saved);
+    let hostname = config["hostname"].as_str().unwrap_or(name).to_owned();
+    let profile = tailnet::profile_file(&config)?;
+    let own = crate::keys::operator_keys(paths, &saved)?;
+    let build = paths.build_dir();
+    let mut command = Command::new("python3");
+    command
+        .current_dir(&source)
+        .args([layout::BUILDER, "iso", "--config"])
+        .arg(profile.path())
+        .arg("--iso")
+        .arg(ubuntu)
+        .arg("--overwrite")
+        .env("DEVBOX_BUILD_DIR", &build)
+        .env("BERTH_PLUGINS", dirs.to_string())
+        .env("BERTH_SSH_PUBLIC_KEY", own.join("\n"))
+        .stdin(std::process::Stdio::null());
+    if let Some(key) = &key {
+        key.pass(&mut command);
+    }
+    if let Some(sha) = saved["builder"]["iso_sha256"]
+        .as_str()
+        .filter(|sha| !sha.is_empty())
+    {
+        command.args(["--sha256", sha]);
+    }
+    Ok(Installer {
+        command,
+        profile,
+        key,
+        iso: build.join(format!("{hostname}-autoinstall.iso")),
+    })
+}
+
+/// Ubuntu's installer ISO a host's installer is built from: the one its
+/// profile names, or none yet.
+pub fn ubuntu_iso(config: &Value) -> Option<PathBuf> {
+    config["builder"]["iso"]
+        .as_str()
+        .filter(|iso| !iso.is_empty())
+        .map(crate::discovery::expand_path)
+}
+
+/// The builder that downloads Ubuntu's current installer ISO into the ISO
+/// folder and checks it, printing its path last.
+pub fn fetch_iso(paths: &Paths) -> Result<Command> {
+    let mut command = Command::new("python3");
+    command
+        .current_dir(paths.source()?)
+        .args([layout::BUILDER, "fetch-iso", "--dir"])
+        .arg(paths.iso_dir())
+        .stdin(std::process::Stdio::null());
+    Ok(command)
+}
+
+/// `sudo` writing the ISO to a whole USB drive, which it erases. With a
+/// password it is read from standard input, and else sudo must need none.
+pub fn write_usb(
+    paths: &Paths,
+    iso: &std::path::Path,
+    device: &str,
+    password: bool,
+) -> Result<Command> {
+    let mut command = Command::new("sudo");
+    match password {
+        true => command.args(["-S", "-p", ""]),
+        false => command.arg("-n"),
+    };
+    command
+        .current_dir(paths.source()?)
+        .args(["bash", layout::WRITE_USB])
+        .arg(iso)
+        .arg(device);
+    Ok(command)
 }

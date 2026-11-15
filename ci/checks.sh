@@ -4,18 +4,15 @@
 set -euo pipefail
 cd /src
 
-crates=(-p berth-api -p berth-pty -p berth-core -p berth-tui -p berth -p berthd -p box -p berth-page -p berth-web -p berth-remote)
+crates=(-p berth-api -p berth-pty -p berth-core -p berth-tui -p berth -p berthd -p box -p berth-page)
 
 # Each runs as the condition of an if, where set -e does not stop it: the
 # steps are joined with && instead.
-rust-tests() {
-  cargo test --locked &&
-    cargo test --locked -p berth --features web
-}
+rust-tests() { cargo test --locked; }
 python-tests() { python3 -m unittest discover -s tests -v; }
 shell-syntax() {
   local script bad=0
-  for script in install.sh install-remote.sh provision/bin/*.sh provision/bootstrap/*.sh container/*.sh ci/*.sh \
+  for script in install.sh provision/bin/*.sh provision/bootstrap/*.sh container/*.sh ci/*.sh \
     provision/ansible/roles/devbox/files/*.sh provision/ansible/roles/devbox/files/tasks/*.sh plugins/*/files/*.sh \
     recipes/*/*.sh; do
     bash -n "$script" || bad=1
@@ -25,15 +22,10 @@ shell-syntax() {
 ansible-syntax() {
   (cd provision && ansible-playbook -i localhost, ansible/site.yml --syntax-check) &&
     (cd provision && ansible-playbook -i localhost, ansible/controller.yml --syntax-check) &&
-    (cd recipes/incus-host && ansible-playbook -i localhost, site.yml --syntax-check) &&
     (cd recipes/berth-server && ansible-playbook -i localhost, site.yml --syntax-check)
 }
 fmt() { cargo fmt --check "${crates[@]}"; }
-clippy() {
-  cargo clippy --locked --all-targets -- -D warnings &&
-    cargo clippy --locked --all-targets -p berth --features web -- -D warnings &&
-    cargo clippy --locked -p berth-web --target wasm32-unknown-unknown -- -D warnings
-}
+clippy() { cargo clippy --locked --all-targets -- -D warnings; }
 vale() { command vale --minAlertLevel=warning README.md AGENTS.md docs/content/docs plugins/*/guide.md; }
 
 all=(fmt shell-syntax ansible-syntax vale python-tests rust-tests clippy)

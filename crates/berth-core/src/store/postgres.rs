@@ -49,6 +49,8 @@ pub(super) const MIGRATIONS: &[&str] = &[
      ALTER TABLE jobs ADD COLUMN action TEXT NOT NULL DEFAULT '';
      ALTER TABLE jobs ADD COLUMN token TEXT;
      CREATE UNIQUE INDEX jobs_token ON jobs(subject, action, token) WHERE token IS NOT NULL;",
+    "ALTER TABLE jobs ADD COLUMN stopped_by TEXT;",
+    "ALTER TABLE jobs ADD COLUMN arguments TEXT;",
 ];
 
 /// The advisory lock that keeps two berths from migrating at once.
@@ -218,8 +220,7 @@ fn entry(row: &Row) -> Entry {
     }
 }
 
-const JOB_COLUMNS: &str =
-    "id, host, what, started, ended, exit_code, output_path, subject, action, token";
+const JOB_COLUMNS: &str = "id, host, what, started, ended, exit_code, output_path, subject, action, token, stopped_by, arguments";
 
 fn job(row: &Row) -> Job {
     Job {
@@ -233,6 +234,8 @@ fn job(row: &Row) -> Job {
         subject: row.get(7),
         action: row.get(8),
         token: row.get(9),
+        stopped_by: row.get(10),
+        arguments: super::arguments_from(row.get(11)),
     }
 }
 
@@ -240,7 +243,7 @@ fn job(row: &Row) -> Job {
 fn insert_job(client: &mut impl postgres::GenericClient, job: &Job) -> PgResult<u64> {
     client.execute(
         &format!(
-            "INSERT INTO jobs({JOB_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            "INSERT INTO jobs({JOB_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
              ON CONFLICT DO NOTHING"
         ),
         &[
@@ -254,6 +257,8 @@ fn insert_job(client: &mut impl postgres::GenericClient, job: &Job) -> PgResult<
             &job.subject,
             &job.action,
             &job.token,
+            &job.stopped_by,
+            &super::arguments_text(&job.arguments),
         ],
     )
 }
@@ -702,6 +707,17 @@ impl Backend for PostgresBackend {
             client.execute(
                 "UPDATE jobs SET ended = $2, exit_code = $3 WHERE id = $1 AND ended IS NULL",
                 &[&id, &ended, &exit_code],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn stop_job(&mut self, id: &str, by: &str) -> Result<()> {
+        let (id, by) = (id.to_owned(), by.to_owned());
+        self.call(move |client| {
+            client.execute(
+                "UPDATE jobs SET stopped_by = $2 WHERE id = $1 AND ended IS NULL",
+                &[&id, &by],
             )?;
             Ok(())
         })

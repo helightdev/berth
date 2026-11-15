@@ -19,6 +19,11 @@ INSTALLED = ('/usr/local/bin/berthd /usr/local/bin/box /usr/local/bin/devbox-des
              '/usr/local/lib/berth /etc/berth /var/lib/berth /run/berth')
 
 
+def actions(station, host):
+    """A host's actions by their names, as the server lists them."""
+    return {action['name']: action for action in json.loads(station.berth('action', 'list', host, '-o', 'json').stdout)}
+
+
 @needs_e2e
 class Controller(unittest.TestCase):
     """The tests build on each other, in the order of their names."""
@@ -47,32 +52,33 @@ class Controller(unittest.TestCase):
         kwargs.setdefault('timeout', 120)
         return self.station.berth(*args, **kwargs)
 
-    def test_1_a_machine_added_by_its_address_is_only_reachable(self):
-        self.assertIn(f'Added {HOST} as a reachable host', self.added.stdout)
+    def test_1_a_machine_added_by_its_address_is_only_logged_in_to(self):
+        self.assertIn(f'Added {HOST} as a host of the type ssh', self.added.stdout)
         self.assertIn(f'{HOST} takes the key berth already', self.added.stdout)
         self.assertEqual(self.station.read_profile(), {
-            'level': 'reachable', 'access': {'address': HOST, 'user': OPERATOR, 'auth': 'berth'}})
-        self.assertEqual(self.berth('ssh', HOST, 'id -un').stdout.strip(), OPERATOR)
-        listed = self.berth('tasks', HOST).stdout
-        self.assertRegex(listed, r'(?m)^  install-controller\s+Install the controller')
-        # What needs more than a login is refused, and says what raises the level.
+            'type': 'ssh', 'access': {'address': HOST, 'user': OPERATOR, 'auth': 'berth'}})
+        self.assertEqual(self.berth('ssh', HOST, '--', 'id -un').stdout.strip(), OPERATOR)
+        listed = actions(self.station, HOST)
+        self.assertEqual(listed['install-controller']['label'], 'Install the controller')
+        # What needs more than a login is refused, and says what changes the type.
         refused = self.berth('apply', HOST, check=False)
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn('not a workstation', refused.stderr)
+        self.assertIn('neither a node nor a workstation', refused.stderr)
         refused = self.berth('exec', HOST, '--', 'id', check=False)
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn(f'berth host install {HOST}', refused.stderr)
+        self.assertIn(f'berth run {HOST} install-controller', refused.stderr)
         self.assertNotEqual(self.root('test -e /usr/local/bin/berthd', check=False).returncode, 0)
 
     def test_2_installing_the_controller_puts_berthd_and_box_there_alone(self):
-        done = self.berth('host', 'install', HOST, timeout=600)
-        self.assertIn(f'{HOST} is a controller host now', done.stdout)
+        done = self.berth('run', HOST, 'install-controller', '-y', timeout=600)
+        self.assertIn(f'{HOST} is a managed host now', done.stdout)
         self.assertIn(f"berth's controller answers on {HOST}", done.stdout)
-        self.assertEqual(self.station.read_profile()['level'], 'controller')
+        self.assertEqual(self.station.read_profile()['type'], 'managed')
+        # The role's record keeps the older name of the type.
         applied = json.loads(self.root('cat /etc/berth/applied.json').stdout)
         self.assertEqual((applied['level'], applied['plugins']), ('controller', []))
         version = self.station.link().get('/v1/version')
-        self.assertEqual(version['level'], 'controller')
+        self.assertEqual(version['type'], 'managed')
         # Nothing of a workstation: no agent account, desktop or role record.
         for absent in ('id agent', 'test -e /etc/devbox', 'test -e /var/lib/devbox/status.json',
                        'test -e /etc/sudoers.d/90-devbox-agent', 'command -v Xvnc'):
@@ -81,22 +87,22 @@ class Controller(unittest.TestCase):
     def test_3_sessions_and_tasks_run_as_the_ssh_user(self):
         self.assertEqual(self.berth('exec', HOST, '--', 'id', '-un').stdout.strip(), OPERATOR)
         self.assertEqual(self.berth('exec', HOST, '--user', 'root', '--', 'id', '-un').stdout.strip(), 'root')
-        listed = self.berth('tasks', HOST).stdout
+        listed = actions(self.station, HOST)
         for name in ('status', 'update', 'secrets'):
-            self.assertRegex(listed, rf'(?m)^  {name}\s+', name)
-        self.assertNotRegex(listed, r'(?m)^  smoke\s+')
-        self.assertRegex(listed, r'(?m)^  install-controller\s+Update the controller')
+            self.assertIn(name, listed)
+        self.assertNotIn('smoke', listed)
+        self.assertEqual(listed['install-controller']['label'], 'Update the controller')
         status = self.berth('run', HOST, 'status')
-        self.assertIn('Level       controller', status.stdout)
+        self.assertIn('Type        managed', status.stdout)
         marker = random_text('controller')
         self.berth('exec', HOST, '--keep', '--', 'echo', marker)
-        line = next(line for line in self.berth('sessions', HOST).stdout.splitlines() if marker in line)
-        self.assertEqual(self.berth('output', HOST, line.split()[0]).stdout.strip(), marker)
+        line = next(line for line in self.berth('session', 'list', HOST).stdout.splitlines() if marker in line)
+        self.assertEqual(self.berth('session', 'logs', HOST, line.split()[0]).stdout.strip(), marker)
 
     def test_4_secrets_go_to_the_ssh_user(self):
         value = random_text('controller-secret')
         self.berth('secret', 'set', 'controller-token', input=value + '\n')
-        self.berth('host', HOST, 'secret', 'controller-token', 'env', 'CONTROLLER_TOKEN')
+        self.berth('host', 'set', HOST, 'secret.controller-token=CONTROLLER_TOKEN')
         sent = self.berth('run', HOST, 'secrets')
         self.assertNotIn(value, sent.stdout + sent.stderr)
         env = self.root(f'cat /home/{OPERATOR}/.config/devbox/secrets.env').stdout
@@ -109,28 +115,27 @@ class OnAWorkstation(unittest.TestCase):
     a profile saved here under another name says the host is less: on
     `studio`, as provisioned() applied it."""
 
-    def test_a_workstation_added_again_as_reachable_keeps_its_controller(self):
+    def test_a_workstation_added_again_as_ssh_keeps_its_controller(self):
         station = provisioned()
-        files = 'cat /etc/berth/applied.json /etc/berth/berthd.json /etc/berth/tasks.json'
+        files = 'cat /etc/berth/applied.json /etc/berth/berthd.json /etc/berth/actions.json'
         before = station.root_on_host(files).stdout
-        added = station.berth('host', 'add', 'adopted', HOST, '--user', OPERATOR, '--level', 'reachable', input='')
+        added = station.berth('host', 'add', 'adopted', HOST, '--user', OPERATOR, '--type', 'ssh', input='')
         try:
             # berth sees what the host is, and says how to adopt it.
-            self.assertIn('adopted is a workstation; its profile here says reachable', added.stdout)
-            self.assertIn('berth adopt adopted', added.stdout)
-            listed = station.berth('tasks', 'adopted').stdout
-            self.assertIn('adopted is a workstation; its profile here says reachable', listed)
-            self.assertRegex(listed, r'(?m)^  install-controller\s+.*take its controller apart')
-            refused = station.berth('host', 'install', 'adopted', check=False, timeout=600)
+            self.assertIn('adopted is a workstation; its profile here says ssh', added.stdout)
+            self.assertIn('berth host adopt adopted', added.stdout)
+            listed = actions(station, 'adopted')
+            self.assertIn('take its controller apart', listed['install-controller']['why'])
+            refused = station.berth('run', 'adopted', 'install-controller', '-y', check=False, timeout=600)
             self.assertNotEqual(refused.returncode, 0)
             self.assertIn('would take its controller apart', refused.stdout + refused.stderr)
             self.assertEqual(station.root_on_host(files).stdout, before)
-            self.assertEqual(station.read_profile('adopted')['level'], 'reachable')
+            self.assertEqual(station.read_profile('adopted')['type'], 'ssh')
             # Adopted from the profile the host keeps, by the address it was added at.
-            adopted = station.berth('adopt', 'adopted')
+            adopted = station.berth('host', 'adopt', 'adopted')
             self.assertIn('Adopted adopted', adopted.stdout)
             profile = station.read_profile('adopted')
-            self.assertNotIn('level', profile)
+            self.assertNotIn('type', profile)
             saved = station.read_profile()
             for key in ('hostname', 'operator_ssh_public_keys', 'agent_ssh_public_keys', 'ansible_vars'):
                 self.assertEqual(profile[key], saved[key], key)

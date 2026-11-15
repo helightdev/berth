@@ -18,9 +18,7 @@ use crate::{
     plugins::{self, Plugin, Provisioner, Setup},
     profiles::Place,
     registry::Store,
-    relay, seed,
-    server::KEPT,
-    store,
+    relay, seed, store,
 };
 use berth_api::{NewResource, ProvisionerInfo};
 use serde_json::{Map, Value, json};
@@ -138,7 +136,7 @@ pub(crate) fn find<'a>(plugins: &'a [Plugin], name: &str) -> Result<(&'a Plugin,
             let provisioner = known.provisioners.iter().find(|known| known.id == id)?;
             Some((known, provisioner))
         })
-        .ok_or_else(|| format!("No provisioner {name}. See: berth provisioners").into())
+        .ok_or_else(|| format!("No provisioner {name}. See: berth provisioner list").into())
 }
 
 /// The provisioner a name stands for: a registered entry's type, or the
@@ -159,7 +157,7 @@ fn secret(store: &Store, name: &str) -> Option<String> {
         .secret(name)
         .ok()
         .flatten()
-        .filter(|value| !value.is_empty() && value != KEPT)
+        .filter(|value| !value.is_empty())
 }
 
 /// The secrets of the provisioner registered as `name`, under the names its
@@ -188,11 +186,11 @@ pub(crate) fn secrets(
 pub(crate) fn needs_secrets(name: &str, missing: &[String]) -> Result<()> {
     match missing {
         [] => Ok(()),
-        missing => Err(format!(
+        missing => Err(crate::Refused(format!(
             "{name} needs the secret{} {}: berth secret set NAME",
             if missing.len() == 1 { "" } else { "s" },
             missing.join(", ")
-        )
+        ))
         .into()),
     }
 }
@@ -363,6 +361,7 @@ pub(crate) fn call(
         .spawn()
         .map_err(|error| format!("{}: {error}", provisioner.command.display()))?;
     let group = child.id() as i32;
+    let _stopped = crate::runner::watch(&child);
     let mut input = serde_json::to_vec(request)?;
     input.push(b'\n');
     let mut stdin = child.stdin.take().ok_or("no standard input")?;
@@ -484,7 +483,7 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) ->
         .filter(|kept| !kept.record.external_id.is_empty())
     {
         return Err(format!(
-            "{host} has a machine already, {} of {}. See it with: berth resource {}; delete it with: berth resource {} remove",
+            "{host} has a machine already, {} of {}. See it with: berth resource show {}; delete it with: berth resource remove {}",
             kept.record.external_id, kept.record.provisioner, kept.record.id, kept.record.id
         )
         .into());
@@ -494,7 +493,7 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) ->
         .filter(|kept| kept.record.provisioner != asked.provisioner)
     {
         return Err(format!(
-            "A machine for {host} was asked of {}, which did not say it made one. Forget it with: berth resource {} remove",
+            "A machine for {host} was asked of {}, which did not say it made one. Forget it with: berth resource remove {}",
             kept.record.provisioner, kept.record.id
         )
         .into());
@@ -526,6 +525,11 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) ->
             asked.provisioner
         )
         .into());
+    }
+    // A new machine is on no tailnet, so a host that joins one needs a key
+    // berth can make, before anything is created.
+    if let Some(problem) = crate::tailnet::problem(paths, &profile.config, host) {
+        return Err(crate::Refused(problem).into());
     }
     let (scope, side) = profile.place.side();
     // Asked again after a failure, the provisioner finds the machine by its token.
@@ -565,16 +569,16 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) ->
     })
 }
 
-/// Make the host's profile a `cloud` one before the machine is made from it:
+/// Make the host's target `cloud` before the machine is made from it:
 /// a created machine has no laptop's physical login or power settings, and
 /// the seed is rendered from, or the role applied with, what is saved.
-fn cloud_profile(paths: &Paths, host: &str) -> Result<()> {
+fn cloud_target(paths: &Paths, host: &str) -> Result<()> {
     let place = Place::resolve(paths, host)?;
     let mut profile = place
         .load(paths)?
         .ok_or_else(|| format!("No host {host}"))?;
-    if profile["profile"] != "cloud" && profile.is_object() {
-        profile["profile"] = json!("cloud");
+    if profile["target"] != "cloud" && profile.is_object() {
+        profile["target"] = json!("cloud");
         place.save(paths, &profile)?;
     }
     Ok(())
@@ -630,7 +634,7 @@ impl Prepared {
     ) -> Result<()> {
         let (host, name) = (self.host.clone(), self.name.clone());
         say(out, &format!("▸ {host}: creating its machine with {name}"));
-        cloud_profile(paths, &host)?;
+        cloud_target(paths, &host)?;
         let profile = Host::load(paths, &host)?;
         let mut request = resource::request(
             "create",
@@ -638,6 +642,7 @@ impl Prepared {
             &self.kept.record,
             &self.kept.record.arguments,
             &self.secrets,
+            &crate::provisioner::node_of(paths, &self.name),
         );
         request["token"] = json!(self.kept.record.token);
         match self.provisioner.setup {
@@ -687,7 +692,7 @@ impl Prepared {
         let id = answer["id"].as_str().unwrap_or("").to_owned();
         if id.is_empty() {
             return Err(format!(
-                "{name} create said no id. Asking again finds the same machine: berth provision {host} {name}"
+                "{name} create said no id. Asking again finds the same machine: berth host create {host} --provisioner {name}"
             )
             .into());
         }
@@ -702,7 +707,7 @@ impl Prepared {
         let resource = self.kept.record.id.clone();
         let exists = |error: Box<dyn std::error::Error>| -> Box<dyn std::error::Error> {
             format!(
-                "{error}. The machine {id} exists and stays: berth resource {resource} remove deletes it"
+                "{error}. The machine {id} exists and stays: berth resource remove {resource} deletes it"
             )
             .into()
         };
@@ -759,6 +764,7 @@ impl Prepared {
             &self.kept.record,
             &self.kept.record.arguments,
             &self.secrets,
+            &crate::provisioner::node_of(paths, &self.name),
         );
         let mut log = resource::request(
             "logs",
@@ -766,6 +772,7 @@ impl Prepared {
             &self.kept.record,
             &self.kept.record.arguments,
             &self.secrets,
+            &crate::provisioner::node_of(paths, &self.name),
         );
         (log["tail"], log["follow"]) = (json!(CONSOLE_LINES), json!(false));
         let logs = self
@@ -1054,7 +1061,6 @@ fn password(paths: &Paths, host: &Host) -> Option<String> {
         return None;
     }
     host.kept_sudo_password(paths)
-        .or_else(|| std::env::var("BERTH_SUDO_PASSWORD").ok())
 }
 
 /// Whether SSH lets berth in. A machine just made has a key nobody has seen;
@@ -1083,13 +1089,8 @@ fn answers(paths: &Paths, host: &Host) -> bool {
     };
     let link = Link::new(spec);
     // The timer is made inside the runtime, which is what it runs on.
-    let asked = runtime.block_on(async {
-        tokio::time::timeout(
-            Duration::from_secs(20),
-            link.get::<berth_api::Version>("/v1/version"),
-        )
-        .await
-    });
+    let asked = runtime
+        .block_on(async { tokio::time::timeout(Duration::from_secs(20), link.version()).await });
     runtime.shutdown_background();
     matches!(asked, Ok(Ok(_)))
 }
@@ -1195,15 +1196,19 @@ fn finish(paths: &Paths, host: &Host, setup: Setup, out: &mut dyn Write) -> Resu
             let password = password(paths, host);
             if host.asks_password() && password.is_none() {
                 return Err(format!(
-                    "{}'s SSH user's sudo asks for a password: set BERTH_SUDO_PASSWORD, or apply it with: berth apply {}",
-                    host.name, host.name
+                    "{name}'s SSH user's sudo asks for a password: keep it with berth secret set sudo/{name}, or apply it with berth host apply {name}",
+                    name = host.name
                 )
                 .into());
             }
             say(out, &format!("▸ {}: applying", host.name));
             let mut prepared = apply::prepare(paths, host, password.as_deref())?;
+            for note in &prepared.notes {
+                say(out, note);
+            }
             let (reader, writer) = std::io::pipe()?;
             let copy = writer.try_clone()?;
+            crate::runner::own_group(&mut prepared.command);
             let mut child = prepared
                 .command
                 .stdin(Stdio::null())
@@ -1211,6 +1216,7 @@ fn finish(paths: &Paths, host: &Host, setup: Setup, out: &mut dyn Write) -> Resu
                 .stderr(copy)
                 .spawn()
                 .map_err(|error| format!("ansible-playbook: {error}"))?;
+            let _group = crate::runner::watch(&child);
             // The command holds the pipe's other ends; they close when it is dropped.
             drop(prepared.command);
             for line in std::io::BufReader::new(reader).lines() {
@@ -1262,7 +1268,7 @@ out = build / config['hostname'] / 'cloud'
 out.mkdir(parents=True, exist_ok=True)
 (build / 'devbox-release.tar.gz').write_bytes(b'release')
 (out / 'user-data').write_text('#cloud-config\n# delivered=' + os.environ.get('BERTH_RELEASE_DELIVERED', '') + '\n'
-                               + '# profile=' + config.get('profile', '') + '\n')
+                               + '# target=' + config.get('target', '') + '\n')
 print(build / 'devbox-release.tar.gz')
 print(out)
 "#;
@@ -1420,7 +1426,7 @@ print(out)
                     &format!(
                         "finished {} as {}",
                         host.address(),
-                        host.config["profile"].as_str().unwrap_or("")
+                        host.config["target"].as_str().unwrap_or("")
                     ),
                 );
                 Ok(())
@@ -1477,7 +1483,7 @@ print(out)
             .unwrap_err()
             .to_string();
         assert!(
-            said.contains(&format!("berth resource {} remove", kept.id)),
+            said.contains(&format!("berth resource remove {}", kept.id)),
             "{said}"
         );
 
@@ -1641,6 +1647,34 @@ print(out)
     }
 
     #[test]
+    fn a_host_that_joins_the_tailnet_gets_no_machine_without_berths_api_key() {
+        let world = World::new();
+        world
+            .store()
+            .set_secret("api_token", Some("tok-made-up"))
+            .unwrap();
+        world.file("answer.create", r#"{"id": "vm-1"}"#);
+        world.profile(
+            "studio",
+            json!({"hostname": "studio", "access": {"user": "ops"}}),
+        );
+        let said = world
+            .provision("fake/vm", &[("server", "x")])
+            .0
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("berth secret set tailnet_api_key"), "{said}");
+        // Nothing was asked of the provisioner, and no record was kept.
+        assert!(world.requests().iter().all(|(verb, _)| verb != "create"));
+        let place = crate::profiles::Place::own("studio").unwrap();
+        assert!(
+            crate::resource::of_place(&world.paths, &place)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn secrets_go_on_standard_input_and_never_into_the_output() {
         let world = World::new();
         world
@@ -1656,7 +1690,7 @@ print(out)
         world.file("answer.create", r#"{"id": "vm-1"}"#);
         world.profile(
             "studio",
-            json!({"access": {"user": "ops", "address": "192.0.2.30"}}),
+            json!({"access": {"user": "ops", "address": "192.0.2.30"}, "ansible_vars": {"devbox_install_tailscale": false}}),
         );
         let (done, out) = world.provision("fake/vm", &[("server", "x")]);
         done.unwrap();
@@ -1704,7 +1738,7 @@ print(out)
         world.file("answer.create", r#"{"id": "vm-2"}"#);
         world.profile(
             "studio",
-            json!({"access": {"user": "ops", "address": "192.0.2.20"}}),
+            json!({"access": {"user": "ops", "address": "192.0.2.20"}, "ansible_vars": {"devbox_install_tailscale": false}}),
         );
         world.provision("fake/vm", &[("server", "x")]).0.unwrap();
         world.file("answer.status", r#"{"state": "running"}"#);
@@ -1819,7 +1853,7 @@ print(out)
         .unwrap_err()
         .to_string();
         assert!(
-            said.contains("gone") && said.contains("berth resource r-") && said.contains(" remove"),
+            said.contains("gone") && said.contains("berth resource remove r-"),
             "{said}"
         );
         assert_eq!(world.record().unwrap().external_id, "seeded-1");
@@ -1828,10 +1862,10 @@ print(out)
         // A created machine is a cloud host, whatever the profile said before.
         assert_eq!(
             create["seed"]["user_data"],
-            "#cloud-config\n# delivered=1\n# profile=cloud\n"
+            "#cloud-config\n# delivered=1\n# target=cloud\n"
         );
         let host = Host::load(&world.paths, "studio").unwrap();
-        assert_eq!(host.config["profile"], "cloud");
+        assert_eq!(host.config["target"], "cloud");
         assert_eq!(
             create["seed"]["meta_data"],
             format!("instance-id: {token}\nlocal-hostname: studio\n")
@@ -1903,7 +1937,7 @@ print(out)
                 Ok(match asked("first boot") {
                     1 => "state provisioning\n==> Installing Ansible\n-- cursor: s=1;i=1\n",
                     2 => "state provisioning\n==> Applying the role\nTASK [devbox : Check the profile] *\nTASK [devbox : Install Docker] *\n-- cursor: s=1;i=2\n",
-                    _ => "state configured-needs-enrollment\n==> The role is applied\n-- cursor: s=1;i=3\n",
+                    _ => "state configured\n==> The role is applied\n-- cursor: s=1;i=3\n",
                 }
                 .to_owned())
             },
@@ -1927,7 +1961,7 @@ print(out)
                 "  │ Installing Ansible",
                 "  │ Applying the role",
                 "  │ Ansible task 2: Install Docker",
-                "  │ first boot: configured-needs-enrollment",
+                "  │ first boot: configured",
                 "  │ The role is applied",
                 "✓ studio: berthd answers",
                 "finished 192.0.2.40 as cloud",
@@ -1975,10 +2009,7 @@ print(out)
         let said = done.unwrap_err().to_string();
         assert!(started.elapsed() < Duration::from_secs(20));
         assert!(said.contains("studio's first boot failed"), "{said}");
-        assert!(
-            said.contains("berth resource r-") && said.contains(" remove"),
-            "{said}"
-        );
+        assert!(said.contains("berth resource remove r-"), "{said}");
         let end = out
             .split_once("! studio: its first boot failed. The end of its log:\n")
             .unwrap()
@@ -2032,7 +2063,7 @@ print(out)
 
     #[test]
     fn the_secrets_a_seed_carries_are_found_in_it() {
-        let deployment = json!({"profile": "cloud", "ansible_vars": {
+        let deployment = json!({"target": "cloud", "ansible_vars": {
             "devbox_tailscale_auth_key": "tskey-auth-kAbc123-xyz",
             "devbox_operator_password_hash": "$6$salt$hashhashhash",
             "devbox_operator_ssh_public_key": "ssh-ed25519 AAAAexample",
@@ -2231,7 +2262,7 @@ print(out)
         assert!(
             listed[0]
                 .problem
-                .contains("berth provisioner lab run settings server=VALUE"),
+                .contains("berth provisioner set lab server=VALUE"),
             "{}",
             listed[0].problem
         );

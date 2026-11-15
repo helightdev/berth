@@ -4,12 +4,21 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "The page of berth serve, its screens and its portal, for a browser (berth-web) and a terminal (berth-remote)"
+description = "The screens of berth in a terminal, over the API of a berth serve, on Linux, macOS and Windows"
 
 [dependencies]
-berth-api.workspace = true
+berth-api = { workspace = true, features = ["client"] }
 berth-tui.workspace = true
 serde_json.workspace = true
 tui-input.workspace = true
-web-time = "1"
-ratatui = { version = "=0.30.2", default-features = false }
+ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
+crossterm = "=0.29.0"
+tokio.workspace = true
+futures-util.workspace = true
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
+rustls-native-certs = "0.8"
+
+[dev-dependencies]
+tempfile.workspace = true

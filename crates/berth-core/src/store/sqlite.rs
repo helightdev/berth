@@ -33,6 +33,8 @@ pub(super) const MIGRATIONS: &[&str] = &[
      ALTER TABLE jobs ADD COLUMN action TEXT NOT NULL DEFAULT '';
      ALTER TABLE jobs ADD COLUMN token TEXT;
      CREATE UNIQUE INDEX jobs_token ON jobs(subject, action, token) WHERE token IS NOT NULL;",
+    "ALTER TABLE jobs ADD COLUMN stopped_by TEXT;",
+    "ALTER TABLE jobs ADD COLUMN arguments TEXT;",
 ];
 
 impl std::convert::From<rusqlite::Error> for Error {
@@ -92,8 +94,7 @@ fn stored(row: &rusqlite::Row<'_>) -> rusqlite::Result<Stored> {
 const MESSAGE_COLUMNS: &str =
     "seq, host, id, topic, body, keep, from_level, from_uid, session, time, done";
 
-const JOB_COLUMNS: &str =
-    "id, host, what, started, ended, exit_code, output_path, subject, action, token";
+const JOB_COLUMNS: &str = "id, host, what, started, ended, exit_code, output_path, subject, action, token, stopped_by, arguments";
 
 fn job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
     Ok(Job {
@@ -107,6 +108,8 @@ fn job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
         subject: row.get(7)?,
         action: row.get(8)?,
         token: row.get(9)?,
+        stopped_by: row.get(10)?,
+        arguments: super::arguments_from(row.get::<_, Option<String>>(11)?),
     })
 }
 
@@ -114,7 +117,7 @@ fn job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
 fn insert_job(db: &Connection, job: &Job) -> rusqlite::Result<usize> {
     db.execute(
         &format!(
-            "INSERT INTO jobs({JOB_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "INSERT INTO jobs({JOB_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT DO NOTHING"
         ),
         params![
@@ -127,7 +130,9 @@ fn insert_job(db: &Connection, job: &Job) -> rusqlite::Result<usize> {
             job.output_path,
             job.subject,
             job.action,
-            job.token
+            job.token,
+            job.stopped_by,
+            super::arguments_text(&job.arguments)
         ],
     )
 }
@@ -442,6 +447,14 @@ impl Backend for SqliteBackend {
         self.db.execute(
             "UPDATE jobs SET ended = ?2, exit_code = ?3 WHERE id = ?1 AND ended IS NULL",
             params![id, ended, exit_code],
+        )?;
+        Ok(())
+    }
+
+    fn stop_job(&mut self, id: &str, by: &str) -> Result<()> {
+        self.db.execute(
+            "UPDATE jobs SET stopped_by = ?2 WHERE id = ?1 AND ended IS NULL",
+            params![id, by],
         )?;
         Ok(())
     }

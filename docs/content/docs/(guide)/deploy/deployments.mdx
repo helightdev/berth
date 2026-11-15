@@ -35,7 +35,7 @@ Store the password as a berth secret, then deploy:
 
 ```bash
 berth secret set notes_db_password
-berth deploy notes --provisioner docker \
+berth resource create notes --provisioner docker \
   --spec notes.compose.yaml --secret notes_db_password:DB_PASSWORD
 ```
 
@@ -43,7 +43,7 @@ berth deploy notes --provisioner docker \
 ▸ Creating the deployment notes with docker
 …
 ✓ docker created notes: running
-notes: berth resource r-p5x2hd7a
+notes is r-p5x2hd7a: berth resource show r-p5x2hd7a
 ```
 
 The output of Compose follows as it runs. The last line gives the new resource's id.
@@ -54,26 +54,25 @@ The output of Compose follows as it runs. The last line gives the new resource's
 | `--provisioner NAME` | The provisioner that makes it, here `docker` |
 | `--spec FILE` | The Compose file. `-` reads it from standard input |
 | `--secret NAME[:VARIABLE]` | A berth secret it gets, as the variable `VARIABLE`, or as `NAME` when none is given. Give it once for each secret |
-| `--token TEXT` | Any text of yours. The same token again answers with the first job, and nothing is made twice |
 | `NAME=VALUE` | Values of its arguments, such as `keep_volumes=yes`, or `host=…` for an engine other than the setting's |
 
 berth refuses before anything is made when a secret has no value, or when the name of a variable is not one a shell takes. A deployment of that name that exists already is changed instead, with the new file.
 
 ### From the provisioner's page
 
-The Hosts tab has the row **+ New compose project**, and the provisioner's page the action of that name, `new-deployment`, in the terminal UI and in the page of [`berth serve --web`](/docs/use/server#in-a-browser). Both open a form laid out like a host's set-up, with the provisioner, the name, the Compose file, the secrets and the deployment's own arguments each on a row. Enter on a row edits it, and Enter on **Run** makes the deployment. The Compose file opens in a text editor that takes the whole screen. Ctrl+S keeps the file, and Esc leaves it as it was. The file is kept in berth's store, so no file on your machine is needed. Give the secrets as `NAME` or `NAME:VARIABLE`, separated by commas. The deployment is made as a job of the provisioner, and is listed on its page when the job ends.
+The Hosts tab has the row **+ New compose project**, and the provisioner's page the action of that name, `new-deployment`, on every system. Both open a form laid out like a host's set-up, with the provisioner, the name, the Compose file, the secrets and the deployment's own arguments each on a row. Enter on a row edits it, and Enter on **Run** makes the deployment. The Compose file opens in a text editor that takes the whole screen. Ctrl+S keeps the file, and Esc leaves it as it was. The file is kept in berth's store, so no file on your machine is needed. Give the secrets as `NAME` or `NAME:VARIABLE`, separated by commas. The deployment is made as a job of the provisioner, and is listed on its page when the job ends.
 
 From the command line the action takes the same values:
 
 ```bash
-berth provisioner docker run new-deployment name=notes \
+berth provisioner run docker new-deployment name=notes \
   spec="$(cat notes.compose.yaml)" secrets=notes_db_password:DB_PASSWORD --yes
 ```
 
 ## Look after it
 
 ```bash
-berth resource notes
+berth resource show notes
 ```
 
 ```text
@@ -86,7 +85,7 @@ Spec       5f0c1d9e8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d
 Secrets    notes_db_password as DB_PASSWORD
 Arguments  host=ssh://ops@192.0.2.10 keep_volumes=no
 
-Actions (berth resource r-p5x2hd7a run ACTION)
+Actions (berth resource run r-p5x2hd7a ACTION)
   start              Start
   stop               Stop
   change             Change
@@ -95,14 +94,14 @@ Actions (berth resource r-p5x2hd7a run ACTION)
   pull               Pull and update
   remove             Remove the deployment
 
-Its log: berth resource r-p5x2hd7a logs [--follow]
+Its log: berth resource logs r-p5x2hd7a [--follow]
 ```
 
 ```bash
-berth resource notes logs --follow      # every service's log
-berth resource notes run services       # each container, with its state
-berth resource notes run pull           # newer images, then up again
-berth resource notes run stop
+berth resource logs notes --follow      # every service's log
+berth resource run notes services       # each container, with its state
+berth resource run notes pull           # newer images, then up again
+berth resource run notes stop
 ```
 
 ## Change it
@@ -110,9 +109,9 @@ berth resource notes run stop
 Deploy again with the same name, or use `change`:
 
 ```bash
-berth deploy notes --provisioner docker --spec notes.compose.yaml
-berth resource notes change --spec notes.compose.yaml
-berth resource notes change keep_volumes=yes
+berth resource create notes --provisioner docker --spec notes.compose.yaml
+berth resource set notes --spec notes.compose.yaml
+berth resource set notes keep_volumes=yes
 ```
 
 The plugin runs `docker compose up -d --remove-orphans` with the file. With the same file nothing changes. Without `--spec`, the file berth has is used again. The secrets stay as they are unless `--secret` is given, which replaces the whole list.
@@ -120,7 +119,7 @@ The plugin runs `docker compose up -d --remove-orphans` with the file. With the 
 ## Remove it
 
 ```bash
-berth resource notes remove
+berth resource remove notes
 ```
 
 berth asks `Remove the deployment notes with what it holds? [y/N]`, which `--yes` answers. The plugin runs `docker compose down`, which removes the project's named volumes too unless `keep_volumes` is `yes`. berth then forgets the record and the Compose file.
@@ -139,7 +138,7 @@ Compose puts the values into the containers as the file says. A variable in a co
 
 ## With a berth server
 
-With a server set, `berth deploy` sends the Compose file to the server. The server keeps it and makes the deployment as a job of the subject `resource:ID`. The secrets it gets are the server's. Making, changing and removing one need the role `admin`, and reading its log `operate` ([Resources](/docs/deploy/resources#with-a-berth-server)).
+With a server set, `berth resource create` sends the Compose file to the server. The server keeps it and makes the deployment as a job of the subject `resource:ID`. The secrets it gets are the server's. Making, changing and removing one need the role `admin`, and reading its log `operate` ([Resources](/docs/deploy/resources#with-a-berth-server)).
 
 ## The Docker plugin's part
 

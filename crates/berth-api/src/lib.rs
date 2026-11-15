@@ -3,12 +3,15 @@
 
 #[cfg(feature = "client")]
 pub mod client;
+pub mod compat;
 pub mod escape;
 pub mod ops;
 #[cfg(feature = "client")]
 pub mod portal;
 pub mod profile;
 pub mod streams;
+#[cfg(feature = "client")]
+pub mod tunnel;
 mod types;
 
 pub use types::*;
@@ -26,7 +29,7 @@ const _: () = assert!(
     "BERTH_BUILD_VERSION is a version such as 0.3.0, without the v of its tag"
 );
 /// Rises when something is added to the API.
-pub const API: u32 = 1;
+pub const API: u32 = 2;
 
 /// Where berthd listens in system mode.
 pub const RUN_DIR: &str = "/run/berth";

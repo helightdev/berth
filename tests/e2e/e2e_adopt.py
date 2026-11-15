@@ -1,5 +1,5 @@
 """The profile a host keeps of itself, and another berth taking the host over
-from it: the file the role writes, berthd serving it, berth adopt reading it
+from it: the file the role writes, berthd serving it, berth host adopt reading it
 over SSH while berthd is broken, and the next applies of the new berth.
 
 It looks at the host as provisioned() applied it, and leaves it so: the new
@@ -42,16 +42,15 @@ class Adopt(unittest.TestCase):
     def test_the_host_keeps_its_profile_for_root_only(self):
         self.assertEqual(self.station.root_on_host(f'stat -c %a:%U:%G {KEPT}').stdout.strip(), '600:root:root')
         self.assertNotEqual(self.station.ssh(OPERATOR, f'cat {KEPT}', check=False).returncode, 0)
-        self.assertEqual((self.kept['format'], self.kept['host']), (2, HOST))
+        self.assertEqual((self.kept['format'], self.kept['host']), (3, HOST))
         self.assertRegex(self.kept['written'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
         saved = self.station.read_profile()
         kept = self.kept['profile']
         # How this berth logs in means nothing to another one.
         self.assertNotIn('access', kept)
         self.assertEqual(kept['builder'], {key: value for key, value in saved['builder'].items() if key not in LOCAL})
-        self.assertNotIn('tailscale_auth_key', kept)
         for key, value in saved.items():
-            if key not in ('access', 'builder', 'tailscale_auth_key'):
+            if key not in ('access', 'builder'):
                 # An empty list a test saved since the last apply is not on the host yet.
                 self.assertEqual(kept.get(key, []), value, key)
 
@@ -60,7 +59,7 @@ class Adopt(unittest.TestCase):
         link = BerthdLink(self.station, key=self.station.key)
         self.assertEqual(link.get('/v1/applied/profile'), self.kept)
         # The controller says the host is a workstation, as the file shows.
-        self.assertEqual(link.get('/v1/version')['level'], 'workstation')
+        self.assertEqual(link.get('/v1/version')['type'], 'workstation')
 
     def test_another_berth_adopts_the_host_while_berthd_is_broken(self):
         adopter = Workstation('adopter')
@@ -68,16 +67,16 @@ class Adopt(unittest.TestCase):
         old_own = self.station.own_public()
         self.assertEqual(block(self.station, marker(old_own)), [old_own])
         # Its keys are not on the host yet, and it says the ways in.
-        refused = adopter.berth('adopt', HOST, f'{OPERATOR}@{HOST}', check=False)
+        refused = adopter.berth('host', 'adopt', HOST, f'{OPERATOR}@{HOST}', check=False)
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn('berth key show', refused.stderr)
-        self.assertIn('--key', refused.stderr)
-        self.assertNotEqual(adopter.berth('profile', HOST, check=False).returncode, 0)
+        self.assertIn('berth key show', refused.output)
+        self.assertIn('--key', refused.output)
+        self.assertNotEqual(adopter.berth('host', 'export', HOST, check=False).returncode, 0)
         # Its public key put into authorized_keys by hand, as from the console.
         self.station.ssh(OPERATOR, f'echo {shell_quote(own)} >> ~/.ssh/authorized_keys')
         self.station.root_on_host('mv /usr/local/bin/berthd /usr/local/bin/berthd.away')
         try:
-            adopted = adopter.berth('adopt', HOST, f'{OPERATOR}@{HOST}')
+            adopted = adopter.berth('host', 'adopt', HOST, f'{OPERATOR}@{HOST}')
         except AssertionError:
             self.station.root_on_host('mv /usr/local/bin/berthd.away /usr/local/bin/berthd')
             raise
@@ -88,10 +87,10 @@ class Adopt(unittest.TestCase):
         profile = adopter.read_profile()
         self.assertEqual(profile['access'], {'address': HOST, 'user': OPERATOR, 'auth': 'berth'})
         # Once there, it is not replaced without being asked.
-        again = adopter.berth('adopt', HOST, f'{OPERATOR}@{HOST}', check=False)
+        again = adopter.berth('host', 'adopt', HOST, f'{OPERATOR}@{HOST}', check=False)
         self.assertNotEqual(again.returncode, 0)
-        self.assertIn('--force', again.stderr)
-        adopter.berth('adopt', HOST, f'{OPERATOR}@{HOST}', '--force')
+        self.assertIn('--force', again.output)
+        adopter.berth('host', 'adopt', HOST, f'{OPERATOR}@{HOST}', '--force')
 
         # Its apply repairs berthd and gives its key a block of its own.
         adopter.berth('apply', HOST, timeout=900)

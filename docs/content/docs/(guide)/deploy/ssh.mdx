@@ -6,7 +6,7 @@ icon: Server
 
 This method runs the role over SSH against a machine that already has Ubuntu. The role adds accounts, packages and services to the existing system without partitioning or reinstalling.
 
-A machine that should stay as it is can be added with only an address instead, and get berth's controller alone or nothing at all ([Host levels](/docs/use/levels)). The **Level** row on the Install tab chooses.
+A machine that should stay as it is can be added with only an address instead, and get berth's controller alone or nothing at all ([Host types](/docs/use/types)). The **Type** row on the Install tab chooses.
 
 <Callout type="warn" title="Dedicated machines only">
   The role installs services, changes the firewall policy and grants the agent sudo for the entire machine. Do not point it at a computer you use for anything else.
@@ -34,7 +34,7 @@ On the host's **Install** tab, choose **Existing host over SSH**. The SSH rows f
 
 ### Give the address
 
-Enter a hostname, an IP address or a `Host` alias from your SSH configuration in **SSH host**. Machines on your tailnet and aliases from `~/.ssh/config` are suggested. Accepting the host fills blank user and port fields from OpenSSH's effective configuration.
+Enter a hostname, an IP address or a `Host` alias from your SSH configuration in **SSH host**. berth logs in from the machine its server runs on, with that machine's SSH configuration and its aliases.
 
 </Step>
 <Step>

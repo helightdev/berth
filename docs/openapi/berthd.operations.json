@@ -2,10 +2,16 @@
   "components": {
     "schemas": {
       "Applied": {
-        "description": "What berth recorded on a host when it applied the configuration: its own\nversion and the plugins whose features the host has.",
+        "description": "What berth recorded on a host when it applied the configuration: its own\nversion, the plugins whose features the host has, and the provisioners\nthose features offer.",
         "properties": {
           "berth": {
             "type": "string"
+          },
+          "offers": {
+            "items": {
+              "$ref": "#/components/schemas/Offer"
+            },
+            "type": "array"
           },
           "plugins": {
             "items": {
@@ -337,11 +343,72 @@
         ],
         "type": "object"
       },
-      "HostLevel": {
-        "description": "How much of berth a host has: what its profile means it to have, or\nwhat it was seen to have. Each level can do what the ones before it can.",
+      "HostAction": {
+        "description": "An action of the host's controller: an entry of `/etc/berth/actions.json`.\nListed without `run`.",
+        "properties": {
+          "agent": {
+            "description": "The agent may run it.",
+            "type": "boolean"
+          },
+          "arguments": {
+            "items": {
+              "$ref": "#/components/schemas/Argument"
+            },
+            "type": "array"
+          },
+          "confirm": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extends": {
+            "description": "Actions it is a step of; it then has no row of its own.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "group": {
+            "type": "string"
+          },
+          "help": {
+            "type": "string"
+          },
+          "input": {
+            "description": "What the workstation sends on standard input: `secrets`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          },
+          "terminal": {
+            "type": "boolean"
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "HostType": {
+        "description": "What berth does with a host: what its profile means it to be, or what it\nwas seen to be. They are in the order of how much of berth each has.",
         "enum": [
-          "reachable",
-          "controller",
+          "ssh",
+          "managed",
+          "node",
           "workstation"
         ],
         "type": "string"
@@ -585,6 +652,64 @@
         ],
         "type": "object"
       },
+      "Offer": {
+        "description": "Provisioners a feature of a host offers, as its tasks found them: berth\nregisters each under a name of its own that names the host. The host\nserves this to anyone who may read it, so it holds public values only,\nsuch as a server's certificate, never a key.",
+        "properties": {
+          "aliases": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "Other values of a setting that reach the same server, such as the\nname a berth server on the host gives it: a provisioner registered by\nhand with one of them is named to its owner, who can make it the\nhost's.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "feature": {
+            "description": "The feature, as `PLUGIN/FEATURE`.",
+            "type": "string"
+          },
+          "fingerprint": {
+            "description": "What the host says identifies the server, such as the fingerprint of\nits certificate, for the person who reads the report.",
+            "type": "string"
+          },
+          "provisioners": {
+            "description": "The plugin's provisioners it offers, by their ids in the plugin.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "secrets": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Values of the provisioners' secrets, such as the certificate of the\nserver to pin, kept as the provisioners' own.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "settings": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Values of the provisioners' own arguments. `{address}`, `{user}` and\n`{port}` stand for where berth reaches the host and as whom.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "feature",
+          "provisioners"
+        ],
+        "type": "object"
+      },
       "Output": {
         "properties": {
           "data_b64": {
@@ -762,7 +887,7 @@
         ],
         "type": "object"
       },
-      "RunTask": {
+      "RunAction": {
         "properties": {
           "arguments": {
             "additionalProperties": {
@@ -918,6 +1043,13 @@
       },
       "Session": {
         "properties": {
+          "action": {
+            "description": "The action it was started for, if any. The sessions an older\nberthd kept on the host say `task`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "cols": {
             "format": "int32",
             "minimum": 0,
@@ -985,13 +1117,6 @@
               "$ref": "#/components/schemas/Step"
             },
             "type": "array"
-          },
-          "task": {
-            "description": "The task it was started for, if any.",
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "title": {
             "type": "string"
@@ -1255,66 +1380,6 @@
         ],
         "type": "object"
       },
-      "Task": {
-        "description": "An entry of `/etc/berth/tasks.json`. Listed without `run`.",
-        "properties": {
-          "agent": {
-            "description": "The agent may run it.",
-            "type": "boolean"
-          },
-          "arguments": {
-            "items": {
-              "$ref": "#/components/schemas/Argument"
-            },
-            "type": "array"
-          },
-          "confirm": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "extends": {
-            "description": "Tasks it is a step of; it then has no row of its own.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "group": {
-            "type": "string"
-          },
-          "help": {
-            "type": "string"
-          },
-          "input": {
-            "description": "What the workstation sends on standard input: `secrets`.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "label": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "run": {
-            "type": "string"
-          },
-          "terminal": {
-            "type": "boolean"
-          },
-          "user": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "type": "object"
-      },
       "Topic": {
         "description": "An entry of `/etc/berth/channels.json`.",
         "properties": {
@@ -1413,20 +1478,20 @@
               }
             ]
           },
-          "level": {
+          "mode": {
+            "description": "`system` or `single`.",
+            "type": "string"
+          },
+          "type": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/HostLevel",
-                "description": "What was installed on the host, by that record: `controller` when\nonly the controller was, `workstation` for a whole profile. Absent\nwhen the host keeps no record."
+                "$ref": "#/components/schemas/HostType",
+                "description": "What was installed on the host, by that record: `managed` when\nonly the controller was, `workstation` for a whole profile. Absent\nwhen the host keeps no record."
               },
               {
                 "type": "null"
               }
             ]
-          },
-          "mode": {
-            "description": "`system` or `single`.",
-            "type": "string"
           },
           "version": {
             "type": "string"
@@ -1578,7 +1643,7 @@
         }
       },
       "role": "view",
-      "summary": "One session's state. The agent sees those it started through a task."
+      "summary": "One session's state. The agent sees those it started through an action."
     },
     {
       "args": [
@@ -1903,32 +1968,32 @@
     },
     {
       "args": [],
-      "group": "tasks",
+      "group": "actions",
       "http": {
         "method": "GET",
-        "path": "/v1/tasks"
+        "path": "/v1/actions"
       },
       "kind": "call",
       "level": "Host and agent level.",
-      "name": "tasks.list",
+      "name": "actions.list",
       "portal": true,
       "result": {
         "schema": {
           "items": {
-            "$ref": "#/components/schemas/Task"
+            "$ref": "#/components/schemas/HostAction"
           },
           "type": "array"
         }
       },
       "role": "view",
-      "summary": "The tasks the caller may run, in the order of the file."
+      "summary": "The actions the caller may run, in the order of the file."
     },
     {
       "args": [
         {
-          "description": "A task's name, as the list gives it.",
+          "description": "An action's name, as the list gives it.",
           "in": "path",
-          "name": "name",
+          "name": "action",
           "required": true
         },
         {
@@ -1942,17 +2007,17 @@
       "data": {
         "description": null,
         "schema": {
-          "$ref": "#/components/schemas/RunTask"
+          "$ref": "#/components/schemas/RunAction"
         }
       },
-      "group": "tasks",
+      "group": "actions",
       "http": {
         "method": "POST",
-        "path": "/v1/tasks/{name}"
+        "path": "/v1/actions/{action}"
       },
       "kind": "call",
       "level": "Host and agent level.",
-      "name": "tasks.run",
+      "name": "actions.run",
       "portal": true,
       "result": {
         "schema": {
@@ -1960,31 +2025,31 @@
         }
       },
       "role": "operate",
-      "summary": "Run a task. It and what extends it are the steps of one session."
+      "summary": "Run an action. It and what extends it are the steps of one session."
     },
     {
       "args": [
         {
-          "description": "A task's name, as the list gives it.",
+          "description": "An action's name, as the list gives it.",
           "in": "path",
-          "name": "name",
+          "name": "action",
           "required": true
         },
         {
-          "description": "The name of one of the task's arguments.",
+          "description": "The name of one of the action's arguments.",
           "in": "path",
           "name": "argument",
           "required": true
         }
       ],
-      "group": "tasks",
+      "group": "actions",
       "http": {
         "method": "GET",
-        "path": "/v1/tasks/{name}/choices/{argument}"
+        "path": "/v1/actions/{action}/choices/{argument}"
       },
       "kind": "call",
       "level": "Host and agent level.",
-      "name": "tasks.choices",
+      "name": "actions.choices",
       "portal": true,
       "result": {
         "schema": {
@@ -2650,6 +2715,121 @@
         }
       ],
       "summary": "For the program that answers a service's calls. While it is open the service is up."
+    },
+    {
+      "args": [
+        {
+          "description": "A TCP port on the host's loopback, 127.0.0.1: a number from 1 to 65535.",
+          "in": "path",
+          "name": "port",
+          "required": true
+        }
+      ],
+      "group": "ports",
+      "http": {
+        "method": "GET",
+        "path": "/v1/ports/{port}"
+      },
+      "kind": "stream",
+      "level": "Host level only.",
+      "name": "ports.connect",
+      "portal": true,
+      "receives": [
+        {
+          "binary": true,
+          "description": "What the program on the port sent.",
+          "example": null,
+          "name": "bytes"
+        },
+        {
+          "binary": false,
+          "description": "The program on the port closed its side. Bytes sent towards it still arrive. The stream ends once both sides have sent this.",
+          "example": {
+            "eof": true
+          },
+          "name": "eof"
+        }
+      ],
+      "resumable": false,
+      "role": "operate",
+      "sends": [
+        {
+          "binary": true,
+          "description": "Bytes for the program on the port.",
+          "example": null,
+          "name": "bytes"
+        },
+        {
+          "binary": false,
+          "description": "The client sends no more, and the program on the port reads the end. What it sends still comes back.",
+          "example": {
+            "eof": true
+          },
+          "name": "eof"
+        }
+      ],
+      "summary": "A TCP connection to a port on the host's loopback, 127.0.0.1. The port is dialled first, so one that nothing listens on is an error and not a stream."
+    },
+    {
+      "args": [
+        {
+          "description": "An IP address or a DNS name, on a network of the host's own interfaces.",
+          "in": "path",
+          "name": "address",
+          "required": true
+        },
+        {
+          "description": "A TCP port: a number from 1 to 65535.",
+          "in": "path",
+          "name": "port",
+          "required": true
+        }
+      ],
+      "group": "endpoints",
+      "http": {
+        "method": "GET",
+        "path": "/v1/endpoints/{address}/{port}"
+      },
+      "http_only": "berth serve dials it itself, only for an endpoint a provisioner reported: open the endpoint with resources.connect",
+      "kind": "stream",
+      "level": "Host level only.",
+      "name": "endpoints.connect",
+      "portal": false,
+      "receives": [
+        {
+          "binary": true,
+          "description": "What the endpoint sent.",
+          "example": null,
+          "name": "bytes"
+        },
+        {
+          "binary": false,
+          "description": "The endpoint closed its side. Bytes sent towards it still arrive. The stream ends once both sides have sent this.",
+          "example": {
+            "eof": true
+          },
+          "name": "eof"
+        }
+      ],
+      "resumable": false,
+      "role": "operate",
+      "sends": [
+        {
+          "binary": true,
+          "description": "Bytes for the endpoint.",
+          "example": null,
+          "name": "bytes"
+        },
+        {
+          "binary": false,
+          "description": "The client sends no more, and the endpoint reads the end. What it sends still comes back.",
+          "example": {
+            "eof": true
+          },
+          "name": "eof"
+        }
+      ],
+      "summary": "For berth serve alone: a TCP connection to an address on a network of the host's own interfaces, such as a container on a bridge. The address is resolved once, every address it has is checked, and the one checked is dialled first, so one that nothing answers on is an error and not a stream."
     }
   ],
   "portal": {

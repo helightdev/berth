@@ -32,6 +32,8 @@ pub const SETTINGS: &str = "settings";
 pub const SECRETS: &str = "secrets";
 /// berth's own action that forgets a registered provisioner.
 pub const REMOVE: &str = "remove";
+/// berth's own action that makes a provisioner registered by hand a node's.
+pub const ADOPT: &str = "adopt";
 /// The start of berth's own action that makes a resource of a kind, such as
 /// `new-deployment`.
 pub const NEW: &str = "new-";
@@ -48,6 +50,13 @@ pub struct Entry {
     pub kind: String,
     #[serde(default)]
     pub settings: BTreeMap<String, String>,
+    /// The node it lives on, when a feature of that host offered it: its
+    /// name among this berth's hosts.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub node: String,
+    /// The node's feature that offered it, as `PLUGIN/FEATURE`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub feature: String,
 }
 
 /// The entry registered under a provisioner's name, if there is one.
@@ -55,6 +64,15 @@ pub fn entry(paths: &Paths, name: &str) -> Result<Option<Entry>> {
     Ok(store::shared(paths)?
         .read_json(kind::PROVISIONER_ENTRY, OWN, name)?
         .and_then(|entry| serde_json::from_value(entry).ok()))
+}
+
+/// The node a registered provisioner lives on, or nothing.
+pub fn node_of(paths: &Paths, name: &str) -> String {
+    entry(paths, name)
+        .ok()
+        .flatten()
+        .map(|entry| entry.node)
+        .unwrap_or_default()
 }
 
 /// Register a provisioner under `name`, of the type `entry.kind`.
@@ -131,10 +149,15 @@ pub fn register(paths: &Paths, name: &str, saved: &berth_api::SavedProvisioner) 
     let settings = match &saved.settings {
         Some(given) => kept_values(name, provisioner, given)?,
         None => existing
-            .map(|existing| existing.settings)
+            .as_ref()
+            .map(|existing| existing.settings.clone())
             .unwrap_or_default(),
     };
-    let entry = Entry { kind, settings };
+    let entry = Entry {
+        kind,
+        settings,
+        ..existing.unwrap_or_default()
+    };
     save_entry(paths, name, &entry)?;
     Ok(entry)
 }
@@ -202,7 +225,7 @@ pub fn adopted_name(paths: &Paths, name: &str, kind: &str) -> Result<String> {
 /// holds resources is kept: they would have no provisioner.
 pub fn remove_entry(paths: &Paths, store: &Store, name: &str) -> Result<()> {
     if entry(paths, name)?.is_none() {
-        return Err(format!("No provisioner {name}. See: berth provisioner").into());
+        return Err(format!("No provisioner {name}. See: berth provisioner list").into());
     }
     let held: Vec<String> = crate::resource::list(paths)?
         .into_iter()
@@ -211,7 +234,7 @@ pub fn remove_entry(paths: &Paths, store: &Store, name: &str) -> Result<()> {
         .collect();
     if !held.is_empty() {
         return Err(format!(
-            "{name} still holds {}. Remove {} first: berth resource ID remove",
+            "{name} still holds {}. Remove {} first: berth resource remove ID",
             held.join(", "),
             if held.len() == 1 { "it" } else { "them" }
         )
@@ -286,6 +309,7 @@ pub fn describe(
     let mut info = provisioner.info(plugin, missing.clone());
     info.id = name.to_owned();
     info.settings = settings(paths, name).unwrap_or_default();
+    info.node = node_of(paths, name);
     if info.problem.is_empty() {
         info.problem = problem(&info.id, provisioner, &missing, &info.settings);
     }
@@ -313,7 +337,7 @@ fn problem(
     match unset.is_empty() {
         true => String::new(),
         false => format!(
-            "{name} needs {}: berth provisioner {name} run {SETTINGS} {}",
+            "{name} needs {}: berth provisioner set {name} {}",
             unset.join(" and "),
             unset
                 .iter()
@@ -524,6 +548,9 @@ pub fn actions(paths: &Paths, store: &Store, name: &str) -> Result<Vec<Action>> 
         if !provisioner.secrets.is_empty() {
             actions.push(secrets_action(name, &provisioner));
         }
+        if entry(paths, name)?.is_some_and(|kept| kept.node.is_empty()) {
+            actions.push(adopt_action(name));
+        }
         actions.push(remove_action(paths, name));
     }
     Ok(actions)
@@ -597,7 +624,7 @@ fn new_action(
             },
             match kind.id == "deployment" {
                 true =>
-                    " From the command line also: berth deploy NAME --provisioner PROVISIONER --spec FILE",
+                    " From the command line also: berth resource create NAME --provisioner PROVISIONER --spec FILE",
                 false => "",
             }
         ),
@@ -629,6 +656,29 @@ fn secrets_action(name: &str, provisioner: &Provisioner) -> Action {
                 ..Argument::default()
             })
             .collect(),
+        role: Role::Admin,
+        ..Action::default()
+    }
+}
+
+/// berth's own action that makes a provisioner registered by hand the one a
+/// node offers, for a server the node's report alone cannot vouch for.
+fn adopt_action(name: &str) -> Action {
+    Action {
+        name: ADOPT.into(),
+        label: "Make it a node's".into(),
+        help: format!(
+            "Make {name} the provisioner a node offers, when you know it reaches that node's server, such as one registered for a server that is now applied as a node. The next apply of the node brings its settings and the certificate it pins up to date."
+        ),
+        group: "Set-Up".into(),
+        arguments: vec![Argument {
+            name: "node".into(),
+            label: "Node".into(),
+            required: true,
+            help: "The node, by its name among berth's hosts".into(),
+            ..Argument::default()
+        }],
+        confirm: Some(format!("Make {name} the node's?")),
         role: Role::Admin,
         ..Action::default()
     }
@@ -692,6 +742,7 @@ enum Doing {
     Settings(BTreeMap<String, String>),
     Secrets(BTreeMap<String, String>, Store),
     Remove(Store),
+    Adopt(String),
     Create(Box<crate::resource::Creating>, Store),
     Program {
         dir: PathBuf,
@@ -705,6 +756,8 @@ enum Doing {
 pub struct Answered {
     pub message: String,
     pub details: Vec<Detail>,
+    /// The exit status of a command it ran, which its job ends with.
+    pub exit_code: Option<i32>,
 }
 
 impl Answered {
@@ -717,7 +770,11 @@ impl Answered {
     pub fn lines(&self) -> Vec<String> {
         let mut lines = vec![];
         if !self.message.is_empty() {
-            lines.push(format!("✓ {}", self.message));
+            let mark = match self.exit_code {
+                Some(code) if code != 0 => "✗",
+                _ => "✓",
+            };
+            lines.push(format!("{mark} {}", self.message));
         }
         let width = self
             .details
@@ -793,6 +850,15 @@ pub fn prepare(
             hidden: vec![],
             action: found,
             work: Doing::Remove(store.clone()),
+        });
+    }
+    if action == ADOPT {
+        let values = values_of(name, &found.arguments, given, &BTreeMap::new())?;
+        return Ok(Acting {
+            name: name.to_owned(),
+            hidden: vec![],
+            action: found,
+            work: Doing::Adopt(values.get("node").cloned().unwrap_or_default()),
         });
     }
     if let Some(kind) = action
@@ -924,6 +990,7 @@ impl Acting {
                         false => format!("{} uses {}", self.name, shown.join(" ")),
                     },
                     details: vec![],
+                    exit_code: None,
                 })
             }
             Doing::Secrets(values, store) => {
@@ -952,6 +1019,7 @@ impl Acting {
                         false => format!("{}'s secrets", self.name),
                     },
                     details,
+                    exit_code: None,
                 })
             }
             Doing::Remove(store) => {
@@ -959,15 +1027,22 @@ impl Acting {
                 Ok(Answered {
                     message: format!("{} is removed", self.name),
                     details: vec![],
+                    exit_code: None,
                 })
             }
+            Doing::Adopt(node) => Ok(Answered {
+                message: crate::node::adopt(paths, &self.name, &node)?,
+                details: vec![],
+                exit_code: None,
+            }),
             Doing::Create(creating, store) => {
                 let id = creating.kept().record.id.clone();
                 let title = creating.kept().title();
                 creating.run(paths, &store, options, out)?;
                 Ok(Answered {
-                    message: format!("{title} is made. Its page: berth resource {id}"),
+                    message: format!("{title} is made. Its page: berth resource show {id}"),
                     details: vec![],
+                    exit_code: None,
                 })
             }
             Doing::Program {
@@ -983,6 +1058,7 @@ impl Acting {
                 Ok(Answered {
                     message: answer["message"].as_str().unwrap_or("").to_owned(),
                     details: details(&answer),
+                    exit_code: None,
                 })
             }
         }
@@ -1009,6 +1085,7 @@ pub(crate) fn stream(
         .spawn()
         .map_err(|error| format!("{}: {error}", provisioner.command.display()))?;
     let group = child.id() as i32;
+    let _stopped = crate::runner::watch(&child);
     let mut input = serde_json::to_vec(asked)?;
     input.push(b'\n');
     let mut stdin = child.stdin.take().ok_or("no standard input")?;

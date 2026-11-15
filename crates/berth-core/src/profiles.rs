@@ -8,7 +8,6 @@
 use crate::{
     Result,
     paths::Paths,
-    server::Server,
     store::{self, OWN, kind},
 };
 use serde_json::Value;
@@ -26,13 +25,10 @@ pub enum Place {
     File(PathBuf),
 }
 
-/// The scope of the saved hosts: the berth server's when one is set, and
-/// this installation's own otherwise.
-pub fn scope(paths: &Paths) -> String {
-    match Server::configured(paths) {
-        Some(server) => server.scope(),
-        None => OWN.to_owned(),
-    }
+/// The scope of the saved hosts: this installation's own. A client of a
+/// server elsewhere keeps none.
+pub fn scope(_: &Paths) -> String {
+    OWN.to_owned()
 }
 
 /// Whether a name can be a saved host's: it is a file name of its own on
@@ -135,14 +131,21 @@ impl Place {
     pub fn load(&self, paths: &Paths) -> Result<Option<Value>> {
         match self {
             Place::Stored { scope, name } => {
-                Ok(store::shared(paths)?.read_json(kind::PROFILE, scope, name)?)
+                let mut profile: Option<Value> =
+                    store::shared(paths)?.read_json(kind::PROFILE, scope, name)?;
+                // A row an older berth or berth server wrote after the store's
+                // names were converted is read with the names of now.
+                if let Some(profile) = &mut profile {
+                    berth_api::profile::take_old_names(profile);
+                }
+                Ok(profile)
             }
             Place::File(path) => match fs::read(path) {
                 Ok(data) => {
                     let mut profile: Value = serde_json::from_slice(&data)
                         .map_err(|error| format!("{}: {error}", path.display()))?;
-                    // A profile of berth 0.4 is read in the access layout; the
-                    // file keeps the old one until the user saves.
+                    // A profile of an older berth is read in the layout of now;
+                    // the file keeps the old one until the user saves.
                     crate::import::convert_profile(paths, &self.title(), &mut profile);
                     Ok(Some(profile))
                 }
@@ -184,7 +187,11 @@ pub fn list(paths: &Paths, scope: &str) -> Result<Vec<(String, Value)>> {
     let entries = store::shared(paths)?.entries(kind::PROFILE, scope)?;
     Ok(entries
         .into_iter()
-        .filter_map(|(name, value)| Some((name, serde_json::from_slice(&value).ok()?)))
+        .filter_map(|(name, value)| {
+            let mut profile = serde_json::from_slice(&value).ok()?;
+            berth_api::profile::take_old_names(&mut profile);
+            Some((name, profile))
+        })
         .collect())
 }
 
@@ -193,6 +200,11 @@ pub fn list(paths: &Paths, scope: &str) -> Result<Vec<(String, Value)>> {
 /// logging in, in one change. A profile in a file is removed with the file.
 pub fn remove(paths: &Paths, place: &Place) -> Result<()> {
     let (scope, name) = place.side();
+    // The provisioners a node offers go with it, unless they still hold resources.
+    if scope == OWN {
+        let secrets = crate::registry::Store::own(store::shared(paths)?);
+        crate::node::forget(paths, &secrets, &name)?;
+    }
     let password = crate::keys::password_secret(place);
     let sudo = crate::keys::sudo_secret(place);
     // The record of a machine that was never made goes with the host; a
@@ -232,10 +244,10 @@ pub fn remove(paths: &Paths, place: &Place) -> Result<()> {
 /// Whether a rename may give the host's profile the new name as its
 /// hostname: only a workstation is applied, which is what sets it.
 pub fn hostname_allowed(name: &str, profile: &Value) -> Result<()> {
-    match crate::level::of(profile) {
-        crate::level::Level::Workstation => Ok(()),
-        level => Err(format!(
-            "{name} is a {level} host, and only a workstation is given its hostname by berth"
+    match crate::host_type::of(profile) {
+        crate::host_type::HostType::Workstation => Ok(()),
+        host_type => Err(format!(
+            "{name} is a host of the type {host_type}, and only a workstation is given its hostname by berth"
         )
         .into()),
     }
@@ -310,6 +322,22 @@ pub fn rename(paths: &Paths, from: &Place, to: &str, hostname: bool) -> Result<P
     for (id, value) in &resources {
         writes.push((kind::RESOURCE, scope.as_str(), id.as_str(), value.clone()));
     }
+    // The provisioners a node offers name it, and go on naming it.
+    let mut offered = vec![];
+    if scope == OWN {
+        for (name, value) in store.entries(kind::PROVISIONER_ENTRY, OWN)? {
+            let Ok(mut entry) = serde_json::from_slice::<crate::provisioner::Entry>(&value) else {
+                continue;
+            };
+            if entry.node == *old {
+                entry.node = to.to_owned();
+                offered.push((name, serde_json::to_vec(&entry)?));
+            }
+        }
+    }
+    for (name, value) in &offered {
+        writes.push((kind::PROVISIONER_ENTRY, OWN, name.as_str(), value.clone()));
+    }
     match scope == OWN {
         true => store.rename_host(old, to, &writes, &removals)?,
         false => store.change(&writes, &removals)?,
@@ -351,14 +379,10 @@ mod tests {
         for bad in ["-x", ".hidden", "a b", ""] {
             assert!(Place::resolve(&paths, bad).is_err(), "{bad}");
         }
-        // With a berth server set, a name is one of the server's hosts.
+        // A berth server set for the commands leaves the saved hosts its own.
         paths.set("server", "http://192.0.2.7:7777").unwrap();
-        let served = Place::resolve(&paths, "studio").unwrap();
-        assert_eq!(served.server_url(), Some("http://192.0.2.7:7777"));
-        assert_eq!(
-            served.describe(),
-            "studio on the berth server at http://192.0.2.7:7777"
-        );
+        let own = Place::resolve(&paths, "studio").unwrap();
+        assert_eq!(own.server_url(), None);
         let path = home.path().join("x.json");
         assert_eq!(
             Place::resolve(&paths, path.to_str().unwrap()).unwrap(),
@@ -543,12 +567,12 @@ mod tests {
         let dock = Place::own("dock").unwrap();
         dock.save(
             &paths,
-            &json!({"level": "reachable", "access": {"address": "192.0.2.30"}}),
+            &json!({"type": "ssh", "access": {"address": "192.0.2.30"}}),
         )
         .unwrap();
         assert_eq!(
             error(rename(&paths, &dock, "pier", true)),
-            "dock is a reachable host, and only a workstation is given its hostname by berth"
+            "dock is a host of the type ssh, and only a workstation is given its hostname by berth"
         );
         assert!(dock.load(&paths).unwrap().is_some());
         let file = Place::File(home.path().join("attic.json"));

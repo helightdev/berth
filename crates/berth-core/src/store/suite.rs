@@ -86,6 +86,7 @@ on_each_backend!(
     two_writers_on_one_key_and_one_loses,
     old_messages_and_jobs_are_pruned_and_values_stay,
     a_repeated_token_finds_the_job_it_started,
+    a_job_keeps_what_it_was_started_with,
     a_store_is_up_to_date_and_says_what_it_is,
     state_rows_are_kept_listed_and_removed,
     replacing_states_leaves_other_scopes_and_kinds_alone,
@@ -97,6 +98,7 @@ on_each_backend!(
     resealing_keeps_the_times,
     resealing_refuses_a_table_that_changed,
     the_old_files_go_into_an_empty_store,
+    sealed_profiles_of_an_older_berth_take_the_names_of_now,
     a_copy_takes_every_table_as_it_is_and_back,
     a_copy_into_a_store_that_has_rows_keeps_them,
 );
@@ -484,6 +486,31 @@ fn a_repeated_token_finds_the_job_it_started(place: &Place) {
         .map(|racer| racer.join().unwrap())
         .collect();
     assert_eq!(ids.len(), 1);
+}
+
+fn a_job_keeps_what_it_was_started_with(place: &Place) {
+    let store = place.open();
+    let job = |id: &str, arguments: &[&str]| Job {
+        id: id.into(),
+        host: "studio".into(),
+        what: "exec".into(),
+        started: rfc3339(unix_now()),
+        output_path: format!("/tmp/{id}.log"),
+        subject: "resource:r-1".into(),
+        action: "exec".into(),
+        arguments: arguments.iter().map(|word| word.to_string()).collect(),
+        ..Job::default()
+    };
+    store
+        .add_job(&job("j1", &["sh", "-c", "echo 'a b'"]))
+        .unwrap();
+    store.add_job(&job("j2", &[])).unwrap();
+    let kept = store.job("j1").unwrap().unwrap();
+    assert_eq!(kept.arguments, ["sh", "-c", "echo 'a b'"]);
+    assert_eq!(kept.json()["arguments"], json!(["sh", "-c", "echo 'a b'"]));
+    assert!(store.job("j2").unwrap().unwrap().arguments.is_empty());
+    let listed = store.jobs(10).unwrap();
+    assert!(listed.iter().any(|job| job.arguments.len() == 3));
 }
 
 fn a_store_is_up_to_date_and_says_what_it_is(place: &Place) {
@@ -1222,6 +1249,60 @@ fn the_old_files_go_into_an_empty_store(place: &Place) {
     );
 }
 
+/// Profiles of berth 0.5, sealed and in any scope, are given the names of now
+/// once, with nothing else changed.
+fn sealed_profiles_of_an_older_berth_take_the_names_of_now(place: &Place) {
+    let store = place.open().with_keys(Some(keys()), None);
+    let old = |level: &str| {
+        json!({"level": level, "profile": "cloud", "access": {"address": "192.0.2.4"}}).to_string()
+    };
+    store
+        .write(kind::PROFILE, OWN, "dock", old("reachable").as_bytes())
+        .unwrap();
+    store
+        .write(kind::PROFILE, OWN, "studio", old("workstation").as_bytes())
+        .unwrap();
+    store
+        .write(
+            kind::PROFILE,
+            "served:http://192.0.2.7:7777",
+            "yard",
+            old("controller").as_bytes(),
+        )
+        .unwrap();
+    let now = br#"{"type":"ssh","target":"laptop"}"#;
+    store.write(kind::PROFILE, OWN, "pier", now).unwrap();
+    let before = stored_row(&store, kind::PROFILE, OWN, "pier");
+    assert_eq!(crate::import::take_in_names(&store).unwrap(), 3);
+    let read = |scope: &str, name: &str| {
+        store
+            .read_json(kind::PROFILE, scope, name)
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(
+        read(OWN, "dock"),
+        json!({"type": "ssh", "target": "cloud", "access": {"address": "192.0.2.4"}})
+    );
+    assert_eq!(
+        read(OWN, "studio"),
+        json!({"target": "cloud", "access": {"address": "192.0.2.4"}})
+    );
+    assert_eq!(
+        read("served:http://192.0.2.7:7777", "yard")["type"],
+        "managed"
+    );
+    assert!(stored_row(&store, kind::PROFILE, OWN, "dock").sealed);
+    assert_eq!(stored_row(&store, kind::PROFILE, OWN, "pier"), before);
+    assert!(
+        store
+            .names(kind::META, OWN)
+            .unwrap()
+            .contains(&crate::import::NAMES_MARKER.to_owned())
+    );
+    assert_eq!(crate::import::take_in_names(&store).unwrap(), 0);
+}
+
 /// A store with something in every table: messages, a cursor, values at a
 /// later revision, jobs, sealed and plain state, and a berth server's scope.
 fn filled(store: &Store) {
@@ -1254,6 +1335,8 @@ fn filled(store: &Store) {
             subject: "host:studio".into(),
             action: "apply".into(),
             token: Some("t-1".into()),
+            stopped_by: Some("ops".into()),
+            arguments: vec!["psql".into(), "-U".into(), "app".into()],
         })
         .unwrap();
     store

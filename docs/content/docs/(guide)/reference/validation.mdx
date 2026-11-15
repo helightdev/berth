@@ -16,7 +16,7 @@ CI runs these on every push, without network access to hosts:
 | `ansible-playbook --syntax-check` | The role |
 | `cargo fmt`, `cargo clippy` | Formatting and lints |
 | `vale` | The prose of the README, these docs and the plugin guides |
-| `tests/e2e` | berth against a test host in a container. A profile is applied over SSH, and a second time without changes. Then the tests use the host with SSH keys, tasks, terminals, files, secrets and a plugin from a folder. `berth serve` is tested with its roles, its set-up and its page, and with a restore of the installation from its database and key file. They use a development build of berth |
+| `tests/e2e` | berth against a test host in a container. A profile is applied over SSH, and a second time without changes. Then the tests use the host with SSH keys, actions, terminals, files, secrets and a plugin from a folder. `berth serve` is tested with its roles, its set-up and its page, and with a restore of the installation from its database and key file. They use a development build of berth |
 
 See [Building and releasing](/docs/reference/building#in-containers) for running them locally.
 
@@ -26,15 +26,15 @@ The container suite can't boot anything. A cloud seed and the USB installer are 
 
 | Test | What happens |
 | --- | --- |
-| `boot cloud` | The Ubuntu 26.04 cloud image boots with the seed of `berth seed` as its NoCloud user data. It downloads the release archive over HTTPS and applies the role on its first boot |
-| `boot iso` | The installer of `berth iso` boots with only a disk of another serial, and must refuse it without writing to it. It then boots with that disk and the right one, erases and installs the right one and powers off. The installed system boots without the installer and sets itself up |
+| `boot cloud` | The Ubuntu 26.04 cloud image boots with the seed of `berth host seed` as its NoCloud user data. It downloads the release archive over HTTPS and applies the role on its first boot |
+| `boot iso` | The installer of `berth host iso` boots with only a disk of another serial, and must refuse it without writing to it. It then boots with that disk and the right one, erases and installs the right one and powers off. The installed system boots without the installer and sets itself up |
 
 After the first boot, berth reaches the host over SSH and checks:
 
 - berthd and a plugin's service run as systemd units, and berthd starts, stops and restarts units and reads the journal
 - the firewall lets in SSH and nothing else, and SSH takes keys only and refuses root
-- the status task ends without failed units, and a second apply in a row doesn't change anything
-- `berth apply --all --reboot` refuses while a session runs, then reboots the host, waits for it and checks it
+- the status action ends without failed units, and a second apply in a row doesn't change anything
+- `berth rollout --all --reboot` refuses while a session runs, then reboots the host, waits for it and checks it
 - the end-to-end tests of commands, berthd's API and secrets
 
 The guest runs on QEMU's user network with a package cache and a release server on the container's side. The cache is in `build/boot/cache` and makes a second run a lot quicker. The profile leaves out the coding agents, toolchains, Docker and Cockpit, and keeps the desktop. The programs a host can do without, such as the office and graphics programs, are left out too unless `BERTH_CI_BOOT_EXTRAS=1` is set. On GitHub the Boot workflow runs either one when started by hand. Started by hand or by its weekly schedule, it installs those programs as well. Logs, timings and the disk and memory used are in `build/boot/KIND/`.

@@ -4,7 +4,7 @@ HTTP over the standard input and output of `docker exec -i CONTAINER berthd conn
 
     python3 tests/container_link.py CONTAINER
 
-Starts a session and runs a task, and fails when either does not end well.
+Starts a session and runs an action, and fails when either does not end well.
 Not a unit test: run it against the built image, started with docker compose.
 """
 import base64
@@ -68,13 +68,13 @@ def main():
         sys.exit(f'Unexpected session result: {session}')
     print(f'session {session["id"]}: output and exit code as expected')
 
-    names = [task['name'] for task in call(container, 'GET', '/v1/tasks')]
+    names = [task['name'] for task in call(container, 'GET', '/v1/actions')]
     if 'sign-in:status' not in names:
-        sys.exit(f'No sign-in:status among the tasks: {names}')
-    task = call(container, 'POST', '/v1/tasks/sign-in:status?wait=120s', {})
+        sys.exit(f'No sign-in:status among the actions: {names}')
+    task = call(container, 'POST', '/v1/actions/sign-in:status?wait=120s', {})
     if task.get('exit_code') != 0:
-        sys.exit(f'Task sign-in:status failed: {task}')
-    print(f'task sign-in:status: ran as session {task["id"]}, steps {[step["name"] for step in task.get("steps", [])]}')
+        sys.exit(f'Action sign-in:status failed: {task}')
+    print(f'action sign-in:status: ran as session {task["id"]}, steps {[step["name"] for step in task.get("steps", [])]}')
 
     refused = None
     try:

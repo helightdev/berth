@@ -6,7 +6,7 @@ icon: Workflow
 
 A service is a program on a host that runs all the time and answers calls. The
 plugin declares it, berth runs it, and `berthd` routes each call to it. The
-caller is the agent on the host, with `box call`, or you, from your machine, with `berth call`.
+caller is the agent on the host, with `box call`, or you, from your machine, with `berth service call`.
 
 ## Declare it
 
@@ -177,15 +177,15 @@ On your machine, a person watches the topic and answers. The `id` is the one
 in the question:
 
 ```sh
-berth channel studio ask/
+berth channel listen studio ask/
 # {"id":4812,"topic":"ask/questions","body":{"id":3107,"question":"Which branch do I release from?"}, ...}
 
-berth call studio ask/desk answer '{"id":3107,"text":"main"}'
+berth service call studio ask/desk answer '{"id":3107,"text":"main"}'
 ```
 
 The agent's `box call` then prints `{"answer":"main"}` and exits with status 0.
 On the host, a script can list what is waiting: `box listen ask/`
-prints each question as a line of JSON, and `berth inbox studio --topic ask/` lists
+prints each question as a line of JSON, and `berth inbox list studio --topic ask/` lists
 the ones `berth serve` has taken in from the host.
 
 If nobody answers within 590 seconds, the handler exits with an error and the

@@ -24,8 +24,8 @@ use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 use tui_input::Input;
-use web_time::{Duration, Instant};
 
 /// How often the list of hosts is asked for again.
 const HOSTS_EVERY: Duration = Duration::from_secs(10);
@@ -35,13 +35,13 @@ const RETRY: Duration = Duration::from_secs(3);
 const SAID_FOR: Duration = Duration::from_secs(5);
 /// What the status line says while the server is away.
 const AWAY: &str = "The berth server does not answer; trying again…";
-/// The key that leaves a running session: a browser keeps Ctrl+Q to itself.
-const LEAVE: &str = "Alt+Q";
+/// The key that leaves a running session, and elsewhere quits.
+const LEAVE: &str = "Ctrl+Q";
 
 #[derive(PartialEq)]
 enum Screen {
     Token,
-    /// What a setup key in the link opens.
+    /// What a setup key opens.
     Installed,
     Hosts,
     Host,
@@ -91,10 +91,8 @@ pub struct App {
     /// The portal has been open with this token, so it is the right one.
     proven: bool,
     retry: Option<Instant>,
-    /// The server: where the page came from, or the one that was named.
+    /// The server that was named, or the one that was kept.
     server: String,
-    /// `berth serve` gave this page, so the server is not asked for.
-    embedded: bool,
     token: String,
     typing: Input,
     typing_server: Input,
@@ -146,34 +144,41 @@ pub struct App {
     qr: Option<qr::Overlay>,
     /// The token collected with a setup key, until Done.
     installed: Option<Installed>,
+    /// A host to open once the server has listed its hosts.
+    wanted: Option<String>,
+    /// The screens are left.
+    quit: bool,
+    /// An action of the open host to begin once the server has listed them.
+    pending: Option<&'static str>,
+    /// Why the server is too old for these screens, once it said its version.
+    older: Rc<RefCell<Option<String>>>,
 }
 
 impl App {
     /// Not a `Default`: making the screens signs in and opens the portal.
     #[allow(clippy::new_without_default)]
     pub fn new() -> App {
-        let embedded = device::embedded();
         let linked = device::linked();
         let (linked_server, linked_token) = (linked.server, linked.token);
         let kept = device::stored(Kept::Server).unwrap_or_default();
-        let server = match embedded {
-            true => device::origin(),
-            false => linked_server
-                .map(|server| device::address(&server))
-                .unwrap_or_else(|| kept.clone()),
-        };
+        let server = linked_server
+            .map(|server| device::address(&server))
+            .unwrap_or_else(|| kept.clone());
         // The token that was kept is the one of the server that was kept.
         let token = linked_token
             .or_else(|| {
-                (embedded || server == kept)
+                (server == kept)
                     .then(|| device::stored(Kept::Token))
                     .flatten()
             })
             .unwrap_or_default();
-        if !embedded {
+        // A server on this machine is never kept: it is found again each run.
+        // Another server named for this run, without its token, leaves the
+        // kept server and token alone until it signs in.
+        if !device::local(&server) && !token.is_empty() {
             device::store(Kept::Server, &server);
+            device::store(Kept::Token, &token);
         }
-        device::store(Kept::Token, &token);
         let mut app = App {
             screen: Screen::Token,
             portal: None,
@@ -182,7 +187,6 @@ impl App {
             on_server: server.is_empty(),
             typing_server: Input::new(server.clone()),
             server,
-            embedded,
             token,
             typing: Input::default(),
             refused: String::new(),
@@ -216,6 +220,10 @@ impl App {
             over_links: vec![],
             qr: None,
             installed: None,
+            wanted: None,
+            quit: false,
+            pending: None,
+            older: Rc::default(),
         };
         // A setup key signs in with the token it collects, whatever was kept.
         if let (Some(key), false) = (linked.setup_key, app.server.is_empty()) {
@@ -223,10 +231,52 @@ impl App {
             app.screen = Screen::Installed;
             return app;
         }
-        if !app.token.is_empty() && !app.server.is_empty() {
+        if (!app.token.is_empty() && !app.server.is_empty()) || device::local(&app.server) {
             app.connect();
         }
         app
+    }
+
+    /// The server is on this machine, and the screens need no token for it.
+    fn local(&self) -> bool {
+        device::local(&self.server)
+    }
+
+    /// Whether the screens were left, with Ctrl+Q or q on the list of hosts.
+    pub fn quit(&self) -> bool {
+        self.quit
+    }
+
+    /// Open the host `name` once the server has listed it.
+    pub fn open_when_listed(&mut self, name: &str) {
+        self.wanted = Some(name.to_owned());
+    }
+
+    /// Open the host that was asked for, once the list has come.
+    fn open_wanted(&mut self) {
+        if !self.hosts.borrow().answered || self.screen != Screen::Hosts {
+            return;
+        }
+        let Some(name) = self.wanted.take() else {
+            return;
+        };
+        let address = self
+            .hosts
+            .borrow()
+            .list
+            .iter()
+            .find(|host| host["name"] == name.as_str())
+            .map(|host| host["address"].as_str().unwrap_or("").to_owned());
+        match address {
+            Some(address) => self.open_host(&name, &address),
+            // A name the server does not know starts a new host, once it has
+            // said what a new host starts from.
+            None if self.admin.is_some() && !self.data.borrow().template.is_object() => {
+                self.wanted = Some(name);
+            }
+            None if self.admin.is_some() => self.name_host(&name),
+            None => self.status = format!("There is no host {name}"),
+        }
     }
 
     /// Open the portal with the token there is.
@@ -234,8 +284,17 @@ impl App {
         self.host.disconnect();
         self.asked = None;
         self.retry = None;
-        match Portal::open(&device::portal_url(&self.server), &self.token) {
+        match Portal::open(&self.server, &self.token) {
             Ok(portal) => {
+                // A server older than these screens would not understand what they send.
+                let (older, url) = (self.older.clone(), self.server.clone());
+                portal.call("version", None, json!({}), Value::Null, move |result| {
+                    if let Ok(said) = result {
+                        let version = said["version"].as_str().unwrap_or("");
+                        let api = said["api"].as_u64().unwrap_or(0) as u32;
+                        *older.borrow_mut() = berth_api::compat::older_server(&url, version, api);
+                    }
+                });
                 // Who the token is here decides what the page offers.
                 let admin = Admin::new(portal.clone(), self.data.clone());
                 admin.load();
@@ -255,6 +314,13 @@ impl App {
 
     /// Back to the token dialog, forgetting the token.
     fn sign_out(&mut self, why: &str) {
+        self.ask_token(why);
+        device::store(Kept::Token, "");
+    }
+
+    /// Back to the token dialog. The kept token stays until the one typed
+    /// next replaces it.
+    fn ask_token(&mut self, why: &str) {
         self.portal = None;
         self.admin = None;
         *self.data.borrow_mut() = Data::default();
@@ -266,7 +332,6 @@ impl App {
         self.host.disconnect();
         *self.hosts.borrow_mut() = Hosts::default();
         self.token.clear();
-        device::store(Kept::Token, "");
         self.typing = Input::default();
         self.refused = why.to_owned();
         self.screen = Screen::Token;
@@ -297,6 +362,7 @@ impl App {
             match installed.tick() {
                 Outcome::SignIn(token) => {
                     self.token = token;
+                    device::store(Kept::Server, &self.server);
                     device::store(Kept::Token, &self.token);
                     self.connect();
                 }
@@ -320,6 +386,16 @@ impl App {
         } else if !self.status.is_empty() && self.said.1.elapsed() >= SAID_FOR {
             self.status.clear();
         }
+        if let Some(older) = self.older.borrow_mut().take() {
+            self.portal = None;
+            self.admin = None;
+            self.host.disconnect();
+            *self.hosts.borrow_mut() = Hosts::default();
+            self.retry = None;
+            self.refused = older;
+            self.screen = Screen::Token;
+            return;
+        }
         match self.portal.as_ref().map(Portal::link) {
             Some(Link::Open) => {
                 self.proven = true;
@@ -327,13 +403,14 @@ impl App {
                     self.status.clear();
                 }
             }
-            // A token that never opened the portal is asked for again; one that
-            // has is the right one, and the server is only away.
-            Some(Link::Refused) if !self.proven => {
-                self.sign_out("The server did not open its portal for that token.");
+            // A token the server refused is asked for again. The kept one stays
+            // until another is given or the user signs out: a server that does
+            // not answer, or not yet, never costs the token.
+            Some(Link::Refused) if !self.local() => {
+                self.ask_token("The server did not take that token. Enter another, or sign out.");
                 return;
             }
-            Some(Link::Refused | Link::Lost) => {
+            Some(Link::Refused | Link::Unreached | Link::Lost) => {
                 self.portal = None;
                 self.host.disconnect();
                 self.retry = Some(Instant::now());
@@ -348,6 +425,7 @@ impl App {
             return;
         }
         self.take_in();
+        self.open_wanted();
         if self
             .asked
             .is_none_or(|asked| asked.elapsed() >= HOSTS_EVERY)
@@ -394,15 +472,6 @@ impl App {
             height.saturating_sub(4).max(4),
             width.saturating_sub(8).max(20),
         )
-    }
-
-    /// The server, and the link that opens this page signed in with its
-    /// token: at this page's own address, which is the server's when the
-    /// server gave it, and told which server otherwise.
-    fn connect_link(&self) -> Option<(String, String)> {
-        let server = (!self.embedded).then_some(self.server.as_str());
-        let link = qr::connect_link(&device::page(), server, &self.token)?;
-        Some((self.server.clone(), link))
     }
 
     fn is_admin(&self) -> bool {
@@ -467,7 +536,7 @@ impl App {
                         setup.machine.found(found);
                     }
                 }
-                // berth's own actions are beside the host's tasks; applying
+                // berth's own actions are beside the controller's; applying
                 // and the seed have rows of their own.
                 Arrived::Actions(name, listed) if name == self.name => {
                     self.host.own = listed
@@ -475,6 +544,7 @@ impl App {
                         .filter(|action| action.runs == berth_api::Runs::Berth)
                         .filter(|action| !["apply", "seed"].contains(&action.name.as_str()))
                         .collect();
+                    self.begin_pending();
                 }
                 Arrived::Actions(..) => {}
                 // One that was removed takes its page back to the list.
@@ -558,18 +628,24 @@ impl App {
             rows.push(Row::info(""));
         }
         rows.push(heading("Connection"));
-        rows.push(Row::info(format!(
-            "  {} · through the berth server at {}",
-            self.address,
-            device::shown(&self.server)
-        )));
-        for line in host::level_lines(&self.name, &self.host) {
+        let address = match self.address.as_str() {
+            "" => "no SSH address yet",
+            address => address,
+        };
+        rows.push(Row::info(match self.local() {
+            true => format!("  {address}"),
+            false => format!(
+                "  {address} · through the berth server at {}",
+                device::shown(&self.server)
+            ),
+        }));
+        for line in host::type_lines(&self.name, &self.host) {
             rows.push(Row::info(Line::styled(
                 format!("  {line}"),
                 Style::new().fg(theme::MUTED),
             )));
         }
-        let workstation = self.host.level == berth_api::HostLevel::Workstation;
+        let workstation = self.host.host_type == berth_api::HostType::Workstation;
         let said = match &self.host.state {
             State::Ready(_) => {
                 if let Some(text) = host::behind_note(&self.host) {
@@ -605,10 +681,10 @@ impl App {
             State::Idle | State::Connecting | State::Password => {
                 vec![note("Asking the host what it can do…".into(), theme::MUTED)]
             }
-            // Below a workstation the controller is installed alone, by berth's own action.
+            // On a host that is not a workstation the controller is installed alone, by berth's own action.
             State::Missing if !workstation => vec![
                 note(
-                    "berth's controller is not on this host. Install it for sessions, tasks and files here.".into(),
+                    "berth's controller is not on this host. Install it for sessions, actions and files here.".into(),
                     theme::MUTED,
                 ),
                 again(),
@@ -622,8 +698,10 @@ impl App {
             ],
             State::Old(version) => vec![
                 note(
-                    format!(
-                        "The host's tools ({version}) are older than this page needs. Applying its configuration, where berth serve runs, brings them up to date."
+                    berth_api::compat::controller_is_older(
+                        &self.name,
+                        version,
+                        self.host.host_type,
                     ),
                     theme::WARN,
                 ),
@@ -643,14 +721,14 @@ impl App {
         // A host that cannot be worked with yet still has berth's own
         // actions, such as first contact and installing the controller.
         let actions = self.host.actions();
-        let mut groups: Vec<(String, Vec<Row>)> = berth_tui::page::groups(&actions, Pick::Task)
+        let mut groups: Vec<(String, Vec<Row>)> = berth_tui::page::groups(&actions, Pick::Action)
             .into_iter()
             .map(|group| {
                 let picks = group
                     .rows
                     .into_iter()
                     .filter(
-                        |(_, pick)| matches!(pick, Pick::Task(index) if self.host.is_own(*index)),
+                        |(_, pick)| matches!(pick, Pick::Action(index) if self.host.is_own(*index)),
                     )
                     .map(|(line, pick)| Row {
                         line: line.into(),
@@ -722,7 +800,7 @@ impl App {
 
     fn help(&self) -> String {
         match self.selected() {
-            Some(Entry::Pick(Pick::Task(index))) => host::task_help(&self.host, index),
+            Some(Entry::Pick(Pick::Action(index))) => host::action_help(&self.host, index),
             Some(Entry::Pick(Pick::Session(index))) => host::session_help(&self.host, index),
             Some(Entry::Pick(Pick::Terminal)) => format!(
                 "A shell on the host, as one of its sessions. Space switches between the agent and the SSH user.\n\nLeaving the shell closes it; {LEAVE} leaves it running, to be opened again from Sessions."
@@ -740,12 +818,10 @@ impl App {
         self.host.disconnect();
         let listed = self.hosts.borrow();
         let found = listed.list.iter().find(|host| host["name"] == name);
-        let level = |key: &str| {
-            found
-                .and_then(|host| host[key].as_str())
-                .and_then(berth_api::HostLevel::parse)
-        };
-        self.host.level = level("level").unwrap_or_default();
+        self.host.host_type = found
+            .and_then(|host| host["type"].as_str())
+            .and_then(berth_api::HostType::parse)
+            .unwrap_or_default();
         drop(listed);
         self.host.own.clear();
         if let Some(admin) = &self.admin {
@@ -769,21 +845,43 @@ impl App {
             }
             return;
         }
-        let body = self.host.task_body(&action, &values);
+        let body = self.host.action_body(&action, &values);
         self.status = format!("Starting {}…", action.title());
         self.host.run(&action.name, body);
     }
 
+    /// Begin the action the set-up left the overview for, now that the
+    /// server has listed the host's actions.
+    fn begin_pending(&mut self) {
+        let Some(name) = self.pending else {
+            return;
+        };
+        // A host saved just now may not be listed yet: its actions come again.
+        if self.host.own.is_empty() {
+            return;
+        }
+        self.pending = None;
+        let index = self
+            .host
+            .actions()
+            .iter()
+            .position(|action| action.name == name);
+        match index {
+            Some(index) => self.choose(Entry::Pick(Pick::Action(index))),
+            None => self.status = format!("The server offers no action {name} for {}", self.name),
+        }
+    }
+
     fn choose(&mut self, entry: Entry) {
         match entry {
-            Entry::Pick(Pick::Task(index)) => {
+            Entry::Pick(Pick::Action(index)) => {
                 if let Some(action) = self.host.actions().get(index)
                     && !action.available
                 {
                     self.status = format!("{} cannot run now: {}", action.title(), action.why);
                     return;
                 }
-                if let Some((index, values)) = self.host.begin_task(index, false) {
+                if let Some((index, values)) = self.host.begin_action(index, false) {
                     self.launch(index, values);
                 }
             }
@@ -808,7 +906,7 @@ impl App {
             }
             Entry::Setup => {
                 if let Some(admin) = &self.admin {
-                    self.setup = Some(Setup::open(&self.name, admin));
+                    self.setup = Some(Setup::open(&self.name, admin, self.local()));
                     self.screen = Screen::Setup;
                 }
             }
@@ -893,7 +991,7 @@ impl App {
             match key.code {
                 Code::Char('y' | 'Y') => match self.host.question.take() {
                     Some((_, Pending::Action(index))) => {
-                        if let Some((index, values)) = self.host.begin_task(index, true) {
+                        if let Some((index, values)) = self.host.begin_action(index, true) {
                             self.launch(index, values);
                         }
                     }
@@ -969,7 +1067,16 @@ impl App {
             right,
         );
         // The cursor only stops on rows that do something.
-        let rows = self.rows();
+        let rows: Vec<Row> = berth_tui::setup::wrapped_rows(
+            self.rows()
+                .into_iter()
+                .map(|row| (row.line, row.entry))
+                .collect(),
+            left.width,
+        )
+        .into_iter()
+        .map(|(line, entry)| Row { line, entry })
+        .collect();
         let positions: Vec<usize> = rows
             .iter()
             .enumerate()
@@ -1010,7 +1117,7 @@ impl App {
         };
         draw_footer(frame, footer, keys, &self.status, theme::ACCENT);
         (self.links, self.words) = match &self.host.view {
-            Some(view) => draw_view(frame, view, &self.status, LEAVE),
+            Some(view) => draw_view(frame, view, &self.status),
             None => (vec![], vec![]),
         };
         if let Some((question, _)) = &self.host.question {
@@ -1088,7 +1195,7 @@ impl App {
             self.address.clear();
             self.status = format!("{name} is kept on the server once it is saved");
             if let Some(admin) = &self.admin {
-                self.setup = Some(Setup::new(name, template, admin));
+                self.setup = Some(Setup::new(name, template, admin, self.local()));
                 self.screen = Screen::Setup;
             }
         }
@@ -1145,7 +1252,8 @@ impl App {
                 }
                 _ => {}
             },
-            Code::Char('o') => self.sign_out(""),
+            Code::Char('o') if !self.local() => self.sign_out(""),
+            Code::Char('q') => self.quit = true,
             _ => {}
         }
     }
@@ -1240,9 +1348,6 @@ impl App {
                 if let Some(said) = self.home.key(tab - 1, key, &admin) {
                     self.status = said;
                 }
-                if let Some(shown) = self.home.qr.take() {
-                    self.qr = Some(shown);
-                }
                 if std::mem::take(&mut self.home.to_hosts) {
                     self.open_tab(0);
                 }
@@ -1264,7 +1369,6 @@ impl App {
         if !admin {
             self.tab = 0;
         }
-        self.home.connect = self.connect_link();
         self.home.server = device::shown(&self.server).to_owned();
         let tabs: &[&str] = if admin { &TABS } else { &[] };
         self.tab_hits = draw_header(frame, header, tabs, self.tab, device::shown(&self.server));
@@ -1350,7 +1454,15 @@ impl App {
         let mut lines: Vec<Line> = vec![];
         for host in hosts.list.iter() {
             let name = host["name"].as_str().unwrap_or("");
+            let older = host["api"]
+                .as_u64()
+                .is_some_and(|api| api < u64::from(berth_api::compat::NEEDS_HOST_API));
             let state = match (host["reachable"].as_bool(), host["version"].as_str()) {
+                // A controller too old for this berth is updated before it is worked with.
+                (Some(true), Some(version)) if older => Span::styled(
+                    format!("● {version} old controller"),
+                    Style::new().fg(theme::WARN),
+                ),
                 (Some(true), Some(version)) => {
                     Span::styled(format!("● {version}"), Style::new().fg(theme::GOOD))
                 }
@@ -1378,11 +1490,11 @@ impl App {
             if host["behind"].is_object() {
                 line.push(Span::styled("  behind", Style::new().fg(theme::WARN)));
             }
-            if let Some(level) = host["level"]
+            if let Some(host_type) = host["type"]
                 .as_str()
-                .filter(|level| *level != "workstation")
+                .filter(|host_type| *host_type != "workstation")
             {
-                line.push(Span::styled(format!("  {level}"), muted));
+                line.push(Span::styled(format!("  {host_type}"), muted));
             }
             if host["rotating"] == true {
                 line.push(Span::styled(
@@ -1419,6 +1531,7 @@ impl App {
             let text = match (&hosts.error, hosts.answered) {
                 (Some(error), _) => format!("✗ {error}"),
                 (None, false) => "Asking the server for its hosts…".into(),
+                (None, true) if self.local() => "No hosts yet.".into(),
                 (None, true) => {
                     "The server has no hosts yet. They are set up with berth where it runs, or from here with the role admin.".into()
                 }
@@ -1438,12 +1551,15 @@ impl App {
         if let Some(input) = &self.naming {
             draw_editor(frame, edit, " New host name ", input, false);
         }
-        let keys = match (admin, self.naming.is_some()) {
-            (_, true) => "Enter create · Esc cancel · Ctrl+O copy",
-            (true, false) => {
-                "↑↓ select · Enter open · n new host · d default · x remove · r refresh · o sign out"
+        let keys = match (admin, self.naming.is_some(), self.local()) {
+            (_, true, _) => "Enter create · Esc cancel · Ctrl+O copy",
+            (true, false, true) => {
+                "↑↓ select · Enter open · n new host · d default · x remove · r refresh · q quit"
             }
-            (false, false) => "↑↓ select · Enter open · r refresh · o sign out",
+            (true, false, false) => {
+                "↑↓ select · Enter open · n new host · d default · x remove · r refresh · o sign out · q quit"
+            }
+            (false, false, _) => "↑↓ select · Enter open · r refresh · o sign out · q quit",
         };
         draw_footer(frame, footer, keys, &self.status, theme::ACCENT);
     }
@@ -1596,27 +1712,21 @@ impl App {
     fn token_event(&mut self, event: Event) {
         match event {
             Event::Key(key)
-                if !self.embedded
-                    && matches!(key.code, Code::Tab | Code::BackTab | Code::Up | Code::Down) =>
+                if matches!(key.code, Code::Tab | Code::BackTab | Code::Up | Code::Down) =>
             {
                 self.on_server = !self.on_server;
             }
             Event::Key(key) if key.code == Code::Enter && self.on_server => self.on_server = false,
             Event::Key(key) if key.code == Code::Enter => {
                 let token = self.typing.value().trim().to_owned();
-                let server = match self.embedded {
-                    true => self.server.clone(),
-                    false => device::address(self.typing_server.value()),
-                };
+                let server = device::address(self.typing_server.value());
                 if server.is_empty() {
                     self.on_server = true;
                 } else if !token.is_empty() {
                     self.token = token;
                     self.server = server;
-                    if !self.embedded {
-                        device::store(Kept::Server, &self.server);
-                        self.typing_server = Input::new(self.server.clone());
-                    }
+                    device::store(Kept::Server, &self.server);
+                    self.typing_server = Input::new(self.server.clone());
                     device::store(Kept::Token, &self.token);
                     self.typing = Input::default();
                     self.refused.clear();
@@ -1683,16 +1793,10 @@ impl App {
         self.draw_backdrop(frame, area);
         let masked = ellipsize(&"•".repeat(self.typing.value().chars().count()), 44);
         let named = ellipsize(self.typing_server.value(), 44);
-        let mut lines = match self.embedded {
-            true => vec![
-                Line::raw("The token of this berth server. It is in serve.token,"),
-                Line::raw("in the data directory of the berth that serves."),
-            ],
-            false => vec![
-                Line::raw("The address of a berth serve, and its token. The token"),
-                Line::raw("is in serve.token, in that berth's data directory."),
-            ],
-        };
+        let mut lines = vec![
+            Line::raw("The address of a berth serve, and its token. The token"),
+            Line::raw("is in serve.token, in that berth's data directory."),
+        ];
         if !self.refused.is_empty() {
             for line in screen::wrap(&self.refused, 56) {
                 lines.push(Line::styled(line, Style::new().fg(theme::WARN)));
@@ -1709,16 +1813,11 @@ impl App {
                 Span::raw(value.to_owned()),
             ])
         };
-        if !self.embedded {
-            lines.push(field("Server  ", &named, self.on_server));
-        }
+        lines.push(field("Server  ", &named, self.on_server));
         let server_row = lines.len() as u16;
         lines.push(field("Token   ", &masked, !self.on_server));
         let rows = lines.len() as u16;
-        let keys = match self.embedded {
-            true => " Enter connect · Ctrl+O copy ",
-            false => " Tab switch · Enter connect · Ctrl+O copy ",
-        };
+        let keys = " Tab switch · Enter connect · Ctrl+O copy ";
         let area = dialog(frame, " Connect ", keys, lines);
         if area.width > 14 && area.height > rows {
             let (typed, row) = match self.on_server {
@@ -1734,6 +1833,15 @@ impl App {
 
     pub fn event(&mut self, event: Event) {
         let event = hint_click(event);
+        // Over a session, Ctrl+Q leaves the session; everywhere else it quits.
+        let in_session = self.screen == Screen::Host && self.host.view.is_some();
+        if let Event::Key(key) = &event
+            && key.is_ctrl('q')
+            && !in_session
+        {
+            self.quit = true;
+            return;
+        }
         // Alt+R over a panel shows its links as QR codes.
         let over = self.seed.is_some() || self.data.borrow().job.is_some();
         let links = match (
@@ -1766,11 +1874,16 @@ impl App {
                     self.screen = Screen::Hosts;
                     return;
                 };
-                if let Flow::Leave = setup.event(event, admin, &mut self.status) {
+                let flow = setup.event(event, admin, &mut self.status);
+                if let Flow::Leave | Flow::Act(_) = flow {
                     // A host the server never got has no overview to go back to.
-                    let kept = setup.kept();
+                    let acting = matches!(flow, Flow::Act(_));
+                    let kept = setup.kept() || acting;
                     self.setup = None;
                     self.asked = None;
+                    if let Flow::Act(action) = flow {
+                        self.pending = Some(action);
+                    }
                     match kept {
                         true => {
                             let (name, address) = (self.name.clone(), self.address.clone());

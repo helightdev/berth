@@ -60,6 +60,12 @@ class ControllerGuardTests(unittest.TestCase):
         code, said = self.run_guard({'applied': {'berth': '0.5.0', 'plugins': [], 'level': 'workstation'}})
         self.assertNotEqual(code, 0)
 
+    def test_a_node_is_refused(self):
+        code, said = self.run_guard({'applied': {'berth': '0.6.0', 'plugins': [], 'level': 'node'},
+                                     'berthd': {'agent': 'ops'}})
+        self.assertNotEqual(code, 0)
+        self.assertIn('is a node that berth set up', said)
+
     def test_a_controller_that_serves_another_account_is_refused(self):
         code, said = self.run_guard({'berthd': {'agent': 'agent', 'operator': 'ops'}})
         self.assertNotEqual(code, 0)

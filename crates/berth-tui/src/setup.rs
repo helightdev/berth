@@ -1,6 +1,6 @@
 //! The set-up pages of a host: what its profile holds, the rows each page
 //! shows of it, and what changing a row does to it. Nothing here reads a file
-//! or runs a command, so berth and its page in a browser share it.
+//! or runs a command: the server keeps the profile and does what it says.
 
 use crate::fields::{Action, Field, Group, Kind, Step};
 use crate::theme;
@@ -19,6 +19,29 @@ pub struct Feature {
     /// The group of the Features page it is listed in.
     pub group: String,
     pub help: String,
+    /// The types of host it is for; none says a workstation.
+    pub types: Vec<berth_api::HostType>,
+}
+
+impl Feature {
+    /// Whether a host of this type can have it.
+    pub fn fits(&self, host_type: berth_api::HostType) -> bool {
+        match self.types.is_empty() {
+            true => host_type == berth_api::HostType::Workstation,
+            false => self.types.contains(&host_type),
+        }
+    }
+}
+
+/// The types of host a feature of the catalogue is for, as the API says them.
+pub fn feature_types(feature: &Value) -> Vec<berth_api::HostType> {
+    feature["types"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(berth_api::HostType::parse)
+        .collect()
 }
 
 /// What a selectable row of a set-up page does when activated.
@@ -127,6 +150,124 @@ pub struct Row {
     pub entry: Option<Entry>,
 }
 
+/// The rows as a list draws them in `width` cells, its cursor's mark taken
+/// off: a row the cursor skips, such as a problem, a refusal or a note,
+/// wraps under itself instead of running off the panel. A row the cursor
+/// stops on stays one line, and the Information panel has its whole text.
+pub fn wrapped(rows: Vec<Row>, width: u16) -> Vec<Row> {
+    wrapped_rows(
+        rows.into_iter().map(|row| (row.line, row.entry)).collect(),
+        width,
+    )
+    .into_iter()
+    .map(|(line, entry)| Row { line, entry })
+    .collect()
+}
+
+/// [`wrapped`] for the rows of any list: each a line and what choosing it does.
+pub fn wrapped_rows<E>(
+    rows: Vec<(Line<'static>, Option<E>)>,
+    width: u16,
+) -> Vec<(Line<'static>, Option<E>)> {
+    let width = usize::from(width.saturating_sub(theme::CURSOR.chars().count() as u16));
+    let mut drawn = Vec::with_capacity(rows.len());
+    for (line, entry) in rows {
+        match entry {
+            Some(entry) => drawn.push((line, Some(entry))),
+            None => drawn.extend(wrap_line(&line, width).into_iter().map(|line| (line, None))),
+        }
+    }
+    drawn
+}
+
+/// Characters of a line, each with its style.
+type Cells = Vec<(String, Style)>;
+
+/// A line broken at spaces into lines `width` cells wide. Its lines after
+/// the first are indented as far as its text begins, past a mark such as
+/// `✗ ` or `! `, so they read as one item.
+pub fn wrap_line(line: &Line<'static>, width: usize) -> Vec<Line<'static>> {
+    let cells: Vec<(String, Style)> = line
+        .spans
+        .iter()
+        .flat_map(|span| {
+            let style = line.style.patch(span.style);
+            span.content.chars().map(move |ch| (ch.to_string(), style))
+        })
+        .collect();
+    let wide = |text: &str| Span::raw(text).width();
+    let total: usize = cells.iter().map(|(text, _)| wide(text)).sum();
+    if width < 8 || total <= width {
+        return vec![line.clone()];
+    }
+    let mut indent = cells.iter().take_while(|(text, _)| text == " ").count();
+    let marked = cells.get(indent + 1).is_some_and(|(text, _)| text == " ")
+        && cells
+            .get(indent)
+            .is_some_and(|(text, _)| !text.chars().all(char::is_alphanumeric));
+    if marked {
+        indent += 2;
+    }
+    let indent = indent.min(width / 2);
+    // Words with the spaces before them.
+    let mut words: Vec<(Cells, Cells)> = vec![];
+    let mut spaces = vec![];
+    let mut word = vec![];
+    for cell in cells {
+        if cell.0 == " " {
+            if !word.is_empty() {
+                words.push((std::mem::take(&mut spaces), std::mem::take(&mut word)));
+            }
+            spaces.push(cell);
+        } else {
+            word.push(cell);
+        }
+    }
+    if !word.is_empty() || !spaces.is_empty() {
+        words.push((spaces, word));
+    }
+    let to_line = |cells: &[(String, Style)]| {
+        let mut spans: Vec<Span<'static>> = vec![];
+        for (text, style) in cells {
+            match spans.last_mut() {
+                Some(last) if last.style == *style => last.content.to_mut().push_str(text),
+                _ => spans.push(Span::styled(text.clone(), *style)),
+            }
+        }
+        Line::from(spans)
+    };
+    let mut lines = vec![];
+    let mut current: Vec<(String, Style)> = vec![];
+    let mut used = 0;
+    for (spaces, word) in words {
+        let word_wide: usize = word.iter().map(|(text, _)| wide(text)).sum();
+        let starting = lines.is_empty() && current.iter().all(|(text, _)| text == " ");
+        if !starting && used + spaces.len() + word_wide > width && used > indent {
+            lines.push(to_line(&current));
+            current = vec![(" ".to_owned(), Style::new()); indent];
+            used = indent;
+        } else {
+            used += spaces.len();
+            current.extend(spaces);
+        }
+        for cell in word {
+            let cell_wide = wide(&cell.0);
+            // A word longer than a whole line is broken where the line ends.
+            if used + cell_wide > width && used > indent {
+                lines.push(to_line(&current));
+                current = vec![(" ".to_owned(), Style::new()); indent];
+                used = indent;
+            }
+            used += cell_wide;
+            current.push(cell);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(to_line(&current));
+    }
+    lines
+}
+
 impl Row {
     pub fn info(line: impl Into<Line<'static>>) -> Self {
         Row {
@@ -161,35 +302,39 @@ pub fn host_secrets(mut names: Vec<String>) -> Vec<String> {
     names
 }
 
-/// Give the profile the host profile the way of installing it takes. A
-/// seed would give a laptop's physical login and power settings to a server,
-/// and a created machine has none, so both make the profile `cloud`.
-pub fn fit_profile(config: &mut Value, action: Action) {
-    if action.seeds() && config["profile"] != "cloud" && config.is_object() {
-        config["profile"] = json!("cloud");
+/// Give the profile the target the way of installing it takes. A seed would
+/// give a laptop's physical login and power settings to a server, and a
+/// created machine has none, so both make the target `cloud`.
+pub fn fit_target(config: &mut Value, action: Action) {
+    if action.seeds() && config["target"] != "cloud" && config.is_object() {
+        config["target"] = json!("cloud");
     }
 }
 
-/// Let a host that is not set up yet join the tailnet with keys berth makes,
-/// when berth has the control server's API key to make them with.
+/// A host that is not set up yet joins the tailnet when berth has the
+/// control server's API key to make its key with, and is reached over SSH
+/// alone when it has not. A host that was set up keeps its choice.
 pub fn default_enrollment(config: &mut Value, names: &[String]) {
-    let unset = |key: &str| config[key].as_str().unwrap_or("").is_empty();
-    if names
+    let has_key = names
         .iter()
-        .any(|name| name == berth_api::profile::TAILNET_API_KEY)
+        .any(|name| name == berth_api::profile::TAILNET_API_KEY);
+    if !has_key
         && config.is_object()
-        && config.get("tailscale_auto_key").is_none()
-        && unset("hostname")
-        && unset("tailscale_auth_key")
+        && config["hostname"].as_str().unwrap_or("").is_empty()
+        && config["ansible_vars"]["devbox_install_tailscale"].is_null()
     {
-        config["tailscale_auto_key"] = json!(true);
+        set_pointer(
+            config,
+            "/ansible_vars/devbox_install_tailscale",
+            json!(false),
+        );
     }
 }
 
 /// What the home screen's Secrets tab says of a secret berth uses itself, if it is one.
 pub fn own_secret_help(name: &str) -> Option<&'static str> {
     (name == berth_api::profile::TAILNET_API_KEY).then_some(
-        "The API key of the tailnet's control server: a Tailscale API access token, or a Headscale API key (headscale apikeys create). berth creates one-use enrollment keys with it, for hosts that join the tailnet automatically and for F4 on the key field. It is never sent to a host. Enter replaces it, x twice removes it.",
+        "The API key of the tailnet's control server: a Tailscale OAuth client with the auth_keys scope as CLIENT_ID:CLIENT_SECRET, a Tailscale API access token, or a Headscale API key (headscale apikeys create). berth makes a one-use key with it for each host that joins the tailnet. An access token expires after at most 90 days, and an OAuth client does not. It is never sent to a host. Enter replaces it, x twice removes it.",
     )
 }
 
@@ -199,13 +344,6 @@ pub fn set_pointer(config: &mut Value, pointer: &str, value: Value) {
         ("/access/sudo", Value::Bool(asks)) => json!(if *asks { "password" } else { "none" }),
         _ => value,
     };
-    // A pasted key would win over the automatic one and is hidden from then on.
-    if pointer == "/tailscale_auto_key"
-        && value == json!(true)
-        && let Some(profile) = config.as_object_mut()
-    {
-        profile.remove("tailscale_auth_key");
-    }
     let mut node = config;
     let mut parts = pointer.trim_start_matches('/').split('/').peekable();
     while let Some(part) = parts.next() {
@@ -420,6 +558,13 @@ pub fn commit(config: &mut Value, field: Field, value: &str) -> Result<(), Strin
     {
         return Err(format!("Choose one of: {}", choices.join(", ")));
     }
+    // A type changes more than its field, such as a node's accounts going.
+    if field == Field::Type {
+        let host_type = berth_api::HostType::parse(value)
+            .ok_or_else(|| format!("Choose one of: {}", crate::fields::TYPES.join(", ")))?;
+        berth_api::profile::set_host_type(config, host_type);
+        return Ok(());
+    }
     if let Some(name) = spec.pointer.strip_prefix("/ansible_vars/")
         && value.is_empty()
     {
@@ -521,11 +666,37 @@ pub struct Profile<'a> {
     /// Whether the host's name can be the machine's: a profile without a
     /// hostname takes it.
     pub named: bool,
+    /// Whether berth has the API key of the tailnet's control server, which
+    /// a host that joins the tailnet needs.
+    pub tailnet_key: bool,
 }
 
 impl<'a> Profile<'a> {
     pub fn keys(&self, account: Account) -> Vec<String> {
         account_keys(self.config, account.name())
+    }
+
+    /// Whether the profile is a node's: a server applied without a desktop
+    /// or accounts of its own.
+    pub fn is_node(&self) -> bool {
+        berth_api::profile::host_type(self.config) == berth_api::HostType::Node
+    }
+
+    /// The type of host whose features the Features tab offers: a node's,
+    /// or else a workstation's, as only those two are given features.
+    fn feature_host_type(&self) -> berth_api::HostType {
+        match self.is_node() {
+            true => berth_api::HostType::Node,
+            false => berth_api::HostType::Workstation,
+        }
+    }
+
+    /// The features, by index, a host of this profile can have.
+    pub fn offered_features(&self) -> Vec<usize> {
+        let host_type = self.feature_host_type();
+        (0..self.features.len())
+            .filter(|index| self.features[*index].fits(host_type))
+            .collect()
     }
 
     pub fn text(&self, field: Field) -> &'a str {
@@ -536,7 +707,7 @@ impl<'a> Profile<'a> {
             .unwrap_or("");
         match (field, text) {
             (Field::Login, "") => "berth",
-            (Field::Level, "") => "workstation",
+            (Field::Type, "") => "workstation",
             _ => text,
         }
     }
@@ -662,6 +833,7 @@ impl<'a> Profile<'a> {
             true => &[Cockpit, Docker],
             false => &[],
         };
+        let host_type = self.feature_host_type();
         let builtin: [(&str, &[Field]); 6] = [
             ("Coding Agents", &[]),
             ("Agent Orchestrator", &[]),
@@ -684,10 +856,17 @@ impl<'a> Profile<'a> {
             .iter()
             .map(|(title, fields)| FeatureGroup {
                 title: (*title).to_owned(),
-                items: fields.iter().map(|field| Item::Field(*field)).collect(),
+                // berth's own things to install are a workstation's.
+                items: match self.is_node() {
+                    true => vec![],
+                    false => fields.iter().map(|field| Item::Field(*field)).collect(),
+                },
             })
             .collect();
         for (index, feature) in self.features.iter().enumerate() {
+            if !feature.fits(host_type) {
+                continue;
+            }
             let item = Item::Feature(index);
             let known = groups
                 .iter_mut()
@@ -769,6 +948,7 @@ impl<'a> Profile<'a> {
     pub fn fields(&self) -> Vec<Field> {
         use Field::*;
         match self.step {
+            Step::Features if self.is_node() => vec![],
             Step::Features => {
                 let mut fields = vec![
                     ToolsWeb,
@@ -820,7 +1000,7 @@ impl<'a> Profile<'a> {
         if self.locked() {
             return vec![];
         }
-        vec![Level, SshHost, SshUser, SshPort, Login, AskBecomePass]
+        vec![Type, SshHost, SshUser, SshPort, Login, AskBecomePass]
     }
 
     /// The fields of the Install tab: those before the provisioner's rows,
@@ -832,34 +1012,43 @@ impl<'a> Profile<'a> {
             return (vec![], vec![]);
         }
         // A host below a workstation needs only to be reached.
-        let level = berth_api::profile::level(self.config);
-        if action == Action::Ssh && level != berth_api::HostLevel::Workstation {
-            let mut after = vec![Level, SshHost, SshUser, SshPort, Login];
-            // Nothing is installed on a reachable host, so nothing asks for sudo.
-            if level == berth_api::HostLevel::Controller {
+        let host_type = berth_api::profile::host_type(self.config);
+        // A node is applied over SSH, without a desktop, and may join the tailnet.
+        if action == Action::Ssh && host_type == berth_api::HostType::Node {
+            return (
+                vec![],
+                vec![
+                    Type,
+                    SshHost,
+                    SshUser,
+                    SshPort,
+                    Login,
+                    AskBecomePass,
+                    Tailscale,
+                ],
+            );
+        }
+        if action == Action::Ssh && host_type != berth_api::HostType::Workstation {
+            let mut after = vec![Type, SshHost, SshUser, SshPort, Login];
+            // Nothing is installed on a host of the type ssh, so nothing asks for sudo.
+            if host_type == berth_api::HostType::Managed {
                 after.push(AskBecomePass);
             }
             return (vec![], after);
         }
-        // A created machine is always a cloud host, so there is no profile to choose.
+        // A created machine is always a cloud host, so there is no target to choose.
         let before = match action {
             Action::Machine => vec![],
-            _ => vec![Profile],
+            _ => vec![Target],
         };
         let mut after = vec![];
         if action == Action::Ssh {
-            after.extend([Level, SshHost, SshUser, SshPort, Login, AskBecomePass]);
+            after.extend([Type, SshHost, SshUser, SshPort, Login, AskBecomePass]);
         }
         if action.installer() || action.seeds() {
             after.push(Hostname);
         }
         after.push(Tailscale);
-        if self.enabled(Tailscale) {
-            after.extend([TailscaleLoginServer, TailscaleAuto]);
-            if !self.enabled(TailscaleAuto) {
-                after.push(TailscaleKey);
-            }
-        }
         (before, after)
     }
 
@@ -873,6 +1062,8 @@ impl<'a> Profile<'a> {
             Action::Save | Action::Release | Action::Manage => return (vec![], vec![], vec![]),
             // The container only has the agent account.
             Action::Docker => return (vec![AgentUser], vec![], vec![]),
+            // A node has no accounts of its own: sessions run as the SSH user.
+            _ if self.is_node() => return (vec![], vec![("Access", vec![HardenSsh])], vec![]),
             _ => {}
         }
         let accounts = vec![
@@ -964,19 +1155,7 @@ impl<'a> Profile<'a> {
         } else {
             self.text(field).to_owned()
         };
-        let (value, kind) = match field {
-            // Enough of the key to recognise it, not enough to use it.
-            Field::TailscaleKey if value.len() > 24 && value.is_ascii() => (
-                format!(
-                    "{}…{}",
-                    &value[..value.len().min(16)],
-                    &value[value.len() - 4..]
-                ),
-                Kind::Text,
-            ),
-            _ => (value, spec.kind),
-        };
-        let mut line = value_line(spec.label, &value, kind);
+        let mut line = value_line(spec.label, &value, spec.kind);
         line.spans.insert(0, Span::styled(prefix.to_owned(), muted));
         rows.push(Row::entry(line, Entry::Field(field)));
     }
@@ -1046,11 +1225,11 @@ impl<'a> Profile<'a> {
         rows
     }
 
-    /// The way of the Install tab the action and the profile's level are:
-    /// over SSH at the level reachable, the host is only logged in to.
+    /// The way of the Install tab the action and the profile's type are:
+    /// over SSH to a host of the type ssh, the host is only logged in to.
     pub fn way(&self) -> Action {
-        match (self.action, berth_api::profile::level(self.config)) {
-            (Action::Ssh, berth_api::HostLevel::Reachable) => Action::Reach,
+        match (self.action, berth_api::profile::host_type(self.config)) {
+            (Action::Ssh, berth_api::HostType::Ssh) => Action::Reach,
             (action, _) => action,
         }
     }
@@ -1059,7 +1238,11 @@ impl<'a> Profile<'a> {
     pub fn method_rows(&self, methods: &[Action]) -> Vec<Row> {
         let mut rows = vec![Row::heading("How To Install")];
         let chosen = self.way();
+        let host_type = berth_api::profile::host_type(self.config);
         for action in methods.iter().copied() {
+            if !action.offered(host_type) && action != chosen {
+                continue;
+            }
             let mark = if action == chosen { "●" } else { "○" };
             rows.push(Row::entry(
                 format!("  {mark} {}", action.label()),
@@ -1116,7 +1299,7 @@ impl<'a> Profile<'a> {
         }
         for problem in own {
             rows.push(Row::info(Line::styled(
-                format!("✗ {}", problem.text),
+                format!("✗ {}", problem.shown()),
                 Style::new().fg(theme::BAD),
             )));
         }
@@ -1142,7 +1325,7 @@ impl<'a> Profile<'a> {
             }
             for problem in placed {
                 rows.push(Row::info(Line::styled(
-                    format!("  ✗ {}", problem.text),
+                    format!("  ✗ {}", problem.shown()),
                     bad,
                 )));
             }
@@ -1185,7 +1368,7 @@ impl<'a> Profile<'a> {
         if matches!(self.action, Action::Machine | Action::Docker) {
             return None;
         }
-        let cloud = self.action == Action::CloudSeed || self.text(Field::Profile) == "cloud";
+        let cloud = self.action == Action::CloudSeed || self.text(Field::Target) == "cloud";
         (cloud && self.text(Field::RecoveryCidr).is_empty()).then(|| {
             if self.enabled(Field::HardenSsh) {
                 "! No recovery SSH CIDR: SSH is reachable from any address (keys only)"
@@ -1200,23 +1383,54 @@ impl<'a> Profile<'a> {
     pub fn problems(&self) -> Vec<String> {
         self.placed_problems()
             .into_iter()
-            .map(|problem| problem.text)
+            .map(|problem| problem.shown())
             .collect()
     }
 
     /// Every problem the profile and the machine show, each on its tab.
     pub fn problems_with(&self, machine: &crate::machine::Machine) -> Vec<Problem> {
+        let mut problems = vec![];
+        if self.action == Action::Ssh && self.text(Field::SshHost).is_empty() {
+            problems.push(Problem::of(
+                Step::Install,
+                Field::SshHost,
+                "The host's address is required: its name, IP address or tailnet name",
+            ));
+        }
+        if let Some(problem) = self.way_problem() {
+            problems.push(problem);
+        }
+        if self.is_node() {
+            problems.extend(self.placed_problems());
+            return problems;
+        }
         // A host below a workstation is only reached: the workstation's settings do not apply.
         if self.action == Action::Ssh
-            && berth_api::profile::level(self.config) != berth_api::HostLevel::Workstation
+            && berth_api::profile::host_type(self.config) != berth_api::HostType::Workstation
         {
-            return vec![];
+            return problems;
         }
-        let mut problems = self.placed_problems();
+        problems.extend(self.placed_problems());
         if self.action == Action::Machine && !machine.exists() {
             problems.extend(machine.problems());
         }
         problems
+    }
+
+    /// That the way chosen cannot install a host of the profile's type.
+    fn way_problem(&self) -> Option<Problem> {
+        let host_type = berth_api::profile::host_type(self.config);
+        let way = self.way();
+        if !self.serves_host() || way.types().contains(&host_type) {
+            return None;
+        }
+        Some(Problem::new(
+            Step::Install,
+            format!(
+                "{} installs a workstation, and this host's type is {host_type}: install it over SSH (method ssh), or make its type workstation",
+                way.label()
+            ),
+        ))
     }
 
     /// [`Profile::problems`], each on the tab of the field it is about.
@@ -1224,12 +1438,29 @@ impl<'a> Profile<'a> {
         use Field::*;
         let action = self.action;
         let mut problems = Vec::new();
-        let mut check = |ok: bool, step: Step, message: &str| {
+        let mut check = |ok: bool, step: Step, field: Field, message: &str| {
             if !ok {
-                problems.push(Problem::new(step, message));
+                problems.push(Problem::of(step, field, message));
             }
         };
         if matches!(action, Action::Save | Action::Release | Action::Manage) {
+            return problems;
+        }
+        if self.is_node() {
+            if action != Action::Ssh {
+                problems.push(Problem::of(
+                    Step::Install,
+                    Type,
+                    "A node is applied over SSH to a server that is installed already: choose Existing host over SSH",
+                ));
+            }
+            // What the profile says that a node has not got, such as accounts.
+            // Its address is the SSH address's own problem.
+            for problem in berth_api::profile::problems(self.config) {
+                if !problem.contains("needs access.address") {
+                    problems.push(Problem::new(Step::Install, problem));
+                }
+            }
             return problems;
         }
         let settings = Step::Settings;
@@ -1237,6 +1468,7 @@ impl<'a> Profile<'a> {
         check(
             valid_username(agent),
             settings,
+            AgentUser,
             "Agent username is invalid or reserved by Ubuntu",
         );
         if action == Action::Docker {
@@ -1247,18 +1479,21 @@ impl<'a> Profile<'a> {
             check(
                 valid_hostname(hostname) || hostname.is_empty() && self.named,
                 Step::Install,
-                "Hostname is missing or invalid (F4 generates)",
+                Hostname,
+                "Hostname is missing or invalid",
             );
         }
         let operator = self.text(OperatorUser);
         check(
             valid_username(operator),
             settings,
+            OperatorUser,
             "Operator username is invalid or reserved by Ubuntu (operator and admin are)",
         );
         check(
             operator != agent,
             settings,
+            AgentUser,
             "Operator and agent need different usernames",
         );
         for (field, name) in [(OperatorHash, "Operator"), (AgentHash, "Agent")] {
@@ -1266,6 +1501,7 @@ impl<'a> Profile<'a> {
             check(
                 hash.is_empty() || valid_password_hash(hash),
                 settings,
+                field,
                 &format!("{name} password hash is not SHA-512 crypt or yescrypt"),
             );
         }
@@ -1273,6 +1509,7 @@ impl<'a> Profile<'a> {
             check(
                 self.keys(account).iter().all(|key| is_public_key(key)),
                 settings,
+                account.field(),
                 &format!("{name} has an SSH public key that is not a supported OpenSSH key"),
             );
         }
@@ -1281,6 +1518,7 @@ impl<'a> Profile<'a> {
                 || !self.text(AgentPrivileges).is_empty()
                 || !self.text(AgentHash).is_empty(),
             settings,
+            AgentHash,
             "Agent needs a password when passwordless sudo is off",
         );
         if action.installer() || action.seeds() {
@@ -1288,6 +1526,7 @@ impl<'a> Profile<'a> {
             check(
                 !self.keys(Account::Operator).is_empty() || !self.own_key.is_empty(),
                 settings,
+                OperatorKey,
                 "Operator needs an SSH key: add one, or make this berth's own",
             );
             // The USB installer asks for a password for the account it makes.
@@ -1296,7 +1535,8 @@ impl<'a> Profile<'a> {
             check(
                 !self.text(OperatorHash).is_empty() || action.seeds(),
                 settings,
-                "Operator password is required (F4 or F5)",
+                OperatorHash,
+                "Operator password is required",
             );
         }
         let geometry = self.text(Geometry);
@@ -1308,6 +1548,7 @@ impl<'a> Profile<'a> {
                     })
                 }),
             settings,
+            Geometry,
             "Desktop size must look like 1600x900",
         );
         if action.installer() {
@@ -1315,16 +1556,19 @@ impl<'a> Profile<'a> {
                 "serial" => check(
                     !self.text(DiskSerial).is_empty(),
                     settings,
+                    DiskSerial,
                     "Serial disk selection needs the target disk serial",
                 ),
                 "model" => check(
                     !self.text(DiskModel).is_empty(),
                     settings,
+                    DiskModel,
                     "Model disk selection needs a model pattern",
                 ),
                 "path" => check(
                     self.text(DiskPath).starts_with("/dev/"),
                     settings,
+                    DiskPath,
                     "Path disk selection needs a /dev/ path or pattern",
                 ),
                 _ => {}
@@ -1335,15 +1579,27 @@ impl<'a> Profile<'a> {
                         .iter()
                         .all(|field| !self.text(*field).is_empty()),
                     settings,
+                    WifiSsid,
                     "Wi-Fi needs an SSID and password",
                 );
             }
+        }
+        // A new machine always needs a key. A host applied over SSH may be on
+        // the tailnet already, which only the host can say, so the apply asks it.
+        if action.installer() || action.seeds() {
+            check(
+                !self.enabled(Tailscale) || self.tailnet_key,
+                Step::Install,
+                Tailscale,
+                "Tailscale is on, and berth has no API key of the tailnet to make the host's key: set the secret tailnet_api_key on the Secrets tab of the home screen, or switch Tailscale off",
+            );
         }
         if action == Action::CloudSeed {
             check(
                 !self.text(ReleaseStore).is_empty()
                     || self.text(ReleaseUrl).starts_with("https://"),
                 settings,
+                ReleaseStore,
                 "Choose where to publish the release, or enter its HTTPS address",
             );
         }
@@ -1367,6 +1623,9 @@ pub struct Page<'a> {
 pub struct Problem {
     pub step: Step,
     pub text: String,
+    /// The field it is about, when it is about one: where the screens
+    /// point, and what the command line asks for or names as the flag.
+    pub field: Option<Field>,
 }
 
 impl Problem {
@@ -1374,6 +1633,24 @@ impl Problem {
         Problem {
             step,
             text: text.into(),
+            field: None,
+        }
+    }
+
+    /// A problem of one field.
+    pub fn of(step: Step, field: Field, text: impl Into<String>) -> Self {
+        Problem {
+            field: Some(field),
+            ..Problem::new(step, text)
+        }
+    }
+
+    /// What the screens show: the text, and the key that fixes it there.
+    pub fn shown(&self) -> String {
+        match self.field {
+            Some(field) if field.is_password_hash() => format!("{} (F4 or F5)", self.text),
+            Some(field) if field.can_generate() => format!("{} (F4 generates)", self.text),
+            _ => self.text.clone(),
         }
     }
 }
@@ -1393,6 +1670,7 @@ mod tests {
             label: key.into(),
             group: group.into(),
             help: String::new(),
+            types: vec![],
         };
         vec![
             feature("demo/agent", "coding agents"),
@@ -1416,6 +1694,7 @@ mod tests {
             secrets: &[],
             own_key: "",
             named: false,
+            tailnet_key: true,
         };
         let groups = profile.feature_groups();
         assert_eq!(groups[0].title, "Coding Agents");
@@ -1425,28 +1704,37 @@ mod tests {
     }
 
     #[test]
-    fn a_host_joins_automatically_or_with_a_pasted_key() {
-        let mut config = json!({"tailscale_auth_key": "tskey-old"});
-        let fields = |config: &Value| {
-            Profile {
-                config,
-                step: Step::Install,
-                action: Action::Ssh,
-                features: &[],
-                registries: &[],
-                secrets: &[],
-                own_key: "",
-                named: false,
-            }
-            .fields()
+    fn the_tailnet_is_one_switch_and_needs_berths_api_key() {
+        let config = json!({"hostname": "studio", "builder": {}});
+        let profile = |tailnet_key: bool| Profile {
+            config: &config,
+            step: Step::Install,
+            action: Action::CloudSeed,
+            features: &[],
+            registries: &[],
+            secrets: &[],
+            own_key: "",
+            named: false,
+            tailnet_key,
         };
-        let shown = fields(&config);
-        assert!(shown.contains(&Field::TailscaleKey));
-        assert!(shown.contains(&Field::TailscaleLoginServer));
-        set_pointer(&mut config, "/tailscale_auto_key", json!(true));
-        assert!(config.get("tailscale_auth_key").is_none());
-        let shown = fields(&config);
-        assert!(shown.contains(&Field::TailscaleAuto) && !shown.contains(&Field::TailscaleKey));
+        let shown = profile(true).fields();
+        assert!(shown.contains(&Field::Tailscale));
+        let lacks = |problems: Vec<String>| {
+            problems
+                .iter()
+                .any(|problem| problem.contains("set the secret tailnet_api_key"))
+        };
+        assert!(!lacks(profile(true).problems()));
+        assert!(lacks(profile(false).problems()));
+        // Without the tailnet there is nothing to make a key for.
+        let off = json!({"builder": {}, "ansible_vars": {"devbox_install_tailscale": false}});
+        assert!(!lacks(
+            Profile {
+                config: &off,
+                ..profile(false)
+            }
+            .problems()
+        ));
         // berth's own API key is no secret a host can be given.
         let names = vec!["github".to_owned(), "tailnet_api_key".to_owned()];
         assert_eq!(host_secrets(names), ["github"]);
@@ -1479,6 +1767,7 @@ mod tests {
             secrets: &[],
             own_key: "",
             named: false,
+            tailnet_key: true,
         };
         let problems = profile.problems();
         assert!(problems.iter().any(|problem| problem.contains("Hostname")));
@@ -1511,23 +1800,22 @@ mod tests {
     }
 
     #[test]
-    fn a_new_host_enrolls_itself_when_berth_has_the_api_key() {
+    fn a_new_host_joins_the_tailnet_when_berth_has_the_api_key() {
         let names = vec!["tailnet_api_key".to_owned()];
         let mut new = json!({});
         default_enrollment(&mut new, &names);
-        assert_eq!(new["tailscale_auto_key"], true);
-        // Without the key there is nothing to make enrollment keys with.
+        assert_eq!(new, json!({}));
+        // Without the key there is nothing to make its key with: it is reached over SSH.
         let mut new = json!({});
         default_enrollment(&mut new, &["github".to_owned()]);
-        assert!(new.get("tailscale_auto_key").is_none());
-        // A host that was set up, or has a key of its own, keeps its choice.
+        assert_eq!(new["ansible_vars"]["devbox_install_tailscale"], false);
+        // A host that was set up, or chose already, keeps its choice.
         for kept in [
             json!({"hostname": "studio"}),
-            json!({"tailscale_auth_key": "tskey-auth-example"}),
-            json!({"tailscale_auto_key": false}),
+            json!({"ansible_vars": {"devbox_install_tailscale": true}}),
         ] {
             let mut profile = kept.clone();
-            default_enrollment(&mut profile, &names);
+            default_enrollment(&mut profile, &["github".to_owned()]);
             assert_eq!(profile, kept);
         }
     }
@@ -1548,6 +1836,7 @@ mod tests {
             secrets: &[],
             own_key: "ssh-ed25519 AAAA berth@studio",
             named: true,
+            tailnet_key: true,
         };
         let problems = profile.problems_with(machine);
         profile
@@ -1613,7 +1902,7 @@ mod tests {
         let install = tab(&config, Action::Machine, Step::Install, &machine);
         // What has to be chosen, in order, and none of what has a default.
         let order = [
-            "● Create a machine",
+            "● From a provisioner",
             "Provisioner  Incus virtual machine",
             "└─ server *  Not set",
             "Hostname",
@@ -1625,9 +1914,9 @@ mod tests {
                 "{pair:?}"
             );
         }
-        // A created machine is always a cloud host: there is no profile to choose.
+        // A created machine is always a cloud host: there is no target to choose.
         for elsewhere in [
-            "Host profile",
+            "Target",
             "cpus",
             "Operator username",
             "Desktop size",
@@ -1644,7 +1933,7 @@ mod tests {
 
         let settings = tab(&config, Action::Machine, Step::Settings, &machine);
         let order = [
-            "Machine",
+            "Size",
             "├─ cpus  1",
             "└─ memory  1",
             "Provisioner Options",
@@ -1676,9 +1965,9 @@ mod tests {
         assert!(place(&run, "Install") < place(&run, "  ✗ server is required"));
         assert!(
             place(&run, "✗ server is required")
-                < place(&run, "[Create machine · Incus virtual machine]")
+                < place(&run, "[Create with Incus virtual machine]")
         );
-        assert!(place(&run, "[Create machine") < place(&run, "[Save · Ctrl+S]"));
+        assert!(place(&run, "[Create with") < place(&run, "[Save · Ctrl+S]"));
         assert!(
             !run.iter()
                 .any(|row| row.contains("✓ Ready") || row.contains("[Run ·"))
@@ -1692,7 +1981,7 @@ mod tests {
             "agent_passwordless_sudo": true});
         let machine = crate::machine::Machine::default();
         let install = tab(&config, Action::CloudSeed, Step::Install, &machine);
-        assert!(place(&install, "Host profile") < place(&install, "Hostname  studio"));
+        assert!(place(&install, "Target") < place(&install, "Hostname  studio"));
         assert!(
             !install
                 .iter()
@@ -1707,7 +1996,7 @@ mod tests {
         assert!(
             !settings
                 .iter()
-                .any(|row| row.contains("Disk selection") || row.contains("Machine"))
+                .any(|row| row.contains("Disk selection") || row.contains("Size"))
         );
         assert_eq!(
             settings.last().unwrap(),
@@ -1765,13 +2054,14 @@ mod tests {
             secrets: &[],
             own_key: "ssh-ed25519 AAAA berth@studio",
             named: true,
+            tailnet_key: true,
         };
         let placed = profile.placed_problems();
         let on = |step: Step| -> Vec<String> {
             placed
                 .iter()
                 .filter(|problem| problem.step == step)
-                .map(|problem| format!("✗ {}", problem.text))
+                .map(|problem| format!("✗ {}", problem.shown()))
                 .collect()
         };
         assert_eq!(
@@ -1821,6 +2111,7 @@ mod tests {
                 secrets: &["github".to_owned()],
                 own_key: "",
                 named: true,
+                tailnet_key: true,
             };
             let problems = profile.problems_with(&machine);
             for row in profile.page_rows(Page {
@@ -1839,10 +2130,82 @@ mod tests {
     }
 
     #[test]
+    fn a_long_problem_wraps_under_itself_and_rows_to_choose_stay_whole() {
+        let problem = "✗ The USB installer is built where berth serve runs, with berth ui there";
+        let rows = vec![
+            Row::entry(
+                "  ○ USB installer, a way that has a long label too",
+                Entry::Action(Action::Iso),
+            ),
+            Row::info(Line::styled(problem, Style::new().fg(theme::BAD))),
+        ];
+        let drawn = wrapped(rows, 40);
+        let text: Vec<String> = drawn.iter().map(|row| row.line.to_string()).collect();
+        assert_eq!(
+            text,
+            [
+                "  ○ USB installer, a way that has a long label too",
+                "✗ The USB installer is built where",
+                "  berth serve runs, with berth ui",
+                "  there",
+            ]
+        );
+        assert!(drawn[0].entry.is_some() && drawn[1..].iter().all(|row| row.entry.is_none()));
+        // Every word is kept, in its colour, and nothing is wider than the panel.
+        let joined: Vec<&str> = text[1..]
+            .iter()
+            .flat_map(|line| line.split_whitespace())
+            .collect();
+        assert_eq!(joined.join(" "), problem);
+        assert!(text[1..].iter().all(|line| line.chars().count() <= 38));
+        assert!(
+            drawn[2]
+                .line
+                .spans
+                .iter()
+                .any(|span| span.style.fg == Some(theme::BAD))
+        );
+        // A word longer than a line is broken at its end.
+        let long = wrap_line(&Line::raw(format!("  ! {}", "x".repeat(30))), 20);
+        assert!(long.iter().all(|line| line.width() <= 20), "{long:?}");
+        assert_eq!(long.len(), 2);
+    }
+
+    #[test]
+    fn a_nodes_install_tab_offers_only_the_ways_over_ssh() {
+        for host_type in ["node", "managed", "ssh"] {
+            let config = json!({"target": "laptop", "type": host_type});
+            let rows = tab(&config, Action::Ssh, Step::Install, &incus());
+            let ways: Vec<&String> = rows.iter().filter(|row| row.starts_with("  ")).collect();
+            for way in ["From a provisioner", "USB installer", "Cloud-init seed"] {
+                assert!(
+                    !ways.iter().any(|row| row.ends_with(way)),
+                    "{host_type}: {rows:?}"
+                );
+            }
+            assert!(
+                ways.iter()
+                    .any(|row| row.ends_with("Existing host over SSH")),
+                "{host_type}: {rows:?}"
+            );
+        }
+        let rows = tab(
+            &json!({"target": "laptop"}),
+            Action::Ssh,
+            Step::Install,
+            &incus(),
+        );
+        assert!(
+            rows.iter().any(|row| row.ends_with("USB installer")),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
     fn an_existing_host_can_be_added_to_be_reached_over_ssh_alone() {
-        let mut config = json!({"profile": "laptop"});
+        let mut config = json!({"target": "laptop"});
         assert_eq!(Action::Reach.choose(&mut config), Action::Ssh);
-        assert_eq!(config["level"], "reachable");
+        assert_eq!(config["type"], "ssh");
         let machine = incus();
         let profile = Profile {
             config: &config,
@@ -1853,6 +2216,7 @@ mod tests {
             secrets: &[],
             own_key: "",
             named: true,
+            tailnet_key: true,
         };
         assert_eq!(profile.way(), Action::Reach);
         let rows: Vec<String> = profile
@@ -1879,16 +2243,13 @@ mod tests {
             "{rows:?}"
         );
         assert!(!rows.iter().any(|row| row.contains("sudo")), "{rows:?}");
-        assert!(
-            !rows.iter().any(|row| row.contains("Host profile")),
-            "{rows:?}"
-        );
+        assert!(!rows.iter().any(|row| row.contains("Target")), "{rows:?}");
         // Installing over SSH again means installing something.
         assert_eq!(Action::Ssh.choose(&mut config), Action::Ssh);
-        assert!(config.get("level").is_none());
-        let mut controller = json!({"level": "controller"});
-        Action::Ssh.choose(&mut controller);
-        assert_eq!(controller["level"], "controller");
+        assert!(config.get("type").is_none());
+        let mut managed = json!({"type": "managed"});
+        Action::Ssh.choose(&mut managed);
+        assert_eq!(managed["type"], "managed");
     }
 
     #[test]
@@ -1899,9 +2260,9 @@ mod tests {
             (Action::Iso, "laptop", "laptop"),
             (Action::Ssh, "laptop", "laptop"),
         ] {
-            let mut config = json!({"profile": before});
-            fit_profile(&mut config, action);
-            assert_eq!(config["profile"], after, "{action:?}");
+            let mut config = json!({"target": before});
+            fit_target(&mut config, action);
+            assert_eq!(config["target"], after, "{action:?}");
         }
     }
 }

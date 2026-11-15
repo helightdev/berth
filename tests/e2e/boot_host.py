@@ -51,7 +51,7 @@ class FirstBoot(unittest.TestCase):
         return self.station.root_on_host(command).stdout
 
     def test_the_first_boot_applied_the_release_it_was_given(self):
-        self.assertEqual(self.root('cat /var/lib/devbox/provision-state').strip(), 'configured-needs-enrollment')
+        self.assertEqual(self.root('cat /var/lib/devbox/provision-state').strip(), 'configured')
         deployment = json.loads(self.root('cat /opt/devbox-bootstrap/deployment.json'))
         self.assertEqual(self.root('cat /var/lib/devbox/ready').strip(), deployment['release_sha256'])
         self.assertEqual(self.root('readlink /opt/devbox/current').strip(),
@@ -78,7 +78,7 @@ class FirstBoot(unittest.TestCase):
         unit = show(self.station, SERVICE, 'ActiveState', 'UnitFileState', 'User')
         self.assertEqual((unit['ActiveState'], unit['UnitFileState'], unit['User']), ('active', 'enabled', AGENT))
         answer = wait_for('the service answering', lambda: (done := self.station.berth(
-            'call', HOST, 'e2e/echo', 'say', '{"text": "hi"}', check=False)).returncode == 0 and done, timeout=60)
+            'service', 'call', HOST, 'e2e/echo', 'say', '{"text": "hi"}', check=False)).returncode == 0 and done, timeout=60)
         self.assertEqual(json.loads(answer.stdout), {'method': 'say', 'body': {'text': 'hi'}, 'level': 'host'})
 
     def test_ssh_takes_keys_only_and_no_root(self):
@@ -132,7 +132,7 @@ class FirstBoot(unittest.TestCase):
     def test_the_status_task_ends_well(self):
         done = self.station.berth('run', HOST, 'status', check=False, timeout=180)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        for line in (f'Host        {HOST}', 'Provision   configured-needs-enrollment', 'ssh         active',
+        for line in (f'Host        {HOST}', 'Provision   configured', 'ssh         active',
                      'berthd      active'):
             self.assertIn(line, done.stdout)
         self.assertNotRegex(done.stdout, r'(?m)^Failed', done.stdout)
@@ -159,7 +159,7 @@ class Units(unittest.TestCase):
         before = self.state(SERVICE)['MainPID']
         self.link.post(f'/v1/units/{SERVICE}/stop')
         self.assertEqual(self.state(SERVICE)['ActiveState'], 'inactive')
-        refused = self.station.berth('call', HOST, 'e2e/echo', 'say', '{}', check=False)
+        refused = self.station.berth('service', 'call', HOST, 'e2e/echo', 'say', '{}', check=False)
         self.assertNotEqual(refused.returncode, 0)
         self.link.post(f'/v1/units/{SERVICE}/start')
         self.assertEqual(self.state(SERVICE)['ActiveState'], 'active')
@@ -168,7 +168,7 @@ class Units(unittest.TestCase):
         restarted = self.state(SERVICE)['MainPID']
         self.assertEqual(len({before, started, restarted}), 3, (before, started, restarted))
         wait_for('the service answering again', lambda: self.station.berth(
-            'call', HOST, 'e2e/echo', 'say', '{}', check=False).returncode == 0, timeout=60)
+            'service', 'call', HOST, 'e2e/echo', 'say', '{}', check=False).returncode == 0, timeout=60)
         status, answer = self.link.request('POST', f'/v1/units/{SERVICE}/mask', {})
         self.assertEqual(status, 400, answer)
 
@@ -200,7 +200,7 @@ class Reapply(unittest.TestCase):
 
 @needs_boot
 class Reboot(unittest.TestCase):
-    """berth apply --all --reboot on a host that needs it."""
+    """berth rollout --all --reboot on a host that needs it."""
 
     @classmethod
     def setUpClass(cls):
@@ -213,7 +213,7 @@ class Reboot(unittest.TestCase):
         sleeper = self.link.post('/v1/sessions', {'kind': 'process', 'title': 'busy', 'command': ['sleep', '900']})
         boot = station.root_on_host('cat /proc/sys/kernel/random/boot_id').stdout
         try:
-            refused = station.berth('apply', '--all', '--reboot', check=False, timeout=1800)
+            refused = station.berth('rollout', '--all', '--reboot', check=False, timeout=1800)
             self.assertEqual(refused.returncode, 1, refused.stdout)
             self.assertRegex(refused.stdout, rf'(?m)^{HOST}: failed: needs a reboot, but 1 session is running there')
             self.assertEqual(station.root_on_host('cat /proc/sys/kernel/random/boot_id').stdout, boot)
@@ -224,7 +224,7 @@ class Reboot(unittest.TestCase):
         station = self.station
         station.root_on_host('touch /var/run/reboot-required')
         boot = station.root_on_host('cat /proc/sys/kernel/random/boot_id').stdout
-        done = station.berth('apply', '--all', '--reboot', check=False, timeout=2400)
+        done = station.berth('rollout', '--all', '--reboot', check=False, timeout=2400)
         self.assertEqual(done.returncode, 0, done.stdout[-3000:] + done.stderr[-2000:])
         self.assertIn(f'▸ {HOST}: rebooting', done.stdout)
         self.assertIn(f'✓ {HOST} is up to date', done.stdout)
@@ -235,8 +235,9 @@ class Reboot(unittest.TestCase):
 
 
 # Enrolment in a tailnet on first boot, against a control server of the tests'
-# own. boot.py gives the profile the key and switches Tailscale on when
-# BERTH_CI_BOOT_CONTROL_URL and BERTH_CI_BOOT_CONTROL_KEY are set.
+# own. boot.py gives berth its API key and switches Tailscale on when
+# BERTH_CI_BOOT_CONTROL_URL and BERTH_CI_BOOT_CONTROL_KEY are set, and the
+# seed carries a key berth made there.
 @needs_boot
 class Enrolment(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('BERTH_BOOT_CONTROL_URL') and os.environ.get('BERTH_BOOT_CONTROL_KEY'),
@@ -247,4 +248,6 @@ class Enrolment(unittest.TestCase):
         self.assertEqual(status['BackendState'], 'Running')
         self.assertEqual(status.get('CurrentTailnet', {}).get('Name') is not None, True)
         deployment = station.root_on_host('cat /opt/devbox-bootstrap/deployment.json').stdout
+        # Neither the API key nor the key berth made for the seed stays.
         self.assertNotIn(os.environ['BERTH_BOOT_CONTROL_KEY'], deployment)
+        self.assertNotIn('devbox_tailscale_auth_key', deployment)

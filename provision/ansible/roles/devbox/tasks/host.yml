@@ -187,33 +187,8 @@
     enabled: false
     state: stopped
   when: not devbox_install_cockpit and devbox_cockpit_unit.stat.exists and devbox_start_services
-- name: Configure timezone
-  ansible.builtin.file:
-    src: "/usr/share/zoneinfo/{{ devbox_timezone }}"
-    dest: /etc/localtime
-    state: link
-    force: true
-- name: Enable English locale
-  ansible.builtin.lineinfile:
-    path: /etc/locale.gen
-    regexp: '^#?\s*en_US.UTF-8 UTF-8'
-    line: en_US.UTF-8 UTF-8
-  register: locale_config
-- name: Generate locale
-  ansible.builtin.command: locale-gen
-  when: locale_config.changed
-- name: Configure unattended security updates without reboots
-  ansible.builtin.copy:
-    dest: /etc/apt/apt.conf.d/52devbox
-    mode: '0644'
-    content: |
-      APT::Periodic::Update-Package-Lists "1";
-      APT::Periodic::Unattended-Upgrade "1";
-      Unattended-Upgrade::Automatic-Reboot "false";
-      Unattended-Upgrade::Origins-Pattern {
-        "origin=Ubuntu,codename=${distro_codename},label=Ubuntu-Security";
-        "site=packages.mozilla.org";
-      };
+- name: Configure the time zone, the locale and security updates
+  ansible.builtin.import_tasks: system.yml
 # Ubuntu only lets programs with an AppArmor profile create user namespaces.
 # Playwright's Chromium and its headless shell have none, so their sandbox
 # would refuse to start.
@@ -255,24 +230,8 @@
     groups: docker
     append: true
   when: devbox_install_docker
-- name: Add Tailscale package signing key
-  ansible.builtin.get_url:
-    url: https://pkgs.tailscale.com/stable/ubuntu/resolute.noarmor.gpg
-    dest: /usr/share/keyrings/devbox-tailscale.gpg
-    mode: '0644'
-  when: devbox_install_tailscale
-- name: Configure Tailscale repository
-  ansible.builtin.copy:
-    dest: /etc/apt/sources.list.d/devbox-tailscale.list
-    content: "deb [signed-by=/usr/share/keyrings/devbox-tailscale.gpg] https://pkgs.tailscale.com/stable/ubuntu resolute main\n"
-    mode: '0644'
-  register: tailscale_repo
-  when: devbox_install_tailscale
 - name: Install Tailscale
-  ansible.builtin.apt:
-    name: tailscale
-    state: present
-    update_cache: "{{ tailscale_repo.changed }}"
+  ansible.builtin.import_tasks: tailscale.yml
   when: devbox_install_tailscale
 - name: Enable machine services
   ansible.builtin.systemd_service:
@@ -362,10 +321,12 @@
     msg: >-
       {% if devbox_serve.rc == 5 %}The desktop and T3 are not published on the tailnet
       ({{ devbox_serve.stdout | trim }}). Reach them through an SSH tunnel, as the
-      access task of the UI's Manage action shows.{% else %}The desktop and T3 were
-      not published on the tailnet ({{ devbox_serve.stdout | default('') | trim }}).
-      Enroll the host and enable HTTPS certificates for the tailnet, then run the
-      publish task from the UI's Manage action or apply again.{% endif %}
+      host's access action shows.{% elif devbox_serve.rc == 3 %}The host is not on the
+      tailnet, so the desktop and T3 are not published on it. Reach them through an
+      SSH tunnel, as the host's access action shows; applying it from berth joins
+      it.{% else %}The desktop and T3 were not published on the tailnet
+      ({{ devbox_serve.stdout | default('') | trim }}). Enable HTTPS certificates for
+      the tailnet, then run the host's publish action or apply again.{% endif %}
   when: devbox_serve is not skipped and devbox_serve.rc | default(0) != 0
 # The timer first fires five minutes after a boot, which has long passed during
 # an install; without this the self-signed certificate stays until a reboot.

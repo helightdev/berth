@@ -7,6 +7,7 @@ rotation of berth's key. No profile is applied.
 It runs on `dock` before e2e_own_key, which wants that host as a provider
 hands it over: at the end the operator's password, its authorized_keys, the
 provided key and the host's SSH host keys are as they were."""
+import json
 import subprocess
 import tempfile
 import time
@@ -99,7 +100,7 @@ class Access(unittest.TestCase):
         """What `berth ssh` does with the profile as it is: the account it
         reached, or its failure. It runs without a terminal, so ssh can ask
         nobody for a password."""
-        return subprocess.run([str(BERTH), 'ssh', HOST, 'id -un'], env=self.station.env, cwd=self.station.home,
+        return subprocess.run([str(BERTH), 'ssh', HOST, '--', 'id -un'], env=self.station.env, cwd=self.station.home,
                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
                               start_new_session=True)
 
@@ -115,13 +116,13 @@ class Access(unittest.TestCase):
         refused = self.logs_in()
         self.assertNotEqual(refused.returncode, 0, refused.stdout)
         own = self.station.own_public()
-        done = self.berth('key', 'trust', HOST, input=self.password + '\n')
+        done = self.berth('key', 'trust', HOST, '--password-stdin', input=self.password + '\n')
         self.assertIn(f'{HOST} takes the key berth now', done.stdout)
         self.assertIn(own, self.authorized())
         self.assertEqual(self.logs_in().stdout.strip(), OPERATOR)
         # The host key it met is recorded, and the password is not kept.
-        self.assertIn(fingerprint(self.original_host_key), self.berth('key', 'host', HOST).stdout)
-        self.assertNotIn(f'ssh/{HOST}', self.berth('secret').stdout)
+        self.assertIn(fingerprint(self.original_host_key), self.berth('host', 'verify', HOST).stdout)
+        self.assertNotIn(f'ssh/{HOST}', self.berth('secret', 'list').stdout)
         self.assertEqual(self.station.read_profile()['access']['auth'], 'berth')
         # Once it takes the key, nothing more is asked or added.
         again = self.berth('key', 'trust', HOST)
@@ -132,21 +133,21 @@ class Access(unittest.TestCase):
         file = self.station.root / 'deploy'
         public = keygen(file, 'deploy@access')
         self.admin.ssh(OPERATOR, 'cat >> ~/.ssh/authorized_keys', input=public + '\n')
-        added = self.berth('key', 'add', 'deploy', str(file))
+        added = self.berth('key', 'import', 'deploy', str(file))
         self.assertIn('Added the key deploy', added.stdout)
-        self.assertNotIn('PRIVATE KEY', added.stdout + self.berth('key').stdout)
+        self.assertNotIn('PRIVATE KEY', added.stdout + self.berth('key', 'list').stdout)
         self.set_auth('key:deploy')
         try:
             self.assertEqual(self.logs_in().stdout.strip(), OPERATOR)
-            options = self.berth('inventory', HOST).stdout
+            options = self.berth('host', 'inventory', HOST).stdout
             self.assertIn('keys/deploy', options)
             self.assertNotIn('keys/berth', options)
-            refused = self.berth('key', 'remove', 'deploy', check=False)
+            refused = self.berth('key', 'remove', 'deploy', '-y', check=False)
             self.assertNotEqual(refused.returncode, 0)
             self.assertIn(HOST, refused.stderr)
         finally:
             self.set_auth('berth')
-        self.berth('key', 'remove', 'deploy')
+        self.berth('key', 'remove', 'deploy', '-y')
 
     def test_3_a_password_goes_through_berths_askpass_helper(self):
         self.set_auth('password')
@@ -156,13 +157,13 @@ class Access(unittest.TestCase):
             self.assertNotEqual(without.returncode, 0)
             self.berth('secret', 'set', f'ssh/{HOST}', input=self.password + '\n')
             self.assertEqual(self.logs_in().stdout.strip(), OPERATOR)
-            self.assertNotIn(self.password, self.berth('inventory', HOST).stdout)
+            self.assertNotIn(self.password, self.berth('host', 'inventory', HOST).stdout)
         finally:
-            self.berth('secret', 'remove', f'ssh/{HOST}', check=False)
+            self.berth('secret', 'remove', f'ssh/{HOST}', '-y', check=False)
             self.set_auth('berth')
 
     def test_4_a_changed_host_key_is_refused_until_it_is_accepted(self):
-        recorded = self.berth('key', 'host', HOST).stdout
+        recorded = self.berth('host', 'verify', HOST).stdout
         self.root(f'rm -f /etc/ssh/ssh_host_* && ssh-keygen -A && {RELOAD_SSHD}')
         new = wait_for('the host showing a new host key',
                        lambda: (now := scanned()) and now != self.original_host_key and now)
@@ -171,17 +172,17 @@ class Access(unittest.TestCase):
         self.assertNotEqual(refused.returncode, 0)
         self.assertRegex(refused.stderr, r'HOST IDENTIFICATION HAS CHANGED|Host key verification failed')
         # berth's own logins say what happened and what to do.
-        said = self.berth('tasks', HOST, check=False)
-        self.assertNotEqual(said.returncode, 0)
-        self.assertIn(f'berth key host {HOST} --accept', said.stderr)
-        self.assertEqual(self.berth('key', 'host', HOST).stdout, recorded)
-        accepted = self.berth('key', 'host', HOST, '--accept')
+        said = json.loads(self.berth('host', 'show', HOST, '-o', 'json').stdout)
+        self.assertFalse(said['reachable'])
+        self.assertIn(f'berth host verify {HOST} --accept', said['error'])
+        self.assertEqual(self.berth('host', 'verify', HOST).stdout, recorded)
+        accepted = self.berth('host', 'verify', HOST, '--accept', '-y')
         self.assertIn(fingerprint(new), accepted.stdout)
         self.assertEqual(self.logs_in().stdout.strip(), OPERATOR)
 
     def test_5_a_rotation_replaces_berths_key_on_the_host(self):
         before = self.station.own_public()
-        rotated = self.berth('key', 'rotate', timeout=300)
+        rotated = self.berth('key', 'rotate', 'berth', '-y', timeout=300)
         self.assertIn(f'{HOST} takes the new key', rotated.stdout)
         after = self.station.own_public()
         self.assertNotEqual(after, before)
@@ -190,7 +191,7 @@ class Access(unittest.TestCase):
         self.assertNotIn(before.split()[1], keys)
         # The other lines stay: the deploy key the provider added.
         self.assertIn('deploy@access', keys)
-        self.assertNotIn('being replaced', self.berth('key').stdout)
+        self.assertNotIn('being replaced', self.berth('key', 'list').stdout)
         self.assertEqual(self.logs_in().stdout.strip(), OPERATOR)
         self.assertEqual(Path(f'{self.station.own_key}.pub').read_text().strip(), after)
 
@@ -200,21 +201,20 @@ class Access(unittest.TestCase):
         try:
             server = Workstation('access-penalty', ssh_key=False, trust=False)
             server.write_profile(profile(access={'address': HOST, 'user': OPERATOR, 'auth': 'berth'}))
-            serve = Serve(server, web=False)
+            serve = Serve(server)
             try:
                 client = Workstation('access-penalty-client', ssh_key=False, trust=False)
-                client.berth('config', 'server', serve.url)
-                client.berth('config', 'server_token', serve.token)
+                client.berth('login', serve.url, '--token-stdin', input=serve.token)
                 # The server's channel follower and the host list ask by themselves; each
                 # refused login would count against this address at the host's sshd.
                 for _ in range(5):
-                    client.berth('list')
+                    client.berth('ls')
                     time.sleep(3)
                 host = next(found for found in serve.call('GET', '/v1/hosts') if found['name'] == HOST)
                 self.assertFalse(host['reachable'])
                 self.assertIn('did not take berth', host['error'] or '')
                 # One first contact with the password goes through.
-                done = server.berth('key', 'trust', HOST, input=self.password + '\n', timeout=120)
+                done = server.berth('key', 'trust', HOST, '--password-stdin', input=self.password + '\n', timeout=120)
                 self.assertIn(f'{HOST} takes the key berth now', done.stdout, done.stderr)
                 self.assertNotIn('PerSourcePenalties', done.stdout + done.stderr)
                 self.assertEqual(self.admin.ssh(OPERATOR, 'true', check=False).returncode, 0)

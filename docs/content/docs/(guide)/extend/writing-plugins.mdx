@@ -91,15 +91,18 @@ The plugin's id is the package name without its scope and without a leading `ber
     commands: { type: 'string[]', description: 'Commands the host must have afterwards; added to /etc/devbox/expected-commands, which the self-test checks.' },
     tasks: { type: 'string', description: 'Path of an Ansible task list in the package.' },
     guide: { type: 'string', description: 'Path of a guide for agents in the package.' },
-    actions: { type: 'Action[]', description: "Tasks for the host's overview." },
+    actions: { type: 'Action[]', description: "Actions for the host's overview." },
     services: { type: 'Service[]', description: 'Programs that keep running on the host and answer calls. See Writing a service.' },
     channels: { type: 'Channel[]', description: "Topics of the host's channel the feature uses, with how long messages are kept." },
+    types: { type: 'string[]', default: '["workstation"]', description: 'The host types it is for: workstation, node or both. berth refuses to apply a host whose profile lists a feature that is not for its type.' },
+    offers: { type: 'string[]', description: "Ids of the plugin's provisioners the feature can offer once it is applied on a node. See Offering provisioners." },
+    trusts: { type: '{certificate, key}', description: "The names of two berth secrets, a client certificate and its key, that the host is to trust. berth makes them when it has neither, and the tasks get the certificate alone." },
   }}
 />
 
 ## Actions
 
-An action becomes a task of the host named `PLUGIN:ACTION`. Applying the configuration writes the actions of the chosen features to the host, and they appear on the overview in their group. From the command line: `berth run HOST PLUGIN:ACTION`.
+An action becomes an action of the host's controller named `PLUGIN:ACTION`. Applying the configuration writes the actions of the chosen features to the host, and they appear on the overview in their group. From the command line: `berth run HOST PLUGIN:ACTION`.
 
 <TypeTable
   type={{
@@ -121,9 +124,9 @@ An action becomes a task of the host named `PLUGIN:ACTION`. Applying the configu
 
 The command finds each argument as `BERTH_ARG_NAME` in its environment, upper-cased, with `_` for anything that is not a letter or digit. Values are never pasted into the command line. `choices` is a command whose output lines are the values to offer.
 
-### Steps of other tasks
+### Steps of other actions
 
-An action with `extends` has no row of its own. It runs after the task it extends, every time, and its output follows the task's. Start that output with the plugin's name. A task and its steps run one after another in one session, each as its own user. All steps run even when one fails. `berth run HOST status` includes what plugins add to it.
+An action with `extends` has no row of its own. It runs after the action it extends, every time, and its output follows that action's. Start that output with the plugin's name. An action and its steps run one after another in one session, each as its own user. All steps run even when one fails. `berth run HOST status` includes what plugins add to it.
 
 ### Terminal actions
 
@@ -154,6 +157,39 @@ version: "{{ devbox_unity_cli_version | default('1.0.0-beta.17') }}"
 
 Tasks must be safe to run again, because applying a configuration runs them every time.
 
+On a [node](/docs/use/nodes) there is no agent: `devbox_user` and `devbox_home` are the SSH user and its home, and `devbox_level` is `node`. A feature for a node can also set these:
+
+| Fact | What it adds |
+| --- | --- |
+| `devbox_firewall_rules` | Rules of the node's firewall, as the arguments of `ufw`, such as `allow in on incusbr0`. The role deletes a rule of a feature that the node no longer has |
+| `devbox_node_units` | Units whose state berthd reports, such as `incus` |
+| `devbox_offer` | The provisioners it offers, once the tasks are sure of them |
+
+### Offering provisioners
+
+A feature that lists `offers` sets `devbox_offer` with `set_fact` at the end of its tasks. The role keeps it in the host's `/etc/berth/applied.json`, and berth registers a provisioner of each type after the apply, with the node it is on. The record is readable on the node, so it holds public values only. berth takes the provisioners the feature lists in `offers`, with their own arguments and secrets. It ignores any other provisioner, setting or secret in the record.
+
+A provisioner registered by hand becomes the node's when berth finds the server it names on the node's address and port. The node's word alone, its aliases or the certificate it reports, never changes another provisioner. The apply then names it, and `berth provisioner run NAME adopt node=NODE` makes it the node's.
+
+| Field | Meaning |
+| --- | --- |
+| `provisioners` | The ids it offers now, out of `offers`. All of them when it is left out |
+| `settings` | Values of the provisioners' own arguments. `{address}`, `{user}` and `{port}` become where berth reaches the node and as whom. A URL has to name the node's address |
+| `secrets` | Values of the provisioners' secrets, such as a server's certificate, kept as each provisioner's own |
+| `aliases` | Other values of a setting that reach the same server. A provisioner registered by hand with one is named in the apply's output, and its owner can make it the node's |
+| `fingerprint` | What identifies the server, for the apply's output |
+
+```yaml
+- name: Offer the provisioner of this engine
+  ansible.builtin.set_fact:
+    devbox_offer:
+      provisioners: [container]
+      settings:
+        host: "ssh://{user}@{address}:{port}"
+```
+
+With `trusts`, the certificate is in `devbox_client_certificates`, under the feature's `PLUGIN/ID`, with its `fingerprint` and a `name` for the trust store.
+
 ## Guide
 
 The guide is installed as `/etc/devbox/guides/PLUGIN-FEATURE.md` and linked from the host's `AGENT.md` ([On the host](/docs/reference/on-the-host#what-agents-read)). It is a Jinja template, so it can adapt to the host:
@@ -178,7 +214,7 @@ The topic becomes `PLUGIN/TOPIC`. `keep` is the default for messages published t
 
 ## Writing a provisioner
 
-A provisioner is a program of a plugin that makes things on a platform: machines for saved hosts, and other kinds of things its plugin names. It also has actions of its own, such as listing images or freeing space. Its plugin lists it under `berth.provisioners`, next to `features`, and holds the executable. People register it under a name of their own with `berth provisioner add NAME PLUGIN/ID`, and then use it with `berth provision HOST NAME`, `berth provisioner NAME` and `berth resource` ([Provisioners](/docs/deploy/provisioners), [Resources](/docs/deploy/resources)). The plugins `docker` and `incus` in the berth source are examples.
+A provisioner is a program of a plugin that makes things on a platform: machines for saved hosts, and other kinds of things its plugin names. It also has actions of its own, such as listing images or freeing space. Its plugin lists it under `berth.provisioners`, next to `features`, and holds the executable. People register it under a name of their own with `berth provisioner add NAME PLUGIN/ID`, and then use it with `berth host create HOST --provisioner NAME`, `berth provisioner show NAME` and `berth resource list` ([Provisioners](/docs/deploy/provisioners), [Resources](/docs/deploy/resources)). The plugins `docker` and `incus` in the berth source are examples.
 
 ```json title="package.json"
 {
@@ -250,7 +286,7 @@ A kind:
     label: { type: 'string', default: 'the id', description: 'Name in berth.' },
     setup: { type: '"seed" | "apply"', description: 'For machine. seed: the machine sets itself up from berth\'s cloud seed. apply: berth applies the profile over SSH once the machine answers.' },
     archive: { type: 'boolean', default: 'false', description: 'For a seed machine. The provisioner puts the release archive into the machine itself, so the profile needs no release_url.' },
-    verbs: { type: 'string[]', description: 'Of start, stop, change and logs, the ones it answers for one of these. create, status and destroy are always required.' },
+    verbs: { type: 'string[]', description: 'Of start, stop, change, logs and exec, the ones it answers for one of these. create, status and destroy are always required.' },
     arguments: { type: 'Argument[]', description: 'What making one takes, such as its CPUs and image.' },
     spec: { type: 'object', description: 'For a kind made from a specification: its format and label, such as {"format": "compose", "label": "Compose file"}.' },
     actions: { type: 'Action[]', description: "What it can do to one of these, each run with the verb act. They are listed on the resource's page." },
@@ -273,13 +309,13 @@ A kind other than `machine` belongs to no host. The Docker plugin's `deployment`
 }
 ```
 
-berth keeps the specification and never reads it. People give it with `berth deploy` or `berth resource ID change --spec FILE` ([Deployments](/docs/deploy/deployments)).
+berth keeps the specification and never reads it. People give it with `berth resource create` or `berth resource set ID --spec FILE` ([Deployments](/docs/deploy/deployments)).
 
-An action takes most fields of a [task's action](#actions):
+An action takes most fields of a [host's action](#actions):
 
 | Field | Means |
 | --- | --- |
-| `name`, `label`, `help` | As for a task |
+| `name`, `label`, `help` | As for a host's action |
 | `group` | The group of the provisioner's page it is listed in |
 | `arguments` | What it asks for |
 | `confirm` | The question to answer yes to first |
@@ -347,7 +383,7 @@ When the command ends, berth ends everything it started in the process group. Do
 | --- | --- |
 | `status`, `list`, an `act` that only reads | 30 seconds |
 | `start`, `stop`, `destroy`, `change` | 5 minutes |
-| `create`, an `act` that changes something | 15 minutes |
+| `create`, `exec`, an `act` that changes something | 15 minutes |
 | `logs` | Until it ends, or the one who asked stops reading |
 
 A command that takes longer is killed with its group.
@@ -373,6 +409,7 @@ A verb about one resource also gets these. `status` without an `id`, `list` and 
 | `host` | The host's name, for a machine |
 | `id` | The id `create` answered with, once it has |
 | `labels` | For a machine, `berth-host` with the host's name and `berth-instance` with the token. For another kind, `berth-resource` with berth's id of the resource and `berth-token` with the token |
+| `node` | The node the provisioner is on, when a node's apply registered it. The node's controller dials its endpoints |
 
 The verbs about a resource get the `arguments` that `create` was given, with defaults for any argument added since. A resource of any other kind gets the provisioner's own arguments and its kind's.
 
@@ -380,11 +417,13 @@ Each verb adds to it and answers like this:
 
 | Verb | Request adds | Answer |
 | --- | --- | --- |
-| `create` | `token`. For a machine, `seed` or `access`. For another kind, `environment`, and `spec` when the kind has one | `id`, and optionally `address` and `port` |
-| `status` | `id` | `state`, which is `running`, `stopped` or `gone`, and optionally `address`. berth shows `gone` as `missing` |
+| `create` | `token`. For a machine, `seed` or `access`. For another kind, `environment`, and `spec` when the kind has one | `id`, and optionally `address`, `port` and `endpoints` |
+| `status` | `id` | `state`, which is `running`, `stopped` or `gone`, and optionally `address` and `endpoints`. berth shows `gone` as `missing` |
 | `status` | nothing | The provisioner itself: `state` (`ready` unless it says otherwise), `message`, `details`, `values` |
-| `destroy`, `start`, `stop` | `id` | `{}` |
-| `change` | `id`, the new values in `arguments`, `changed` with the names of the arguments whose value is new, and `environment`. For a kind with a specification, `spec`: the new one, or the one berth has | `state` |
+| `destroy` | `id` | `{}` |
+| `start`, `stop` | `id` | `{}`, and optionally `state` and `endpoints` |
+| `change` | `id`, the new values in `arguments`, `changed` with the names of the arguments whose value is new, and `environment`. For a kind with a specification, `spec`: the new one, or the one berth has | `state`, and optionally `endpoints` |
+| `exec` | `id`, `command` as a list of words, and `stdin` when there is input | `exit_code`, the command's exit status. Its output goes to standard error |
 | `logs` | `id`, `tail` and `follow` | The log on standard output, a line at a time, until it ends |
 | `list` | nothing | `resources`, a list of `id`, `kind`, `name`, `host` and `state`, of every kind |
 | `act` | `action`: its `name` and its `arguments`. For an action of a kind, also `environment`, and `spec` when the kind has one | `message`, and optionally `details` |
@@ -396,6 +435,31 @@ Each verb adds to it and answers like this:
 For `logs`, `tail` is how many of the last lines to give, and `follow` whether to go on with what comes after them. Give a machine's console, or its boot output when the console has none. An empty log is no failure.
 
 While berth waits for a new machine, it asks `logs` of the machine kind with each `status`, until SSH answers, with `tail` at 100 and `follow` false. It shows the lines it has not shown before. berth removes escape sequences and control characters, shortens long lines and shows at most six lines at a time. It hides the provisioner's secrets and those of the seed. A kind without `logs` is waited for without them.
+
+### Endpoints
+
+An answer about one resource may report where it is reached, as `endpoints`. berth keeps the list with the resource's record, and an answer with `endpoints` replaces it whole. An answer without them leaves the list as it was, and a resource that is gone has none. Report them from `create`, `status` and `change`, so they follow what is there, and from `start` and an `act` that makes it anew when those know.
+
+```json title="Answer of status"
+{"state": "running",
+ "endpoints": [{"name": "8080", "address": "127.0.0.1", "port": 8080, "hint": "http", "local": true},
+               {"name": "bridge-80", "address": "172.17.0.2", "port": 80, "hint": "http", "local": true}]}
+```
+
+| Field | Value |
+| --- | --- |
+| `name` | Unique within the resource. Lowercase letters, digits, `-`, `_` and `.`, up to 63, starting with a letter or a digit |
+| `address` | An IP address or a DNS name, as seen from the machine your engine runs on |
+| `port` | 1 to 65535 |
+| `protocol` | `tcp`, the default, or `udp` |
+| `hint` | What speaks there, such as `http` or `postgres`. berth shows it to people and doesn't read it |
+| `local` | `true` when your engine runs on the machine that dials: the one berth runs on, or the node in the request |
+
+berth leaves out an endpoint that does not fit, and the first of two with the same name stands. `resources.connect` dials only what you report. It dials from the server, or from the node when the request has `node`. Report `local` only for an engine on the server's own machine or on that node, as a loopback address is then the dialling machine's. With `node`, report addresses as the node sees them: `127.0.0.1` for a port published on every address, and the addresses of the node's bridges. For an engine elsewhere, report addresses that other machines can connect to, such as a port published on the engine's own name. Leave out the addresses only its machine routes to.
+
+### Commands
+
+A kind with `exec` among its verbs gets berth's action `exec` ([Run a command in it](/docs/deploy/resources#run-a-command-in-it)). berth sends the command as a list of words in `command`, never as one line for a shell. Run it as it is, with `stdin` on its standard input when the request has it. Write its output to standard error as it comes. Answer with its `exit_code`. Exit with 0 even when the command fails; exit with another code only when you could not run it, such as when the resource is not running. berth records the command line in the job, and not the input.
 
 `details` is a list of rows, each `{"label": …, "value": …}`, which berth shows as they are, such as a pool and how full it is. `values` names, by argument, the values an argument takes here, such as `{"pool": ["default", "fast"]}`. berth offers those in place of what the manifest says.
 
@@ -474,10 +538,10 @@ A provisioner is run again after a crash or a timeout, and it works on machines 
 Install the plugin from its folder and see that berth finds the provisioner and what it says of itself:
 
 ```bash
-berth plugins add ~/src/berth-plugin-lab
+berth plugin add ~/src/berth-plugin-lab
 berth provisioner types
 berth provisioner add lab lab/vm server=https://192.0.2.10:8443
-berth provisioner lab
+berth provisioner show lab
 ```
 
 Run a verb by hand from the package directory with a request on standard input. Use a scratch machine and made-up values:
@@ -490,9 +554,9 @@ echo '{"version":2,"verb":"status","provisioner":"vm","arguments":{"server":"htt
 Then create a machine for a saved host and delete it again:
 
 ```bash
-berth provision studio-2 lab/vm
-berth resource                       # the machine's id, such as r-k3q7wz2m
-berth resource r-k3q7wz2m remove
+berth host create studio-2 --provisioner lab/vm
+berth resource list                       # the machine's id, such as r-k3q7wz2m
+berth resource remove r-k3q7wz2m
 ```
 
-Run `berth provision` a second time while the first has failed to check that it finds the same machine.
+Run `berth host create --provisioner` a second time while the first has failed to check that it finds the same machine.

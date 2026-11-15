@@ -6,15 +6,13 @@ berth sets up and looks after agent workstations. These are Ubuntu machines with
 
 | Path | What it is |
 | --- | --- |
-| `crates/berth/` | The `berth` program: terminal UI, commands and `berth serve` (`crates/berth/src/serve/`). In `serve/`, `actions.rs` has the actions of hosts and of the installation, `keys.rs` the key ring's routes, `provisioners.rs` and `resources.rs` those of provisioners and resources |
+| `crates/berth/` | The `berth` program, for Linux, macOS and Windows. `main.rs` opens the screens, and `src/cli/` is the command line, the same on every system. In `cli/`, `args.rs` is the grammar in clap and `docs.rs` writes the reference page from it. `client.rs` reaches the server. `ask.rs` asks, `follow.rs` shows progress, and `out.rs` prints. On Linux, `src/local/` adds the commands of the server's own machine and `berth serve` (`src/local/serve/`), behind one `#[cfg(target_os = "linux")]`, and `client_only.rs` stands in for it elsewhere. In `serve/`, `here.rs` is the server in berth's own process that the screens and commands use when no other is set, `actions.rs` has the actions of hosts and of the installation, `keys.rs` the key ring's routes, `provisioners.rs` and `resources.rs` those of provisioners and resources |
 | `crates/berth-api/` | Types and the operations table shared by every program (`ops.rs` names each operation, its HTTP route and its role) |
-| `crates/berth-core/` | Hosts, profiles, links to hosts, registries and secrets, and plugins. The store is in `store/`. `kept.rs` and `plugin_state.rs` write files from it, and `import.rs` takes in the files of older versions. `kept_profile.rs` is the profile a host keeps of itself and `berth adopt`. `runner.rs` runs every action as a job. `keys/` is the key ring and how berth logs in to hosts. `level.rs` says what a host can do at each level. `provisioner.rs` and `resource.rs` are the provisioners of plugins and what they made |
-| `crates/berth-tui/` | The parts of the UI that run in a terminal and in a browser |
+| `crates/berth-core/` | Hosts, profiles, links to hosts, registries and secrets, and plugins. The store is in `store/`. `kept.rs` and `plugin_state.rs` write files from it, and `import.rs` takes in the files of older versions. `kept_profile.rs` is the profile a host keeps of itself and `berth host adopt`. `runner.rs` runs every action as a job. `keys/` is the key ring and how berth logs in to hosts. `host_type.rs` says what a host of each type can do. `provisioner.rs` and `resource.rs` are the provisioners of plugins and what they made |
+| `crates/berth-tui/` | The parts of the screens with no terminal in them. `fields.rs`, `setup.rs` and `flow.rs` describe a host's set-up once, for the screens' tabs and the command line's prompts and flags alike, and `theme.rs` has the colours both draw with |
 | `crates/berth-pty/` | Terminals for sessions |
 | `crates/berthd/`, `crates/box/` | The controller on each host and the agent's own tool there |
-| `crates/berth-page/` | The screens of the page of `berth serve`, shared by `berth-web` and `berth-remote`. `device.rs` is what a browser and a terminal each give them, and `portal.rs` the server's portal over it |
-| `crates/berth-web/` | The page of `berth serve --web`, built for WebAssembly: the browser's side of `berth-page`'s device |
-| `crates/berth-remote/` | `berth-remote`, the same screens in a terminal on Linux, macOS and Windows, for a `berth serve` on another machine |
+| `crates/berth-page/` | berth's screens in a terminal. They do everything through the API of a server: one elsewhere, a `berth serve` on its socket, or the one in the process. `net.rs` reaches it, `portal.rs` is its portal, `settings.rs` keeps the server and its token, and `device.rs` is what the program starts them with |
 | `crates/vendor/` | The vendored `tui-input` crate |
 | `provision/` | The installer side of the provisioning source: the role in `ansible/`, first-boot provisioning in `bootstrap/`, the builder of seeds and releases in `bin/devbox.py` and the example profile in `config/`. berth names these paths in `layout` in `crates/berth-core/src/paths.rs` |
 | `plugins/` | The plugins that come with berth, each an npm-format package with a `guide.md`. With `provision/` they make the provisioning source, which berth carries and unpacks with the same layout |
@@ -40,7 +38,7 @@ A new skill gets its own folder and a row here and in `.agents/skills/README.md`
 - Follow the `install-berth` skill. It says which recipe in `recipes/` fits and gives its command.
 - A recipe that erases disks needs the user's word first, for that server and those disks.
 - Do not write an enrollment key or a password into a file in the repository.
-- When a berth server is installed, give the user its address and a setup key from `berth setup-key`. Do not read or print the token in `serve.token`.
+- When a berth server is installed, give the user its address and a setup key from `berth server setup-key`. Do not read or print the token in `serve.token`.
 
 ## Build and check
 
@@ -48,16 +46,15 @@ Use cargo for everything Rust. These are what CI runs:
 
 ```bash
 cargo test --locked
-cargo test --locked -p berth --features web
-cargo fmt --check -p berth-api -p berth-pty -p berth-core -p berth-tui -p berth -p berthd -p box -p berth-page -p berth-web -p berth-remote
+cargo fmt --check -p berth-api -p berth-pty -p berth-core -p berth-tui -p berth -p berthd -p box -p berth-page
 cargo clippy --locked --all-targets -- -D warnings
-cargo clippy --locked --all-targets -p berth --features web -- -D warnings
-cargo clippy --locked -p berth-web --target wasm32-unknown-unknown -- -D warnings
 python3 -m unittest discover -s tests -v
-vale --minAlertLevel=warning README.md docs/content/docs plugins/*/guide.md
+vale --minAlertLevel=warning README.md AGENTS.md docs/content/docs plugins/*/guide.md
 ```
 
-Development and test builds embed quick builds of berthd, box and the page (the `host-dev` and `web-dev` profiles). Only `--release` embeds the release builds. The `web` feature needs the `wasm32-unknown-unknown` target. The Python tests skip their YAML checks without PyYAML, so install `provision/requirements.txt` in a virtual environment to run them all.
+On macOS and Windows berth is the client alone. Check that it still builds there with `cargo check -p berth --target x86_64-pc-windows-msvc` or `--target aarch64-apple-darwin`; the release builds it on those systems.
+
+Development and test builds embed quick builds of berthd and box (the `host-dev` profile). Only `--release` embeds the release builds. The Python tests skip their YAML checks without PyYAML, so install `provision/requirements.txt` in a virtual environment to run them all.
 
 ### In containers
 
@@ -79,6 +76,7 @@ The end-to-end tests in `tests/e2e/` use throw-away containers over SSH, with be
 | `e2e_controller.Controller` | The same host and berth's controller alone, with one playbook run |
 | `e2e_provisioners` | A provisioner of a made-up plugin, and no test host. With Docker, `ci/run.sh` starts an engine on the test network for the Docker plugin's cases |
 | `e2e_restore` | The host `studio` as it is, and a server of its own with an encrypted store. It leaves the host as it is |
+| `e2e_node` | The bare host `dock` applied as a node, with a made-up plugin's feature that offers a provisioner. It runs last there and leaves the node |
 | The rest | A full apply of the profile |
 
 That engine starts with Docker when the run is complete, names `e2e_provisioners` or is the shard that holds it. `BERTH_CI_DOCKER` (`1` or `0`) forces it on or off, and `BERTH_CI_DIND_IMAGES` lists images of your own engine to load into it, as it cannot pull. The header of `ci/run.sh` has the rest.
@@ -92,21 +90,22 @@ CI builds berth once and runs the tests of each test host as a shard, in a job o
 ## API changes
 
 - Add the operation to `crates/berth-api/src/ops.rs` with the role it needs. A test fails when a route has no operation or the other way round.
-- The API documents in `docs/openapi/` are committed. Regenerate them with `BERTH_UPDATE_DOCS=1 cargo test -p berth -p berthd`.
-- The pages under `docs/content/docs/api/host` and `api/serve` are generated from those documents. Do not edit them by hand.
+- The API documents in `docs/openapi/` are committed. Regenerate them with `BERTH_UPDATE_DOCS=1 cargo test -p berth -p berthd`. The same writes the command line's reference page, `docs/content/docs/(guide)/reference/cli.mdx`, from the grammar in `crates/berth/src/cli/args.rs`. A test fails while either is stale.
+- The pages under `docs/content/docs/api/host` and `api/serve` are generated from those documents when the docs are built (`docs/scripts/reference.mjs`), and are not committed. Do not edit them by hand.
+- The screenshots of the docs are taken offscreen by `docs/scripts/screens.py`, from made-up hosts.
 
 ### Actions
 
-Give a new thing a host, the installation, a provisioner or a resource can do an action in the matching registry. It does not get a route of its own. The routes `hosts.act`, `actions.act`, `provisioners.act` and `resources.act` run it, and each action says whether it can run now and what role it needs.
+Give a new thing a host, the installation, a provisioner or a resource can do an action in the matching registry. It does not get a route of its own. The routes `hosts.act`, `installation.act`, `provisioners.act` and `resources.act` run it, and each action says whether it can run now and what role it needs.
 
 | Subject | Where its actions are |
 | --- | --- |
-| A host | `HOST` in `crates/berth/src/serve/actions.rs`, besides the tasks its controller lists |
+| A host | `HOST` in `crates/berth/src/local/serve/actions.rs`, besides the actions its controller lists |
 | The installation | `INSTALLATION` in the same file |
 | A provisioner | `provisioner::actions` in `crates/berth-core/src/provisioner.rs`: its plugin's actions and berth's own |
 | A resource | `resource::actions` in `crates/berth-core/src/resource.rs`: those of its kind and its plugin's |
 
-An action that changes something runs as a job through `runner.rs`.
+An action that changes something runs as a job through `runner.rs`. The screens do everything through the API. What works only with the server's own machine, such as writing a USB drive, is an action that is available to a caller there alone (`Seen::local`: the socket or the process), and says why not to one over the network.
 
 ## Versions and releases
 

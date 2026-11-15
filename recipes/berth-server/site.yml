@@ -9,6 +9,20 @@
   vars_files:
     - vars.yml
   tasks:
+    - name: Check that the helper that updates the server's container came with the recipe
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../../provision/ansible/roles/devbox/files/berth-server-upgrade.py"
+      delegate_to: localhost
+      become: false
+      register: berth_server_helper_found
+
+    - name: Stop when it did not
+      ansible.builtin.assert:
+        that: berth_server_helper_found.stat.exists
+        fail_msg: >-
+          provision/ansible/roles/devbox/files/berth-server-upgrade.py is not beside recipes/.
+          Download the recipe with the command in its README, which takes that file too.
+
     - name: Check that this is an Ubuntu the recipe knows
       ansible.builtin.assert:
         that:
@@ -61,9 +75,58 @@
       when: "'Status: active' not in firewall_state.stdout"
       changed_when: true
 
+    # A machine the incus-host recipe of berth 0.5 set up runs Incus, and the
+    # provisioners registered then reach it as incus-host, and Docker through
+    # its socket: the container keeps both.
+    - name: See whether this machine runs Incus
+      ansible.builtin.stat:
+        path: /var/lib/incus/server.crt
+      register: berth_server_incus
+
+    - name: Find the group of Docker's socket
+      ansible.builtin.command: stat --format %g /var/run/docker.sock
+      register: docker_socket_group
+      changed_when: false
+      when: berth_server_node | bool or berth_server_incus.stat.exists
+
     - name: Run the berth server
       ansible.builtin.include_tasks: ../shared/berth-server.yml
+      vars:
+        berth_server_helper: "{{ playbook_dir }}/../../provision/ansible/roles/devbox/files/berth-server-upgrade.py"
+        # On a node the server reaches this machine as `node`, and its Docker
+        # engine through the socket. The server in the image is no root, so it
+        # joins the socket's group.
+        berth_server_engine: "{{ berth_server_node | bool or berth_server_incus.stat.exists }}"
+        berth_server_options: >-
+          {{ ['--publish', '127.0.0.1:' ~ berth_server_port ~ ':7777',
+              '--volume', berth_server_dir ~ '/config:/config',
+              '--volume', berth_server_dir ~ '/data:/data',
+              '--volume', berth_server_dir ~ '/ssh:/home/berth/.ssh']
+             + (['--add-host', 'node:host-gateway'] if berth_server_node | bool else [])
+             + (['--add-host', 'incus-host:host-gateway'] if berth_server_incus.stat.exists else [])
+             + (['--volume', '/var/run/docker.sock:/var/run/docker.sock',
+                 '--group-add', docker_socket_group.stdout | trim] if berth_server_engine | bool else []) }}
+
+    # Only the public half comes out of the container; berth makes its key there.
+    - name: Read the berth server's public key
+      ansible.builtin.command: docker exec berth berth key show
+      register: berth_server_key
+      changed_when: false
+      when: berth_server_node | bool
+
+    - name: Let the berth server log in to this machine as root
+      ansible.builtin.blockinfile:
+        path: /root/.ssh/authorized_keys
+        create: true
+        mode: "0600"
+        marker: "# {mark} BERTH SERVER IN ITS CONTAINER"
+        block: "{{ berth_server_key.stdout | trim }}"
+      when: berth_server_node | bool
 
     - name: Say how to use the berth server
       ansible.builtin.debug:
-        msg: "{{ berth_server_handover }}"
+        msg: "{{ berth_server_handover + (berth_server_as_node if berth_server_node | bool else []) }}"
+      vars:
+        berth_server_as_node:
+          - "To make this machine a node of the server, on a berth connected to it: berth host add NAME node --user root --type node --feature docker/engine --feature incus/server"
+          - "Then apply it: berth apply NAME"

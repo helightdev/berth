@@ -55,7 +55,7 @@ pub mod layout {
     pub(crate) const OLD_BUILDER: &str = "bin/devbox.py";
 }
 
-/// Settings that `berth config KEY VALUE` can change. Those [`is_local`]
+/// Settings that `berth config set KEY VALUE` can change. Those [`is_local`]
 /// names are in `config.json`, the others in the store.
 pub const SETTINGS: &[(&str, &str)] = &[
     (
@@ -113,7 +113,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ),
     (
         "tailnet_tags",
-        "tags new hosts get, comma separated, such as tag:berth (for Tailscale also DEVBOX_TAILSCALE_TAGS)",
+        "tags new hosts get, comma separated, such as tag:berth; an OAuth client of Tailscale needs them",
     ),
     (
         "store",
@@ -121,7 +121,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ),
     (
         "store_key",
-        "the key file that seals the store's values, made by berth store encrypt (default: store.key in the configuration directory)",
+        "the key file that seals the store's values, made by berth server store encrypt (default: store.key in the configuration directory)",
     ),
     (
         "store_ca",
@@ -469,7 +469,7 @@ fn is_source(dir: &Path) -> bool {
 fn older_source(dir: &Path) -> Result<()> {
     if dir.join(layout::OLD_BUILDER).is_file() && !is_source(dir) {
         return Err(format!(
-            "{} is a provisioning source of an older berth, with {} where this berth looks for {}. Update that checkout, or stop using it with: berth config source \"\" (and unset BERTH_SOURCE)",
+            "{} is a provisioning source of an older berth, with {} where this berth looks for {}. Update that checkout, or stop using it with: berth config unset source (and unset BERTH_SOURCE)",
             dir.display(),
             layout::OLD_BUILDER,
             layout::BUILDER
@@ -617,11 +617,6 @@ mod tests {
         assert_eq!(
             paths.setting_with("server", None).as_deref(),
             Some("http://192.0.2.7:7777")
-        );
-        assert!(crate::server::Server::configured(&paths).is_some());
-        assert_eq!(
-            crate::profiles::scope(&paths),
-            "served:http://192.0.2.7:7777"
         );
         assert_eq!(paths.setting_with("default_host", None), None);
         assert!(paths.settings().is_err());

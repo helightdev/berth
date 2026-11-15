@@ -171,6 +171,7 @@ impl Admin {
                         label: text("label"),
                         group: text("group"),
                         help: text("help"),
+                        types: berth_tui::setup::feature_types(feature),
                     }
                 })
                 .collect();
@@ -348,7 +349,7 @@ impl Admin {
         let body = json!({"arguments": options.arguments()});
         let asked = json!({"action": "rollout"});
         self.portal
-            .call("actions.act", None, asked, body, move |result| {
+            .call("installation.act", None, asked, body, move |result| {
                 let job = match result {
                     Ok(acted) => acted["job"].clone(),
                     Err(error) => {
@@ -556,7 +557,8 @@ impl Admin {
             json!({"name": name, "action": "seed"}),
             Value::Null,
             |admin, acted| {
-                admin.say("");
+                // Until when the seed can join the tailnet, for a host that joins it.
+                admin.say(acted["result"]["tailnet"].as_str().unwrap_or(""));
                 admin.arrive(Arrived::Seed(
                     acted["result"]["user_data"]
                         .as_str()
@@ -577,7 +579,7 @@ impl Admin {
         self.job("apply", name, body, title, size, |_| {});
     }
 
-    /// What the server lists as the host's actions: its tasks and berth's own.
+    /// What the server lists as the host's actions: its controller's and berth's own.
     pub fn actions(&self, name: &str) {
         let admin = self.clone();
         let host = name.to_owned();
@@ -648,7 +650,7 @@ impl Admin {
                 Ok(acted) => {
                     let job = &acted["job"];
                     admin.say("");
-                    admin.data.borrow_mut().job = Some(View::plain(&title, size.0, size.1));
+                    admin.data.borrow_mut().job = Some(View::of_job(&title, size.0, size.1, job));
                     let follower = admin.clone();
                     admin.portal.stream(
                         "jobs.follow",
@@ -748,7 +750,7 @@ impl Admin {
         let mut asked = asked.clone();
         asked.host = Some(name.to_owned());
         asked.kind = "machine".into();
-        let title = format!("Create machine · {name}");
+        let title = format!("Create · {name}");
         let (admin, host) = (self.clone(), name.to_owned());
         self.say("Starting…");
         self.portal.call(
@@ -760,7 +762,7 @@ impl Admin {
                 Ok(created) => {
                     admin.say("");
                     let again = host.clone();
-                    admin.follow(created["job"]["id"].clone(), &title, size, move |admin| {
+                    admin.follow(&created["job"], &title, size, move |admin| {
                         admin.machine(&again)
                     });
                 }
@@ -772,7 +774,7 @@ impl Admin {
     /// Delete the host's machine, the resource `id`, as a job of the server,
     /// and follow it.
     pub fn unprovision(&self, name: &str, id: &str, size: (u16, u16)) {
-        let title = format!("Delete machine · {name}");
+        let title = format!("Destroy · {name}");
         let (admin, host) = (self.clone(), name.to_owned());
         self.portal.call(
             "resources.remove",
@@ -782,7 +784,7 @@ impl Admin {
             move |result| match result {
                 Ok(acted) => {
                     let again = host.clone();
-                    admin.follow(acted["job"]["id"].clone(), &title, size, move |admin| {
+                    admin.follow(&acted["job"], &title, size, move |admin| {
                         admin.machine(&again)
                     });
                 }
@@ -795,7 +797,7 @@ impl Admin {
     /// server, and follow it.
     pub fn power(&self, name: &str, id: &str, verb: &str, size: (u16, u16)) {
         let title = format!(
-            "{} machine · {name}",
+            "{} · {name}",
             if verb == "start" { "Start" } else { "Stop" }
         );
         let (admin, host) = (self.clone(), name.to_owned());
@@ -808,7 +810,7 @@ impl Admin {
                 Ok(acted) if acted["job"].is_null() => admin.machine(&host),
                 Ok(acted) => {
                     let again = host.clone();
-                    admin.follow(acted["job"]["id"].clone(), &title, size, move |admin| {
+                    admin.follow(&acted["job"], &title, size, move |admin| {
                         admin.machine(&again)
                     });
                 }
@@ -882,7 +884,7 @@ impl Admin {
                 Ok(acted) => {
                     admin.say("");
                     let again = id.clone();
-                    admin.follow(acted["job"]["id"].clone(), &title, size, move |admin| {
+                    admin.follow(&acted["job"], &title, size, move |admin| {
                         admin.resource(&again)
                     });
                 }
@@ -1067,7 +1069,7 @@ impl Admin {
                 Ok(acted) => {
                     admin.say("");
                     let again = name.clone();
-                    admin.follow(acted["job"]["id"].clone(), &title, size, move |admin| {
+                    admin.follow(&acted["job"], &title, size, move |admin| {
                         admin.provisioner(&again)
                     });
                 }
@@ -1088,8 +1090,9 @@ impl Admin {
     }
 
     /// Follow a job of the server in a panel; `ended` is run when it has ended.
-    fn follow(&self, id: Value, title: &str, size: (u16, u16), ended: impl Fn(&Admin) + 'static) {
-        self.data.borrow_mut().job = Some(View::plain(title, size.0, size.1));
+    fn follow(&self, job: &Value, title: &str, size: (u16, u16), ended: impl Fn(&Admin) + 'static) {
+        let id = job["id"].clone();
+        self.data.borrow_mut().job = Some(View::of_job(title, size.0, size.1, job));
         let follower = self.clone();
         self.portal
             .stream("jobs.follow", None, json!({"id": id}), move |frame| {

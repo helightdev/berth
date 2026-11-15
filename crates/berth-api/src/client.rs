@@ -68,6 +68,20 @@ fn transport(error: impl std::fmt::Display) -> Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// A connection to a server, whatever carries it: TCP, TLS, a unix socket,
+/// or a pipe to a server in the same process.
+pub trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
+pub type Stream = Box<dyn Io>;
+
+/// How a client reaches its server: each call opens a new connection, for a
+/// request or for a WebSocket.
+pub type Dial = std::sync::Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Stream>> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// A raw answer: status, headers and body.
 pub struct Response {
     pub status: u16,
@@ -238,12 +252,27 @@ where
         Ok((stream, _)) => Ok(stream),
         Err(tungstenite::Error::Http(response)) => {
             let body = response.body().clone().unwrap_or_default();
-            Err(Response {
-                status: response.status().as_u16(),
-                headers: Default::default(),
-                body: body.into(),
+            let status = response.status().as_u16();
+            // The body may still be on its way when the head is read, and
+            // then only the headers say which error it was.
+            let header = |name: &str| response.headers().get(name)?.to_str().ok();
+            let named = header(crate::ERROR_HEADER);
+            let said = header(crate::ERROR_MESSAGE_HEADER)
+                .map(decode)
+                .filter(|said| !said.is_empty());
+            match (serde_json::from_slice::<crate::ErrorBody>(&body), named) {
+                (Err(_), Some(code)) => Err(Error::Api {
+                    status,
+                    code: code.to_owned(),
+                    message: said.unwrap_or_else(|| format!("HTTP {status}: {code}")),
+                }),
+                _ => Err(Response {
+                    status,
+                    headers: Default::default(),
+                    body: body.into(),
+                }
+                .error()),
             }
-            .error())
         }
         Err(error) => Err(transport(error)),
     }
@@ -261,3 +290,31 @@ pub async fn websocket_unix(
 }
 
 pub use crate::escape::{decode, encode, encode_path};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn a_refused_stream_says_why_from_the_head_alone() {
+        let (ours, mut theirs) = tokio::io::duplex(4096);
+        let server = tokio::spawn(async move {
+            let mut asked = [0; 1024];
+            let _ = theirs.read(&mut asked).await;
+            let said = crate::error_message_header("Nothing answers at db: né");
+            // The head alone: the body it promises never comes.
+            let head = format!(
+                "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 80\r\n{}: unreachable\r\n{}: {said}\r\n\r\n",
+                crate::ERROR_HEADER,
+                crate::ERROR_MESSAGE_HEADER,
+            );
+            theirs.write_all(head.as_bytes()).await.unwrap();
+            theirs
+        });
+        let refused = websocket(ours, "/v1/sessions/1", "").await.err().unwrap();
+        assert_eq!(refused.status(), 503);
+        assert_eq!(refused.to_string(), "Nothing answers at db: né");
+        drop(server.await);
+    }
+}

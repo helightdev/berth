@@ -182,10 +182,16 @@
         "type": "object"
       },
       "Applied": {
-        "description": "What berth recorded on a host when it applied the configuration: its own\nversion and the plugins whose features the host has.",
+        "description": "What berth recorded on a host when it applied the configuration: its own\nversion, the plugins whose features the host has, and the provisioners\nthose features offer.",
         "properties": {
           "berth": {
             "type": "string"
+          },
+          "offers": {
+            "items": {
+              "$ref": "#/components/schemas/Offer"
+            },
+            "type": "array"
           },
           "plugins": {
             "items": {
@@ -399,6 +405,43 @@
         ],
         "type": "object"
       },
+      "Endpoint": {
+        "description": "Where a resource can be reached: an address and a port, as its\nprovisioner reports it. The address is as seen from the machine the\nprovisioner's engine runs on, such as a Docker engine or an Incus server.",
+        "properties": {
+          "address": {
+            "description": "An IP address or a DNS name.",
+            "type": "string"
+          },
+          "hint": {
+            "description": "What speaks there, for people, such as `http` or `postgres`.",
+            "type": "string"
+          },
+          "local": {
+            "description": "The engine runs on the server's own machine, so the address is one\nthe server reaches as it is, a loopback address among them.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Unique among the resource's endpoints: lowercase letters, digits, `-`, `_` and `.`.",
+            "type": "string"
+          },
+          "port": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "protocol": {
+            "description": "`tcp` or `udp`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "address",
+          "port",
+          "protocol"
+        ],
+        "type": "object"
+      },
       "ErrorBody": {
         "properties": {
           "error": {
@@ -441,13 +484,21 @@
           },
           "label": {
             "type": "string"
+          },
+          "types": {
+            "description": "The types of host it is for, such as `workstation` or `node`.",
+            "items": {
+              "$ref": "#/components/schemas/HostType"
+            },
+            "type": "array"
           }
         },
         "required": [
           "key",
           "label",
           "group",
-          "help"
+          "help",
+          "types"
         ],
         "type": "object"
       },
@@ -498,7 +549,7 @@
             ]
           },
           "what": {
-            "description": "`hostname`, `password` or `tailscale_key`.",
+            "description": "`hostname` or `password`.",
             "type": "string"
           }
         },
@@ -521,7 +572,7 @@
             ]
           },
           "value": {
-            "description": "The host name, the password's hash, or the key.",
+            "description": "The host name or the password's hash.",
             "type": "string"
           }
         },
@@ -589,10 +640,6 @@
               "null"
             ]
           },
-          "level": {
-            "$ref": "#/components/schemas/HostLevel",
-            "description": "The level its profile means it to have."
-          },
           "name": {
             "type": "string"
           },
@@ -606,13 +653,17 @@
           "seen": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/HostLevel",
-                "description": "The level it was seen to have: what its controller's record says,\n`reachable` when berth logged in and found no controller. Absent\nwhen it could not be asked."
+                "$ref": "#/components/schemas/HostType",
+                "description": "The type it was seen to be: what its controller's record says, `ssh`\nwhen berth logged in and found no controller. Absent when it could\nnot be asked."
               },
               {
                 "type": "null"
               }
             ]
+          },
+          "type": {
+            "$ref": "#/components/schemas/HostType",
+            "description": "The type its profile means it to be."
           },
           "version": {
             "description": "The version of its berthd.",
@@ -626,15 +677,16 @@
           "name",
           "address",
           "reachable",
-          "level"
+          "type"
         ],
         "type": "object"
       },
-      "HostLevel": {
-        "description": "How much of berth a host has: what its profile means it to have, or\nwhat it was seen to have. Each level can do what the ones before it can.",
+      "HostType": {
+        "description": "What berth does with a host: what its profile means it to be, or what it\nwas seen to be. They are in the order of how much of berth each has.",
         "enum": [
-          "reachable",
-          "controller",
+          "ssh",
+          "managed",
+          "node",
           "workstation"
         ],
         "type": "string"
@@ -697,6 +749,13 @@
             "description": "The action it runs, such as `apply`, `rollout` or `provision`.",
             "type": "string"
           },
+          "arguments": {
+            "description": "What it was started with, as people may see it: the command of a\nresource's `exec`, or an action's arguments as `NAME=VALUE`. Never a\nsecret argument, a password or standard input.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "ended": {
             "type": [
               "string",
@@ -730,6 +789,13 @@
           },
           "started": {
             "type": "string"
+          },
+          "stopped_by": {
+            "description": "Who stopped it before it ended by itself.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "subject": {
             "description": "What it was done to: `host:NAME`, `provisioner:NAME`,\n`resource:ID` or `installation`. Empty for a job from before 0.5.",
@@ -985,6 +1051,64 @@
         ],
         "type": "object"
       },
+      "Offer": {
+        "description": "Provisioners a feature of a host offers, as its tasks found them: berth\nregisters each under a name of its own that names the host. The host\nserves this to anyone who may read it, so it holds public values only,\nsuch as a server's certificate, never a key.",
+        "properties": {
+          "aliases": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "Other values of a setting that reach the same server, such as the\nname a berth server on the host gives it: a provisioner registered by\nhand with one of them is named to its owner, who can make it the\nhost's.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "feature": {
+            "description": "The feature, as `PLUGIN/FEATURE`.",
+            "type": "string"
+          },
+          "fingerprint": {
+            "description": "What the host says identifies the server, such as the fingerprint of\nits certificate, for the person who reads the report.",
+            "type": "string"
+          },
+          "provisioners": {
+            "description": "The plugin's provisioners it offers, by their ids in the plugin.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "secrets": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Values of the provisioners' secrets, such as the certificate of the\nserver to pin, kept as the provisioners' own.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "settings": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Values of the provisioners' own arguments. `{address}`, `{user}` and\n`{port}` stand for where berth reaches the host and as whom.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "feature",
+          "provisioners"
+        ],
+        "type": "object"
+      },
       "Output": {
         "properties": {
           "data_b64": {
@@ -1039,9 +1163,55 @@
         ],
         "type": "object"
       },
+      "PluginAction": {
+        "description": "An action a feature adds to a host.",
+        "properties": {
+          "agent": {
+            "description": "The agent may run it with `box run`.",
+            "type": "boolean"
+          },
+          "arguments": {
+            "description": "The names of the arguments it asks for.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "extends": {
+            "description": "Actions of berth it runs after, with no row of its own.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "description": "The action is `PLUGIN:NAME` on the host.",
+            "type": "string"
+          },
+          "user": {
+            "description": "`agent`, `operator` or `root`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "user"
+        ],
+        "type": "object"
+      },
       "PluginFeature": {
         "description": "Something a plugin installs, switched on per host.",
         "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/PluginAction"
+            },
+            "type": "array"
+          },
           "channels": {
             "description": "Channel topics, without the plugin's id.",
             "items": {
@@ -1066,12 +1236,6 @@
           "services": {
             "items": {
               "$ref": "#/components/schemas/PluginService"
-            },
-            "type": "array"
-          },
-          "tasks": {
-            "items": {
-              "$ref": "#/components/schemas/PluginTask"
             },
             "type": "array"
           }
@@ -1220,46 +1384,6 @@
         ],
         "type": "object"
       },
-      "PluginTask": {
-        "description": "A task a feature adds to a host's overview.",
-        "properties": {
-          "agent": {
-            "description": "The agent may run it with `box run`.",
-            "type": "boolean"
-          },
-          "arguments": {
-            "description": "The names of the arguments it asks for.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "extends": {
-            "description": "Tasks of berth it runs after, with no row of its own.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "label": {
-            "type": "string"
-          },
-          "name": {
-            "description": "The task is `PLUGIN:NAME` on the host.",
-            "type": "string"
-          },
-          "user": {
-            "description": "`agent`, `operator` or `root`.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "label",
-          "user"
-        ],
-        "type": "object"
-      },
       "PluginUpdate": {
         "description": "Whether a newer version of a plugin is there, as its registry says.",
         "properties": {
@@ -1359,6 +1483,10 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "node": {
+            "description": "The node it lives on, when a feature of that host offered it.",
+            "type": "string"
           },
           "own": {
             "description": "The names of the provisioner's own arguments, which say where it is,\nsuch as an Incus server. Their values are kept as its settings.",
@@ -1540,6 +1668,13 @@
             "description": "When it was asked for, RFC 3339.",
             "type": "string"
           },
+          "endpoints": {
+            "description": "Where it can be reached, as its provisioner last said: when it was\nmade, changed or checked.",
+            "items": {
+              "$ref": "#/components/schemas/Endpoint"
+            },
+            "type": "array"
+          },
           "external_id": {
             "description": "The provisioner's id of it; empty until `create` said it.",
             "type": "string"
@@ -1587,7 +1722,7 @@
             "type": "string"
           },
           "verbs": {
-            "description": "What can be done to it besides being removed: `start`, `stop`,\n`change`, `logs`, as its kind declares.",
+            "description": "What can be done to it besides being removed: `start`, `stop`,\n`change`, `logs`, `exec`, as its kind declares.",
             "items": {
               "type": "string"
             },
@@ -1793,6 +1928,13 @@
       },
       "Session": {
         "properties": {
+          "action": {
+            "description": "The action it was started for, if any. The sessions an older\nberthd kept on the host say `task`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "cols": {
             "format": "int32",
             "minimum": 0,
@@ -1860,13 +2002,6 @@
               "$ref": "#/components/schemas/Step"
             },
             "type": "array"
-          },
-          "task": {
-            "description": "The task it was started for, if any.",
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "title": {
             "type": "string"
@@ -2026,20 +2161,20 @@
               }
             ]
           },
-          "level": {
+          "mode": {
+            "description": "`system` or `single`.",
+            "type": "string"
+          },
+          "type": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/HostLevel",
-                "description": "What was installed on the host, by that record: `controller` when\nonly the controller was, `workstation` for a whole profile. Absent\nwhen the host keeps no record."
+                "$ref": "#/components/schemas/HostType",
+                "description": "What was installed on the host, by that record: `managed` when\nonly the controller was, `workstation` for a whole profile. Absent\nwhen the host keeps no record."
               },
               {
                 "type": "null"
               }
             ]
-          },
-          "mode": {
-            "description": "`system` or `single`.",
-            "type": "string"
           },
           "version": {
             "type": "string"
@@ -2053,7 +2188,7 @@
       }
     }
   },
-  "description": "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME. Only the `secrets` task is refused; the host's `secrets` action sends the server's own. An action's own role is asked when it runs. Each operation names the least role a caller over TCP needs: view, operate or admin.",
+  "description": "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME/controller. Only the controller's own `secrets` action is refused, for which the server's `secrets` action of the host sends the server's secrets, and `endpoints.connect`, which the server opens itself for `resources.connect`. An action's own role is asked when it runs. Each operation names the least role a caller over TCP needs: view, operate or admin.",
   "hosts": true,
   "operations": [
     {
@@ -2297,7 +2432,7 @@
         }
       ],
       "data": {
-        "description": "The whole profile. A workstation's has a builder object; a reachable or controller host's needs only level and access",
+        "description": "The whole profile. A workstation's has a builder object; a host of the type ssh or managed needs only type and access",
         "schema": {}
       },
       "errors": [
@@ -2320,7 +2455,7 @@
         }
       },
       "role": "admin",
-      "summary": "Save a host's profile: a new host, or a changed one. A host below a workstation needs only its level and access."
+      "summary": "Save a host's profile: a new host, or a changed one. A host that is not a workstation needs only its type and access."
     },
     {
       "args": [
@@ -2385,7 +2520,7 @@
         }
       },
       "role": "view",
-      "summary": "What can be done to a host: the tasks its controller lists, and berth's own actions."
+      "summary": "What can be done to a host: the actions its controller lists, and berth's own."
     },
     {
       "args": [
@@ -2455,17 +2590,17 @@
         }
       },
       "role": "view",
-      "summary": "Run one of a host's actions. One of berth's that changes something is a job; a task of the host is a session there, which a job follows unless it needs a terminal."
+      "summary": "Run one of a host's actions. One of berth's that changes something is a job; an action of the host's controller is a session there, which a job follows unless it needs a terminal."
     },
     {
       "args": [],
-      "group": "actions",
+      "group": "installation",
       "http": {
         "method": "GET",
-        "path": "/v1/actions"
+        "path": "/v1/installation/actions"
       },
       "kind": "call",
-      "name": "actions.list",
+      "name": "installation.actions",
       "portal": true,
       "result": {
         "schema": {
@@ -2481,7 +2616,7 @@
     {
       "args": [
         {
-          "description": "The action, as actions.list names it",
+          "description": "The action, as installation.actions names it",
           "in": "path",
           "name": "action",
           "required": true
@@ -2518,13 +2653,13 @@
           "status": "409"
         }
       ],
-      "group": "actions",
+      "group": "installation",
       "http": {
         "method": "POST",
-        "path": "/v1/actions/{action}"
+        "path": "/v1/installation/actions/{action}"
       },
       "kind": "call",
-      "name": "actions.act",
+      "name": "installation.act",
       "portal": true,
       "result": null,
       "role": "view",
@@ -2913,7 +3048,7 @@
         }
       },
       "role": "admin",
-      "summary": "Change one of the settings that are open to callers."
+      "summary": "Change one of the settings that are open to callers, or any for the user the server runs as."
     },
     {
       "args": [],
@@ -3136,7 +3271,7 @@
         }
       },
       "role": "admin",
-      "summary": "Make up a host name, hash or make up a password, or create a one-use enrollment key at the tailnet's control server."
+      "summary": "Make up a host name, or hash or make up a password."
     },
     {
       "args": [],
@@ -3779,6 +3914,65 @@
     {
       "args": [
         {
+          "description": null,
+          "in": "path",
+          "name": "id",
+          "required": true
+        },
+        {
+          "description": null,
+          "in": "path",
+          "name": "endpoint",
+          "required": true
+        }
+      ],
+      "group": "resources",
+      "http": {
+        "method": "GET",
+        "path": "/v1/resources/{id}/endpoints/{endpoint}"
+      },
+      "kind": "stream",
+      "name": "resources.connect",
+      "portal": true,
+      "receives": [
+        {
+          "binary": true,
+          "description": "What the endpoint sent.",
+          "example": null,
+          "name": "bytes"
+        },
+        {
+          "binary": false,
+          "description": "The endpoint closed its side. Bytes sent towards it still arrive. The stream ends once both sides have sent this.",
+          "example": {
+            "eof": true
+          },
+          "name": "eof"
+        }
+      ],
+      "resumable": false,
+      "role": "operate",
+      "sends": [
+        {
+          "binary": true,
+          "description": "Bytes for the endpoint.",
+          "example": null,
+          "name": "bytes"
+        },
+        {
+          "binary": false,
+          "description": "The client sends no more, and the endpoint reads the end. What it sends still comes back.",
+          "example": {
+            "eof": true
+          },
+          "name": "eof"
+        }
+      ],
+      "summary": "A TCP connection to an endpoint its provisioner reported for a resource, named by the endpoint's name or its port. The server dials it first, so one that nothing answers on, or an address berth refuses, is an error and not a stream."
+    },
+    {
+      "args": [
+        {
           "description": "At most this many (default 100, at most 1,000).",
           "header": null,
           "in": "query",
@@ -3951,6 +4145,45 @@
     {
       "args": [
         {
+          "description": "A job's id",
+          "in": "path",
+          "name": "id",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "The caller may not start a job of its kind, so may not stop it",
+          "status": "403"
+        },
+        {
+          "description": "No such job",
+          "status": "404"
+        },
+        {
+          "description": "It has ended already",
+          "status": "409"
+        },
+        {
+          "description": "It runs in another berth serve of the same store",
+          "status": "501"
+        }
+      ],
+      "group": "jobs",
+      "http": {
+        "method": "POST",
+        "path": "/v1/jobs/{id}/stop"
+      },
+      "kind": "call",
+      "name": "jobs.stop",
+      "portal": true,
+      "result": null,
+      "role": "view",
+      "summary": "Stop a running job: its programs end, a session it follows ends on its host, and its record says who stopped it."
+    },
+    {
+      "args": [
+        {
           "description": "Only this host.",
           "header": null,
           "in": "query",
@@ -4043,6 +4276,16 @@
             "topic": "myplugin/progress"
           },
           "name": "message"
+        },
+        {
+          "binary": false,
+          "description": "This follower was too slow. `events` counts the server's events it missed, of every kind. Read the inbox again.",
+          "example": {
+            "dropped": {
+              "events": 12
+            }
+          },
+          "name": "dropped"
         }
       ],
       "resumable": false,
@@ -4187,6 +4430,16 @@
             "removed": true
           },
           "name": "removed"
+        },
+        {
+          "binary": false,
+          "description": "This follower was too slow. `events` counts the server's events it missed, of every kind. List the namespace again.",
+          "example": {
+            "dropped": {
+              "events": 12
+            }
+          },
+          "name": "dropped"
         }
       ],
       "resumable": false,
@@ -4395,6 +4648,39 @@
             "value": {}
           },
           "name": "kv"
+        },
+        {
+          "binary": false,
+          "description": "A saved host was `added`, `removed`, `renamed` (with the name it had `from`) or its profile `changed`. Read the host itself with hosts.get.",
+          "example": {
+            "change": "renamed",
+            "from": "desk",
+            "host": "studio",
+            "source": "host"
+          },
+          "name": "host"
+        },
+        {
+          "binary": false,
+          "description": "A resource was `created`, `removed` or its record `changed`. Read it with resources.get.",
+          "example": {
+            "change": "created",
+            "kind": "deployment",
+            "provisioner": "docker",
+            "resource": "r-k3v9qz2m",
+            "source": "resource"
+          },
+          "name": "resource"
+        },
+        {
+          "binary": false,
+          "description": "This follower was too slow. `events` counts the server's events it missed, of every kind. Read what it follows again.",
+          "example": {
+            "dropped": {
+              "events": 12
+            }
+          },
+          "name": "dropped"
         }
       ],
       "resumable": false,
@@ -4404,6 +4690,10 @@
           "binary": false,
           "description": "What to follow. Sent once, first.",
           "example": {
+            "changes": [
+              "hosts",
+              "resources"
+            ],
             "hosts": [
               "server"
             ],
@@ -4418,7 +4708,7 @@
           "name": "follow"
         }
       ],
-      "summary": "Channel messages of chosen hosts, jobs and key-value changes together. The first frame sent names what to follow; each frame received says where it came from."
+      "summary": "Channel messages of chosen hosts, jobs, key-value changes and changes to hosts and resources together. The first frame sent names what to follow; each frame received says where it came from."
     }
   ],
   "portal": {

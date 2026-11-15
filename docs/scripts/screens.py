@@ -2,7 +2,7 @@
 """Terminal screenshots for the documentation, in docs/public/screens/.
 
 Runs the built berth binary (target/debug/berth) in a pseudo-terminal against an
-invented set-up and writes what the terminal shows as PNG, in the UI's colours.
+invented set-up, its screens with the server inside berth, and writes what the terminal shows as PNG, in the UI's colours.
 Each picture is drawn as SVG first, then rendered by headless Chrome at twice the
 size with JetBrains Mono (docs/scripts/fonts, SIL OFL) embedded, so the text looks
 the same wherever the PNG is shown. Only the PNGs are kept.
@@ -182,20 +182,19 @@ def make_demo(root: Path) -> dict:
         access={"address": "192.0.2.31", "user": "ops"},
     )
     for host in (studio, cloud, laptop):
-        run(env, "profile", host["hostname"], "--set", "-", stdin=json.dumps(host, indent=2) + "\n")
-    run(env, "config", "default_host", "studio")
+        run(env, "host", "import", host["hostname"], "-", stdin=json.dumps(host, indent=2) + "\n")
+    run(env, "config", "set", "default_host", "studio")
     # Registries and a secret, through the commands; nothing is contacted.
-    run(env, "registry", "add", "nexus", "nexus", "https://nexus.example.com", "ci-user")
-    run(env, "registry", "repo", "nexus", "npm", "npm-group")
-    run(env, "registry", "repo", "nexus", "raw", "berth-releases")
-    run(env, "registry", "repo", "nexus", "docker", "docker-hosted", "nexus.example.com:8083")
-    run(env, "registry", "add", "ghcr", "docker", "ghcr.io", "demo-user")
+    run(env, "registry", "add", "nexus", "nexus", "https://nexus.example.com", "--user", "ci-user")
+    run(env, "registry", "add-repo", "nexus", "npm", "npm-group")
+    run(env, "registry", "add-repo", "nexus", "raw", "berth-releases")
+    run(env, "registry", "add-repo", "nexus", "docker", "docker-hosted", "--address", "nexus.example.com:8083")
+    run(env, "registry", "add", "ghcr", "docker", "ghcr.io", "--user", "demo-user")
     run(env, "secret", "set", "github", stdin="github_pat_demo_not_a_real_token\n")
     run(env, "secret", "set", "backup-password", stdin="correct-horse-demo\n")
     for host in ("studio", "cloud-1"):
-        run(env, "host", host, "secret", "github", "env", "GH_TOKEN")
-        run(env, "host", host, "registry", "nexus", "on")
-    run(env, "host", "studio", "secret", "backup-password", "file", "~/.config/berth-backup/password", "0600")
+        run(env, "host", "set", host, "secret.github=GH_TOKEN", "registry.nexus=on")
+    run(env, "host", "set", "studio", "secret.backup-password=~/.config/berth-backup/password:0600")
     return env
 
 
@@ -503,7 +502,7 @@ def save(name: str, screen: pyte.Screen, title: str, trim=True):
 
 
 def tui(env, name, args, keys, title, cols=120, rows=30, settle=1.5):
-    term = Terminal([str(BERTH), *args], env, cols, rows, env["HOME"])
+    term = Terminal([str(BERTH), "ui", *args], env, cols, rows, env["HOME"])
     try:
         term.pump(settle)
         for step in keys:
@@ -537,7 +536,12 @@ def shlex_quote(text):
 # Downs from the top of a host's Settings tab to the fourth row of its registries
 # and secrets: past the six rows of the operator with its one key, the five of
 # the agent, and SSH hardening.
-SECRETS_DOWN = 15
+SECRETS_DOWN = 13
+
+
+# The keys from a new host's overview to its set-up tabs: past Try again to
+# Change what is installed.
+SETUP = [2.0, "<down>", "<enter>", 1.0]
 
 
 def pictures(env):
@@ -545,22 +549,23 @@ def pictures(env):
     picture shows what an earlier one left behind, such as sessions."""
     return {
         "home": (False, lambda: tui(env, "home", [], [], "berth", rows=20)),
-        "home-plugins": (False, lambda: tui(env, "home-plugins", [], ["5"], "berth: plugins")),
-        "features": (False, lambda: tui(env, "features", ["cloud-1"], ["2"], "berth cloud-1: features", rows=34)),
-        "accounts": (False, lambda: tui(env, "accounts", ["cloud-1"], ["3"], "berth cloud-1: settings", rows=26)),
-        "secrets": (False, lambda: tui(env, "secrets", ["cloud-1"], ["3"] + ["<down>"] * SECRETS_DOWN,
+        "home-plugins": (False, lambda: tui(env, "home-plugins", [], ["6"], "berth: plugins")),
+        "features": (False, lambda: tui(env, "features", ["cloud-1"], SETUP + ["2"], "berth cloud-1: features", rows=34)),
+        "accounts": (False, lambda: tui(env, "accounts", ["cloud-1"], SETUP + ["3"], "berth cloud-1: settings", rows=26)),
+        "secrets": (False, lambda: tui(env, "secrets", ["cloud-1"], SETUP + ["3"] + ["<down>"] * SECRETS_DOWN,
                                        "berth cloud-1: settings", rows=22)),
-        "install-cloud": (False, lambda: tui(env, "install-cloud", ["cloud-1"], ["<down>", "<down>", "<enter>", "4"],
+        "install-cloud": (False, lambda: tui(env, "install-cloud", ["cloud-1"],
+                                             SETUP + ["<down>", "<down>", "<enter>", "4"],
                                              "berth cloud-1: run", rows=34)),
-        "list": (False, lambda: command(env, "list", ["list"])),
-        "overview": (True, lambda: tui(env, "overview", ["studio"], [2.5, "<up>"], "berth studio", rows=46)),
+        "list": (False, lambda: command(env, "list", ["ls"])),
+        "overview": (True, lambda: tui(env, "overview", ["studio"], [2.5], "berth studio", rows=46)),
         "terminal": (True, lambda: tui(env, "terminal", ["studio"],
-                                       [2.5, "<enter>", 1.5, "id\r", "ls --color=never /srv/agent\r", 3.0],
+                                       [2.5, "<down>", "<enter>", 1.5, "id\r", "ls --color=never /srv/agent\r", 3.0],
                                        "berth studio: terminal", rows=20)),
-        "tasks": (True, lambda: command(env, "tasks", ["tasks", "studio"])),
+        "actions": (True, lambda: command(env, "actions", ["action", "list", "studio"])),
         "exec": (True, lambda: command(env, "exec", ["exec", "studio", "--", "id"])),
-        "sessions": (True, lambda: command(env, "sessions", ["sessions", "studio"])),
-        "host": (False, lambda: command(env, "host", ["host", "studio"])),
+        "sessions": (True, lambda: command(env, "sessions", ["session", "list", "studio"])),
+        "host": (False, lambda: command(env, "host", ["host", "show", "studio"])),
     }
 
 

@@ -50,7 +50,6 @@ async fn connections_are_kept_replaced_and_can_start_with_a_password() {
         program: "sh".into(),
         args: vec!["-c".into(), script.clone()],
         first_line: None,
-        via: None,
         ..LinkSpec::default()
     });
     let made = || {
@@ -117,7 +116,6 @@ async fn connections_are_kept_replaced_and_can_start_with_a_password() {
         program: "sh".into(),
         args: vec!["-c".into(), guarded.clone()],
         first_line: Some(line.into()),
-        via: None,
         ..LinkSpec::default()
     };
     let version: Value = Link::new(spec("secret")).get("/v1/version").await.unwrap();

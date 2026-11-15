@@ -9,7 +9,10 @@ mod sqlite;
 #[cfg(test)]
 mod suite;
 
-pub use installation::{Installation, default_file, hold_lock, shared, wait_lock};
+pub use installation::{
+    Installation, default_file, hold_lock, keep_before_converting, open_converting, shared,
+    wait_lock,
+};
 pub use postgres::PostgresBackend;
 pub use sqlite::SqliteBackend;
 
@@ -168,6 +171,10 @@ pub struct Job {
     /// The caller's token: the same one again for the same subject and
     /// action finds this job.
     pub token: Option<String>,
+    /// Who stopped it, when it was stopped before it ended by itself.
+    pub stopped_by: Option<String>,
+    /// What it was started with that people may see; never a secret.
+    pub arguments: Vec<String>,
 }
 
 impl Job {
@@ -180,8 +187,20 @@ impl Job {
         json!({
             "id": self.id, "subject": self.subject, "action": action, "host": self.host,
             "started": self.started, "ended": self.ended, "exit_code": self.exit_code,
+            "stopped_by": self.stopped_by, "arguments": self.arguments,
         })
     }
+}
+
+/// A job's arguments as its column keeps them: a JSON list, or nothing.
+fn arguments_text(arguments: &[String]) -> Option<String> {
+    (!arguments.is_empty()).then(|| json!(arguments).to_string())
+}
+
+/// A job's arguments from its column; none in rows from before it was kept.
+fn arguments_from(text: Option<String>) -> Vec<String> {
+    text.and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
 }
 
 /// A row of the `state` table: a value of some kind, for a scope, by name.
@@ -370,6 +389,8 @@ pub trait Backend: Send {
     fn add_job(&mut self, job: &Job) -> Result<Job>;
     fn job_by_token(&mut self, subject: &str, action: &str, token: &str) -> Result<Option<Job>>;
     fn end_job(&mut self, id: &str, exit_code: Option<i32>, ended: &str) -> Result<()>;
+    /// Say who stopped a job that has not ended.
+    fn stop_job(&mut self, id: &str, by: &str) -> Result<()>;
     fn end_lost_jobs(&mut self, ended: &str) -> Result<usize>;
     fn job(&mut self, id: &str) -> Result<Option<Job>>;
     fn jobs(&mut self, limit: usize) -> Result<Vec<Job>>;
@@ -604,6 +625,11 @@ impl Store {
 
     pub fn end_job(&self, id: &str, exit_code: Option<i32>) -> Result<()> {
         self.backend().end_job(id, exit_code, &now())
+    }
+
+    /// Say who stopped a job that has not ended.
+    pub fn stop_job(&self, id: &str, by: &str) -> Result<()> {
+        self.backend().stop_job(id, by)
     }
 
     /// Jobs that were running when the program that ran them went away.

@@ -1,6 +1,6 @@
-//! The screen a setup key opens, after an install: berth is installed, this
-//! browser is signed in, and the token for a terminal. The key works until
-//! Done, so opening the link again before then shows the screen again.
+//! The screen a setup key opens, after an install: berth is installed, these
+//! screens are signed in, and the token for berth. The key works until Done,
+//! so starting again with it before then shows the screen again.
 
 use crate::device::{self, Here};
 use berth_tui::screen::{Platform, note_hints, wrap};
@@ -49,12 +49,8 @@ impl Installed {
     pub fn claim(server: &str, key: String) -> Installed {
         let claim = Rc::new(RefCell::new(Claim::Asking));
         let answered = claim.clone();
-        device::request(
-            "POST",
-            &format!("{server}/v1/setup-key"),
-            &key,
-            move |answer| {
-                *answered.borrow_mut() = match answer {
+        device::request("POST", server, "/v1/setup-key", &key, move |answer| {
+            *answered.borrow_mut() = match answer {
                     Ok((200, body)) => {
                         let said: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
                         let text = |name: &str| said[name].as_str().unwrap_or("").to_owned();
@@ -67,7 +63,7 @@ impl Installed {
                         }
                     }
                     Ok((401, _)) => Claim::Failed(
-                        "The setup key in the link was not taken: it is wrong, used up or expired. Make a new one where the server runs (berth setup-key), or give the token."
+                        "The setup key was not taken: it is wrong, used up or expired. Make a new one where the server runs (berth server setup-key), or give the token."
                             .into(),
                     ),
                     Ok((status, body)) => {
@@ -79,8 +75,7 @@ impl Installed {
                     }
                     Err(error) => Claim::Failed(format!("The server did not answer: {error}")),
                 };
-            },
-        );
+        });
         Installed {
             server: server.to_owned(),
             key,
@@ -108,11 +103,10 @@ impl Installed {
         }
     }
 
-    fn commands(&self, token: &str) -> [String; 2] {
-        [
-            format!("berth config server {}", self.server),
-            format!("berth config server_token {token}"),
-        ]
+    /// What uses this server from berth on another machine: the command,
+    /// which reads the token from standard input, so it is in no argv.
+    fn commands(&self, _token: &str) -> [String; 1] {
+        [format!("berth login {} --token-stdin", self.server)]
     }
 
     /// A key on the screen, and what the status line then says.
@@ -140,13 +134,14 @@ impl Installed {
     pub fn done(&self, then: impl FnOnce(Option<String>) + 'static) {
         device::request(
             "DELETE",
-            &format!("{}/v1/setup-key", self.server),
+            &self.server,
+            "/v1/setup-key",
             &self.key,
             move |answer| {
                 then(match answer {
                     Ok((200, _)) => None,
                     _ => Some(
-                        "The setup key was not ended. It stops by itself within a day, or with berth setup-key --remove where the server runs."
+                        "The setup key was not ended. It stops by itself within a day, or with berth server setup-key --revoke where the server runs."
                             .into(),
                     ),
                 })

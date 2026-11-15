@@ -20,7 +20,7 @@ icon: FolderTree
   </Folder>
   <Folder name="/etc/berth" defaultOpen>
     <File name="berthd.json" />
-    <File name="tasks.json" />
+    <File name="actions.json" />
     <File name="services.json" />
     <File name="channels.json" />
     <File name="applied.json" />
@@ -58,10 +58,10 @@ icon: FolderTree
 | `/etc/devbox/guides/` | Longer guides for the desktop, graphics, and each plugin feature with a guide |
 | `/etc/devbox/expected-commands` | Commands the self-test requires, including those plugins list |
 | `/etc/devbox/mcp.json` | The desktop MCP server, to merge into an MCP client's configuration |
-| `/etc/berth/*.json` | berthd's settings, tasks, services and channel topics |
+| `/etc/berth/*.json` | berthd's settings, actions, services and channel topics |
 | `/etc/berth/applied.json` | The versions of berth and its plugins at the last apply |
 | `/etc/berth/profile.json` | The host's profile, for root only, which [another berth can adopt](/docs/use/moving) |
-| `/usr/local/lib/berth/tasks/` | The scripts of berth's own tasks |
+| `/usr/local/lib/berth/tasks/` | The scripts of berth's own actions |
 | `/var/lib/devbox/provision-state` | The state of the first-boot provisioning |
 | `/var/lib/devbox/ready` | Written when Ansible converged, with the release's digest |
 | `/var/lib/devbox/toolchains.json` | The runtime versions that were installed |
@@ -96,7 +96,7 @@ GUI programs, T3 Code and the commands it starts share the desktop's `DISPLAY`, 
 
 ## The self-test
 
-`devbox-smoke` is the **Self-Test** task. It checks:
+`devbox-smoke` is the **Self-Test** action. It checks:
 
 - that the expected commands exist
 - llvmpipe on the shared desktop and in Xvfb, and lavapipe enumeration

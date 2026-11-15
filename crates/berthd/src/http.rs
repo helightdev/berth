@@ -3,7 +3,7 @@
 
 use crate::error::E;
 use crate::state::{Caller, Mode, State};
-use crate::{channel, files, services, sessions, system, tasks};
+use crate::{actions, channel, endpoints, files, ports, services, sessions, system};
 use axum::{
     Json, Router,
     extract::{Extension, Request, State as AppState},
@@ -46,7 +46,7 @@ pub const ROUTES: &[Route] = &[
 
     Route { method: "POST", path: "/v1/sessions", summary: "Start a session.", level: "host", query: &[WAIT], body: "StartSession", reply: "Started", stream: "", handler: || post(sessions::start) },
     Route { method: "GET", path: "/v1/sessions", summary: "All sessions, running and ended.", level: "host", query: &[], body: "", reply: "Session[]", stream: "", handler: || get(sessions::list) },
-    Route { method: "GET", path: "/v1/sessions/{id}", summary: "One session's state. The agent sees those it started through a task.", level: "both", query: &[], body: "", reply: "Session", stream: "session", handler: || get(sessions::one) },
+    Route { method: "GET", path: "/v1/sessions/{id}", summary: "One session's state. The agent sees those it started through an action.", level: "both", query: &[], body: "", reply: "Session", stream: "session", handler: || get(sessions::one) },
     Route { method: "DELETE", path: "/v1/sessions/{id}", summary: "End it if it runs (HUP, after five seconds KILL) and forget it with its transcript.", level: "host", query: &[], body: "", reply: "Done", stream: "", handler: || delete(sessions::delete) },
     Route { method: "GET", path: "/v1/sessions/{id}/output", summary: "The transcript, by bytes or by lines.", level: "both", query: &[("stream", "stdout, stderr or merged (default), for a process."), ("since", "Byte offset to read from."), ("limit", "Most bytes to return; default 1 MB."), ("line", "Read lines from this line number (a process only)."), ("count", "How many lines; default 100."), ("tail", "The last so many lines.")], body: "", reply: "Output", stream: "", handler: || get(sessions::output) },
     Route { method: "GET", path: "/v1/sessions/{id}/screen", summary: "A terminal as it looks now, as text.", level: "both", query: &[("format", "text (default) or ansi, which keeps colours."), ("tail", "That many lines of screen and scrollback instead.")], body: "", reply: "Screen", stream: "", handler: || get(sessions::screen) },
@@ -54,9 +54,9 @@ pub const ROUTES: &[Route] = &[
     Route { method: "POST", path: "/v1/sessions/{id}/resize", summary: "Give a terminal a new size.", level: "host", query: &[], body: "Resize", reply: "Done", stream: "", handler: || post(sessions::resize) },
     Route { method: "POST", path: "/v1/sessions/{id}/signal", summary: "Send INT, TERM, HUP or KILL to the session's process group.", level: "host", query: &[], body: "Signal", reply: "Done", stream: "", handler: || post(sessions::signal) },
 
-    Route { method: "GET", path: "/v1/tasks", summary: "The tasks the caller may run, in the order of the file.", level: "both", query: &[], body: "", reply: "Task[]", stream: "", handler: || get(tasks::list) },
-    Route { method: "POST", path: "/v1/tasks/{name}", summary: "Run a task. It and what extends it are the steps of one session.", level: "both", query: &[WAIT], body: "RunTask", reply: "Started", stream: "", handler: || post(tasks::run) },
-    Route { method: "GET", path: "/v1/tasks/{name}/choices/{argument}", summary: "The values to offer for an argument.", level: "both", query: &[], body: "", reply: "Choices", stream: "", handler: || get(tasks::choices) },
+    Route { method: "GET", path: "/v1/actions", summary: "The actions the caller may run, in the order of the file.", level: "both", query: &[], body: "", reply: "HostAction[]", stream: "", handler: || get(actions::list) },
+    Route { method: "POST", path: "/v1/actions/{action}", summary: "Run an action. It and what extends it are the steps of one session.", level: "both", query: &[WAIT], body: "RunAction", reply: "Started", stream: "", handler: || post(actions::run) },
+    Route { method: "GET", path: "/v1/actions/{action}/choices/{argument}", summary: "The values to offer for an argument.", level: "both", query: &[], body: "", reply: "Choices", stream: "", handler: || get(actions::choices) },
 
     Route { method: "GET", path: "/v1/stats", summary: "Load, CPU, memory, filesystems, network, GPU and unit states, read now.", level: "host", query: &[], body: "", reply: "Stats", stream: "", handler: || get(system::stats) },
     Route { method: "GET", path: "/v1/screenshot", summary: "The shared desktop as PNG.", level: "host", query: &[], body: "", reply: "png", stream: "", handler: || get(system::screenshot) },
@@ -77,6 +77,10 @@ pub const ROUTES: &[Route] = &[
     Route { method: "GET", path: "/v1/services", summary: "The services that can be called, and whether each is up.", level: "both", query: &[], body: "", reply: "Service[]", stream: "", handler: || get(services::list) },
     Route { method: "POST", path: "/v1/services/{plugin}/{name}/{method}", summary: "Call a method of the service PLUGIN/NAME: JSON in, JSON out.", level: "both", query: &[], body: "json", reply: "json", stream: "", handler: || post(services::call) },
     Route { method: "GET", path: "/v1/services/{plugin}/{name}/serve", summary: "Only as a WebSocket: for the program that answers the service's calls.", level: "both", query: &[], body: "", reply: "", stream: "serve", handler: || get(services::serve) },
+
+    Route { method: "GET", path: "/v1/ports/{port}", summary: "Only as a WebSocket: a TCP connection to a port on the host's loopback. A port that nothing listens on is an error before the handshake.", level: "host", query: &[], body: "", reply: "", stream: "port", handler: || get(ports::connect) },
+    // berth serve calls it itself, for an endpoint a provisioner reported, and passes it through for nobody.
+    Route { method: "GET", path: "/v1/endpoints/{address}/{port}", summary: "Only as a WebSocket, and only for berth serve itself: a TCP connection to an address on a network of the host's own interfaces, such as a container on a bridge. Never loopback, link-local or a metadata address. One that nothing answers on is an error before the handshake.", level: "host", query: &[], body: "", reply: "", stream: "endpoint", handler: || get(endpoints::connect) },
 ];
 
 async fn version(AppState(state): AppState<Arc<State>>) -> Json<api::Version> {
@@ -93,22 +97,22 @@ async fn version(AppState(state): AppState<Arc<State>>) -> Json<api::Version> {
     let applied = record
         .clone()
         .and_then(|record| serde_json::from_value(record).ok());
-    // A record without a level is of a whole profile, as before levels, and
-    // only a workstation's apply or first boot leaves the profile it keeps.
+    // A record without a level is of a whole profile, as before there were
+    // types, and so is a kept profile without a record: the first boot of a
+    // workstation leaves one. The role records the type as `level` with its
+    // older values, and a node as `node`.
     let kept = state.config_dir.join("profile.json").exists();
-    let level = match kept {
-        true => Some(api::HostLevel::Workstation),
-        false => record.map(|record| match record["level"].as_str() {
-            Some(level) => api::HostLevel::parse(level).unwrap_or_default(),
-            None => api::HostLevel::Workstation,
-        }),
+    let host_type = match record.as_ref().map(|record| record["level"].as_str()) {
+        Some(Some(level)) => Some(api::HostType::from_level(level).unwrap_or_default()),
+        Some(None) => Some(api::HostType::Workstation),
+        None => kept.then_some(api::HostType::Workstation),
     };
     Json(api::Version {
         version: api::VERSION.into(),
         api: api::API,
         mode: mode.into(),
         applied,
-        level,
+        host_type,
     })
 }
 
@@ -149,7 +153,7 @@ async fn portal(
     upgrade: axum::extract::ws::WebSocketUpgrade,
 ) -> Response {
     let inner = router(state).layer(Extension(caller));
-    upgrade.on_upgrade(move |socket| {
+    crate::portal::upgrade(upgrade).on_upgrade(move |socket| {
         crate::portal::run(socket, inner, crate::portal::host_operations())
     })
 }
@@ -320,8 +324,8 @@ pub fn paths(prefix: &str) -> serde_json::Map<String, Value> {
     api::Resize,
     api::Signal,
     api::Argument,
-    api::Task,
-    api::RunTask,
+    api::HostAction,
+    api::RunAction,
     api::Choices,
     api::Memory,
     api::Filesystem,
@@ -377,11 +381,15 @@ const PATH_ARGUMENTS: &[(&str, &str, &str)] = &[
         "id",
         "A session's id, as starting it or the list gives it.",
     ),
-    ("tasks.", "name", "A task's name, as the list gives it."),
     (
-        "tasks.",
+        "actions.",
+        "action",
+        "An action's name, as the list gives it.",
+    ),
+    (
+        "actions.",
         "argument",
-        "The name of one of the task's arguments.",
+        "The name of one of the action's arguments.",
     ),
     ("system.power", "verb", "`reboot` or `poweroff`."),
     (
@@ -403,6 +411,21 @@ const PATH_ARGUMENTS: &[(&str, &str, &str)] = &[
     ("services.", "plugin", "The plugin the service belongs to."),
     ("services.", "name", "The service's name within its plugin."),
     ("services.call", "method", "One of the service's methods."),
+    (
+        "endpoints.",
+        "address",
+        "An IP address or a DNS name, on a network of the host's own interfaces.",
+    ),
+    (
+        "endpoints.",
+        "port",
+        "A TCP port: a number from 1 to 65535.",
+    ),
+    (
+        "ports.",
+        "port",
+        "A TCP port on the host's loopback, 127.0.0.1: a number from 1 to 65535.",
+    ),
     ("jobs.", "id", "A job's id."),
     ("kv.", "namespace", "A namespace."),
     ("kv.", "key", "A key."),

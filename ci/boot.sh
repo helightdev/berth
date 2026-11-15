@@ -19,8 +19,12 @@
 # BERTH_CI_BOOT_CPUS        its vCPUs (default: 4, at most what is there)
 # BERTH_CI_BOOT_SSH_PORT    the loopback port of its SSH with --keep (default: 22722)
 # BERTH_CI_BOOT_CONTROL_URL, BERTH_CI_BOOT_CONTROL_KEY
-#                           a tailnet control server and a key to enrol the
-#                           guest with on its first boot
+#                           a tailnet control server, a Headscale address or
+#                           tailscale for Tailscale's own, and its API key, with
+#                           which berth makes the key the guest joins with on
+#                           its first boot
+# BERTH_CI_BOOT_CONTROL_USER, BERTH_CI_BOOT_CONTROL_TAGS
+#                           berth's tailnet_user and tailnet_tags for it
 
 boot_compose() { "$engine" compose -f ci/boot.compose.yml "$@"; }
 
@@ -63,7 +67,7 @@ boot() {
     boot_compose build --quiet
   fi
   # The guest gets berth's host programs from the role's files, which this build puts there.
-  dev cargo build --locked -p berth --features web
+  dev cargo build --locked -p berth
 
   local kind status=0 run
   for kind in "${kinds[@]}"; do

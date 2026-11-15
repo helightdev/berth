@@ -43,11 +43,11 @@ An unknown operation is `404`, and a missing argument is `400`.
 On the portal of `berth serve`, `host` names the host and the rest of the frame is the host's operation, exactly as berthd takes it:
 
 ```js
-→ {"id": 9, "host": "studio", "op": "tasks.run", "args": {"name": "status"}}
+→ {"id": 9, "host": "studio", "op": "actions.run", "args": {"action": "status"}}
 ← {"id": 9, "result": {"id": "a81kq0wd3m5c"}}
 ```
 
-`berth serve` refuses the `secrets` task, because the secrets stay on the machine that runs it.
+`berth serve` refuses the controller's own `secrets` action, because the secrets stay on the machine that runs it.
 
 ## A stream
 
@@ -71,6 +71,25 @@ The reply to a streaming operation is `{"open": true}`. The server then sends fr
 
 The frames inside `data` and the bytes after the four-byte prefix are those of the stream's own WebSocket, listed on each stream's page. Calls go on beside open streams.
 
+## A window on a stream's bytes
+
+When nobody reads a stream, its bytes would fill the other side's memory or hold up the frames of the other streams. A client asks for a window when it opens the stream to prevent this:
+
+```js
+→ {"id": 12, "op": "ports.connect", "args": {"port": 8080}, "window": 262144}
+← {"id": 12, "result": {"open": true, "window": 262144}}
+→ binary: 00 00 00 0c, then up to 262144 bytes
+← {"sub": 12, "credit": 131072}
+```
+
+| Rule | Means |
+| --- | --- |
+| `window` in the request | How many bytes of binary frames each side may send before the other side credits them. The server takes 16 KB to 4 MB |
+| `window` in the answer | The server keeps to that window. Without it, no window applies to the stream |
+| `{"sub": N, "credit": BYTES}` | Either side has taken so many bytes, and the other may send that many more |
+
+A side may send one frame beyond the window, so a large frame isn't held forever. JSON frames don't count against it. Each side says what it took once it has taken half the window. berth's client asks for a window on every stream it opens, and a client that asks for none gets the streams as before.
+
 ## Bytes
 
 Bytes in input or a result are `{"base64": "…"}`, and a result adds `content_type`. The portal takes up to 8 MB of bytes per operation, and a larger result is a `413` error. Use HTTP for larger transfers, such as big files.
@@ -79,6 +98,24 @@ Bytes in input or a result are `{"base64": "…"}`, and a result adds `content_t
 → {"id": 11, "op": "files.write", "args": {"path": "/srv/agent/workspaces/notes.txt"}, "data": {"base64": "aGVsbG8K"}}
 ← {"id": 11, "result": {"ok": true}}
 ```
+
+## Limits
+
+The server keeps a fixed amount of memory for each portal, so a caller that sends without reading can't fill it. berthd and `berth serve` keep to the same limits:
+
+| Limit | Value | Past it |
+| --- | --- | --- |
+| One message | The 8 MB of an operation as base64, and 1 MB more | The portal closes |
+| The name of an operation | 128 bytes | A `400` error that doesn't repeat the name |
+| An error's message | 2 KB | The message is cut short |
+| Calls in flight | 256 | A `429` error with the code `limit` |
+| Streams open | 256, such as the connections of a forwarded port | A `429` error with the code `limit` |
+| Calls, their answers until they are sent, and input waiting for its stream | 64 MB | A call is refused with a `429` error with the code `limit`, and a stream ends with that error in its last frame |
+| The portal's own frames waiting to be sent, such as errors and credits | 64 KB | The server reads nothing more from the caller until they are sent |
+
+A caller that keeps to its windows and reads what comes never reaches these limits.
+
+berth's client holds up to 16 MB of a stream that it has not read. A server that sends more ends that stream with an error.
 
 ## When to use HTTP instead
 

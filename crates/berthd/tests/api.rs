@@ -431,31 +431,31 @@ async fn a_terminal_keeps_its_screen_for_viewers_that_come_and_go() {
 }
 
 #[tokio::test]
-async fn tasks_run_as_steps_with_arguments() {
-    let tasks = json!([
+async fn actions_run_as_steps_with_arguments() {
+    let actions = json!([
         {"name": "greet", "label": "Greet", "group": "Demo", "agent": true, "confirm": "Really?",
          "arguments": [{"name": "who", "required": true}, {"name": "how-loud", "default": "quiet"},
                        {"name": "pick", "choices": "echo one; echo; echo 'two words'"}],
          "run": "printf '%s|%s\\n' \"$BERTH_ARG_WHO\" \"$BERTH_ARG_HOW_LOUD\"; exit 2"},
-        {"name": "plug:extra", "extends": ["greet"], "run": "echo extra for $BERTH_TASK"},
+        {"name": "plug:extra", "extends": ["greet"], "run": "echo extra for $BERTH_ACTION and $BERTH_TASK"},
         {"name": "plug:last", "extends": ["greet", "other"], "run": "exit 5"},
         {"name": "private", "run": "echo host only"},
         {"name": "feed", "input": "secrets", "run": "cat"},
         {"name": "ask", "terminal": true, "agent": true, "run": "printf 'go? '; read answer; echo went $answer"},
     ]);
-    let daemon = Daemon::start(&[("tasks.json", tasks)]);
+    let daemon = Daemon::start(&[("actions.json", actions)]);
     let mut host = daemon.host().await;
     let mut agent = daemon.agent().await;
 
-    let listed: Vec<api::Task> = host.get("/v1/tasks").await.unwrap();
+    let listed: Vec<api::HostAction> = host.get("/v1/actions").await.unwrap();
     assert_eq!(listed.len(), 6);
-    assert!(listed.iter().all(|task| task.run.is_empty()));
+    assert!(listed.iter().all(|action| action.run.is_empty()));
     assert_eq!(listed[0].confirm.as_deref(), Some("Really?"));
-    let listed: Vec<api::Task> = agent.get("/v1/tasks").await.unwrap();
+    let listed: Vec<api::HostAction> = agent.get("/v1/actions").await.unwrap();
     assert_eq!(
         listed
             .iter()
-            .map(|task| task.name.as_str())
+            .map(|action| action.name.as_str())
             .collect::<Vec<_>>(),
         ["greet", "ask"]
     );
@@ -463,10 +463,10 @@ async fn tasks_run_as_steps_with_arguments() {
     // Arguments arrive in the environment, quotes and spaces untouched. All
     // steps run; the exit code is the first that was not 0.
     let run = json!({"arguments": {"who": "it's \"me\" $HOME; ls"}});
-    let done: Value = host.post("/v1/tasks/greet?wait=10s", &run).await.unwrap();
+    let done: Value = host.post("/v1/actions/greet?wait=10s", &run).await.unwrap();
     assert_eq!(
         text(&done["stdout_b64"]),
-        "it's \"me\" $HOME; ls|quiet\nextra for greet\n"
+        "it's \"me\" $HOME; ls|quiet\nextra for greet and greet\n"
     );
     assert_eq!(done["exit_code"], 2);
     let steps: Vec<(String, i64)> = done["steps"]
@@ -488,13 +488,16 @@ async fn tasks_run_as_steps_with_arguments() {
             ("plug:last".to_owned(), 5)
         ]
     );
-    assert_eq!(done["task"], "greet");
+    assert_eq!(done["action"], "greet");
 
-    assert_eq!(code(host.post("/v1/tasks/greet", &json!({})).await).0, 400);
+    assert_eq!(
+        code(host.post("/v1/actions/greet", &json!({})).await).0,
+        400
+    );
     assert_eq!(
         code(
             host.post(
-                "/v1/tasks/greet",
+                "/v1/actions/greet",
                 &json!({"arguments": {"who": "x", "nope": "y"}})
             )
             .await
@@ -503,17 +506,17 @@ async fn tasks_run_as_steps_with_arguments() {
         400
     );
     assert_eq!(
-        code(host.post("/v1/tasks/missing", &json!({})).await).0,
+        code(host.post("/v1/actions/missing", &json!({})).await).0,
         404
     );
-    let choices: api::Choices = host.get("/v1/tasks/greet/choices/pick").await.unwrap();
+    let choices: api::Choices = host.get("/v1/actions/greet/choices/pick").await.unwrap();
     assert_eq!(choices.choices, ["one", "two words"]);
 
     // What the workstation sends as input reaches the command and nothing else does.
-    assert_eq!(code(host.post("/v1/tasks/feed", &json!({})).await).0, 400);
+    assert_eq!(code(host.post("/v1/actions/feed", &json!({})).await).0, 400);
     let done: Value = host
         .post(
-            "/v1/tasks/feed?wait=10s",
+            "/v1/actions/feed?wait=10s",
             &json!({"input_b64": api::b64(b"{\"k\":1}\n")}),
         )
         .await
@@ -522,11 +525,11 @@ async fn tasks_run_as_steps_with_arguments() {
 
     // The agent runs what is marked for it, reads and follows that session, and nothing else.
     assert_eq!(
-        code(agent.post("/v1/tasks/private", &json!({})).await).0,
+        code(agent.post("/v1/actions/private", &json!({})).await).0,
         403
     );
     let hosts: Value = host
-        .post("/v1/tasks/private?wait=10s", &json!({}))
+        .post("/v1/actions/private?wait=10s", &json!({}))
         .await
         .unwrap();
     assert_eq!(
@@ -539,7 +542,7 @@ async fn tasks_run_as_steps_with_arguments() {
         403
     );
     let started: Value = agent
-        .post("/v1/tasks/ask", &json!({"rows": 5, "cols": 40}))
+        .post("/v1/actions/ask", &json!({"rows": 5, "cols": 40}))
         .await
         .unwrap();
     assert_eq!(
@@ -1061,6 +1064,7 @@ async fn services_answer_calls_through_their_socket() {
 
 #[tokio::test]
 async fn a_restart_ends_sessions_and_keeps_their_transcripts() {
+    // What the role of berth 0.5 wrote is read until there is the file of now.
     let mut daemon =
         Daemon::start(&[("tasks.json", json!([{"name": "one", "run": "echo first"}]))]);
     let mut host = daemon.host().await;
@@ -1074,18 +1078,20 @@ async fn a_restart_ends_sessions_and_keeps_their_transcripts() {
     let id = started["id"].as_str().unwrap().to_owned();
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // A reload takes up new tasks and leaves the session running.
+    let actions: Vec<api::HostAction> = host.get("/v1/actions").await.unwrap();
+    assert_eq!(actions[0].name, "one");
+    // A reload takes up new actions and leaves the session running.
     std::fs::write(
-        daemon.dir.path().join("etc/tasks.json"),
+        daemon.dir.path().join("etc/actions.json"),
         json!([{"name": "two", "run": "true"}]).to_string(),
     )
     .unwrap();
     let _: Value = host.post("/v1/reload", &json!({})).await.unwrap();
-    let tasks: Vec<api::Task> = host.get("/v1/tasks").await.unwrap();
-    assert_eq!(tasks[0].name, "two");
+    let actions: Vec<api::HostAction> = host.get("/v1/actions").await.unwrap();
+    assert_eq!(actions[0].name, "two");
     let state: api::Session = host.get(&format!("/v1/sessions/{id}")).await.unwrap();
     assert!(state.running());
-    std::fs::write(daemon.dir.path().join("etc/tasks.json"), "not json").unwrap();
+    std::fs::write(daemon.dir.path().join("etc/actions.json"), "not json").unwrap();
     assert_eq!(code(host.post("/v1/reload", &json!({})).await).0, 400);
 
     drop(host);
@@ -1228,12 +1234,225 @@ async fn the_portal_carries_calls_and_streams_together() {
     let agent = Portal::over(daemon.stream("agent", "/v1/portal").await);
     assert!(
         agent
-            .call("tasks.list", None, Value::Null, None)
+            .call("actions.list", None, Value::Null, None)
             .await
             .is_ok()
     );
     let refused = agent.call("sessions.list", None, Value::Null, None).await;
     assert_eq!(refused.unwrap_err().status(), 403);
+}
+
+/// A listener on the loopback that sends back what it gets, and ends its
+/// side once the caller has ended theirs.
+async fn echo() -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((connection, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                let (mut reading, mut writing) = connection.into_split();
+                let _ = tokio::io::copy(&mut reading, &mut writing).await;
+                let _ = writing.shutdown().await;
+            });
+        }
+    });
+    port
+}
+
+/// Write `data` and end, while what comes back is read: what came back.
+async fn through<T>(open: T, data: &[u8]) -> Vec<u8>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut reading, mut writing) = tokio::io::split(open);
+    let sent = data.to_vec();
+    let writer = tokio::spawn(async move {
+        writing.write_all(&sent).await.unwrap();
+        writing.shutdown().await.unwrap();
+        writing
+    });
+    let mut back = vec![];
+    tokio::time::timeout(Duration::from_secs(60), reading.read_to_end(&mut back))
+        .await
+        .expect("all of it back in time")
+        .unwrap();
+    drop(writer.await.unwrap());
+    back
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_port_on_the_loopback_is_a_stream() {
+    use berth_api::{portal::Portal, tunnel};
+    use tokio::io::AsyncWriteExt;
+    let daemon = Daemon::start(&[]);
+    let port = echo().await;
+    let control = || tokio::net::UnixStream::connect(daemon.socket("control"));
+
+    // What is sent comes back, and after this side's end the rest still arrives.
+    let open = tunnel::tunnel(control().await.unwrap(), port)
+        .await
+        .unwrap();
+    assert_eq!(through(open, b"hello").await, b"hello");
+    // A few MB at once, over the stream's own WebSocket and over the portal's windows.
+    let data: Vec<u8> = (0..4_000_000u32).map(|n| (n % 251) as u8).collect();
+    let open = tunnel::tunnel(control().await.unwrap(), port)
+        .await
+        .unwrap();
+    assert!(through(open, &data).await == data);
+    let portal = Portal::over(daemon.stream("control", "/v1/portal").await);
+    let open = portal.connect_port(None, port).await.unwrap();
+    assert!(through(open, &data).await == data);
+
+    // A stream that is not read holds up neither calls nor other streams.
+    // It takes more than the system's buffers hold, which the window then keeps.
+    let mut stuck = portal.connect_port(None, port).await.unwrap();
+    let writing = vec![7u8; 64 << 20];
+    let writer = tokio::spawn(async move {
+        stuck.write_all(&writing).await.unwrap();
+        stuck
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!writer.is_finished(), "the window let it all through");
+    let version = tokio::time::timeout(
+        Duration::from_secs(10),
+        portal.call("version", None, Value::Null, None),
+    )
+    .await
+    .expect("an answer beside the stuck stream");
+    assert_eq!(version.unwrap()["api"], api::API);
+    let other = portal.connect_port(None, port).await.unwrap();
+    assert_eq!(through(other, b"beside").await, b"beside");
+    drop(writer);
+
+    // A port nothing listens on is an error before the stream opens.
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let refused = tunnel::tunnel(control().await.unwrap(), closed)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!((refused.status(), refused.code()), (503, "not_served"));
+    let refused = portal.connect_port(None, closed).await.err().unwrap();
+    assert_eq!((refused.status(), refused.code()), (503, "not_served"));
+    // Only a port of the loopback, by its number.
+    for wrong in ["0", "65536", "http", "192.0.2.1:22", "-1"] {
+        let path = format!("/v1/ports/{wrong}");
+        let refused = client::websocket_unix(&daemon.socket("control"), &path)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(refused.status(), 400, "{wrong}");
+    }
+    // A plain request is no stream, and the agent may not open one.
+    let plain = daemon
+        .host()
+        .await
+        .get::<Value>(&format!("/v1/ports/{port}"))
+        .await;
+    assert_eq!(code(plain).0, 400);
+    let agent = client::websocket_unix(&daemon.socket("agent"), &format!("/v1/ports/{port}"))
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(agent.status(), 403);
+}
+
+/// A listener like `echo`, on an address of one of the host's own networks,
+/// or nothing when the machine has none but the loopback.
+async fn echo_on_a_network() -> Option<(String, u16)> {
+    for network in berthd::endpoints::networks() {
+        let Ok(listener) = tokio::net::TcpListener::bind((network.address, 0)).await else {
+            continue;
+        };
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((connection, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    use tokio::io::AsyncWriteExt;
+                    let (mut reading, mut writing) = connection.into_split();
+                    let _ = tokio::io::copy(&mut reading, &mut writing).await;
+                    let _ = writing.shutdown().await;
+                });
+            }
+        });
+        return Some((network.address.to_string(), port));
+    }
+    None
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_address_on_the_hosts_own_networks_is_a_stream_for_the_server_alone() {
+    use berth_api::{portal::Portal, tunnel};
+    let daemon = Daemon::start(&[]);
+    let control = || tokio::net::UnixStream::connect(daemon.socket("control"));
+    let open = |address: String, port: u16| async move {
+        let io = control().await.unwrap();
+        tunnel::address_tunnel(io, &address, port).await
+    };
+
+    match echo_on_a_network().await {
+        Some((address, port)) => {
+            let data: Vec<u8> = (0..3_000_000u32).map(|n| (n % 251) as u8).collect();
+            let opened = open(address.clone(), port).await.unwrap();
+            assert_eq!(through(opened, b"hello").await, b"hello");
+            let opened = open(address.clone(), port).await.unwrap();
+            assert!(through(opened, &data).await == data);
+            // A port nothing listens on there is an error before the stream opens.
+            let closed = {
+                let listener = std::net::TcpListener::bind((address.as_str(), 0)).unwrap();
+                listener.local_addr().unwrap().port()
+            };
+            let refused = open(address.clone(), closed).await.err().unwrap();
+            assert_eq!((refused.status(), refused.code()), (503, "not_served"));
+        }
+        None => eprintln!("skipped the round trip: this machine has no network but the loopback"),
+    }
+
+    // Off the host's networks, its loopback, a metadata address, and a name for the loopback.
+    let port = echo().await;
+    for (address, why) in [
+        ("192.0.2.1", "no network"),
+        ("127.0.0.1", "ports.connect"),
+        ("169.254.169.254", "metadata"),
+        ("fd00:ec2::254", "metadata"),
+        ("fe80::1", "no address"),
+        ("localhost", "ports.connect"),
+    ] {
+        let refused = open(address.into(), port).await.err().unwrap();
+        assert_eq!(refused.status(), 403, "{address}: {refused}");
+        assert!(refused.to_string().contains(why), "{address}: {refused}");
+    }
+    for wrong in ["0", "65536", "http"] {
+        let path = format!("/v1/endpoints/192.0.2.1/{wrong}");
+        let refused = client::websocket_unix(&daemon.socket("control"), &path)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(refused.status(), 400, "{wrong}");
+    }
+
+    // The agent may not open it, and no portal carries it.
+    let agent = client::websocket_unix(&daemon.socket("agent"), "/v1/endpoints/192.0.2.1/80")
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(agent.status(), 403);
+    let portal = Portal::over(daemon.stream("control", "/v1/portal").await);
+    let args = json!({"address": "192.0.2.1", "port": 80});
+    let refused = portal
+        .open("endpoints.connect", None, args)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(refused.status(), 403, "{refused}");
+    assert!(
+        refused.to_string().contains("resources.connect"),
+        "{refused}"
+    );
 }
 
 /// The committed API documents are what the program generates. Run with
@@ -1258,4 +1477,82 @@ fn the_committed_documents_are_current() {
             "{name} is out of date: run BERTH_UPDATE_DOCS=1 cargo test -p berthd the_committed_documents"
         );
     }
+}
+
+#[tokio::test]
+async fn a_node_says_it_is_one_and_what_its_features_offer() {
+    let offer = json!({"feature": "incus/server", "provisioners": ["vm"],
+        "settings": {"server": "https://{address}:8444"}, "secrets": {"incus_server_cert": "CERT"}});
+    // A node keeps its profile as a workstation does; its record says what it is.
+    let daemon = Daemon::start(&[
+        (
+            "applied.json",
+            json!({"berth": "0.6.0", "plugins": [], "level": "node", "offers": [offer]}),
+        ),
+        (
+            "profile.json",
+            json!({"format": 2, "berth": "0.6.0", "host": "big", "profile": {}}),
+        ),
+    ]);
+    let mut host = daemon.host().await;
+    let version: api::Version = host.get("/v1/version").await.unwrap();
+    assert_eq!(version.host_type, Some(api::HostType::Node));
+    let applied = version.applied.unwrap();
+    assert_eq!(applied.offers[0].feature, "incus/server");
+    assert_eq!(applied.offers[0].secrets["incus_server_cert"], "CERT");
+    // A kept profile without a record is a workstation's first boot.
+    let daemon = Daemon::start(&[(
+        "profile.json",
+        json!({"format": 2, "berth": "0.6.0", "host": "studio", "profile": {}}),
+    )]);
+    let mut host = daemon.host().await;
+    let version: api::Version = host.get("/v1/version").await.unwrap();
+    assert_eq!(version.host_type, Some(api::HostType::Workstation));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_floods_its_portal_does_not_stop_berthd() {
+    use berth_api::portal::Portal;
+    let daemon = Daemon::start(&[]);
+    let (mut sink, mut source) = daemon.stream("agent", "/v1/portal").await.split();
+    // A long name it sends is not sent back.
+    let name = "x".repeat(60_000);
+    sink.send(Frame::Text(json!({"id": 0, "op": name}).to_string().into()))
+        .await
+        .unwrap();
+    let back = loop {
+        if let Some(Ok(Frame::Text(text))) = source.next().await {
+            break text.to_string();
+        }
+    };
+    assert!(back.len() < 300, "{back}");
+    assert!(back.contains("\"code\":\"bad_request\""), "{back}");
+    // It sends calls and never reads their answers.
+    let flood = tokio::spawn(async move {
+        for id in 1..200_000u64 {
+            let frame = json!({"id": id, "op": "no-such-operation"}).to_string();
+            if sink.send(Frame::Text(frame.into())).await.is_err() {
+                break;
+            }
+        }
+        sink
+    });
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Every other caller is answered meanwhile, the agent's other portals too.
+    for level in ["agent", "control"] {
+        let portal = Portal::over(daemon.stream(level, "/v1/portal").await);
+        let version = tokio::time::timeout(
+            Duration::from_secs(10),
+            portal.call("version", None, Value::Null, None),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(version["version"], api::VERSION, "{version}");
+    }
+    let mut host = daemon.host().await;
+    let version: api::Version = host.get("/v1/version").await.unwrap();
+    assert_eq!(version.version, api::VERSION);
+    flood.abort();
+    drop(source);
 }

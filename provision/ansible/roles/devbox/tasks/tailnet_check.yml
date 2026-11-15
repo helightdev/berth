@@ -1,0 +1,37 @@
+---
+# A host that joins the tailnet and is not on it needs a one-use key: the
+# one of its seed, or berth's command for one. Without either the play stops
+# here, before it changes anything, with what berth said is missing. A host
+# on the tailnet already needs no key, and one with devbox_tailnet_optional
+# goes on without the tailnet, as berth 0.5 did.
+- name: Inspect Tailscale enrollment
+  ansible.builtin.command: tailscale status --json
+  register: devbox_tailnet_status
+  changed_when: false
+  failed_when: false
+  check_mode: false
+- name: Tell whether the host is on the tailnet
+  ansible.builtin.set_fact:
+    devbox_tailnet_enrolled: "{{ devbox_tailnet_status.stdout | default('', true) is search('\"BackendState\":\\s*\"Running\"') }}"
+- name: Stop when the host cannot join the tailnet
+  ansible.builtin.fail:
+    msg: >-
+      {{ devbox_tailnet_problem if devbox_tailnet_problem | length > 0 else
+      'This host joins the tailnet, and nothing gave it a key to join with. Apply it with berth,
+      which makes one from the secret tailnet_api_key, or set devbox_install_tailscale to false.' }}
+  when:
+    - not devbox_tailnet_enrolled | bool
+    - devbox_tailscale_auth_key | length == 0
+    - devbox_tailscale_key_command | length == 0
+    - not devbox_tailnet_optional | default(false) | bool
+- name: Say that the host stays off the tailnet
+  ansible.builtin.debug:
+    msg: >-
+      This host is not on the tailnet, and berth cannot make its key yet
+      ({{ devbox_tailnet_problem if devbox_tailnet_problem | length > 0 else 'nothing gave it one' }}).
+      The apply goes on without the tailnet, and berth reaches the host over SSH at its address.
+  when:
+    - not devbox_tailnet_enrolled | bool
+    - devbox_tailscale_auth_key | length == 0
+    - devbox_tailscale_key_command | length == 0
+    - devbox_tailnet_optional | default(false) | bool

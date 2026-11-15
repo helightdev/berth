@@ -19,7 +19,7 @@ use ratatui::{
 };
 
 /// The key that shows a link as a QR code. Alt keeps it from the program in a
-/// terminal panel, and a browser leaves it to the page.
+/// terminal panel.
 pub const KEY: &str = "Alt+R";
 /// Its hint in a footer.
 pub const HINT: &str = "Alt+R QR code";
@@ -176,8 +176,6 @@ pub struct Overlay {
     pub title: String,
     pub links: Vec<String>,
     pub index: usize,
-    /// A few words in the bottom border: what the code gives whoever scans it.
-    pub note: Option<String>,
 }
 
 impl Overlay {
@@ -193,18 +191,7 @@ impl Overlay {
             title: "QR code".into(),
             links,
             index: 0,
-            note: None,
         })
-    }
-
-    /// The link that opens a berth server's page, signed in.
-    pub fn connect(link: String) -> Overlay {
-        Overlay {
-            title: "Open berth on another device".into(),
-            links: vec![link],
-            index: 0,
-            note: Some("holds the server's token".into()),
-        }
     }
 
     pub fn link(&self) -> &str {
@@ -293,12 +280,7 @@ impl Overlay {
             _ => "←→ other links · Esc close",
         };
         note_hints(keys, area.x + 1, area.bottom().saturating_sub(1), true);
-        let mut block = theme::popup(&title, theme::ACCENT).title_bottom(theme::hints(keys));
-        if let Some(note) = &self.note {
-            block = block.title_bottom(
-                Line::styled(format!(" {note} "), Style::new().fg(theme::WARN)).right_aligned(),
-            );
-        }
+        let block = theme::popup(&title, theme::ACCENT).title_bottom(theme::hints(keys));
         let inner = block.inner(area);
         frame.render_widget(Clear, area);
         frame.render_widget(block, area);
@@ -359,80 +341,6 @@ pub fn any_link<'a>(lines: impl IntoIterator<Item = &'a str>) -> bool {
             .iter()
             .any(|(part, link)| *link && !part.ends_with('…'))
     })
-}
-
-/// A value as it may stand in an address: letters, digits and `-._~` as they
-/// are, and with `keep` also those characters; everything else
-/// percent-encoded.
-fn encoded(value: &str, keep: &str) -> String {
-    let mut out = String::new();
-    for byte in value.bytes() {
-        let ch = byte as char;
-        if ch.is_ascii_alphanumeric() || "-._~".contains(ch) || keep.contains(ch) {
-            out.push(ch);
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
-}
-
-/// An access token of an OAuth issuer is a JWT, of three parts in base64.
-/// It runs out, and belongs to whoever it was issued to, so it is never handed on.
-fn issued(token: &str) -> bool {
-    token.starts_with("eyJ") && token.matches('.').count() == 2
-}
-
-/// The link that opens the browser page of a berth server, signed in with
-/// `token`: `page` is where the page is. A page that is not the server's own,
-/// as on the documentation site, is told the `server` as well. `None` when
-/// there is no such link: no token, an access token of an issuer, or no address over the
-/// network.
-pub fn connect_link(page: &str, server: Option<&str>, token: &str) -> Option<String> {
-    let token = token.trim();
-    let web = |address: &str| address.starts_with("https://") || address.starts_with("http://");
-    if token.is_empty() || issued(token) || !web(page) || server.is_some_and(|server| !web(server))
-    {
-        return None;
-    }
-    let query = match server {
-        Some(server) => format!("?server={}", encoded(server.trim_end_matches('/'), ":/")),
-        None => String::new(),
-    };
-    Some(format!("{page}{query}#token={}", encoded(token, "")))
-}
-
-/// The link to the page that `berth serve --web` gives at `server`.
-pub fn served_link(server: &str, token: &str) -> Option<String> {
-    connect_link(&format!("{}/", server.trim_end_matches('/')), None, token)
-}
-
-/// What the information box says of the row that shows the link to the
-/// server's page. `served` when the link is to the page `berth serve --web`
-/// gives, which a server without `--web` does not have.
-pub fn connect_help(server: &str, served: bool) -> String {
-    let mut help = format!(
-        "A QR code and a link that open this berth server, {server}, in a browser on a phone or another computer, signed in.\n\n**Both hold the server's token**, which gives full control of its hosts. Show them to nobody who should not have it."
-    );
-    if served {
-        help += &format!(
-            "\n\nThe link is to the page of `berth serve --web`. Without `--web`, the page of the documentation site takes `/web/?server={server}#token=TOKEN`."
-        );
-    }
-    if loopback(server) {
-        help += "\n\nThat address is this machine's own, which a phone cannot reach. Use one of the server's addresses on your network or tailnet.";
-    }
-    help
-}
-
-/// Whether an address is this machine's own, which a phone cannot reach.
-pub fn loopback(address: &str) -> bool {
-    let rest = address
-        .trim_start_matches("https://")
-        .trim_start_matches("http://");
-    ["localhost", "127.", "[::1]", "0.0.0.0"]
-        .iter()
-        .any(|name| rest.starts_with(name))
 }
 
 #[cfg(test)]
@@ -587,44 +495,18 @@ mod tests {
 
     #[test]
     fn the_overlay_falls_back_to_text_in_a_small_window() {
-        let overlay = Overlay::connect("https://berth.example.ts.net/#token=secret".into());
+        let overlay = Overlay {
+            title: "QR code".into(),
+            links: vec!["https://berth.example.ts.net/?query=a-long-enough-link".into()],
+            index: 0,
+        };
         let drawn = text(&screen(60, 12, |frame| overlay.draw(frame)));
         assert!(
             drawn.contains("too small") && !drawn.contains('▀'),
             "{drawn}"
         );
-        assert!(drawn.contains("#token=secret") && drawn.contains("token"));
+        assert!(drawn.contains("a-long-enough-link"));
         let drawn = text(&screen(100, 40, |frame| overlay.draw(frame)));
-        assert!(
-            drawn.contains('▀') && drawn.contains("holds the server's token"),
-            "{drawn}"
-        );
-    }
-
-    #[test]
-    fn connect_links_are_what_the_page_takes() {
-        assert_eq!(
-            served_link("https://berth.example.ts.net/", "a1b2").as_deref(),
-            Some("https://berth.example.ts.net/#token=a1b2")
-        );
-        assert_eq!(
-            connect_link(
-                "https://docs.example.org/web/",
-                Some("https://berth.example.ts.net"),
-                "a+b/c"
-            )
-            .as_deref(),
-            Some(
-                "https://docs.example.org/web/?server=https://berth.example.ts.net#token=a%2Bb%2Fc"
-            )
-        );
-        // No token, a login's token, or a socket: nothing to hand on.
-        assert_eq!(served_link("https://berth.example.ts.net", ""), None);
-        assert_eq!(
-            served_link("https://berth.example.ts.net", "eyJhbGciOi.eyJzdWIi.c2ln"),
-            None
-        );
-        assert_eq!(served_link("unix:/run/berth/serve.sock", "a1b2"), None);
-        assert!(loopback("http://127.0.0.1:7777") && !loopback("https://berth.example.ts.net"));
+        assert!(drawn.contains('▀'), "{drawn}");
     }
 }

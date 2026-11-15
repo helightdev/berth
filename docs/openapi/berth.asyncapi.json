@@ -11,19 +11,28 @@
           }
         }
       },
-      "description": "Channel messages of chosen hosts, jobs and key-value changes together. The first frame sent names what to follow; each frame received says where it came from.",
+      "description": "Channel messages of chosen hosts, jobs, key-value changes and changes to hosts and resources together. The first frame sent names what to follow; each frame received says where it came from.",
       "messages": {
         "events.channel": {
           "$ref": "#/components/messages/events.channel"
         },
+        "events.dropped": {
+          "$ref": "#/components/messages/events.dropped"
+        },
         "events.follow": {
           "$ref": "#/components/messages/events.follow"
+        },
+        "events.host": {
+          "$ref": "#/components/messages/events.host"
         },
         "events.job": {
           "$ref": "#/components/messages/events.job"
         },
         "events.kv": {
           "$ref": "#/components/messages/events.kv"
+        },
+        "events.resource": {
+          "$ref": "#/components/messages/events.resource"
         }
       },
       "parameters": {},
@@ -31,7 +40,7 @@
       "x-berth-resumable": false
     },
     "host.channel": {
-      "address": "/v1/hosts/{name}/channel",
+      "address": "/v1/hosts/{name}/controller/channel",
       "bindings": {
         "ws": {
           "query": {
@@ -67,7 +76,7 @@
       "x-berth-resumable": true
     },
     "host.logs": {
-      "address": "/v1/hosts/{name}/logs",
+      "address": "/v1/hosts/{name}/controller/logs",
       "bindings": {
         "ws": {
           "query": {
@@ -99,8 +108,38 @@
       "x-berth-level": "host",
       "x-berth-resumable": true
     },
+    "host.port": {
+      "address": "/v1/hosts/{name}/controller/ports/{port}",
+      "bindings": {
+        "ws": {
+          "query": {
+            "properties": {},
+            "type": "object"
+          }
+        }
+      },
+      "description": "A TCP connection to a port on the host's loopback, 127.0.0.1. The port is dialled first, so one that nothing listens on is an error and not a stream.",
+      "messages": {
+        "host.port.bytes": {
+          "$ref": "#/components/messages/host.port.bytes"
+        },
+        "host.port.eof": {
+          "$ref": "#/components/messages/host.port.eof"
+        }
+      },
+      "parameters": {
+        "name": {
+          "description": "name"
+        },
+        "port": {
+          "description": "port"
+        }
+      },
+      "x-berth-level": "host",
+      "x-berth-resumable": false
+    },
     "host.serve": {
-      "address": "/v1/hosts/{name}/services/{service}/serve",
+      "address": "/v1/hosts/{name}/controller/services/{service}/serve",
       "bindings": {
         "ws": {
           "query": {
@@ -133,7 +172,7 @@
       "x-berth-resumable": false
     },
     "host.session": {
-      "address": "/v1/hosts/{name}/sessions/{id}",
+      "address": "/v1/hosts/{name}/controller/sessions/{id}",
       "bindings": {
         "ws": {
           "query": {
@@ -203,6 +242,9 @@
       },
       "description": "Messages as they are taken in from the hosts.",
       "messages": {
+        "inbox.dropped": {
+          "$ref": "#/components/messages/inbox.dropped"
+        },
         "inbox.message": {
           "$ref": "#/components/messages/inbox.message"
         }
@@ -255,6 +297,9 @@
       },
       "description": "Changes to a namespace of the key-value store.",
       "messages": {
+        "kv.dropped": {
+          "$ref": "#/components/messages/kv.dropped"
+        },
         "kv.removed": {
           "$ref": "#/components/messages/kv.removed"
         },
@@ -265,6 +310,36 @@
       "parameters": {
         "namespace": {
           "description": "namespace"
+        }
+      },
+      "x-berth-level": "host",
+      "x-berth-resumable": false
+    },
+    "resource-connect": {
+      "address": "/v1/resources/{id}/endpoints/{endpoint}",
+      "bindings": {
+        "ws": {
+          "query": {
+            "properties": {},
+            "type": "object"
+          }
+        }
+      },
+      "description": "A TCP connection to an endpoint its provisioner reported for a resource, named by the endpoint's name or its port. The server dials it first, so one that nothing answers on, or an address berth refuses, is an error and not a stream.",
+      "messages": {
+        "resource-connect.bytes": {
+          "$ref": "#/components/messages/resource-connect.bytes"
+        },
+        "resource-connect.eof": {
+          "$ref": "#/components/messages/resource-connect.eof"
+        }
+      },
+      "parameters": {
+        "endpoint": {
+          "description": "endpoint"
+        },
+        "id": {
+          "description": "id"
         }
       },
       "x-berth-level": "host",
@@ -332,11 +407,32 @@
         },
         "summary": "A message from a host's channel."
       },
+      "events.dropped": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "dropped": {
+                "events": 12
+              }
+            }
+          }
+        ],
+        "name": "dropped",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "This follower was too slow. `events` counts the server's events it missed, of every kind. Read what it follows again."
+      },
       "events.follow": {
         "contentType": "application/json",
         "examples": [
           {
             "payload": {
+              "changes": [
+                "hosts",
+                "resources"
+              ],
               "hosts": [
                 "server"
               ],
@@ -355,6 +451,24 @@
           "type": "object"
         },
         "summary": "What to follow. Sent once, first."
+      },
+      "events.host": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "change": "renamed",
+              "from": "desk",
+              "host": "studio",
+              "source": "host"
+            }
+          }
+        ],
+        "name": "host",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "A saved host was `added`, `removed`, `renamed` (with the name it had `from`) or its profile `changed`. Read the host itself with hosts.get."
       },
       "events.job": {
         "contentType": "application/json",
@@ -396,6 +510,25 @@
           "type": "object"
         },
         "summary": "A key changed."
+      },
+      "events.resource": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "change": "created",
+              "kind": "deployment",
+              "provisioner": "docker",
+              "resource": "r-k3v9qz2m",
+              "source": "resource"
+            }
+          }
+        ],
+        "name": "resource",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "A resource was `created`, `removed` or its record `changed`. Read it with resources.get."
       },
       "host.channel.message": {
         "contentType": "application/json",
@@ -459,6 +592,30 @@
           "type": "object"
         },
         "summary": "One journal entry."
+      },
+      "host.port.bytes": {
+        "contentType": "application/octet-stream",
+        "name": "bytes",
+        "payload": {
+          "format": "binary",
+          "type": "string"
+        },
+        "summary": "Bytes for the program on the port."
+      },
+      "host.port.eof": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "eof": true
+            }
+          }
+        ],
+        "name": "eof",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "The client sends no more, and the program on the port reads the end. What it sends still comes back."
       },
       "host.serve.call": {
         "contentType": "application/json",
@@ -618,6 +775,23 @@
         },
         "summary": "INT, TERM, HUP or KILL to the session's process group."
       },
+      "inbox.dropped": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "dropped": {
+                "events": 12
+              }
+            }
+          }
+        ],
+        "name": "dropped",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "This follower was too slow. `events` counts the server's events it missed, of every kind. Read the inbox again."
+      },
       "inbox.message": {
         "contentType": "application/json",
         "examples": [
@@ -669,6 +843,23 @@
         },
         "summary": "The job's output."
       },
+      "kv.dropped": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "dropped": {
+                "events": 12
+              }
+            }
+          }
+        ],
+        "name": "dropped",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "This follower was too slow. `events` counts the server's events it missed, of every kind. List the namespace again."
+      },
       "kv.removed": {
         "contentType": "application/json",
         "examples": [
@@ -704,6 +895,30 @@
         },
         "summary": "A key was written."
       },
+      "resource-connect.bytes": {
+        "contentType": "application/octet-stream",
+        "name": "bytes",
+        "payload": {
+          "format": "binary",
+          "type": "string"
+        },
+        "summary": "Bytes for the endpoint."
+      },
+      "resource-connect.eof": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "eof": true
+            }
+          }
+        ],
+        "name": "eof",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "The client sends no more, and the endpoint reads the end. What it sends still comes back."
+      },
       "resource-logs.exited": {
         "contentType": "application/json",
         "examples": [
@@ -734,7 +949,7 @@
   },
   "defaultContentType": "application/json",
   "info": {
-    "description": "The WebSockets of berth serve: its own, and each host's under /v1/hosts/{name}. Text frames are JSON, one message each; binary frames carry only session and job bytes.",
+    "description": "The WebSockets of berth serve: its own, and each host's under /v1/hosts/{name}/controller. Text frames are JSON, one message each; binary frames carry only session and job bytes.",
     "title": "berth serve",
     "version": "0.5.2"
   },
@@ -764,6 +979,15 @@
         },
         {
           "$ref": "#/channels/events/messages/events.kv"
+        },
+        {
+          "$ref": "#/channels/events/messages/events.host"
+        },
+        {
+          "$ref": "#/channels/events/messages/events.resource"
+        },
+        {
+          "$ref": "#/channels/events/messages/events.dropped"
         }
       ]
     },
@@ -797,6 +1021,34 @@
       "messages": [
         {
           "$ref": "#/channels/host.logs/messages/host.logs.entry"
+        }
+      ]
+    },
+    "host.port.receive": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/host.port"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/host.port/messages/host.port.bytes"
+        },
+        {
+          "$ref": "#/channels/host.port/messages/host.port.eof"
+        }
+      ]
+    },
+    "host.port.send": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/host.port"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/host.port/messages/host.port.bytes"
+        },
+        {
+          "$ref": "#/channels/host.port/messages/host.port.eof"
         }
       ]
     },
@@ -870,6 +1122,9 @@
       "messages": [
         {
           "$ref": "#/channels/inbox/messages/inbox.message"
+        },
+        {
+          "$ref": "#/channels/inbox/messages/inbox.dropped"
         }
       ]
     },
@@ -898,6 +1153,37 @@
         },
         {
           "$ref": "#/channels/kv/messages/kv.removed"
+        },
+        {
+          "$ref": "#/channels/kv/messages/kv.dropped"
+        }
+      ]
+    },
+    "resource-connect.receive": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/resource-connect"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/resource-connect/messages/resource-connect.bytes"
+        },
+        {
+          "$ref": "#/channels/resource-connect/messages/resource-connect.eof"
+        }
+      ]
+    },
+    "resource-connect.send": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/resource-connect"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/resource-connect/messages/resource-connect.bytes"
+        },
+        {
+          "$ref": "#/channels/resource-connect/messages/resource-connect.eof"
         }
       ]
     },

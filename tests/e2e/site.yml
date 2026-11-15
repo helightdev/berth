@@ -2,17 +2,48 @@
 # The role as the end-to-end tests apply it: the tasks berth itself talks to
 # (accounts and keys, plugins, the agent's helpers, berthd and its files),
 # without the desktop packages, toolchains and browsers that need the internet.
-# The tests put this playbook where berth looks for provision/ansible/site.yml.
+# A node gets its own tasks of the same kinds, without the packages and the
+# Tailscale install that need the internet. The tests put this playbook where
+# berth looks for provision/ansible/site.yml.
+- name: Configure what berth talks to on a node
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Set the node up without the internet
+      when: devbox_level | default('workstation') == 'node'
+      block:
+        - name: Check the node and find the account sessions run as
+          ansible.builtin.include_role:
+            name: devbox
+            tasks_from: node_facts.yml
+        - name: Let berth in with its key, and nobody with a password
+          ansible.builtin.include_role:
+            name: devbox
+            tasks_from: node_ssh.yml
+        - name: Apply the features, berth's controller and the record
+          ansible.builtin.include_role:
+            name: devbox
+            tasks_from: node_berth.yml
+
 - name: Configure what berth talks to on a host
   hosts: all
   become: true
   gather_facts: true
   tasks:
+    - name: End here for a node
+      ansible.builtin.meta: end_host
+      when: devbox_level | default('workstation') == 'node'
     - name: Check target and profile before any changes
       ansible.builtin.assert:
         that:
           - ansible_facts.distribution == 'Ubuntu'
           - devbox_profile in ['laptop', 'cloud', 'container']
+    - name: Check that the host can join the tailnet
+      ansible.builtin.include_role:
+        name: devbox
+        tasks_from: tailnet_check.yml
+      when: devbox_install_tailscale | default(false)
     - name: Configure accounts and paths
       ansible.builtin.include_role:
         name: devbox

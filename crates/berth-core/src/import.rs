@@ -10,8 +10,10 @@
 //!    the token and the plugin directory stay where they are, as they are
 //!    used as files; only `serve.setup-key` goes.
 //!
-//! Two more change rows the store has already: how hosts are reached moves
-//! into `access`, and the records of hosts' machines become resources.
+//! More change rows the store has already: how hosts are reached moves into
+//! `access`, the records of hosts' machines become resources, provisioners
+//! get names of their own, and profiles take the names their fields have
+//! now ([`take_in_names`]).
 //!
 //! The rows of an import go into the store in one change with its marker, so
 //! they are all there or none of them are. Only then are the old files put
@@ -44,6 +46,24 @@ pub const RESOURCES_MARKER: &str = "import:resources";
 /// The marker of the sixth, which registers each provisioner that has
 /// settings or made something under a name of its own.
 pub const PROVISIONERS_MARKER: &str = "import:provisioners";
+/// The marker of the seventh, which gives every stored profile the names its
+/// fields have now: `type` for `level` and `target` for `profile`.
+pub const NAMES_MARKER: &str = "import:names";
+/// The marker of the eighth, which takes out of every stored profile what
+/// older berths kept of joining the tailnet without a key berth makes.
+pub const TAILNET_MARKER: &str = "import:tailnet";
+
+/// Every import's marker: a store that lacks one is taken in by this berth.
+pub const MARKERS: &[&str] = &[
+    MARKER,
+    PROFILES_MARKER,
+    KEYS_MARKER,
+    ACCESS_MARKER,
+    RESOURCES_MARKER,
+    PROVISIONERS_MARKER,
+    NAMES_MARKER,
+    TAILNET_MARKER,
+];
 
 /// What a row of the import is.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -74,6 +94,8 @@ pub fn run(paths: &Paths, installation: &Installation, store: &Store) -> Result<
         && marked(store, ACCESS_MARKER)?
         && marked(store, RESOURCES_MARKER)?
         && marked(store, PROVISIONERS_MARKER)?
+        && marked(store, NAMES_MARKER)?
+        && marked(store, TAILNET_MARKER)?
     {
         return Ok(());
     }
@@ -146,12 +168,183 @@ pub fn run(paths: &Paths, installation: &Installation, store: &Store) -> Result<
         let registered = take_in_provisioners(store)?;
         if !registered.is_empty() {
             eprintln!(
-                "berth: the provisioners in use are registered as {}: see berth provisioner",
+                "berth: the provisioners in use are registered as {}: see berth provisioner list",
                 registered.join(", ")
             );
         }
     }
+    // Before the names, which drop the same fields without a word.
+    if !marked(store, TAILNET_MARKER)? {
+        let taken = take_in_tailnet(store)?;
+        if let Some(said) = tailnet_message(&taken, store)? {
+            eprintln!("berth: {said}");
+        }
+    }
+    if !marked(store, NAMES_MARKER)? {
+        let renamed = take_in_names(store)?;
+        if renamed > 0 {
+            let (noun, verb) = match renamed {
+                1 => ("profile", "says"),
+                _ => ("profiles", "say"),
+            };
+            eprintln!("berth: {renamed} {noun} {verb} type for level and target for profile now");
+        }
+    }
     Ok(())
+}
+
+/// The seventh import, in one change with its marker: every stored profile,
+/// of every scope, takes the names of now ([`berth_api::profile::take_old_names`]).
+/// The values may be sealed, so this is done here rather than by a migration
+/// of the database. Returns how many profiles changed.
+pub(crate) fn take_in_names(store: &Store) -> Result<usize> {
+    let mut scopes = std::collections::BTreeSet::new();
+    if let crate::store::Rows::State(rows) = store.export(crate::store::Table::State)? {
+        for row in rows.into_iter().filter(|row| row.kind == kind::PROFILE) {
+            scopes.insert(row.scope);
+        }
+    }
+    let mut writes: Vec<(String, String, Vec<u8>)> = vec![];
+    for scope in scopes {
+        for (name, value) in store.entries(kind::PROFILE, &scope)? {
+            let Ok(mut config) = serde_json::from_slice::<Value>(&value) else {
+                continue;
+            };
+            if berth_api::profile::take_old_names(&mut config) {
+                writes.push((scope.clone(), name, config.to_string().into_bytes()));
+            }
+        }
+    }
+    let renamed = writes.len();
+    let marker =
+        json!({"version": berth_api::VERSION, "at": berth_api::rfc3339(berth_api::unix_now())});
+    let marker = marker.to_string().into_bytes();
+    let mut rows: Vec<(&str, &str, &str, Vec<u8>)> = writes
+        .iter()
+        .map(|(scope, name, value)| (kind::PROFILE, scope.as_str(), name.as_str(), value.clone()))
+        .collect();
+    rows.push((kind::META, OWN, NAMES_MARKER, marker));
+    store.change(&rows, &[])?;
+    Ok(renamed)
+}
+
+/// The hosts whose profiles the tailnet's import changed: those that held a
+/// pasted key, and those berth 0.5 never joined by itself.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct TakenTailnet {
+    pub pasted: Vec<String>,
+    pub optional: Vec<String>,
+}
+
+/// The role's variable that lets an apply go on, without the tailnet, when
+/// berth cannot make the host's key.
+pub const TAILNET_OPTIONAL: &str = "devbox_tailnet_optional";
+
+/// The eighth import, in one change with its marker: every stored profile,
+/// of every scope, loses its pasted enrollment key and the switch of keys
+/// berth makes ([`berth_api::profile::take_old_tailnet`]), so no key lingers
+/// in the store. berth 0.5 joined a host only with a pasted key or with that
+/// switch on, which was off unless set, and an apply without either left the
+/// host off the tailnet. A profile of such a host keeps that: it joins once
+/// berth can make its key, and until then an apply goes on without it. Says
+/// which hosts of berth's own scope it changed.
+pub(crate) fn take_in_tailnet(store: &Store) -> Result<TakenTailnet> {
+    let mut scopes = std::collections::BTreeSet::new();
+    if let crate::store::Rows::State(rows) = store.export(crate::store::Table::State)? {
+        for row in rows.into_iter().filter(|row| row.kind == kind::PROFILE) {
+            scopes.insert(row.scope);
+        }
+    }
+    let mut taken = TakenTailnet::default();
+    let mut writes: Vec<(String, String, Vec<u8>)> = vec![];
+    for scope in scopes {
+        for (name, value) in store.entries(kind::PROFILE, &scope)? {
+            let Ok(mut config) = serde_json::from_slice::<Value>(&value) else {
+                continue;
+            };
+            if !config.is_object() {
+                continue;
+            }
+            let joins = berth_api::profile::joins_tailnet(&config);
+            let old = berth_api::profile::take_old_tailnet(&mut config);
+            let optional = joins
+                && old.is_none_or(|old| old.by_hand && !old.pasted)
+                && config["ansible_vars"].get(TAILNET_OPTIONAL).is_none();
+            if optional {
+                if !config["ansible_vars"].is_object() {
+                    config["ansible_vars"] = json!({});
+                }
+                config["ansible_vars"][TAILNET_OPTIONAL] = json!(true);
+            }
+            if old.is_none() && !optional {
+                continue;
+            }
+            if scope == OWN {
+                match (old.is_some_and(|old| old.pasted), optional) {
+                    (true, _) => taken.pasted.push(name.clone()),
+                    (false, true) => taken.optional.push(name.clone()),
+                    _ => {}
+                }
+            }
+            writes.push((scope.clone(), name, config.to_string().into_bytes()));
+        }
+    }
+    let marker =
+        json!({"version": berth_api::VERSION, "at": berth_api::rfc3339(berth_api::unix_now())});
+    let marker = marker.to_string().into_bytes();
+    let mut rows: Vec<(&str, &str, &str, Vec<u8>)> = writes
+        .iter()
+        .map(|(scope, name, value)| (kind::PROFILE, scope.as_str(), name.as_str(), value.clone()))
+        .collect();
+    rows.push((kind::META, OWN, TAILNET_MARKER, marker));
+    store.change(&rows, &[])?;
+    Ok(taken)
+}
+
+/// What the tailnet's import tells the user, once, or `None` when it
+/// changed nothing they need to know.
+pub(crate) fn tailnet_message(taken: &TakenTailnet, store: &Store) -> Result<Option<String>> {
+    if taken.pasted.is_empty() && taken.optional.is_empty() {
+        return Ok(None);
+    }
+    let list = |names: &[String]| names.join(", ");
+    let joins = |names: &[String]| if names.len() == 1 { "joins" } else { "join" };
+    let has_key = store
+        .names(kind::SECRET, OWN)?
+        .iter()
+        .any(|name| name == berth_api::profile::TAILNET_API_KEY);
+    let secret = berth_api::profile::TAILNET_API_KEY;
+    let mut said = String::from("berth makes the keys hosts join the tailnet with itself now.");
+    if !taken.pasted.is_empty() {
+        said += &format!(
+            " The keys pasted into the profiles of {0} are removed. {0} {1} the tailnet on the next apply, unless already on it",
+            list(&taken.pasted),
+            joins(&taken.pasted)
+        );
+        said += &match has_key {
+            true => ".".to_owned(),
+            false => format!(", once the secret {secret} is set: berth secret set {secret}."),
+        };
+    }
+    if !taken.optional.is_empty() {
+        let names = list(&taken.optional);
+        said += &match has_key {
+            true => format!(
+                " {names} {} the tailnet on the next apply, unless already on it.",
+                joins(&taken.optional)
+            ),
+            false => format!(
+                " {names} {} the tailnet once the secret {secret} is set: berth secret set {secret}. Until then an apply leaves {} off the tailnet, as berth 0.5 did.",
+                joins(&taken.optional),
+                if taken.optional.len() == 1 {
+                    "it"
+                } else {
+                    "them"
+                }
+            ),
+        };
+    }
+    Ok(Some(said))
 }
 
 /// The sixth import, in one change with its marker: each type of provisioner
@@ -166,7 +359,14 @@ pub(crate) fn take_in_provisioners(store: &Store) -> Result<Vec<String>> {
     for (kind, value) in store.entries(kind::PROVISIONER, OWN)? {
         removals.push((kind::PROVISIONER, OWN.into(), kind.clone()));
         let settings = serde_json::from_slice(&value).unwrap_or_default();
-        types.insert(kind.clone(), Entry { kind, settings });
+        types.insert(
+            kind.clone(),
+            Entry {
+                kind,
+                settings,
+                ..Entry::default()
+            },
+        );
     }
     let mut scopes = std::collections::BTreeSet::new();
     if let crate::store::Rows::State(rows) = store.export(crate::store::Table::State)? {
@@ -397,7 +597,7 @@ pub(crate) fn convert_access(
             }
             Err(error) => {
                 converted.notices.push(format!(
-                    "{title} named the key file {}, which berth could not take into its key ring ({error}). It logs in with your SSH configuration now. Add the key with: berth key add NAME FILE, and choose it as the host's login",
+                    "{title} named the key file {}, which berth could not take into its key ring ({error}). It logs in with your SSH configuration now. Add the key with: berth key import NAME FILE, and choose it as the host's login",
                     file.display()
                 ));
                 Auth::Ssh
@@ -545,10 +745,17 @@ pub(crate) fn take_in_access(
     Ok(converted.notices)
 }
 
-/// A profile of an older layout as it is read or given: of the access
-/// layout, its key file taken into the ring. A file is written only when the
-/// user saves it.
+/// A profile of an older layout as it is read or given: with the names its
+/// fields have now, and of the access layout, its key file taken into the
+/// ring. A file is written only when the user saves it.
 pub fn convert_profile(paths: &Paths, title: &str, config: &mut Value) {
+    berth_api::profile::take_old_names(config);
+    convert_layout(paths, title, config);
+}
+
+/// A profile of the layout before `access`, in the access layout, its key
+/// file taken into the ring.
+pub fn convert_layout(paths: &Paths, title: &str, config: &mut Value) {
     use crate::keys::ring::{Halves, blob};
     if config["builder"].as_object().is_none_or(|builder| {
         ![
@@ -1208,6 +1415,8 @@ mod tests {
             json!({"address": "192.0.2.10", "user": "admin", "auth": "ssh", "sudo": "password"})
         );
         assert!(berth_api::profile::asks_become_pass(&studio));
+        assert_eq!(studio["target"], "cloud");
+        assert!(studio.get("profile").is_none());
         assert_eq!(machine_of(&store, "studio").unwrap().external_id, "vm-1");
         let mut applied = studio.clone();
         applied["access"]["user"] = json!("ops");
@@ -1289,17 +1498,198 @@ mod tests {
     }
 
     #[test]
+    fn an_installation_of_berth_05_gives_its_profiles_the_names_of_now() {
+        let (_dir, paths) = scratch();
+        // berth 0.5 had run every import but the last, and saved hosts of each level.
+        let store = open(&paths);
+        store
+            .change(&[], &[(kind::META, OWN, NAMES_MARKER)])
+            .unwrap();
+        for (name, level) in [("dock", "reachable"), ("pier", "controller")] {
+            let old =
+                json!({"level": level, "profile": "cloud", "access": {"address": "192.0.2.4"}});
+            store
+                .write(kind::PROFILE, OWN, name, old.to_string().as_bytes())
+                .unwrap();
+        }
+        let studio = json!({"hostname": "studio", "profile": "laptop", "builder": {}});
+        store
+            .write(kind::PROFILE, OWN, "studio", studio.to_string().as_bytes())
+            .unwrap();
+        let found = installation(&paths);
+        run(&paths, &found, &store).unwrap();
+        assert!(read(&store, kind::META, NAMES_MARKER).is_some());
+        let dock = json_row(&store, kind::PROFILE, "dock").unwrap();
+        assert_eq!(
+            (&dock["type"], &dock["target"]),
+            (&json!("ssh"), &json!("cloud"))
+        );
+        assert_eq!(
+            json_row(&store, kind::PROFILE, "pier").unwrap()["type"],
+            "managed"
+        );
+        assert_eq!(
+            json_row(&store, kind::PROFILE, "studio").unwrap(),
+            json!({"hostname": "studio", "target": "laptop", "builder": {}})
+        );
+        // A row an older berth writes later is read with the names of now.
+        let late = json!({"level": "controller", "access": {"address": "192.0.2.5"}});
+        store
+            .write(kind::PROFILE, OWN, "late", late.to_string().as_bytes())
+            .unwrap();
+        let place = crate::profiles::Place::own("late").unwrap();
+        assert_eq!(place.load(&paths).unwrap().unwrap()["type"], "managed");
+        let listed = crate::profiles::list(&paths, OWN).unwrap();
+        let (_, listed) = listed.iter().find(|(name, _)| name == "late").unwrap();
+        assert!(listed.get("level").is_none());
+    }
+
+    #[test]
+    fn stored_profiles_lose_their_pasted_keys_and_say_so_once() {
+        let (_dir, paths) = scratch();
+        let store = open(&paths);
+        store
+            .change(&[], &[(kind::META, OWN, TAILNET_MARKER)])
+            .unwrap();
+        let rows = [
+            (
+                OWN,
+                "studio",
+                json!({"hostname": "studio", "tailscale_auth_key": "tskey-auth-kFAKE-0000", "tailscale_auto_key": false}),
+            ),
+            (
+                OWN,
+                "dock",
+                json!({"hostname": "dock", "tailscale_auto_key": false}),
+            ),
+            (
+                OWN,
+                "pier",
+                json!({"hostname": "pier", "tailscale_auto_key": true}),
+            ),
+            (OWN, "attic", json!({"hostname": "attic", "builder": {}})),
+            (
+                "ffffffff",
+                "theirs",
+                json!({"ansible_vars": {"devbox_tailscale_auth_key": "tskey-auth-kFAKE-1111"}}),
+            ),
+        ];
+        for (scope, name, profile) in &rows {
+            store
+                .write(kind::PROFILE, scope, name, profile.to_string().as_bytes())
+                .unwrap();
+        }
+        let taken = take_in_tailnet(&store).unwrap();
+        assert_eq!(
+            taken,
+            TakenTailnet {
+                pasted: vec!["studio".into()],
+                optional: vec!["attic".into(), "dock".into()],
+            }
+        );
+        assert!(read(&store, kind::META, TAILNET_MARKER).is_some());
+        assert_eq!(
+            json_row(&store, kind::PROFILE, "studio").unwrap(),
+            json!({"hostname": "studio"})
+        );
+        assert_eq!(
+            json_row(&store, kind::PROFILE, "pier").unwrap(),
+            json!({"hostname": "pier"})
+        );
+        // berth 0.5 joined neither of these by itself, and an apply goes on without the tailnet still.
+        assert_eq!(
+            json_row(&store, kind::PROFILE, "attic").unwrap(),
+            json!({"hostname": "attic", "builder": {}, "ansible_vars": {(TAILNET_OPTIONAL): true}})
+        );
+        assert_eq!(
+            json_row(&store, kind::PROFILE, "dock").unwrap(),
+            json!({"hostname": "dock", "ansible_vars": {(TAILNET_OPTIONAL): true}})
+        );
+        // No key is left in any row of the store, of any scope.
+        let crate::store::Rows::State(all) = store.export(crate::store::Table::State).unwrap()
+        else {
+            panic!("no rows");
+        };
+        assert!(
+            all.iter()
+                .all(|row| !String::from_utf8_lossy(&row.value).contains("tskey-auth"))
+        );
+        let said = tailnet_message(&taken, &store).unwrap().unwrap();
+        assert_eq!(
+            said,
+            "berth makes the keys hosts join the tailnet with itself now. The keys pasted into the profiles of studio are removed. studio joins the tailnet on the next apply, unless already on it, once the secret tailnet_api_key is set: berth secret set tailnet_api_key. attic, dock join the tailnet once the secret tailnet_api_key is set: berth secret set tailnet_api_key. Until then an apply leaves them off the tailnet, as berth 0.5 did."
+        );
+        store
+            .write(
+                kind::SECRET,
+                OWN,
+                berth_api::profile::TAILNET_API_KEY,
+                b"tskey-api-kFAKE-0000",
+            )
+            .unwrap();
+        assert!(
+            tailnet_message(&taken, &store)
+                .unwrap()
+                .unwrap()
+                .ends_with("unless already on it.")
+        );
+        assert_eq!(
+            tailnet_message(&TakenTailnet::default(), &store).unwrap(),
+            None
+        );
+        // One host joins, several join.
+        let one = TakenTailnet {
+            pasted: vec![],
+            optional: vec!["dock".into()],
+        };
+        assert!(
+            tailnet_message(&one, &store)
+                .unwrap()
+                .unwrap()
+                .contains(" dock joins the tailnet on the next apply")
+        );
+        // Once is enough: the next start finds the marker and changes nothing.
+        let before = store.export(crate::store::Table::State).unwrap();
+        let found = installation(&paths);
+        run(&paths, &found, &store).unwrap();
+        assert_eq!(store.export(crate::store::Table::State).unwrap(), before);
+    }
+
+    #[test]
+    fn a_profile_given_in_a_file_is_read_with_the_names_of_now() {
+        let (dir, paths) = scratch();
+        let file = dir.path().join("dock.json");
+        fs::write(
+            &file,
+            r#"{"level": "reachable", "profile": "cloud", "access": {"address": "192.0.2.4"}}"#,
+        )
+        .unwrap();
+        let place = crate::profiles::Place::File(file.clone());
+        let read = place.load(&paths).unwrap().unwrap();
+        assert_eq!(
+            read,
+            json!({"type": "ssh", "target": "cloud", "access": {"address": "192.0.2.4"}})
+        );
+        // The file keeps what it said until it is saved.
+        assert!(fs::read_to_string(&file).unwrap().contains("reachable"));
+        place.save(&paths, &read).unwrap();
+        assert!(!fs::read_to_string(&file).unwrap().contains("level"));
+    }
+
+    #[test]
     fn a_new_installation_gets_only_the_marker() {
         let (_dir, paths) = scratch();
         let store = open(&paths);
         let report = store.seal_report().unwrap();
-        assert_eq!((report.sealed, report.plain), (0, 6));
+        assert_eq!((report.sealed, report.plain), (0, 8));
         assert!(read(&store, kind::META, MARKER).is_some());
         assert!(read(&store, kind::META, PROVISIONERS_MARKER).is_some());
         assert!(read(&store, kind::META, PROFILES_MARKER).is_some());
         assert!(read(&store, kind::META, KEYS_MARKER).is_some());
         assert!(read(&store, kind::META, ACCESS_MARKER).is_some());
         assert!(read(&store, kind::META, RESOURCES_MARKER).is_some());
+        assert!(read(&store, kind::META, NAMES_MARKER).is_some());
+        assert!(read(&store, kind::META, TAILNET_MARKER).is_some());
         assert!(!paths.config_dir.join("migrated").exists());
         assert!(!paths.settings_file().exists());
     }
@@ -1313,8 +1703,8 @@ mod tests {
         let store = open(&paths);
         assert!(store.encrypted());
         let report = store.seal_report().unwrap();
-        // Two secrets, a registry, two settings and the six markers.
-        assert_eq!((report.sealed, report.plain), (11, 0));
+        // Two secrets, a registry, two settings and the eight markers.
+        assert_eq!((report.sealed, report.plain), (13, 0));
         assert_eq!(read(&store, kind::SECRET, "github").unwrap(), "ghp-made-up");
     }
 
@@ -1433,9 +1823,11 @@ mod tests {
         old_hosts(&paths);
         let store = open(&paths);
         // In the layout of now: an empty key file was the user's keys and berth's.
+        // berth 0.5 did not join it to the tailnet by itself, and an apply still goes on without.
         assert_eq!(
             json_row(&store, kind::PROFILE, "studio").unwrap(),
-            json!({"hostname": "studio", "builder": {}, "access": {"address": "192.0.2.10", "auth": "ssh"}})
+            json!({"hostname": "studio", "builder": {}, "access": {"address": "192.0.2.10", "auth": "ssh"},
+                   "ansible_vars": {(TAILNET_OPTIONAL): true}})
         );
         assert!(json_row(&store, kind::PROFILE, "attic").is_some());
         assert_eq!(

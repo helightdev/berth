@@ -56,18 +56,18 @@ class Restore(unittest.TestCase):
             folder.mkdir(mode=0o700)
         station.env.update(BERTH_STORE=str(keep / 'berth.db'), BERTH_STORE_KEY=str(keep / 'store.key'))
         # What the store says of itself when it is sealed.
-        cls.encrypted = station.berth('store', 'encrypt')
+        cls.encrypted = station.berth('server', 'store', 'encrypt')
         cls.own_public = station.own_public()
         cls.give_the_host_the_keys()
         key = station.own_key_file()
         wait_for('the operator taking the key of the server', lambda: station.ssh(
             OPERATOR, 'true', key=key, check=False).returncode == 0)
-        serve = Serve(station, web=False)
+        serve = Serve(station)
         try:
             cls.fill(serve)
         finally:
             serve.stop()
-        cls.status = station.berth('store').stdout
+        cls.status = station.berth('server', 'store', 'status').stdout
         cls.sealed_file = (keep / 'berth.db').read_bytes()
         # The database and the key file are all that is kept.
         for name in ('berth.db', 'store.key'):
@@ -76,7 +76,7 @@ class Restore(unittest.TestCase):
         wipe(station)
         shutil.rmtree(keep)
         station.env.update(BERTH_STORE=str(cls.moved / 'berth.db'), BERTH_STORE_KEY=str(cls.moved / 'store.key'))
-        cls.serve = Serve(station, web=False)
+        cls.serve = Serve(station)
 
     @classmethod
     def give_the_host_the_keys(cls):
@@ -93,7 +93,7 @@ class Restore(unittest.TestCase):
         host = cls.worker.read_profile()
         host['access']['auth'] = 'berth'
         host['ansible_vars'] = light_vars()
-        for key in ('secrets', 'registries', 'tailscale_auto_key', 'tailscale_auth_key', 'tailscale_login_server'):
+        for key in ('secrets', 'registries'):
             host.pop(key, None)
         serve.call('PUT', f'/v1/hosts/{HOST}/profile', host)
         wait_for('the host answering through the server', lambda: [
@@ -155,8 +155,8 @@ class Restore(unittest.TestCase):
         profile['secrets'] = [{'name': self.secret, 'env': 'RESTORED_SECRET'}]
         self.serve.call('PUT', f'/v1/hosts/{HOST}/profile', profile)
         session = self.serve.call('POST', f'/v1/hosts/{HOST}/actions/secrets', expect=202)['session']
-        wait_for('the secrets task to end', lambda: self.serve.call(
-            'GET', f'/v1/hosts/{HOST}/sessions/{session["id"]}').get('exit_code') == 0)
+        wait_for('the secrets action to end', lambda: self.serve.call(
+            'GET', f'/v1/hosts/{HOST}/controller/sessions/{session["id"]}').get('exit_code') == 0)
         env = self.worker.root_on_host(f'cat /home/{AGENT}/.config/devbox/secrets.env').stdout
         self.assertIn(f'export RESTORED_SECRET={self.secret_value}', env)
 
@@ -183,7 +183,9 @@ class Restore(unittest.TestCase):
         self.assertIn(str(absent), said)
         self.assertNotIn('Listening on', said)
         self.assertTrue(digest(database) == before, 'berth serve changed the database')
-        # SQLite's own files beside the database are no change; a key file or a new database would be.
-        self.assertEqual({path.name for path in self.keyless.iterdir()} - {'berth.db-wal', 'berth.db-shm'}, {'berth.db'})
+        # SQLite's own files and berth's empty lock beside the database are no change; a key file, a copy or a new database would be.
+        beside = {'berth.db-wal', 'berth.db-shm', 'berth.db.convert.lock'}
+        self.assertEqual({path.name for path in self.keyless.iterdir()} - beside, {'berth.db'})
+        self.assertEqual((self.keyless / 'berth.db.convert.lock').stat().st_size, 0)
         self.assertFalse((station.data / 'berth/serve.token').exists())
         self.assertFalse((station.data / 'berth/keys').exists())

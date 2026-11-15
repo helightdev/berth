@@ -1,0 +1,90 @@
+---
+# A node's features, berth's controller with the node's actions, its
+# firewall and the record of the apply, which says what the features offer.
+- name: Apply the features of the node
+  ansible.builtin.import_tasks: plugins.yml
+- name: See whether a berth server runs here in a container
+  ansible.builtin.command: docker container inspect --format {% raw %}'{{.Config.Image}}'{% endraw %} {{ devbox_berth_server_container | quote }}
+  register: devbox_node_server
+  changed_when: false
+  failed_when: false
+- name: Describe the node's actions and units to berthd
+  ansible.builtin.set_fact:
+    # Rebooting asks systemd, and only a node with a berth server's container can upgrade it.
+    devbox_tasks: >-
+      {{ (devbox_node_tasks
+          | rejectattr('name', 'equalto', 'reboot' if ansible_facts.service_mgr != 'systemd' else '')
+          | rejectattr('name', 'equalto', 'upgrade-server' if devbox_node_server.rc != 0 else '')
+          | list) + devbox_plugin_tasks }}
+    devbox_berthd_units: "{{ ['ssh', 'berthd', 'ufw'] + (['tailscaled'] if devbox_install_tailscale else []) + devbox_node_units + devbox_service_units }}"
+    devbox_berthd_roots: ["{{ devbox_node_home }}"]
+    devbox_berthd_systemd: "{{ ansible_facts.service_mgr == 'systemd' }}"
+- name: Install the helper that takes in secrets
+  ansible.builtin.copy:
+    src: secrets.py
+    dest: /usr/local/bin/devbox-secrets
+    mode: '0755'
+- name: Install berthd, box and what they read
+  ansible.builtin.import_tasks: berth.yml
+- name: Install the helper that upgrades a berth server's container
+  ansible.builtin.copy:
+    src: berth-server-upgrade.py
+    dest: /usr/local/lib/berth/berth-server-upgrade
+    mode: '0755'
+- name: Say who starts berthd on a node without systemd
+  ansible.builtin.debug:
+    msg: This node has no systemd, so nothing here starts berthd by itself. Something on the host has to run /usr/local/bin/berthd, as the init of a container does.
+  when: not devbox_berthd_systemd | bool
+
+# ── The firewall ────────────────────────────────────────────────────────────
+
+# Last, once the features have said what they open. The address this apply
+# came from keeps SSH, so the run never locks berth out.
+- name: Install the node's firewall helper
+  ansible.builtin.copy:
+    src: node-firewall.sh
+    dest: /usr/local/sbin/devbox-node-firewall
+    mode: '0755'
+  when: devbox_manage_firewall
+# A machine taken in may let SSH in from some addresses only, by rules made by
+# hand such as those of the incus-host recipe of 0.5. Those stay and are not
+# widened: SSH stays open to them and to where this apply came from.
+- name: Read the firewall's rules
+  ansible.builtin.command: ufw show added
+  register: devbox_node_ufw_added
+  changed_when: false
+  failed_when: false
+  when: devbox_manage_firewall
+- name: Keep SSH as limited as it was
+  ansible.builtin.set_fact:
+    devbox_node_ssh_limited: >-
+      {{ devbox_ssh_from == 'any'
+         and (devbox_node_ufw_added.stdout_lines | default([]) | select('match', '^ufw allow from [^ ]+ to any port 22( proto tcp)?$') | list | length > 0)
+         and (devbox_node_ufw_added.stdout_lines | default([]) | select('match', '^ufw allow (in )?(22|22/tcp|ssh|OpenSSH)( |$)') | list | length == 0) }}
+  when: devbox_manage_firewall
+- name: Say that SSH stays limited
+  ansible.builtin.debug:
+    msg: SSH stays open only to the addresses the firewall's own rules name, and to the address this apply came from. Delete those rules by hand to open it to every address.
+  when: devbox_manage_firewall and devbox_node_ssh_limited | bool
+- name: Set the node's firewall
+  ansible.builtin.command: /usr/local/sbin/devbox-node-firewall
+  args:
+    stdin: "{{ devbox_node_firewall | join('\n') }}"
+  register: devbox_node_firewall_set
+  changed_when: devbox_node_firewall_set.stdout | length > 0
+  when: devbox_manage_firewall
+  vars:
+    devbox_node_firewall: >-
+      {{ (([] if devbox_node_ssh_limited | bool else [('allow 22/tcp' if devbox_ssh_from == 'any' else 'allow from ' ~ devbox_ssh_from ~ ' to any port 22 proto tcp')])
+          + (['allow from ' ~ devbox_apply_from ~ ' to any port 22 proto tcp'] if devbox_apply_from | length > 0 and (devbox_ssh_from != 'any' or devbox_node_ssh_limited | bool) else [])
+          + (['allow from ' ~ devbox_bootstrap_ssh_cidr ~ ' to any port 22 proto tcp'] if devbox_bootstrap_ssh_cidr | length > 0 else [])
+          + (['allow in on tailscale0 to any port 22 proto tcp', 'allow 41641/udp'] if devbox_install_tailscale else [])
+          + devbox_firewall_rules) | unique }}
+- name: Say what the firewall changed
+  ansible.builtin.debug:
+    msg: "{{ devbox_node_firewall_set.stdout_lines }}"
+  when: devbox_node_firewall_set is changed
+
+# Last, so a run that failed leaves the host recorded as it was before.
+- name: Record what this configuration came from
+  ansible.builtin.import_tasks: applied.yml

@@ -13,8 +13,8 @@ output is at `/v1/sessions/{id}`, the channel at `/v1/channel`, and a service's
 serving connection at `/v1/services/{service}/serve`. Open it with a `GET` and
 the usual upgrade headers, on the same unix socket as the plain requests.
 
-`berth serve` passes a host's streams through under `/v1/hosts/{name}`, so the
-session above is at `/v1/hosts/{name}/sessions/{id}` there, with the same
+`berth serve` passes a host's streams through under `/v1/hosts/{name}/controller`,
+so the session above is at `/v1/hosts/{name}/controller/sessions/{id}` there, with the same
 frames. Over TCP the token from `serve.token` goes in an
 `Authorization: Bearer` header. A browser cannot set a header on a WebSocket, so
 the token is also accepted as the `Sec-WebSocket-Protocol` value.
@@ -61,6 +61,80 @@ Text frames are the same for both kinds:
 Any number of viewers can be connected to one session. A terminal has the size
 that the last viewer to resize it asked for.
 
+## The stream of a port
+
+[`ports.connect`](/docs/api/host/ports) is a TCP connection to a port on the
+host's loopback, `127.0.0.1`. It is at `/v1/ports/{port}`, and through
+`berth serve` at `/v1/hosts/{name}/controller/ports/{port}`. berthd connects to the port
+before the handshake, so a port that nothing listens on gives the error `503
+not_served`. It needs the role `operate` and the host
+level.
+
+Binary frames are the connection's bytes in both directions. Either side ends
+its direction with a text frame:
+
+| Frame | From | Meaning |
+|---|---|---|
+| `{"eof":true}` | client | The client sends no more. The program on the port reads the end, and what it sends still comes back |
+| `{"eof":true}` | server | The program closed its side. Bytes sent towards it still arrive |
+
+The stream ends once both sides have sent `{"eof":true}`. It ends at once when
+the client closes the WebSocket or the connection to the port breaks. A stream
+that closes before its `{"eof":true}` has lost its connection.
+`berth_api::tunnel` reads and writes such a stream like a socket.
+
+## The stream of an address on a host
+
+[`endpoints.connect`](/docs/api/host/endpoints) of berthd is a TCP connection
+to an address on one of the host's own networks, such as a container on a
+bridge. It is at `/v1/endpoints/{address}/{port}`, and its frames are those of
+the stream of a port. Only `berth serve` opens it, for an endpoint of a
+resource on a node. It does not pass it through under
+`/v1/hosts/{name}/controller`, and a portal refuses it.
+
+berthd resolves the address once, checks every address it has and connects to
+the one it checked, all before the handshake:
+
+| Error | When |
+|---|---|
+| `403 forbidden` | The address is a loopback, link-local or metadata address, or on none of the host's networks |
+| `502 unreachable`, `504 timeout` | The name does not resolve, or not in time |
+| `503 not_served`, `504 timeout` | The address refuses the connection, or doesn't answer in time |
+
+A network of the host is the subnet of an address of one of its interfaces
+that are up, without the loopback. A prefix shorter than `/8` for IPv4 or
+`/16` for IPv6 doesn't count.
+
+## The stream of an endpoint
+
+[`resources.connect`](/docs/api/serve/resources) of `berth serve` is a TCP
+connection to an endpoint of a resource, one that its provisioner reported
+([Endpoints](/docs/deploy/resources#endpoints)). It is at
+`/v1/resources/{id}/endpoints/{endpoint}`, where `endpoint` is the endpoint's
+name or its port. Its frames are those of the stream of a port.
+
+The server reads the endpoints from the resource's record, then resolves the
+address, checks it and connects, all before the handshake. It needs the role
+`operate`. What it can refuse:
+
+| Error | When |
+|---|---|
+| `404 not_found` | No such resource, or its provisioner did not report that endpoint |
+| `400 bad_request` | The endpoint is UDP |
+| `403 forbidden` | The address is one berth does not dial from the server |
+| `503 not_served`, `504 timeout` | The endpoint refuses the connection, or doesn't answer in time |
+| `502 unreachable` | The provisioner is on a node that cannot be reached |
+| `501 not_available` | The provisioner is on a node whose controller is older than `endpoints.connect` |
+
+Who dials the endpoint:
+
+| Where the provisioner is | Who dials |
+|---|---|
+| On a node | The node's controller: `ports.connect` for `127.0.0.1`, `endpoints.connect` for any other address |
+| Anywhere else | The server itself |
+
+`Portal::connect_endpoint` and `berth_api::tunnel::endpoint_tunnel` open one.
+
 ## Resuming
 
 A stream that can be resumed takes `since=` and starts there. The page of each
@@ -104,6 +178,11 @@ A client that cannot keep up does not slow the others down:
   `GET /v1/sessions/{id}/output?since=OFFSET`, or reconnect with `since=`.
 - On the channel, a listener that falls 1,000 messages behind is closed. Open it
   again with `since` set to the last id it saw.
+- On `events.follow`, `inbox.follow` and `kv.follow` of `berth serve`, a
+  follower that is too slow gets `{"dropped":{"events":12}}` and the stream
+  goes on. The number counts all the server's events it missed, also those it
+  does not follow. Read the current state again with `inbox.list`, `kv.list` or
+  `jobs.list`.
 
 ## Events on your machine
 
@@ -116,19 +195,39 @@ GET /v1/events
 The first frame the client sends says what to follow. It is sent once, first:
 
 ```json
-{ "hosts": ["studio"], "jobs": true, "kv": ["ui"], "topics": ["myplugin/"] }
+{ "hosts": ["studio"], "jobs": true, "kv": ["ui"], "topics": ["myplugin/"], "changes": ["hosts", "resources"] }
 ```
 
-`hosts` and `topics` select channel messages by host and by topic prefix. `jobs`
-turns on job starts and ends. `kv` lists the key-value namespaces to watch.
+| Field | Follows |
+| --- | --- |
+| `hosts`, `topics` | Channel messages, by host and by topic prefix. All hosts when `hosts` is empty |
+| `jobs` | Job starts and ends |
+| `kv` | Changes in these key-value namespaces |
+| `changes` | Changes to the saved `hosts` and to `resources` |
 
-Each frame the server sends names where it came from in `source`, which is
-`channel`, `job` or `kv`:
+Each frame the server sends names where it came from in `source`:
 
 ```json
 { "source": "kv", "namespace": "ui", "key": "layout", "revision": 4, "value": {} }
 ```
 
-A channel frame also has the `host` and the `message`, and a job frame has the
-`job`. Events are not resumable. After a reconnect, read what was missed with
-`inbox.list` and `kv.list`, then follow again. `inbox.follow` and `kv.follow` follow one of them alone.
+| `source` | The frame also has |
+| --- | --- |
+| `channel` | The `host` and the `message` |
+| `job` | The `job` |
+| `kv` | The `namespace`, the `key`, and the `value` and `revision`, or `removed` |
+| `host` | The `host` and the `change`: `added`, `removed`, `renamed` or `changed`. A rename has the old name in `from` |
+| `resource` | The `resource` id, its `provisioner` and `kind`, and the `change`: `created`, `removed` or `changed` |
+
+A host or resource frame only names what changed. Read the rest with `hosts.get`
+or `resources.get`. A host changes when its profile is saved, as by
+`hosts.save` or an action, and a resource when its record does, as when a job
+creates it or its state is checked. A change that another berth makes in the
+store is told within a few seconds.
+
+```json
+{ "source": "host", "host": "dock", "change": "renamed", "from": "studio" }
+```
+
+Events are not resumable. After a reconnect, read what was missed with
+`inbox.list`, `kv.list`, `hosts.list` and `resources.list`, then follow again. `inbox.follow` and `kv.follow` follow one of them alone.

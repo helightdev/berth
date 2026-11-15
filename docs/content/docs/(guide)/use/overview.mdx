@@ -1,18 +1,18 @@
 ---
 title: A host's overview
-description: The page of a running host, with its tasks, the terminal panel and its sessions.
+description: The page of a running host, with its actions, the terminal panel and its sessions.
 icon: LayoutDashboard
 ---
 
-Opening an installed host shows its overview, with the connection at the top and the host's tasks in groups below. The host reports its own tasks, and the list changes with what is installed there.
+Opening an installed host shows its overview, with the connection at the top and the host's actions in groups below. The host's controller reports its own actions, and the list changes with what is installed there.
 
 <Screen name="overview" alt="The overview of a host: connection settings, then System, Access, Sync, Sign-In, Backup and Set-Up groups" />
 
-The line under the title is the host's load, CPU, memory, disk and uptime. Under **Connection**, a line says the host's [level](/docs/use/levels), and what the host itself was seen to be when that differs.
+The line under the title is the host's load, CPU, memory, disk and uptime. Under **Connection**, a line says the host's [type](/docs/use/types), and what the host itself was seen to be when that differs.
 
-## Tasks
+## Actions
 
-| Group | Task | Does |
+| Group | Action | Does |
 | --- | --- | --- |
 | System | Status | Provisioning state and services, graphics and disk space, failed units and the access links, then what plugins report |
 | | Terminal | A shell on the host in a panel; Space switches between the agent and the SSH user |
@@ -30,11 +30,11 @@ The line under the title is the host's load, CPU, memory, disk and uptime. Under
 
 When the host was applied before a plugin or berth itself changed, a **Configuration** group at the top says which, such as `claude 1.0.0 → 1.1.0`, with **Apply this configuration** below it ([Updates](/docs/use/updates#hosts-that-are-behind)).
 
-berth's own actions on the host are listed beside its tasks, such as **Install the controller** for a host below a workstation. One the host's level or state rules out is marked `not now`, and the Information panel says why and what to do first. A host with the controller alone has only Status, Update, Reboot and the secrets.
+berth's own actions on the host are listed beside its controller's, such as **Install the controller** for a host that is not a workstation. One the host's type or state rules out is marked `not now`, and the Information panel says why and what to do first. A host with the controller alone has only Status, Update, Reboot and the secrets.
 
-Plugins add tasks to these groups or bring groups of their own, such as **Backup**. They also add steps to built-in tasks such as Status and Update. A task's output stays on the page.
+Plugins add actions to these groups or bring groups of their own, such as **Backup**. They also add steps to built-in actions such as Status and Update. An action's output stays on the page.
 
-Some tasks take arguments, such as which snapshot to restore. Tasks that cannot be undone ask for confirmation first. When the profile says to ask for the SSH user's sudo password, berth asks once and keeps it until it closes.
+Some actions take arguments, such as which snapshot to restore. Actions that cannot be undone ask for confirmation first. When the profile says to ask for the SSH user's sudo password, berth asks once and keeps it until it closes.
 
 ## Panels
 
@@ -56,11 +56,11 @@ A long web address that runs over several rows is one link, even when the progra
 
 ## Sessions
 
-A terminal is a session of the host and keeps running when you leave it. Running sessions appear in a **Sessions** group on the overview, where Enter opens one again. `berth sessions HOST` lists them, and `berth attach HOST ID` puts your own terminal onto one ([Commands](/docs/use/cli#sessions-and-commands)).
+A terminal is a session of the host and keeps running when you leave it. Running sessions appear in a **Sessions** group on the overview, where Enter opens one again. `berth session list HOST` lists them, and `berth session attach HOST ID` puts your own terminal onto one ([Commands](/docs/use/cli#sessions-and-commands)).
 
 ## Unreachable hosts
 
-Instead of the tasks, the overview then says why, and offers:
+Instead of the actions, the overview then says why, and offers:
 
 | Row | Does |
 | --- | --- |

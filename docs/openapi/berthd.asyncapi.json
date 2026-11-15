@@ -33,6 +33,36 @@
       "x-berth-level": "both",
       "x-berth-resumable": true
     },
+    "endpoint": {
+      "address": "/v1/endpoints/{address}/{port}",
+      "bindings": {
+        "ws": {
+          "query": {
+            "properties": {},
+            "type": "object"
+          }
+        }
+      },
+      "description": "For berth serve alone: a TCP connection to an address on a network of the host's own interfaces, such as a container on a bridge. The address is resolved once, every address it has is checked, and the one checked is dialled first, so one that nothing answers on is an error and not a stream.",
+      "messages": {
+        "endpoint.bytes": {
+          "$ref": "#/components/messages/endpoint.bytes"
+        },
+        "endpoint.eof": {
+          "$ref": "#/components/messages/endpoint.eof"
+        }
+      },
+      "parameters": {
+        "address": {
+          "description": "address"
+        },
+        "port": {
+          "description": "port"
+        }
+      },
+      "x-berth-level": "host",
+      "x-berth-resumable": false
+    },
     "logs": {
       "address": "/v1/logs",
       "bindings": {
@@ -61,6 +91,33 @@
       "parameters": {},
       "x-berth-level": "host",
       "x-berth-resumable": true
+    },
+    "port": {
+      "address": "/v1/ports/{port}",
+      "bindings": {
+        "ws": {
+          "query": {
+            "properties": {},
+            "type": "object"
+          }
+        }
+      },
+      "description": "A TCP connection to a port on the host's loopback, 127.0.0.1. The port is dialled first, so one that nothing listens on is an error and not a stream.",
+      "messages": {
+        "port.bytes": {
+          "$ref": "#/components/messages/port.bytes"
+        },
+        "port.eof": {
+          "$ref": "#/components/messages/port.eof"
+        }
+      },
+      "parameters": {
+        "port": {
+          "description": "port"
+        }
+      },
+      "x-berth-level": "host",
+      "x-berth-resumable": false
     },
     "serve": {
       "address": "/v1/services/{service}/serve",
@@ -186,6 +243,30 @@
         },
         "summary": "Publish a message."
       },
+      "endpoint.bytes": {
+        "contentType": "application/octet-stream",
+        "name": "bytes",
+        "payload": {
+          "format": "binary",
+          "type": "string"
+        },
+        "summary": "Bytes for the endpoint."
+      },
+      "endpoint.eof": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "eof": true
+            }
+          }
+        ],
+        "name": "eof",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "The client sends no more, and the endpoint reads the end. What it sends still comes back."
+      },
       "logs.entry": {
         "contentType": "application/json",
         "examples": [
@@ -204,6 +285,30 @@
           "type": "object"
         },
         "summary": "One journal entry."
+      },
+      "port.bytes": {
+        "contentType": "application/octet-stream",
+        "name": "bytes",
+        "payload": {
+          "format": "binary",
+          "type": "string"
+        },
+        "summary": "Bytes for the program on the port."
+      },
+      "port.eof": {
+        "contentType": "application/json",
+        "examples": [
+          {
+            "payload": {
+              "eof": true
+            }
+          }
+        ],
+        "name": "eof",
+        "payload": {
+          "type": "object"
+        },
+        "summary": "The client sends no more, and the program on the port reads the end. What it sends still comes back."
       },
       "serve.call": {
         "contentType": "application/json",
@@ -394,6 +499,34 @@
         }
       ]
     },
+    "endpoint.receive": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/endpoint"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/endpoint/messages/endpoint.bytes"
+        },
+        {
+          "$ref": "#/channels/endpoint/messages/endpoint.eof"
+        }
+      ]
+    },
+    "endpoint.send": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/endpoint"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/endpoint/messages/endpoint.bytes"
+        },
+        {
+          "$ref": "#/channels/endpoint/messages/endpoint.eof"
+        }
+      ]
+    },
     "logs.send": {
       "action": "send",
       "channel": {
@@ -402,6 +535,34 @@
       "messages": [
         {
           "$ref": "#/channels/logs/messages/logs.entry"
+        }
+      ]
+    },
+    "port.receive": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/port"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/port/messages/port.bytes"
+        },
+        {
+          "$ref": "#/channels/port/messages/port.eof"
+        }
+      ]
+    },
+    "port.send": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/port"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/port/messages/port.bytes"
+        },
+        {
+          "$ref": "#/channels/port/messages/port.eof"
         }
       ]
     },

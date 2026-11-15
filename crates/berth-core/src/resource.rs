@@ -22,7 +22,7 @@ use crate::{
     runner::{Lock, Subject},
     store::{self, OWN, kind},
 };
-use berth_api::{Action, Argument, Resource, ResourceSecret, ops::Role};
+use berth_api::{Action, Argument, Endpoint, Resource, ResourceSecret, ops::Role};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{collections::BTreeMap, io::Write, path::PathBuf};
@@ -63,6 +63,9 @@ pub struct Record {
     pub checked: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub address: String,
+    /// Where it can be reached, as its provisioner last said.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endpoints: Vec<Endpoint>,
 }
 
 /// A record with the scope it is kept in.
@@ -143,7 +146,7 @@ pub fn find_by(paths: &Paths, given: &str) -> Result<Kept> {
         .collect();
     match named.as_slice() {
         [one] => Ok((*one).clone()),
-        [] => Err(format!("No resource {given}. See: berth resource").into()),
+        [] => Err(format!("No resource {given}. See: berth resource list").into()),
         _ => Err(format!(
             "Several resources are called {given}: name one by its id ({})",
             named
@@ -161,7 +164,7 @@ pub fn find(paths: &Paths, id: &str) -> Result<Kept> {
     list(paths)?
         .into_iter()
         .find(|kept| kept.record.id == id)
-        .ok_or_else(|| format!("No resource {id}. See: berth resource").into())
+        .ok_or_else(|| format!("No resource {id}. See: berth resource list").into())
 }
 
 /// The machine of the host whose profile is at `place`.
@@ -332,7 +335,7 @@ pub fn info(paths: &Paths, kept: &Kept, plugins: &[Plugin], busy: bool) -> Resou
         (true, false) => (
             "unknown".to_owned(),
             format!(
-                "Creating it did not end. Asking again finds the same one; removing it forgets it: berth resource {} remove",
+                "Creating it did not end. Asking again finds the same one; removing it forgets it: berth resource remove {}",
                 record.id
             ),
         ),
@@ -348,6 +351,7 @@ pub fn info(paths: &Paths, kept: &Kept, plugins: &[Plugin], busy: bool) -> Resou
         external_id: record.external_id.clone(),
         host: (!record.host.is_empty()).then(|| record.host.clone()),
         address: record.address.clone(),
+        endpoints: record.endpoints.clone(),
         arguments: record.arguments.clone(),
         secrets: record.secrets.clone(),
         spec_sha256: record.spec_sha256.clone(),
@@ -387,6 +391,8 @@ pub(crate) struct Called {
     pub dir: PathBuf,
     pub provisioner: Provisioner,
     pub secrets: Map<String, Value>,
+    /// The node its provisioner lives on, or nothing.
+    pub node: String,
 }
 
 impl Called {
@@ -407,6 +413,7 @@ impl Called {
             dir: plugin.dir.clone(),
             provisioner: provisioner.clone(),
             secrets,
+            node: crate::provisioner::node_of(paths, &kept.record.provisioner),
             kept,
         })
     }
@@ -431,6 +438,7 @@ impl Called {
             &self.kept.record,
             arguments,
             &self.secrets,
+            &self.node,
         )
     }
 
@@ -451,9 +459,14 @@ pub(crate) fn request(
     record: &Record,
     arguments: &BTreeMap<String, String>,
     secrets: &Map<String, Value>,
+    node: &str,
 ) -> Value {
     let mut request = provision::request(verb, provisioner, arguments, secrets);
     request["kind"] = json!(record.kind);
+    // Its endpoints are dialled from the node, so the plugin reports them as the node sees them.
+    if !node.is_empty() {
+        request["node"] = json!(node);
+    }
     request["name"] = json!(record.name);
     if record.kind == plugins::MACHINE {
         // A machine's labels are those of berth before resources, which
@@ -477,7 +490,7 @@ pub(crate) fn environment(store: &Store, wanted: &[ResourceSecret]) -> Result<Ma
     for secret in wanted {
         match store
             .secret(&secret.name)?
-            .filter(|value| !value.is_empty() && value != crate::server::KEPT)
+            .filter(|value| !value.is_empty())
         {
             Some(value) => {
                 given.insert(secret.variable().to_owned(), json!(value));
@@ -527,6 +540,40 @@ fn state_of(answer: &Value) -> Option<String> {
     }
 }
 
+/// Keep the endpoints an answer reports, when it reports them: what it does
+/// not name it no longer has. One that is gone has none. An endpoint that
+/// does not fit is left out, and said to `out`.
+fn take_endpoints(record: &mut Record, answer: &Value, out: &mut dyn Write) {
+    if record.state == "missing" {
+        record.endpoints.clear();
+        return;
+    }
+    let Some(listed) = answer.get("endpoints").and_then(Value::as_array) else {
+        return;
+    };
+    let mut endpoints: Vec<Endpoint> = vec![];
+    for entry in listed {
+        match Endpoint::from_answer(entry) {
+            Ok(endpoint) if endpoints.iter().any(|known| known.name == endpoint.name) => say(
+                out,
+                &format!(
+                    "! {} reported the endpoint {} twice; the first stands",
+                    record.provisioner, endpoint.name
+                ),
+            ),
+            Ok(endpoint) => endpoints.push(endpoint),
+            Err(why) => say(
+                out,
+                &format!(
+                    "! {} reported an endpoint berth leaves out: {why}",
+                    record.provisioner
+                ),
+            ),
+        }
+    }
+    record.endpoints = endpoints;
+}
+
 /// Ask the provisioner how a resource is, and keep what it says. One it no
 /// longer finds is marked missing, and its record stays.
 pub fn status(paths: &Paths, store: &Store, id: &str, options: &Options) -> Result<Resource> {
@@ -564,6 +611,7 @@ pub fn status(paths: &Paths, store: &Store, id: &str, options: &Options) -> Resu
                 {
                     kept.record.address = address.into();
                 }
+                take_endpoints(&mut kept.record, &answer, &mut std::io::sink());
                 kept.record.checked = berth_api::now();
                 // Seen by someone else meanwhile, such as removed: what it said stands.
                 if find(paths, id).is_ok() {
@@ -705,7 +753,7 @@ pub fn prepare(paths: &Paths, store: &Store, asked: &berth_api::NewResource) -> 
         .filter(|kept| !kept.record.external_id.is_empty())
     {
         return Err(format!(
-            "There is a {kind} {name} of {} already, {}. Change it with: berth resource {} change, or remove it first",
+            "There is a {kind} {name} of {} already, {}. Change it with: berth resource set {}, or remove it first",
             asked.provisioner, existing.record.id, existing.record.id
         )
         .into());
@@ -751,6 +799,7 @@ pub fn prepare(paths: &Paths, store: &Store, asked: &berth_api::NewResource) -> 
         &kept.record,
         &kept.record.arguments,
         &secrets,
+        &crate::provisioner::node_of(paths, &asked.provisioner),
     );
     request["token"] = json!(kept.record.token);
     if let Some(spec) = spec {
@@ -843,6 +892,7 @@ impl Creating {
                 if let Some(address) = answer["address"].as_str() {
                     kept.record.address = address.to_owned();
                 }
+                take_endpoints(&mut kept.record, &answer, out);
                 kept.save(paths)?;
                 say(
                     out,
@@ -868,6 +918,14 @@ fn say(out: &mut dyn Write, line: &str) {
 pub const REMOVE: &str = "remove";
 /// berth's own action that changes a resource's arguments and specification.
 pub const CHANGE: &str = "change";
+
+/// berth's own action that runs a command in a resource, for a kind whose
+/// provisioner answers `exec`.
+pub const EXEC: &str = "exec";
+
+/// The arguments of `exec`.
+pub const COMMAND_FIELD: &str = "command";
+pub const STDIN_FIELD: &str = "stdin";
 
 /// The argument of the change form that holds the specification, when the
 /// kind has one.
@@ -956,7 +1014,7 @@ pub fn actions(paths: &Paths, store: &Store, kept: &Kept) -> Vec<Action> {
             .collect();
         let help = match kind.spec.is_some() {
             true => {
-                "Give it other values of its arguments, and its specification, which berth keeps and opens in the editor. From the command line a new one is given with: berth resource ID change --spec FILE"
+                "Give it other values of its arguments, and its specification, which berth keeps and opens in the editor. From the command line a new one is given with: berth resource set ID --spec FILE"
             }
             false => "Give it other values of its arguments, as its provisioner can.",
         };
@@ -973,6 +1031,33 @@ pub fn actions(paths: &Paths, store: &Store, kept: &Kept) -> Vec<Action> {
             });
         }
         actions.push(limit(own(CHANGE, "Change", help).with_arguments(arguments)));
+    }
+    if can(EXEC) {
+        let arguments = vec![
+            Argument {
+                name: COMMAND_FIELD.into(),
+                label: "Command".into(),
+                required: true,
+                help: "The command and its arguments, split at spaces, or as a JSON list such as [\"sh\", \"-c\", \"echo hi\"] for an argument with spaces in it.".into(),
+                ..Argument::default()
+            },
+            Argument {
+                name: STDIN_FIELD.into(),
+                label: "Standard input".into(),
+                kind: Argument::TEXT.into(),
+                help: "What the command reads on its standard input. Empty gives it none.".into(),
+                ..Argument::default()
+            },
+        ];
+        actions.push(limit(Action {
+            role: Role::Operate,
+            ..own(
+                EXEC,
+                "Run a command",
+                "Run a command in it, as its provisioner does, and wait for it to end. Its output and its exit status are the job's, and so is the command line; standard input is not recorded.",
+            )
+            .with_arguments(arguments)
+        }));
     }
     for action in kind.map(|kind| kind.actions.clone()).unwrap_or_default() {
         actions.push(limit(action));
@@ -1047,6 +1132,9 @@ pub struct Acting {
     work: Doing,
     lock: Option<Lock>,
     hidden: Vec<String>,
+    /// What its job's record shows: the command of `exec`, or the
+    /// arguments that are no secret.
+    shown: Vec<String>,
 }
 
 enum Doing {
@@ -1059,6 +1147,12 @@ enum Doing {
         request: Value,
         /// What it has after a change: its arguments, secrets and specification.
         after: Option<After>,
+    },
+    /// A command, run with `exec`.
+    Exec {
+        called: Box<Called>,
+        request: Value,
+        command: Vec<String>,
     },
     /// One of its plugin's actions, run with `act`.
     Act {
@@ -1129,7 +1223,8 @@ pub fn prepare_action(
     if (given.spec.is_some() || given.secrets.is_some()) && action != CHANGE {
         return Err(format!("Only {CHANGE} takes a specification or secrets").into());
     }
-    let lock = match found.changes {
+    // Commands change what is in it, not berth's record, so several may run at once.
+    let lock = match found.changes && action != EXEC {
         true => Some(kept.lock(paths)?),
         false => None,
     };
@@ -1140,6 +1235,7 @@ pub fn prepare_action(
             work: Doing::Forget,
             lock,
             hidden: vec![],
+            shown: vec![],
         });
     }
     let called = Box::new(Called::load(paths, store, kept.clone())?);
@@ -1218,6 +1314,25 @@ pub fn prepare_action(
                 after: Some((arguments, wanted, new_spec)),
             }
         }
+        EXEC => {
+            let theirs = values_of(
+                &format!("{EXEC} of {}", kept.record.id),
+                &found.arguments,
+                &given.arguments,
+                &BTreeMap::new(),
+            )?;
+            let command = argv(theirs.get(COMMAND_FIELD).map_or("", String::as_str))?;
+            let mut request = called.request(EXEC, &called.arguments());
+            request["command"] = json!(command);
+            if let Some(stdin) = theirs.get(STDIN_FIELD).filter(|stdin| !stdin.is_empty()) {
+                request["stdin"] = json!(stdin);
+            }
+            Doing::Exec {
+                called,
+                request,
+                command,
+            }
+        }
         _ => {
             let declared = found.arguments.clone();
             let theirs = values_of(
@@ -1247,18 +1362,29 @@ pub fn prepare_action(
             }
         }
     };
+    let shown = match &work {
+        Doing::Exec { command, .. } => command.clone(),
+        _ => Argument::shown(&found.arguments, &given.arguments),
+    };
     Ok(Acting {
         kept,
         action: found,
         work,
         lock,
         hidden,
+        shown,
     })
 }
 
 impl Acting {
     pub fn action(&self) -> &Action {
         &self.action
+    }
+
+    /// What its job's record shows: the command of `exec`, or the
+    /// arguments that are no secret.
+    pub fn shown(&self) -> Vec<String> {
+        self.shown.clone()
     }
 
     pub fn kept(&self) -> &Kept {
@@ -1292,7 +1418,7 @@ impl Acting {
         let _lock = lock;
         let done = |message: String| crate::provisioner::Answered {
             message,
-            details: vec![],
+            ..crate::provisioner::Answered::default()
         };
         match work {
             Doing::Forget => {
@@ -1373,6 +1499,7 @@ impl Acting {
                 } else if verb == "start" {
                     kept.record.state = "running".into();
                 }
+                take_endpoints(&mut kept.record, &answer, out);
                 match after {
                     Some((arguments, secrets, spec)) => {
                         kept.record.arguments = arguments;
@@ -1386,6 +1513,32 @@ impl Acting {
                     "stop" => format!("Stopped {}", kept.title()),
                     _ => format!("Changed {}: {}", kept.title(), kept.record.state),
                 }))
+            }
+            Doing::Exec {
+                called,
+                request,
+                command,
+            } => {
+                // The output is the command's own, so berth adds no line of its own to it.
+                let answer = call(
+                    &called.dir,
+                    &called.provisioner,
+                    EXEC,
+                    &request,
+                    options.create,
+                    out,
+                )?;
+                let code = answer["exit_code"]
+                    .as_i64()
+                    .and_then(|code| i32::try_from(code).ok())
+                    .ok_or_else(|| {
+                        format!("{} exec said no exit status", kept.record.provisioner)
+                    })?;
+                Ok(crate::provisioner::Answered {
+                    message: format!("{} exited with {code}", command[0]),
+                    exit_code: Some(code),
+                    ..crate::provisioner::Answered::default()
+                })
             }
             Doing::Act {
                 called,
@@ -1404,12 +1557,34 @@ impl Acting {
                     limit,
                     out,
                 )?;
+                // An action that made it anew, such as pulling new images, may say where it is now.
+                if changes && answer.get("endpoints").is_some() {
+                    let mut kept = find(paths, &kept.record.id).unwrap_or(kept);
+                    take_endpoints(&mut kept.record, &answer, out);
+                    kept.save(paths)?;
+                }
                 Ok(crate::provisioner::Answered {
                     message: answer["message"].as_str().unwrap_or("").to_owned(),
                     details: crate::provisioner::details(&answer),
+                    exit_code: None,
                 })
             }
         }
+    }
+}
+
+/// A command as `exec` is given it: a JSON list of words, or words split
+/// at spaces.
+pub fn argv(text: &str) -> Result<Vec<String>> {
+    let text = text.trim();
+    let words: Vec<String> = match text.starts_with('[') {
+        true => serde_json::from_str(text)
+            .map_err(|_| "The command is not a JSON list of texts, such as [\"ls\", \"-l\"]")?,
+        false => text.split_whitespace().map(str::to_owned).collect(),
+    };
+    match words.first() {
+        Some(first) if !first.is_empty() => Ok(words),
+        _ => Err("Give the command to run".into()),
     }
 }
 

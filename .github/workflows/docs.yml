@@ -24,16 +24,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      # The site has the page of berth serve under /web, which building berth makes.
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl, wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
       - run: npm install --no-audit --no-fund && npm run build
         working-directory: docs
         env:
           DOCS_BASE_PATH: ${{ steps.pages.outputs.base_path }}
-      - run: test -f docs/out/web/berth-web_bg.wasm
       - uses: actions/upload-pages-artifact@v5
         with:
           path: docs/out

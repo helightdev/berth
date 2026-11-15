@@ -144,7 +144,7 @@ docker_up() {
 e2e() {
   # The test host and the runner have no way out, so berth is built first.
   if [[ ${BERTH_CI_PREBUILT:-} != 1 ]]; then
-    dev cargo build --locked -p berth --features web
+    dev cargo build --locked -p berth
   fi
   e2e_down
   trap e2e_down EXIT

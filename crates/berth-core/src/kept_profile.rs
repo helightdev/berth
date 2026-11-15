@@ -1,6 +1,6 @@
 //! The profile a host keeps of itself. Every apply and every first boot leaves
 //! it on the host, so that a berth that does not have the profile, or has lost
-//! it, can take the host over from the host itself: `berth adopt`.
+//! it, can take the host over from the host itself: `berth host adopt`.
 
 use crate::{
     Result,
@@ -16,15 +16,17 @@ use std::{io::Write, path::PathBuf, process::Stdio};
 /// Where the role writes it, readable by root only.
 pub const PATH: &str = "/etc/berth/profile.json";
 
-/// The format of the document: 2 has the profile in the layout with
-/// `access`. Format 1, of berth 0.4.1, had the layout before it; it is
-/// converted when it is read. A berth refuses one newer than it knows.
-pub const FORMAT: u64 = 2;
+/// The format of the document: 3 has the profile with the fields `type`
+/// and `target`. Format 2 named them `level` and `profile`, and format 1, of
+/// berth 0.4.1, had the layout before `access`; both are converted when they
+/// are read. A berth refuses one newer than it knows, so a berth of format 2
+/// asks to be updated rather than read `type` as a workstation.
+pub const FORMAT: u64 = 3;
 
 /// What a profile's `builder` held of how one berth reached the host, or of
 /// that berth's own machine, in the layout before `access`, and what still
 /// belongs to this machine alone: a served host names this berth's server,
-/// and a USB drive and the last task were never meant to be kept.
+/// and a USB drive and the last action were never meant to be kept.
 const LOCAL_BUILDER: &[&str] = &[
     "ssh_host",
     "ssh_user",
@@ -46,22 +48,16 @@ const LOCAL_BUILDER: &[&str] = &[
 /// a program of this machine.
 pub fn stored(config: &Value) -> Value {
     let mut config = config.clone();
+    // berth makes a host's key to join the tailnet when the host needs one,
+    // so a key a profile of an older berth held never travels.
+    berth_api::profile::take_old_tailnet(&mut config);
     let Some(profile) = config.as_object_mut() else {
         return json!({});
     };
-    // An enrollment key is used up when the host joins, and a new one is made
-    // when it has to join again.
-    profile.remove("tailscale_auth_key");
     profile.remove("access");
     // The operator always has sudo without a password and berth's key.
     profile.remove("operator_passwordless_sudo");
     profile.remove("berth_ssh_key");
-    if let Some(vars) = profile
-        .get_mut("ansible_vars")
-        .and_then(Value::as_object_mut)
-    {
-        vars.remove("devbox_tailscale_auth_key");
-    }
     if let Some(builder) = profile.get_mut("builder").and_then(Value::as_object_mut) {
         for key in LOCAL_BUILDER {
             builder.remove(*key);
@@ -243,8 +239,8 @@ pub fn adopted(paths: &Paths, title: &str, kept: &Value, access: &Access) -> Res
     if !profile["builder"].is_object() {
         profile["builder"] = json!({});
     }
-    // berth 0.4.1 kept a profile of the layout before `access`; what is left
-    // of that becomes the new layout, and then the adopting berth's way in.
+    // An older berth kept a profile of older names or of the layout before
+    // `access`; it takes those of now, and then the adopting berth's way in.
     crate::import::convert_profile(paths, title, &mut profile);
     profile = stored(&profile);
     if !profile["builder"].is_object() {
@@ -436,7 +432,7 @@ mod tests {
 
     fn profile() -> Value {
         json!({
-            "hostname": "studio", "profile": "cloud",
+            "hostname": "studio", "target": "cloud",
             "operator_username": "ops", "operator_password_hash": "$6$salt$hash",
             "operator_ssh_public_keys": ["ssh-ed25519 AAAA user"],
             "agent_username": "agent", "agent_password_hash": "$6$salt$agent",
@@ -475,7 +471,13 @@ mod tests {
     #[test]
     fn what_is_used_once_or_is_this_berths_way_in_stays_out() {
         let kept = stored(&profile());
-        assert!(kept.get("tailscale_auth_key").is_none());
+        for old in [
+            "tailscale_auth_key",
+            "tailscale_auto_key",
+            "tailscale_login_server",
+        ] {
+            assert!(kept.get(old).is_none(), "{old}");
+        }
         assert!(
             kept["ansible_vars"]
                 .get("devbox_tailscale_auth_key")
@@ -527,12 +529,7 @@ mod tests {
         let back = adopted(&paths, "studio", &kept, &reached()).unwrap();
         let dirs = json!({"demo": "/p/demo"});
         let own = ["ssh-ed25519 OWN berth".to_owned()];
-        let mut wanted = ansible_vars(&original, &dirs, &own);
-        // What is used once is not applied again.
-        wanted
-            .as_object_mut()
-            .unwrap()
-            .remove("devbox_tailscale_auth_key");
+        let wanted = ansible_vars(&original, &dirs, &own);
         assert_eq!(ansible_vars(&back.profile, &dirs, &own), wanted);
         // Another berth applies the same keys of the profile and gives its own
         // apart, in a block of its own, so the first berth's block stays.
@@ -580,6 +577,8 @@ mod tests {
         });
         let back = adopted(&paths, "studio", &kept, &reached()).unwrap();
         assert_eq!(back.profile["builder"], json!({"shipped_plugins": true}));
+        assert_eq!(back.profile["target"], "cloud");
+        assert!(back.profile.get("profile").is_none());
         assert_eq!(back.profile["access"]["address"], "192.0.2.10");
         assert_eq!(back.profile["access"]["auth"], "berth");
         // sudo is how the adopting berth found it, not what the old switch said.
@@ -595,6 +594,30 @@ mod tests {
         );
         assert!(resource::valid_id(&machine.id));
         assert_eq!(machine.arguments["server"], "https://192.0.2.20:8443");
+    }
+
+    #[test]
+    fn a_profile_kept_by_berth_05_takes_the_names_of_now() {
+        let (_home, paths) = scratch();
+        let old = |level: &str| {
+            json!({
+                "format": 2, "berth": "0.5.2", "host": "studio", "written": "2026-11-13T10:00:00Z",
+                "profile": {"hostname": "studio", "profile": "laptop", "level": level, "builder": {}},
+            })
+        };
+        let back = adopted(&paths, "studio", &old("workstation"), &reached()).unwrap();
+        assert_eq!(back.profile["target"], "laptop");
+        assert!(back.profile.get("profile").is_none() && back.profile.get("type").is_none());
+        assert!(back.profile.get("level").is_none());
+        let back = adopted(&paths, "studio", &old("controller"), &reached()).unwrap();
+        assert_eq!(back.profile["type"], "managed");
+        // Kept again, it is written in the format of now.
+        let again = document("studio", &back.profile, None);
+        assert_eq!(again["format"], 3);
+        assert_eq!(
+            (&again["profile"]["type"], &again["profile"]["target"]),
+            (&json!("managed"), &json!("laptop"))
+        );
     }
 
     #[test]

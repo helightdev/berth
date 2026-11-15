@@ -20,11 +20,18 @@ builder=load('builder','provision/bin/devbox.py')
 guard=load('guard','provision/bin/check-target-disk.py')
 
 def config():
-    return {'hostname':'test-devbox','profile':'cloud',
+    return {'hostname':'test-devbox','target':'cloud',
         'operator_ssh_public_key':'ssh-ed25519 '+base64.b64encode(b'\0'*64).decode(),
         'operator_password_hash':'$6$salt$'+'a'*86,'target_disk_serial':'DEVBOX_TEST_DISK',
         'release_url':'https://example.com/devbox.tar.gz',
-        'ansible_vars':{'devbox_bootstrap_ssh_cidr':'10.0.2.2/32'}}
+        'ansible_vars':{'devbox_bootstrap_ssh_cidr':'10.0.2.2/32','devbox_install_tailscale':False}}
+
+
+def joining():
+    """config() of a host that joins the tailnet."""
+    c=config()
+    c['ansible_vars']={**c['ansible_vars'],'devbox_install_tailscale':True}
+    return c
 
 class DiskGuardTests(unittest.TestCase):
     def test_exact_single_nonremovable_disk(self):
@@ -98,7 +105,7 @@ class RenderTests(unittest.TestCase):
             self.assertRaises(ValueError,builder.cloud_config,config(),'a'*64)
     def test_only_the_usb_installer_needs_an_operator_password(self):
         with tempfile.TemporaryDirectory() as d:
-            path=Path(d)/'c.json'; c=config(); c['profile']='cloud'; del c['operator_password_hash']
+            path=Path(d)/'c.json'; c=config(); c['target']='cloud'; del c['operator_password_hash']
             path.write_text(json.dumps(c))
             operator=builder.cloud_config(builder.checked_config(path,'cloud'),'a'*64)['users'][1]
             # Locked with `*`, not `!`: sshd without PAM refuses keys for an account locked with `!`.
@@ -107,7 +114,7 @@ class RenderTests(unittest.TestCase):
             with self.assertRaises(ValueError): builder.checked_config(path,'usb')
             # A profile from when the operator's sudo could ask still renders, and gets no password.
             for laptop in ('cloud','laptop'):
-                c['operator_passwordless_sudo']=False; c['profile']=laptop; path.write_text(json.dumps(c))
+                c['operator_passwordless_sudo']=False; c['target']=laptop; path.write_text(json.dumps(c))
                 builder.checked_config(path,'cloud')
         operator=builder.cloud_config(config(),'a'*64)['users'][1]
         self.assertEqual((operator['lock_passwd'],operator['passwd']),(False,config()['operator_password_hash']))
@@ -198,39 +205,53 @@ class RenderTests(unittest.TestCase):
     def test_cloud_recovery_network_is_optional_but_checked(self):
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/'host.json'
-            c=config(); c['ansible_vars']={}; path.write_text(json.dumps(c))
+            c=config(); c['ansible_vars']={'devbox_install_tailscale':False}; path.write_text(json.dumps(c))
             builder.checked_config(path,'cloud')
-            c['ansible_vars']={'devbox_bootstrap_ssh_cidr':'not a network'}; path.write_text(json.dumps(c))
+            c['ansible_vars']={'devbox_bootstrap_ssh_cidr':'not a network','devbox_install_tailscale':False}; path.write_text(json.dumps(c))
             with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
-    def test_a_qemu_profile_is_a_cloud_one_reached_from_the_qemu_host(self):
+    def test_a_qemu_target_is_a_cloud_one_reached_from_the_qemu_host(self):
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/'host.json'
-            c=config(); c['profile']='qemu'; c['ansible_vars']={}; path.write_text(json.dumps(c))
+            c=config(); c['target']='qemu'; c['ansible_vars']={'devbox_install_tailscale':False}; path.write_text(json.dumps(c))
             checked=builder.checked_config(path,'cloud')
-            self.assertEqual(checked['profile'],'cloud')
+            self.assertEqual(checked['target'],'cloud')
             self.assertEqual(checked['ansible_vars']['devbox_bootstrap_ssh_cidr'],'10.0.2.2/32')
-            self.assertEqual(builder.deployment(checked,'a'*64)['profile'],'cloud')
+            self.assertEqual(builder.deployment(checked,'a'*64)['target'],'cloud')
             # A network it names stays; laptop and cloud are left alone.
-            c['ansible_vars']={'devbox_bootstrap_ssh_cidr':'192.0.2.0/24'}; path.write_text(json.dumps(c))
+            c['ansible_vars']={'devbox_bootstrap_ssh_cidr':'192.0.2.0/24','devbox_install_tailscale':False}; path.write_text(json.dumps(c))
             self.assertEqual(builder.checked_config(path,'cloud')['ansible_vars']['devbox_bootstrap_ssh_cidr'],'192.0.2.0/24')
             for kept in ['laptop','cloud']:
-                self.assertEqual(builder.retire_qemu({'profile':kept}),{'profile':kept})
-            c['profile']='desktop'; path.write_text(json.dumps(c))
+                self.assertEqual(builder.retire_qemu({'target':kept}),{'target':kept})
+            c['target']='desktop'; path.write_text(json.dumps(c))
             with self.assertRaisesRegex(ValueError,'laptop or cloud'): builder.checked_config(path,'cloud')
+    def test_a_profile_of_berth_05_is_read_with_the_names_of_now(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'host.json'
+            c=config(); del c['target']; c['profile']='laptop'; c['level']='workstation'
+            path.write_text(json.dumps(c))
+            checked=builder.checked_config(path,'cloud')
+            self.assertEqual(checked['target'],'laptop')
+            self.assertNotIn('profile',checked); self.assertNotIn('level',checked); self.assertNotIn('type',checked)
+            self.assertEqual(builder.deployment(checked,'a'*64)['target'],'laptop')
+        self.assertEqual(builder.take_old_names({'level':'controller','profile':'cloud'}),{'type':'managed','target':'cloud'})
+        self.assertEqual(builder.take_old_names({'type':'ssh','level':'controller','target':'laptop','profile':'cloud'}),
+                         {'type':'ssh','target':'laptop'})
     def test_bootstrap_hands_a_qemu_seed_to_the_role_as_cloud(self):
         script=(ROOT/'provision/bootstrap/bootstrap.sh').read_text()
         start=script.index("python3 - <<'PY'\n")+len("python3 - <<'PY'\n")
         handover=script[start:script.index('\nPY\n',start)]
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
-            deployment={'profile':'qemu','ansible_vars':{'devbox_user':'agent'}}
             code=(handover.replace("/opt/devbox-bootstrap/deployment.json",str(root/'deployment.json'))
                           .replace("Path('/etc/devbox')","Path(%r)"%str(root/'etc')))
-            (root/'deployment.json').write_text(json.dumps(deployment))
-            subprocess.run([sys.executable,'-c',code],check=True)
-            handed=json.loads((root/'etc/host.json').read_text())
-            self.assertEqual(handed['devbox_profile'],'cloud')
-            self.assertEqual(handed['devbox_bootstrap_ssh_cidr'],'10.0.2.2/32')
+            # A seed of berth 0.5 named the target profile.
+            for key in ('target','profile'):
+                deployment={key:'qemu','ansible_vars':{'devbox_user':'agent'}}
+                (root/'deployment.json').write_text(json.dumps(deployment))
+                subprocess.run([sys.executable,'-c',code],check=True)
+                handed=json.loads((root/'etc/host.json').read_text())
+                self.assertEqual(handed['devbox_profile'],'cloud',key)
+                self.assertEqual(handed['devbox_bootstrap_ssh_cidr'],'10.0.2.2/32',key)
     def test_accounts_take_several_keys_and_the_operator_this_berths(self):
         key=lambda byte:'ssh-ed25519 '+base64.b64encode(bytes([byte])*64).decode()
         c={**config(),'operator_ssh_public_keys':[key(1),key(1)],'agent_ssh_public_keys':[key(2),key(3)]}
@@ -266,7 +287,7 @@ class RenderTests(unittest.TestCase):
                 path=Path(temp)/'host.json'; path.write_text(json.dumps(only))
                 with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
     def test_malformed_profiles_are_rejected_cleanly(self):
-        for change in [{'hostname':None},{'hostname':'trailing-'},{'profile':'container'},
+        for change in [{'hostname':None},{'hostname':'trailing-'},{'target':'container'},
                        {'agent_ssh_public_key':'not a key'},{'operator_username':'root'},
                        {'agent_username':'ops'},{'operator_username':'operator'},{'agent_username':'admin'},{'agent_passwordless_sudo':'no'},
                        {'ansible_vars':{'other':1}},{'target_disk_mode':'serial','target_disk_serial':''}]:
@@ -335,28 +356,45 @@ class RenderTests(unittest.TestCase):
                          'provision/ansible/site.yml','provision/config/example.json']:
                 self.assertIn(need,names)
             self.assertFalse(any('secrets/' in x or 'config/local.json' in x for x in names))
-    def test_seed_joins_the_login_server_with_the_key_berth_put_in(self):
+    def test_seed_joins_the_login_server_with_the_key_berth_gave_it(self):
         with tempfile.TemporaryDirectory() as temp:
-            path=Path(temp)/'host.json'
-            # A profile as berth renders it for a host that joins automatically.
-            path.write_text(json.dumps({**config(),'tailscale_auto_key':True,
-                                        'tailscale_auth_key':'hskey-auth-new','tailscale_login_server':'http://hs.test:8080'}))
-            variables=builder.deployment(builder.checked_config(path,'cloud'),'0'*64)['ansible_vars']
-            self.assertEqual(variables['devbox_tailscale_auth_key'],'hskey-auth-new')
+            path,given=Path(temp)/'host.json',Path(temp)/'tailnet.json'
+            given.write_text(json.dumps({'key':'hskey-auth-FAKE','login_server':'http://hs.test:8080'}))
+            path.write_text(json.dumps(joining()))
+            with patch.dict(os.environ,{'BERTH_TAILNET_FILE':str(given)}):
+                variables=builder.deployment(builder.checked_config(path,'cloud'),'0'*64)['ansible_vars']
+            self.assertEqual(variables['devbox_tailscale_auth_key'],'hskey-auth-FAKE')
             self.assertEqual(variables['devbox_tailscale_login_server'],'http://hs.test:8080')
             self.assertNotIn('devbox_tailscale_key_command',variables)
-            # Without berth nothing makes the key.
-            path.write_text(json.dumps({**config(),'tailscale_auto_key':True}))
-            with self.assertRaisesRegex(ValueError,'needs berth'): builder.checked_config(path,'cloud')
-            path.write_text(json.dumps({**config(),'tailscale_login_server':'hs.test'}))
-            with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
-            # A pasted key without a login server stays as it was.
-            path.write_text(json.dumps({**config(),'tailscale_auth_key':'tskey-auth-old'}))
-            variables=builder.deployment(builder.checked_config(path,'cloud'),'0'*64)['ansible_vars']
-            self.assertEqual(variables['devbox_tailscale_auth_key'],'tskey-auth-old')
+            given.write_text(json.dumps({'key':'tskey-auth-FAKE','login_server':''}))
+            with patch.dict(os.environ,{'BERTH_TAILNET_FILE':str(given)}):
+                variables=builder.deployment(builder.checked_config(path,'cloud'),'0'*64)['ansible_vars']
             self.assertNotIn('devbox_tailscale_login_server',variables)
+            given.write_text(json.dumps({'key':'tskey-auth-FAKE','login_server':'hs.test'}))
+            with patch.dict(os.environ,{'BERTH_TAILNET_FILE':str(given)}):
+                with self.assertRaises(ValueError): builder.checked_config(path,'cloud')
+    def test_a_seed_that_joins_needs_the_key_berth_makes(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ,{'BERTH_TAILNET_FILE':''}):
+            path=Path(temp)/'host.json'
+            path.write_text(json.dumps(joining()))
+            with self.assertRaisesRegex(ValueError,'tailnet_api_key'): builder.checked_config(path,'cloud')
+            # A key pasted into the profile, as older berths took it, is not read.
+            path.write_text(json.dumps({**joining(),'tailscale_auth_key':'tskey-auth-FAKE','tailscale_auto_key':False}))
+            with self.assertRaisesRegex(ValueError,'tailnet_api_key'): builder.checked_config(path,'cloud')
+            pasted={**config(),'tailscale_auth_key':'tskey-auth-FAKE','tailscale_login_server':'http://hs.test:8080'}
+            pasted['ansible_vars']={**pasted['ansible_vars'],'devbox_tailscale_auth_key':'tskey-auth-FAKE',
+                                    'devbox_tailscale_key_command':['sh','-c','id']}
+            path.write_text(json.dumps(pasted))
+            checked=builder.checked_config(path,'cloud')
+            self.assertNotIn('tailscale_auth_key',checked)
+            variables=builder.deployment(checked,'0'*64)['ansible_vars']
+            for name in builder.TAILNET_VARS:
+                self.assertNotIn(name,variables)
+            # A host off the tailnet needs no key.
+            path.write_text(json.dumps(config()))
+            builder.checked_config(path,'cloud')
     def test_release_carries_plugins_berth_installed(self):
-        # berth plugins add puts a plugin in node_modules of berth's plugins folder.
+        # berth plugin add puts a plugin in node_modules of berth's plugins folder.
         with tempfile.TemporaryDirectory() as temp, patch.object(builder,'BUILD',Path(temp)/'build'):
             plugin=Path(temp)/'plugins/node_modules/berth-plugin-demo'
             (plugin/'tasks').mkdir(parents=True); (plugin/'node_modules/dep').mkdir(parents=True)

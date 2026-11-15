@@ -15,22 +15,22 @@ A registry is a server with one address and one login. Hosts get npm and Docker 
 
 A registry with a user name logs in with user name and password. Without a user name, what is stored is used as a token: `_authToken` for npm, a bearer token for uploads.
 
-Registries, with their addresses and user names, are kept in berth's store. Passwords and tokens are kept there as secrets, sealed when the store is encrypted. `berth store` says where the store is.
+Registries, with their addresses and user names, are kept in berth's store. Passwords and tokens are kept there as secrets, sealed when the store is encrypted. `berth server store status` says where the store is.
 
 ## Adding registries
 
 ```bash
-berth registry add nexus nexus https://nexus.example.com ci-user
+berth registry add nexus nexus https://nexus.example.com --user ci-user
 berth registry login nexus                      # asks for the password or token
-berth registry repo nexus npm npm-group
-berth registry repo nexus raw berth-releases
-berth registry repo nexus docker docker-hosted nexus.example.com:8083
+berth registry add-repo nexus npm npm-group
+berth registry add-repo nexus raw berth-releases
+berth registry add-repo nexus docker docker-hosted --address nexus.example.com:8083
 
 berth registry add verdaccio npm https://npm.example.com     # token login
-berth registry add files raw https://files.example.com/berth ci-user
-berth registry add ghcr docker ghcr.io my-user
+berth registry add files raw https://files.example.com/berth --user ci-user
+berth registry add ghcr docker ghcr.io --user my-user
 
-berth registry                                  # the list
+berth registry list                                  # the list
 berth registry check                            # do they answer and accept the login?
 ```
 
@@ -51,7 +51,7 @@ A Docker repository with path-based routing in Nexus does not need an address: i
 ## Giving a host a registry
 
 ```bash
-berth host studio registry nexus on
+berth host set studio registry.nexus=on
 berth run studio secrets
 ```
 
@@ -62,8 +62,8 @@ Or switch it on under **Registries** on the host's **Settings** tab and run **Se
 A machine set up from a [cloud seed](/docs/deploy/cloud) downloads the release archive. With **Cloud-init seed** chosen on a host's Install tab, **Publish release to** under Release on the Settings tab switches between your file servers and raw repositories. **Download with login** decides whether the machine logs in for the download. Making the seed then uploads the archive and points the seed at it. From the command line:
 
 ```bash
-berth publish nexus/berth-releases cloud-1
-berth publish files cloud-1
+berth registry publish nexus/berth-releases --host cloud-1
+berth registry publish files --host cloud-1
 ```
 
 Either way the seed pins the archive's SHA-256, and the archive contains no profiles, keys or secrets. The new machine downloads it with or without a login.
@@ -77,8 +77,8 @@ The default. The repository has to allow anonymous reads.
 <Tab value="With a login">
 
 ```bash
-berth publish nexus/berth-releases cloud-1 --login              # the login of nexus
-berth publish nexus/berth-releases cloud-1 --login nexus-read   # another registry's
+berth registry publish nexus/berth-releases --host cloud-1 --login              # the login of nexus
+berth registry publish nexus/berth-releases --host cloud-1 --login nexus-read   # another registry's
 ```
 
 The cloud seed then contains that login, in a file only root can read that is deleted after the download. The login is taken from your machine when the seed is rendered, so it is never written into the host's profile.
@@ -93,8 +93,8 @@ The cloud seed then contains that login, in a file only root can read that is de
 ## Pushing the container image
 
 ```bash
-berth image push nexus/docker-hosted          # NEXUS-DOCKER-ADDRESS/berth-desktop:latest
-berth image push ghcr v1                      # ghcr.io/berth-desktop:v1
+berth registry push-image nexus/docker-hosted          # NEXUS-DOCKER-ADDRESS/berth-desktop:latest
+berth registry push-image ghcr v1                      # ghcr.io/berth-desktop:v1
 ```
 
 pushes the image built by the **Container image** install method.

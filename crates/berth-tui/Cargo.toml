@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "The screens of a host with no terminal in them, for berth and for its page in a browser"
+description = "The parts of berth's screens with no terminal in them"
 
 [dependencies]
 berth-api.workspace = true
@@ -16,4 +16,3 @@ ratatui = { version = "=0.30.2", default-features = false }
 qrcode = { version = "0.14", default-features = false }
 pulldown-cmark = { version = "0.13", default-features = false }
 tui-input.workspace = true
-web-time = "1"

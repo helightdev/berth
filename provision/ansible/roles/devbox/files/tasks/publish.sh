@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 . "$(dirname "$0")/common.sh"
-[[ -n $address ]] || { echo 'Not on a tailnet. Run: sudo tailscale up' >&2; exit 1; }
+[[ -n $address ]] || { echo "$off_tailnet" >&2; exit 1; }
 if own_control; then
   echo "Nothing published: the tailnet's control server, $control, offers neither tailscale serve nor HTTPS certificates." >&2
   access
