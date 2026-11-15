@@ -66,7 +66,7 @@ The **Information** panel on the right explains the selected row. **Apply this c
 | Tab, Shift+Tab, number keys | Next or previous tab, or a tab by number; also accepts the current edit |
 | Right or F2, Left | Into the *Suggestions* list (detected keys, hosts, choices) and back |
 | F3 | Browse for a file on path fields; Ctrl+Enter picks the directory itself |
-| F4 | Generate a value, such as a hostname, a password hash or a Tailscale key, or download the ISO |
+| F4 | Generate a value, such as a hostname or a password hash, or download the ISO |
 | F5 | Type a password and store its hash; on Wi-Fi fields, unlock the saved passwords |
 | c | On a key of the key ring, such as **This berth's SSH key**, copy its public half to the clipboard |
 | Alt+R | In a panel, show its links as QR codes to scan with a phone. Left and Right go to the other links, any other key closes it. Where Alt+R is taken by other software, click its hint at the bottom of the panel |
@@ -89,7 +89,7 @@ Every `.pub` file in `~/.ssh`, keys held by ssh-agent, the ways to log in with t
 </Accordion>
 <Accordion title="Tailscale">
 
-The Linux machines in `tailscale status`, as address suggestions. With the secret `tailnet_api_key` or `TS_API_KEY` set, F4 on the Tailscale key field creates a one-use enrollment key through the API of Tailscale or of the Headscale server in `tailnet_login_server`.
+The Linux machines in `tailscale status`, as address suggestions. A host joins the tailnet with a key berth makes, see [joining the tailnet](/docs/use/access#joining-the-tailnet).
 
 </Accordion>
 <Accordion title="Wi-Fi">

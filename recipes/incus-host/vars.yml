@@ -63,6 +63,8 @@ berth_server_tailscale_serve: true
 
 # An enrollment key joins the server to your tailnet. Without one Tailscale
 # is not installed: pass it on the command line rather than saving it here.
+# This recipe runs before berth does, so it takes a key made by hand; the
+# hosts berth sets up get theirs from berth, with the secret tailnet_api_key.
 #   ./install.sh -e tailscale_auth_key=tskey-auth-…
 tailscale_auth_key: ""
 tailscale_hostname: "{{ ansible_facts['hostname'] }}"

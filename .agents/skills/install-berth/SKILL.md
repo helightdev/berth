@@ -144,6 +144,7 @@ The data in `/srv/berth` stays.
 | Locked out of SSH | With `ssh_from` set to one address, SSH from anywhere else is refused. The provider's console is the way back in. |
 | Docker ports are open to the world | Docker publishes past `ufw`. Publish on `127.0.0.1` or the tailnet address. |
 | The enrollment key leaks | Pass `tailscale_auth_key` on the command line. Never save it in a file you commit. |
+| Hosts berth sets up do not join the tailnet | berth makes their keys itself, with the secret `tailnet_api_key`: a Tailscale OAuth client as `CLIENT_ID:CLIENT_SECRET`, a Tailscale API access token or a Headscale API key. Ask the user to set it with `berth secret set tailnet_api_key`. Only the recipes' own machine takes a key by hand, because the recipe runs before berth does. |
 | A rescue install refuses to run | It refuses a system that did not start with UEFI, and a disk the running system is on. |
 
 ## Hand the server over to the user
