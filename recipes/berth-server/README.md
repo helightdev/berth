@@ -97,10 +97,8 @@ Then, on a berth connected to the server, add the machine as a node, list
 its features and apply it. This example calls it `big`:
 
 ```bash
-berth host add big node --user root --type node
-berth profile big > big.json
-# in big.json: "ansible_vars": {"devbox_plugin_features": ["docker/engine", "incus/server"]}
-berth profile big --set big.json
+berth host add big node --user root --type node \
+  --feature docker/engine --feature incus/server
 berth apply big
 ```
 

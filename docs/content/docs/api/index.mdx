@@ -106,11 +106,11 @@ The reference is generated from documents that the programs print and the tests 
 | Document | Printed by | Download |
 | --- | --- | --- |
 | Operations of berthd | `berthd operations` | [berthd.operations.json](/openapi/berthd.operations.json) |
-| Operations of berth serve | `berth operations` | [berth.operations.json](/openapi/berth.operations.json) |
+| Operations of berth serve | `berth server api operations` | [berth.operations.json](/openapi/berth.operations.json) |
 | OpenAPI 3 of berthd | `berthd openapi` | [berthd.openapi.json](/openapi/berthd.openapi.json) |
-| OpenAPI 3 of berth serve | `berth openapi` | [berth.openapi.json](/openapi/berth.openapi.json) |
+| OpenAPI 3 of berth serve | `berth server api openapi` | [berth.openapi.json](/openapi/berth.openapi.json) |
 | AsyncAPI 3 of berthd | `berthd asyncapi` | [berthd.asyncapi.json](/openapi/berthd.asyncapi.json) |
-| AsyncAPI 3 of berth serve | `berth asyncapi` | [berth.asyncapi.json](/openapi/berth.asyncapi.json) |
+| AsyncAPI 3 of berth serve | `berth server api asyncapi` | [berth.asyncapi.json](/openapi/berth.asyncapi.json) |
 
 An operations document describes each operation with its name and HTTP route, arguments and errors, and input and result schemas. For streams it adds the frames each way. `components` holds the JSON schemas the `$ref`s point at. The `berth serve` document has `"hosts": true`: every berthd operation is available there with a host.
 

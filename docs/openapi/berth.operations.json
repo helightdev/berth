@@ -484,13 +484,21 @@
           },
           "label": {
             "type": "string"
+          },
+          "types": {
+            "description": "The types of host it is for, such as `workstation` or `node`.",
+            "items": {
+              "$ref": "#/components/schemas/HostType"
+            },
+            "type": "array"
           }
         },
         "required": [
           "key",
           "label",
           "group",
-          "help"
+          "help",
+          "types"
         ],
         "type": "object"
       },
@@ -774,6 +782,13 @@
           },
           "started": {
             "type": "string"
+          },
+          "stopped_by": {
+            "description": "Who stopped it before it ended by itself.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "subject": {
             "description": "What it was done to: `host:NAME`, `provisioner:NAME`,\n`resource:ID` or `installation`. Empty for a job from before 0.5.",
@@ -4119,6 +4134,45 @@
       },
       "role": "view",
       "summary": "What a job wrote, by bytes or by lines."
+    },
+    {
+      "args": [
+        {
+          "description": "A job's id",
+          "in": "path",
+          "name": "id",
+          "required": true
+        }
+      ],
+      "errors": [
+        {
+          "description": "The caller may not start a job of its kind, so may not stop it",
+          "status": "403"
+        },
+        {
+          "description": "No such job",
+          "status": "404"
+        },
+        {
+          "description": "It has ended already",
+          "status": "409"
+        },
+        {
+          "description": "It runs in another berth serve of the same store",
+          "status": "501"
+        }
+      ],
+      "group": "jobs",
+      "http": {
+        "method": "POST",
+        "path": "/v1/jobs/{id}/stop"
+      },
+      "kind": "call",
+      "name": "jobs.stop",
+      "portal": true,
+      "result": null,
+      "role": "view",
+      "summary": "Stop a running job: its programs end, a session it follows ends on its host, and its record says who stopped it."
     },
     {
       "args": [

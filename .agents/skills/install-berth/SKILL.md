@@ -79,10 +79,8 @@ x86_64 and a login as root or as an account with sudo. On the user's own
 machine, or on a berth connected to their server, with the made-up name `big`:
 
 ```bash
-berth host add big 192.0.2.20 --user root --auth ssh --type node
-berth profile big > big.json
-# in big.json: "ansible_vars": {"devbox_plugin_features": ["docker/engine", "incus/server"]}
-berth profile big --set big.json
+berth host add big 192.0.2.20 --user root --auth ssh --type node \
+  --feature docker/engine --feature incus/server
 berth apply big
 ```
 
@@ -93,7 +91,7 @@ The apply gives the SSH user berth's key and allows only keys for SSH. Root
 keeps a login with keys. Its `ufw` firewall keeps these open: SSH, the
 tailnet, the guests' bridge `incusbr0` and the Incus API on port 8444. berth
 then registers the provisioners. Check with `berth run big status` and
-`berth provisioner`.
+`berth provisioner list`.
 
 The features never erase a disk. They make an Incus storage pool in a folder,
 or use one the user names in `devbox_incus_pool`. A server with Incus or Docker

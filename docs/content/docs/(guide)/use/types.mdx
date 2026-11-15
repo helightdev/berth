@@ -104,7 +104,7 @@ berth also refuses it on a host that is a workstation or a node whatever its pro
 | From | To | How |
 | --- | --- | --- |
 | `ssh` | `managed` | Install the controller |
-| `ssh` or `managed` | `node` | `berth host type HOST node`, list its features, and apply ([Nodes](/docs/use/nodes)) |
+| `ssh` or `managed` | `node` | `berth host set HOST type=node`, list its features, and apply ([Nodes](/docs/use/nodes)) |
 | `ssh`, `managed` or `node` | `workstation` | Set **Type** to `workstation` in the set-up, fill in the rest of the tabs, and apply |
 
 berth never takes a host back to a type with less, and never removes what it installed. A node is not applied over a workstation that berth set up, as nothing would look after its desktop, agent and accounts any more. Making a profile a node's takes the fields of the agent and the operator out of it.

@@ -2,8 +2,8 @@
 """Boot a real install in QEMU, set it up on first boot, and test it with
 berth over SSH.
 
-    ci/run.sh boot cloud     the Ubuntu cloud image with the seed of berth seed
-    ci/run.sh boot iso       the installer of berth iso, on a blank virtual disk
+    ci/run.sh boot cloud     the Ubuntu cloud image with the seed of berth host seed
+    ci/run.sh boot iso       the installer of berth host iso, on a blank virtual disk
     ci/run.sh boot cloud --keep -- boot_host.FirstBoot
 
 Only meant for the container of ci/boot.compose.yml. Logs, the timings and the

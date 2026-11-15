@@ -214,7 +214,7 @@ pub fn adopted_name(paths: &Paths, name: &str, kind: &str) -> Result<String> {
 /// holds resources is kept: they would have no provisioner.
 pub fn remove_entry(paths: &Paths, store: &Store, name: &str) -> Result<()> {
     if entry(paths, name)?.is_none() {
-        return Err(format!("No provisioner {name}. See: berth provisioner").into());
+        return Err(format!("No provisioner {name}. See: berth provisioner list").into());
     }
     let held: Vec<String> = crate::resource::list(paths)?
         .into_iter()

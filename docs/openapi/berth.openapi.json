@@ -581,13 +581,21 @@
           },
           "label": {
             "type": "string"
+          },
+          "types": {
+            "description": "The types of host it is for, such as `workstation` or `node`.",
+            "items": {
+              "$ref": "#/components/schemas/HostType"
+            },
+            "type": "array"
           }
         },
         "required": [
           "key",
           "label",
           "group",
-          "help"
+          "help",
+          "types"
         ],
         "type": "object"
       },
@@ -1067,6 +1075,13 @@
           },
           "started": {
             "type": "string"
+          },
+          "stopped_by": {
+            "description": "Who stopped it before it ended by itself.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "subject": {
             "description": "What it was done to: `host:NAME`, `provisioner:NAME`,\n`resource:ID` or `installation`. Empty for a job from before 0.5.",
@@ -5960,6 +5975,78 @@
           }
         },
         "summary": "What a job wrote, by bytes or by lines.",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/v1/jobs/{id}/stop": {
+      "post": {
+        "operationId": "stop_job",
+        "parameters": [
+          {
+            "description": "A job's id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobInfo"
+                }
+              }
+            },
+            "description": "Asked to stop; it ends soon, as following it shows"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not start a job of its kind, so may not stop it"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such job"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "It has ended already"
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "It runs in another berth serve of the same store"
+          }
+        },
+        "summary": "Stop a running job: its programs end, a session it follows ends on its host, and its record says who stopped it.",
         "tags": [
           "jobs"
         ]

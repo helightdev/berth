@@ -251,7 +251,7 @@ class Workstation:
         return self.ssh(OPERATOR, f'sudo -n sh -c {shell_quote(command)}', check=check)
 
     def write_profile(self, profile, name=HOST):
-        """Save a host's profile in berth's store, as `berth profile --set` does."""
+        """Save a host's profile in berth's store, as `berth host import` does."""
         self.berth('host', 'import', name, '-', input=json.dumps(profile, indent=2) + '\n')
 
     def read_profile(self, name=HOST):

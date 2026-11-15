@@ -200,7 +200,7 @@ class Reapply(unittest.TestCase):
 
 @needs_boot
 class Reboot(unittest.TestCase):
-    """berth apply --all --reboot on a host that needs it."""
+    """berth rollout --all --reboot on a host that needs it."""
 
     @classmethod
     def setUpClass(cls):

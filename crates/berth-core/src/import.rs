@@ -156,7 +156,7 @@ pub fn run(paths: &Paths, installation: &Installation, store: &Store) -> Result<
         let registered = take_in_provisioners(store)?;
         if !registered.is_empty() {
             eprintln!(
-                "berth: the provisioners in use are registered as {}: see berth provisioner",
+                "berth: the provisioners in use are registered as {}: see berth provisioner list",
                 registered.join(", ")
             );
         }

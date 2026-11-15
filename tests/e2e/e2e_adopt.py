@@ -1,5 +1,5 @@
 """The profile a host keeps of itself, and another berth taking the host over
-from it: the file the role writes, berthd serving it, berth adopt reading it
+from it: the file the role writes, berthd serving it, berth host adopt reading it
 over SSH while berthd is broken, and the next applies of the new berth.
 
 It looks at the host as provisioned() applied it, and leaves it so: the new

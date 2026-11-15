@@ -58,7 +58,7 @@ docker run -d --name berth -p 127.0.0.1:7777:7777 \
 Any other command goes after the image name, and the terminal UI needs the default command cleared:
 
 ```bash
-docker run --rm -it -v berth-config:/config -v berth-data:/data ghcr.io/helightdev/berth list
+docker run --rm -it -v berth-config:/config -v berth-data:/data ghcr.io/helightdev/berth ls
 docker run --rm -it --entrypoint berth -v berth-config:/config -v berth-data:/data \
   -v ~/.ssh:/home/berth/.ssh:ro ghcr.io/helightdev/berth
 ```

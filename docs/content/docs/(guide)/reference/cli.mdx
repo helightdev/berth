@@ -155,7 +155,7 @@ berth host show NAME
 Describe a new host, then install it. Asks what is missing on a terminal.
 
 ```text
-berth host create NAME [--method METHOD] [--from PROFILE] [--feature FEATURE] [--no-feature FEATURE] [--set KEY=VALUE] [--generate-passwords] [--provisioner PROVISIONER] [NAME=VALUE…] [--run] [--detach] [--sudo-password-stdin]
+berth host create NAME [--method METHOD] [--from PROFILE] [--type TYPE] [--feature FEATURE] [--no-feature FEATURE] [--set KEY=VALUE] [--generate-passwords] [--provisioner PROVISIONER] [NAME=VALUE…] [--run] [--detach] [--sudo-password-stdin]
 ```
 
 | Argument | What it is |
@@ -163,6 +163,7 @@ berth host create NAME [--method METHOD] [--from PROFILE] [--feature FEATURE] [-
 | `NAME` | Its name. |
 | `--method METHOD` | How it is installed: provisioner, iso, cloud-seed, ssh or ssh-only. |
 | `--from PROFILE` | Start from a profile: a host's name, a JSON file, or - for standard input. |
+| `--type TYPE` | What berth does with it: workstation, or node for a server of machines, applied over SSH. |
 | `--feature FEATURE` | Switch on a plugin's feature, PLUGIN/FEATURE. Again for more. |
 | `--no-feature FEATURE` | Switch off a plugin's feature. |
 | `--set KEY=VALUE` | Set a field of the profile. Again for more; the keys are listed below. |
@@ -196,9 +197,6 @@ The fields of a profile, for `--set KEY=VALUE` here and `berth host set`. A swit
 | `sudo` | Ask for sudo password |
 | `hostname` | Hostname |
 | `install_tailscale` | Tailscale |
-| `tailscale_login_server` | Login server |
-| `tailscale_auto_key` | Automatic enrollment key |
-| `tailscale_auth_key` | Tailscale enrollment key |
 | `tools_web` | JavaScript runtimes |
 | `tools_native` | Native development |
 | `tools_jvm` | JVM development |
@@ -244,7 +242,7 @@ The fields of a profile, for `--set KEY=VALUE` here and `berth host set`. A swit
 Take in a machine that exists, by its address, and log in to it once.
 
 ```text
-berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH] [--type TYPE] [--no-contact] [--password-stdin]
+berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH] [--type TYPE] [--feature FEATURE] [--no-contact] [--password-stdin]
 ```
 
 | Argument | What it is |
@@ -254,7 +252,8 @@ berth host add NAME ADDRESS [--user USER] [--port PORT] [--auth AUTH] [--type TY
 | `--user USER` | The account berth logs in as. |
 | `--port PORT` |  |
 | `--auth AUTH` | How berth logs in: berth, key:NAME, password or ssh. |
-| `--type TYPE` | What berth does with it: ssh, managed or workstation. By default `ssh`. |
+| `--type TYPE` | What berth does with it: ssh, managed, node or workstation. By default `ssh`. |
+| `--feature FEATURE` | Switch on a plugin's feature of a node or a workstation, PLUGIN/FEATURE, such as incus/server. Again for more. |
 | `--no-contact` | Save it without logging in to it. |
 | `--password-stdin` | Read a password from standard input that installs berth's key on it, once. |
 
@@ -753,6 +752,21 @@ berth resource logs ID [-f, --follow] [--tail N]
 | `-f, --follow` |  |
 | `--tail N` |  |
 
+### berth resource exec
+
+Run a command in it, for a kind that has exec, and exit with its exit status.
+
+```text
+berth resource exec ID [--stdin] -- COMMAND… [--detach]
+```
+
+| Argument | What it is |
+| --- | --- |
+| `ID` | Its id. |
+| `--stdin` | Give the command what berth reads on standard input, to its end. |
+| `COMMAND…` | The command and its arguments, after --. |
+| `--detach` | Print the job's id and return; berth job wait ID waits for it. Needs a berth serve. |
+
 ### berth resource actions
 
 What it can do.
@@ -829,6 +843,18 @@ Wait for a job to end and exit with its result.
 
 ```text
 berth job wait ID
+```
+
+| Argument | What it is |
+| --- | --- |
+| `ID` | Its id. |
+
+### berth job stop
+
+Stop a running job: its programs end, and its record says who stopped it.
+
+```text
+berth job stop ID
 ```
 
 | Argument | What it is |
@@ -1145,11 +1171,11 @@ berth plugin update [ID] [--check]
 
 ## berth config
 
-The server's settings.
+The settings: the server's, and this berth's own, such as the server it uses.
 
 ### berth config list
 
-The settings, with what each means.
+The settings, with what each means and where it is kept.
 
 `berth config ls` is the same.
 
@@ -1196,20 +1222,23 @@ berth config unset KEY
 
 ## berth port
 
-Reach a port of a host from this machine.
+Reach a port of a host, or an endpoint of a resource, from this machine.
 
 ### berth port forward
 
-Listen on this machine and pass each connection to a port of the host.
+Listen on this machine and pass each connection to a port of a host, or to an endpoint of a resource.
+
+TARGET is a host's name. A resource's id or name is taken when no host has that name, or always with --resource.
 
 ```text
-berth port forward HOST [LOCAL:]PORT… [--address ADDRESS]
+berth port forward TARGET [LOCAL:]PORT|ENDPOINT… [--resource] [--address ADDRESS]
 ```
 
 | Argument | What it is |
 | --- | --- |
-| `HOST` | A host's name. |
-| `[LOCAL:]PORT…` | [LOCAL:]PORT: the host's port, and the one to listen on here. |
+| `TARGET` |  |
+| `[LOCAL:]PORT|ENDPOINT…` | [LOCAL:]PORT for a host's port. For a resource, [LOCAL:]ENDPOINT, an endpoint's name or port; LOCAL is the endpoint's port unless given. |
+| `--resource` | TARGET is a resource, even where a host has the same name. |
 | `--address ADDRESS` | The address to listen on. By default `127.0.0.1`. |
 
 ## berth inbox

@@ -153,7 +153,7 @@ pub fn check(
         },
         (_, _) if capability.allowed(HostType::Node) => Refusal {
             why: format!(
-                "{name} is a host of the type {host_type}, neither a node nor a workstation: {what} needs berth to apply its profile. Make it a node (berth host type {name} node) or a workstation in its set-up, then apply it"
+                "{name} is a host of the type {host_type}, neither a node nor a workstation: {what} needs berth to apply its profile. Make it a node (berth host set {name} type=node) or a workstation in its set-up, then apply it"
             ),
             raise: "setup",
         },
@@ -381,7 +381,7 @@ mod tests {
         assert!(refused.why.starts_with("big is a node: applying"));
         let refused = check("big", HostType::Managed, Capability::Apply).unwrap_err();
         assert!(refused.why.contains("neither a node nor a workstation"));
-        assert!(refused.why.contains("berth host type big node"));
+        assert!(refused.why.contains("berth host set big type=node"));
         // The controller alone is never put over a node's.
         let action = install_controller_action("big", HostType::Managed, Some(HostType::Node));
         assert!(!action.available);

@@ -98,5 +98,5 @@
         msg: "{{ berth_server_handover + (berth_server_as_node if berth_server_node | bool else []) }}"
       vars:
         berth_server_as_node:
-          - "To make this machine a node of the server, on a berth connected to it: berth host add NAME node --user root --type node"
-          - "Then list its features, such as docker/engine and incus/server, and apply it: berth apply NAME"
+          - "To make this machine a node of the server, on a berth connected to it: berth host add NAME node --user root --type node --feature docker/engine --feature incus/server"
+          - "Then apply it: berth apply NAME"
