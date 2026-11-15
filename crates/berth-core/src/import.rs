@@ -217,17 +217,25 @@ pub(crate) fn take_in_names(store: &Store) -> Result<usize> {
 }
 
 /// The hosts whose profiles the tailnet's import changed: those that held a
-/// pasted key, and those that were to be joined by hand.
+/// pasted key, and those berth 0.5 never joined by itself.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct TakenTailnet {
     pub pasted: Vec<String>,
-    pub by_hand: Vec<String>,
+    pub optional: Vec<String>,
 }
+
+/// The role's variable that lets an apply go on, without the tailnet, when
+/// berth cannot make the host's key.
+pub const TAILNET_OPTIONAL: &str = "devbox_tailnet_optional";
 
 /// The eighth import, in one change with its marker: every stored profile,
 /// of every scope, loses its pasted enrollment key and the switch of keys
 /// berth makes ([`berth_api::profile::take_old_tailnet`]), so no key lingers
-/// in the store. Says which hosts of berth's own scope it changed.
+/// in the store. berth 0.5 joined a host only with a pasted key or with that
+/// switch on, which was off unless set, and an apply without either left the
+/// host off the tailnet. A profile of such a host keeps that: it joins once
+/// berth can make its key, and until then an apply goes on without it. Says
+/// which hosts of berth's own scope it changed.
 pub(crate) fn take_in_tailnet(store: &Store) -> Result<TakenTailnet> {
     let mut scopes = std::collections::BTreeSet::new();
     if let crate::store::Rows::State(rows) = store.export(crate::store::Table::State)? {
@@ -242,13 +250,27 @@ pub(crate) fn take_in_tailnet(store: &Store) -> Result<TakenTailnet> {
             let Ok(mut config) = serde_json::from_slice::<Value>(&value) else {
                 continue;
             };
-            let Some(old) = berth_api::profile::take_old_tailnet(&mut config) else {
+            if !config.is_object() {
                 continue;
-            };
+            }
+            let joins = berth_api::profile::joins_tailnet(&config);
+            let old = berth_api::profile::take_old_tailnet(&mut config);
+            let optional = joins
+                && old.is_none_or(|old| old.by_hand && !old.pasted)
+                && config["ansible_vars"].get(TAILNET_OPTIONAL).is_none();
+            if optional {
+                if !config["ansible_vars"].is_object() {
+                    config["ansible_vars"] = json!({});
+                }
+                config["ansible_vars"][TAILNET_OPTIONAL] = json!(true);
+            }
+            if old.is_none() && !optional {
+                continue;
+            }
             if scope == OWN {
-                match (old.pasted, old.by_hand) {
+                match (old.is_some_and(|old| old.pasted), optional) {
                     (true, _) => taken.pasted.push(name.clone()),
-                    (false, true) => taken.by_hand.push(name.clone()),
+                    (false, true) => taken.optional.push(name.clone()),
                     _ => {}
                 }
             }
@@ -270,33 +292,42 @@ pub(crate) fn take_in_tailnet(store: &Store) -> Result<TakenTailnet> {
 /// What the tailnet's import tells the user, once, or `None` when it
 /// changed nothing they need to know.
 pub(crate) fn tailnet_message(taken: &TakenTailnet, store: &Store) -> Result<Option<String>> {
-    if taken.pasted.is_empty() && taken.by_hand.is_empty() {
+    if taken.pasted.is_empty() && taken.optional.is_empty() {
         return Ok(None);
     }
     let list = |names: &[String]| names.join(", ");
-    let mut said = String::from("berth makes the keys hosts join the tailnet with itself now.");
-    if !taken.pasted.is_empty() {
-        said += &format!(
-            " The keys pasted into the profiles of {} are removed.",
-            list(&taken.pasted)
-        );
-    }
-    let joining: Vec<String> = taken.pasted.iter().chain(&taken.by_hand).cloned().collect();
+    let joins = |names: &[String]| if names.len() == 1 { "joins" } else { "join" };
     let has_key = store
         .names(kind::SECRET, OWN)?
         .iter()
         .any(|name| name == berth_api::profile::TAILNET_API_KEY);
-    said += &format!(
-        " {} join the tailnet on the next apply, unless already on it",
-        list(&joining)
-    );
-    said += &match has_key {
-        true => ".".to_owned(),
-        false => format!(
-            ", once the secret {0} is set: berth secret set {0}.",
-            berth_api::profile::TAILNET_API_KEY
-        ),
-    };
+    let secret = berth_api::profile::TAILNET_API_KEY;
+    let mut said = String::from("berth makes the keys hosts join the tailnet with itself now.");
+    if !taken.pasted.is_empty() {
+        said += &format!(
+            " The keys pasted into the profiles of {0} are removed. {0} {1} the tailnet on the next apply, unless already on it",
+            list(&taken.pasted),
+            joins(&taken.pasted)
+        );
+        said += &match has_key {
+            true => ".".to_owned(),
+            false => format!(", once the secret {secret} is set: berth secret set {secret}."),
+        };
+    }
+    if !taken.optional.is_empty() {
+        let names = list(&taken.optional);
+        said += &match has_key {
+            true => format!(
+                " {names} {} the tailnet on the next apply, unless already on it.",
+                joins(&taken.optional)
+            ),
+            false => format!(
+                " {names} {} the tailnet once the secret {secret} is set: berth secret set {secret}. Until then an apply leaves {} off the tailnet, as berth 0.5 did.",
+                joins(&taken.optional),
+                if taken.optional.len() == 1 { "it" } else { "them" }
+            ),
+        };
+    }
     Ok(Some(said))
 }
 
@@ -1537,7 +1568,7 @@ mod tests {
             taken,
             TakenTailnet {
                 pasted: vec!["studio".into()],
-                by_hand: vec!["dock".into()],
+                optional: vec!["attic".into(), "dock".into()],
             }
         );
         assert!(read(&store, kind::META, TAILNET_MARKER).is_some());
@@ -1549,9 +1580,14 @@ mod tests {
             json_row(&store, kind::PROFILE, "pier").unwrap(),
             json!({"hostname": "pier"})
         );
+        // berth 0.5 joined neither of these by itself, and an apply goes on without the tailnet still.
         assert_eq!(
             json_row(&store, kind::PROFILE, "attic").unwrap(),
-            json!({"hostname": "attic", "builder": {}})
+            json!({"hostname": "attic", "builder": {}, "ansible_vars": {(TAILNET_OPTIONAL): true}})
+        );
+        assert_eq!(
+            json_row(&store, kind::PROFILE, "dock").unwrap(),
+            json!({"hostname": "dock", "ansible_vars": {(TAILNET_OPTIONAL): true}})
         );
         // No key is left in any row of the store, of any scope.
         let crate::store::Rows::State(all) = store.export(crate::store::Table::State).unwrap()
@@ -1565,7 +1601,7 @@ mod tests {
         let said = tailnet_message(&taken, &store).unwrap().unwrap();
         assert_eq!(
             said,
-            "berth makes the keys hosts join the tailnet with itself now. The keys pasted into the profiles of studio are removed. studio, dock join the tailnet on the next apply, unless already on it, once the secret tailnet_api_key is set: berth secret set tailnet_api_key."
+            "berth makes the keys hosts join the tailnet with itself now. The keys pasted into the profiles of studio are removed. studio joins the tailnet on the next apply, unless already on it, once the secret tailnet_api_key is set: berth secret set tailnet_api_key. attic, dock join the tailnet once the secret tailnet_api_key is set: berth secret set tailnet_api_key. Until then an apply leaves them off the tailnet, as berth 0.5 did."
         );
         store
             .write(
@@ -1585,10 +1621,22 @@ mod tests {
             tailnet_message(&TakenTailnet::default(), &store).unwrap(),
             None
         );
+        // One host joins, several join.
+        let one = TakenTailnet {
+            pasted: vec![],
+            optional: vec!["dock".into()],
+        };
+        assert!(
+            tailnet_message(&one, &store)
+                .unwrap()
+                .unwrap()
+                .contains(" dock joins the tailnet on the next apply")
+        );
         // Once is enough: the next start finds the marker and changes nothing.
+        let before = store.export(crate::store::Table::State).unwrap();
         let found = installation(&paths);
         run(&paths, &found, &store).unwrap();
-        assert_eq!(take_in_tailnet(&store).unwrap(), TakenTailnet::default());
+        assert_eq!(store.export(crate::store::Table::State).unwrap(), before);
     }
 
     #[test]
@@ -1759,9 +1807,11 @@ mod tests {
         old_hosts(&paths);
         let store = open(&paths);
         // In the layout of now: an empty key file was the user's keys and berth's.
+        // berth 0.5 did not join it to the tailnet by itself, and an apply still goes on without.
         assert_eq!(
             json_row(&store, kind::PROFILE, "studio").unwrap(),
-            json!({"hostname": "studio", "builder": {}, "access": {"address": "192.0.2.10", "auth": "ssh"}})
+            json!({"hostname": "studio", "builder": {}, "access": {"address": "192.0.2.10", "auth": "ssh"},
+                   "ansible_vars": {(TAILNET_OPTIONAL): true}})
         );
         assert!(json_row(&store, kind::PROFILE, "attic").is_some());
         assert_eq!(
