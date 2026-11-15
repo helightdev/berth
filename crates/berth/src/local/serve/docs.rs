@@ -19,7 +19,8 @@ pub fn openapi() -> Value {
     api.info.description = Some(
         "One API over all hosts, with the inbox and a key-value store. Everything under \
          /v1/hosts/{name}/controller/ is that host's own API, passed through unchanged; \
-         only the controller's own `secrets` action is refused, which the server's `secrets` action of the host stands in for. \
+         only the controller's own `secrets` action is refused, which the server's `secrets` action of the host stands in for, \
+         and `endpoints.connect`, which the server opens itself for `resources.connect`. \
          What can be done to a host or to the installation is listed at /v1/hosts/{name}/actions and \
          /v1/installation/actions, and run by POST to an action's name there. Over TCP every request \
          carries the server's token or an OAuth 2.0 access token as a bearer, and needs the role its operation names. \
@@ -68,6 +69,14 @@ fn upgrade(stream: &Stream, id: &str) -> Value {
     })
 }
 
+/// Whether a path of berthd is one the server calls only for itself, which
+/// it does not pass through and so does not describe as its own.
+fn server_only(path: &str) -> bool {
+    berth_api::ops::HOST
+        .iter()
+        .any(|op| op.path == path && !op.server_only.is_empty())
+}
+
 /// Put a host's paths under `/v1/hosts/{name}/controller` and its schemas
 /// beside ours.
 fn merge_host(document: &mut Value, host: &Value) {
@@ -76,6 +85,9 @@ fn merge_host(document: &mut Value, host: &Value) {
         let Some(rest) = path.strip_prefix("/v1") else {
             continue;
         };
+        if server_only(path) {
+            continue;
+        }
         let mut item = item.clone();
         for (_, operation) in item.as_object_mut().into_iter().flatten() {
             if !operation.is_object() {
@@ -125,7 +137,7 @@ pub fn operations() -> Value {
     let own = serde_json::to_value(own).expect("the document is JSON");
     let mut document = berthd::http::operations_of(
         "berth serve",
-        "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME/controller. Only the controller's own `secrets` action is refused; the server's `secrets` action of the host sends the server's secrets. An action's own role is asked when it runs. Each operation names the least role a caller over TCP needs: view, operate or admin.",
+        "The operations of berth serve. Every operation of a host is one here too: on the portal with `\"host\": \"NAME\"` in the frame, over HTTP under /v1/hosts/NAME/controller. Only the controller's own `secrets` action is refused, for which the server's `secrets` action of the host sends the server's secrets, and `endpoints.connect`, which the server opens itself for `resources.connect`. An action's own role is asked when it runs. Each operation names the least role a caller over TCP needs: view, operate or admin.",
         berth_api::ops::SERVE,
         &own,
         &|op| streams::SERVE.iter().find(|stream| stream.path == op.path),
@@ -138,6 +150,7 @@ pub fn asyncapi() -> Value {
     let keep = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
     let hosted: Vec<Stream> = streams::HOST
         .iter()
+        .filter(|stream| !server_only(stream.path))
         .map(|stream| Stream {
             id: keep(format!("host.{}", stream.id)),
             path: keep(format!(

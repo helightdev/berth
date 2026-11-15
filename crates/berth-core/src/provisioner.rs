@@ -64,6 +64,15 @@ pub fn entry(paths: &Paths, name: &str) -> Result<Option<Entry>> {
         .and_then(|entry| serde_json::from_value(entry).ok()))
 }
 
+/// The node a registered provisioner lives on, or nothing.
+pub fn node_of(paths: &Paths, name: &str) -> String {
+    entry(paths, name)
+        .ok()
+        .flatten()
+        .map(|entry| entry.node)
+        .unwrap_or_default()
+}
+
 /// Register a provisioner under `name`, of the type `entry.kind`.
 pub fn save_entry(paths: &Paths, name: &str, entry: &Entry) -> Result<()> {
     if !plugins::valid_name(name) {
@@ -298,11 +307,7 @@ pub fn describe(
     let mut info = provisioner.info(plugin, missing.clone());
     info.id = name.to_owned();
     info.settings = settings(paths, name).unwrap_or_default();
-    info.node = entry(paths, name)
-        .ok()
-        .flatten()
-        .map(|entry| entry.node)
-        .unwrap_or_default();
+    info.node = node_of(paths, name);
     if info.problem.is_empty() {
         info.problem = problem(&info.id, provisioner, &missing, &info.settings);
     }
