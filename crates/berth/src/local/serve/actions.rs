@@ -672,8 +672,9 @@ fn seed(state: Arc<Serve>, name: String, _: Act) -> Run {
         .await
         .map_err(internal)?
         .map_err(|error| Fail::new(code::BAD_REQUEST, error))?;
+        // A seed's key joins the tailnet for a day, which whoever starts the machine needs to know.
         Ok(Acted {
-            result: Some(json!({"user_data": seed.user_data})),
+            result: Some(json!({"user_data": seed.user_data, "tailnet": seed.tailnet})),
             ..Acted::default()
         })
     })
@@ -798,7 +799,8 @@ fn installer(state: Arc<Serve>, name: String, act: Act) -> Run {
                     return false;
                 }
             };
-            let (iso, _profile) = (built.iso.clone(), built.profile);
+            // The builder reads both files while it runs.
+            let (iso, _profile, key) = (built.iso.clone(), built.profile, built.key);
             let program = berth_core::runner::Program {
                 command: built.command,
                 input: None,
@@ -806,6 +808,9 @@ fn installer(state: Arc<Serve>, name: String, act: Act) -> Run {
             };
             if berth_core::runner::run_program(program, out) != Some(0) {
                 return false;
+            }
+            if let Some(key) = &key {
+                let _ = writeln!(out, "{}", key.note());
             }
             if device.is_empty() {
                 let _ = writeln!(out, "Built {}", iso.display());

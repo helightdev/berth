@@ -19,6 +19,9 @@
       - devbox_berth_ssh_public_key.splitlines() | reject('match', '^(ssh-|ecdsa-|sk-)[^ ]+ [A-Za-z0-9+/=]+( .*)?$') | list | length == 0
       - devbox_geometry is match('^[0-9]{3,4}x[0-9]{3,4}$')
     fail_msg: This version supports dedicated Ubuntu 26.04 amd64 hosts with distinct operator and agent accounts whose names Ubuntu does not already use.
+- name: Check that the host can join the tailnet
+  ansible.builtin.include_tasks: tailnet_check.yml
+  when: devbox_install_tailscale and devbox_start_services and devbox_profile != 'container'
 - name: Install common packages
   ansible.builtin.apt:
     name: "{{ devbox_packages }}"
@@ -76,7 +79,7 @@
   ansible.builtin.copy:
     dest: /var/lib/devbox/status.json
     mode: '0644'
-    content: "{{ {'state': 'configured-needs-enrollment', 'profile': devbox_profile, 'agents_installed': devbox_install_agents, 't3': devbox_t3_version, 'claude': devbox_claude_version, 'codex': devbox_codex_version, 'pi': devbox_pi_version, 'tool_categories': devbox_enabled_categories, 'plugin_features': devbox_plugin_features, 'agent_privileges': devbox_privileges, 'software_rendering': devbox_software_rendering, 'cockpit': devbox_install_cockpit and devbox_profile != 'container', 'ssh_hardened': devbox_ssh_hardened | default(false)} | to_nice_json }}\n"
+    content: "{{ {'state': 'configured', 'profile': devbox_profile, 'agents_installed': devbox_install_agents, 't3': devbox_t3_version, 'claude': devbox_claude_version, 'codex': devbox_codex_version, 'pi': devbox_pi_version, 'tool_categories': devbox_enabled_categories, 'plugin_features': devbox_plugin_features, 'agent_privileges': devbox_privileges, 'software_rendering': devbox_software_rendering, 'cockpit': devbox_install_cockpit and devbox_profile != 'container', 'ssh_hardened': devbox_ssh_hardened | default(false)} | to_nice_json }}\n"
 # Last, so a run that failed leaves the host recorded as it was before.
 - name: Record what this configuration came from
   ansible.builtin.import_tasks: applied.yml

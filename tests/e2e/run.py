@@ -56,9 +56,9 @@ HOSTS = {
         'e2e_tailnet.AutomaticKey',
         'e2e_update.Update',
         'e2e_update.ShippedChanged',
-        # plain(): without them, with a pasted key.
+        # plain(): without them, joined by hand by an older berth.
         'e2e_plugins.PluginRemoved',
-        'e2e_tailnet.PastedKey',
+        'e2e_tailnet.JoinedByHand',
         # served(): berth serve, applying nothing.
         'e2e_serve.Routes',
         'e2e_serve.Portal',

@@ -39,6 +39,11 @@
         that:
           - ansible_facts.distribution == 'Ubuntu'
           - devbox_profile in ['laptop', 'cloud', 'container']
+    - name: Check that the host can join the tailnet
+      ansible.builtin.include_role:
+        name: devbox
+        tasks_from: tailnet_check.yml
+      when: devbox_install_tailscale | default(false)
     - name: Configure accounts and paths
       ansible.builtin.include_role:
         name: devbox

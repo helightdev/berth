@@ -6,6 +6,9 @@
 # keeps logging in as that user with its own key.
 - name: Check the node and find the account sessions run as
   ansible.builtin.import_tasks: node_facts.yml
+- name: Check that the node can join the tailnet
+  ansible.builtin.include_tasks: tailnet_check.yml
+  when: devbox_install_tailscale and devbox_start_services and devbox_profile != 'container'
 - name: Install what a node needs
   ansible.builtin.apt:
     name: "{{ devbox_node_packages }}"

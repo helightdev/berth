@@ -108,10 +108,10 @@ step 'Applying the role'
 ln -sfn "$release" /opt/devbox/current
 printf '%s\n' "$digest" > "$state/ready"
 chmod 0644 "$state/ready"
-set_state configured-needs-enrollment
+set_state configured
 step 'The role is applied'
-# Successful enrollment consumes the temporary key. The original USB/cloud user data
-# may still contain it; use short-lived one-use keys, never a reusable credential.
+# Successful enrollment consumes the key. The original USB/cloud user data may
+# still contain it, which is why berth makes it for one use and a day.
 python3 - <<'PY'
 import json
 from pathlib import Path

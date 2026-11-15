@@ -59,6 +59,8 @@ pub struct Setup {
     stores: Vec<String>,
     /// The server's own SSH public key.
     own_key: String,
+    /// Whether the server has the API key of the tailnet.
+    tailnet_key: bool,
     /// The names of the keys of the server's key ring.
     ring_keys: Vec<String>,
     list: ListState,
@@ -124,6 +126,7 @@ impl Setup {
             secrets: vec![],
             stores: vec![],
             own_key: String::new(),
+            tailnet_key: false,
             ring_keys: vec![],
             list: ListState::default().with_selected(Some(0)),
             display: ListState::default(),
@@ -184,6 +187,9 @@ impl Setup {
         if !self.loading {
             setup::default_enrollment(&mut self.config, &names);
         }
+        self.tailnet_key = names
+            .iter()
+            .any(|name| name == berth_api::profile::TAILNET_API_KEY);
         self.secrets = setup::host_secrets(names);
         self.stores = setup::release_stores(&data.registries);
         self.own_key = data.own_key.clone();
@@ -210,6 +216,7 @@ impl Setup {
             secrets: &self.secrets,
             own_key: &self.own_key,
             named: setup::valid_hostname(&self.name),
+            tailnet_key: self.tailnet_key,
         }
     }
 
@@ -413,9 +420,6 @@ impl Setup {
         let view = self.view();
         let asked = match field {
             Field::Hostname => json!({"what": "hostname"}),
-            Field::TailscaleKey => {
-                json!({"what": "tailscale_key", "host": view.text(Field::Hostname)})
-            }
             _ if field.is_password_hash() => {
                 let user = match field {
                     Field::OperatorHash => Field::OperatorUser,

@@ -135,6 +135,12 @@ there, or keep your own file and pass it with `-e @my-vars.yml`.
 Pass the enrollment key on the command line. Do not save it in a file you
 commit.
 
+This machine takes a key you make, in Tailscale's admin console or with
+`headscale preauthkeys create`, because the recipe runs before berth does.
+Make it one-use and short-lived. The hosts berth sets up later get their keys
+from berth, which makes them through the tailnet's API with the secret
+`tailnet_api_key`.
+
 ## Update it
 
 On a node, run the node's action `upgrade-server` from a berth of the new

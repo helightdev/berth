@@ -47,9 +47,19 @@ LEFT_OUT = {'test_units_without_systemd_are_an_answer_not_a_crash'}
 
 def control_server():
     """A tailnet control server to enrol the guest with on its first boot, as
-    (URL, key), when one is given."""
+    (URL, API key), when one is given. The URL tailscale means Tailscale's own."""
     url, key = os.environ.get('BERTH_BOOT_CONTROL_URL'), os.environ.get('BERTH_BOOT_CONTROL_KEY')
     return (url, key) if url and key else None
+
+
+def use_control_server(station):
+    """berth's settings and secret for the control server, so that the seed it
+    renders carries a key berth made there."""
+    url, key = control_server()
+    station.berth('config', 'tailnet_login_server', '' if url == 'tailscale' else url)
+    for setting in ('user', 'tags'):
+        station.berth('config', f'tailnet_{setting}', os.environ.get(f'BERTH_BOOT_CONTROL_{setting.upper()}', ''))
+    station.berth('secret', 'set', 'tailnet_api_key', input=key + '\n')
 
 
 def boot_vars():
@@ -69,8 +79,7 @@ def boot_vars():
     if not os.environ.get('BERTH_BOOT_EXTRAS'):
         variables['devbox_extra_packages'] = []
     if control_server():
-        # Enrolment on first boot. The role's option for a control server of
-        # one's own is not there yet; its name goes here when it is.
+        # Enrolment on first boot, with the key berth makes for the seed.
         variables['devbox_install_tailscale'] = True
     return variables
 
@@ -97,8 +106,6 @@ def boot_profile(station, kind, **values):
     if kind != 'cloud':
         # The installed machine is reached only from this container, as QEMU's host.
         profile['ansible_vars']['devbox_bootstrap_ssh_cidr'] = f'{vm.GATEWAY}/32'
-    if control_server():
-        profile['tailscale_auth_key'] = control_server()[1]
     profile.update(values)
     return profile
 
@@ -147,7 +154,7 @@ def wait_for_provisioning(station, machine, timeout):
                                    check=False).stdout
                 raise AssertionError(f'The first-boot provisioning failed. The end of its journal, all of which'
                                      f' is in provision.log:\n{tail}')
-            if ready == 'ready' and state == 'configured-needs-enrollment' and active != 'activating':
+            if ready == 'ready' and state == 'configured' and active != 'activating':
                 return
             line = lines[3] if len(lines) > 3 else ''
             if (state, line) != shown:
@@ -166,6 +173,8 @@ def boot_cloud(run, side, station):
         image = vm.cloud_image()
     with run.phase('render the seed'):
         station.berth('plugins', 'add', str(FIXTURE))
+        if control_server():
+            use_control_server(station)
         station.write_profile(boot_profile(station, 'cloud', release_url=f'https://{vm.GATEWAY}/devbox-release.tar.gz'))
         station.berth('seed', HOST, timeout=300)
         build = station.data / 'berth/build'
@@ -209,6 +218,8 @@ def install_iso(run, side, station):
         iso, sha = vm.server_iso()
     with run.phase('build the installer'):
         station.berth('plugins', 'add', str(FIXTURE))
+        if control_server():
+            use_control_server(station)
         station.write_profile(boot_profile(station, 'iso', target_disk_mode='serial', target_disk_serial=TARGET,
                                            builder={'shipped_plugins': True, 'iso': str(iso),
                                                     'iso_sha256': sha}))

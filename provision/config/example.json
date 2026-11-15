@@ -14,7 +14,6 @@
   "target_disk_serial": "",
   "keyboard": "de",
   "release_url": "",
-  "tailscale_auth_key": "",
   "wifi_enabled": false,
   "wifi": null,
   "ansible_vars": {},

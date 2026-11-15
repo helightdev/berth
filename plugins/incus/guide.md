@@ -212,5 +212,6 @@ The page also offers the server's pools and networks for `pool` and `network`.
   the machine.
 - The server needs to reach `https://images.linuxcontainers.org` to download the
   image the first time.
-- berth reaches the machine through its tailnet once it's set up. The address
-  Incus reports is only the first way in.
+- Once it's set up, berth reaches the machine through the tailnet when it has
+  joined one. Without the tailnet, berth reaches it over SSH at the address
+  Incus reports.

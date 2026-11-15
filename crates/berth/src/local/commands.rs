@@ -1366,6 +1366,9 @@ pub fn seed(paths: &Paths, name: &str) -> Result<()> {
             .open(&file)?;
         out.write_all(seed["user_data"].as_str().unwrap_or("").as_bytes())?;
     }
+    if let Some(note) = seed["tailnet"].as_str() {
+        eprintln!("{note}");
+    }
     println!("{}", file.display());
     Ok(())
 }
@@ -1684,7 +1687,7 @@ pub fn adopt(paths: &Paths, name: &str, args: &[&str]) -> Result<()> {
             ));
         }
     }
-    if berth_api::profile::joins_automatically(&adopted.profile)
+    if berth_api::profile::joins_tailnet(&adopted.profile)
         && !known
             .iter()
             .any(|known| known == berth_api::profile::TAILNET_API_KEY)

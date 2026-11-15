@@ -80,7 +80,7 @@ class RolePath(unittest.TestCase):
                     for task in node_tasks()]
         included = sorted(name for name in included if name and not name.startswith('node_'))
         self.assertEqual(included, ['applied.yml', 'berth.yml', 'plugins.yml', 'system.yml',
-                                    'tailnet.yml', 'tailscale.yml'])
+                                    'tailnet.yml', 'tailnet_check.yml', 'tailscale.yml'])
         for absent in ('desktop.yml', 'accounts.yml', 'applications.yml', 'toolchains.yml', 'laptop.yml',
                        'host.yml', 'devbox_packages', 'novnc', 'cockpit', 't3code'):
             self.assertNotIn(absent, node, absent)

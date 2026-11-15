@@ -1,11 +1,12 @@
-"""Joining a tailnet at a Headscale server: with a key berth creates when the
-host needs one, through berth and through berth serve, and with a key pasted
-into the profile. The test host runs the real tailscale client.
+"""Joining a tailnet at a Headscale server, with a key berth creates when the
+host needs one, through berth and through berth serve; and a host an older
+berth left joined by hand, which stays as it is. The test host runs the real
+tailscale client.
 
-Each way of joining is a shared state of the host, which leaves the tailnet
-before the next one joins: AutomaticKey is the extended state
-(harness.extended()), PastedKey the plain one (harness.plain()) and
-ThroughTheServer the one of berth serve (harness.served_extended())."""
+Each is a shared state of the host, which leaves the tailnet before the next
+one joins: AutomaticKey is the extended state (harness.extended()),
+JoinedByHand the plain one (harness.plain()) and ThroughTheServer the one of
+berth serve (harness.served_extended())."""
 import json
 import sqlite3
 import time
@@ -79,17 +80,34 @@ class AutomaticKey(Joined, unittest.TestCase):
 
 
 @needs_e2e
-class PastedKey(Joined, unittest.TestCase):
-    """A key made by hand and pasted into the profile, with the login server."""
+class JoinedByHand(unittest.TestCase):
+    """A host joined by hand, with the profile of an older berth that held a
+    pasted key, and no API key of the tailnet on the workstation."""
 
     @classmethod
     def setUpClass(cls):
         applied = plain()
-        cls.station, cls.before = applied.station, applied.before
+        cls.station, cls.first, cls.saved, cls.refused = applied.station, applied.first, applied.saved, applied.refused
+        cls.nodes, cls.after, cls.before = applied.nodes, applied.after, applied.before
 
-    def test_the_host_joins_with_the_pasted_key(self):
-        self.assert_joined(self.before)
-        self.assertEqual(last_key_id(), self.before + 1)
+    def test_a_host_on_the_tailnet_is_left_on_it(self):
+        self.assertIn('failed=0', self.first.stdout)
+        self.assertEqual([node['id'] for node in self.after], [node['id'] for node in self.nodes])
+        self.assertEqual([node['givenName'] for node in self.after], [HOST])
+        self.assertNotIn('Consume enrollment key', changed(self.first.stdout))
+        self.assertEqual(last_key_id(), self.before)
+
+    def test_the_pasted_key_is_not_kept(self):
+        for old in ('tailscale_auth_key', 'tailscale_auto_key', 'tailscale_login_server'):
+            self.assertNotIn(old, self.saved)
+        self.assertNotIn('devbox_tailscale_auth_key', self.saved.get('ansible_vars', {}))
+
+    def test_off_the_tailnet_without_the_api_key_nothing_runs(self):
+        output = self.refused.stdout + self.refused.stderr
+        self.assertNotEqual(self.refused.returncode, 0, output)
+        self.assertIn('berth secret set tailnet_api_key', output)
+        self.assertIn('switch Tailscale off', output)
+        self.assertEqual(changed(self.refused.stdout), [])
 
 
 @needs_e2e
@@ -129,13 +147,16 @@ class ThroughTheServer(Joined, unittest.TestCase):
         self.assertNotIn('Consume enrollment key', changed(self.second))
 
     def test_a_seed_carries_a_key_made_for_it(self):
-        draft = {**self.kept, 'hostname': 'cloud-5', 'builder': {}, 'access': {}, 'tailscale_auto_key': True,
+        draft = {**self.kept, 'hostname': 'cloud-5', 'builder': {}, 'access': {},
                  'operator_password_hash': '$6$e2e$' + 'x' * 86,
                  'release_url': 'https://192.0.2.30/berth-release.tar.gz'}
         self.serve.call('PUT', '/v1/hosts/cloud-5/profile', joining(draft))
         try:
             before = last_key_id()
-            written = self.client.berth('seed', 'cloud-5').stdout.strip()
+            seeded = self.client.berth('seed', 'cloud-5')
+            written = seeded.stdout.strip()
+            # Whoever starts the machine learns until when it can join.
+            self.assertIn('joins the tailnet until', seeded.stderr)
             seed = open(written).read()
             made = [key for key in headscale().keys() if int(key['id']) > before]
             self.assertEqual(len(made), 1)
@@ -146,6 +167,7 @@ class ThroughTheServer(Joined, unittest.TestCase):
             self.assertIn(headscale().url, seed)
             self.assertNotIn(headscale().api_key, seed)
             # The profile keeps no key: the next seed gets a new one.
-            self.assertEqual(self.serve.call('GET', '/v1/hosts/cloud-5/profile').get('tailscale_auth_key', ''), '')
+            self.assertNotIn(made[0]['key'].removesuffix('***'),
+                             json.dumps(self.serve.call('GET', '/v1/hosts/cloud-5/profile')))
         finally:
             self.serve.call('DELETE', '/v1/hosts/cloud-5')
