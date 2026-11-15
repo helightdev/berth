@@ -1,10 +1,10 @@
-//! berth-remote against a berth serve of its own: a setup key signs it in,
-//! and its portal answers.
+//! The screens against a berth serve of their own over the network: a setup
+//! key signs them in, and its portal answers.
 
 use super::*;
-use berth_page::device::{Kept, Linked};
+use berth_page::device::Linked;
 use berth_page::portal::{Link, Portal};
-use berth_remote::{device::Terminal, settings::Settings};
+use berth_page::settings::{self, Settings};
 use berth_tui::{Code, Event, Key};
 use ratatui::{Terminal as Screen, backend::TestBackend};
 use std::cell::RefCell;
@@ -32,13 +32,13 @@ fn until(what: &str, mut done: impl FnMut() -> bool) {
             started.elapsed() < Duration::from_secs(10),
             "no {what} in time"
         );
-        berth_remote::pump();
+        berth_page::pump();
         std::thread::sleep(Duration::from_millis(20));
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn berth_remote_signs_in_with_a_setup_key_and_uses_the_portal() {
+async fn the_screens_sign_in_with_a_setup_key_and_use_the_portal() {
     let dir = tempfile::tempdir().unwrap();
     let state = state_in(dir.path(), Some("s3cret-token"));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -48,14 +48,13 @@ async fn berth_remote_signs_in_with_a_setup_key_and_uses_the_portal() {
     let (key, _) = super::super::setup_key::make(&state.paths).unwrap();
 
     let client = tempfile::tempdir().unwrap();
-    let kept = client.path().join("berth-remote");
+    let kept = client.path().join("berth");
     let linked = Linked {
         server: Some(url.clone()),
         token: None,
         setup_key: Some(key),
     };
-    let terminal = Terminal::new(linked, Settings::new(Some(kept.clone())), false).unwrap();
-    berth_page::device::install(terminal);
+    berth_page::device::install(linked, Settings::new(Some(kept.clone())));
 
     // The key collects the token, which is kept for the next run.
     let mut app = berth_page::App::new();
@@ -63,9 +62,15 @@ async fn berth_remote_signs_in_with_a_setup_key_and_uses_the_portal() {
         app.tick();
         screen(&mut app).contains("is installed and serves at")
     });
-    let settings = Settings::new(Some(kept.clone())).read();
-    assert_eq!(settings["token"], "s3cret-token");
-    assert_eq!(settings["server"], url.as_str());
+    let settings = Settings::new(Some(kept.clone()));
+    assert_eq!(
+        settings.get(settings::TOKEN).as_deref(),
+        Some("s3cret-token")
+    );
+    assert_eq!(
+        settings.get(settings::SERVER).as_deref(),
+        Some(url.as_str())
+    );
 
     // Done ends the key and shows the hosts of the server.
     app.event(Event::Key(Key {
@@ -89,7 +94,7 @@ async fn berth_remote_signs_in_with_a_setup_key_and_uses_the_portal() {
     });
 
     // The portal answers with the token, and a wrong one is refused.
-    let portal = Portal::open(&berth_page::device::portal_url(&url), "s3cret-token").unwrap();
+    let portal = Portal::open(&url, "s3cret-token").unwrap();
     let hosts = Rc::new(RefCell::new(None));
     let answer = hosts.clone();
     portal.call("hosts.list", None, json!({}), Value::Null, move |result| {
@@ -98,15 +103,7 @@ async fn berth_remote_signs_in_with_a_setup_key_and_uses_the_portal() {
     until("answer", || hosts.borrow().is_some());
     assert_eq!(portal.link(), Link::Open);
     assert_eq!(hosts.borrow_mut().take().unwrap(), Ok(json!([])));
-    let refused = Portal::open(&berth_page::device::portal_url(&url), "wrong").unwrap();
+    let refused = Portal::open(&url, "wrong").unwrap();
     until("refusal", || refused.link() != Link::Connecting);
     assert_eq!(refused.link(), Link::Refused);
-
-    // Forgetting removes what was kept.
-    let forgot = Terminal::new(Linked::default(), Settings::new(Some(kept.clone())), true).unwrap();
-    assert!(!kept.exists());
-    assert_eq!(
-        berth_page::device::Device::stored(&forgot, Kept::Token),
-        None
-    );
 }

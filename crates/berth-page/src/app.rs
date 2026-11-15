@@ -35,8 +35,8 @@ const RETRY: Duration = Duration::from_secs(3);
 const SAID_FOR: Duration = Duration::from_secs(5);
 /// What the status line says while the server is away.
 const AWAY: &str = "The berth server does not answer; trying again…";
-/// The key that leaves a running session, as Ctrl+Q quits the program.
-const LEAVE: &str = "Alt+Q";
+/// The key that leaves a running session, and elsewhere quits.
+const LEAVE: &str = "Ctrl+Q";
 
 #[derive(PartialEq)]
 enum Screen {
@@ -144,6 +144,12 @@ pub struct App {
     qr: Option<qr::Overlay>,
     /// The token collected with a setup key, until Done.
     installed: Option<Installed>,
+    /// A host to open once the server has listed its hosts.
+    wanted: Option<String>,
+    /// The screens are left.
+    quit: bool,
+    /// An action of the open host to begin once the server has listed them.
+    pending: Option<&'static str>,
 }
 
 impl App {
@@ -164,8 +170,11 @@ impl App {
                     .flatten()
             })
             .unwrap_or_default();
-        device::store(Kept::Server, &server);
-        device::store(Kept::Token, &token);
+        // A server on this machine is never kept: it is found again each run.
+        if !device::local(&server) {
+            device::store(Kept::Server, &server);
+            device::store(Kept::Token, &token);
+        }
         let mut app = App {
             screen: Screen::Token,
             portal: None,
@@ -207,6 +216,9 @@ impl App {
             over_links: vec![],
             qr: None,
             installed: None,
+            wanted: None,
+            quit: false,
+            pending: None,
         };
         // A setup key signs in with the token it collects, whatever was kept.
         if let (Some(key), false) = (linked.setup_key, app.server.is_empty()) {
@@ -214,10 +226,46 @@ impl App {
             app.screen = Screen::Installed;
             return app;
         }
-        if !app.token.is_empty() && !app.server.is_empty() {
+        if (!app.token.is_empty() && !app.server.is_empty()) || device::local(&app.server) {
             app.connect();
         }
         app
+    }
+
+    /// The server is on this machine, and the screens need no token for it.
+    fn local(&self) -> bool {
+        device::local(&self.server)
+    }
+
+    /// Whether the screens were left, with Ctrl+Q or q on the list of hosts.
+    pub fn quit(&self) -> bool {
+        self.quit
+    }
+
+    /// Open the host `name` once the server has listed it.
+    pub fn open_when_listed(&mut self, name: &str) {
+        self.wanted = Some(name.to_owned());
+    }
+
+    /// Open the host that was asked for, once the list has come.
+    fn open_wanted(&mut self) {
+        if !self.hosts.borrow().answered || self.screen != Screen::Hosts {
+            return;
+        }
+        let Some(name) = self.wanted.take() else {
+            return;
+        };
+        let address = self
+            .hosts
+            .borrow()
+            .list
+            .iter()
+            .find(|host| host["name"] == name.as_str())
+            .map(|host| host["address"].as_str().unwrap_or("").to_owned());
+        match address {
+            Some(address) => self.open_host(&name, &address),
+            None => self.status = format!("There is no host {name}"),
+        }
     }
 
     /// Open the portal with the token there is.
@@ -225,7 +273,7 @@ impl App {
         self.host.disconnect();
         self.asked = None;
         self.retry = None;
-        match Portal::open(&device::portal_url(&self.server), &self.token) {
+        match Portal::open(&self.server, &self.token) {
             Ok(portal) => {
                 // Who the token is here decides what the page offers.
                 let admin = Admin::new(portal.clone(), self.data.clone());
@@ -320,7 +368,7 @@ impl App {
             }
             // A token that never opened the portal is asked for again; one that
             // has is the right one, and the server is only away.
-            Some(Link::Refused) if !self.proven => {
+            Some(Link::Refused) if !self.proven && !self.local() => {
                 self.sign_out("The server did not open its portal for that token.");
                 return;
             }
@@ -339,6 +387,7 @@ impl App {
             return;
         }
         self.take_in();
+        self.open_wanted();
         if self
             .asked
             .is_none_or(|asked| asked.elapsed() >= HOSTS_EVERY)
@@ -457,6 +506,7 @@ impl App {
                         .filter(|action| action.runs == berth_api::Runs::Berth)
                         .filter(|action| !["apply", "seed"].contains(&action.name.as_str()))
                         .collect();
+                    self.begin_pending();
                 }
                 Arrived::Actions(..) => {}
                 // One that was removed takes its page back to the list.
@@ -540,11 +590,17 @@ impl App {
             rows.push(Row::info(""));
         }
         rows.push(heading("Connection"));
-        rows.push(Row::info(format!(
-            "  {} · through the berth server at {}",
-            self.address,
-            device::shown(&self.server)
-        )));
+        let address = match self.address.as_str() {
+            "" => "no SSH address yet",
+            address => address,
+        };
+        rows.push(Row::info(match self.local() {
+            true => format!("  {address}"),
+            false => format!(
+                "  {address} · through the berth server at {}",
+                device::shown(&self.server)
+            ),
+        }));
         for line in host::type_lines(&self.name, &self.host) {
             rows.push(Row::info(Line::styled(
                 format!("  {line}"),
@@ -754,6 +810,28 @@ impl App {
         self.host.run(&action.name, body);
     }
 
+    /// Begin the action the set-up left the overview for, now that the
+    /// server has listed the host's actions.
+    fn begin_pending(&mut self) {
+        let Some(name) = self.pending else {
+            return;
+        };
+        // A host saved just now may not be listed yet: its actions come again.
+        if self.host.own.is_empty() {
+            return;
+        }
+        self.pending = None;
+        let index = self
+            .host
+            .actions()
+            .iter()
+            .position(|action| action.name == name);
+        match index {
+            Some(index) => self.choose(Entry::Pick(Pick::Action(index))),
+            None => self.status = format!("The server offers no action {name} for {}", self.name),
+        }
+    }
+
     fn choose(&mut self, entry: Entry) {
         match entry {
             Entry::Pick(Pick::Action(index)) => {
@@ -788,7 +866,7 @@ impl App {
             }
             Entry::Setup => {
                 if let Some(admin) = &self.admin {
-                    self.setup = Some(Setup::open(&self.name, admin));
+                    self.setup = Some(Setup::open(&self.name, admin, self.local()));
                     self.screen = Screen::Setup;
                 }
             }
@@ -990,7 +1068,7 @@ impl App {
         };
         draw_footer(frame, footer, keys, &self.status, theme::ACCENT);
         (self.links, self.words) = match &self.host.view {
-            Some(view) => draw_view(frame, view, &self.status, LEAVE),
+            Some(view) => draw_view(frame, view, &self.status),
             None => (vec![], vec![]),
         };
         if let Some((question, _)) = &self.host.question {
@@ -1068,7 +1146,7 @@ impl App {
             self.address.clear();
             self.status = format!("{name} is kept on the server once it is saved");
             if let Some(admin) = &self.admin {
-                self.setup = Some(Setup::new(name, template, admin));
+                self.setup = Some(Setup::new(name, template, admin, self.local()));
                 self.screen = Screen::Setup;
             }
         }
@@ -1125,7 +1203,8 @@ impl App {
                 }
                 _ => {}
             },
-            Code::Char('o') => self.sign_out(""),
+            Code::Char('o') if !self.local() => self.sign_out(""),
+            Code::Char('q') => self.quit = true,
             _ => {}
         }
     }
@@ -1395,6 +1474,7 @@ impl App {
             let text = match (&hosts.error, hosts.answered) {
                 (Some(error), _) => format!("✗ {error}"),
                 (None, false) => "Asking the server for its hosts…".into(),
+                (None, true) if self.local() => "No hosts yet.".into(),
                 (None, true) => {
                     "The server has no hosts yet. They are set up with berth where it runs, or from here with the role admin.".into()
                 }
@@ -1414,12 +1494,15 @@ impl App {
         if let Some(input) = &self.naming {
             draw_editor(frame, edit, " New host name ", input, false);
         }
-        let keys = match (admin, self.naming.is_some()) {
-            (_, true) => "Enter create · Esc cancel · Ctrl+O copy",
-            (true, false) => {
-                "↑↓ select · Enter open · n new host · d default · x remove · r refresh · o sign out"
+        let keys = match (admin, self.naming.is_some(), self.local()) {
+            (_, true, _) => "Enter create · Esc cancel · Ctrl+O copy",
+            (true, false, true) => {
+                "↑↓ select · Enter open · n new host · d default · x remove · r refresh · q quit"
             }
-            (false, false) => "↑↓ select · Enter open · r refresh · o sign out",
+            (true, false, false) => {
+                "↑↓ select · Enter open · n new host · d default · x remove · r refresh · o sign out · q quit"
+            }
+            (false, false, _) => "↑↓ select · Enter open · r refresh · o sign out · q quit",
         };
         draw_footer(frame, footer, keys, &self.status, theme::ACCENT);
     }
@@ -1693,6 +1776,15 @@ impl App {
 
     pub fn event(&mut self, event: Event) {
         let event = hint_click(event);
+        // Over a session, Ctrl+Q leaves the session; everywhere else it quits.
+        let in_session = self.screen == Screen::Host && self.host.view.is_some();
+        if let Event::Key(key) = &event
+            && key.is_ctrl('q')
+            && !in_session
+        {
+            self.quit = true;
+            return;
+        }
         // Alt+R over a panel shows its links as QR codes.
         let over = self.seed.is_some() || self.data.borrow().job.is_some();
         let links = match (
@@ -1725,11 +1817,16 @@ impl App {
                     self.screen = Screen::Hosts;
                     return;
                 };
-                if let Flow::Leave = setup.event(event, admin, &mut self.status) {
+                let flow = setup.event(event, admin, &mut self.status);
+                if let Flow::Leave | Flow::Act(_) = flow {
                     // A host the server never got has no overview to go back to.
-                    let kept = setup.kept();
+                    let acting = matches!(flow, Flow::Act(_));
+                    let kept = setup.kept() || acting;
                     self.setup = None;
                     self.asked = None;
+                    if let Flow::Act(action) = flow {
+                        self.pending = Some(action);
+                    }
                     match kept {
                         true => {
                             let (name, address) = (self.name.clone(), self.address.clone());

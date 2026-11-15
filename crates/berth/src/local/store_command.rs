@@ -601,7 +601,7 @@ mod tests {
             )
             .unwrap();
         paths.own_key().unwrap();
-        let token = crate::serve::token(paths).unwrap();
+        let token = crate::local::serve::token(paths).unwrap();
         // A plugin from an upload and one copied in as a folder.
         let own = berth_core::plugins::own_dir(&paths.config_dir);
         fs::create_dir_all(own.join("uploads")).unwrap();
@@ -656,7 +656,7 @@ mod tests {
         let file = paths.own_key().unwrap();
         assert_eq!(file, paths.data_dir.join("keys/berth"));
         assert_eq!(fs::read(&file).unwrap(), key);
-        assert_eq!(crate::serve::token(paths).unwrap(), token);
+        assert_eq!(crate::local::serve::token(paths).unwrap(), token);
         assert_eq!(
             fs::read_to_string(paths.data_dir.join("serve.token"))
                 .unwrap()

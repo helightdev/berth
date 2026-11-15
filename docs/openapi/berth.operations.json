@@ -2957,7 +2957,7 @@
         }
       },
       "role": "admin",
-      "summary": "Change one of the settings that are open to callers."
+      "summary": "Change one of the settings that are open to callers, or any for the user the server runs as."
     },
     {
       "args": [],

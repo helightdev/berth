@@ -19,7 +19,7 @@ use std::{
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -464,6 +464,8 @@ pub struct Runner {
     store: Arc<store::Store>,
     jobs_dir: PathBuf,
     notify: Notify,
+    /// The jobs this process runs now, which end with it.
+    running: Arc<Mutex<Vec<store::Job>>>,
 }
 
 /// Where an installation keeps the output of the jobs it runs.
@@ -514,7 +516,13 @@ impl Runner {
             store,
             jobs_dir,
             notify,
+            running: Arc::default(),
         }
+    }
+
+    /// The jobs that run in this process now, as they started.
+    pub fn running(&self) -> Vec<store::Job> {
+        self.running.lock().unwrap().clone()
     }
 
     /// Start the work as a job, in a thread of its own, and say which job it
@@ -609,6 +617,7 @@ impl Ticket {
     /// Run the work in a thread of its own: the job as it started.
     pub fn run(self, work: Work) -> store::Job {
         let job = self.job.clone();
+        self.runner.running.lock().unwrap().push(job.clone());
         std::thread::spawn(move || {
             let Ticket {
                 runner,
@@ -625,6 +634,11 @@ impl Ticket {
             };
             drop(lock);
             runner.end(&job.id, exit_code);
+            runner
+                .running
+                .lock()
+                .unwrap()
+                .retain(|running| running.id != job.id);
         });
         job
     }

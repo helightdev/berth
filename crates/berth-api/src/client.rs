@@ -68,6 +68,20 @@ fn transport(error: impl std::fmt::Display) -> Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// A connection to a server, whatever carries it: TCP, TLS, a unix socket,
+/// or a pipe to a server in the same process.
+pub trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
+pub type Stream = Box<dyn Io>;
+
+/// How a client reaches its server: each call opens a new connection, for a
+/// request or for a WebSocket.
+pub type Dial = std::sync::Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Stream>> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// A raw answer: status, headers and body.
 pub struct Response {
     pub status: u16,

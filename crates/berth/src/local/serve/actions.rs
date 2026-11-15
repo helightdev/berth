@@ -53,6 +53,9 @@ pub(super) struct Seen<'a> {
     pub observed: Option<HostType>,
     /// Why its controller did not answer, when it was asked and did not.
     pub unanswered: Option<&'a str>,
+    /// The caller is on the machine the server runs on: in its process, or
+    /// on its socket.
+    pub local: bool,
 }
 
 /// berth's own actions that run through the host's controller, so the host
@@ -105,6 +108,11 @@ pub(super) static HOST: &[Builtin] = &[
         name: "rename",
         describe: rename_action,
         run: rename,
+    },
+    Builtin {
+        name: "installer",
+        describe: installer_action,
+        run: installer,
     },
 ];
 
@@ -245,6 +253,7 @@ fn no_action(subject: &str, action: &str, actions: &[Action]) -> Fail {
               (status = 404, description = "No such host", body = ErrorBody)))]
 pub async fn host_actions(
     State(state): App,
+    access: Option<Extension<Access>>,
     Path(name): Path<String>,
 ) -> Answer<Json<Vec<Action>>> {
     state.refresh(false);
@@ -270,6 +279,7 @@ pub async fn host_actions(
         host_type: host_type::of(&profile),
         observed,
         unanswered,
+        local: access.is_none(),
     })))
 }
 
@@ -326,6 +336,7 @@ pub async fn host_act(
         host_type: host_type::of(&profile),
         observed,
         unanswered: unanswered.as_deref(),
+        local: access.is_none(),
     });
     let found = actions
         .iter()
@@ -354,6 +365,7 @@ fn installation_list() -> Vec<Action> {
         host_type: HostType::Workstation,
         observed: None,
         unanswered: None,
+        local: false,
     };
     INSTALLATION
         .iter()
@@ -652,6 +664,196 @@ fn seed(state: Arc<Serve>, name: String, _: Act) -> Run {
             ..Acted::default()
         })
     })
+}
+
+/// Why an action that works with this machine's own drives and files is
+/// not offered to a caller elsewhere.
+fn only_here(what: &str) -> String {
+    format!("{what} is done on the machine berth serve runs on: there, with berth ui or berth iso")
+}
+
+fn installer_action(seen: &Seen) -> Action {
+    // The drives are looked for only for a caller who can write them.
+    let drives = match seen.local {
+        true => berth_core::discovery::usb_drives(),
+        false => vec![],
+    };
+    let kept = seen.profile["builder"]["usb_device"].as_str().unwrap_or("");
+    let default = match (kept, drives.as_slice()) {
+        ("", [(_, only)]) => only.clone(),
+        (kept, _) => kept.to_owned(),
+    };
+    let found = match drives.is_empty() {
+        true => "No USB drive is connected now.".to_owned(),
+        false => format!(
+            "Connected now: {}.",
+            drives
+                .iter()
+                .map(|(label, _)| label.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
+        ),
+    };
+    let action = Action {
+        arguments: vec![
+            Argument {
+                name: "device".into(),
+                label: "USB drive to write it to".into(),
+                default,
+                help: format!(
+                    "The whole USB drive the finished ISO is written to, such as /dev/sdb. It is erased. Empty builds the ISO only. {found}"
+                ),
+                ..Argument::default()
+            },
+            Argument {
+                name: "password".into(),
+                label: "Your sudo password, to write the drive".into(),
+                help: "Writing the drive runs as root through sudo. Empty when sudo needs none or no drive is written.".into(),
+                secret: true,
+                ..Argument::default()
+            },
+        ],
+        ..set_up(
+            "installer",
+            "Build the USB installer",
+            "For a blank machine: build an installer image from Ubuntu Server's ISO that installs and sets up the host without questions, and write it to a USB drive. Without an ISO in the profile the current one is downloaded and checked first. Booting the drive erases the machine's chosen disk.",
+        )
+    };
+    let action = host_type::fit(action, seen.name, seen.host_type, Capability::Apply);
+    match (seen.local, seen.profile.is_null()) {
+        (false, _) => unavailable(action, Some(only_here("Building the USB installer"))),
+        (_, true) => unavailable(
+            action,
+            Some(format!("{} has no profile on the server", seen.name)),
+        ),
+        _ => action,
+    }
+}
+
+fn installer(state: Arc<Serve>, name: String, act: Act) -> Run {
+    Box::pin(async move {
+        let bad =
+            |error: Box<dyn std::error::Error>| Fail::new(code::BAD_REQUEST, error.to_string());
+        let text = |key: &str| act.arguments.get(key).map_or("", |value| value.trim());
+        let device = text("device").to_owned();
+        let password = act.arguments.get("password").cloned().unwrap_or_default();
+        // Only a whole USB drive that is connected now is written, as the script checks again.
+        if !device.is_empty()
+            && !berth_core::discovery::usb_drives()
+                .iter()
+                .any(|(_, path)| *path == device)
+        {
+            return Err(Fail::new(
+                code::BAD_REQUEST,
+                format!("{device} is no USB drive connected to this machine"),
+            ));
+        }
+        let profile = profile_of(&state, &name);
+        let ubuntu = berth_core::seed::ubuntu_iso(&profile);
+        if let Some(iso) = &ubuntu
+            && !iso.is_file()
+        {
+            return Err(Fail::new(
+                code::BAD_REQUEST,
+                format!("The profile's ISO {} is not there", iso.display()),
+            ));
+        }
+        // The host must be one an installer can be built for before a job starts.
+        let paths = state.paths.clone();
+        let fetch = berth_core::seed::fetch_iso(&paths).map_err(bad)?;
+        let mut request = Request::new(Subject::Host(name.clone()), "installer");
+        request.token = act.token;
+        request.secrets = Some(password.clone())
+            .filter(|password| !password.is_empty())
+            .into_iter()
+            .collect();
+        let work = Work::Function(Box::new(move |out| {
+            let ubuntu = match ubuntu {
+                Some(iso) => iso,
+                None => {
+                    let _ = writeln!(out, "Downloading Ubuntu's installer ISO…");
+                    match fetched(fetch, out) {
+                        Some(iso) => iso,
+                        None => return false,
+                    }
+                }
+            };
+            let built = match berth_core::seed::installer(&paths, &name, &ubuntu) {
+                Ok(built) => built,
+                Err(error) => {
+                    let _ = writeln!(out, "✗ {error}");
+                    return false;
+                }
+            };
+            let (iso, _profile) = (built.iso.clone(), built.profile);
+            let program = berth_core::runner::Program {
+                command: built.command,
+                input: None,
+                files: vec![],
+            };
+            if berth_core::runner::run_program(program, out) != Some(0) {
+                return false;
+            }
+            if device.is_empty() {
+                let _ = writeln!(out, "Built {}", iso.display());
+                return true;
+            }
+            let write =
+                match berth_core::seed::write_usb(&paths, &iso, &device, !password.is_empty()) {
+                    Ok(write) => write,
+                    Err(error) => {
+                        let _ = writeln!(out, "✗ {error}");
+                        return false;
+                    }
+                };
+            let program = berth_core::runner::Program {
+                command: write,
+                input: (!password.is_empty()).then(|| format!("{password}\n").into_bytes()),
+                files: vec![],
+            };
+            let written = berth_core::runner::run_program(program, out) == Some(0);
+            if written {
+                let _ = writeln!(
+                    out,
+                    "Next: boot the machine from the USB drive. Booting it erases the chosen disk."
+                );
+            }
+            written
+        }));
+        let job = state.runner.start(request, work).map_err(refused)?;
+        Ok(Acted {
+            job: Some(job_info(&state.paths, job)),
+            ..Acted::default()
+        })
+    })
+}
+
+/// Download Ubuntu's ISO with the builder: where it is, which it says last.
+fn fetched(
+    command: std::process::Command,
+    out: &mut berth_core::runner::Output,
+) -> Option<std::path::PathBuf> {
+    let mut command = command;
+    let output = match command.stderr(std::process::Stdio::piped()).output() {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = writeln!(out, "✗ python3: {error}");
+            return None;
+        }
+    };
+    let _ = out.write_all(&output.stderr);
+    let said = String::from_utf8_lossy(&output.stdout);
+    let iso = said
+        .lines()
+        .last()
+        .map(|line| std::path::PathBuf::from(line.trim()));
+    match (output.status.success(), iso) {
+        (true, Some(iso)) if iso.is_file() => Some(iso),
+        _ => {
+            let _ = writeln!(out, "✗ Downloading Ubuntu's installer ISO failed");
+            None
+        }
+    }
 }
 
 fn secrets_action(seen: &Seen) -> Action {

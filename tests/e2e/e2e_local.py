@@ -106,7 +106,8 @@ class Profiles(unittest.TestCase):
 
 @needs_e2e
 class Screens(unittest.TestCase):
-    """The terminal UI starts, shows the host and what berthd says of it, and quits."""
+    """The screens start with a server in berth itself, show the host and what
+    berthd says of it, and quit."""
 
     @classmethod
     def setUpClass(cls):
@@ -126,6 +127,9 @@ class Screens(unittest.TestCase):
         try:
             # The rows of the tasks come from berthd on the host.
             terminal.expect('Secrets and registry logins')
+            # q goes back to the hosts, and there it quits.
+            terminal.send('q')
+            terminal.expect('New host')
             terminal.send('q')
             self.assertEqual(terminal.wait(), 0)
         finally:

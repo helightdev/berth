@@ -4,7 +4,7 @@
 //! rest of its arguments on the Settings tab, and creating it, or the machine
 //! once there is one, on the Run tab. The machine is the host's resource of
 //! the machine kind, and starting, stopping and deleting it are its actions.
-//! berth and berth-remote ask for these and run the jobs each their own way.
+//! The screens ask the server for these, which runs the jobs.
 
 use crate::fields::{Kind, Step};
 use crate::setup::{Entry, Problem, Row, value_line};

@@ -7,6 +7,7 @@ mod api;
 mod auth;
 mod connect;
 mod docs;
+pub mod here;
 pub(crate) mod keys;
 mod provisioners;
 mod resources;
@@ -19,7 +20,7 @@ use crate::Result;
 use berth_api::{Message, Version, client};
 use berth_core::{
     host::Host,
-    link::{Link, LinkSpec, runtime_dir},
+    link::{Link, LinkSpec},
     paths::Paths,
     store::{self, Filter, Store, Stored, When},
 };
@@ -255,6 +256,9 @@ pub struct Serve {
     /// How long provisioners may take and how a new machine is waited for,
     /// which tests make quick.
     pub provision: fn() -> berth_core::provision::Options,
+    /// Whether the hosts' channels are taken in, which only `berth serve`
+    /// does, holding its lock.
+    pub follows: bool,
     watch: Arc<Watch>,
 }
 
@@ -293,6 +297,7 @@ impl Serve {
             followers: Mutex::new(BTreeMap::new()),
             passwords: Mutex::new(BTreeMap::new()),
             provision: Default::default,
+            follows: true,
             watch,
         })
     }
@@ -314,7 +319,7 @@ impl Serve {
             .write()
             .unwrap()
             .insert(remote.name.clone(), remote.clone());
-        if remote.link.is_some() {
+        if remote.link.is_some() && self.follows {
             let follower = tokio::spawn(take_in(self.clone(), remote.clone()));
             let before = self
                 .followers
@@ -603,7 +608,7 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
             "berth serve: the PostgreSQL database holds this installation's keys and passwords readable; berth store encrypt seals them"
         );
     }
-    crate::restore_plugins(paths);
+    crate::local::restore_plugins(paths);
     let token = match listen {
         Some(_) => Some(token(paths)?),
         None => None,
@@ -636,7 +641,7 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
             }
         });
 
-        let socket = runtime_dir().join("serve.sock");
+        let socket = here::socket();
         let _ = std::fs::remove_file(&socket);
         let unix = tokio::net::UnixListener::bind(&socket)?;
         {
