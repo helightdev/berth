@@ -174,7 +174,24 @@ pub fn forward(
 }
 
 pub fn inbox(client: &Client, command: Inbox) -> Result<()> {
-    let Inbox::List { host, topic, all } = command;
+    let (host, topic, all, before) = match command {
+        Inbox::List {
+            host,
+            topic,
+            all,
+            before,
+        } => (host, topic, all, before),
+        Inbox::Done { host, id } => {
+            client.call("inbox.done", json!({"host": host, "id": id}), None)?;
+            out::done(format!("Message {id} of {host} is done"));
+            return Ok(());
+        }
+        Inbox::Reopen { host, id } => {
+            client.call("inbox.reopen", json!({"host": host, "id": id}), None)?;
+            out::done(format!("Message {id} of {host} is open again"));
+            return Ok(());
+        }
+    };
     let mut args = json!({"limit": 200});
     if let Some(host) = host {
         args["host"] = json!(host);
@@ -184,6 +201,9 @@ pub fn inbox(client: &Client, command: Inbox) -> Result<()> {
     }
     if !all {
         args["done"] = json!(false);
+    }
+    if let Some(before) = before {
+        args["before"] = json!(before);
     }
     let found = client.call("inbox.list", args, None)?;
     out::data(&found, || {
@@ -205,8 +225,10 @@ pub fn inbox(client: &Client, command: Inbox) -> Result<()> {
             ]);
         }
         table.print("No messages");
-        if !found["next"].is_null() {
-            out::hint("Older messages are not shown");
+        if let Some(next) = found["next"].as_i64() {
+            out::hint(format!(
+                "Older messages are not shown. The next ones: berth inbox list --before {next}"
+            ));
         }
     });
     Ok(())

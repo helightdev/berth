@@ -61,6 +61,7 @@ The inbox, jobs and key-value store are kept in berth's store for `retention_day
 
 ```bash
 berth inbox list studio --topic ask/        # what is open; --all includes what is done
+berth inbox done studio 12                  # marks message 12 of studio done
 berth kv set ui layout '{"columns": 2}'
 berth kv list ui
 ```

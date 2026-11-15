@@ -868,7 +868,14 @@ pub enum Inbox {
         /// Done ones as well.
         #[arg(long)]
         all: bool,
+        /// Only those taken in before this one, by the number the list ends with.
+        #[arg(long, value_name = "SEQ")]
+        before: Option<i64>,
     },
+    /// Mark a message done, so the list leaves it out.
+    Done { host: String, id: u64 },
+    /// Mark a done message as open again.
+    Reopen { host: String, id: u64 },
 }
 
 #[derive(Subcommand, Debug)]
