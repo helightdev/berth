@@ -119,7 +119,7 @@ class RolePath(unittest.TestCase):
 
     def test_the_actions_of_a_node_run_what_it_installs(self):
         actions = {task['name']: task for task in yaml.safe_load((ROLE / 'vars/main.yml').read_text())['devbox_node_tasks']}
-        self.assertEqual(list(actions), ['status', 'update', 'reboot', 'secrets', 'upgrade-server'])
+        self.assertEqual(list(actions), ['status', 'reboot', 'update', 'secrets', 'upgrade-server'])
         self.assertTrue(actions['status']['run'].endswith('/status.sh node'))
         self.assertIn('if [[ ${1:-} == node ]]', (ROLE / 'files/tasks/status.sh').read_text())
         upgrade = actions['upgrade-server']
