@@ -1422,6 +1422,9 @@ pub struct Rollout {
     /// These hosts, in this order; all saved hosts by name when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosts: Vec<String>,
+    /// Hosts left out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub except: Vec<String>,
     /// Also the hosts that are current.
     #[serde(default)]
     pub all: bool,
@@ -1449,6 +1452,9 @@ impl Rollout {
         if !self.hosts.is_empty() {
             arguments.insert("hosts".into(), self.hosts.join(","));
         }
+        if !self.except.is_empty() {
+            arguments.insert("except".into(), self.except.join(","));
+        }
         arguments
     }
 
@@ -1459,16 +1465,19 @@ impl Rollout {
             Some("yes" | "true") => Ok(true),
             Some(other) => Err(format!("{name} is yes or no, not {other}")),
         };
-        let hosts = arguments.get("hosts").map_or(vec![], |hosts| {
-            hosts
-                .split(',')
-                .map(str::trim)
-                .filter(|host| !host.is_empty())
-                .map(str::to_owned)
-                .collect()
-        });
+        let names = |key: &str| {
+            arguments.get(key).map_or(vec![], |hosts| {
+                hosts
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|host| !host.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+        };
         let rollout = Rollout {
-            hosts,
+            hosts: names("hosts"),
+            except: names("except"),
             all: flag("all")?,
             update: flag("update")?,
             reboot: flag("reboot")?,

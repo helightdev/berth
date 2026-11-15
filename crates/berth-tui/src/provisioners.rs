@@ -113,7 +113,10 @@ pub struct Tab {
 }
 
 /// What a host's list offers to make besides hosts, as (kind, label).
-pub const MAKES: [(&str, &str); 2] = [("instance", "instance"), ("deployment", "compose project")];
+pub const MAKES: [(&str, &str); 2] = [
+    ("instance", "resource from an image"),
+    ("deployment", "compose project"),
+];
 
 /// The action of the dialog that registers a provisioner: its name, then
 /// its type, of `types`.
@@ -659,7 +662,7 @@ impl Tab {
             .collect();
         let Some((first, _)) = makers.first().cloned() else {
             return Asked::Nothing(Some(format!(
-                "No provisioner makes {label}s. Add one on the Provisioners tab"
+                "No provisioner makes a {label}. Add one on the Provisioners tab"
             )));
         };
         let form = Form::making(&format!("new {label}"), &format!("new-{kind}"), makers);
@@ -1310,7 +1313,10 @@ mod tests {
             Ok(vec![Action::default(), made.clone()]),
         );
         let form = tab.form().unwrap();
-        assert_eq!(form.context(), format!("{first} › new instance"));
+        assert_eq!(
+            form.context(),
+            format!("{first} › new resource from an image")
+        );
         assert!(!form.waiting());
         // Enter on its first row goes on to the next provisioner, which is asked.
         assert_eq!(

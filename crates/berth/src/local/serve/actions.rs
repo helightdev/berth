@@ -932,6 +932,12 @@ fn rollout_action(_: &Seen) -> Action {
                 help: "Host names, separated by commas, in the order to take them. All saved hosts when empty.".into(),
                 ..Argument::default()
             },
+            Argument {
+                name: "except".into(),
+                label: "Leave out".into(),
+                help: "Host names, separated by commas, that the roll-out leaves alone.".into(),
+                ..Argument::default()
+            },
             flag("all", "Also current hosts", "Apply the hosts that are current too."),
             flag("update", "Update", "Run each host's update action after applying."),
             flag("reboot", "Reboot", "Reboot a host that says it needs it, and wait for it to come back."),
@@ -947,8 +953,15 @@ fn rollout(state: Arc<Serve>, _: String, act: Act) -> Run {
         let options = Rollout::from_arguments(&act.arguments)
             .map_err(|error| Fail::new(code::BAD_REQUEST, error))?;
         let known: Vec<String> = state.hosts.read().unwrap().keys().cloned().collect();
-        let names = rollout::chosen(known, &options.hosts)
+        if let Some(unknown) = options.except.iter().find(|name| !known.contains(name)) {
+            return Err(Fail::new(
+                code::NOT_FOUND,
+                format!("No host {unknown} to leave out"),
+            ));
+        }
+        let mut names = rollout::chosen(known, &options.hosts)
             .map_err(|error| Fail::new(code::NOT_FOUND, error.to_string()))?;
+        names.retain(|name| !options.except.contains(name));
         let passwords: Vec<Option<String>> = names
             .iter()
             .map(|name| state.host(name).and_then(|remote| remote.password.clone()))

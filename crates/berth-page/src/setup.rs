@@ -20,15 +20,8 @@ use ratatui::{
 use serde_json::{Value, json};
 use tui_input::Input;
 
-/// The ways the server installs a host itself. The USB installer is built
-/// on the machine the server runs on.
-const METHODS: [Action; 5] = [
-    Action::Machine,
-    Action::Iso,
-    Action::CloudSeed,
-    Action::Ssh,
-    Action::Reach,
-];
+/// The ways the server installs a host itself.
+const METHODS: [Action; 5] = Action::SERVED;
 
 /// The action of the host that builds its USB installer.
 pub const INSTALLER: &str = "installer";
@@ -221,12 +214,6 @@ impl Setup {
             problems.push(Problem::new(
                 Step::Install,
                 "The USB installer is built where berth serve runs, with berth ui there",
-            ));
-        }
-        if self.action == Action::Ssh && view.text(Field::SshHost).is_empty() {
-            problems.push(Problem::new(
-                Step::Install,
-                "The host's address is required: its name, IP address or tailnet name",
             ));
         }
         problems

@@ -748,7 +748,7 @@ impl Admin {
         let mut asked = asked.clone();
         asked.host = Some(name.to_owned());
         asked.kind = "machine".into();
-        let title = format!("Create machine · {name}");
+        let title = format!("Create · {name}");
         let (admin, host) = (self.clone(), name.to_owned());
         self.say("Starting…");
         self.portal.call(
@@ -772,7 +772,7 @@ impl Admin {
     /// Delete the host's machine, the resource `id`, as a job of the server,
     /// and follow it.
     pub fn unprovision(&self, name: &str, id: &str, size: (u16, u16)) {
-        let title = format!("Delete machine · {name}");
+        let title = format!("Destroy · {name}");
         let (admin, host) = (self.clone(), name.to_owned());
         self.portal.call(
             "resources.remove",
@@ -795,7 +795,7 @@ impl Admin {
     /// server, and follow it.
     pub fn power(&self, name: &str, id: &str, verb: &str, size: (u16, u16)) {
         let title = format!(
-            "{} machine · {name}",
+            "{} · {name}",
             if verb == "start" { "Start" } else { "Stop" }
         );
         let (admin, host) = (self.clone(), name.to_owned());
