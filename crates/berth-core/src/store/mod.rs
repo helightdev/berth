@@ -170,6 +170,8 @@ pub struct Job {
     pub token: Option<String>,
     /// Who stopped it, when it was stopped before it ended by itself.
     pub stopped_by: Option<String>,
+    /// What it was started with that people may see; never a secret.
+    pub arguments: Vec<String>,
 }
 
 impl Job {
@@ -182,9 +184,20 @@ impl Job {
         json!({
             "id": self.id, "subject": self.subject, "action": action, "host": self.host,
             "started": self.started, "ended": self.ended, "exit_code": self.exit_code,
-            "stopped_by": self.stopped_by,
+            "stopped_by": self.stopped_by, "arguments": self.arguments,
         })
     }
+}
+
+/// A job's arguments as its column keeps them: a JSON list, or nothing.
+fn arguments_text(arguments: &[String]) -> Option<String> {
+    (!arguments.is_empty()).then(|| json!(arguments).to_string())
+}
+
+/// A job's arguments from its column; none in rows from before it was kept.
+fn arguments_from(text: Option<String>) -> Vec<String> {
+    text.and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
 }
 
 /// A row of the `state` table: a value of some kind, for a scope, by name.

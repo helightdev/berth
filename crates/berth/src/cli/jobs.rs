@@ -55,6 +55,13 @@ pub fn command(client: &Client, command: Job) -> Result<()> {
                     ("Action", text("action")),
                     ("Subject", text("subject")),
                     ("Host", text("host")),
+                    (
+                        match text("action").as_str() {
+                            "exec" => "Command",
+                            _ => "Arguments",
+                        },
+                        berth_tui::host::job_arguments(&job).unwrap_or_default(),
+                    ),
                     ("State", state_of(&job)),
                     ("Started", text("started")),
                     ("Ended", text("ended")),

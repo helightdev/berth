@@ -436,6 +436,10 @@ pub struct Request {
     pub secrets: Vec<String>,
     /// The role that may start it, which may also stop it.
     pub role: Role,
+    /// What it was started with that its record shows, such as the command
+    /// of `exec`. Made with [`berth_api::Argument::shown`] for an action's
+    /// arguments, so that a secret one never gets here.
+    pub arguments: Vec<String>,
 }
 
 impl Request {
@@ -453,6 +457,7 @@ impl Request {
             held: None,
             secrets: vec![],
             role: Role::Admin,
+            arguments: vec![],
         }
     }
 
@@ -730,6 +735,17 @@ impl Runner {
             action,
             token: request.token.clone(),
             stopped_by: None,
+            arguments: request
+                .arguments
+                .iter()
+                .filter(|argument| {
+                    !request
+                        .secrets
+                        .iter()
+                        .any(|secret| !secret.is_empty() && argument.contains(secret.as_str()))
+                })
+                .cloned()
+                .collect(),
         };
         let job = self.store.add_job(&asked)?;
         // Another caller with the same token was first.
@@ -1014,6 +1030,8 @@ mod tests {
         let mut request = Request::new(Subject::Installation, "rollout");
         request.host = "studio, lab".into();
         request.secrets = vec!["s3cret-value".into()];
+        // An argument that holds a secret never reaches the record.
+        request.arguments = vec!["only=studio".into(), "key=s3cret-value".into()];
         let work = Work::Function(Box::new(|out: &mut Output| {
             writeln!(out, "using s3cret-value").unwrap();
             assert!(
@@ -1031,6 +1049,7 @@ mod tests {
         assert_eq!(job.exit_code, Some(1));
         assert_eq!(log(&job), "using [secret]\n");
         assert_eq!(job.host, "studio, lab");
+        assert_eq!(job.arguments, ["only=studio"]);
         // Told when it started and when it ended.
         let told = world.told.lock().unwrap();
         assert_eq!(told.len(), 2);

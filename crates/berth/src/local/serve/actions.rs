@@ -491,6 +491,7 @@ async fn run_action(
         });
     }
     let mut request = Request::new(Subject::Host(remote.name.clone()), &action.name);
+    request.arguments = Argument::shown(&action.arguments, &act.arguments);
     request.token = act.token;
     request.role = action.role;
     // An action is the host's own session, and runs beside the others there.
@@ -1020,6 +1021,10 @@ fn flag(name: &str, label: &str, help: &str) -> Argument {
 }
 
 fn rollout_action(_: &Seen) -> Action {
+    rollout_declared()
+}
+
+fn rollout_declared() -> Action {
     Action {
         name: "rollout".into(),
         label: "Roll out".into(),
@@ -1068,6 +1073,7 @@ fn rollout(state: Arc<Serve>, _: String, act: Act) -> Run {
             .map(|name| state.host(name).and_then(|remote| remote.password.clone()))
             .collect();
         let mut request = Request::new(Subject::Installation, "rollout");
+        request.arguments = Argument::shown(&rollout_declared().arguments, &act.arguments);
         request.host = names.join(", ");
         request.token = act.token;
         request.secrets = passwords.iter().flatten().cloned().collect();

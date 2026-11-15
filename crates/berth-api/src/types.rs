@@ -423,6 +423,24 @@ impl Argument {
     pub fn is_resource(&self) -> bool {
         self.kind == Self::RESOURCE
     }
+
+    /// The arguments of `given` a job may show as `NAME=VALUE`, in the order
+    /// they are declared: never a secret one, nor one of several lines, such
+    /// as what a command reads on its standard input.
+    pub fn shown(
+        declared: &[Argument],
+        given: &std::collections::BTreeMap<String, String>,
+    ) -> Vec<String> {
+        declared
+            .iter()
+            .filter(|argument| !argument.secret && argument.kind != Self::TEXT)
+            .filter_map(|argument| {
+                let value = given.get(&argument.name)?;
+                (!value.is_empty() && !value.contains('\n'))
+                    .then(|| format!("{}={value}", argument.name))
+            })
+            .collect()
+    }
 }
 
 /// An action of the host's controller: an entry of `/etc/berth/actions.json`.
@@ -659,6 +677,11 @@ pub struct JobInfo {
     /// Who stopped it before it ended by itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped_by: Option<String>,
+    /// What it was started with, as people may see it: the command of a
+    /// resource's `exec`, or an action's arguments as `NAME=VALUE`. Never a
+    /// secret argument, a password or standard input.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arguments: Vec<String>,
 }
 
 // ── System ──────────────────────────────────────────────────────────────────
@@ -1678,6 +1701,41 @@ pub struct RolloutReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_job_shows_no_secret_argument_and_no_text() {
+        let declared = vec![
+            Argument {
+                name: "size".into(),
+                ..Argument::default()
+            },
+            Argument {
+                name: "password".into(),
+                secret: true,
+                ..Argument::default()
+            },
+            Argument {
+                name: "stdin".into(),
+                kind: Argument::TEXT.into(),
+                ..Argument::default()
+            },
+            Argument {
+                name: "empty".into(),
+                ..Argument::default()
+            },
+        ];
+        let given: std::collections::BTreeMap<String, String> = [
+            ("password", "hunter2"),
+            ("size", "2"),
+            ("stdin", "select 1;"),
+            ("empty", ""),
+            ("undeclared", "x"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.into(), value.into()))
+        .collect();
+        assert_eq!(Argument::shown(&declared, &given), ["size=2"]);
+    }
     use serde_json::json;
 
     #[test]

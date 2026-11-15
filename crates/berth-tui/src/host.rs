@@ -123,6 +123,16 @@ impl View {
         }
     }
 
+    /// The panel of a job of the server, which begins with what the job
+    /// was started with, such as the command of `exec`, as its record says.
+    pub fn of_job(title: &str, rows: u16, cols: u16, job: &Value) -> View {
+        let mut view = View::plain(title, rows, cols);
+        if let Some(line) = started_with(job) {
+            view.feed(format!("\x1b[2m{line}\x1b[0m\r\n").as_bytes());
+        }
+        view
+    }
+
     pub fn screen(&self) -> &vt100::Screen {
         self.parser.screen()
     }
@@ -693,6 +703,26 @@ pub fn list<T: serde::de::DeserializeOwned>(value: Value, key: &str) -> Vec<T> {
         .into_iter()
         .filter_map(|item| serde_json::from_value(item).ok())
         .collect()
+}
+
+/// What a job was started with, as a line for people: `$ COMMAND` for a
+/// resource's `exec`, else its arguments; `None` for a job with none.
+pub fn started_with(job: &Value) -> Option<String> {
+    let words = job_arguments(job)?;
+    Some(match job["action"].as_str() {
+        Some("exec") => format!("$ {words}"),
+        _ => format!("with {words}"),
+    })
+}
+
+/// A job's arguments as words a shell reads back; `None` when it has none.
+pub fn job_arguments(job: &Value) -> Option<String> {
+    let arguments: Vec<String> = job["arguments"]
+        .as_array()?
+        .iter()
+        .filter_map(|word| word.as_str().map(str::to_owned))
+        .collect();
+    (!arguments.is_empty()).then(|| crate::text::shell_words(&arguments))
 }
 
 /// The exit code an `exited` frame of a session carries, when the frame is one.

@@ -238,9 +238,35 @@ impl TextEditor {
     }
 }
 
+/// Words as a shell reads them back: a word with a space or a character the
+/// shell gives a meaning is quoted.
+pub fn shell_words(words: &[String]) -> String {
+    let quote = |word: &String| {
+        let plain = !word.is_empty()
+            && word
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || "-_./=:,+@%^".contains(ch));
+        match plain {
+            true => word.clone(),
+            false => format!("'{}'", word.replace('\'', r"'\''")),
+        }
+    };
+    words.iter().map(quote).collect::<Vec<_>>().join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn words_are_quoted_as_a_shell_reads_them() {
+        let words = |list: &[&str]| list.iter().map(|word| word.to_string()).collect::<Vec<_>>();
+        assert_eq!(shell_words(&words(&["psql", "-U", "app"])), "psql -U app");
+        assert_eq!(
+            shell_words(&words(&["sh", "-c", "echo 'a b'", ""])),
+            r"sh -c 'echo '\''a b'\''' ''"
+        );
+    }
 
     fn press(editor: &mut TextEditor, code: Code) -> Outcome {
         editor.handle(&Key::plain(code))

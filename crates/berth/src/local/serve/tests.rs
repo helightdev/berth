@@ -374,6 +374,7 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
         action: "apply".into(),
         token: None,
         stopped_by: None,
+        arguments: vec![],
     };
     served.state.store.add_job(&job).unwrap();
     let jobs: Value = client.get("/v1/jobs").await.unwrap();
@@ -4234,6 +4235,24 @@ async fn a_command_runs_in_a_resource_as_a_job_that_ends_as_it_did() {
     assert_eq!(request["command"], json!(["sh", "-c", "echo hi; exit 3"]));
     assert_eq!(request["stdin"], "select 1;\n");
     assert_eq!(request["id"], "db-1");
+    // The job's record keeps the command, and not what it read.
+    assert_eq!(
+        acted["job"]["arguments"],
+        json!(["sh", "-c", "echo hi; exit 3"])
+    );
+    let (_, kept) = send(
+        client,
+        "GET",
+        &format!("/v1/jobs/{}", acted["job"]["id"].as_str().unwrap()),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        kept["arguments"],
+        json!(["sh", "-c", "echo hi; exit 3"]),
+        "{kept}"
+    );
+    assert!(!kept.to_string().contains("select 1"), "{kept}");
 
     // Words split at spaces, no input, and a command that went well.
     std::fs::write(fake.join("answer.exec"), r#"{"exit_code": 0}"#).unwrap();
