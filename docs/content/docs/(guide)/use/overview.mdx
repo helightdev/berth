@@ -14,22 +14,23 @@ The line under the title is the host's load, CPU, memory, disk and uptime. Under
 
 | Group | Action | Does |
 | --- | --- | --- |
-| System | Status | Provisioning state and services, graphics and disk space, failed units and the access links, then what plugins report |
-| | Terminal | A shell on the host in a panel; Space switches between the agent and the SSH user |
+| Host | Status | Provisioning state and services, graphics and disk space, failed units and the access links, then what plugins report |
 | | Self-Test | `devbox-smoke` as the agent, with the checks plugins add |
-| | Update | `apt` update and upgrade, then what plugins keep up to date; says whether a reboot is needed |
-| | Reboot | Restarts the host, after asking |
-| Access | Access links and desktop password | Links for the desktop, T3, Cockpit and SSH, and the virtual desktop's password |
+| | Rename | Gives the host another name in berth, and with `hostname` its profile's hostname too |
+| | Duplicate | Saves a copy of the profile under another name, without what belongs to this machine |
+| | Remove | Forgets the host, and with `destroy` destroys the machine its provisioner made ([Removing a host](/docs/use/lifecycle#removing-a-host)) |
+| Power | Reboot | Restarts the host, after asking |
+| | Start, Stop | Through the provisioner that made the host, or as its profile declares ([Starting and stopping](/docs/use/lifecycle#starting-and-stopping)) |
+| Sync | Update | `apt` update and upgrade, then what plugins keep up to date; says whether a reboot is needed |
+| | Secrets and registry logins | Sends this host's secrets and logins to the agent account |
+| Access | Terminal | A shell on the host in a panel; Space switches between the agent and the SSH user |
+| | Access links and desktop password | Links for the desktop, T3, Cockpit and SSH, and the virtual desktop's password |
 | | Publish desktop and T3 on the tailnet | `tailscale serve` for both, and the tailnet's trusted certificate for Cockpit |
 | | Use T3 from another device | A one-time pairing link for a phone or another computer |
-| Sync | Secrets and registry logins | Sends this host's secrets and logins to the agent account |
 | Sign-In | Show who is signed in | The accounts of the agent that the host's plugins know about |
 | | Sign in to Claude Code, Codex, GitHub | The tool's sign-in in a panel, from its plugin |
 | Set-Up | Change what is installed, accounts or install method | Opens the [set-up tabs](/docs/use/terminal-ui#a-host) |
 | | Apply this configuration | Runs the role again with this profile, such as after changing what is installed |
-| Power | Start, Stop | Through the provisioner that made the host, or as its profile declares ([Starting and stopping](/docs/use/lifecycle#starting-and-stopping)) |
-| Host | Duplicate | Saves a copy of the profile under another name, without what belongs to this machine |
-| | Remove | Forgets the host, and with `destroy` destroys the machine its provisioner made ([Removing a host](/docs/use/lifecycle#removing-a-host)) |
 
 When the host was applied before a plugin or berth itself changed, a **Configuration** group at the top says which, such as `claude 1.0.0 → 1.1.0`, with **Apply this configuration** below it ([Updates](/docs/use/updates#hosts-that-are-behind)).
 

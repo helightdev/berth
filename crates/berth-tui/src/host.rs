@@ -628,6 +628,9 @@ pub enum Pick {
     Session(usize),
 }
 
+/// The group the terminal is listed in.
+const ACCESS_GROUP: &str = "Access";
+
 /// The groups of the overview of a host that answers, as it lists its actions:
 /// each in the group it names, with the terminal among the first and the
 /// host's sessions after them.
@@ -638,12 +641,19 @@ pub fn groups(host: &HostView, terminal_user: &str) -> Vec<(String, Vec<(String,
             .map(|group| (group.title, group.rows))
             .collect();
     let terminal = (format!("  ▸ Terminal · as {terminal_user}"), Pick::Terminal);
-    match groups
-        .iter_mut()
-        .find(|(title, _)| title == page::HOST_GROUP)
-    {
-        Some((_, rows)) => rows.insert(1.min(rows.len()), terminal),
-        None => groups.insert(0, (page::HOST_GROUP.to_owned(), vec![terminal])),
+    // A terminal is a way in to the host, as the other rows of Access are.
+    match groups.iter_mut().find(|(title, _)| title == ACCESS_GROUP) {
+        Some((_, rows)) => rows.insert(0, terminal),
+        None => {
+            // After the host's own groups, where Access is when the host lists it.
+            let at = groups
+                .iter()
+                .take_while(|(title, _)| {
+                    [page::HOST_GROUP, "Power", "Sync"].contains(&title.as_str())
+                })
+                .count();
+            groups.insert(at, (ACCESS_GROUP.to_owned(), vec![terminal]));
+        }
     }
     if !host.sessions.is_empty() {
         let rows = host
@@ -840,6 +850,45 @@ mod tests {
         let setup = groups.iter().find(|(title, _)| title == "Set-Up").unwrap();
         assert_eq!(setup.1[0].0, "  ▸ Update the controller · not now");
         assert!(action_help(&host, 1).contains("It cannot run now: studio is a workstation"));
+    }
+
+    #[test]
+    fn the_terminal_is_the_first_way_in_under_access() {
+        let action = |name: &str, group: &str| api::HostAction {
+            name: name.into(),
+            label: name.into(),
+            group: group.into(),
+            ..api::HostAction::default()
+        };
+        let titles = |host: &HostView| -> Vec<(String, String)> {
+            groups(host, "agent")
+                .into_iter()
+                .map(|(title, rows)| (title, rows[0].0.clone()))
+                .collect()
+        };
+        let mut host = HostView {
+            host_actions: vec![
+                action("status", "Host"),
+                action("reboot", "Power"),
+                action("access", "Access"),
+            ],
+            ..HostView::default()
+        };
+        let listed = titles(&host);
+        assert_eq!(
+            listed[2],
+            ("Access".into(), "  ▸ Terminal · as agent".into())
+        );
+        assert!(listed[0].1.contains("status"), "{listed:?}");
+        // A host that lists nothing under Access gets the group for its terminal, after its own groups.
+        host.host_actions = vec![
+            action("status", "Host"),
+            action("update", "Sync"),
+            action("x", "Sign-In"),
+        ];
+        let listed = titles(&host);
+        let names: Vec<&str> = listed.iter().map(|(title, _)| title.as_str()).collect();
+        assert_eq!(names, ["Host", "Sync", "Access", "Sign-In"]);
     }
 
     #[test]
