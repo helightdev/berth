@@ -722,7 +722,23 @@ pub fn job_arguments(job: &Value) -> Option<String> {
         .iter()
         .filter_map(|word| word.as_str().map(str::to_owned))
         .collect();
-    (!arguments.is_empty()).then(|| crate::text::shell_words(&arguments))
+    (!arguments.is_empty()).then(|| shell_words(&arguments))
+}
+
+/// Words as a shell reads them back: a word with a space or a character the
+/// shell gives a meaning is quoted.
+pub fn shell_words(words: &[String]) -> String {
+    let quote = |word: &String| {
+        let plain = !word.is_empty()
+            && word
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || "-_./=:,+@%^".contains(ch));
+        match plain {
+            true => word.clone(),
+            false => format!("'{}'", word.replace('\'', r"'\''")),
+        }
+    };
+    words.iter().map(quote).collect::<Vec<_>>().join(" ")
 }
 
 /// The exit code an `exited` frame of a session carries, when the frame is one.
@@ -776,6 +792,16 @@ pub fn session_help(host: &HostView, index: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn words_are_quoted_as_a_shell_reads_them() {
+        let words = |list: &[&str]| list.iter().map(|word| word.to_string()).collect::<Vec<_>>();
+        assert_eq!(shell_words(&words(&["psql", "-U", "app"])), "psql -U app");
+        assert_eq!(
+            shell_words(&words(&["sh", "-c", "echo 'a b'", ""])),
+            r"sh -c 'echo '\''a b'\''' ''"
+        );
+    }
 
     #[test]
     fn berths_own_actions_follow_the_controllers_and_say_when_they_cannot_run() {
