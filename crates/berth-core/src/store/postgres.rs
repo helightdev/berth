@@ -60,7 +60,19 @@ const MIGRATION_LOCK: i64 = 0x6265_7274_6800;
 
 impl std::convert::From<PgError> for Error {
     fn from(error: PgError) -> Self {
-        Error::Database(error.to_string())
+        Error::Database(described(&error))
+    }
+}
+
+/// What the server said of an error, with the constraint it names: the
+/// client's own text says only "db error".
+fn described(error: &PgError) -> String {
+    match error.as_db_error() {
+        Some(db) => match db.constraint() {
+            Some(constraint) => format!("{} ({constraint})", db.message()),
+            None => db.message().to_owned(),
+        },
+        None => error.to_string(),
     }
 }
 
@@ -114,7 +126,7 @@ impl Link {
             Err(error) if !fresh && (closed(&error) || client.is_closed()) => {
                 self.client = None;
                 let (client, _) = self.client()?;
-                work(client).map_err(|error| self.error(error))
+                work(client).map_err(|error| self.error(described(&error)))
             }
             Err(error) => Err(self.error(error)),
         }

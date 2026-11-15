@@ -404,13 +404,20 @@ pub(crate) fn take_in_ids(store: &Store, plugins: &[crate::plugins::Plugin]) -> 
     // Resources: an id of the new shape, their provisioner and host by id,
     // and their specification beside them.
     let mut resources: BTreeMap<String, String> = BTreeMap::new();
-    for (scope, old) in legacy(kind::RESOURCE) {
+    // Every record, as the imports before make ids of the new shape too.
+    let records: Vec<(String, String)> = rows
+        .iter()
+        .filter(|row| row.kind == kind::RESOURCE)
+        .map(|row| (row.scope.clone(), row.name.clone()))
+        .collect();
+    for (scope, old) in records {
         let Some(value) = store.read(kind::RESOURCE, &scope, &old)? else {
             continue;
         };
         let Ok(mut record) = serde_json::from_slice::<crate::resource::Record>(&value) else {
             continue;
         };
+        let before = record.clone();
         let id = match berth_api::ids::is_id(&old) {
             true => old.clone(),
             false => new_id(),
@@ -423,6 +430,9 @@ pub(crate) fn take_in_ids(store: &Store, plugins: &[crate::plugins::Plugin]) -> 
             && let Some(host) = id_of(&ids, kind::PROFILE, &scope, &record.host)
         {
             record.host = host;
+        }
+        if record == before && id == old {
+            continue;
         }
         batch.remove(kind::RESOURCE, &scope, &old);
         if let Some(spec) = store.read(kind::SPEC, &scope, &old)? {
