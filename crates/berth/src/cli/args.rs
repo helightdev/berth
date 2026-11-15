@@ -176,7 +176,7 @@ pub enum Command {
     Logout,
     /// Install the latest release in this program's place.
     Update(Update),
-    /// The version of this berth.
+    /// The version of this berth, and of the server it uses.
     Version,
     /// The completions of a shell, to source from its start-up file.
     Completion {

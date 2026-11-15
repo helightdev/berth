@@ -124,12 +124,40 @@ impl Client {
                 }
             },
         };
-        let portal = connect(&url, &token)?;
-        Ok(Client {
+        let in_process = finish.is_some();
+        let client = Client {
+            portal: connect(&url, &token)?,
             url,
-            portal,
             finish,
+        };
+        // One in this process is this berth; any other may be older.
+        if !in_process {
+            let (version, api) = client.server_version()?;
+            if let Some(older) = berth_api::compat::older_server(&client.url, &version, api) {
+                return Err(Fail::refused(older));
+            }
+        }
+        Ok(client)
+    }
+
+    /// Reach the server this run uses, whatever its version, only to ask it.
+    pub fn open_any(global: &Global, kept: &Settings) -> Result<Client> {
+        let url =
+            named_in(global, kept).ok_or_else(|| Fail::unreachable("No berth server is set"))?;
+        let token = token(global, &url, kept)?;
+        Ok(Client {
+            portal: connect(&url, &token)?,
+            url,
+            finish: None,
         })
+    }
+
+    /// The server's version and the number of its API.
+    pub fn server_version(&self) -> Result<(String, u32)> {
+        let said = self.call("version", json!({}), None)?;
+        let version = said["version"].as_str().unwrap_or("").to_owned();
+        let api = said["api"].as_u64().unwrap_or(0) as u32;
+        Ok((version, api))
     }
 
     /// Whether the server runs in this process, and ends with it.

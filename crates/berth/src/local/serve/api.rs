@@ -405,7 +405,7 @@ async fn portal(
             None => (ops::SERVE, String::new()),
         };
         let op = ops::find(table, name)
-            .ok_or_else(|| (code::NOT_FOUND, format!("No operation {name}")))?;
+            .ok_or_else(|| (code::NOT_FOUND, berth_api::compat::no_operation(name)))?;
         if !op.server_only.is_empty() {
             return Err((code::FORBIDDEN, op.server_only.into()));
         }

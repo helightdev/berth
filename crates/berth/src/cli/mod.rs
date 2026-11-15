@@ -259,13 +259,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Login(login) => login::login(&global, &login),
         Command::Logout => login::logout(),
         Command::Update(update) => crate::update::command(&update),
-        Command::Version => {
-            out::data(
-                &serde_json::json!({"version": berth_api::VERSION, "api": berth_api::API}),
-                || println!("berth {}", berth_api::VERSION),
-            );
-            Ok(())
-        }
+        Command::Version => version(&global),
         Command::Completion { shell } => {
             let mut tree = self::command();
             clap_complete::generate(shell, &mut tree, "berth", &mut std::io::stdout());
@@ -277,6 +271,42 @@ fn run(cli: Cli) -> Result<()> {
         #[cfg(target_os = "linux")]
         Command::TailnetKey { host } => crate::local::tailnet_key(&host),
     }
+}
+
+/// `berth version`: this berth's, and that of the server it is set to use,
+/// which an older server still answers.
+fn version(global: &args::Global) -> Result<()> {
+    use serde_json::json;
+    let server = client::named(global).map(|url| {
+        match Client::open_any(global, &client::settings()).and_then(|client| client.server_version()) {
+            Ok((version, api)) => json!({"url": url, "version": version, "api": api}),
+            Err(fail) => json!({"url": url, "error": fail.message}),
+        }
+    });
+    let mut said = json!({"version": berth_api::VERSION, "api": berth_api::API});
+    if let Some(server) = &server {
+        said["server"] = server.clone();
+    }
+    out::data(&said, || {
+        println!("berth {} (API {})", berth_api::VERSION, berth_api::API);
+        if let Some(server) = &server {
+            let url = server["url"].as_str().unwrap_or("");
+            match server["version"].as_str() {
+                Some(version) => {
+                    println!("server {url}: berth {version} (API {})", server["api"]);
+                    let api = server["api"].as_u64().unwrap_or(0) as u32;
+                    if let Some(older) = berth_api::compat::older_server(url, version, api) {
+                        out::warn(older);
+                    }
+                }
+                None => println!(
+                    "server {url}: not reached ({})",
+                    server["error"].as_str().unwrap_or("")
+                ),
+            }
+        }
+    });
+    Ok(())
 }
 
 #[cfg(test)]

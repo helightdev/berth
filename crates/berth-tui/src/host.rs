@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 /// The lowest `api` of a host this berth can work with.
-pub const NEEDS_API: u32 = 2;
+pub use berth_api::compat::NEEDS_HOST_API as NEEDS_API;
 /// How often the overview asks for stats and sessions again.
 const POLL: Duration = Duration::from_secs(10);
 /// Lines of a process session's transcript kept for scrolling back.
