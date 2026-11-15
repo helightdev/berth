@@ -586,7 +586,7 @@ impl Flow {
                     .catalogue
                     .provisioners
                     .iter()
-                    .any(|known| &known.id == name)
+                    .any(|known| known.named() == name || &known.id == name)
                 {
                     return Err(Stop::Refused(format!(
                         "No provisioner {name}. berth provisioner list names them"

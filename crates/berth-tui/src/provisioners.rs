@@ -251,7 +251,7 @@ pub fn rows(provisioners: &[ProvisionerInfo]) -> Vec<Line<'static>> {
             let (said, colour) = usable(provisioner);
             Line::from(vec![
                 Span::styled(
-                    format!("{:<20}", provisioner.id),
+                    format!("{:<20}", provisioner.named()),
                     Style::new().fg(theme::TEXT),
                 ),
                 Span::styled(format!("{:<28}", provisioner.label), muted),
@@ -359,7 +359,7 @@ pub fn help(provisioner: Option<&ProvisionerInfo>, place: &str) -> String {
     }
     text + &format!(
         "Enter opens its page, which asks it how it is.\n\nThe provisioners of {place}. From the command line: `berth provisioner show {}`",
-        provisioner.id
+        provisioner.named()
     )
 }
 
@@ -499,7 +499,7 @@ impl Page {
             false => format!("{mark} {} · {}", state.state, state.message),
         };
         let mut lines = vec![
-            (format!("{} · {}", info.label, info.id), Tone::Plain),
+            (format!("{} · {}", info.label, info.named()), Tone::Plain),
             (said, tone),
         ];
         // The settings row is one of them, in the same columns.
@@ -1401,7 +1401,7 @@ impl Page {
         self.state = Some(match (state, &actions) {
             (Ok(state), Err(error)) => Err(format!(
                 "{} answered, but not with its actions: {error}",
-                state.provisioner.id
+                state.provisioner.named()
             )),
             (state, _) => state,
         });
@@ -1452,7 +1452,7 @@ impl Tab {
         let makers: Vec<(String, String)> = list
             .iter()
             .filter(|provisioner| provisioner.kinds.iter().any(|known| known.id == kind))
-            .map(|provisioner| (provisioner.id.clone(), provisioner.label.clone()))
+            .map(|provisioner| (provisioner.named().to_owned(), provisioner.label.clone()))
             .collect();
         let Some((first, _)) = makers.first().cloned() else {
             return Asked::Nothing(Some(format!(
@@ -1887,7 +1887,7 @@ impl Tab {
                 }
                 Code::Enter => {
                     if let Some(provisioner) = self.selected(list) {
-                        let id = provisioner.id.clone();
+                        let id = provisioner.named().to_owned();
                         self.page = Some(Page::new(&id));
                         return Asked::Open(id);
                     }

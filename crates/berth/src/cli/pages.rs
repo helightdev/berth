@@ -122,7 +122,10 @@ pub fn provisioner(
     given: &BTreeMap<String, String>,
 ) -> String {
     let info = &state.provisioner;
-    let mut text = format!("{}  {}\n", info.id, info.label);
+    let mut text = format!("{}  {}\n", info.named(), info.label);
+    if info.id != info.named() {
+        text += &format!("id  {}\n", info.id);
+    }
     if !info.description.is_empty() {
         text += &format!("{}\n", info.description);
     }
@@ -172,7 +175,7 @@ pub fn provisioner(
         if info.own.iter().any(|name| given.contains_key(name)) {
             text += &format!(
                 "          To keep them: berth provisioner set {} NAME=VALUE\n",
-                info.id
+                info.named()
             );
         }
     }
@@ -241,7 +244,10 @@ pub fn provisioner(
         }
     }
     if !groups.is_empty() {
-        text += &format!("\nActions (berth provisioner run {} ACTION)\n", info.id);
+        text += &format!(
+            "\nActions (berth provisioner run {} ACTION)\n",
+            info.named()
+        );
     }
     for (title, list) in groups {
         text += &format!("  {title}\n");

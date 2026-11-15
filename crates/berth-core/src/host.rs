@@ -6,7 +6,8 @@ use serde_json::Value;
 use std::process::Command;
 
 pub struct Host {
-    /// The name it is saved under, or the path of its file.
+    /// The name it is saved under, or the path of its file. Its id is the
+    /// place's.
     pub name: String,
     /// Where its profile is.
     pub place: Place,
@@ -37,12 +38,10 @@ impl Host {
         crate::profiles::list(paths, &scope)
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|(name, config)| {
-                Some(Host {
-                    place: Place::stored(&scope, &name).ok()?,
-                    name,
-                    config,
-                })
+            .map(|(place, config)| Host {
+                name: place.argument(),
+                place,
+                config,
             })
             .filter(|host| host.access().reachable())
             .collect()

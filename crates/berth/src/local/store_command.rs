@@ -321,6 +321,10 @@ mod tests {
         input: String,
     }
 
+    /// The ids of the secret and the host every scratch store has.
+    const API: &str = "01972c4e8f3a7b219d4e5a6b7c8d9e0f";
+    const STUDIO: &str = "01972c4e8f3a7b219d4e5a6b7c8d9e1f";
+
     fn scratch() -> Scratch {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths {
@@ -330,9 +334,17 @@ mod tests {
         // The settings of the files only, whatever the environment of the tests holds.
         let installation = Installation::with(&paths, &|key| paths.setting_with(key, None));
         let store = installation.open().unwrap();
-        store.write(kind::SECRET, "", "api", b"hunter2").unwrap();
         store
-            .write(kind::PROFILE, "", "studio", b"{\"hostname\":\"studio\"}")
+            .write_labelled(kind::SECRET, "", API, "api", b"hunter2")
+            .unwrap();
+        store
+            .write_labelled(
+                kind::PROFILE,
+                "",
+                STUDIO,
+                "studio",
+                b"{\"hostname\":\"studio\"}",
+            )
             .unwrap();
         Scratch {
             _dir: dir,
@@ -394,7 +406,7 @@ mod tests {
         );
         let store = s.installation.open().unwrap();
         assert_eq!(
-            store.read(kind::SECRET, "", "api").unwrap().unwrap(),
+            store.read(kind::SECRET, "", API).unwrap().unwrap(),
             b"hunter2"
         );
         drop(store);
@@ -425,7 +437,7 @@ mod tests {
         );
         let store = s.installation.open().unwrap();
         assert_eq!(
-            store.read(kind::SECRET, "", "api").unwrap().unwrap(),
+            store.read(kind::SECRET, "", API).unwrap().unwrap(),
             b"hunter2"
         );
         assert!(s.run(&["rekey"]).is_err());
@@ -475,7 +487,7 @@ mod tests {
         .open()
         .unwrap();
         assert_eq!(
-            copied.read(kind::SECRET, "", "api").unwrap().unwrap(),
+            copied.read(kind::SECRET, "", API).unwrap().unwrap(),
             b"hunter2"
         );
         assert!(
@@ -570,7 +582,7 @@ mod tests {
             .set_secret("github", Some("ghp-made-up"))
             .unwrap();
         for (name, address) in [("studio", "192.0.2.10"), ("attic", "192.0.2.11")] {
-            let place = Place::own(name).unwrap();
+            let place = Place::own(paths, name).unwrap();
             let profile = serde_json::json!({"hostname": name, "builder": {}, "access": {"address": address}});
             place.save(paths, &profile).unwrap();
             berth_core::credentials::save(paths, &place, "ops", &format!("pw-of-{name}")).unwrap();
@@ -583,7 +595,7 @@ mod tests {
                 kind: "machine".into(),
                 name: "studio".into(),
                 external_id: "vm-1".into(),
-                host: "studio".into(),
+                host: Place::own(paths, "studio").unwrap().key(),
                 token: "t0k".into(),
                 ..Default::default()
             },
@@ -593,9 +605,10 @@ mod tests {
         // A key of its own in the ring, so no ssh-keygen is needed.
         berth_core::store::shared(paths)
             .unwrap()
-            .write(
+            .write_labelled(
                 berth_core::store::kind::KEY,
                 berth_core::store::OWN,
+                &berth_core::store::new_id(),
                 "berth",
                 br#"{"private": "made-up private key\n", "public": "ssh-ed25519 AAAA berth@studio"}"#,
             )
@@ -632,7 +645,7 @@ mod tests {
                 ("studio".to_owned(), "192.0.2.10".to_owned())
             ]
         );
-        let studio = Place::own("studio").unwrap();
+        let studio = Place::own(paths, "studio").unwrap();
         assert_eq!(studio.load(paths).unwrap().unwrap()["hostname"], "studio");
         assert_eq!(
             berth_core::credentials::load(paths, &studio).unwrap()["ops"],

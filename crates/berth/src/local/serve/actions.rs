@@ -25,7 +25,7 @@ use berth_core::{
     apply,
     host::Host,
     host_type::{self, Capability, HostType, Powered},
-    keys::{self, Once, contact, ring},
+    keys::{Once, contact, ring},
     profiles::Place,
     registry::Store,
     rollout,
@@ -323,7 +323,7 @@ fn profile_of(state: &Serve, name: &str) -> Value {
 /// The machine a provisioner made for the saved host `name`, or one planned
 /// for it, as berth's record has it.
 pub(super) fn machine_of(state: &Serve, name: &str) -> Option<Resource> {
-    let place = Place::own(name).ok()?;
+    let place = Place::own(&state.paths, name).ok()?;
     let kept = berth_core::resource::of_place(&state.paths, &place).ok()??;
     let plugins = berth_core::provision::list_plugins(&state.paths);
     Some(berth_core::resource::info(
@@ -371,7 +371,7 @@ fn no_action(subject: &str, action: &str, actions: &[Action]) -> Fail {
 }
 
 #[utoipa::path(get, path = "/v1/hosts/{name}/actions", summary = "What can be done to a host: the actions its controller lists, and berth's own.", tag = "hosts",
-    params(("name" = String, Path, description = "A saved host")),
+    params(("name" = String, Path, description = "A saved host, by its name or its id (bare or as `host_ID`)")),
     responses((status = 200, description = "The actions, each saying whether it can run now", body = Vec<Action>),
               (status = 404, description = "No such host", body = ErrorBody)))]
 pub async fn host_actions(
@@ -413,7 +413,7 @@ pub async fn host_actions(
 }
 
 #[utoipa::path(post, path = "/v1/hosts/{name}/actions/{action}", summary = "Run one of a host's actions. One of berth's that changes something is a job; an action of the host's controller is a session there, which a job follows unless it needs a terminal.", tag = "hosts",
-    params(("name" = String, Path, description = "A saved host"),
+    params(("name" = String, Path, description = "A saved host, by its name or its id (bare or as `host_ID`)"),
            ("action" = String, Path, description = "The action, as hosts.actions names it")),
     request_body(content = Option<Act>, description = "Its arguments, and a token that makes asking again safe"),
     responses((status = 202, description = "Started as a job; an action of its controller also says its session", body = Acted),
@@ -706,8 +706,7 @@ fn logs_in_alone(seen: &Seen, action: Action) -> Action {
         return action;
     }
     let wants = profile::Access::of(seen.profile).auth == Auth::Password;
-    let kept = Place::own(seen.name)
-        .is_ok_and(|place| seen.secrets.contains(&keys::password_secret(&place)));
+    let kept = seen.secrets.contains(&format!("ssh/{}", seen.name));
     unavailable(
         action,
         (wants && !kept).then(|| {
@@ -735,8 +734,8 @@ fn install_controller(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let remote = remote(&state, &name)?;
         let bad = |error: Box<dyn std::error::Error>| turned_down(error);
-        let host =
-            own_place(&name).and_then(|place| Host::load_at(&state.paths, place).map_err(bad))?;
+        let host = own_place(&state.paths, &name)
+            .and_then(|place| Host::load_at(&state.paths, place).map_err(bad))?;
         let password = act
             .sudo_password
             .or_else(|| remote.password.clone())
@@ -774,8 +773,8 @@ fn apply(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let remote = remote(&state, &name)?;
         let bad = |error: Box<dyn std::error::Error>| turned_down(error);
-        let host =
-            own_place(&name).and_then(|place| Host::load_at(&state.paths, place).map_err(bad))?;
+        let host = own_place(&state.paths, &name)
+            .and_then(|place| Host::load_at(&state.paths, place).map_err(bad))?;
         let password = act
             .sudo_password
             .or_else(|| remote.password.clone())
@@ -1097,7 +1096,7 @@ fn secrets(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let remote = remote(&state, &name)?;
         let bad = |error: Box<dyn std::error::Error>| turned_down(error);
-        let host = Host::load_at(&state.paths, own_place(&name)?).map_err(bad)?;
+        let host = Host::load_at(&state.paths, own_place(&state.paths, &name)?).map_err(bad)?;
         let payload = Store::own(state.store.clone())
             .host_payload(&host.config)
             .map_err(bad)?;
@@ -1463,7 +1462,7 @@ fn destroy_refused(name: &str, machine: Option<&Resource>) -> Option<String> {
 fn remove(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let destroy = yes(&act, "destroy")?;
-        let place = own_place(&name)?;
+        let place = own_place(&state.paths, &name)?;
         let (_, profile) = saved_profile(&state, &name)?;
         let machine = machine_of(&state, &name);
         if destroy && let Some(why) = destroy_refused(&name, machine.as_ref()) {
@@ -1504,7 +1503,7 @@ fn remove(state: Arc<Serve>, name: String, act: Act) -> Run {
             let paths = &serve.paths;
             if let Some(acting) = acting {
                 let (provisioner, id) = (
-                    acting.kept().record.provisioner.clone(),
+                    berth_core::provisioner::label(paths, &acting.kept().record.provisioner),
                     acting.kept().record.external_id.clone(),
                 );
                 match acting.run(paths, &(serve.provision)(), out) {
@@ -1613,8 +1612,8 @@ fn duplicate(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let new = given(&act, "name").unwrap_or_default().to_owned();
         let create = yes(&act, "create")?;
-        let to = own_place(&new)?;
-        let from = own_place(&name)?;
+        let to = own_place(&state.paths, &new)?;
+        let from = own_place(&state.paths, &name)?;
         saved_profile(&state, &name)?;
         if to.load(&state.paths).map_err(internal)?.is_some() {
             return Err(Fail::new(
@@ -1796,7 +1795,7 @@ fn rollout(state: Arc<Serve>, _: String, act: Act) -> Run {
             let mut problem = None;
             let mut skipped = vec![];
             for (name, password) in names.iter().zip(passwords) {
-                let host = berth_core::profiles::Place::own(name)
+                let host = berth_core::profiles::Place::own(&paths, name)
                     .and_then(|place| Host::load_at(&paths, place));
                 // Only a node or a workstation is applied; the others are said and left.
                 let host = match host {
@@ -1874,7 +1873,7 @@ fn take_known_host_key(state: &Serve, name: &str) {
     let Some(known_hosts) = state.known_hosts.lock().unwrap().clone() else {
         return;
     };
-    let Ok(place) = own_place(name) else {
+    let Ok(place) = own_place(&state.paths, name) else {
         return;
     };
     let Ok(host) = Host::load_at(&state.paths, place.clone()) else {
@@ -1939,7 +1938,7 @@ fn trust_key_action(seen: &Seen) -> Action {
 fn trust_key(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let bad = |error: String| Fail::new(code::BAD_REQUEST, error);
-        let host = Host::load_at(&state.paths, own_place(&name)?)
+        let host = Host::load_at(&state.paths, own_place(&state.paths, &name)?)
             .map_err(|error| bad(error.to_string()))?;
         let keep = yes(&act, "keep_password")?;
         let password = given(&act, "password").map(str::to_owned);
@@ -2013,7 +2012,7 @@ fn host_key_action(seen: &Seen) -> Action {
 fn host_key(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let accept = yes(&act, "accept")?;
-        let host = Host::load_at(&state.paths, own_place(&name)?)
+        let host = Host::load_at(&state.paths, own_place(&state.paths, &name)?)
             .map_err(|error| Fail::new(code::BAD_REQUEST, error.to_string()))?;
         let paths = state.paths.clone();
         // It may log in to the host, and waits for that.
@@ -2053,11 +2052,11 @@ fn rename(state: Arc<Serve>, name: String, act: Act) -> Run {
         let bad = |error: String| Fail::new(code::BAD_REQUEST, error);
         let new = given(&act, "name").unwrap_or_default().to_owned();
         let hostname = yes(&act, "hostname")?;
-        let to = own_place(&new)?;
+        let to = own_place(&state.paths, &new)?;
         if hostname && let Some(problem) = berth_tui::setup::hostname_problem(&new) {
             return Err(bad(problem));
         }
-        let from = own_place(&name)?;
+        let from = own_place(&state.paths, &name)?;
         let joins = profile::joins_tailnet(&profile_of(&state, &name));
         if hostname {
             berth_core::profiles::hostname_allowed(&name, &profile_of(&state, &name))
@@ -2184,7 +2183,7 @@ fn adopt_reach(
     let address = given(act, "address").unwrap_or("");
     let port = given(act, "port").unwrap_or("");
     let key = given(act, "key");
-    let place = Place::own(name).map_err(|error| error.to_string())?;
+    let place = Place::own(paths, name).map_err(|error| error.to_string())?;
     let saved = place.load(paths).map_err(|error| error.to_string())?;
     let reach = match (&saved, address) {
         (None, "") => {

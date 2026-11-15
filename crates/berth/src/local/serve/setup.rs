@@ -45,16 +45,16 @@ fn store(state: &Serve) -> Store {
 
 /// Where the profile of a host of this name is: a host of the server's own,
 /// whatever its settings say, by a name that is never a path.
-pub(super) fn own_place(name: &str) -> Answer<Place> {
+pub(super) fn own_place(paths: &berth_core::paths::Paths, name: &str) -> Answer<Place> {
     if !safe(name) {
         return Err(bad(format!("Not a host name: {name}")));
     }
-    Place::own(name).map_err(bad)
+    Place::own(paths, name).map_err(bad)
 }
 
 /// A saved host's profile, or a 404.
 pub(super) fn saved_profile(state: &Serve, name: &str) -> Answer<(Place, Value)> {
-    let place = own_place(name)?;
+    let place = own_place(&state.paths, name)?;
     match place.load(&state.paths).map_err(internal)? {
         Some(profile) => Ok((place, profile)),
         None => Err(missing(format!("No host {name}"))),
@@ -62,7 +62,7 @@ pub(super) fn saved_profile(state: &Serve, name: &str) -> Answer<(Place, Value)>
 }
 
 #[utoipa::path(get, path = "/v1/hosts/{name}/profile", summary = "A host's profile, as it is saved.", tag = "set-up",
-    params(("name" = String, Path, description = "A saved host")),
+    params(("name" = String, Path, description = "A saved host, by its name or its id (bare or as `host_ID`)")),
     responses((status = 200, description = "The profile, with the passwords and keys in it", body = Value),
               (status = 404, description = "No such host", body = ErrorBody)))]
 pub async fn profile(State(state): App, Path(name): Path<String>) -> Answer<Json<Value>> {
@@ -70,7 +70,7 @@ pub async fn profile(State(state): App, Path(name): Path<String>) -> Answer<Json
 }
 
 #[utoipa::path(put, path = "/v1/hosts/{name}/profile", summary = "Save a host's profile: a new host, or a changed one. A host that is not a workstation needs only its type and access.", tag = "set-up",
-    params(("name" = String, Path, description = "The name to save it under: letters, digits, `-`, `_` and `.`")),
+    params(("name" = String, Path, description = "The name to save it under: letters, digits, `-`, `_` and `.`, and not in the shape of an id; or the id of a saved host")),
     request_body(content = Value, description = "The whole profile. A workstation's has a builder object; a host of the type ssh or managed needs only type and access"),
     responses((status = 200, description = "Saved", body = Done),
               (status = 400, description = "Not a profile, or not a name", body = ErrorBody)))]
@@ -82,7 +82,7 @@ pub async fn save_profile(
 ) -> Answer<Json<Done>> {
     // A caller on the socket or in berth itself is the server's own user.
     let own_user = access.is_none();
-    let place = own_place(&name)?;
+    let place = own_place(&state.paths, &name)?;
     if !profile.is_object() {
         return Err(bad("A profile is an object"));
     }
@@ -138,7 +138,7 @@ pub async fn save_profile(
 }
 
 #[utoipa::path(delete, path = "/v1/hosts/{name}", summary = "Remove a host's profile. The host itself is left as it is.", tag = "set-up",
-    params(("name" = String, Path, description = "A saved host")),
+    params(("name" = String, Path, description = "A saved host, by its name or its id (bare or as `host_ID`)")),
     responses((status = 200, description = "Removed", body = Done),
               (status = 404, description = "No such host", body = ErrorBody),
               (status = 409, description = "It has a machine berth created, which is deleted first, or one is being created", body = ErrorBody)))]
@@ -179,7 +179,7 @@ pub struct Credentials {
 }
 
 #[utoipa::path(get, path = "/v1/hosts/{name}/credentials", summary = "The passwords the server generated for a host's accounts.", tag = "set-up",
-    params(("name" = String, Path, description = "A saved host")),
+    params(("name" = String, Path, description = "A saved host, by its name or its id (bare or as `host_ID`)")),
     responses((status = 200, description = "The passwords by account; none when none were generated", body = Credentials),
               (status = 404, description = "No such host", body = ErrorBody)))]
 pub async fn credentials(State(state): App, Path(name): Path<String>) -> Answer<Json<Credentials>> {
@@ -194,8 +194,13 @@ pub async fn credentials(State(state): App, Path(name): Path<String>) -> Answer<
 /// except to a host.
 #[derive(Serialize, ToSchema)]
 pub struct SecretNames {
-    /// A registry's password or token is `registry/NAME`.
+    /// The global secrets' names, and the addresses of those that belong to
+    /// something: a registry's password or token is `registry/NAME`, the
+    /// passwords berth logs in to a host with `ssh/HOST` and `sudo/HOST`,
+    /// and a provisioner's own `provisioner/NAME/SECRET`.
     pub names: Vec<String>,
+    /// The global secrets, by name, with their ids.
+    pub secrets: Vec<berth_api::Named>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -204,12 +209,13 @@ pub struct SecretValue {
 }
 
 fn secret_name(name: &str) -> Answer<&str> {
-    // A host's SSH or sudo password is kept under the host's name.
+    use berth_api::ids::{self, Kind};
+    // A host's SSH or sudo password belongs to the host, by its name or id.
     if let Some(host) = name
         .strip_prefix("ssh/")
         .or_else(|| name.strip_prefix("sudo/"))
     {
-        return match profiles::valid_name(host) {
+        return match profiles::valid_name(host) || ids::id_in(Kind::Host, host).is_some() {
             true => Ok(name),
             false => Err(bad(format!("Not a host's name: {host}"))),
         };
@@ -217,11 +223,16 @@ fn secret_name(name: &str) -> Answer<&str> {
     if berth_core::provisioner::is_secret_name(name) {
         return Ok(name);
     }
+    if let Some(registry) = name.strip_prefix("registry/")
+        && ids::id_in(Kind::Registry, registry).is_some()
+    {
+        return Ok(name);
+    }
     let plain = name.strip_prefix("registry/").unwrap_or(name);
-    match plugins::valid_name(plain) {
+    match plugins::valid_name(plain) && !ids::looks_like_id(plain) {
         true => Ok(name),
         false => Err(bad(format!(
-            "Not a secret's name: {name} (lower-case letters, digits, - and _)"
+            "Not a secret's name: {name} (lower-case letters, digits, - and _, and not in the shape of an id)"
         ))),
     }
 }
@@ -229,12 +240,75 @@ fn secret_name(name: &str) -> Answer<&str> {
 #[utoipa::path(get, path = "/v1/secrets", summary = "The names of the secrets.", tag = "set-up",
     responses((status = 200, description = "The names", body = SecretNames)))]
 pub async fn secrets(State(state): App) -> Answer<Json<SecretNames>> {
-    let names = store(&state).all_secret_names().map_err(internal)?;
-    Ok(Json(SecretNames { names }))
+    let store = store(&state);
+    let names = store.all_secret_names().map_err(internal)?;
+    let secrets = store
+        .secret_ids()
+        .map_err(internal)?
+        .into_iter()
+        .map(named)
+        .collect();
+    Ok(Json(SecretNames { names, secrets }))
+}
+
+pub(super) fn named(found: berth_core::store::Found) -> berth_api::Named {
+    berth_api::Named {
+        id: found.id,
+        name: found.name,
+    }
+}
+
+/// A rename's error as an answer: a name that is taken or cannot be one is
+/// refused, a thing that is not there not found.
+fn renamed(result: berth_core::Result<()>) -> Answer<Json<Done>> {
+    match result {
+        Ok(()) => Ok(Json(Done { ok: true })),
+        Err(error) if error.to_string().starts_with("No ") => Err(missing(error.to_string())),
+        Err(error) if error.to_string().starts_with("There is ") => {
+            Err(Fail::new(code::CONFLICT, error.to_string()))
+        }
+        Err(error) => Err(bad(error.to_string())),
+    }
+}
+
+#[utoipa::path(post, path = "/v1/secrets/{name}/rename", summary = "Give a global secret another name.", tag = "set-up",
+    params(("name" = String, Path, description = "The secret, by its name or its id (bare or as `sec_ID`)")),
+    request_body(content = berth_api::Rename, description = "The new name"),
+    responses((status = 200, description = "Renamed: the profiles that hand it to hosts refer to it still", body = Done),
+              (status = 400, description = "Not a name for a secret, or one that belongs to something", body = ErrorBody),
+              (status = 404, description = "No such secret", body = ErrorBody),
+              (status = 409, description = "The name is taken", body = ErrorBody)))]
+pub async fn rename_secret(
+    State(state): App,
+    Path(name): Path<String>,
+    Json(to): Json<berth_api::Rename>,
+) -> Answer<Json<Done>> {
+    renamed(store(&state).rename_secret(&name, to.name.trim()))
+}
+
+#[utoipa::path(post, path = "/v1/registries/{name}/rename", summary = "Give a registry another name.", tag = "set-up",
+    params(("name" = String, Path, description = "The registry, by its name or its id (bare or as `reg_ID`)")),
+    request_body(content = berth_api::Rename, description = "The new name"),
+    responses((status = 200, description = "Renamed, with its login: the hosts that use it refer to it still", body = Done),
+              (status = 400, description = "Not a name for a registry", body = ErrorBody),
+              (status = 404, description = "No such registry", body = ErrorBody),
+              (status = 409, description = "The name is taken", body = ErrorBody)))]
+pub async fn rename_registry(
+    State(state): App,
+    Path(name): Path<String>,
+    Json(to): Json<berth_api::Rename>,
+) -> Answer<Json<Done>> {
+    let new = to.name.trim();
+    if !plugins::valid_name(new) || berth_api::ids::looks_like_id(new) {
+        return Err(bad(format!(
+            "A registry has a name of lower-case letters, digits, - and _, and not in the shape of an id: {new}"
+        )));
+    }
+    renamed(store(&state).rename_registry(&name, new).map(|_| ()))
 }
 
 #[utoipa::path(put, path = "/v1/secrets/{name}", summary = "Set a secret's value.", tag = "set-up",
-    params(("name" = String, Path, description = "The secret; `registry/NAME` is a registry's login")),
+    params(("name" = String, Path, description = "The secret, by its name or its id (bare or as `sec_ID`); `registry/REGISTRY` is a registry's login, `ssh/HOST` and `sudo/HOST` a host's passwords and `provisioner/PROVISIONER/SECRET` a provisioner's own")),
     request_body(content = SecretValue, description = "The value"),
     responses((status = 200, description = "Kept", body = Done),
               (status = 400, description = "Not a name", body = ErrorBody)))]
@@ -243,14 +317,16 @@ pub async fn set_secret(
     Path(name): Path<String>,
     Json(secret): Json<SecretValue>,
 ) -> Answer<Json<Done>> {
-    store(&state)
-        .set_secret(secret_name(&name)?, Some(&secret.value))
-        .map_err(internal)?;
-    Ok(Json(Done { ok: true }))
+    match store(&state).set_secret(secret_name(&name)?, Some(&secret.value)) {
+        Ok(()) => Ok(Json(Done { ok: true })),
+        // One that would belong to a registry, host or provisioner there is not.
+        Err(error) if error.to_string().starts_with("No ") => Err(missing(error.to_string())),
+        Err(error) => Err(bad(error.to_string())),
+    }
 }
 
 #[utoipa::path(delete, path = "/v1/secrets/{name}", summary = "Remove a secret.", tag = "set-up",
-    params(("name" = String, Path, description = "The secret")),
+    params(("name" = String, Path, description = "The secret, by its name or its id (bare or as `sec_ID`), or the address of one that belongs to something")),
     responses((status = 200, description = "Removed", body = Done),
               (status = 404, description = "No such secret", body = ErrorBody)))]
 pub async fn remove_secret(State(state): App, Path(name): Path<String>) -> Answer<Json<Done>> {
@@ -266,8 +342,9 @@ pub async fn remove_secret(State(state): App, Path(name): Path<String>) -> Answe
 
 #[derive(Serialize, ToSchema)]
 pub struct Registries {
-    /// By name: `type` (nexus, npm, raw or docker), `url`, `username` and, for
-    /// a Nexus server, its `repositories`.
+    /// By name: its `id`, `type` (nexus, npm, raw or docker), `url`,
+    /// `username` and, for a Nexus server, its `repositories`. The id is
+    /// berth's, and is left out of what is saved.
     pub registries: Map<String, Value>,
 }
 
@@ -280,12 +357,21 @@ pub struct Checked {
 #[utoipa::path(get, path = "/v1/registries", summary = "The registries.", tag = "set-up",
     responses((status = 200, description = "The registries by name", body = Registries)))]
 pub async fn registries(State(state): App) -> Answer<Json<Registries>> {
-    let registries = store(&state).registries().map_err(internal)?;
+    let store = store(&state);
+    let mut registries = store.registries().map_err(internal)?;
+    for found in store.registry_ids().map_err(internal)? {
+        if let Some(fields) = registries
+            .get_mut(&found.name)
+            .and_then(Value::as_object_mut)
+        {
+            fields.insert("id".into(), Value::String(found.id));
+        }
+    }
     Ok(Json(Registries { registries }))
 }
 
 #[utoipa::path(put, path = "/v1/registries/{name}", summary = "Add a registry, or change one.", tag = "set-up",
-    params(("name" = String, Path, description = "The registry's name here")),
+    params(("name" = String, Path, description = "The registry's name here, or the id of one there is")),
     request_body(content = Value, description = "`type`, `url`, and optionally `username` and `repositories`"),
     responses((status = 200, description = "Saved", body = Done),
               (status = 400, description = "Not a registry", body = ErrorBody)))]
@@ -296,7 +382,11 @@ pub async fn save_registry(
 ) -> Answer<Json<Done>> {
     let kind = registry["type"].as_str().unwrap_or("");
     let url = registry["url"].as_str().unwrap_or("");
-    if !plugins::valid_name(&name) || !registry::TYPES.contains(&kind) || url.is_empty() {
+    if !plugins::valid_name(&name)
+        || berth_api::ids::looks_like_id(&name)
+        || !registry::TYPES.contains(&kind)
+        || url.is_empty()
+    {
         return Err(bad(format!(
             "A registry has a name of lower-case letters, digits, - and _, a type ({}) and a url",
             registry::TYPES.join(", ")
@@ -310,7 +400,7 @@ pub async fn save_registry(
 }
 
 #[utoipa::path(delete, path = "/v1/registries/{name}", summary = "Remove a registry with its stored login.", tag = "set-up",
-    params(("name" = String, Path, description = "A registry")),
+    params(("name" = String, Path, description = "A registry, by its name or its id (bare or as `reg_ID`)")),
     responses((status = 200, description = "Removed", body = Done),
               (status = 404, description = "No such registry", body = ErrorBody)))]
 pub async fn remove_registry(State(state): App, Path(name): Path<String>) -> Answer<Json<Done>> {
@@ -319,15 +409,13 @@ pub async fn remove_registry(State(state): App, Path(name): Path<String>) -> Ans
     if registries.remove(&name).is_none() {
         return Err(missing(format!("No registry {name}")));
     }
-    store
-        .set_secret(&format!("registry/{name}"), None)
-        .map_err(internal)?;
+    // Its login goes with it.
     store.save_registries(registries).map_err(internal)?;
     Ok(Json(Done { ok: true }))
 }
 
 #[utoipa::path(post, path = "/v1/registries/{name}/check", summary = "Whether a registry answers and takes its login.", tag = "set-up",
-    params(("name" = String, Path, description = "A registry")),
+    params(("name" = String, Path, description = "A registry, by its name or its id (bare or as `reg_ID`)")),
     responses((status = 200, description = "What was found", body = Checked),
               (status = 404, description = "No such registry", body = ErrorBody)))]
 pub async fn check_registry(State(state): App, Path(name): Path<String>) -> Answer<Json<Checked>> {
@@ -653,7 +741,9 @@ pub struct Generated {
 pub async fn generate(State(state): App, Json(asked): Json<Generate>) -> Answer<Json<Generated>> {
     use berth_core::credentials;
     let kept = match (&asked.host, asked.what.as_str()) {
-        (Some(host), "password") if asked.password.is_none() => Some(own_place(host)?),
+        (Some(host), "password") if asked.password.is_none() => {
+            Some(own_place(&state.paths, host)?)
+        }
         _ => None,
     };
     let paths = state.paths.clone();

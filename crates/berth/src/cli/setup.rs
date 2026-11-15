@@ -521,6 +521,15 @@ pub fn secret(client: &Client, command: Secret) -> Result<()> {
             out::done(format!("Set the secret {name}"));
             Ok(())
         }
+        Secret::Rename { name, new } => {
+            client.call(
+                "secrets.rename",
+                json!({"name": name}),
+                Some(json!({"name": new})),
+            )?;
+            out::done(format!("{name} is called {new} now"));
+            Ok(())
+        }
         Secret::Remove { name } => {
             ask::confirm(&format!("This removes the secret {name}."))?;
             client.call("secrets.remove", json!({"name": name}), None)?;
@@ -676,6 +685,15 @@ pub fn registry(global: &Global, command: Registry) -> Result<()> {
                 true => Err(Fail::exit(1)),
                 false => Ok(()),
             }
+        }
+        Registry::Rename { name, new } => {
+            client.call(
+                "registries.rename",
+                json!({"name": name}),
+                Some(json!({"name": new})),
+            )?;
+            out::done(format!("{name} is called {new} now, with its login"));
+            Ok(())
         }
         Registry::Remove { name } => {
             ask::confirm(&format!("This removes the registry {name} with its login."))?;

@@ -1,8 +1,8 @@
 //! The store in a SQLite file.
 
 use super::{
-    Backend, CursorRow, Entry, Error, Filter, Job, JobFilter, KvRow, MessageRow, Result, Rows,
-    StateRow, Stored, Table, When, json_value, keep_from, keep_name,
+    Backend, Change, CursorRow, Entry, Error, Filter, Job, JobFilter, KvRow, MessageRow, Result,
+    Rows, StateRow, Stored, Table, When, json_value, keep_from, keep_name,
 };
 use berth_api::{From, Level, Message};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -35,6 +35,8 @@ pub(super) const MIGRATIONS: &[&str] = &[
      CREATE UNIQUE INDEX jobs_token ON jobs(subject, action, token) WHERE token IS NOT NULL;",
     "ALTER TABLE jobs ADD COLUMN stopped_by TEXT;",
     "ALTER TABLE jobs ADD COLUMN arguments TEXT;",
+    "ALTER TABLE state ADD COLUMN label TEXT;
+     CREATE UNIQUE INDEX state_label ON state(kind, scope, label) WHERE label IS NOT NULL;",
 ];
 
 impl std::convert::From<rusqlite::Error> for Error {
@@ -147,7 +149,7 @@ fn entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
     })
 }
 
-const STATE_COLUMNS: &str = "kind, scope, name, value, sealed, updated";
+const STATE_COLUMNS: &str = "kind, scope, name, value, sealed, updated, label";
 
 fn state_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StateRow> {
     Ok(StateRow {
@@ -157,13 +159,16 @@ fn state_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StateRow> {
         value: row.get(3)?,
         sealed: row.get(4)?,
         updated: row.get(5)?,
+        label: row.get(6)?,
     })
 }
 
-const PUT_STATE: &str = "INSERT INTO state(kind, scope, name, value, sealed, updated)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+// A write without a label keeps the one the row has.
+const PUT_STATE: &str = "INSERT INTO state(kind, scope, name, value, sealed, updated, label)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
      ON CONFLICT (kind, scope, name) DO UPDATE
-     SET value = excluded.value, sealed = excluded.sealed, updated = excluded.updated";
+     SET value = excluded.value, sealed = excluded.sealed, updated = excluded.updated,
+         label = COALESCE(excluded.label, state.label)";
 
 fn put_state(db: &Connection, row: &StateRow) -> rusqlite::Result<()> {
     db.execute(
@@ -174,8 +179,19 @@ fn put_state(db: &Connection, row: &StateRow) -> rusqlite::Result<()> {
             row.name,
             row.value,
             row.sealed,
-            row.updated
+            row.updated,
+            row.label
         ],
+    )?;
+    Ok(())
+}
+
+/// Delete the rows that belong to `owner` in `scope`: those without a label
+/// whose name is the owner's id or starts with it and a `/`.
+fn forget_owned(db: &Connection, scope: &str, owner: &str) -> rusqlite::Result<()> {
+    db.execute(
+        "DELETE FROM state WHERE scope = ?1 AND label IS NULL AND (name = ?2 OR substr(name, 1, length(?2) + 1) = ?2 || '/')",
+        [scope, owner],
     )?;
     Ok(())
 }
@@ -537,6 +553,34 @@ impl Backend for SqliteBackend {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    fn labelled(&mut self, kind: &str, scope: &str, label: &str) -> Result<Option<StateRow>> {
+        Ok(self
+            .db
+            .query_row(
+                &format!(
+                    "SELECT {STATE_COLUMNS} FROM state WHERE kind = ?1 AND scope = ?2 AND label = ?3"
+                ),
+                [kind, scope, label],
+                state_row,
+            )
+            .optional()?)
+    }
+
+    fn relabel(
+        &mut self,
+        kind: &str,
+        scope: &str,
+        name: &str,
+        label: &str,
+        updated: &str,
+    ) -> Result<bool> {
+        let changed = self.db.execute(
+            "UPDATE state SET label = ?4, updated = ?5 WHERE kind = ?1 AND scope = ?2 AND name = ?3",
+            [kind, scope, name, label, updated],
+        )?;
+        Ok(changed == 1)
+    }
+
     fn put_state(&mut self, row: &StateRow) -> Result<()> {
         Ok(put_state(&self.db, row)?)
     }
@@ -574,88 +618,32 @@ impl Backend for SqliteBackend {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    fn change_states(
-        &mut self,
-        writes: &[StateRow],
-        removals: &[(String, String, String)],
-    ) -> Result<()> {
+    fn change_states(&mut self, change: &Change) -> Result<()> {
         let transaction = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        for row in writes {
-            put_state(&transaction, row)?;
-        }
-        for (kind, scope, name) in removals {
+        for (kind, scope, name) in &change.removals {
             transaction.execute(
                 "DELETE FROM state WHERE kind = ?1 AND scope = ?2 AND name = ?3",
                 [kind, scope, name],
             )?;
         }
-        transaction.commit()?;
-        Ok(())
-    }
-
-    fn rename_host(
-        &mut self,
-        old: &str,
-        new: &str,
-        writes: &[StateRow],
-        removals: &[(String, String, String)],
-    ) -> Result<()> {
-        let transaction = self
-            .db
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        for row in writes {
+        for (scope, owner) in &change.owners {
+            forget_owned(&transaction, scope, owner)?;
+        }
+        for row in &change.writes {
             put_state(&transaction, row)?;
         }
-        for (kind, scope, name) in removals {
+        for (old, new) in &change.hosts {
+            transaction.execute("UPDATE messages SET host = ?2 WHERE host = ?1", [old, new])?;
+            transaction.execute("UPDATE cursors SET host = ?2 WHERE host = ?1", [old, new])?;
+        }
+        for (id, host, subject) in &change.jobs {
             transaction.execute(
-                "DELETE FROM state WHERE kind = ?1 AND scope = ?2 AND name = ?3",
-                [kind, scope, name],
+                "UPDATE jobs SET host = ?2, subject = ?3 WHERE id = ?1",
+                [id, host, subject],
             )?;
         }
-        let (old_subject, new_subject) = (format!("host:{old}"), format!("host:{new}"));
-        transaction.execute("DELETE FROM messages WHERE host = ?1", [new])?;
-        transaction.execute("DELETE FROM cursors WHERE host = ?1", [new])?;
-        transaction.execute("UPDATE messages SET host = ?2 WHERE host = ?1", [old, new])?;
-        transaction.execute("UPDATE cursors SET host = ?2 WHERE host = ?1", [old, new])?;
-        transaction.execute("UPDATE jobs SET host = ?2 WHERE host = ?1", [old, new])?;
-        transaction.execute(
-            "UPDATE jobs SET token = NULL WHERE subject = ?1",
-            [&new_subject],
-        )?;
-        transaction.execute(
-            "UPDATE jobs SET subject = ?2 WHERE subject = ?1",
-            [&old_subject, &new_subject],
-        )?;
-        transaction.commit()?;
-        Ok(())
-    }
-
-    fn rename_subject(
-        &mut self,
-        old: &str,
-        new: &str,
-        writes: &[StateRow],
-        removals: &[(String, String, String)],
-    ) -> Result<()> {
-        let transaction = self
-            .db
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        for row in writes {
-            put_state(&transaction, row)?;
-        }
-        for (kind, scope, name) in removals {
-            transaction.execute(
-                "DELETE FROM state WHERE kind = ?1 AND scope = ?2 AND name = ?3",
-                [kind, scope, name],
-            )?;
-        }
-        transaction.execute("UPDATE jobs SET token = NULL WHERE subject = ?1", [new])?;
-        transaction.execute(
-            "UPDATE jobs SET subject = ?2 WHERE subject = ?1",
-            [old, new],
-        )?;
         transaction.commit()?;
         Ok(())
     }
@@ -761,8 +749,8 @@ impl Backend for SqliteBackend {
         match rows {
             Rows::State(rows) => {
                 let mut statement = transaction.prepare(
-                    "INSERT INTO state(kind, scope, name, value, sealed, updated)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT DO NOTHING",
+                    "INSERT INTO state(kind, scope, name, value, sealed, updated, label)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT DO NOTHING",
                 )?;
                 for row in rows {
                     added += statement.execute(params![
@@ -771,7 +759,8 @@ impl Backend for SqliteBackend {
                         row.name,
                         row.value,
                         row.sealed,
-                        row.updated
+                        row.updated,
+                        row.label
                     ])?;
                 }
             }

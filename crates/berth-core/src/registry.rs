@@ -32,6 +32,80 @@ pub fn type_label(kind: &str) -> &'static str {
 }
 pub const FORMATS: &[&str] = &["npm", "raw", "docker"];
 
+/// Where a secret is kept.
+enum Located {
+    /// A global secret: its id when it is there, and its name.
+    Global(Option<String>, String),
+    /// A secret that belongs to something, by the name of its row.
+    Owned(String),
+    /// One that would belong to something there is not, and why.
+    NoOwner(String),
+}
+
+/// The row a secret is kept in, as given by its name or id, or by the
+/// address of a secret that belongs to something: `registry/REGISTRY`
+/// for a registry's login, `ssh/HOST` and `sudo/HOST` for the passwords
+/// berth logs in to a host with, and `provisioner/PROVISIONER/SECRET`
+/// for a provisioner's own.
+fn locate(store: &store::Store, scope: &str, given: &str) -> Result<Located> {
+    let owned = |kind: &str, owner: &str, label: &str| -> Result<Located> {
+        Ok(match store.find(kind, scope, owner)? {
+            Some(found) => Located::Owned(format!("{}/{label}", found.id)),
+            None => Located::NoOwner(format!(
+                "No {} {owner}, which the secret {given} would belong to",
+                store::noun(kind)
+            )),
+        })
+    };
+    if let Some(registry) = given.strip_prefix("registry/") {
+        return owned(kind::REGISTRY, registry, "login");
+    }
+    for (prefix, label) in [("ssh/", "ssh"), ("sudo/", "sudo")] {
+        if let Some(host) = given.strip_prefix(prefix) {
+            // A profile in a file keeps its passwords by its path.
+            if host.contains('/') || host.ends_with(".json") {
+                return Ok(Located::Owned(given.to_owned()));
+            }
+            return owned(kind::PROFILE, host, label);
+        }
+    }
+    // A provisioner is named by its name, its id or its type.
+    if let Some((provisioner, secret)) = given
+        .strip_prefix("provisioner/")
+        .and_then(|rest| rest.rsplit_once('/'))
+    {
+        return Ok(match crate::provisioner::find_in(store, provisioner)? {
+            Some(found) => Located::Owned(format!("{}/{secret}", found.id)),
+            None => Located::NoOwner(format!(
+                "No provisioner {provisioner}, which the secret {given} would belong to"
+            )),
+        });
+    }
+    Ok(match store.find(kind::SECRET, scope, given)? {
+        Some(found) => Located::Global(Some(found.id), found.name),
+        None => Located::Global(None, given.to_owned()),
+    })
+}
+
+/// The value of a secret in a store that is open, by its name or id, or by
+/// the address of one that belongs to something, such as `registry/NAME`.
+pub fn read_secret_in(store: &store::Store, scope: &str, given: &str) -> Result<Option<String>> {
+    let row = match locate(store, scope, given)? {
+        Located::Global(Some(id), _) => id,
+        Located::Owned(row) => row,
+        Located::Global(None, _) | Located::NoOwner(_) => return Ok(None),
+    };
+    Ok(store
+        .read(kind::SECRET, scope, &row)?
+        .map(|value| String::from_utf8_lossy(&value).into_owned()))
+}
+
+/// Whether a name can be a global secret's: no address of one that
+/// belongs to something, and not in the shape of an id.
+pub fn valid_secret_name(name: &str) -> bool {
+    !name.trim().is_empty() && !name.contains('/') && !berth_api::ids::looks_like_id(name)
+}
+
 /// The registries and secrets of this installation.
 #[derive(Clone)]
 pub struct Store {
@@ -116,101 +190,186 @@ impl Store {
 
     pub fn registries(&self) -> Result<Map<String, Value>> {
         self.store
-            .entries(kind::REGISTRY, &self.scope)?
+            .labelled_entries(kind::REGISTRY, &self.scope)?
             .into_iter()
-            .map(|(name, value)| {
+            .map(|(found, value)| {
                 let registry = serde_json::from_slice(&value)
-                    .map_err(|error| format!("Registry {name} in the store: {error}"))?;
-                Ok((name, registry))
+                    .map_err(|error| format!("Registry {} in the store: {error}", found.name))?;
+                Ok((found.name, registry))
             })
             .collect()
     }
 
-    /// The rows of the registries, for one change of the store.
-    fn registry_rows(registries: &Map<String, Value>) -> Vec<(&str, &str, Vec<u8>)> {
-        registries
-            .iter()
-            .map(|(name, registry)| {
-                (
-                    kind::REGISTRY,
-                    name.as_str(),
-                    registry.to_string().into_bytes(),
-                )
-            })
-            .collect()
+    /// The registries' names and ids, by name.
+    pub fn registry_ids(&self) -> Result<Vec<store::Found>> {
+        Ok(self.store.labels(kind::REGISTRY, &self.scope)?)
     }
 
-    /// Make these the registries, in one change of the store.
+    /// The registry a name or id gives.
+    pub fn find_registry(&self, given: &str) -> Result<Option<store::Found>> {
+        Ok(self.store.find(kind::REGISTRY, &self.scope, given)?)
+    }
+
+    /// Make these the registries, in one change of the store: one of a name
+    /// kept keeps its id and login, a new one gets an id, and one left out
+    /// goes with its login. Profiles that name a registry refer to its id.
     pub fn save_registries(&self, registries: Map<String, Value>) -> Result<()> {
-        let rows = Self::registry_rows(&registries);
-        Ok(self.store.replace(&self.scope, &[kind::REGISTRY], &rows)?)
+        let before = self.registry_ids()?;
+        let mut batch = store::Batch::default();
+        for (name, registry) in &registries {
+            let mut registry = registry.clone();
+            if let Some(fields) = registry.as_object_mut() {
+                fields.remove("id");
+            }
+            let id = match before.iter().find(|found| &found.name == name) {
+                Some(found) => found.id.clone(),
+                None => {
+                    let id = store::new_id();
+                    crate::profiles::swap_references(
+                        &self.store,
+                        &mut batch,
+                        &self.scope,
+                        kind::REGISTRY,
+                        name,
+                        &id,
+                    )?;
+                    id
+                }
+            };
+            batch.write_labelled(
+                kind::REGISTRY,
+                &self.scope,
+                &id,
+                name,
+                registry.to_string().into_bytes(),
+            );
+        }
+        for gone in before
+            .iter()
+            .filter(|found| !registries.contains_key(&found.name))
+        {
+            batch
+                .remove(kind::REGISTRY, &self.scope, &gone.id)
+                .forget_owned(&self.scope, &gone.id);
+            crate::profiles::swap_references(
+                &self.store,
+                &mut batch,
+                &self.scope,
+                kind::REGISTRY,
+                &gone.id,
+                &gone.name,
+            )?;
+        }
+        Ok(self.store.apply(&batch)?)
     }
 
-    /// Give a registry another name, with its stored login, in one change of
-    /// the store. Returns whether there was a login to go with the name.
+    /// Give a registry another name. Its login and the hosts that use it
+    /// stay with it, as both refer to its id. Returns whether it has a login.
     pub fn rename_registry(&self, old: &str, new: &str) -> Result<bool> {
-        let mut registries = self.registries()?;
-        let registry = registries
-            .remove(old)
+        let found = self
+            .find_registry(old)?
             .ok_or_else(|| format!("No registry {old}"))?;
-        if registries.contains_key(new) {
-            return Err(format!("There is a registry {new} already").into());
+        if found.name == new {
+            return Err(format!("{new} has that name already").into());
         }
-        registries.insert(new.to_owned(), registry.clone());
-        let (old_login, new_login) = (format!("registry/{old}"), format!("registry/{new}"));
-        let login = self.store.read(kind::SECRET, &self.scope, &old_login)?;
-        let mut writes = vec![(
-            kind::REGISTRY,
-            self.scope.as_str(),
-            new,
-            registry.to_string().into_bytes(),
-        )];
-        if let Some(login) = &login {
-            writes.push((kind::SECRET, &self.scope, &new_login, login.clone()));
-        }
-        self.store.change(
-            &writes,
-            &[
-                (kind::REGISTRY, &self.scope, old),
-                (kind::SECRET, &self.scope, &old_login),
-            ],
-        )?;
-        Ok(login.is_some())
+        match self
+            .store
+            .relabel(kind::REGISTRY, &self.scope, &found.id, new)
+        {
+            Err(store::Error::Taken { .. }) => {
+                return Err(format!("There is a registry {new} already").into());
+            }
+            result => result?,
+        };
+        self.has_secret(&format!("registry/{}", found.id))
     }
 
     fn registry(&self, name: &str) -> Result<Value> {
+        let found = self
+            .find_registry(name)?
+            .ok_or_else(|| format!("No registry {name}. See: berth registry"))?;
         self.store
-            .read_json(kind::REGISTRY, &self.scope, name)?
+            .read_json(kind::REGISTRY, &self.scope, &found.id)?
             .ok_or_else(|| format!("No registry {name}. See: berth registry").into())
     }
 
-    /// The names of every secret, with the logins of registries, in order.
-    /// Nothing is unsealed.
+    fn locate(&self, given: &str) -> Result<Located> {
+        locate(&self.store, &self.scope, given)
+    }
+
+    /// The global secrets, without those that belong to something, by name.
+    pub fn secret_ids(&self) -> Result<Vec<store::Found>> {
+        Ok(self.store.labels(kind::SECRET, &self.scope)?)
+    }
+
+    /// The names of the global secrets, and the addresses of the secrets
+    /// that belong to registries, hosts and provisioners, in order. Nothing
+    /// is unsealed.
     pub fn all_secret_names(&self) -> Result<Vec<String>> {
-        Ok(self.store.names(kind::SECRET, &self.scope)?)
+        let mut names: Vec<String> = self
+            .secret_ids()?
+            .into_iter()
+            .map(|found| found.name)
+            .collect();
+        let owners = [
+            (kind::REGISTRY, "registry"),
+            (kind::PROFILE, "host"),
+            (kind::PROVISIONER_ENTRY, "provisioner"),
+        ];
+        let mut labels = std::collections::HashMap::new();
+        for (kind, of) in owners {
+            for found in self.store.labels(kind, &self.scope)? {
+                labels.insert(found.id, (of, found.name));
+            }
+        }
+        for row in self.store.names(kind::SECRET, &self.scope)? {
+            match row.split_once('/') {
+                Some((owner, label)) if berth_api::ids::is_id(owner) => {
+                    match (labels.get(owner), label) {
+                        (Some(("registry", name)), _) => names.push(format!("registry/{name}")),
+                        (Some(("host", name)), label) => names.push(format!("{label}/{name}")),
+                        (Some((_, name)), label) => {
+                            names.push(format!("provisioner/{name}/{label}"))
+                        }
+                        (None, _) => {}
+                    }
+                }
+                // A file's passwords, by its path.
+                Some(_) => names.push(row),
+                None => {}
+            }
+        }
+        names.sort();
+        names.dedup();
+        Ok(names)
     }
 
     /// The secrets the user named, without the passwords of registries and
     /// those berth logs in to hosts with.
     pub fn secret_names(&self) -> Vec<String> {
-        self.all_secret_names()
+        self.secret_ids()
             .unwrap_or_default()
             .into_iter()
-            .filter(|name| {
-                !["registry/", "ssh/", "sudo/", "provisioner/"]
-                    .iter()
-                    .any(|kept| name.starts_with(kept))
-            })
+            .map(|found| found.name)
             .collect()
     }
 
     /// Whether a secret has a value. Nothing is unsealed.
     pub fn has_secret(&self, name: &str) -> Result<bool> {
-        Ok(self.all_secret_names()?.iter().any(|known| known == name))
+        Ok(match self.locate(name)? {
+            Located::Global(id, _) => id.is_some(),
+            Located::Owned(row) => self.store.names(kind::SECRET, &self.scope)?.contains(&row),
+            Located::NoOwner(_) => false,
+        })
     }
 
     pub fn secret(&self, name: &str) -> Result<Option<String>> {
-        match self.store.read(kind::SECRET, &self.scope, name)? {
+        let row = match self.locate(name)? {
+            Located::Global(Some(id), _) => id,
+            Located::Owned(row) => row,
+            Located::Global(None, _) | Located::NoOwner(_) => return Ok(None),
+        };
+        match self.store.read(kind::SECRET, &self.scope, &row)? {
             Some(value) => Ok(Some(
                 String::from_utf8(value).map_err(|_| format!("Secret {name} is not text"))?,
             )),
@@ -218,16 +377,86 @@ impl Store {
         }
     }
 
+    /// Set a secret, or forget it with `None`. A new global secret gets an
+    /// id, and profiles that name it refer to that; one forgotten is named
+    /// by them again.
     pub fn set_secret(&self, name: &str, value: Option<&str>) -> Result<()> {
-        match value {
-            Some(value) => self
-                .store
-                .write(kind::SECRET, &self.scope, name, value.as_bytes())?,
-            None => {
-                self.store.forget(kind::SECRET, &self.scope, name)?;
+        let mut batch = store::Batch::default();
+        match (self.locate(name)?, value) {
+            (Located::NoOwner(why), Some(_)) => return Err(why.into()),
+            (Located::NoOwner(_), None) | (Located::Global(None, _), None) => return Ok(()),
+            (Located::Owned(row), Some(value)) => {
+                batch.write(kind::SECRET, &self.scope, &row, value.as_bytes().to_vec());
+            }
+            (Located::Owned(row), None) => {
+                batch.remove(kind::SECRET, &self.scope, &row);
+            }
+            (Located::Global(Some(id), label), Some(value)) => {
+                batch.write_labelled(
+                    kind::SECRET,
+                    &self.scope,
+                    &id,
+                    &label,
+                    value.as_bytes().to_vec(),
+                );
+            }
+            (Located::Global(None, label), Some(value)) => {
+                if !valid_secret_name(&label) {
+                    return Err(format!("Not a name for a secret: {label}").into());
+                }
+                let id = store::new_id();
+                batch.write_labelled(
+                    kind::SECRET,
+                    &self.scope,
+                    &id,
+                    &label,
+                    value.as_bytes().to_vec(),
+                );
+                crate::profiles::swap_references(
+                    &self.store,
+                    &mut batch,
+                    &self.scope,
+                    kind::SECRET,
+                    &label,
+                    &id,
+                )?;
+            }
+            (Located::Global(Some(id), label), None) => {
+                batch.remove(kind::SECRET, &self.scope, &id);
+                crate::profiles::swap_references(
+                    &self.store,
+                    &mut batch,
+                    &self.scope,
+                    kind::SECRET,
+                    &id,
+                    &label,
+                )?;
             }
         }
-        Ok(())
+        Ok(self.store.apply(&batch)?)
+    }
+
+    /// Give a global secret another name. The profiles that hand it to
+    /// hosts refer to its id, and go on doing so.
+    pub fn rename_secret(&self, old: &str, new: &str) -> Result<()> {
+        let Located::Global(Some(id), label) = self.locate(old)? else {
+            return Err(format!(
+                "No secret {old}. A secret that belongs to a registry, host or provisioner keeps its name"
+            )
+            .into());
+        };
+        if label == new {
+            return Err(format!("{new} has that name already").into());
+        }
+        if !valid_secret_name(new) {
+            return Err(format!("Not a name for a secret: {new}").into());
+        }
+        match self.store.relabel(kind::SECRET, &self.scope, &id, new) {
+            Err(store::Error::Taken { .. }) => {
+                Err(format!("There is a secret {new} already").into())
+            }
+            result => Ok(result.map(|_| ())?),
+        }
     }
 
     /// `user:password` of a registry in base64, when its login is known.
@@ -753,9 +982,11 @@ mod tests {
         store.set_secret("registry/verdaccio", Some("tok")).unwrap();
         store.set_secret("github", Some("token")).unwrap();
         store.set_secret("cert", Some("PEM")).unwrap();
+        // The login belongs to the registry, by its id.
+        let nexus = store.find_registry("nexus").unwrap().unwrap().id;
         assert_eq!(
             opened
-                .read(kind::SECRET, store::OWN, "registry/nexus")
+                .read(kind::SECRET, store::OWN, &format!("{nexus}/login"))
                 .unwrap()
                 .unwrap(),
             b"pw"

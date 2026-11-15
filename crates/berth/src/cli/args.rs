@@ -740,6 +740,13 @@ pub enum Secret {
         #[arg(long, value_name = "FILE")]
         value_file: Option<PathBuf>,
     },
+    /// Give a secret another name. The profiles that hand it to hosts go on doing so.
+    #[command(visible_alias = "mv")]
+    Rename {
+        /// The secret, by its name or its id.
+        name: String,
+        new: String,
+    },
     /// Remove a secret.
     #[command(visible_alias = "rm")]
     Remove { name: String },
@@ -781,6 +788,13 @@ pub enum Registry {
     },
     /// Whether a registry answers and takes its login.
     Check { name: Option<String> },
+    /// Give a registry another name. Its login and the hosts that use it stay with it.
+    #[command(visible_alias = "mv")]
+    Rename {
+        /// The registry, by its name or its id.
+        name: String,
+        new: String,
+    },
     /// Remove a registry with its login.
     #[command(visible_alias = "rm")]
     Remove { name: String },

@@ -119,7 +119,7 @@ fn host(paths: &Paths, name: &str, port: u16) -> Host {
         .unwrap()
         .trim()
         .to_owned();
-    let place = Place::own(name).unwrap();
+    let place = Place::own(paths, name).unwrap();
     let config =
         json!({"access": {"address": "127.0.0.1", "port": port.to_string(), "user": user}});
     place.save(paths, &config).unwrap();

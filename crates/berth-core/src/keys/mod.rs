@@ -25,7 +25,7 @@ use crate::Result;
 use crate::link::LinkSpec;
 use crate::paths::Paths;
 use crate::profiles::Place;
-use crate::store::{OWN, Store, kind};
+use crate::store::{OWN, Store};
 use berth_api::profile::{Access, Auth, BERTH_KEY};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -162,7 +162,7 @@ pub fn login(paths: &Paths, store: &Store, place: &Place, config: &Value) -> Res
         }
         Auth::Password => {
             let secret = password_secret(place);
-            if store.names(kind::SECRET, OWN)?.contains(&secret) {
+            if crate::registry::read_secret_in(store, OWN, &secret)?.is_some() {
                 login.askpass = Some(format!("secret:{secret}"));
             }
         }
@@ -467,12 +467,10 @@ const PASSWORD_LINK: &str = r#"sh -c 'IFS= read -r p; if sudo -n true 2>/dev/nul
 
 /// The saved hosts of this installation that log in with a key of the ring.
 pub fn users(store: &Store, key: &str) -> Result<Vec<String>> {
-    Ok(store
-        .entries(kind::PROFILE, OWN)?
+    Ok(crate::profiles::stored_entries(store, OWN)?
         .into_iter()
-        .filter_map(|(name, value)| {
-            let config: Value = serde_json::from_slice(&value).ok()?;
-            (Access::of(&config).auth.key() == Some(key)).then_some(name)
+        .filter_map(|(host, config)| {
+            (Access::of(&config).auth.key() == Some(key)).then_some(host.name)
         })
         .collect())
 }

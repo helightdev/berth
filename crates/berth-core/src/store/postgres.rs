@@ -6,8 +6,8 @@
 //! answer.
 
 use super::{
-    Backend, CursorRow, Entry, Error, Filter, Job, JobFilter, KvRow, MessageRow, Result, Rows,
-    StateRow, Stored, Table, When, json_value, keep_from, keep_name,
+    Backend, Change, CursorRow, Entry, Error, Filter, Job, JobFilter, KvRow, MessageRow, Result,
+    Rows, StateRow, Stored, Table, When, json_value, keep_from, keep_name,
 };
 use berth_api::{From, Keep, Level, Message};
 use postgres::config::SslMode;
@@ -51,6 +51,8 @@ pub(super) const MIGRATIONS: &[&str] = &[
      CREATE UNIQUE INDEX jobs_token ON jobs(subject, action, token) WHERE token IS NOT NULL;",
     "ALTER TABLE jobs ADD COLUMN stopped_by TEXT;",
     "ALTER TABLE jobs ADD COLUMN arguments TEXT;",
+    "ALTER TABLE state ADD COLUMN label TEXT COLLATE \"C\";
+     CREATE UNIQUE INDEX state_label ON state(kind, scope, label) WHERE label IS NOT NULL;",
 ];
 
 /// The advisory lock that keeps two berths from migrating at once.
@@ -263,7 +265,7 @@ fn insert_job(client: &mut impl postgres::GenericClient, job: &Job) -> PgResult<
     )
 }
 
-const STATE_COLUMNS: &str = "kind, scope, name, value, sealed, updated";
+const STATE_COLUMNS: &str = "kind, scope, name, value, sealed, updated, label";
 
 fn state_row(row: &Row) -> StateRow {
     StateRow {
@@ -273,13 +275,16 @@ fn state_row(row: &Row) -> StateRow {
         value: row.get(3),
         sealed: row.get(4),
         updated: row.get(5),
+        label: row.get(6),
     }
 }
 
-const PUT_STATE: &str = "INSERT INTO state(kind, scope, name, value, sealed, updated)
-     VALUES ($1, $2, $3, $4, $5, $6)
+// A write without a label keeps the one the row has.
+const PUT_STATE: &str = "INSERT INTO state(kind, scope, name, value, sealed, updated, label)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (kind, scope, name) DO UPDATE
-     SET value = excluded.value, sealed = excluded.sealed, updated = excluded.updated";
+     SET value = excluded.value, sealed = excluded.sealed, updated = excluded.updated,
+         label = COALESCE(excluded.label, state.label)";
 
 fn put_state(client: &mut impl postgres::GenericClient, row: &StateRow) -> PgResult<()> {
     client.execute(
@@ -291,7 +296,22 @@ fn put_state(client: &mut impl postgres::GenericClient, row: &StateRow) -> PgRes
             &row.value,
             &row.sealed,
             &row.updated,
+            &row.label,
         ],
+    )?;
+    Ok(())
+}
+
+/// Delete the rows that belong to `owner` in `scope`: those without a label
+/// whose name is the owner's id or starts with it and a `/`.
+fn forget_owned(
+    client: &mut impl postgres::GenericClient,
+    scope: &str,
+    owner: &str,
+) -> PgResult<()> {
+    client.execute(
+        "DELETE FROM state WHERE scope = $1 AND label IS NULL AND (name = $2 OR left(name, length($2) + 1) = $2 || '/')",
+        &[&scope, &owner],
     )?;
     Ok(())
 }
@@ -804,6 +824,38 @@ impl Backend for PostgresBackend {
         })
     }
 
+    fn labelled(&mut self, kind: &str, scope: &str, label: &str) -> Result<Option<StateRow>> {
+        let (kind, scope, label) = (kind.to_owned(), scope.to_owned(), label.to_owned());
+        self.call(move |client| {
+            let row = client.query_opt(
+                &format!(
+                    "SELECT {STATE_COLUMNS} FROM state WHERE kind = $1 AND scope = $2 AND label = $3"
+                ),
+                &[&kind, &scope, &label],
+            )?;
+            Ok(row.as_ref().map(state_row))
+        })
+    }
+
+    fn relabel(
+        &mut self,
+        kind: &str,
+        scope: &str,
+        name: &str,
+        label: &str,
+        updated: &str,
+    ) -> Result<bool> {
+        let given = [kind, scope, name, label, updated].map(str::to_owned);
+        self.call(move |client| {
+            let [kind, scope, name, label, updated] = &given;
+            let changed = client.execute(
+                "UPDATE state SET label = $4, updated = $5 WHERE kind = $1 AND scope = $2 AND name = $3",
+                &[kind, scope, name, label, updated],
+            )?;
+            Ok(changed == 1)
+        })
+    }
+
     fn put_state(&mut self, row: &StateRow) -> Result<()> {
         let row = row.clone();
         self.call(move |client| put_state(client, &row))
@@ -847,96 +899,33 @@ impl Backend for PostgresBackend {
         })
     }
 
-    fn change_states(
-        &mut self,
-        writes: &[StateRow],
-        removals: &[(String, String, String)],
-    ) -> Result<()> {
-        let (writes, removals) = (writes.to_vec(), removals.to_vec());
+    fn change_states(&mut self, change: &Change) -> Result<()> {
+        let change = change.clone();
         self.call(move |client| {
             let mut transaction = client.transaction()?;
-            for row in &writes {
-                put_state(&mut transaction, row)?;
-            }
-            for (kind, scope, name) in &removals {
+            for (kind, scope, name) in &change.removals {
                 transaction.execute(
                     "DELETE FROM state WHERE kind = $1 AND scope = $2 AND name = $3",
                     &[kind, scope, name],
                 )?;
             }
-            transaction.commit()
-        })
-    }
-
-    fn rename_host(
-        &mut self,
-        old: &str,
-        new: &str,
-        writes: &[StateRow],
-        removals: &[(String, String, String)],
-    ) -> Result<()> {
-        let (writes, removals) = (writes.to_vec(), removals.to_vec());
-        let (old, new) = (old.to_owned(), new.to_owned());
-        self.call(move |client| {
-            let mut transaction = client.transaction()?;
-            for row in &writes {
+            for (scope, owner) in &change.owners {
+                forget_owned(&mut transaction, scope, owner)?;
+            }
+            for row in &change.writes {
                 put_state(&mut transaction, row)?;
             }
-            for (kind, scope, name) in &removals {
+            for (old, new) in &change.hosts {
+                transaction
+                    .execute("UPDATE messages SET host = $2 WHERE host = $1", &[old, new])?;
+                transaction.execute("UPDATE cursors SET host = $2 WHERE host = $1", &[old, new])?;
+            }
+            for (id, host, subject) in &change.jobs {
                 transaction.execute(
-                    "DELETE FROM state WHERE kind = $1 AND scope = $2 AND name = $3",
-                    &[kind, scope, name],
+                    "UPDATE jobs SET host = $2, subject = $3 WHERE id = $1",
+                    &[id, host, subject],
                 )?;
             }
-            let (old_subject, new_subject) = (format!("host:{old}"), format!("host:{new}"));
-            transaction.execute("DELETE FROM messages WHERE host = $1", &[&new])?;
-            transaction.execute("DELETE FROM cursors WHERE host = $1", &[&new])?;
-            transaction.execute(
-                "UPDATE messages SET host = $2 WHERE host = $1",
-                &[&old, &new],
-            )?;
-            transaction.execute(
-                "UPDATE cursors SET host = $2 WHERE host = $1",
-                &[&old, &new],
-            )?;
-            transaction.execute("UPDATE jobs SET host = $2 WHERE host = $1", &[&old, &new])?;
-            transaction.execute(
-                "UPDATE jobs SET token = NULL WHERE subject = $1",
-                &[&new_subject],
-            )?;
-            transaction.execute(
-                "UPDATE jobs SET subject = $2 WHERE subject = $1",
-                &[&old_subject, &new_subject],
-            )?;
-            transaction.commit()
-        })
-    }
-
-    fn rename_subject(
-        &mut self,
-        old: &str,
-        new: &str,
-        writes: &[StateRow],
-        removals: &[(String, String, String)],
-    ) -> Result<()> {
-        let (writes, removals) = (writes.to_vec(), removals.to_vec());
-        let (old, new) = (old.to_owned(), new.to_owned());
-        self.call(move |client| {
-            let mut transaction = client.transaction()?;
-            for row in &writes {
-                put_state(&mut transaction, row)?;
-            }
-            for (kind, scope, name) in &removals {
-                transaction.execute(
-                    "DELETE FROM state WHERE kind = $1 AND scope = $2 AND name = $3",
-                    &[kind, scope, name],
-                )?;
-            }
-            transaction.execute("UPDATE jobs SET token = NULL WHERE subject = $1", &[&new])?;
-            transaction.execute(
-                "UPDATE jobs SET subject = $2 WHERE subject = $1",
-                &[&old, &new],
-            )?;
             transaction.commit()
         })
     }
@@ -1058,8 +1047,8 @@ impl Backend for PostgresBackend {
             match &rows {
                 Rows::State(rows) => {
                     let statement = transaction.prepare(
-                        "INSERT INTO state(kind, scope, name, value, sealed, updated)
-                         VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+                        "INSERT INTO state(kind, scope, name, value, sealed, updated, label)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING",
                     )?;
                     for row in rows {
                         added += transaction.execute(
@@ -1071,6 +1060,7 @@ impl Backend for PostgresBackend {
                                 &row.value,
                                 &row.sealed,
                                 &row.updated,
+                                &row.label,
                             ],
                         )?;
                     }

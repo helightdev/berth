@@ -11,7 +11,7 @@ use crate::Result;
 use crate::host::Host;
 use crate::paths::Paths;
 use crate::profiles::Place;
-use crate::store::{OWN, Store, kind};
+use crate::store::{OWN, Store};
 use berth_api::profile::{Access, Auth, BERTH_KEY};
 use serde_json::Value;
 use std::io::Write;
@@ -234,13 +234,8 @@ pub struct Rotation {
 /// that berth knows nothing of and does not log in with it, is left out.
 fn rotated(store: &Store, name: &str, old: &str, new: &str) -> Result<Vec<(Place, Value)>> {
     let mut hosts = vec![];
-    for (host, value) in store.entries(kind::PROFILE, OWN)? {
-        let Ok(config) = serde_json::from_slice::<Value>(&value) else {
-            continue;
-        };
-        let Ok(place) = Place::own(&host) else {
-            continue;
-        };
+    for (host, config) in crate::profiles::stored_entries(store, OWN)? {
+        let place = Place::at(OWN, &host.id, &host.name);
         let record = known::Record::load(store, &place)?;
         if wanted(&record, &config, name, old, new) {
             hosts.push((place, config));
@@ -375,7 +370,7 @@ mod tests {
             config_dir: dir.path().join("config"),
             data_dir: dir.path().join("data"),
         };
-        let place = crate::profiles::Place::own("studio").unwrap();
+        let place = crate::profiles::Place::own(&paths, "studio").unwrap();
         let host = Host {
             name: "studio".into(),
             place: place.clone(),

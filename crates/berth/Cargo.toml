@@ -27,6 +27,7 @@ futures-util.workspace = true
 # set up from.
 [target.'cfg(target_os = "linux")'.dependencies]
 berth-core.workspace = true
+tower = { version = "0.5", features = ["util"] }
 # For its API document, which berth serve's includes.
 berthd = { path = "../berthd" }
 axum.workspace = true

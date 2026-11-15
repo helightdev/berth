@@ -16,12 +16,12 @@ use std::{io::Write, path::PathBuf, process::Stdio};
 /// Where the role writes it, readable by root only.
 pub const PATH: &str = "/etc/berth/profile.json";
 
-/// The format of the document: 3 has the profile with the fields `type`
-/// and `target`. Format 2 named them `level` and `profile`, and format 1, of
+/// The format of the document: 4 has the host's id beside its name, and 3
+/// the profile with the fields `type` and `target`. Format 2 named them `level` and `profile`, and format 1, of
 /// berth 0.4.1, had the layout before `access`; both are converted when they
 /// are read. A berth refuses one newer than it knows, so a berth of format 2
 /// asks to be updated rather than read `type` as a workstation.
-pub const FORMAT: u64 = 3;
+pub const FORMAT: u64 = 4;
 
 /// What a profile's `builder` held of how one berth reached the host, or of
 /// that berth's own machine, in the layout before `access`, and what still
@@ -67,16 +67,20 @@ pub fn stored(config: &Value) -> Value {
 }
 
 /// The document the role writes, without the time of the write, which the
-/// role adds. `host` is the name the host has in this berth. Only the record
+/// role adds. `host` is the name the host has in this berth, and `id` its
+/// id, which a berth that adopts the host gives it again when it can. Only the record
 /// of a machine that exists travels: one without the provisioner's id names
 /// nothing yet. What says when berth last looked at it stays here.
-pub fn document(host: &str, config: &Value, machine: Option<&resource::Record>) -> Value {
+pub fn document(host: &str, id: &str, config: &Value, machine: Option<&resource::Record>) -> Value {
     let mut document = json!({
         "format": FORMAT,
         "berth": berth_api::VERSION,
         "host": host,
         "profile": stored(config),
     });
+    if berth_api::ids::is_id(id) {
+        document["id"] = json!(id);
+    }
     if let Some(record) = machine.filter(|record| !record.external_id.is_empty()) {
         let mut kept = json!(record);
         if let Some(kept) = kept.as_object_mut() {
@@ -96,7 +100,8 @@ pub fn for_host(paths: &Paths, host: &crate::host::Host) -> Value {
         .ok()
         .flatten()
         .map(|kept| kept.record);
-    let mut document = document(&host.place.title(), &host.config, machine.as_ref());
+    let id = host.place.id().unwrap_or("");
+    let mut document = document(&host.place.title(), id, &host.config, machine.as_ref());
     // Another berth knows the provisioner by its type, not by this berth's name for it.
     if document["machine"].is_object()
         && let Some(record) = &machine
@@ -109,8 +114,8 @@ pub fn for_host(paths: &Paths, host: &crate::host::Host) -> Value {
 
 /// Add the document to a profile handed to the seed builder, which puts it
 /// where the first boot finds it. `saved` is the profile as berth holds it.
-pub fn for_seed(config: &mut Value, host: &str, saved: &Value) {
-    config["berth_profile"] = document(host, saved, None);
+pub fn for_seed(config: &mut Value, host: &str, id: &str, saved: &Value) {
+    config["berth_profile"] = document(host, id, saved, None);
 }
 
 /// How the adopting berth reaches the host.
@@ -182,6 +187,8 @@ pub struct Adopted {
     /// The type of the provisioner that made the machine, as `PLUGIN/ID`,
     /// when the document says it.
     pub machine_type: String,
+    /// The host's id where it was written, from format 4 on; empty before.
+    pub id: String,
     /// The name and berth of the write, and when it was.
     pub host: String,
     pub berth: String,
@@ -282,6 +289,9 @@ pub fn adopted(paths: &Paths, title: &str, kept: &Value, access: &Access) -> Res
         profile,
         machine,
         machine_type,
+        id: Some(text("id"))
+            .filter(|id| berth_api::ids::is_id(id))
+            .unwrap_or_default(),
         host: text("host"),
         berth: text("berth"),
         written: text("written"),
@@ -400,8 +410,33 @@ pub fn read(
 }
 
 /// Save an adopted host at `place`, with the record of its machine in place
-/// of one kept there before.
-pub fn save(paths: &Paths, place: &Place, adopted: &Adopted) -> Result<()> {
+/// of one kept there before. A host saved here for the first time takes the
+/// id it kept, unless another host here has it; what berth learned of its
+/// SSH on the way in goes with it. Returns where it was saved.
+pub fn save(paths: &Paths, place: &Place, adopted: &Adopted) -> Result<Place> {
+    let place = &match place {
+        Place::Stored { scope, id, name }
+            if !adopted.id.is_empty()
+                && *id != adopted.id
+                && place.load(paths)?.is_none()
+                && crate::store::shared(paths)?
+                    .label_of(crate::store::kind::PROFILE, scope, &adopted.id)?
+                    .is_none() =>
+        {
+            let store = crate::store::shared(paths)?;
+            let mut batch = crate::store::Batch::default();
+            for kind in [crate::store::kind::ACCESS, crate::store::kind::CREDENTIALS] {
+                if let Some(value) = store.read(kind, scope, id)? {
+                    batch
+                        .write(kind, scope, &adopted.id, value)
+                        .remove(kind, scope, id);
+                }
+            }
+            store.apply(&batch)?;
+            Place::at(scope, &adopted.id, name)
+        }
+        place => place.clone(),
+    };
     place.save(paths, &adopted.profile)?;
     if let Some(old) = resource::of_place(paths, place)? {
         old.forget(paths)?;
@@ -412,7 +447,7 @@ pub fn save(paths: &Paths, place: &Place, adopted: &Adopted) -> Result<()> {
         record.host = host;
         record.name = place.title();
         record.provisioner =
-            crate::provisioner::adopted_name(paths, &record.provisioner, &adopted.machine_type)?;
+            crate::provisioner::adopted(paths, &record.provisioner, &adopted.machine_type)?;
         // An id this berth has already, or none of its making, is not taken over.
         let taken = resource::list(paths)?
             .iter()
@@ -422,7 +457,7 @@ pub fn save(paths: &Paths, place: &Place, adopted: &Adopted) -> Result<()> {
         }
         resource::Kept { scope, record }.save(paths)?;
     }
-    Ok(())
+    Ok(place.clone())
 }
 
 #[cfg(test)]
@@ -499,7 +534,7 @@ mod tests {
     #[test]
     fn only_the_record_of_a_machine_that_exists_travels() {
         let mut record = resource::Record {
-            id: "r-abcdefgh".into(),
+            id: "01972c4e8f3a7b219d4e5a6b7c8d9e0f".into(),
             provisioner: "incus/vm".into(),
             kind: "machine".into(),
             host: "studio".into(),
@@ -507,10 +542,10 @@ mod tests {
             state: "running".into(),
             ..resource::Record::default()
         };
-        let none = document("studio", &profile(), Some(&record));
+        let none = document("studio", "", &profile(), Some(&record));
         assert!(none.get("machine").is_none());
         record.external_id = "berth-studio".into();
-        let made = document("studio", &profile(), Some(&record));
+        let made = document("studio", "", &profile(), Some(&record));
         assert_eq!(made["machine"]["external_id"], "berth-studio");
         assert!(made["machine"].get("host").is_none() && made["machine"].get("state").is_none());
         assert_eq!(
@@ -524,7 +559,7 @@ mod tests {
     fn a_kept_profile_read_back_applies_as_the_original() {
         let (_home, paths) = scratch();
         let original = profile();
-        let mut kept = document("studio", &original, None);
+        let mut kept = document("studio", "", &original, None);
         kept["written"] = json!("2026-11-13T10:00:00Z");
         let back = adopted(&paths, "studio", &kept, &reached()).unwrap();
         let dirs = json!({"demo": "/p/demo"});
@@ -555,8 +590,8 @@ mod tests {
         assert_eq!(back.registries(), ["nexus"]);
         // Kept again, it is the same document.
         assert_eq!(
-            document("studio", &back.profile, None),
-            document("studio", &original, None)
+            document("studio", "", &back.profile, None),
+            document("studio", "", &original, None)
         );
     }
 
@@ -612,8 +647,8 @@ mod tests {
         let back = adopted(&paths, "studio", &old("controller"), &reached()).unwrap();
         assert_eq!(back.profile["type"], "managed");
         // Kept again, it is written in the format of now.
-        let again = document("studio", &back.profile, None);
-        assert_eq!(again["format"], 3);
+        let again = document("studio", "", &back.profile, None);
+        assert_eq!(again["format"], 4);
         assert_eq!(
             (&again["profile"]["type"], &again["profile"]["target"]),
             (&json!("managed"), &json!("laptop"))
@@ -646,34 +681,34 @@ mod tests {
     fn an_adopted_host_is_saved_with_its_machine_in_place_of_the_old_one() {
         let (_home, paths) = scratch();
         let record = resource::Record {
-            id: "r-abcdefgh".into(),
+            id: "01972c4e8f3a7b219d4e5a6b7c8d9e1f".into(),
             provisioner: "incus/vm".into(),
             kind: "machine".into(),
             external_id: "berth-studio".into(),
             token: "0123abcd".into(),
             ..resource::Record::default()
         };
-        let kept = document("old", &profile(), Some(&record));
+        let kept = document("old", "", &profile(), Some(&record));
         let back = adopted(&paths, "studio", &kept, &reached()).unwrap();
-        let place = Place::own("studio").unwrap();
+        let place = Place::own(&paths, "studio").unwrap();
         save(&paths, &place, &back).unwrap();
         assert_eq!(place.load(&paths).unwrap().unwrap(), back.profile);
         let machine = resource::of_place(&paths, &place).unwrap().unwrap();
-        assert_eq!(machine.record.id, "r-abcdefgh");
+        assert_eq!(machine.record.id, record.id);
         assert_eq!(
             (machine.record.host.as_str(), machine.record.name.as_str()),
-            ("studio", "studio")
+            (place.key().as_str(), "studio")
         );
         // Saved again under another name, the id this berth has already is not taken twice.
-        let attic = Place::own("attic").unwrap();
+        let attic = Place::own(&paths, "attic").unwrap();
         save(&paths, &attic, &back).unwrap();
         let other = resource::of_place(&paths, &attic).unwrap().unwrap();
-        assert_ne!(other.record.id, "r-abcdefgh");
+        assert_ne!(other.record.id, record.id);
         // Adopted again without a machine, the old record goes.
         let bare = adopted(
             &paths,
             "studio",
-            &document("old", &profile(), None),
+            &document("old", "", &profile(), None),
             &reached(),
         )
         .unwrap();

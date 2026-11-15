@@ -1010,6 +1010,21 @@ berth secret set NAME [--value-file FILE]
 | `NAME` | Its name. |
 | `--value-file FILE` | Read the value from FILE. |
 
+### berth secret rename
+
+Give a secret another name. The profiles that hand it to hosts go on doing so.
+
+`berth secret mv` is the same.
+
+```text
+berth secret rename NAME NEW
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | The secret, by its name or its id. |
+| `NEW` | Its new name. |
+
 ### berth secret remove
 
 Remove a secret.
@@ -1092,6 +1107,21 @@ berth registry check [NAME]
 | Argument | What it is |
 | --- | --- |
 | `NAME` | Its name. |
+
+### berth registry rename
+
+Give a registry another name. Its login and the hosts that use it stay with it.
+
+`berth registry mv` is the same.
+
+```text
+berth registry rename NAME NEW
+```
+
+| Argument | What it is |
+| --- | --- |
+| `NAME` | The registry, by its name or its id. |
+| `NEW` | Its new name. |
 
 ### berth registry remove
 

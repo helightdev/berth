@@ -182,7 +182,7 @@ impl Machine {
     /// The provisioner chosen to create the machine with.
     pub fn provisioner(&self) -> Option<&ProvisionerInfo> {
         let chosen = self.chosen.as_ref()?;
-        self.all().iter().find(|known| &known.id == chosen)
+        self.all().iter().find(|known| known.named() == chosen)
     }
 
     /// The machine the host has, once that is known.
@@ -199,7 +199,7 @@ impl Machine {
         let Some(provisioner) = self.all().get(index) else {
             return;
         };
-        if self.chosen.as_ref() == Some(&provisioner.id) {
+        if self.chosen.as_ref() == Some(&provisioner.named().to_owned()) {
             return;
         }
         let values = provisioner
@@ -213,7 +213,7 @@ impl Machine {
                 (argument.name.clone(), value)
             })
             .collect();
-        self.chosen = Some(provisioner.id.clone());
+        self.chosen = Some(provisioner.named().to_owned());
         self.values = values;
     }
 
@@ -224,11 +224,11 @@ impl Machine {
             .iter()
             .map(|known| {
                 // Two provisioners of one type differ by their names alone.
-                let label = match known.kind.is_empty() || known.kind == known.id {
+                let label = match known.kind.is_empty() || known.kind == known.named() {
                     true => known.label.clone(),
-                    false => format!("{} · {}", known.id, known.label),
+                    false => format!("{} · {}", known.named(), known.label),
                 };
-                (label, known.id.clone())
+                (label, known.named().to_owned())
             })
             .collect()
     }
@@ -260,7 +260,7 @@ impl Machine {
 
     /// Choose the provisioner with this name.
     pub fn choose_id(&mut self, id: &str) {
-        if let Some(index) = self.all().iter().position(|known| known.id == id) {
+        if let Some(index) = self.all().iter().position(|known| known.named() == id) {
             self.choose(index);
         }
     }
@@ -275,7 +275,7 @@ impl Machine {
             Some(chosen) => self
                 .all()
                 .iter()
-                .position(|known| &known.id == chosen)
+                .position(|known| known.named() == chosen)
                 .map_or(0, |index| (index + 1) % count),
             None => 0,
         };
@@ -373,7 +373,7 @@ impl Machine {
             })
             .collect();
         Ok(NewResource {
-            provisioner: provisioner.id.clone(),
+            provisioner: provisioner.named().to_owned(),
             kind: "machine".into(),
             arguments,
             ..NewResource::default()

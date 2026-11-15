@@ -138,7 +138,7 @@ impl Seed {
             return Err("token has at least 32 characters and no spaces".into());
         }
         for (name, host) in &seed.hosts {
-            Place::own(name).map_err(|error| format!("hosts.{name}: {error}"))?;
+            checked(name).map_err(|error| format!("hosts.{name}: {error}"))?;
             if host
                 .profile
                 .as_ref()
@@ -211,7 +211,7 @@ impl Seed {
                 .map_err(|error| format!("provisioners.{name}: {error}"))?;
         }
         for (name, profile, applied) in self.profiles() {
-            let place = Place::own(&name)?;
+            let place = Place::own(paths, &name)?;
             place.save(paths, &profile)?;
             if applied {
                 let host = Host::load_at(paths, place)?;
@@ -221,6 +221,14 @@ impl Seed {
             }
         }
         Ok(())
+    }
+}
+
+/// A host's name, checked: it names a folder of the simulation.
+fn checked(name: &str) -> Result<()> {
+    match crate::profiles::valid_name(name) {
+        true => Ok(()),
+        false => Err(format!("Not a host name: {name}").into()),
     }
 }
 
@@ -295,7 +303,7 @@ impl Simulation {
     }
 
     fn dir(&self, name: &str) -> Result<PathBuf> {
-        Place::own(name)?;
+        checked(name)?;
         Ok(self.root.join("hosts").join(name))
     }
 
@@ -743,7 +751,7 @@ pub fn provision(verb: &str, input: &str, progress: &mut dyn Write) -> Result<Va
     if request["kind"] == "machine"
         && let Some(host) = request["host"]
             .as_str()
-            .filter(|host| Place::own(host).is_ok())
+            .filter(|host| checked(host).is_ok())
     {
         let stopped = dir.join("hosts").join(host).join(STOPPED);
         match verb {

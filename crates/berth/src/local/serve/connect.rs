@@ -326,10 +326,10 @@ pub async fn connect(
         Fail::new(
             code::NOT_FOUND,
             match names.is_empty() {
-                true => format!("{} reports no endpoints", kept.title()),
+                true => format!("{} reports no endpoints", kept.title(&state.paths)),
                 false => format!(
                     "{} has no endpoint {given}. Its endpoints: {}",
-                    kept.title(),
+                    kept.title(&state.paths),
                     names.join(", ")
                 ),
             },
@@ -350,7 +350,7 @@ pub async fn connect(
             format!(
                 "berth serve --simulate dials no endpoint: {} of {} leads nowhere",
                 endpoint.name,
-                kept.title()
+                kept.title(&state.paths)
             ),
         ));
     }

@@ -5,6 +5,7 @@
 pub mod client;
 pub mod compat;
 pub mod escape;
+pub mod ids;
 pub mod ops;
 #[cfg(feature = "client")]
 pub mod portal;

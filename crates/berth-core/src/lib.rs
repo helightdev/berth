@@ -51,5 +51,9 @@ impl std::error::Error for Refused {}
 /// Whether `error` is a refusal before anything began: [`Refused`], or a
 /// host of a type that cannot do it.
 pub fn is_refused(error: &(dyn std::error::Error + 'static)) -> bool {
-    error.is::<Refused>() || error.is::<host_type::Refusal>()
+    error.is::<Refused>()
+        || error.is::<host_type::Refusal>()
+        || error.downcast_ref::<store::Error>().is_some_and(|error| {
+            matches!(error, store::Error::Taken { .. } | store::Error::Given(_))
+        })
 }

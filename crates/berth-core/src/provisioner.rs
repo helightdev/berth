@@ -48,12 +48,18 @@ const FORGET: &str = "-";
 /// plugin's provisioner it is, and the values of its own arguments.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
+    /// Its id, which the store keeps it by.
+    #[serde(skip)]
+    pub id: String,
+    /// Its name, which the store keeps beside it.
+    #[serde(skip)]
+    pub name: String,
     #[serde(rename = "type")]
     pub kind: String,
     #[serde(default)]
     pub settings: BTreeMap<String, String>,
-    /// The node it lives on, when a feature of that host offered it: its
-    /// name among this berth's hosts.
+    /// The node it lives on, when a feature of that host offered it: the
+    /// id of that host among this berth's.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub node: String,
     /// The node's feature that offered it, as `PLUGIN/FEATURE`.
@@ -61,41 +67,148 @@ pub struct Entry {
     pub feature: String,
 }
 
-/// The entry registered under a provisioner's name, if there is one.
-pub fn entry(paths: &Paths, name: &str) -> Result<Option<Entry>> {
-    Ok(store::shared(paths)?
-        .read_json(kind::PROVISIONER_ENTRY, OWN, name)?
-        .and_then(|entry| serde_json::from_value(entry).ok()))
+/// The registered provisioner a name or id gives in a store that is open.
+/// A type, such as `incus/vm`, gives the one provisioner registered of it,
+/// and nothing when there are none or several.
+pub fn find_in(store: &store::Store, given: &str) -> Result<Option<store::Found>> {
+    if let Some(found) = store.find(kind::PROVISIONER_ENTRY, OWN, given)? {
+        return Ok(Some(found));
+    }
+    if !given.contains('/') {
+        return Ok(None);
+    }
+    let mut of_type = vec![];
+    for (found, value) in store.labelled_entries(kind::PROVISIONER_ENTRY, OWN)? {
+        if serde_json::from_slice::<Entry>(&value).is_ok_and(|entry| entry.kind == given) {
+            of_type.push(found);
+        }
+    }
+    Ok(match of_type.len() {
+        1 => of_type.pop(),
+        _ => None,
+    })
 }
 
-/// The node a registered provisioner lives on, or nothing.
-pub fn node_of(paths: &Paths, name: &str) -> String {
-    entry(paths, name)
+/// The provisioner registered under a name or with an id, if there is one,
+/// or the one of a type as [`find_in`] says.
+pub fn entry(paths: &Paths, given: &str) -> Result<Option<Entry>> {
+    let store = store::shared(paths)?;
+    let Some(found) = find_in(&store, given)? else {
+        return Ok(None);
+    };
+    Ok(store
+        .read_json(kind::PROVISIONER_ENTRY, OWN, &found.id)?
+        .and_then(|entry| serde_json::from_value::<Entry>(entry).ok())
+        .map(|entry| Entry {
+            id: found.id,
+            name: found.name,
+            ..entry
+        }))
+}
+
+/// The id of the provisioner registered under a name or with an id.
+pub fn id_of(paths: &Paths, given: &str) -> Result<Option<String>> {
+    let shared = store::shared(paths)?;
+    Ok(find_in(&shared, given)?.map(|found| found.id))
+}
+
+/// What a provisioner is called for people: the name of the registered one
+/// with the id, or what was given, such as a type that is not registered.
+pub fn label(paths: &Paths, given: &str) -> String {
+    store::shared(paths)
         .ok()
-        .flatten()
-        .map(|entry| entry.node)
-        .unwrap_or_default()
+        .and_then(|store| find_in(&store, given).ok().flatten())
+        .map_or_else(|| given.to_owned(), |found| found.name)
 }
 
-/// Register a provisioner under `name`, of the type `entry.kind`.
-pub fn save_entry(paths: &Paths, name: &str, entry: &Entry) -> Result<()> {
-    if !plugins::valid_name(name) {
+/// What a record keeps of the provisioner a name or id gives: the id of the
+/// registered one, or what was given, such as a type no provisioner is
+/// registered for.
+pub fn reference(paths: &Paths, given: &str) -> Result<String> {
+    Ok(id_of(paths, given)?.unwrap_or_else(|| given.to_owned()))
+}
+
+/// What a record keeps of the provisioner a name, id or type gives, to
+/// make something with: the id of a registered one, or of the one
+/// registered of a type; a type no provisioner is registered of stays the
+/// type, which is given no secrets as it has none of its own.
+pub fn for_use(paths: &Paths, given: &str) -> Result<String> {
+    if let Some(id) = id_of(paths, given)? {
+        return Ok(id);
+    }
+    if !given.contains('/') {
+        return Err(format!("No provisioner {given}. See: berth provisioner list").into());
+    }
+    let several: Vec<String> = entries(paths)?
+        .into_iter()
+        .filter(|(_, entry)| entry.kind == given)
+        .map(|(name, _)| name)
+        .collect();
+    if !several.is_empty() {
         return Err(format!(
-            "{name} is not a name for a provisioner: lowercase letters, digits, - and _, starting with a letter"
+            "Several provisioners are of the type {given}: name one ({})",
+            several.join(", ")
         )
         .into());
     }
-    store::shared(paths)?.write_json(kind::PROVISIONER_ENTRY, OWN, name, &json!(entry))?;
-    Ok(())
+    Ok(given.to_owned())
+}
+
+/// The name of the node a registered provisioner lives on, or nothing: what
+/// its plugin is told, and people.
+pub fn node_of(paths: &Paths, given: &str) -> String {
+    entry(paths, given)
+        .ok()
+        .flatten()
+        .filter(|entry| !entry.node.is_empty())
+        .map(|entry| crate::node::node_name(paths, &entry.node))
+        .unwrap_or_default()
+}
+
+/// Why a provisioner cannot be called `name`, if it cannot.
+fn name_problem(name: &str) -> Option<String> {
+    (!plugins::valid_name(name) || berth_api::ids::looks_like_id(name)).then(|| {
+        format!(
+            "{name} is not a name for a provisioner: lowercase letters, digits, - and _, starting with a letter"
+        )
+    })
+}
+
+/// Save the provisioner registered under a name or with an id, or register
+/// a new one of the type `entry.kind` under the name. Returns its id.
+pub fn save_entry(paths: &Paths, given: &str, entry: &Entry) -> Result<String> {
+    let store = store::shared(paths)?;
+    let (id, name) = match find_in(&store, given)? {
+        Some(found) => (found.id, found.name),
+        None => {
+            if let Some(problem) = name_problem(given) {
+                return Err(problem.into());
+            }
+            (store::new_id(), given.to_owned())
+        }
+    };
+    store.write_labelled(
+        kind::PROVISIONER_ENTRY,
+        OWN,
+        &id,
+        &name,
+        json!(entry).to_string().as_bytes(),
+    )?;
+    Ok(id)
 }
 
 /// The registered provisioners, by name.
 pub fn entries(paths: &Paths) -> Result<Vec<(String, Entry)>> {
     let shared = store::shared(paths)?;
     let mut found = vec![];
-    for name in shared.names(kind::PROVISIONER_ENTRY, OWN)? {
-        if let Some(entry) = entry(paths, &name)? {
-            found.push((name, entry));
+    for (thing, value) in shared.labelled_entries(kind::PROVISIONER_ENTRY, OWN)? {
+        if let Ok(entry) = serde_json::from_slice::<Entry>(&value) {
+            let entry = Entry {
+                id: thing.id,
+                name: thing.name.clone(),
+                ..entry
+            };
+            found.push((thing.name, entry));
         }
     }
     Ok(found)
@@ -107,25 +220,30 @@ pub fn default_name(kind: &str) -> String {
     kind.replace('/', "-")
 }
 
-/// The berth secret a registered provisioner keeps as its own `secret`. One
-/// without it is given the secret of that name that all share.
-pub fn secret_name(name: &str, secret: &str) -> String {
-    format!("provisioner/{name}/{secret}")
+/// The address of the secret `secret` the registered provisioner of a name
+/// or id keeps as its own. A provisioner is given its own secrets alone.
+pub fn secret_name(provisioner: &str, secret: &str) -> String {
+    format!("provisioner/{provisioner}/{secret}")
 }
 
-/// Whether `name` is the name of a secret a provisioner keeps of its own.
+/// Whether `name` is the address of a secret a provisioner keeps of its own.
 pub fn is_secret_name(name: &str) -> bool {
     name.strip_prefix("provisioner/")
         .and_then(|rest| rest.split_once('/'))
         .is_some_and(|(provisioner, secret)| {
-            plugins::valid_name(provisioner) && plugins::valid_name(secret)
+            (plugins::valid_name(provisioner) || berth_api::ids::is_id(provisioner))
+                && plugins::valid_name(secret)
         })
 }
 
 /// Register a provisioner under `name`, or change the settings of the one
 /// there is. A registered one keeps its type; settings left out stay.
-pub fn register(paths: &Paths, name: &str, saved: &berth_api::SavedProvisioner) -> Result<Entry> {
-    let existing = entry(paths, name)?;
+pub fn register(paths: &Paths, given: &str, saved: &berth_api::SavedProvisioner) -> Result<Entry> {
+    let existing = entry(paths, given)?;
+    let name = existing
+        .as_ref()
+        .map_or_else(|| given.to_owned(), |existing| existing.name.clone());
+    let name = name.as_str();
     let wanted = saved.kind.trim();
     let kind = match (&existing, wanted) {
         (Some(existing), "") => existing.kind.clone(),
@@ -187,24 +305,25 @@ fn kept_values(
         .collect())
 }
 
-/// The name of this berth's provisioner for a machine another berth made
+/// The id of this berth's provisioner for a machine another berth made
 /// with its provisioner `name` of the type `kind`: one registered here of
-/// that type, or one registered for it now. Without a type, the name stays.
-pub fn adopted_name(paths: &Paths, name: &str, kind: &str) -> Result<String> {
+/// that type, or one registered for it now. Without a type, a provisioner
+/// registered under the name, or the name as it is.
+pub fn adopted(paths: &Paths, name: &str, kind: &str) -> Result<String> {
     if kind.is_empty() {
-        return Ok(name.to_owned());
+        return Ok(id_of(paths, name)?.unwrap_or_else(|| name.to_owned()));
     }
     let registered = entries(paths)?;
-    if let Some((found, _)) = registered
+    if let Some((_, found)) = registered
         .iter()
         .find(|(known, entry)| known == name && entry.kind == kind)
         .or_else(|| registered.iter().find(|(_, entry)| entry.kind == kind))
     {
-        return Ok(found.clone());
+        return Ok(found.id.clone());
     }
-    let stem = match plugins::valid_name(name) {
-        true => name.to_owned(),
-        false => default_name(kind),
+    let stem = match name_problem(name) {
+        None => name.to_owned(),
+        Some(_) => default_name(kind),
     };
     let mut free = stem.clone();
     let mut number = 2;
@@ -219,144 +338,74 @@ pub fn adopted_name(paths: &Paths, name: &str, kind: &str) -> Result<String> {
             kind: kind.to_owned(),
             ..Entry::default()
         },
-    )?;
-    Ok(free)
+    )
 }
 
-/// Forget a registered provisioner and the secrets it keeps. One that still
-/// holds resources is kept: they would have no provisioner.
-pub fn remove_entry(paths: &Paths, store: &Store, name: &str) -> Result<()> {
-    if entry(paths, name)?.is_none() {
-        return Err(format!("No provisioner {name}. See: berth provisioner list").into());
-    }
+/// Forget a registered provisioner and everything that belongs to it, such
+/// as the secrets it keeps, in one change. One that still holds resources is
+/// kept: they would have no provisioner.
+pub fn remove_entry(paths: &Paths, _store: &Store, given: &str) -> Result<()> {
+    let Some(entry) = entry(paths, given)? else {
+        return Err(format!("No provisioner {given}. See: berth provisioner list").into());
+    };
     let held: Vec<String> = crate::resource::list(paths)?
         .into_iter()
-        .filter(|kept| kept.record.provisioner == name)
+        .filter(|kept| kept.record.provisioner == entry.id)
         .map(|kept| kept.record.id)
         .collect();
     if !held.is_empty() {
         return Err(format!(
-            "{name} still holds {}. Remove {} first: berth resource remove ID",
+            "{} still holds {}. Remove {} first: berth resource remove ID",
+            entry.name,
             held.join(", "),
             if held.len() == 1 { "it" } else { "them" }
         )
         .into());
     }
-    let prefix = secret_name(name, "");
-    for secret in store.all_secret_names()? {
-        if secret.starts_with(&prefix) {
-            store.set_secret(&secret, None)?;
-        }
-    }
-    store::shared(paths)?.forget(kind::PROVISIONER_ENTRY, OWN, name)?;
+    let mut batch = store::Batch::default();
+    batch
+        .remove(kind::PROVISIONER_ENTRY, OWN, &entry.id)
+        .forget_owned(OWN, &entry.id);
+    store::shared(paths)?.apply(&batch)?;
     Ok(())
 }
 
 /// Why the registered provisioner `old` cannot be called `new`, if it cannot.
 pub fn rename_problem(paths: &Paths, old: &str, new: &str) -> Result<Option<String>> {
-    if entry(paths, old)?.is_none() {
+    let Some(entry) = entry(paths, old)? else {
         return Err(
             format!("No provisioner {old} is registered. See: berth provisioner list").into(),
         );
-    }
-    Ok(if !plugins::valid_name(new) {
-        Some(format!(
-            "{new} is not a name for a provisioner: lowercase letters, digits, - and _, starting with a letter"
-        ))
-    } else if new == old {
-        Some(format!("{old} has that name already"))
-    } else if entry(paths, new)?.is_some() {
+    };
+    Ok(if let Some(problem) = name_problem(new) {
+        Some(problem)
+    } else if new == entry.name {
+        Some(format!("{} has that name already", entry.name))
+    } else if store::shared(paths)?
+        .id_of(kind::PROVISIONER_ENTRY, OWN, new)?
+        .is_some()
+    {
         Some(format!("There is a provisioner {new} already"))
     } else {
         None
     })
 }
 
-/// Give the registered provisioner `old` the name `new`, in one change: its
-/// entry with its settings and the node it is of, the secrets it keeps of its
-/// own, the records of what it made and of the machines planned with it, and
-/// its jobs. Each resource keeps its id, and the machines and what runs on
-/// them are not touched. The caller holds the lock of `old`, as its job does;
-/// the lock of `new` and those of what it made are taken here, so that no
-/// work on one of them saves its record with the old name meanwhile.
-pub fn rename(paths: &Paths, store: &Store, old: &str, new: &str) -> Result<()> {
+/// Give the registered provisioner `old` the name `new`. Everything that
+/// belongs to it or refers to it, its settings, node, secrets, resources and
+/// jobs, does so by its id, and stays with it.
+pub fn rename(paths: &Paths, _store: &Store, old: &str, new: &str) -> Result<()> {
     if let Some(problem) = rename_problem(paths, old, new)? {
         return Err(problem.into());
     }
-    let _new = crate::runner::lock(
-        paths,
-        &crate::runner::Subject::Provisioner(new.to_owned()),
-        "rename the provisioner",
-    )?;
-    let _held = crate::resource::list(paths)?
-        .iter()
-        .filter(|kept| kept.record.provisioner == old)
-        .map(|kept| kept.lock(paths))
-        .collect::<Result<Vec<_>>>()?;
-    let shared = store::shared(paths)?;
-    let mut writes: Vec<(&str, String, String, Vec<u8>)> = vec![];
-    let mut removals: Vec<(&str, String, String)> = vec![];
-    let mut moved = |kind: &'static str, scope: &str, from: String, to: String, value: Vec<u8>| {
-        writes.push((kind, scope.to_owned(), to, value));
-        removals.push((kind, scope.to_owned(), from));
-    };
-    for kind in [kind::PROVISIONER_ENTRY, kind::PROVISIONER] {
-        if let Some(value) = shared.read(kind, OWN, old)? {
-            moved(kind, OWN, old.to_owned(), new.to_owned(), value);
+    let id = id_of(paths, old)?.unwrap_or_default();
+    match store::shared(paths)?.relabel(kind::PROVISIONER_ENTRY, OWN, &id, new) {
+        Ok(_) => Ok(()),
+        Err(store::Error::Taken { .. }) => {
+            Err(format!("There is a provisioner {new} already").into())
         }
+        Err(error) => Err(error.into()),
     }
-    let (from, to) = (secret_name(old, ""), secret_name(new, ""));
-    let mut stale = vec![];
-    for secret in store.all_secret_names()? {
-        if let Some(own) = secret.strip_prefix(&from) {
-            if let Some(value) = shared.read(kind::SECRET, OWN, &secret)? {
-                moved(
-                    kind::SECRET,
-                    OWN,
-                    secret.clone(),
-                    format!("{to}{own}"),
-                    value,
-                );
-            }
-        } else if secret.starts_with(&to) {
-            // Left by a provisioner of that name before; the renamed one has its own.
-            stale.push(secret);
-        }
-    }
-    for scope in [OWN, crate::profiles::FILE_SCOPE] {
-        for (id, value) in shared.entries(kind::RESOURCE, scope)? {
-            let mut record: crate::resource::Record =
-                serde_json::from_slice(&value).map_err(|error| {
-                    format!("The record of the resource {id} in berth's store: {error}")
-                })?;
-            if record.provisioner == old {
-                record.provisioner = new.to_owned();
-                writes.push((
-                    kind::RESOURCE,
-                    scope.to_owned(),
-                    id,
-                    serde_json::to_vec(&record)?,
-                ));
-            }
-        }
-    }
-    let written: Vec<(&str, &str, &str, Vec<u8>)> = writes
-        .iter()
-        .map(|(kind, scope, name, value)| (*kind, scope.as_str(), name.as_str(), value.clone()))
-        .collect();
-    let mut removed: Vec<(&str, &str, &str)> = removals
-        .iter()
-        .map(|(kind, scope, name)| (*kind, scope.as_str(), name.as_str()))
-        .collect();
-    removed.extend(
-        stale
-            .iter()
-            .filter(|secret| !written.iter().any(|(_, _, name, _)| name == secret))
-            .map(|secret| (kind::SECRET, OWN, secret.as_str())),
-    );
-    let subject = |name: &str| crate::runner::Subject::Provisioner(name.to_owned()).key();
-    shared.rename_subject(&subject(old), &subject(new), &written, &removed)?;
-    Ok(())
 }
 
 /// The values of a provisioner's own arguments that berth keeps, by name.
@@ -381,7 +430,8 @@ pub fn save_settings(paths: &Paths, name: &str, values: &BTreeMap<String, String
             .into_iter()
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
-        return save_entry(paths, name, &entry);
+        save_entry(paths, name, &entry)?;
+        return Ok(());
     }
     let store = store::shared(paths)?;
     match kept.is_empty() {
@@ -416,11 +466,18 @@ pub fn describe(
 ) -> ProvisionerInfo {
     let missing = secrets(store, name, provisioner).1;
     let mut info = provisioner.info(plugin, missing.clone());
-    info.id = name.to_owned();
+    if let Ok(Some(entry)) = entry(paths, name) {
+        info.id = entry.id;
+        info.name = entry.name;
+        info.node = crate::node::node_name(paths, &entry.node);
+        info.node_id = entry.node;
+    } else {
+        info.id = name.to_owned();
+        info.name = name.to_owned();
+    }
     info.settings = settings(paths, name).unwrap_or_default();
-    info.node = node_of(paths, name);
     if info.problem.is_empty() {
-        info.problem = problem(&info.id, provisioner, &missing, &info.settings);
+        info.problem = problem(&info.name, provisioner, &missing, &info.settings);
     }
     info
 }
@@ -583,7 +640,7 @@ pub fn state(
         Ok(own) => own,
         Err(error) => {
             state.message = error.to_string();
-            state.resources = crate::resource::merge(&records, name, vec![]);
+            state.resources = crate::resource::merge(paths, &records, name, vec![]);
             return Ok(state);
         }
     };
@@ -636,7 +693,7 @@ pub fn state(
             listed = crate::resource::listed_of(&answer);
         }
     }
-    state.resources = crate::resource::merge(&records, name, listed);
+    state.resources = crate::resource::merge(paths, &records, name, listed);
     Ok(state)
 }
 
@@ -802,15 +859,13 @@ fn new_action(
     }
 }
 
-/// berth's own action that keeps the secrets of one registered provisioner,
-/// in place of those all of its type share.
+/// berth's own action that keeps the secrets of one registered provisioner.
 fn secrets_action(name: &str, provisioner: &Provisioner) -> Action {
     Action {
         name: SECRETS.into(),
         label: "Secrets".into(),
         help: format!(
-            "The secrets {name} uses of its own, such as the certificate of its server. Each is kept in berth's store as {}, and one it does not have is taken from the secret of that name that all share. An empty value keeps what it has, and {FORGET} forgets it.",
-            secret_name(name, "NAME")
+            "The secrets {name} uses, such as the certificate of its server. Each belongs to {name}, goes with it when it is renamed and is removed with it; {name} is given no other secret. An empty value keeps what it has, and {FORGET} forgets it."
         ),
         group: "Set-Up".into(),
         arguments: provisioner
@@ -857,7 +912,7 @@ fn rename_action(name: &str) -> Action {
         name: RENAME.into(),
         label: "Rename".into(),
         help: format!(
-            "Give {name} another name in berth. Its settings, the secrets it keeps of its own, the resources and machines it made or plans, and its jobs go with it. What it made is not touched, and a node's provisioner stays the node's."
+            "Give {name} another name in berth. Its id stays, and with it its settings, its secrets, the resources and machines it made or plans, and its jobs. What it made is not touched, and a node's provisioner stays the node's."
         ),
         group: "Set-Up".into(),
         arguments: vec![Argument {
@@ -1206,7 +1261,7 @@ impl Acting {
                         "" => continue,
                         FORGET => {
                             store.set_secret(&kept, None)?;
-                            "forgotten: the one all share is used"
+                            "forgotten"
                         }
                         value => {
                             store.set_secret(&kept, Some(value))?;
@@ -1250,7 +1305,7 @@ impl Acting {
             }
             Doing::Create(creating, store) => {
                 let id = creating.kept().record.id.clone();
-                let title = creating.kept().title();
+                let title = creating.kept().title(paths);
                 creating.run(paths, &store, options, out)?;
                 Ok(Answered {
                     message: format!("{title} is made. Its page: berth resource show {id}"),

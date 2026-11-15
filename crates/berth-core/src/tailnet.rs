@@ -1412,7 +1412,7 @@ mod tests {
         paths.set("tailnet_user", "5").unwrap();
         set_secret(&paths, Some("hskey-api-x"));
         let config = json!({"hostname": "studio"});
-        let stored = crate::profiles::Place::own("studio").unwrap();
+        let stored = crate::profiles::Place::own(&paths, "studio").unwrap();
         let file = crate::profiles::Place::File(home.path().join("attic.json"));
         let mut keys = vec![];
         for place in [&stored, &file] {
@@ -1450,7 +1450,7 @@ mod tests {
 
     /// The host `studio`, saved with this profile.
     fn studio(paths: &Paths, config: Value) -> crate::host::Host {
-        let place = Place::own("studio").unwrap();
+        let place = Place::own(paths, "studio").unwrap();
         place.save(paths, &config).unwrap();
         crate::host::Host {
             name: "studio".into(),

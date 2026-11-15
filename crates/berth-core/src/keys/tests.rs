@@ -18,9 +18,12 @@ fn option<'a>(args: &'a [String], name: &str) -> Vec<&'a str> {
         .collect()
 }
 
+/// The login of the saved host studio, whose profile has `access`.
 fn login_for(paths: &Paths, store: &Store, access: Value) -> Login {
-    let place = Place::own("studio").unwrap();
-    login(paths, store, &place, &json!({"access": access})).unwrap()
+    let place = Place::own(paths, "studio").unwrap();
+    let config = json!({"access": access});
+    place.save(paths, &config).unwrap();
+    login(paths, store, &place, &config).unwrap()
 }
 
 #[test]
@@ -67,7 +70,7 @@ fn berth_and_a_named_key_offer_that_key_alone() {
         [paths.data_dir.join("keys/deploy").to_str().unwrap()]
     );
     // A key that is not in the ring is an error, not ssh's defaults.
-    let place = Place::own("studio").unwrap();
+    let place = Place::own(&paths, "studio").unwrap();
     let missing = json!({"access": {"address": "192.0.2.10", "auth": "key:gone"}});
     assert!(login(&paths, &store, &place, &missing).is_err());
 }
@@ -177,7 +180,7 @@ fn the_link_and_the_inventory_take_the_same_options() {
         )));
     }
     let bad = |access: Value| {
-        let place = Place::own("studio").unwrap();
+        let place = Place::own(&paths, "studio").unwrap();
         login(&paths, &store, &place, &json!({"access": access}))
             .and_then(|login| login.inventory())
             .is_err()
@@ -228,7 +231,7 @@ fn the_ring_takes_openssh_keys_without_a_passphrase() {
     assert!(!serde_json::to_string(&listed).unwrap().contains("PRIVATE"));
 
     // A key a host logs in with stays.
-    Place::own("studio")
+    Place::own(&paths, "studio")
         .unwrap()
         .save(
             &paths,
@@ -240,7 +243,7 @@ fn the_ring_takes_openssh_keys_without_a_passphrase() {
         .to_string();
     assert!(said.contains("studio"), "{said}");
     assert!(ring::remove(&paths, &store, BERTH_KEY).is_err());
-    Place::own("studio")
+    Place::own(&paths, "studio")
         .unwrap()
         .save(&paths, &json!({"access": {"address": "192.0.2.10"}}))
         .unwrap();
@@ -258,9 +261,18 @@ fn a_key_name_that_leaves_the_folder_of_keys_is_refused_everywhere() {
     std::fs::write(&outside, "kept").unwrap();
     let halves =
         serde_json::to_vec(&json!({"private": "x", "public": "ssh-ed25519 AAAA"})).unwrap();
-    for name in ["../../outside", "../../outside.pending"] {
-        store.write(kind::KEY, OWN, name, &halves).unwrap();
-    }
+    let id = crate::store::new_id();
+    store
+        .write_labelled(crate::store::kind::KEY, OWN, &id, "../../outside", &halves)
+        .unwrap();
+    store
+        .write(
+            crate::store::kind::KEY,
+            OWN,
+            &format!("{id}/pending"),
+            &halves,
+        )
+        .unwrap();
     let name = "../../outside";
     assert!(ring::read(&store, name, false).is_err());
     assert!(ring::file(&paths, &store, name, false).is_err());
@@ -307,6 +319,10 @@ fn child_env(command: &Command) -> std::collections::HashMap<String, String> {
 fn no_child_ssh_can_reach_a_password_dialog_of_the_desktop() {
     let (_dir, paths, store) = scratch();
     let helper = std::env::current_exe().unwrap().display().to_string();
+    Place::own(&paths, "studio")
+        .unwrap()
+        .save(&paths, &json!({}))
+        .unwrap();
     // A password berth has: ssh asks berth, and nothing else.
     crate::registry::Store::own(store.clone())
         .set_secret("ssh/studio", Some("made-up-pw"))

@@ -836,6 +836,10 @@
               "null"
             ]
           },
+          "id": {
+            "description": "Its id, which stays when it is renamed; empty for a host that is not saved.",
+            "type": "string"
+          },
           "machine": {
             "oneOf": [
               {
@@ -964,6 +968,11 @@
                 "type": "boolean"
               },
               "host": {
+                "description": "The host's name.",
+                "type": "string"
+              },
+              "host_id": {
+                "description": "The host's id, when it is a saved host.",
                 "type": "string"
               },
               "seq": {
@@ -1013,6 +1022,10 @@
             "description": "The hosts it is about, for a reader: a name, or several with commas.",
             "type": "string"
           },
+          "host_id": {
+            "description": "The ids of those hosts, as `host` lists them; a host in a file by its path.",
+            "type": "string"
+          },
           "id": {
             "type": "string"
           },
@@ -1038,7 +1051,11 @@
             ]
           },
           "subject": {
-            "description": "What it was done to: `host:NAME`, `provisioner:NAME`,\n`resource:ID` or `installation`. Empty for a job from before 0.5.",
+            "description": "What it was done to, by id: `host:ID`, `provisioner:ID`,\n`resource:ID` or `installation`. Empty for a job from before 0.5.",
+            "type": "string"
+          },
+          "subject_name": {
+            "description": "What it was done to, by name as it is called now: `host:NAME`,\n`provisioner:NAME`, `resource:ID` or `installation`; by id for one\nthat is gone.",
             "type": "string"
           }
         },
@@ -1069,6 +1086,10 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "id": {
+            "description": "Its id; empty for the key that replaces another while it rotates.",
+            "type": "string"
           },
           "name": {
             "type": "string"
@@ -1233,6 +1254,23 @@
         ],
         "type": "object"
       },
+      "Named": {
+        "description": "A thing berth keeps, by its id and its name.",
+        "properties": {
+          "id": {
+            "description": "Its id, which stays when it is renamed.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
       "NewResource": {
         "description": "What to create a resource with.",
         "properties": {
@@ -1262,7 +1300,7 @@
             "type": "string"
           },
           "provisioner": {
-            "description": "The provisioner's name.",
+            "description": "The provisioner, by name or id.",
             "type": "string"
           },
           "secrets": {
@@ -1751,7 +1789,7 @@
             "type": "string"
           },
           "id": {
-            "description": "The name it is registered under, such as `ovh-incus`. In the list of\ntypes, the type itself.",
+            "description": "Its id, which stays when it is renamed. In the list of types, the\ntype itself.",
             "type": "string"
           },
           "kinds": {
@@ -1771,8 +1809,16 @@
             },
             "type": "array"
           },
+          "name": {
+            "description": "The name it is registered under, such as `ovh-incus`. In the list of\ntypes, the type itself.",
+            "type": "string"
+          },
           "node": {
-            "description": "The node it lives on, when a feature of that host offered it.",
+            "description": "The node it lives on, when a feature of that host offered it, by name.",
+            "type": "string"
+          },
+          "node_id": {
+            "description": "The id of that node.",
             "type": "string"
           },
           "own": {
@@ -1933,7 +1979,7 @@
         "properties": {
           "registries": {
             "additionalProperties": {},
-            "description": "By name: `type` (nexus, npm, raw or docker), `url`, `username` and, for\na Nexus server, its `repositories`.",
+            "description": "By name: its `id`, `type` (nexus, npm, raw or docker), `url`,\n`username` and, for a Nexus server, its `repositories`. The id is\nberth's, and is left out of what is saved.",
             "propertyNames": {
               "type": "string"
             },
@@ -1942,6 +1988,18 @@
         },
         "required": [
           "registries"
+        ],
+        "type": "object"
+      },
+      "Rename": {
+        "description": "A new name for a thing.",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
         ],
         "type": "object"
       },
@@ -1980,11 +2038,15 @@
             "type": "string"
           },
           "host": {
-            "description": "The host a machine belongs to, if any.",
+            "description": "The host a machine belongs to, if any, by name; a profile in a file\nby its path.",
             "type": [
               "string",
               "null"
             ]
+          },
+          "host_id": {
+            "description": "The id of that host, when it is a saved host.",
+            "type": "string"
           },
           "id": {
             "description": "berth's id of it, stable for the life of the record.",
@@ -2004,6 +2066,10 @@
           },
           "provisioner": {
             "description": "The name of the provisioner that made it.",
+            "type": "string"
+          },
+          "provisioner_id": {
+            "description": "The id of that provisioner, when it is registered.",
             "type": "string"
           },
           "secrets": {
@@ -2203,15 +2269,23 @@
         "description": "The names of the secrets the server keeps. Their values never leave it\nexcept to a host.",
         "properties": {
           "names": {
-            "description": "A registry's password or token is `registry/NAME`.",
+            "description": "The global secrets' names, and the addresses of those that belong to\nsomething: a registry's password or token is `registry/NAME`, the\npasswords berth logs in to a host with `ssh/HOST` and `sudo/HOST`,\nand a provisioner's own `provisioner/NAME/SECRET`.",
             "items": {
               "type": "string"
+            },
+            "type": "array"
+          },
+          "secrets": {
+            "description": "The global secrets, by name, with their ids.",
+            "items": {
+              "$ref": "#/components/schemas/Named"
             },
             "type": "array"
           }
         },
         "required": [
-          "names"
+          "names",
+          "secrets"
         ],
         "type": "object"
       },
@@ -2666,7 +2740,7 @@
     {
       "args": [
         {
-          "description": "A saved host",
+          "description": "A saved host, by its name or its id (bare or as `host_ID`)",
           "in": "path",
           "name": "name",
           "required": true
@@ -2697,7 +2771,7 @@
     {
       "args": [
         {
-          "description": "A saved host",
+          "description": "A saved host, by its name or its id (bare or as `host_ID`)",
           "in": "path",
           "name": "name",
           "required": true
@@ -2732,7 +2806,7 @@
     {
       "args": [
         {
-          "description": "A saved host",
+          "description": "A saved host, by its name or its id (bare or as `host_ID`)",
           "in": "path",
           "name": "name",
           "required": true
@@ -2761,7 +2835,7 @@
     {
       "args": [
         {
-          "description": "The name to save it under: letters, digits, `-`, `_` and `.`",
+          "description": "The name to save it under: letters, digits, `-`, `_` and `.`, and not in the shape of an id; or the id of a saved host",
           "in": "path",
           "name": "name",
           "required": true
@@ -2796,7 +2870,7 @@
     {
       "args": [
         {
-          "description": "A saved host",
+          "description": "A saved host, by its name or its id (bare or as `host_ID`)",
           "in": "path",
           "name": "name",
           "required": true
@@ -2827,7 +2901,7 @@
     {
       "args": [
         {
-          "description": "A saved host",
+          "description": "A saved host, by its name or its id (bare or as `host_ID`)",
           "in": "path",
           "name": "name",
           "required": true
@@ -2861,7 +2935,7 @@
     {
       "args": [
         {
-          "description": "A saved host",
+          "description": "A saved host, by its name or its id (bare or as `host_ID`)",
           "in": "path",
           "name": "name",
           "required": true
@@ -3022,7 +3096,7 @@
     {
       "args": [
         {
-          "description": "The secret; `registry/NAME` is a registry's login",
+          "description": "The secret, by its name or its id (bare or as `sec_ID`); `registry/REGISTRY` is a registry's login, `ssh/HOST` and `sudo/HOST` a host's passwords and `provisioner/PROVISIONER/SECRET` a provisioner's own",
           "in": "path",
           "name": "name",
           "required": true
@@ -3059,7 +3133,7 @@
     {
       "args": [
         {
-          "description": "The secret",
+          "description": "The secret, by its name or its id (bare or as `sec_ID`), or the address of one that belongs to something",
           "in": "path",
           "name": "name",
           "required": true
@@ -3088,6 +3162,51 @@
       "summary": "Remove a secret."
     },
     {
+      "args": [
+        {
+          "description": "The secret, by its name or its id (bare or as `sec_ID`)",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "data": {
+        "description": "The new name",
+        "schema": {
+          "$ref": "#/components/schemas/Rename"
+        }
+      },
+      "errors": [
+        {
+          "description": "Not a name for a secret, or one that belongs to something",
+          "status": "400"
+        },
+        {
+          "description": "No such secret",
+          "status": "404"
+        },
+        {
+          "description": "The name is taken",
+          "status": "409"
+        }
+      ],
+      "group": "secrets",
+      "http": {
+        "method": "POST",
+        "path": "/v1/secrets/{name}/rename"
+      },
+      "kind": "call",
+      "name": "secrets.rename",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "role": "admin",
+      "summary": "Give a global secret another name."
+    },
+    {
       "args": [],
       "group": "keys",
       "http": {
@@ -3108,7 +3227,7 @@
     {
       "args": [
         {
-          "description": "The key's name: letters, digits, - and _",
+          "description": "The key's name: letters, digits, - and _, and not in the shape of an id",
           "in": "path",
           "name": "name",
           "required": true
@@ -3146,7 +3265,7 @@
     {
       "args": [
         {
-          "description": "The key",
+          "description": "The key, by its name or its id (bare or as `key_ID`)",
           "in": "path",
           "name": "name",
           "required": true
@@ -3181,7 +3300,7 @@
     {
       "args": [
         {
-          "description": "The key",
+          "description": "The key, by its name or its id (bare or as `key_ID`)",
           "in": "path",
           "name": "name",
           "required": true
@@ -3234,7 +3353,7 @@
     {
       "args": [
         {
-          "description": "The registry's name here",
+          "description": "The registry's name here, or the id of one there is",
           "in": "path",
           "name": "name",
           "required": true
@@ -3269,7 +3388,7 @@
     {
       "args": [
         {
-          "description": "A registry",
+          "description": "A registry, by its name or its id (bare or as `reg_ID`)",
           "in": "path",
           "name": "name",
           "required": true
@@ -3300,7 +3419,52 @@
     {
       "args": [
         {
-          "description": "A registry",
+          "description": "The registry, by its name or its id (bare or as `reg_ID`)",
+          "in": "path",
+          "name": "name",
+          "required": true
+        }
+      ],
+      "data": {
+        "description": "The new name",
+        "schema": {
+          "$ref": "#/components/schemas/Rename"
+        }
+      },
+      "errors": [
+        {
+          "description": "Not a name for a registry",
+          "status": "400"
+        },
+        {
+          "description": "No such registry",
+          "status": "404"
+        },
+        {
+          "description": "The name is taken",
+          "status": "409"
+        }
+      ],
+      "group": "registries",
+      "http": {
+        "method": "POST",
+        "path": "/v1/registries/{name}/rename"
+      },
+      "kind": "call",
+      "name": "registries.rename",
+      "portal": true,
+      "result": {
+        "schema": {
+          "$ref": "#/components/schemas/Done"
+        }
+      },
+      "role": "admin",
+      "summary": "Give a registry another name."
+    },
+    {
+      "args": [
+        {
+          "description": "A registry, by its name or its id (bare or as `reg_ID`)",
           "in": "path",
           "name": "name",
           "required": true
@@ -3654,7 +3818,7 @@
     {
       "args": [
         {
-          "description": "The provisioner's name",
+          "description": "The provisioner, by its name or its id (bare or as `prov_ID`)",
           "in": "path",
           "name": "name",
           "required": true
@@ -3692,7 +3856,7 @@
     {
       "args": [
         {
-          "description": "Its name: lowercase letters, digits, - and _, starting with a letter",
+          "description": "Its name: lowercase letters, digits, - and _, starting with a letter, and not in the shape of an id; or the id of a registered one",
           "in": "path",
           "name": "name",
           "required": true
@@ -3729,7 +3893,7 @@
     {
       "args": [
         {
-          "description": "Its name",
+          "description": "Its name or its id (bare or as `prov_ID`)",
           "in": "path",
           "name": "name",
           "required": true
@@ -3760,7 +3924,7 @@
     {
       "args": [
         {
-          "description": "The provisioner's name",
+          "description": "The provisioner, by its name or its id (bare or as `prov_ID`)",
           "in": "path",
           "name": "name",
           "required": true
@@ -3794,7 +3958,7 @@
     {
       "args": [
         {
-          "description": "The provisioner's name",
+          "description": "The provisioner, by its name or its id (bare or as `prov_ID`)",
           "in": "path",
           "name": "name",
           "required": true
@@ -3941,7 +4105,7 @@
     {
       "args": [
         {
-          "description": "berth's id of the resource",
+          "description": "berth's id of the resource, bare or as `res_ID`",
           "in": "path",
           "name": "id",
           "required": true
@@ -3972,7 +4136,7 @@
     {
       "args": [
         {
-          "description": "berth's id of the resource",
+          "description": "berth's id of the resource, bare or as `res_ID`",
           "in": "path",
           "name": "id",
           "required": true
@@ -4017,7 +4181,7 @@
     {
       "args": [
         {
-          "description": "berth's id of the resource",
+          "description": "berth's id of the resource, bare or as `res_ID`",
           "in": "path",
           "name": "id",
           "required": true
@@ -4059,7 +4223,7 @@
     {
       "args": [
         {
-          "description": "berth's id of the resource",
+          "description": "berth's id of the resource, bare or as `res_ID`",
           "in": "path",
           "name": "id",
           "required": true
@@ -4093,7 +4257,7 @@
     {
       "args": [
         {
-          "description": "berth's id of the resource",
+          "description": "berth's id of the resource, bare or as `res_ID`",
           "in": "path",
           "name": "id",
           "required": true
@@ -4163,7 +4327,7 @@
     {
       "args": [
         {
-          "description": "berth's id of the resource",
+          "description": "berth's id of the resource, bare or as `res_ID`",
           "in": "path",
           "name": "id",
           "required": true
@@ -4309,14 +4473,14 @@
     {
       "args": [
         {
-          "description": "Only the jobs of this subject: `host:NAME`, `provisioner:NAME`, `resource:ID` or `installation`.",
+          "description": "Only the jobs of this subject: `host:HOST`, `provisioner:PROVISIONER`, `resource:ID` or `installation`, each by name or id.",
           "header": null,
           "in": "query",
           "name": "subject",
           "required": false
         },
         {
-          "description": "Only the jobs about this host, alone or among others, as a roll-out is.",
+          "description": "Only the jobs about this host, by name or id, alone or among others, as a roll-out is.",
           "header": null,
           "in": "query",
           "name": "host",
@@ -4666,7 +4830,7 @@
     {
       "args": [
         {
-          "description": "The host it came from",
+          "description": "The host it came from, by its name or its id",
           "in": "path",
           "name": "host",
           "required": true
@@ -4703,7 +4867,7 @@
     {
       "args": [
         {
-          "description": "The host it came from",
+          "description": "The host it came from, by its name or its id",
           "in": "path",
           "name": "host",
           "required": true

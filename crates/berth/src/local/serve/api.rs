@@ -21,7 +21,7 @@ use axum::{
 };
 use berth_api::{
     Applied, Behind, Done, ErrorBody, ErrorDetail, HostBehind, HostType, JobInfo, Message, Output,
-    Power, PowerState, Version, b64, client, code,
+    Power, PowerState, Version, b64, client, code, ids,
     ops::{self, Role},
     streams,
 };
@@ -88,6 +88,8 @@ impl From<store::Error> for Fail {
         let kind = match error {
             store::Error::Conflict(_) => code::PRECONDITION,
             store::Error::TooLarge => code::TOO_LARGE,
+            store::Error::Taken { .. } => code::CONFLICT,
+            store::Error::Given(_) => code::BAD_REQUEST,
             store::Error::Database(_)
             | store::Error::Encrypted { .. }
             | store::Error::Sealing(_) => code::INTERNAL,
@@ -156,6 +158,9 @@ pub(super) fn turned_down(said: impl Into<Said>) -> Fail {
 
 #[derive(Serialize, ToSchema)]
 pub struct HostInfo {
+    /// Its id, which stays when it is renamed; empty for a host that is not saved.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub name: String,
     /// Its SSH address.
     pub address: String,
@@ -223,7 +228,11 @@ pub(super) struct Known {
 pub struct InboxMessage {
     #[serde(flatten)]
     pub message: Message,
+    /// The host's name.
     pub host: String,
+    /// The host's id, when it is a saved host.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub host_id: String,
     pub done: bool,
     /// The order it was taken in; what `before` counts in.
     pub seq: i64,
@@ -265,16 +274,20 @@ pub(super) fn job_info(paths: &berth_core::paths::Paths, job: store::Job) -> Job
     let report = berth_core::runner::output_file(paths, &job.output_path)
         .and_then(|output| std::fs::read(report_path(&output)).ok())
         .and_then(|data| serde_json::from_slice(&data).ok());
+    let subject_name = berth_core::runner::Subject::parse(&job.subject)
+        .map_or_else(|| job.subject.clone(), |subject| subject.named(paths).key());
     JobInfo {
         report,
         id: job.id,
         subject: job.subject,
+        subject_name,
         // Rows from before actions were kept say it as what they did.
         action: match job.action.is_empty() {
             true => job.what,
             false => job.action,
         },
-        host: job.host,
+        host: berth_core::runner::hosts_named(paths, &job.host),
+        host_id: job.host,
         started: job.started,
         ended: job.ended,
         exit_code: job.exit_code,
@@ -319,12 +332,14 @@ fn guarded_routes() -> OpenApiRouter<Arc<Serve>> {
         .routes(routes!(actions::act))
         .routes(routes!(setup::secrets))
         .routes(routes!(setup::set_secret, setup::remove_secret))
+        .routes(routes!(setup::rename_secret))
         .routes(routes!(keys::list))
         .routes(routes!(keys::add, keys::remove))
         .routes(routes!(keys::rotate))
         .routes(routes!(setup::registries))
         .routes(routes!(setup::save_registry, setup::remove_registry))
         .routes(routes!(setup::check_registry))
+        .routes(routes!(setup::rename_registry))
         .routes(routes!(setup::settings))
         .routes(routes!(setup::set_setting))
         .routes(routes!(setup::plugins, setup::add_plugin))
@@ -407,9 +422,88 @@ pub fn router(state: Arc<Serve>, guarded: bool) -> Router {
             response
         }));
     }
-    router
+    let inner = router
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
-        .with_state(state)
+        .with_state(state.clone());
+    // Before the routes are matched, so every handler gets the name.
+    let paths = state.paths.clone();
+    Router::new().fallback_service(tower::service_fn(move |request: Request| {
+        let (inner, paths) = (inner.clone(), paths.clone());
+        async move {
+            use tower::ServiceExt;
+            match by_name(&paths, request) {
+                Ok(request) => inner.oneshot(request).await,
+                Err(fail) => Ok(fail.into_response()),
+            }
+        }
+    }))
+}
+
+/// The things a path names by id, as the parts of the paths of hosts,
+/// provisioners, registries, secrets, keys, resources and the inbox: their
+/// kind of row, and the kind of id.
+const NAMED: &[(&str, &str, ids::Kind)] = &[
+    ("hosts", store::kind::PROFILE, ids::Kind::Host),
+    ("inbox", store::kind::PROFILE, ids::Kind::Host),
+    (
+        "provisioners",
+        store::kind::PROVISIONER_ENTRY,
+        ids::Kind::Provisioner,
+    ),
+    ("registries", store::kind::REGISTRY, ids::Kind::Registry),
+    ("secrets", store::kind::SECRET, ids::Kind::Secret),
+    ("keys", store::kind::KEY, ids::Kind::Key),
+    ("resources", store::kind::RESOURCE, ids::Kind::Resource),
+];
+
+/// A request with the thing its path names by id, bare or with the prefix
+/// of its kind, named by its name instead: every handler then finds it as
+/// it always has. A resource is named by its id, which loses its prefix. An
+/// id with a prefix that no thing has is not found, and a prefix of another
+/// kind is refused.
+fn by_name(paths: &berth_core::paths::Paths, mut request: Request) -> Result<Request, Fail> {
+    let path = request.uri().path().to_owned();
+    let parts: Vec<&str> = path.split('/').collect();
+    let (Some(&""), Some(&"v1"), Some(collection), Some(given)) =
+        (parts.first(), parts.get(1), parts.get(2), parts.get(3))
+    else {
+        return Ok(request);
+    };
+    let Some((_, kind, id_kind)) = NAMED.iter().find(|(known, ..)| known == collection) else {
+        return Ok(request);
+    };
+    let read = ids::read(*id_kind, given).map_err(|why| Fail::new(code::BAD_REQUEST, why))?;
+    let (id, prefixed) = match read {
+        ids::Given::Name(_) => return Ok(request),
+        ids::Given::Prefixed(id) => (id, true),
+        ids::Given::Bare(id) => (id, false),
+    };
+    let name = match *id_kind {
+        ids::Kind::Resource => Some(id),
+        _ => store::shared(paths)
+            .map_err(|error| Fail::new(code::INTERNAL, error.to_string()))?
+            .label_of(kind, store::OWN, &id)?,
+    };
+    let name = match (name, prefixed) {
+        (Some(name), _) => client::encode(&name),
+        (None, true) => {
+            return Err(Fail::new(
+                code::NOT_FOUND,
+                format!("No {} {given}", id_kind.noun()),
+            ));
+        }
+        (None, false) => return Ok(request),
+    };
+    let mut rewritten: Vec<&str> = parts.clone();
+    rewritten[3] = &name;
+    let mut uri = rewritten.join("/");
+    if let Some(query) = request.uri().query() {
+        uri = format!("{uri}?{query}");
+    }
+    *request.uri_mut() = uri
+        .parse()
+        .map_err(|_| Fail::new(code::BAD_REQUEST, format!("Not a path: {uri}")))?;
+    Ok(request)
 }
 
 /// What a browser finds at the server's address. It says nothing of the
@@ -579,7 +673,7 @@ pub(super) fn known(state: &Serve, name: &str) -> Known {
         .as_ref()
         .map_or(HostType::Workstation, berth_api::profile::host_type);
     let rotating = profile.is_ok_and(|profile| {
-        let place = berth_core::profiles::Place::own(name);
+        let place = berth_core::profiles::Place::own(&state.paths, name);
         let store = berth_core::store::shared(&state.paths);
         match (place, store) {
             (Ok(place), Ok(store)) => berth_core::keys::contact::waiting(&store, &place, &profile)
@@ -612,6 +706,7 @@ async fn info(remote: Arc<Remote>, compare: Compare, known: Known) -> HostInfo {
     );
     let reachable = seen.is_ok();
     HostInfo {
+        id: remote.id.clone(),
         name: remote.name.clone(),
         address: remote.address.clone(),
         reachable,
@@ -691,7 +786,7 @@ async fn hosts(State(state): App) -> Json<Vec<HostInfo>> {
 }
 
 #[utoipa::path(get, path = "/v1/hosts/{name}", summary = "One host: its address, and whether it answers.", tag = "hosts",
-    params(("name" = String, Path, description = "A saved host")),
+    params(("name" = String, Path, description = "A saved host, by its name or its id (bare or as `host_ID`)")),
     responses((status = 200, description = "One host", body = HostInfo),
               (status = 404, description = "No such host", body = ErrorBody)))]
 async fn host(State(state): App, Path(name): Path<String>) -> Answer<Json<HostInfo>> {
@@ -707,9 +802,9 @@ async fn host(State(state): App, Path(name): Path<String>) -> Answer<Json<HostIn
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 struct JobsQuery {
-    /// Only the jobs of this subject: `host:NAME`, `provisioner:NAME`, `resource:ID` or `installation`.
+    /// Only the jobs of this subject: `host:HOST`, `provisioner:PROVISIONER`, `resource:ID` or `installation`, each by name or id.
     subject: Option<String>,
-    /// Only the jobs about this host, alone or among others, as a roll-out is.
+    /// Only the jobs about this host, by name or id, alone or among others, as a roll-out is.
     host: Option<String>,
     /// Only the jobs that have not ended, or with `false` only those that have.
     running: Option<bool>,
@@ -726,9 +821,20 @@ async fn jobs(State(state): App, Query(query): Query<JobsQuery>) -> Answer<Json<
     if let Some(before) = &query.before {
         find_job(&state, before)?;
     }
+    // Jobs keep what they are about by id.
+    let subject = query.subject.as_deref().map(|given| {
+        berth_core::runner::Subject::parse(given).map_or_else(
+            || given.to_owned(),
+            |subject| subject.by_id(&state.paths).key(),
+        )
+    });
+    let host = query
+        .host
+        .as_deref()
+        .map(|host| host_key(&state.paths, host));
     let jobs = state.store.find_jobs(&store::JobFilter {
-        subject: query.subject.as_deref(),
-        host: query.host.as_deref(),
+        subject: subject.as_deref(),
+        host: host.as_deref(),
         running: query.running,
         before: query.before.as_deref(),
         limit: query.limit.unwrap_or(100),
@@ -978,12 +1084,38 @@ struct InboxQuery {
     limit: Option<usize>,
 }
 
-fn inbox_message(stored: store::Stored) -> InboxMessage {
+fn inbox_message(paths: &berth_core::paths::Paths, stored: store::Stored) -> InboxMessage {
+    let (host, host_id) = host_named(paths, &stored.host);
     InboxMessage {
         message: stored.message,
-        host: stored.host,
+        host,
+        host_id,
         done: stored.done,
         seq: stored.seq,
+    }
+}
+
+/// What the store keeps of a host a name or id gives: its id, or what was
+/// given when no saved host has it.
+pub(super) fn host_key(paths: &berth_core::paths::Paths, given: &str) -> String {
+    berth_core::profiles::Place::find(paths, store::OWN, given)
+        .ok()
+        .flatten()
+        .map_or_else(|| given.to_owned(), |place| place.key())
+}
+
+/// A host the store keeps by its id: its name now and the id, or what is
+/// kept and no id when no saved host has it.
+pub(super) fn host_named(paths: &berth_core::paths::Paths, kept: &str) -> (String, String) {
+    let name = store::shared(paths).ok().and_then(|store| {
+        store
+            .label_of(store::kind::PROFILE, store::OWN, kept)
+            .ok()
+            .flatten()
+    });
+    match name {
+        Some(name) => (name, kept.to_owned()),
+        None => (kept.to_owned(), String::new()),
     }
 }
 
@@ -991,25 +1123,30 @@ fn inbox_message(stored: store::Stored) -> InboxMessage {
     responses((status = 200, description = "Stored messages, newest first", body = Inbox),
               (status = 101, description = "As a WebSocket: messages as they are taken in")))]
 async fn inbox(State(state): App, Query(query): Query<InboxQuery>, ws: Ws) -> Answer<Response> {
+    let host = query
+        .host
+        .as_deref()
+        .map(|host| host_key(&state.paths, host));
     if let Ok(ws) = ws {
         let events = state.events.subscribe();
+        let paths = state.paths.clone();
         return Ok(ws.on_upgrade(move |socket| {
             forward(socket, events, move |event| match event {
                 Event::Inbox(stored)
-                    if query.host.as_ref().is_none_or(|host| *host == stored.host)
+                    if host.as_ref().is_none_or(|host| *host == stored.host)
                         && stored
                             .message
                             .topic
                             .starts_with(query.topic.as_deref().unwrap_or("")) =>
                 {
-                    Some(stored.json())
+                    serde_json::to_value(inbox_message(&paths, stored)).ok()
                 }
                 _ => None,
             })
         }));
     }
     let filter = Filter {
-        host: query.host.as_deref(),
+        host: host.as_deref(),
         topic: query.topic.as_deref(),
         before: query.before,
         done: query.done,
@@ -1017,7 +1154,10 @@ async fn inbox(State(state): App, Query(query): Query<InboxQuery>, ws: Ws) -> An
     };
     let (messages, next) = state.store.inbox(&filter)?;
     Ok(Json(Inbox {
-        messages: messages.into_iter().map(inbox_message).collect(),
+        messages: messages
+            .into_iter()
+            .map(|stored| inbox_message(&state.paths, stored))
+            .collect(),
         next,
     })
     .into_response())
@@ -1051,7 +1191,10 @@ async fn forward(
 }
 
 fn mark(state: &Serve, host: &str, id: u64, done: bool) -> Answer<Json<Done>> {
-    if !state.store.set_done(host, id, done)? {
+    if !state
+        .store
+        .set_done(&host_key(&state.paths, host), id, done)?
+    {
         return Err(Fail::new(
             code::NOT_FOUND,
             format!("No message {id} from {host}"),
@@ -1061,7 +1204,7 @@ fn mark(state: &Serve, host: &str, id: u64, done: bool) -> Answer<Json<Done>> {
 }
 
 #[utoipa::path(post, path = "/v1/inbox/{host}/{id}/done", summary = "Mark a message as done.", tag = "inbox",
-    params(("host" = String, Path, description = "The host it came from"), ("id" = u64, Path, description = "The message's id on that host")),
+    params(("host" = String, Path, description = "The host it came from, by its name or its id"), ("id" = u64, Path, description = "The message's id on that host")),
     responses((status = 200, description = "Marked done", body = Done),
               (status = 404, description = "No such message", body = ErrorBody)))]
 async fn mark_done(State(state): App, Path((host, id)): Path<(String, u64)>) -> Answer<Json<Done>> {
@@ -1069,7 +1212,7 @@ async fn mark_done(State(state): App, Path((host, id)): Path<(String, u64)>) -> 
 }
 
 #[utoipa::path(delete, path = "/v1/inbox/{host}/{id}/done", summary = "Mark a message as open again.", tag = "inbox",
-    params(("host" = String, Path, description = "The host it came from"), ("id" = u64, Path, description = "The message's id on that host")),
+    params(("host" = String, Path, description = "The host it came from, by its name or its id"), ("id" = u64, Path, description = "The message's id on that host")),
     responses((status = 200, description = "No longer marked done", body = Done),
               (status = 404, description = "No such message", body = ErrorBody)))]
 async fn mark_open(State(state): App, Path((host, id)): Path<(String, u64)>) -> Answer<Json<Done>> {
@@ -1266,8 +1409,12 @@ async fn events(State(state): App, ws: WebSocketUpgrade) -> Response {
                 }
                 Some(frame)
             }
-            Event::Resource { id, provisioner, kind, change } if follow.changes.contains(&Changes::Resources) => {
-                Some(json!({"source": "resource", "resource": id, "provisioner": provisioner, "kind": kind, "change": change}))
+            Event::Resource { id, provisioner, provisioner_name, kind, change } if follow.changes.contains(&Changes::Resources) => {
+                let mut frame = json!({"source": "resource", "resource": id, "provisioner": provisioner_name, "kind": kind, "change": change});
+                if berth_api::ids::is_id(&provisioner) {
+                    frame["provisioner_id"] = json!(provisioner);
+                }
+                Some(frame)
             }
             _ => None,
         })
