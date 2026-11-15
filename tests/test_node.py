@@ -299,7 +299,50 @@ if '--env-file' in args:
     data['env_mode'] = oct(os.stat(args[args.index('--env-file') + 1]).st_mode & 0o777)
 def save():
     json.dump(data, open(state, 'w'))
-containers = data['containers']
+containers, images = data['containers'], data['images']
+VALUED = {'--name', '--restart', '--network', '--hostname', '--domainname', '--publish', '--volume',
+          '--group-add', '--add-host', '--memory', '--cpus', '--shm-size', '--log-driver', '--log-opt',
+          '--stop-signal', '--stop-timeout', '--user', '--label', '--env-file'}
+def made(args):
+    # A container as docker inspect shows one that `docker run ARGS` made.
+    given, rest = {}, list(args)
+    while rest and rest[0].startswith('--'):
+        flag = rest.pop(0)
+        given.setdefault(flag, []).append(rest.pop(0) if flag in VALUED else True)
+    ref, command = rest[0], rest[1:]
+    image = images[ref]
+    one = lambda flag, default=None: given.get(flag, [default])[-1]
+    env = list(image['Config'].get('Env') or [])
+    if '--env-file' in given:
+        env += [line for line in open(one('--env-file')).read().splitlines() if line]
+    ports = {}
+    for published in given.get('--publish', []):
+        parts = published.rsplit(':', 2)
+        ports.setdefault(parts[-1] + '/tcp', []).append({'HostIp': parts[0] if len(parts) == 3 else '',
+                                                        'HostPort': parts[-2] if len(parts) > 1 else ''})
+    mounts = []
+    for volume in given.get('--volume', []):
+        source, target, *mode = volume.split(':')
+        mounts.append({'Type': 'bind' if source.startswith('/') else 'volume', 'Source': source, 'Name': source,
+                       'Destination': target, 'Mode': ','.join(mode), 'RW': 'ro' not in mode})
+    restart = (one('--restart', 'no') or 'no').split(':')
+    return {
+        'Id': 'f00d' + str(len(data['calls'])).rjust(12, '0'), 'Name': '/' + one('--name'), 'Image': image['Id'],
+        'State': {'Running': data.get('new_runs', True)},
+        'Config': {'Image': ref, 'Hostname': 'f00d' + str(len(data['calls'])).rjust(8, '0'), 'Env': env,
+                   'Cmd': command or image['Config'].get('Cmd'), 'Entrypoint': image['Config'].get('Entrypoint'),
+                   'User': one('--user', image['Config'].get('User') or ''),
+                   'WorkingDir': image['Config'].get('WorkingDir') or '', 'Labels': {}},
+        'HostConfig': {'RestartPolicy': {'Name': restart[0], 'MaximumRetryCount': int(restart[1]) if len(restart) > 1 else 0},
+                       'NetworkMode': one('--network', 'bridge'), 'PortBindings': ports,
+                       'GroupAdd': given.get('--group-add') or None, 'ExtraHosts': given.get('--add-host') or None,
+                       'LogConfig': {'Type': one('--log-driver', 'json-file'),
+                                     'Config': dict(opt.split('=', 1) for opt in given.get('--log-opt', []))},
+                       'Runtime': 'runc', 'IpcMode': 'private', 'ShmSize': 67108864, 'CgroupnsMode': 'private',
+                       'MaskedPaths': ['/proc/acpi', '/proc/kcore']},
+        'NetworkSettings': {'Networks': {one('--network', 'bridge'): {}}},
+        'Mounts': mounts,
+    }
 if args[:2] == ['container', 'inspect'] and args[2] == '--format':
     found = containers.get(args[-1])
     save()
@@ -312,23 +355,34 @@ if args[:2] == ['container', 'inspect']:
         print('Error: No such container', file=sys.stderr); sys.exit(1)
     print(json.dumps([found])); sys.exit(0)
 if args[:2] == ['image', 'inspect']:
-    save(); print(json.dumps([data['images'][args[2]]])); sys.exit(0)
+    save()
+    if args[2] not in images:
+        print('Error: No such image', file=sys.stderr); sys.exit(1)
+    print(json.dumps([images[args[2]]])); sys.exit(0)
 if args[:1] == ['pull']:
-    data['images'][args[1]] = data['images']['new']
+    images[args[1]] = images[images['new']['Id']] = images['new']
     save(); sys.exit(0)
 if args[:2] == ['container', 'rename']:
     containers[args[3]] = containers.pop(args[2])
 if args[:2] == ['container', 'stop']:
     containers[args[2]]['State']['Running'] = False
-if args[:2] == ['container', 'start']:
-    containers[args[2]]['State']['Running'] = True
+if args[:2] in (['container', 'start'], ['start']):
+    containers[args[-1]]['State']['Running'] = True
 if args[:2] == ['container', 'rm']:
     containers.pop(args[-1], None)
 if args[:1] == ['run']:
-    name = args[args.index('--name') + 1]
-    containers[name] = {'State': {'Running': data.get('new_runs', True)}}
+    container = made(args[1:])
+    containers[container['Name'][1:]] = container
+if args[:1] == ['exec'] and args[-3:] == ['berth', 'server', 'setup-key']:
+    print('berth-setup-made-up-key')
+if args[:1] == ['exec'] and args[-3:] == ['berth', 'key', 'show']:
+    print('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMadeUpMadeUpMadeUpMadeUpMadeUpMadeUpMadeUp berth')
 save()
 '''
+
+# The berth server's container that the incus-host recipe of berth 0.5.2 ran,
+# as docker inspect shows it on a daemon with log options in daemon.json.
+FOUND_052 = json.loads((SRC / 'tests/fixtures/berth-server-0.5.2.json').read_text())
 
 
 def container(**host):
@@ -376,22 +430,37 @@ class ServerUpgrade(unittest.TestCase):
         write_program(self.scratch / 'docker', FAKE_DOCKER)
         self.state = self.scratch / 'docker.json'
 
-    def upgrade(self, version, found=None, new_runs=True):
-        self.state.write_text(json.dumps({
-            'containers': {'berth': found or container()},
-            'images': {'sha256:old': image('0.5.2', 'sha256:old'), 'new': image(version, 'sha256:new')},
-            'new_runs': new_runs}))
+    def helper(self, *args, found=None, old_image=None, new='0.6.0', new_runs=True, images=None, keep=False):
+        if not keep:
+            found = found or container()
+            old_image = old_image or image('0.5.2', 'sha256:old')
+            self.state.write_text(json.dumps({
+                'containers': {'berth': found},
+                'images': dict({found['Image']: old_image, found['Config']['Image']: old_image,
+                                'new': image(new, 'sha256:new')}, **(images or {})),
+                'new_runs': new_runs}))
+        else:
+            data = json.loads(self.state.read_text())
+            data['calls'] = []
+            self.state.write_text(json.dumps(data))
         env = dict(os.environ, DEVBOX_DOCKER=str(self.scratch / 'docker'), FAKE_DOCKER=str(self.state),
-                   DEVBOX_UPGRADE_SETTLE='0', BERTH_ARG_VERSION=version)
-        done = subprocess.run([sys.executable, str(UPGRADE), 'berth'], capture_output=True, text=True,
+                   DEVBOX_UPGRADE_SETTLE='0', BERTH_ARG_VERSION=new)
+        done = subprocess.run([sys.executable, str(UPGRADE), 'berth', *args], capture_output=True, text=True,
                               env=env, timeout=60)
         return done, json.loads(self.state.read_text())
+
+    def upgrade(self, version, found=None, new_runs=True):
+        return self.helper(found=found, new=version, new_runs=new_runs)
+
+    @staticmethod
+    def run_call(data):
+        return next(call for call in data['calls'] if call[0] == 'run')
 
     def test_the_new_container_keeps_the_data_and_the_options(self):
         done, data = self.upgrade('0.6.0')
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn('berth runs ghcr.io/helightdev/berth:0.6.0 now', done.stdout)
-        run = next(call for call in data['calls'] if call[0] == 'run')
+        run = self.run_call(data)
         words = ' '.join(run)
         for kept in ('--name berth', '--restart unless-stopped', '--publish 127.0.0.1:7777:7777',
                      '--volume /srv/berth/data:/data', '--volume /srv/berth/ssh:/home/berth/.ssh',
@@ -405,11 +474,35 @@ class ServerUpgrade(unittest.TestCase):
         self.assertEqual(sorted(data['containers']), ['berth'])
         self.assertIn(['pull', 'ghcr.io/helightdev/berth:0.6.0'], data['calls'])
 
+    def test_a_container_of_0_5_2_on_a_daemon_with_log_options_is_carried_over(self):
+        found, old = FOUND_052['container'], FOUND_052['image']
+        new = dict(old, Id='sha256:new', Config=dict(old['Config'], Cmd=['serve', '--listen', '0.0.0.0:7777', '--expose']))
+        done, data = self.helper(found=found, old_image=old, images={'new': new})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        run = self.run_call(data)
+        words = ' '.join(run)
+        for kept in ('--log-driver json-file', '--log-opt max-file=5', '--log-opt max-size=10m',
+                     '--add-host incus-host:host-gateway', '--group-add 989',
+                     '--volume /var/run/docker.sock:/var/run/docker.sock', '--volume /srv/berth/config:/config',
+                     '--publish 127.0.0.1:7777:7777', '--restart unless-stopped'):
+            self.assertIn(kept, words)
+        # What docker fills in for every container is not an option of this one.
+        for left in ('--shm-size', '--hostname', '--user', '--privileged', 'MaskedPaths'):
+            self.assertNotIn(left, words)
+        # Its command was its image's, so the new image's own runs: no --web of 0.5.2.
+        self.assertEqual(run[-1], 'ghcr.io/helightdev/berth:0.6.0')
+        self.assertEqual(data['env_file'], '')
+
     def test_an_option_it_cannot_carry_over_changes_nothing(self):
         done, data = self.upgrade('0.6.0', found=container(Privileged=True, Devices=[{'PathOnHost': '/dev/kvm'}]))
         self.assertNotEqual(done.returncode, 0)
         self.assertIn('it runs privileged; it has devices', done.stderr)
         self.assertFalse([call for call in data['calls'] if call[0] in ('pull', 'run', 'container') and call[1:2] != ['inspect']])
+        for host in ({'ReadonlyRootfs': True}, {'DeviceRequests': [{'Count': -1}]}, {'Runtime': 'sysbox-runc'},
+                     {'AutoRemove': True}):
+            done, _ = self.upgrade('0.6.0', found=container(**host))
+            self.assertNotEqual(done.returncode, 0, host)
+            self.assertIn('Upgrade it by hand', done.stderr)
 
     def test_an_older_version_is_refused(self):
         done, data = self.upgrade('0.5.1')
@@ -426,6 +519,48 @@ class ServerUpgrade(unittest.TestCase):
         self.assertEqual(sorted(data['containers']), ['berth'])
         self.assertTrue(data['containers']['berth']['State']['Running'])
         self.assertIn(['container', 'rename', 'berth-before-0.6.0', 'berth'], data['calls'])
+
+    def test_the_recipe_sets_its_options_over_the_containers_and_keeps_the_others(self):
+        asked = ['--publish', '127.0.0.1:7878:7777', '--volume', '/srv/berth/data:/data',
+                 '--add-host', 'node:host-gateway', '--add-host', 'incus-host:host-gateway', '--group-add', '989']
+        done, data = self.helper('--image', 'ghcr.io/helightdev/berth', '--pull', *asked)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        run = self.run_call(data)
+        words = ' '.join(run)
+        self.assertIn('--publish 127.0.0.1:7878:7777', words)
+        self.assertNotIn('127.0.0.1:7777:7777', words)
+        self.assertEqual(words.count('--add-host incus-host:host-gateway'), 1)
+        self.assertEqual(words.count('--group-add 989'), 1)
+        for kept in ('--add-host node:host-gateway', '--volume /var/run/docker.sock:/var/run/docker.sock'):
+            self.assertIn(kept, words)
+        self.assertEqual(run[-1], 'ghcr.io/helightdev/berth')
+        # Run again with the same, it changes nothing.
+        done, data = self.helper('--image', 'ghcr.io/helightdev/berth', '--pull', *asked, keep=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn('berth is unchanged', done.stdout)
+        self.assertNotIn('run', [call[0] for call in data['calls']])
+
+    def test_without_an_update_the_recipe_keeps_the_image(self):
+        done, data = self.helper('--image', 'ghcr.io/helightdev/berth', '--keep-image',
+                                 '--publish', '127.0.0.1:7777:7777')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn('berth is unchanged', done.stdout)
+        self.assertNotIn('pull', [call[0] for call in data['calls']])
+        done, data = self.helper('--image', 'ghcr.io/helightdev/berth', '--keep-image',
+                                 '--add-host', 'node:host-gateway')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.run_call(data)[-1], 'ghcr.io/helightdev/berth:0.5.2')
+        # A tag pulled again since is not taken up without an update.
+        done, data = self.helper('--image', 'x', '--keep-image', '--add-host', 'node:host-gateway',
+                                 images={'ghcr.io/helightdev/berth:0.5.2': image('0.6.0', 'sha256:new')})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.run_call(data)[-1], 'sha256:old')
+
+    def test_the_recipe_never_goes_back_to_an_older_server(self):
+        done, data = self.helper('--image', 'ghcr.io/helightdev/berth:0.5.1', '--pull', new='0.5.1')
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn('which is newer than 0.5.1', done.stderr)
+        self.assertNotIn('run', [call[0] for call in data['calls']])
 
 
 if __name__ == '__main__':

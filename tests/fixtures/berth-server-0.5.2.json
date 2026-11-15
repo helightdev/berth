@@ -1,0 +1,243 @@
+{
+ "_about": "docker inspect of a berth 0.5.2 server container that the incus-host recipe of 0.5.2 ran, on a Docker daemon with max-size and max-file in daemon.json; paths, ids and the group are made up",
+ "container": {
+  "Config": {
+   "AttachStderr": true,
+   "AttachStdin": false,
+   "AttachStdout": true,
+   "Cmd": [
+    "serve",
+    "--listen",
+    "0.0.0.0:7777",
+    "--expose",
+    "--web"
+   ],
+   "Domainname": "",
+   "Entrypoint": [
+    "tini",
+    "--",
+    "berth"
+   ],
+   "Env": [
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "XDG_CONFIG_HOME=/config",
+    "XDG_DATA_HOME=/data",
+    "TERM=xterm-256color"
+   ],
+   "ExposedPorts": {
+    "7777/tcp": {}
+   },
+   "Hostname": "4d1c0ffee000",
+   "Image": "ghcr.io/helightdev/berth:0.5.2",
+   "Labels": {},
+   "OpenStdin": false,
+   "StdinOnce": false,
+   "Tty": false,
+   "User": "berth",
+   "Volumes": {
+    "/config": {},
+    "/data": {}
+   },
+   "WorkingDir": ""
+  },
+  "HostConfig": {
+   "AutoRemove": false,
+   "Binds": [
+    "/srv/berth/ssh:/home/berth/.ssh",
+    "/var/run/docker.sock:/var/run/docker.sock",
+    "/srv/berth/config:/config",
+    "/srv/berth/data:/data"
+   ],
+   "BlkioDeviceReadBps": [],
+   "BlkioDeviceReadIOps": [],
+   "BlkioDeviceWriteBps": [],
+   "BlkioDeviceWriteIOps": [],
+   "BlkioWeight": 0,
+   "BlkioWeightDevice": [],
+   "CapAdd": null,
+   "CapDrop": null,
+   "Cgroup": "",
+   "CgroupParent": "",
+   "CgroupnsMode": "private",
+   "ConsoleSize": [
+    0,
+    0
+   ],
+   "ContainerIDFile": "",
+   "CpuCount": 0,
+   "CpuPercent": 0,
+   "CpuPeriod": 0,
+   "CpuQuota": 0,
+   "CpuRealtimePeriod": 0,
+   "CpuRealtimeRuntime": 0,
+   "CpuShares": 0,
+   "CpusetCpus": "",
+   "CpusetMems": "",
+   "DeviceCgroupRules": null,
+   "DeviceRequests": null,
+   "Devices": [],
+   "Dns": null,
+   "DnsOptions": [],
+   "DnsSearch": [],
+   "ExtraHosts": [
+    "incus-host:host-gateway"
+   ],
+   "GroupAdd": [
+    "989"
+   ],
+   "IOMaximumBandwidth": 0,
+   "IOMaximumIOps": 0,
+   "IpcMode": "private",
+   "Isolation": "",
+   "Links": null,
+   "LogConfig": {
+    "Config": {
+     "max-file": "5",
+     "max-size": "10m"
+    },
+    "Type": "json-file"
+   },
+   "MaskedPaths": [
+    "/proc/acpi",
+    "/proc/asound",
+    "/proc/interrupts",
+    "/proc/kcore",
+    "/proc/keys",
+    "/proc/latency_stats",
+    "/proc/sched_debug",
+    "/proc/scsi",
+    "/proc/timer_list",
+    "/proc/timer_stats",
+    "/sys/devices/virtual/powercap",
+    "/sys/firmware",
+    "/sys/devices/system/cpu/cpu0/thermal_throttle"
+   ],
+   "Memory": 0,
+   "MemoryReservation": 0,
+   "MemorySwap": 0,
+   "MemorySwappiness": null,
+   "NanoCpus": 0,
+   "NetworkMode": "bridge",
+   "OomKillDisable": false,
+   "OomScoreAdj": 0,
+   "PidMode": "",
+   "PidsLimit": null,
+   "PortBindings": {
+    "7777/tcp": [
+     {
+      "HostIp": "127.0.0.1",
+      "HostPort": "7777"
+     }
+    ]
+   },
+   "Privileged": false,
+   "PublishAllPorts": false,
+   "ReadonlyPaths": [
+    "/proc/bus",
+    "/proc/fs",
+    "/proc/irq",
+    "/proc/sys",
+    "/proc/sysrq-trigger"
+   ],
+   "ReadonlyRootfs": false,
+   "RestartPolicy": {
+    "MaximumRetryCount": 0,
+    "Name": "unless-stopped"
+   },
+   "Runtime": "runc",
+   "SecurityOpt": null,
+   "ShmSize": 67108864,
+   "UTSMode": "",
+   "Ulimits": [],
+   "UsernsMode": "",
+   "VolumeDriver": "",
+   "VolumesFrom": null
+  },
+  "Id": "4d1c0ffee0000000000000000000000000000000000000000000000000000000",
+  "Image": "sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+  "Mounts": [
+   {
+    "Destination": "/data",
+    "Mode": "",
+    "Propagation": "rprivate",
+    "RW": true,
+    "Source": "/srv/berth/data",
+    "Type": "bind"
+   },
+   {
+    "Destination": "/home/berth/.ssh",
+    "Mode": "",
+    "Propagation": "rprivate",
+    "RW": true,
+    "Source": "/srv/berth/ssh",
+    "Type": "bind"
+   },
+   {
+    "Destination": "/var/run/docker.sock",
+    "Mode": "",
+    "Propagation": "rprivate",
+    "RW": true,
+    "Source": "/var/run/docker.sock",
+    "Type": "bind"
+   },
+   {
+    "Destination": "/config",
+    "Mode": "",
+    "Propagation": "rprivate",
+    "RW": true,
+    "Source": "/srv/berth/config",
+    "Type": "bind"
+   }
+  ],
+  "Name": "/berth",
+  "NetworkSettings": {
+   "Networks": {
+    "bridge": {
+     "Gateway": "172.17.0.1",
+     "IPAddress": "172.17.0.2",
+     "MacAddress": "02:42:ac:11:00:02",
+     "NetworkID": ""
+    }
+   }
+  },
+  "State": {
+   "Running": true,
+   "Status": "running"
+  }
+ },
+ "image": {
+  "Config": {
+   "ArgsEscaped": true,
+   "Cmd": [
+    "serve",
+    "--listen",
+    "0.0.0.0:7777",
+    "--expose",
+    "--web"
+   ],
+   "Entrypoint": [
+    "tini",
+    "--",
+    "berth"
+   ],
+   "Env": [
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "XDG_CONFIG_HOME=/config",
+    "XDG_DATA_HOME=/data",
+    "TERM=xterm-256color"
+   ],
+   "ExposedPorts": {
+    "7777/tcp": {}
+   },
+   "User": "berth",
+   "Volumes": {
+    "/config": {},
+    "/data": {}
+   }
+  },
+  "Id": "sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+  "RepoTags": [
+   "ghcr.io/helightdev/berth:0.5.2"
+  ]
+ }
+}
