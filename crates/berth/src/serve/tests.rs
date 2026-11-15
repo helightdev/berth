@@ -3172,24 +3172,6 @@ fn a_setup_key_is_refused_when_the_token_is_off() {
     assert!(super::setup_key::command(&paths, &["--nothing"]).is_err());
 }
 
-/// Generate the password of the operator on the screen of `app`, and what
-/// the screen said.
-fn generate_operator_password(app: &mut crate::app::App) -> String {
-    use crate::app::Entry;
-    use crate::fields::{Field, Step};
-    let found = Step::SETUP.into_iter().find_map(|step| {
-        app.step = step;
-        app.entries()
-            .iter()
-            .position(|entry| *entry == Entry::Field(Field::OperatorHash))
-    });
-    app.list.select(found);
-    match app.generate() {
-        Ok(()) => app.status.clone(),
-        Err(error) => error.to_string(),
-    }
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_is_renamed_as_a_job_with_what_the_server_keeps_of_it() {
     let served = served().await;
@@ -3440,51 +3422,6 @@ fn generated_passwords_are_kept_where_the_host_is_and_shown_to_an_admin() {
     let (status, _) = ask("GET", "/v1/hosts/attic/credentials", Value::Null);
     assert_eq!(status, 404);
 
-    // The screen of a berth that uses this server has the server make the
-    // password, and keeps none of it itself, where a mirror would erase it.
-    let elsewhere = tempfile::tempdir().unwrap();
-    let paths = Paths {
-        config_dir: elsewhere.path().join("config"),
-        data_dir: elsewhere.path().join("data"),
-    };
-    let url = format!("unix:{}", served.socket.display());
-    paths.set("server", &url).unwrap();
-    let place = Place::resolve(&paths, "studio").unwrap();
-    assert_eq!(place.server_url(), Some(url.as_str()));
-    let mut config = profile.clone();
-    config["builder"]["served"] = json!(url);
-    let mut app = crate::app::App::new(
-        paths.clone(),
-        place.clone(),
-        crate::app::parse_config(config.to_string().as_bytes()).unwrap(),
-    );
-    let said = generate_operator_password(&mut app);
-    assert!(said.contains("kept on the berth server"), "{said}");
-    assert!(
-        app.config["operator_password_hash"]
-            .as_str()
-            .unwrap()
-            .starts_with("$6$")
-    );
-    assert!(credentials::load(&paths, &place).unwrap().is_empty());
-    let kept = credentials::load(&served.state.paths, &own).unwrap();
-    assert_ne!(kept["ops"], json!(password), "a new one was made");
-
-    // A host of this berth's own keeps it in this berth's store.
-    let local = tempfile::tempdir().unwrap();
-    let paths = Paths {
-        config_dir: local.path().join("config"),
-        data_dir: local.path().join("data"),
-    };
-    let attic = Place::own("attic").unwrap();
-    let mut app = crate::app::App::new(
-        paths.clone(),
-        attic.clone(),
-        crate::app::parse_config(b"{}").unwrap(),
-    );
-    let said = generate_operator_password(&mut app);
-    assert!(said.contains("berth credentials attic"), "{said}");
-    assert_eq!(credentials::load(&paths, &attic).unwrap().len(), 1);
     runtime.shutdown_background();
 }
 
@@ -3972,69 +3909,6 @@ async fn a_host_removed_or_changed_in_the_store_by_another_process_is_not_listed
     assert_eq!((status, hosts), (200, json!([])));
     let (status, _) = send(client, "GET", "/v1/hosts/studio", Value::Null).await;
     assert_eq!(status, 404);
-}
-
-// Not on a runtime of the test's: the screen waits for the server on one of its own.
-#[test]
-fn the_screen_keeps_the_address_a_server_gave_a_new_machine_and_opens_its_overview() {
-    use crate::fields::Step;
-    use berth_core::profiles::Place;
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let served = runtime.block_on(served());
-    let own = Place::own("studio").unwrap();
-    let profile = json!({"hostname": "studio", "builder": {}, "operator_username": "ops"});
-    own.save(&served.state.paths, &profile).unwrap();
-
-    let elsewhere = tempfile::tempdir().unwrap();
-    let paths = Paths {
-        config_dir: elsewhere.path().join("config"),
-        data_dir: elsewhere.path().join("data"),
-    };
-    let url = format!("unix:{}", served.socket.display());
-    paths.set("server", &url).unwrap();
-    let server = berth_core::server::Server::configured(&paths).unwrap();
-    server.mirror(&paths).unwrap();
-    let place = Place::resolve(&paths, "studio").unwrap();
-    let stored = place.load(&paths).unwrap().unwrap();
-    let mut app = crate::app::App::new(
-        paths.clone(),
-        place.clone(),
-        crate::app::parse_config(stored.to_string().as_bytes()).unwrap(),
-    );
-    app.set_step(Step::Install);
-
-    // The server made the machine in a job of its own and gave its profile the address.
-    let mut made = own.load(&served.state.paths).unwrap().unwrap();
-    made["access"] = json!({"address": "192.0.2.40", "user": "ops", "auth": "berth"});
-    made["target"] = json!("cloud");
-    own.save(&served.state.paths, &made).unwrap();
-    let stage = crate::job::Stage {
-        title: "Create machine".into(),
-        command: std::process::Command::new("true"),
-        source: None,
-        input: None,
-    };
-    app.job = Some(crate::job::Job::start(vec![stage], "", vec![]).unwrap());
-    app.machine_job = true;
-    for _ in 0..500 {
-        app.job.as_mut().unwrap().tick();
-        if !app.job.as_ref().unwrap().running() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    app.close_job();
-    assert_eq!(app.step, Step::Manage, "{}", app.status);
-    assert_eq!(app.config["access"]["address"], "192.0.2.40");
-    assert!(!app.unsaved());
-
-    // What the screen saves next, as before it starts the machine, keeps the address.
-    app.save().unwrap();
-    let kept = own.load(&served.state.paths).unwrap().unwrap();
-    assert_eq!(kept["access"]["address"], "192.0.2.40", "{kept}");
 }
 
 /// What works with this machine's own drives and settings is offered to its

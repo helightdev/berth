@@ -22,6 +22,46 @@ pub fn socket() -> std::path::PathBuf {
     berth_core::link::runtime_dir().join("serve.sock")
 }
 
+/// The server berth goes through when it is set to use none: a `berth
+/// serve` of this user on this machine, or else one started in this process,
+/// which the caller keeps while it is needed. The address names either.
+pub fn local(paths: &Paths) -> Result<(String, Option<Here>)> {
+    let socket = socket();
+    if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+        return Ok((format!("unix:{}", socket.display()), None));
+    }
+    let here = Here::start(paths)?;
+    berth_core::server::serve_here(here.dial());
+    Ok((berth_core::server::HERE.to_owned(), Some(here)))
+}
+
+/// The server a command goes through: the one berth is set to use, or one
+/// on this machine as [`local`] finds it.
+pub fn server(paths: &Paths) -> Result<(berth_core::server::Server, Option<Here>)> {
+    if let Some(server) = berth_core::server::Server::configured(paths) {
+        return Ok((server, None));
+    }
+    let (url, here) = local(paths)?;
+    Ok((berth_core::server::Server { url, token: None }, here))
+}
+
+/// Wait for the jobs a command started in its own server, saying on
+/// standard error which they are.
+pub fn finish(here: Option<Here>) {
+    if let Some(here) = here {
+        here.wait_for_jobs(|jobs| {
+            let names: Vec<String> = jobs
+                .iter()
+                .map(|job| format!("{} {}", job.action, job.host).trim().to_owned())
+                .collect();
+            eprintln!(
+                "berth: waiting for what runs in this berth to end: {}. Ctrl+C stops it unfinished; berth serve keeps jobs running after berth ends.",
+                names.join(", ")
+            );
+        });
+    }
+}
+
 /// The pipes clients open, as connections that axum serves.
 struct Pipes(UnboundedReceiver<DuplexStream>);
 
@@ -218,6 +258,76 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    fn screen(app: &mut berth_page::App) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..30)
+            .map(|y| {
+                (0..120)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_screens_list_and_open_a_host_through_it() {
+        let (dir, paths) = scratch();
+        for (name, address) in [("studio", "192.0.2.10"), ("dock", "192.0.2.11")] {
+            let profile = json!({"hostname": name, "builder": {}, "access": {"address": address, "link": ["sh", "-c", "exit 1"]}});
+            berth_core::profiles::Place::own(name)
+                .unwrap()
+                .save(&paths, &profile)
+                .unwrap();
+        }
+        let here = Here::start(&paths).unwrap();
+        berth_page::net::serve_here(here.dial());
+        let kept = dir.path().join("client");
+        let linked = berth_page::device::Linked {
+            server: Some(berth_page::device::HERE.into()),
+            ..Default::default()
+        };
+        berth_page::device::install(
+            linked,
+            berth_page::settings::Settings::new(Some(kept.clone())),
+        );
+        let mut app = berth_page::App::new();
+        app.open_when_listed("dock");
+        let started = std::time::Instant::now();
+        let shown = loop {
+            berth_page::pump();
+            app.tick();
+            let shown = screen(&mut app);
+            if shown.contains("Connection") && shown.contains("192.0.2.11") {
+                break shown;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the host did not open:\n{shown}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        // Its own server needs no token and says where it is, and is never kept.
+        assert!(!shown.contains("through the berth server"), "{shown}");
+        assert!(!kept.join("config.json").exists());
+        app.event(berth_tui::Event::Key(berth_tui::Key::plain(
+            berth_tui::Code::Esc,
+        )));
+        app.tick();
+        let home = screen(&mut app);
+        assert!(
+            home.contains("this machine") && home.contains("studio"),
+            "{home}"
+        );
+        app.event(berth_tui::Event::Key(berth_tui::Key::plain(
+            berth_tui::Code::Char('q'),
+        )));
+        assert!(app.quit());
     }
 
     #[test]

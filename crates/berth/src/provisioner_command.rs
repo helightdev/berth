@@ -44,14 +44,6 @@ impl Source {
         }
     }
 
-    /// Where they are, for people.
-    pub fn place(&self) -> String {
-        match self {
-            Source::Here(_) => "this machine".into(),
-            Source::Server(server) => format!("the berth server at {}", server.url),
-        }
-    }
-
     pub fn list(&self) -> Result<Vec<ProvisionerInfo>> {
         match self {
             Source::Here(paths) => Ok(provision::list(paths, &registry::Store::new(paths)?)),

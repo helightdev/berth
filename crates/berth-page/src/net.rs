@@ -44,11 +44,13 @@ pub struct Target {
 }
 
 /// The server in this process, when the program runs one.
-static HERE: OnceLock<client::Dial> = OnceLock::new();
+static HERE: std::sync::RwLock<Option<client::Dial>> = std::sync::RwLock::new(None);
 
-/// Reach `here:` through `dial`, for the rest of the program.
+/// Reach `here:` through `dial`, until another is given.
 pub fn serve_here(dial: client::Dial) {
-    let _ = HERE.set(dial);
+    *HERE
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(dial);
 }
 
 /// Where `path` of `server` is: `http(s)://HOST[:PORT]`, `unix:/path` or `here:`.
@@ -127,7 +129,11 @@ fn tls() -> Arc<rustls::ClientConfig> {
 pub async fn connect(target: &Target) -> Result<Stream, String> {
     let (name, port, secure) = match &target.way {
         Way::Here => {
-            let dial = HERE.get().ok_or("There is no server in this program")?;
+            let dial = HERE
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+                .ok_or("There is no server in this program")?;
             return dial().await.map_err(|error| describe(&error));
         }
         #[cfg(unix)]

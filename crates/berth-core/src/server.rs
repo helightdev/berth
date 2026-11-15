@@ -19,11 +19,13 @@ use tokio::net::{TcpStream, UnixStream};
 /// The address of the server in this process.
 pub const HERE: &str = "here:";
 
-static DIAL: std::sync::OnceLock<client::Dial> = std::sync::OnceLock::new();
+static DIAL: std::sync::RwLock<Option<client::Dial>> = std::sync::RwLock::new(None);
 
-/// Reach the server in this process, `here:`, through `dial`.
+/// Reach the server in this process, `here:`, through `dial`, until another is given.
 pub fn serve_here(dial: client::Dial) {
-    let _ = DIAL.set(dial);
+    *DIAL
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(dial);
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -163,7 +165,9 @@ impl Server {
         let token = self.token.as_deref().unwrap_or("");
         if self.url == HERE {
             let dial = DIAL
-                .get()
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
                 .ok_or_else(|| Error::Transport("no server runs in this berth".into()))?;
             let socket = client::websocket(dial().await?, ops::PORTAL, "").await?;
             return Ok(Portal::over(socket));
