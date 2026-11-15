@@ -654,6 +654,18 @@ pub enum Job {
     List {
         #[arg(long, default_value_t = 20)]
         limit: u32,
+        /// Only the jobs about this host.
+        #[arg(long)]
+        host: Option<String>,
+        /// Only the jobs of this subject, such as provisioner:NAME or installation.
+        #[arg(long)]
+        subject: Option<String>,
+        /// Only the jobs that are still running.
+        #[arg(long)]
+        running: bool,
+        /// Only the jobs that started before this one, to see the next page.
+        #[arg(long, value_name = "ID")]
+        before: Option<String>,
     },
     /// One job's state.
     Show { id: String },

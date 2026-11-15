@@ -87,6 +87,7 @@ on_each_backend!(
     old_messages_and_jobs_are_pruned_and_values_stay,
     a_repeated_token_finds_the_job_it_started,
     a_job_keeps_what_it_was_started_with,
+    jobs_are_listed_by_subject_host_and_state_a_page_at_a_time,
     a_store_is_up_to_date_and_says_what_it_is,
     state_rows_are_kept_listed_and_removed,
     replacing_states_leaves_other_scopes_and_kinds_alone,
@@ -512,6 +513,97 @@ fn a_job_keeps_what_it_was_started_with(place: &Place) {
     assert!(store.job("j2").unwrap().unwrap().arguments.is_empty());
     let listed = store.jobs(10).unwrap();
     assert!(listed.iter().any(|job| job.arguments.len() == 3));
+}
+
+fn jobs_are_listed_by_subject_host_and_state_a_page_at_a_time(place: &Place) {
+    let store = place.open();
+    let job = |id: &str, age: u64, host: &str, subject: &str, ended: bool| Job {
+        id: id.into(),
+        host: host.into(),
+        what: "apply".into(),
+        started: rfc3339(unix_now() - age),
+        ended: ended.then(|| rfc3339(unix_now())),
+        output_path: format!("/tmp/{id}.log"),
+        subject: subject.into(),
+        action: "apply".into(),
+        ..Job::default()
+    };
+    store
+        .add_job(&job("j1", 50, "studio", "host:studio", true))
+        .unwrap();
+    store
+        .add_job(&job("j2", 40, "studio, lab", "installation", true))
+        .unwrap();
+    store
+        .add_job(&job("j3", 30, "", "provisioner:vm", false))
+        .unwrap();
+    store
+        .add_job(&job("j4", 20, "studio-2", "host:studio-2", true))
+        .unwrap();
+    store
+        .add_job(&job("j5", 10, "studio", "host:studio", false))
+        .unwrap();
+    let ids = |filter: JobFilter| -> Vec<String> {
+        store
+            .find_jobs(&JobFilter {
+                limit: 10,
+                ..filter
+            })
+            .unwrap()
+            .into_iter()
+            .map(|job| job.id)
+            .collect()
+    };
+    assert_eq!(ids(JobFilter::default()), ["j5", "j4", "j3", "j2", "j1"]);
+    // A host is found alone and among others, and not as part of another's name.
+    let studio = JobFilter {
+        host: Some("studio"),
+        ..JobFilter::default()
+    };
+    assert_eq!(ids(studio.clone()), ["j5", "j2", "j1"]);
+    assert_eq!(
+        ids(JobFilter {
+            subject: Some("host:studio"),
+            ..JobFilter::default()
+        }),
+        ["j5", "j1"]
+    );
+    assert_eq!(
+        ids(JobFilter {
+            running: Some(true),
+            ..JobFilter::default()
+        }),
+        ["j5", "j3"]
+    );
+    assert_eq!(
+        ids(JobFilter {
+            running: Some(false),
+            ..studio.clone()
+        }),
+        ["j2", "j1"]
+    );
+    // A page goes on after the last job of the one before.
+    let first = store
+        .find_jobs(&JobFilter {
+            limit: 2,
+            ..JobFilter::default()
+        })
+        .unwrap();
+    assert_eq!(first.len(), 2);
+    assert_eq!(
+        ids(JobFilter {
+            before: Some(&first[1].id),
+            ..JobFilter::default()
+        }),
+        ["j3", "j2", "j1"]
+    );
+    assert!(
+        ids(JobFilter {
+            before: Some("nothing"),
+            ..JobFilter::default()
+        })
+        .is_empty()
+    );
 }
 
 fn a_store_is_up_to_date_and_says_what_it_is(place: &Place) {

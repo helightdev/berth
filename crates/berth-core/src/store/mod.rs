@@ -145,6 +145,20 @@ pub struct Filter<'a> {
     pub limit: usize,
 }
 
+/// Which jobs a list has, newest first.
+#[derive(Debug, Clone, Default)]
+pub struct JobFilter<'a> {
+    /// Only those of this subject, as [`crate::runner::Subject::key`] says it.
+    pub subject: Option<&'a str>,
+    /// Only those about this host, alone or among others.
+    pub host: Option<&'a str>,
+    /// Only those that have not ended, or only those that have.
+    pub running: Option<bool>,
+    /// Only those that started before the job of this id.
+    pub before: Option<&'a str>,
+    pub limit: usize,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
     pub key: String,
@@ -393,7 +407,9 @@ pub trait Backend: Send {
     fn stop_job(&mut self, id: &str, by: &str) -> Result<()>;
     fn end_lost_jobs(&mut self, ended: &str) -> Result<usize>;
     fn job(&mut self, id: &str) -> Result<Option<Job>>;
-    fn jobs(&mut self, limit: usize) -> Result<Vec<Job>>;
+    /// The jobs `filter` lets through, newest first. A `before` that names
+    /// no job lets none through.
+    fn jobs(&mut self, filter: &JobFilter<'_>) -> Result<Vec<Job>>;
 
     /// Drop messages from before `cutoff` and jobs that ended and started
     /// before it, in one transaction. Returns the dropped jobs' output files.
@@ -654,7 +670,20 @@ impl Store {
 
     /// Jobs, newest first.
     pub fn jobs(&self, limit: usize) -> Result<Vec<Job>> {
-        self.backend().jobs(limit.clamp(1, 1000))
+        self.find_jobs(&JobFilter {
+            limit,
+            ..JobFilter::default()
+        })
+    }
+
+    /// The jobs `filter` lets through, newest first: at most its limit,
+    /// which is between 1 and 1,000.
+    pub fn find_jobs(&self, filter: &JobFilter<'_>) -> Result<Vec<Job>> {
+        let filter = JobFilter {
+            limit: filter.limit.clamp(1, 1000),
+            ..filter.clone()
+        };
+        self.backend().jobs(&filter)
     }
 
     // ── Pruning ─────────────────────────────────────────────────────────────

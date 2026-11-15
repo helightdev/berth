@@ -6095,6 +6095,42 @@
         "operationId": "jobs",
         "parameters": [
           {
+            "description": "Only the jobs of this subject: `host:NAME`, `provisioner:NAME`, `resource:ID` or `installation`.",
+            "in": "query",
+            "name": "subject",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the jobs about this host, alone or among others, as a roll-out is.",
+            "in": "query",
+            "name": "host",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the jobs that have not ended, or with `false` only those that have.",
+            "in": "query",
+            "name": "running",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Only the jobs that started before the job of this id: the next page after it.",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "At most this many (default 100, at most 1,000).",
             "in": "query",
             "name": "limit",
@@ -6118,6 +6154,16 @@
               }
             },
             "description": "Jobs, newest first"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`before` names no job"
           }
         },
         "summary": "The jobs, newest first.",

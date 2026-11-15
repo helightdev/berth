@@ -831,12 +831,16 @@ The jobs, newest first.
 `berth job ls` is the same.
 
 ```text
-berth job list [--limit LIMIT]
+berth job list [--limit LIMIT] [--host HOST] [--subject SUBJECT] [--running] [--before ID]
 ```
 
 | Argument | What it is |
 | --- | --- |
 | `--limit LIMIT` | By default `20`. |
+| `--host HOST` | Only the jobs about this host. |
+| `--subject SUBJECT` | Only the jobs of this subject, such as provisioner:NAME or installation. |
+| `--running` | Only the jobs that are still running. |
+| `--before ID` | Only the jobs that started before this one, to see the next page. |
 
 ### berth job show
 

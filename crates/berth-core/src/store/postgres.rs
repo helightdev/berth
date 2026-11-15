@@ -6,8 +6,8 @@
 //! answer.
 
 use super::{
-    Backend, CursorRow, Entry, Error, Filter, Job, KvRow, MessageRow, Result, Rows, StateRow,
-    Stored, Table, When, json_value, keep_from, keep_name,
+    Backend, CursorRow, Entry, Error, Filter, Job, JobFilter, KvRow, MessageRow, Result, Rows,
+    StateRow, Stored, Table, When, json_value, keep_from, keep_name,
 };
 use berth_api::{From, Keep, Level, Message};
 use postgres::config::SslMode;
@@ -743,11 +743,22 @@ impl Backend for PostgresBackend {
         })
     }
 
-    fn jobs(&mut self, limit: usize) -> Result<Vec<Job>> {
+    fn jobs(&mut self, filter: &JobFilter<'_>) -> Result<Vec<Job>> {
+        let subject = filter.subject.map(str::to_owned);
+        let host = filter.host.map(str::to_owned);
+        let (running, before) = (filter.running, filter.before.map(str::to_owned));
+        let limit = filter.limit as i64;
         self.call(move |client| {
             let rows = client.query(
-                &format!("SELECT {JOB_COLUMNS} FROM jobs ORDER BY started DESC, id DESC LIMIT $1"),
-                &[&(limit as i64)],
+                &format!(
+                    "SELECT {JOB_COLUMNS} FROM jobs
+                     WHERE ($1::TEXT IS NULL OR subject = $1)
+                       AND ($2::TEXT IS NULL OR strpos(', ' || host || ', ', ', ' || $2 || ', ') > 0)
+                       AND ($3::BOOLEAN IS NULL OR (ended IS NULL) = $3)
+                       AND ($4::TEXT IS NULL OR (started, id) < (SELECT started, id FROM jobs WHERE id = $4))
+                     ORDER BY started DESC, id DESC LIMIT $5"
+                ),
+                &[&subject, &host, &running, &before, &limit],
             )?;
             Ok(rows.iter().map(job).collect())
         })

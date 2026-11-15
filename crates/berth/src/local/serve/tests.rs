@@ -2745,6 +2745,44 @@ async fn a_provisioner_is_renamed_with_everything_that_names_it() {
         let (_, found) = send(client, "GET", &format!("/v1/jobs/{job}"), Value::Null).await;
         assert_eq!(found["subject"], "provisioner:lab", "{found}");
     }
+    // They are listed by their subject, a page at a time.
+    let listed = |found: &Value| -> Vec<String> {
+        found
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|job| job["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let (_, found) = send(
+        client,
+        "GET",
+        "/v1/jobs?subject=provisioner:lab",
+        Value::Null,
+    )
+    .await;
+    // Both started in the same second, so either may be first.
+    let both = listed(&found);
+    let mut sorted = both.clone();
+    sorted.sort();
+    let mut expected = vec![id.clone(), before.clone()];
+    expected.sort();
+    assert_eq!(sorted, expected);
+    let (_, found) = send(
+        client,
+        "GET",
+        "/v1/jobs?subject=provisioner:vm",
+        Value::Null,
+    )
+    .await;
+    assert!(listed(&found).is_empty(), "{found}");
+    let path = format!("/v1/jobs?subject=provisioner:lab&before={}", both[0]);
+    let (_, found) = send(client, "GET", &path, Value::Null).await;
+    assert_eq!(listed(&found), [both[1].clone()]);
+    let (_, found) = send(client, "GET", "/v1/jobs?running=true", Value::Null).await;
+    assert!(listed(&found).is_empty(), "{found}");
+    let (status, _) = send(client, "GET", "/v1/jobs?before=nothing", Value::Null).await;
+    assert_eq!(status, 404);
     let (status, page) = send(client, "GET", "/v1/provisioners/lab", Value::Null).await;
     assert_eq!(status, 200, "{page}");
     assert_eq!(
