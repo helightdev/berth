@@ -68,7 +68,7 @@
               {"name": "volume", "label": "Volume", "default": "", "help": "The volume for /srv/agent, the agent's work. Empty uses berth-HOST-data."},
               {"name": "cpus", "label": "CPUs", "default": "", "kind": "resource", "help": "How many CPUs the container may use, such as 4. Empty sets no limit."},
               {"name": "memory", "label": "Memory", "default": "", "kind": "resource", "help": "How much memory the container may use, such as 8g. Empty sets no limit."},
-              {"name": "keep_volume", "label": "Keep volume on destroy", "default": "no", "values": ["no", "yes"], "help": "Whether deleting the machine keeps its volume, so a new machine can take the agent's work over."}
+              {"name": "keep_volume", "label": "Keep volume on destroy", "default": "no", "kind": "boolean", "values": ["no", "yes"], "help": "Whether deleting the machine keeps its volume, so a new machine can take the agent's work over."}
             ]
           },
           {
@@ -77,7 +77,7 @@
             "verbs": ["start", "stop", "change", "logs"],
             "spec": {"format": "compose", "label": "Compose file"},
             "arguments": [
-              {"name": "keep_volumes", "label": "Keep volumes on remove", "default": "no", "values": ["no", "yes"], "help": "Whether removing the deployment keeps the named volumes of its project. no removes them with what is in them."}
+              {"name": "keep_volumes", "label": "Keep volumes on remove", "default": "no", "kind": "boolean", "values": ["no", "yes"], "help": "Whether removing the deployment keeps the named volumes of its project. no removes them with what is in them."}
             ],
             "actions": [
               {"name": "services", "label": "Services", "group": "Compose", "changes": false, "help": "Each container of the project, with its service and its state."},
@@ -175,7 +175,7 @@
           {"name": "build", "label": "Build the image", "group": "Engine", "help": "Build the image the plugin brings, which a new machine starts from unless it names another. Creating the first machine builds it too; this does it ahead of time."},
           {"name": "prune", "label": "Remove what berth left behind", "group": "Storage", "confirm": "Remove the images of older versions of this plugin that no container uses, and with volumes=yes the volumes berth made that no container uses?", "help": "Remove the images of older versions of this plugin that no container uses. With volumes=yes also the volumes berth made that no container uses, such as those kept with keep_volume, and the agent's work in them. Nothing berth did not make is touched, and no container is.",
            "arguments": [
-             {"name": "volumes", "label": "Also volumes", "default": "no", "values": ["no", "yes"], "help": "yes also removes the volumes berth made that no container uses, with what is in them."}
+             {"name": "volumes", "label": "Also volumes", "default": "no", "kind": "boolean", "values": ["no", "yes"], "help": "yes also removes the volumes berth made that no container uses, with what is in them."}
            ]}
         ]
       }

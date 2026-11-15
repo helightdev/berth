@@ -11,7 +11,7 @@ use super::host;
 use super::out::{self, Style, Table, styled};
 use super::pages;
 use berth_api::portal::{Piece, PortalStream};
-use berth_api::{Act, SessionKind};
+use berth_api::{Act, Argument, SessionKind};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, Write};
@@ -441,6 +441,33 @@ fn complete(
     given: &mut BTreeMap<String, String>,
     subject: &str,
 ) -> Result<()> {
+    // A yes or no goes as the value the action declares, however it is spelt.
+    for argument in action
+        .arguments
+        .iter()
+        .filter(|argument| argument.is_boolean())
+    {
+        if let Some(value) = given.get_mut(&argument.name) {
+            *value = argument.read_switch(value).map_err(Fail::usage)?;
+        }
+    }
+    // One the action cannot take another value of here says why.
+    for argument in action
+        .arguments
+        .iter()
+        .filter(|argument| !argument.fixed.is_empty())
+    {
+        let default = match argument.is_boolean() {
+            true => argument.switched(Argument::is_on(&argument.default)),
+            false => argument.default.clone(),
+        };
+        if given
+            .get(&argument.name)
+            .is_some_and(|value| !value.is_empty() && *value != default)
+        {
+            return Err(Fail::refused(argument.fixed.clone()));
+        }
+    }
     for argument in &action.arguments {
         if !argument.required
             || given
@@ -454,9 +481,24 @@ fn complete(
             label => label.to_owned(),
         };
         let flag = format!("{}=VALUE", argument.name);
-        let value = match argument.secret {
-            true => ask::secret(&label, &flag)?,
-            false => ask::text(&label, &argument.help, &flag)?,
+        let value = match (argument.secret, argument.is_boolean()) {
+            (true, _) => ask::secret(&label, &flag)?,
+            (false, true) => {
+                let flag = format!("{}=yes|no", argument.name);
+                let on = Argument::is_on(&argument.default);
+                argument.switched(ask::yes_no(&label, &argument.help, &flag, on)?)
+            }
+            (false, false) if !argument.values.is_empty() => {
+                let chosen = ask::choice(
+                    &label,
+                    &argument.help,
+                    &flag,
+                    &argument.values,
+                    &argument.default,
+                )?;
+                argument.values[chosen].clone()
+            }
+            (false, false) => ask::text(&label, &argument.help, &flag)?,
         };
         given.insert(argument.name.clone(), value);
     }
@@ -466,8 +508,8 @@ fn complete(
             action.name, action.why
         )));
     }
-    if let Some(question) = &action.confirm {
-        ask::confirm(question)?;
+    if let Some(question) = berth_tui::page::confirmation(action, given) {
+        ask::confirm(&question)?;
     }
     Ok(())
 }
@@ -1013,5 +1055,96 @@ pub fn resource(client: &Client, command: Resource) -> Result<()> {
             )?;
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn remove() -> berth_api::Action {
+        berth_api::Action {
+            name: "remove".into(),
+            confirm: Some("Remove studio?".into()),
+            arguments: vec![Argument {
+                name: "destroy".into(),
+                label: "Destroy its machine".into(),
+                default: "no".into(),
+                kind: Argument::BOOLEAN.into(),
+                values: vec!["no".into(), "yes".into()],
+                ..Argument::default()
+            }],
+            available: true,
+            ..berth_api::Action::default()
+        }
+    }
+
+    fn given(value: &str) -> BTreeMap<String, String> {
+        arguments(&[format!("destroy={value}")]).unwrap()
+    }
+
+    #[test]
+    fn a_yes_or_no_is_taken_in_any_spelling_and_named_in_the_question() {
+        // Nobody can be asked here, so the question comes back as the refusal.
+        let mut on = given("TRUE");
+        let refused = complete(&remove(), &mut on, "studio").unwrap_err();
+        assert_eq!(on["destroy"], "yes");
+        assert!(
+            refused
+                .message
+                .starts_with("Remove studio? Destroy its machine is on. Confirm with --yes"),
+            "{}",
+            refused.message
+        );
+        let mut off = given("Off");
+        let refused = complete(&remove(), &mut off, "studio").unwrap_err();
+        assert_eq!(off["destroy"], "no");
+        assert!(
+            refused
+                .message
+                .starts_with("Remove studio? Confirm with --yes")
+        );
+        let mut bad = given("maybe");
+        let refused = complete(&remove(), &mut bad, "studio").unwrap_err();
+        assert_eq!(
+            refused.message,
+            "destroy is yes or no (or true/false, on/off, 1/0), not maybe"
+        );
+    }
+
+    #[test]
+    fn a_needed_yes_or_no_says_how_to_give_it() {
+        let mut action = remove();
+        action.confirm = None;
+        action.arguments[0].required = true;
+        let mut none = BTreeMap::new();
+        let refused = complete(&action, &mut none, "studio").unwrap_err();
+        assert_eq!(
+            refused.message,
+            "Destroy its machine is missing: pass destroy=yes|no"
+        );
+        let mut on = given("1");
+        complete(&action, &mut on, "studio").unwrap();
+        assert_eq!(on["destroy"], "yes");
+    }
+
+    #[test]
+    fn a_switch_with_its_own_question_asks_it_and_a_fixed_one_says_why() {
+        let mut action = remove();
+        action.arguments[0].confirm = "Remove studio and destroy its machine?".into();
+        let refused = complete(&action, &mut given("yes"), "studio").unwrap_err();
+        assert!(
+            refused
+                .message
+                .starts_with("Remove studio and destroy its machine? Confirm with --yes"),
+            "{}",
+            refused.message
+        );
+        action.arguments[0].fixed = "No provisioner made studio".into();
+        let refused = complete(&action, &mut given("on"), "studio").unwrap_err();
+        assert_eq!(refused.message, "No provisioner made studio");
+        // Off is what it is anyway, so the action's own question comes.
+        let refused = complete(&action, &mut given("no"), "studio").unwrap_err();
+        assert!(refused.message.starts_with("Remove studio? Confirm"));
     }
 }

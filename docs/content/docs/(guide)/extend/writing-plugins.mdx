@@ -112,7 +112,7 @@ An action becomes an action of the host's controller named `PLUGIN:ACTION`. Appl
     help: { type: 'string', description: 'Help text in berth.' },
     user: { type: '"agent" | "root" | "operator"', default: '"agent"', description: 'agent runs in its home with the desktop environment; operator is the SSH user.' },
     agent: { type: 'boolean', default: 'false', description: 'Lets the agent run it itself with box run PLUGIN:ACTION.' },
-    arguments: { type: 'Argument[]', description: 'Values asked for before it runs: {name, label, required, default, choices}.' },
+    arguments: { type: 'Argument[]', description: 'Values asked for before it runs: {name, label, required, default, choices, values, kind}.' },
     confirm: { type: 'string', description: 'A sentence to confirm before it runs, for something that cannot be taken back.' },
     terminal: { type: 'boolean', default: 'false', description: 'For a command that asks something or shows a link to follow, such as a sign-in.' },
     group: { type: 'string', description: 'The overview group: Host, Power, Access, Sync, Sign-In, or your own. Default: a group named after the plugin.' },
@@ -122,7 +122,7 @@ An action becomes an action of the host's controller named `PLUGIN:ACTION`. Appl
 
 ### Arguments
 
-The command finds each argument as `BERTH_ARG_NAME` in its environment, upper-cased, with `_` for anything that is not a letter or digit. Values are never pasted into the command line. `choices` is a command whose output lines are the values to offer.
+The command finds each argument as `BERTH_ARG_NAME` in its environment, upper-cased, with `_` for anything that is not a letter or digit. Values are never pasted into the command line. `choices` is a command whose output lines are the values to offer. `values` and `kind` mean what they mean for a provisioner's arguments, below. A yes or no is a switch here too.
 
 ### Steps of other actions
 
@@ -403,12 +403,28 @@ Each entry of `arguments`, of the provisioner, of a kind or of an action, is one
     label: { type: 'string', default: 'the name', description: 'Name in berth.' },
     required: { type: 'boolean', default: 'false', description: 'It is refused while it is empty.' },
     default: { type: 'string', default: '""', description: 'The value it starts with.' },
-    kind: { type: '"resource"', description: 'Marks a resource of the machine, such as CPUs, memory or disk. Without it, the argument is an ordinary one.' },
+    kind: { type: '"resource" | "boolean"', description: 'resource marks a resource of the machine, such as CPUs, memory or disk. boolean marks a yes or no. Without it, the argument is an ordinary one.' },
     help: { type: 'string', description: 'What the argument is for, in one or two short sentences, with an example value where it helps. berth shows it in the Information panel of the row. Keep the label to a name, such as Image.' },
     values: { type: 'string[]', description: 'The values it takes, for a choice of a few, such as ["no", "yes"]. berth offers them like any other choice, and refuses another value.' },
     secret: { type: 'boolean', default: 'false', description: 'For an action: what is given is a secret. It is not shown or kept, and is masked in the output.' },
   }}
 />
+
+#### A yes or no
+
+Declare a yes or no with `"kind": "boolean"`, and give its two values too:
+
+```json
+{"name": "keep_volumes", "label": "Keep volumes", "default": "no", "kind": "boolean", "values": ["no", "yes"]}
+```
+
+The screens show it as a switch, which Space, Enter or a click turns on or off. An argument whose `values` are just `yes` and `no`, or `true` and `false`, is a switch as well. Your program gets the value for on or off from `values`, or `yes` and `no` without them. On the command line it is given as one of these, in any case, and berth sends the declared value:
+
+| On | Off |
+| --- | --- |
+| `yes`, `true`, `on`, `1` | `no`, `false`, `off`, `0` |
+
+An action's `confirm` question names each switch that is on. Give the argument a `confirm` of its own, such as `"confirm": "Remove the deployment and its volumes?"`, and berth asks that question instead of the action's while the switch is on.
 
 A provisioner's `status`, described below, lists the values an argument takes. berth does not run a `choices` command for a provisioner.
 

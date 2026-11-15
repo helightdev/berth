@@ -457,7 +457,8 @@ pub struct Argument {
     pub choices: String,
     /// `resource` for an argument of a provisioner that sizes the machine:
     /// its CPUs, memory or disk. `text` for one whose value has several
-    /// lines. Empty for any other argument.
+    /// lines. `boolean` for a yes or no, which the screens show as a switch.
+    /// Empty for any other argument.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
     /// What it is for, in a sentence or two, beside its short label.
@@ -471,6 +472,16 @@ pub struct Argument {
     /// is typed, nor kept, nor written to a job's output.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub secret: bool,
+    /// Why it keeps its default here and cannot be given another value,
+    /// such as destroying a machine no provisioner made. The screens show
+    /// it greyed and say this instead of changing it. Empty when it can be
+    /// changed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fixed: String,
+    /// For a yes or no: the question to answer yes to before the action
+    /// runs with it on, instead of the action's own.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub confirm: String,
 }
 
 impl Argument {
@@ -479,10 +490,68 @@ impl Argument {
     /// The kind of an argument whose value has several lines, such as a
     /// Compose file.
     pub const TEXT: &'static str = "text";
+    /// The kind of an argument that is a yes or no.
+    pub const BOOLEAN: &'static str = "boolean";
 
     /// Whether it sizes the machine a provisioner creates.
     pub fn is_resource(&self) -> bool {
         self.kind == Self::RESOURCE
+    }
+
+    /// Whether it is a yes or no: declared `boolean`, or taking just the
+    /// values yes and no, or true and false.
+    pub fn is_boolean(&self) -> bool {
+        if self.kind == Self::BOOLEAN {
+            return true;
+        }
+        let [one, other] = self.values.as_slice() else {
+            return false;
+        };
+        let mut pair = [one.to_lowercase(), other.to_lowercase()];
+        pair.sort();
+        pair == ["no", "yes"] || pair == ["false", "true"]
+    }
+
+    /// The values of a yes or no when it is on and when it is off: those it
+    /// declares, or `yes` and `no`.
+    pub fn switch_values(&self) -> (String, String) {
+        let declared = |on: bool| {
+            self.values
+                .iter()
+                .find(|value| parse_bool(value) == Some(on))
+                .cloned()
+        };
+        match (declared(true), declared(false)) {
+            (Some(on), Some(off)) => (on, off),
+            _ => ("yes".into(), "no".into()),
+        }
+    }
+
+    /// Whether `value` turns a yes or no on. Empty is off.
+    pub fn is_on(value: &str) -> bool {
+        parse_bool(value) == Some(true)
+    }
+
+    /// The value a yes or no has when it is set to `on`.
+    pub fn switched(&self, on: bool) -> String {
+        let (yes, no) = self.switch_values();
+        match on {
+            true => yes,
+            false => no,
+        }
+    }
+
+    /// A yes or no as it is given, such as on the command line, as the
+    /// value it declares. Says what it takes when it is neither.
+    pub fn read_switch(&self, value: &str) -> Result<String, String> {
+        match parse_bool(value) {
+            Some(on) => Ok(self.switched(on)),
+            None if value.trim().is_empty() => Ok(self.switched(false)),
+            None => Err(format!(
+                "{} is yes or no (or true/false, on/off, 1/0), not {value}",
+                self.name
+            )),
+        }
     }
 
     /// The arguments of `given` a job may show as `NAME=VALUE`, in the order
@@ -501,6 +570,16 @@ impl Argument {
                     .then(|| format!("{}={value}", argument.name))
             })
             .collect()
+    }
+}
+
+/// A yes or no as a person writes it: `yes`, `true`, `on` or `1`, and their
+/// opposites, in any case. `None` for anything else.
+pub fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim().to_lowercase().as_str() {
+        "yes" | "true" | "on" | "1" => Some(true),
+        "no" | "false" | "off" | "0" => Some(false),
+        _ => None,
     }
 }
 
@@ -1864,9 +1943,8 @@ impl Rollout {
     /// What the arguments of the `rollout` action ask for.
     pub fn from_arguments(arguments: &BTreeMap<String, String>) -> Result<Rollout, String> {
         let flag = |name: &str| match arguments.get(name).map(|value| value.trim()) {
-            None | Some("" | "no" | "false") => Ok(false),
-            Some("yes" | "true") => Ok(true),
-            Some(other) => Err(format!("{name} is yes or no, not {other}")),
+            None | Some("") => Ok(false),
+            Some(value) => parse_bool(value).ok_or(format!("{name} is yes or no, not {value}")),
         };
         let names = |key: &str| {
             arguments.get(key).map_or(vec![], |hosts| {
@@ -1947,6 +2025,57 @@ pub struct RolloutReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_yes_or_no_is_declared_or_known_by_its_values() {
+        let with = |kind: &str, values: &[&str]| Argument {
+            name: "destroy".into(),
+            kind: kind.into(),
+            values: values.iter().map(|value| value.to_string()).collect(),
+            ..Argument::default()
+        };
+        assert!(with(Argument::BOOLEAN, &[]).is_boolean());
+        assert!(with("", &["no", "yes"]).is_boolean());
+        assert!(with("", &["Yes", "no"]).is_boolean());
+        assert!(with("", &["true", "false"]).is_boolean());
+        assert!(!with("", &["no", "always"]).is_boolean());
+        assert!(!with("", &["no", "yes", "always"]).is_boolean());
+        assert!(!with("", &[]).is_boolean());
+        // It keeps the values it declares, and is yes and no without.
+        assert_eq!(
+            with("", &["false", "true"]).switch_values(),
+            ("true".into(), "false".into())
+        );
+        assert_eq!(
+            with(Argument::BOOLEAN, &[]).switch_values(),
+            ("yes".into(), "no".into())
+        );
+    }
+
+    #[test]
+    fn a_yes_or_no_is_read_in_the_usual_spellings() {
+        for on in ["yes", "YES", "true", "On", "1", " yes "] {
+            assert_eq!(parse_bool(on), Some(true), "{on}");
+        }
+        for off in ["no", "False", "OFF", "0"] {
+            assert_eq!(parse_bool(off), Some(false), "{off}");
+        }
+        assert_eq!(parse_bool("maybe"), None);
+        assert_eq!(parse_bool("y"), None);
+        let flag = Argument {
+            name: "destroy".into(),
+            kind: Argument::BOOLEAN.into(),
+            values: vec!["no".into(), "yes".into()],
+            ..Argument::default()
+        };
+        assert_eq!(flag.read_switch("TRUE").as_deref(), Ok("yes"));
+        assert_eq!(flag.read_switch("off").as_deref(), Ok("no"));
+        assert_eq!(flag.read_switch("").as_deref(), Ok("no"));
+        assert_eq!(
+            flag.read_switch("maybe"),
+            Err("destroy is yes or no (or true/false, on/off, 1/0), not maybe".into())
+        );
+    }
 
     #[test]
     fn a_job_shows_no_secret_argument_and_no_text() {
