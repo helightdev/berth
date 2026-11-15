@@ -199,10 +199,14 @@ pub fn hint_click(event: Event) -> Event {
 
 /// The bottom line: key hints on the left, the last message on the right.
 pub fn draw_footer(frame: &mut Frame, area: Rect, keys: &str, status: &str, colour: Color) {
-    let width = if status.is_empty() {
+    let long = status.chars().count() as u16 + 2 > area.width / 2;
+    if long {
+        draw_said(frame, area, status, colour);
+    }
+    let width = if status.is_empty() || long {
         0
     } else {
-        (status.chars().count() as u16 + 2).min(area.width / 2)
+        status.chars().count() as u16 + 2
     };
     let [hints, note] =
         Layout::horizontal([Constraint::Min(0), Constraint::Length(width)]).areas(area);
@@ -214,6 +218,26 @@ pub fn draw_footer(frame: &mut Frame, area: Rect, keys: &str, status: &str, colo
             .alignment(Alignment::Right)
             .style(Style::new().fg(colour)),
         note,
+    );
+}
+
+/// What the status line says when it is too long to sit beside the keys:
+/// in full, wrapped, on the rows just above the footer, so that a refusal
+/// or an error is never cut off.
+fn draw_said(frame: &mut Frame, footer: Rect, status: &str, colour: Color) {
+    let lines = crate::setup::wrap_line(
+        &Line::styled(status.to_owned(), Style::new().fg(colour)),
+        usize::from(footer.width),
+    );
+    let height = (lines.len() as u16).min(footer.y.saturating_sub(frame.area().y));
+    if height == 0 {
+        return;
+    }
+    let area = Rect::new(footer.x, footer.y - height, footer.width, height);
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::new().bg(theme::BASE)),
+        area,
     );
 }
 
@@ -750,4 +774,47 @@ pub fn action_arguments_event(
         _ => {}
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn screen(width: u16, height: u16, status: &str) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let footer = Rect::new(area.x, area.bottom() - 1, area.width, 1);
+                draw_footer(frame, footer, "↑↓ select · q quit", status, theme::BAD);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_owned())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_long_message_is_shown_whole_at_a_narrow_width() {
+        let said = "✗ The USB installer is built where berth serve runs, with berth ui there";
+        let rows = screen(40, 8, said);
+        let words: Vec<&str> = rows[..7]
+            .iter()
+            .flat_map(|row| row.split_whitespace())
+            .collect();
+        assert_eq!(words.join(" "), said, "{rows:#?}");
+        assert!(rows[7].starts_with("↑↓ select"), "{rows:#?}");
+        // A short one stays beside the keys.
+        let rows = screen(80, 4, "Saved");
+        assert!(rows[3].ends_with("Saved"), "{rows:#?}");
+        assert!(rows[..3].iter().all(String::is_empty), "{rows:#?}");
+    }
 }

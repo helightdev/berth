@@ -374,6 +374,7 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
         action: "apply".into(),
         token: None,
         stopped_by: None,
+        arguments: vec![],
     };
     served.state.store.add_job(&job).unwrap();
     let jobs: Value = client.get("/v1/jobs").await.unwrap();
@@ -3502,6 +3503,124 @@ mod keys;
 mod remote;
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_server_in_the_process_names_both_ways_to_give_a_sudo_password() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = state_in(dir.path(), None);
+    Arc::get_mut(&mut state).unwrap().here = true;
+    let profile = json!({"builder": {}, "access": {"address": "192.0.2.9", "user": "ops", "sudo": "password"}});
+    berth_core::profiles::Place::own("studio")
+        .unwrap()
+        .save(&state.paths, &profile)
+        .unwrap();
+    state.refresh(false);
+    let problem = state
+        .host("studio")
+        .unwrap()
+        .problem
+        .clone()
+        .unwrap_or_default();
+    assert!(problem.contains("--sudo-password-stdin"), "{problem}");
+    assert!(
+        problem.contains("berth secret set sudo/studio"),
+        "{problem}"
+    );
+    // Given one for the run, the host is taken up again with it.
+    state
+        .passwords
+        .lock()
+        .unwrap()
+        .insert("studio".into(), "pass-word-1".into());
+    state.forget("studio");
+    state.refresh(false);
+    let remote = state.host("studio").unwrap();
+    assert!(
+        !remote.problem.clone().unwrap_or_default().contains("sudo"),
+        "{:?}",
+        remote.problem
+    );
+    // berth serve says what it says to its own user.
+    let other = tempfile::tempdir().unwrap();
+    let served = state_in(other.path(), None);
+    berth_core::profiles::Place::own("studio")
+        .unwrap()
+        .save(&served.paths, &profile)
+        .unwrap();
+    served.refresh(false);
+    let problem = served
+        .host("studio")
+        .unwrap()
+        .problem
+        .clone()
+        .unwrap_or_default();
+    assert!(
+        problem.contains("run berth serve on a terminal"),
+        "{problem}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_caller_on_this_machine_takes_the_host_key_its_user_knows() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state_in(dir.path(), Some("s3cret-token"));
+    let known_hosts = dir.path().join("known_hosts");
+    std::fs::write(&known_hosts, "192.0.2.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEdockdockdockdockdockdockdockdockdockdockdo\n").unwrap();
+    *state.known_hosts.lock().unwrap() = Some(known_hosts);
+    for name in ["dock", "studio"] {
+        berth_core::profiles::Place::own(name)
+            .unwrap()
+            .save(
+                &state.paths,
+                &json!({"builder": {}, "access": {"address": "192.0.2.8"}}),
+            )
+            .unwrap();
+    }
+    // Over the network nothing of the server's user's files is taken.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = api::router(state.clone(), true);
+    tokio::spawn(async move { axum::serve(listener, router).await });
+    let mut far = Client::over(tokio::net::TcpStream::connect(address).await.unwrap())
+        .await
+        .unwrap();
+    let answer = far
+        .send(
+            "POST",
+            "/v1/hosts/dock/actions/host-key",
+            &[("authorization", "Bearer s3cret-token")],
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(answer.status, 200);
+    let acted: Value = serde_json::from_slice(&answer.body).unwrap();
+    assert_eq!(acted["result"]["host_keys"], json!([]), "{acted}");
+    // On the socket the key that file has for the address is the host's.
+    let socket = dir.path().join("serve.sock");
+    let unix = tokio::net::UnixListener::bind(&socket).unwrap();
+    let router = api::router(state.clone(), false);
+    tokio::spawn(async move { axum::serve(unix, router).await });
+    let mut client = Client::unix(&socket).await.unwrap();
+    let (status, acted) = send(
+        &mut client,
+        "POST",
+        "/v1/hosts/studio/actions/host-key",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{acted}");
+    let keys = acted["result"]["host_keys"].as_array().unwrap();
+    assert_eq!(keys.len(), 1, "{acted}");
+    assert_eq!(keys[0]["type"], "ssh-ed25519");
+    assert!(
+        keys[0]["fingerprint"]
+            .as_str()
+            .unwrap()
+            .starts_with("SHA256:"),
+        "{acted}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn first_contact_and_keys_are_actions_of_the_server() {
     let served = served().await;
     let mut client = served.client().await;
@@ -4235,6 +4354,24 @@ async fn a_command_runs_in_a_resource_as_a_job_that_ends_as_it_did() {
     assert_eq!(request["command"], json!(["sh", "-c", "echo hi; exit 3"]));
     assert_eq!(request["stdin"], "select 1;\n");
     assert_eq!(request["id"], "db-1");
+    // The job's record keeps the command, and not what it read.
+    assert_eq!(
+        acted["job"]["arguments"],
+        json!(["sh", "-c", "echo hi; exit 3"])
+    );
+    let (_, kept) = send(
+        client,
+        "GET",
+        &format!("/v1/jobs/{}", acted["job"]["id"].as_str().unwrap()),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        kept["arguments"],
+        json!(["sh", "-c", "echo hi; exit 3"]),
+        "{kept}"
+    );
+    assert!(!kept.to_string().contains("select 1"), "{kept}");
 
     // Words split at spaces, no input, and a command that went well.
     std::fs::write(fake.join("answer.exec"), r#"{"exit_code": 0}"#).unwrap();

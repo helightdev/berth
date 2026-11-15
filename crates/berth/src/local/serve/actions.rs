@@ -364,7 +364,11 @@ pub async fn host_act(
         .iter()
         .find(|known| known.name == action)
         .ok_or_else(|| no_action(&name, &action, &actions))?;
+    let local = access.is_none();
     admit(&state, &caller(access), found, &act)?;
+    if local && builtin.is_some() {
+        take_known_host_key(&state, &name);
+    }
     let acted = match builtin {
         Some(builtin) => (builtin.run)(state, name, act).await?,
         None => run_action(&state, &remote, found, act, None).await?,
@@ -491,6 +495,7 @@ async fn run_action(
         });
     }
     let mut request = Request::new(Subject::Host(remote.name.clone()), &action.name);
+    request.arguments = Argument::shown(&action.arguments, &act.arguments);
     request.token = act.token;
     request.role = action.role;
     // An action is the host's own session, and runs beside the others there.
@@ -1024,6 +1029,10 @@ fn flag(name: &str, label: &str, help: &str) -> Argument {
 }
 
 fn rollout_action(_: &Seen) -> Action {
+    rollout_declared()
+}
+
+fn rollout_declared() -> Action {
     Action {
         name: "rollout".into(),
         label: "Roll out".into(),
@@ -1072,6 +1081,7 @@ fn rollout(state: Arc<Serve>, _: String, act: Act) -> Run {
             .map(|name| state.host(name).and_then(|remote| remote.password.clone()))
             .collect();
         let mut request = Request::new(Subject::Installation, "rollout");
+        request.arguments = Argument::shown(&rollout_declared().arguments, &act.arguments);
         request.host = names.join(", ");
         request.token = act.token;
         request.secrets = passwords.iter().flatten().cloned().collect();
@@ -1147,6 +1157,36 @@ fn given<'a>(act: &'a Act, name: &str) -> Option<&'a str> {
         .get(name)
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
+}
+
+/// For a caller on the server's machine, take the host's key from the
+/// known-hosts file of the user the server runs as, when berth has none of
+/// it yet: that user said yes to it already, so a first login asks nothing.
+/// A caller elsewhere sends none of its files; the key the host shows at its
+/// first login is recorded and printed, and `berth host verify` shows it.
+fn take_known_host_key(state: &Serve, name: &str) {
+    let Some(known_hosts) = state.known_hosts.lock().unwrap().clone() else {
+        return;
+    };
+    let Ok(place) = own_place(name) else {
+        return;
+    };
+    let Ok(host) = Host::load_at(&state.paths, place.clone()) else {
+        return;
+    };
+    let taken = berth_core::keys::known::take_from_user(
+        &state.paths,
+        &state.store,
+        &place,
+        &host.config,
+        &known_hosts,
+    );
+    if let Err(error) = taken {
+        eprintln!(
+            "berth: {name}'s host key was not taken from {}: {error}",
+            known_hosts.display()
+        );
+    }
 }
 
 /// What logs in to a host first: it needs only a profile, not a controller.

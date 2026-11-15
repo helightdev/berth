@@ -307,11 +307,15 @@ pub enum Stop {
     Refused(String),
 }
 
-/// The ways offered, as choices.
-fn method_choices() -> Vec<Choice> {
+/// The ways offered for a host of `host_type`, as the Install tab offers
+/// them; with the type given, only the ways that keep it.
+fn methods_for(host_type: berth_api::HostType, given: bool) -> Vec<Action> {
     Action::SERVED
-        .iter()
-        .map(|action| Choice::new(action.key(), action.label(), action.help()))
+        .into_iter()
+        .filter(|action| match given {
+            true => action.types().contains(&host_type),
+            false => action.offered(host_type),
+        })
         .collect()
 }
 
@@ -470,14 +474,19 @@ impl Flow {
         asker: &mut dyn Asker,
         maker: &mut dyn Maker,
     ) -> Result<(), Stop> {
-        // Install: the way first, which decides what the tabs hold.
+        // Install: the way first, which decides what the tabs hold. A type
+        // given narrows the ways to those that can install it.
+        let typed = given
+            .values
+            .iter()
+            .find(|(field, _)| *field == Field::Type)
+            .and_then(|(_, value)| berth_api::HostType::parse(value));
+        let host_type = typed.unwrap_or(berth_api::profile::host_type(&self.config));
+        let methods = methods_for(host_type, typed.is_some());
         let method = match (given.method, &given.provisioner) {
             (Some(method), _) => Some(method),
             (None, Some(_)) => Some(Action::Machine),
-            // A node is only ever applied over SSH.
-            (None, None) if given.values.contains(&(Field::Type, "node".into())) => {
-                Some(Action::Ssh)
-            }
+            (None, None) if methods.len() == 1 => Some(methods[0]),
             (None, None) if given.has(Field::SshHost) => Some(Action::Ssh),
             _ => None,
         };
@@ -490,16 +499,19 @@ impl Flow {
                     help: "The ways the server installs a host.".into(),
                     flag: "--method METHOD".into(),
                     asked: Asked::Choice {
-                        options: method_choices(),
+                        options: methods
+                            .iter()
+                            .map(|action| Choice::new(action.key(), action.label(), action.help()))
+                            .collect(),
                         default: 0,
                     },
                     required: true,
                 };
                 let chosen = match Flow::put(asker, question)? {
-                    Some(Answer::Choice(index)) => Action::SERVED.get(index).copied(),
+                    Some(Answer::Choice(index)) => methods.get(index).copied(),
                     _ => None,
                 };
-                self.choose(chosen.unwrap_or(Action::Machine));
+                self.choose(chosen.unwrap_or(methods[0]));
             }
         }
         // What the command line says comes before anything is asked.
@@ -1078,6 +1090,54 @@ mod tests {
             Err(Stop::Refused(why)) => {
                 assert!(why.contains("not for a host of the type node"), "{why}")
             }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_ways_offered_follow_the_type() {
+        use berth_api::HostType::*;
+        let keys = |host_type, given| -> Vec<&str> {
+            methods_for(host_type, given)
+                .into_iter()
+                .map(Action::key)
+                .collect()
+        };
+        assert_eq!(
+            keys(Workstation, false),
+            ["provisioner", "iso", "cloud-seed", "ssh", "ssh-only"]
+        );
+        for host_type in [Node, Managed, Ssh] {
+            assert_eq!(keys(host_type, false), ["ssh", "ssh-only"], "{host_type}");
+        }
+        // A type given keeps only the ways that install it.
+        assert_eq!(keys(Node, true), ["ssh"]);
+        assert_eq!(keys(Managed, true), ["ssh"]);
+        assert_eq!(keys(Ssh, true), ["ssh-only"]);
+        // A way that installs a whole workstation makes the host one.
+        let mut config = json!({"type": "node"});
+        assert_eq!(Action::Iso.choose(&mut config), Action::Iso);
+        assert_eq!(berth_api::profile::host_type(&config), Workstation);
+    }
+
+    #[test]
+    fn a_node_cannot_be_installed_by_an_installer() {
+        let mut given = Given {
+            method: Action::by_key("iso"),
+            generate_passwords: true,
+            ..Given::default()
+        };
+        given
+            .set(&["type=node".into(), "hostname=big".into()])
+            .unwrap();
+        let mut flow = Flow::new("big", catalogue());
+        match flow.run(&given, &mut Nobody, &mut Hashes) {
+            Err(Stop::Problems(problems)) => assert!(
+                problems
+                    .iter()
+                    .any(|problem| problem.text.contains("installs a workstation")),
+                "{problems:?}"
+            ),
             other => panic!("{other:?}"),
         }
     }

@@ -87,7 +87,7 @@
           },
           {
             "id": "instance",
-            "label": "Instance",
+            "label": "Container from an image",
             "verbs": ["start", "stop", "change", "logs", "exec"],
             "arguments": [
               {"name": "image", "label": "Image", "default": "", "help": "The image to start from, such as debian:12 or any image reference. It becomes no berth host: nothing of berth is put in it."},

@@ -151,19 +151,43 @@ impl Action {
             .find(|action| action.key() == key)
     }
 
+    /// The types a host installed this way can have. Only over SSH can berth
+    /// install less than a workstation: an installer, a seed or a provisioner
+    /// installs the whole profile from a blank machine.
+    pub fn types(self) -> &'static [berth_api::HostType] {
+        use berth_api::HostType::*;
+        match self {
+            Action::Reach => &[Ssh],
+            Action::Ssh | Action::Manage => &[Managed, Node, Workstation],
+            _ => &[Workstation],
+        }
+    }
+
+    /// Whether the Install tab offers this way to a host of `host_type`:
+    /// the ways its type allows, and the two over SSH, which move a host
+    /// between the type ssh and the types berth installs.
+    pub fn offered(self, host_type: berth_api::HostType) -> bool {
+        matches!(self, Action::Ssh | Action::Reach) || self.types().contains(&host_type)
+    }
+
     /// The action a way of the Install tab sets, with the type it gives the
-    /// profile when it gives one.
+    /// profile when it implies one.
     pub fn choose(self, config: &mut serde_json::Value) -> Action {
+        use berth_api::HostType;
         let host_type = berth_api::profile::host_type(config);
         match self {
             Action::Reach => {
-                berth_api::profile::set_host_type(config, berth_api::HostType::Ssh);
+                berth_api::profile::set_host_type(config, HostType::Ssh);
                 Action::Ssh
             }
             // Installing over SSH installs something: the whole profile, unless the controller is chosen.
-            Action::Ssh if host_type == berth_api::HostType::Ssh => {
-                berth_api::profile::set_host_type(config, berth_api::HostType::Workstation);
+            Action::Ssh if host_type == HostType::Ssh => {
+                berth_api::profile::set_host_type(config, HostType::Workstation);
                 Action::Ssh
+            }
+            action if !action.types().contains(&host_type) => {
+                berth_api::profile::set_host_type(config, HostType::Workstation);
+                action
             }
             action => action,
         }

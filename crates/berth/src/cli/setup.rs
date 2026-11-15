@@ -353,7 +353,6 @@ fn run_way(client: &Client, flow: &Flow, create: &args::HostCreate) -> Result<()
             client,
             &args::HostApply {
                 name: name.clone(),
-                sudo: create.sudo.clone(),
                 detach: create.detach.clone(),
             },
         ),

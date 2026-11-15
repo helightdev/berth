@@ -15,6 +15,11 @@ pub fn server(_ask: bool) -> Result<Option<crate::Local>> {
     Ok(None)
 }
 
+/// No server runs in this process to give a sudo password to.
+pub fn give_sudo_password(_: &str, _: &str) -> bool {
+    false
+}
+
 /// Plain SSH needs the server's key, which is on the machine it runs on.
 pub fn ssh(_: &Global, ssh: &Ssh) -> Done<()> {
     Err(Fail::refused(format!(

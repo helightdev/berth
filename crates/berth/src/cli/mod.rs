@@ -83,10 +83,43 @@ pub fn command() -> clap::Command {
         .iter()
         .map(|(status, means)| format!("{status} {means}"))
         .collect();
-    Cli::command().after_help(format!(
+    Cli::command().styles(help_styles()).after_help(format!(
         "berth THING --help explains a thing and its actions.\nExit statuses: {}. A command run on a host passes its own through.",
         statuses.join("; ")
     ))
+}
+
+/// The colours of the help and of clap's errors, from the screens' palette.
+/// clap leaves them out by itself without a terminal or with `NO_COLOR`.
+fn help_styles() -> clap::builder::Styles {
+    use berth_tui::theme::{Depth, Role, colour};
+    use clap::builder::styling::{Ansi256Color, AnsiColor, Color, RgbColor, Style, Styles};
+    let depth = Depth::of_terminal(|name| std::env::var(name).ok());
+    let paint = |role: Role| -> Option<Color> {
+        use ratatui::style::Color as Tui;
+        match colour(role, depth)? {
+            Tui::Rgb(r, g, b) => Some(RgbColor(r, g, b).into()),
+            Tui::Indexed(index) => Some(Ansi256Color(index).into()),
+            Tui::LightBlue => Some(AnsiColor::BrightBlue.into()),
+            Tui::Green => Some(AnsiColor::Green.into()),
+            Tui::Yellow => Some(AnsiColor::Yellow.into()),
+            Tui::LightRed => Some(AnsiColor::BrightRed.into()),
+            _ => None,
+        }
+    };
+    let style = |role: Role| Style::new().fg_color(paint(role));
+    Styles::styled()
+        .header(Style::new().bold())
+        .usage(Style::new().bold())
+        .literal(style(Role::Accent))
+        .placeholder(match depth {
+            Depth::Basic => Style::new().dimmed(),
+            _ => style(Role::Muted),
+        })
+        .valid(style(Role::Good))
+        .invalid(style(Role::Warn))
+        .error(style(Role::Bad).bold())
+        .context(style(Role::Muted))
 }
 
 /// Run berth with these arguments: the exit status.
@@ -95,7 +128,10 @@ pub fn main(args: Vec<String>) -> i32 {
         out::fail(&fail);
         return fail.status;
     }
-    let matches = match command().try_get_matches_from(&args) {
+    let matches = match command()
+        .color(colour_asked(&args))
+        .try_get_matches_from(&args)
+    {
         Ok(matches) => matches,
         Err(error) => return clap_error(error, &args),
     };
@@ -111,6 +147,26 @@ pub fn main(args: Vec<String>) -> i32 {
             fail.status
         }
     }
+}
+
+/// `--color` as given, for the help clap prints before berth reads its
+/// flags.
+fn colour_asked(args: &[String]) -> clap::ColorChoice {
+    let mut words = args.iter().skip(1).take_while(|arg| *arg != "--");
+    while let Some(word) = words.next() {
+        let value = match word.strip_prefix("--color") {
+            Some("") => words.next().map(String::as_str),
+            Some(rest) => rest.strip_prefix('='),
+            None => None,
+        };
+        match value {
+            Some("always") => return clap::ColorChoice::Always,
+            Some("never") => return clap::ColorChoice::Never,
+            Some(_) => return clap::ColorChoice::Auto,
+            None => {}
+        }
+    }
+    clap::ColorChoice::Auto
 }
 
 /// Help and versions as clap prints them, and usage errors as berth says

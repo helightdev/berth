@@ -50,6 +50,7 @@ pub(super) const MIGRATIONS: &[&str] = &[
      ALTER TABLE jobs ADD COLUMN token TEXT;
      CREATE UNIQUE INDEX jobs_token ON jobs(subject, action, token) WHERE token IS NOT NULL;",
     "ALTER TABLE jobs ADD COLUMN stopped_by TEXT;",
+    "ALTER TABLE jobs ADD COLUMN arguments TEXT;",
 ];
 
 /// The advisory lock that keeps two berths from migrating at once.
@@ -219,8 +220,7 @@ fn entry(row: &Row) -> Entry {
     }
 }
 
-const JOB_COLUMNS: &str =
-    "id, host, what, started, ended, exit_code, output_path, subject, action, token, stopped_by";
+const JOB_COLUMNS: &str = "id, host, what, started, ended, exit_code, output_path, subject, action, token, stopped_by, arguments";
 
 fn job(row: &Row) -> Job {
     Job {
@@ -235,6 +235,7 @@ fn job(row: &Row) -> Job {
         action: row.get(8),
         token: row.get(9),
         stopped_by: row.get(10),
+        arguments: super::arguments_from(row.get(11)),
     }
 }
 
@@ -242,7 +243,7 @@ fn job(row: &Row) -> Job {
 fn insert_job(client: &mut impl postgres::GenericClient, job: &Job) -> PgResult<u64> {
     client.execute(
         &format!(
-            "INSERT INTO jobs({JOB_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            "INSERT INTO jobs({JOB_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
              ON CONFLICT DO NOTHING"
         ),
         &[
@@ -257,6 +258,7 @@ fn insert_job(client: &mut impl postgres::GenericClient, job: &Job) -> PgResult<
             &job.action,
             &job.token,
             &job.stopped_by,
+            &super::arguments_text(&job.arguments),
         ],
     )
 }

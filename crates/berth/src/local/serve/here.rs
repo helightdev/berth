@@ -51,6 +51,26 @@ pub fn finish(here: Option<Here>) {
     }
 }
 
+/// The server of this process, while it runs.
+static OWN: std::sync::Mutex<std::sync::Weak<Serve>> =
+    std::sync::Mutex::new(std::sync::Weak::new());
+
+/// Give the server of this process a host's sudo password, which it keeps
+/// until the process ends and stores nowhere. Whether one runs.
+pub fn give_sudo_password(name: &str, password: &str) -> bool {
+    let Some(state) = OWN.lock().unwrap().upgrade() else {
+        return false;
+    };
+    state
+        .passwords
+        .lock()
+        .unwrap()
+        .insert(name.to_owned(), password.to_owned());
+    // Taken up again with the password at the next call.
+    state.forget(name);
+    true
+}
+
 /// The pipes clients open, as connections that axum serves.
 struct Pipes(UnboundedReceiver<DuplexStream>);
 
@@ -90,7 +110,9 @@ impl Here {
         let mut state = Serve::with(paths.clone(), store, auth::Auth::nobody());
         if let Some(state) = Arc::get_mut(&mut state) {
             state.follows = false;
+            state.here = true;
         }
+        *OWN.lock().unwrap() = Arc::downgrade(&state);
         std::fs::create_dir_all(&state.jobs_dir)?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
