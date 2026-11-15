@@ -1,11 +1,14 @@
 """A node: the role's path without the desktop, its firewall helper against a
 fake ufw, the helper that upgrades a berth server's container against a fake
 docker, and the features of the Incus and Docker plugins that a node takes."""
+import hashlib
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -125,6 +128,9 @@ class RolePath(unittest.TestCase):
         upgrade = actions['upgrade-server']
         self.assertTrue(upgrade['run'].startswith('/usr/local/lib/berth/berth-server-upgrade '))
         self.assertEqual(upgrade['arguments'][0]['name'], 'version')
+        # Its source is the published image unless the berth that runs it sends its own.
+        source = upgrade['arguments'][1]
+        self.assertEqual((source['name'], source['default'], source['values']), ('source', 'release', ['release', 'here']))
         installed = node_named("Install the helper that upgrades a berth server's container")
         self.assertEqual(installed['ansible.builtin.copy']['dest'], '/usr/local/lib/berth/berth-server-upgrade')
 
@@ -407,8 +413,10 @@ if args[:2] == ['container', 'inspect'] and args[2] == '--format':
     save()
     print('true' if found and found['State']['Running'] else 'false')
     sys.exit(0 if found else 1)
+def container_named(name):
+    return containers.get(name) or next((c for c in containers.values() if c['Id'] == name), None)
 if args[:2] == ['container', 'inspect']:
-    found = containers.get(args[2])
+    found = container_named(args[2])
     save()
     if not found:
         print('Error: No such container', file=sys.stderr); sys.exit(1)
@@ -418,6 +426,39 @@ if args[:2] == ['image', 'inspect']:
     if args[2] not in images:
         print('Error: No such image', file=sys.stderr); sys.exit(1)
     print(json.dumps([images[args[2]]])); sys.exit(0)
+if args[:1] == ['build']:
+    # The context on standard input; the image gets the labels the Dockerfile sets.
+    context = sys.stdin.buffer.read()
+    tag = args[args.index('--tag') + 1]
+    built = dict(arg.split('=', 1) for arg in args[args.index('--tag'):] if '=' in arg)
+    number = data['builds'] = data.get('builds', 0) + 1
+    image = {'Id': f'sha256:built{number}', 'Created': f'2026-11-{10 + number:02d}T00:00:00Z', 'RepoTags': [tag],
+             'Config': dict(images['new']['Config'], Labels={
+                 'org.opencontainers.image.version': built['BERTH_VERSION'], 'dev.berth.source': 'self-built',
+                 'dev.berth.baseline': 'ghcr.io/helightdev/berth', 'dev.berth.binary-sha256': built['BERTH_SHA256']})}
+    for other in images.values():
+        if tag in (other.get('RepoTags') or []):
+            other['RepoTags'].remove(tag)
+    images[tag] = images[image['Id']] = image
+    data['context_bytes'] = len(context)
+    save(); sys.exit(0)
+if args[:2] == ['image', 'ls']:
+    wanted = args[args.index('--filter') + 1].removeprefix('label=').split('=', 1)
+    found = {image['Id'] for image in images.values()
+             if (image['Config'].get('Labels') or {}).get(wanted[0]) == wanted[1]}
+    print('\n'.join(sorted(found)))
+    save(); sys.exit(0)
+if args[:2] == ['container', 'ls']:
+    print('\n'.join(container['Id'] for container in containers.values()))
+    save(); sys.exit(0)
+if args[:2] == ['image', 'rm']:
+    gone = images.get(args[2])
+    if gone is None:
+        print('Error: No such image', file=sys.stderr); save(); sys.exit(1)
+    if any(container['Image'] == gone['Id'] for container in containers.values()):
+        print('Error: image is being used', file=sys.stderr); save(); sys.exit(1)
+    for key in [key for key, image in images.items() if key == args[2] or (args[2] == gone['Id'] and image['Id'] == gone['Id'])]:
+        images.pop(key)
 if args[:1] == ['pull']:
     images[args[1]] = images[images['new']['Id']] = images['new']
     save(); sys.exit(0)
@@ -489,12 +530,13 @@ class ServerUpgrade(unittest.TestCase):
         write_program(self.scratch / 'docker', FAKE_DOCKER)
         self.state = self.scratch / 'docker.json'
 
-    def helper(self, *args, found=None, old_image=None, new='0.6.0', new_runs=True, images=None, keep=False):
+    def helper(self, *args, found=None, old_image=None, new='0.6.0', new_runs=True, images=None, keep=False,
+               containers=None, source=None, context=None):
         if not keep:
             found = found or container()
             old_image = old_image or image('0.5.2', 'sha256:old')
             self.state.write_text(json.dumps({
-                'containers': {'berth': found},
+                'containers': dict({'berth': found}, **(containers or {})),
                 'images': dict({found['Image']: old_image, found['Config']['Image']: old_image,
                                 'new': image(new, 'sha256:new')}, **(images or {})),
                 'new_runs': new_runs}))
@@ -504,8 +546,12 @@ class ServerUpgrade(unittest.TestCase):
             self.state.write_text(json.dumps(data))
         env = dict(os.environ, DEVBOX_DOCKER=str(self.scratch / 'docker'), FAKE_DOCKER=str(self.state),
                    DEVBOX_UPGRADE_SETTLE='0', BERTH_ARG_VERSION=new)
-        done = subprocess.run([sys.executable, str(UPGRADE), 'berth', *args], capture_output=True, text=True,
-                              env=env, timeout=60)
+        env.pop('BERTH_ARG_SOURCE', None)
+        if source:
+            env['BERTH_ARG_SOURCE'] = source
+        done = subprocess.run([sys.executable, str(UPGRADE), 'berth', *args], capture_output=True,
+                              input=context or b'', env=env, timeout=60)
+        done.stdout, done.stderr = done.stdout.decode(), done.stderr.decode()
         return done, json.loads(self.state.read_text())
 
     def upgrade(self, version, found=None, new_runs=True):
@@ -620,6 +666,121 @@ class ServerUpgrade(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0)
         self.assertIn('which is newer than 0.5.1', done.stderr)
         self.assertNotIn('run', [call[0] for call in data['calls']])
+
+
+    # ── A server built from a berth ─────────────────────────────────────────
+
+    def self_built(self, version='0.6.0', **labels):
+        found = container()
+        found['Config']['Image'] = f'berth:{version}'
+        built = image(version, 'sha256:old')
+        built['Config']['Labels'].update({'dev.berth.source': 'self-built', **labels})
+        return found, built
+
+    def test_a_self_built_server_goes_back_to_the_baseline_for_a_release(self):
+        found, built = self.self_built()
+        done, data = self.helper(found=found, old_image=built, new='0.6.1')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(['pull', 'ghcr.io/helightdev/berth:0.6.1'], data['calls'])
+        self.assertEqual(self.run_call(data)[-1], 'ghcr.io/helightdev/berth:0.6.1')
+        # The baseline its image names, when it names one.
+        found, built = self.self_built(**{'dev.berth.baseline': 'registry.example/berth'})
+        done, data = self.helper(found=found, old_image=built, new='0.6.1')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(['pull', 'registry.example/berth:0.6.1'], data['calls'])
+        # Its own version from the release is no step back.
+        found, built = self.self_built()
+        done, data = self.helper(found=found, old_image=built, new='0.6.0')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(['pull', 'ghcr.io/helightdev/berth:0.6.0'], data['calls'])
+
+    @staticmethod
+    def program(machine=None, interpreter=None):
+        """A 64-bit ELF header for this machine's CPU, static unless it names an interpreter."""
+        number = {'x86_64': 62, 'aarch64': 183}.get(machine or os.uname().machine, 62)
+        program = bytearray(256)
+        program[:6] = b'\x7fELF\x02\x01'
+        program[18:20] = number.to_bytes(2, 'little')
+        program[32:40] = (64).to_bytes(8, 'little')
+        program[54:56] = (56).to_bytes(2, 'little')
+        program[56:58] = (1).to_bytes(2, 'little')
+        program[64:68] = (3 if interpreter else 1).to_bytes(4, 'little')
+        return bytes(program)
+
+    @staticmethod
+    def context(program, extra=None):
+        out = io.BytesIO()
+        with tarfile.open(fileobj=out, mode='w:gz') as tar:
+            for name, data in [('Dockerfile', b'FROM debian:trixie-slim\n'), ('requirements.txt', b'ansible-core\n'),
+                               ('berth', program), *(extra or [])]:
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+        return out.getvalue()
+
+    def test_here_builds_the_image_of_the_berth_sent_and_runs_it(self):
+        if os.uname().machine not in ('x86_64', 'aarch64'):
+            self.skipTest('berth is released for x86_64 and aarch64')
+        program = self.program()
+        context = self.context(program)
+        done, data = self.helper(source='here', context=context)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        digest = hashlib.sha256(program).hexdigest()
+        build = next(call for call in data['calls'] if call[0] == 'build')
+        self.assertEqual(build[:3], ['build', '--tag', 'berth:0.6.0'])
+        self.assertIn(f'BERTH_SHA256={digest}', build)
+        self.assertIn('BERTH_VERSION=0.6.0', build)
+        self.assertEqual(build[-1], '-')
+        self.assertEqual(data['context_bytes'], len(context))
+        # The tag is local: it never passes for a published image.
+        self.assertEqual(self.run_call(data)[-1], 'berth:0.6.0')
+        self.assertNotIn('pull', [call[0] for call in data['calls']])
+        self.assertIn('berth runs berth:0.6.0 now', done.stdout)
+        # The same berth again builds nothing and changes nothing.
+        done, data = self.helper(source='here', context=context, keep=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn('holds this berth already', done.stdout)
+        self.assertNotIn('build', [call[0] for call in data['calls']])
+        self.assertNotIn('run', [call[0] for call in data['calls']])
+        # Another program of the same version is built again, as the same tag.
+        done, data = self.helper(source='here', context=self.context(program + b'\0'), keep=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn('build', [call[0] for call in data['calls']])
+        self.assertEqual(self.run_call(data)[-1], 'berth:0.6.0')
+
+    def test_here_refuses_what_cannot_run_in_the_image(self):
+        other = {'x86_64': 'aarch64'}.get(os.uname().machine, 'x86_64')
+        for context, said in [
+                (self.context(self.program(interpreter=True)), 'not a static build'),
+                (self.context(self.program(machine=other)), 'another CPU'),
+                (self.context(b'#!/bin/sh\n'), 'not a Linux program'),
+                (self.context(self.program(), extra=[('extra.sh', b'')]), 'not Dockerfile, berth, requirements.txt alone'),
+                (b'not a tar stream', 'not a tar stream')]:
+            done, data = self.helper(source='here', context=context)
+            self.assertNotEqual(done.returncode, 0, said)
+            self.assertIn(said, done.stderr)
+            self.assertFalse([call for call in data['calls'] if call[0] in ('build', 'run', 'pull')], said)
+        done, _ = self.helper(source='there')
+        self.assertIn("source is release or here, not 'there'", done.stderr)
+
+    def test_old_self_built_images_go_and_the_two_newest_and_those_in_use_stay(self):
+        def built(number, tag):
+            made = image('0.6.0', f'sha256:b{number}')
+            made.update({'Created': f'2026-10-{number:02d}T00:00:00Z', 'RepoTags': [tag]})
+            made['Config']['Labels'].update({'dev.berth.source': 'self-built'})
+            return made
+        old = {f'berth:0.5.{n}': built(n, f'berth:0.5.{n}') for n in range(1, 6)}
+        images = {**old, **{made['Id']: made for made in old.values()}}
+        # Another container runs the oldest of them.
+        other = dict(container(), Id='beef', Name='/other', Image='sha256:b1')
+        done, data = self.helper(images=images, containers={'other': other})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        removed = [call[2] for call in data['calls'] if call[:2] == ['image', 'rm']]
+        self.assertEqual(sorted(removed), ['berth:0.5.2', 'berth:0.5.3'])
+        self.assertIn('berth:0.5.1', data['images'])
+        self.assertIn('berth:0.5.5', data['images'])
+        # A published image is never one of them.
+        self.assertIn('ghcr.io/helightdev/berth:0.5.2', data['images'])
 
 
 if __name__ == '__main__':

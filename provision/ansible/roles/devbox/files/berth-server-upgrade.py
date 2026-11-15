@@ -9,12 +9,26 @@ the running container.
         [--publish P]… [--volume SRC:DST]… [--add-host NAME:ADDRESS]… [--group-add GROUP]…
 
 The first two are the node's action upgrade-server: the image is the
-container's own repository at VERSION. The third is the server recipe's: it
-takes the image as given, or keeps the container's own with --keep-image, and
-sets the options it names over those of the container. An option it names
-replaces the container's one for the same port, mount point or host name.
-Nothing changes when the container runs that image with those options
-already.
+container's own repository at VERSION. A server that runs an image built
+from a berth, tagged berth:VERSION, goes back to the repository its image
+names as its baseline, ghcr.io/helightdev/berth unless it names another.
+
+With BERTH_ARG_SOURCE=here the action builds the image instead: standard
+input is the build context a berth sends of itself, with its Dockerfile,
+requirements.txt and the program as berth. It is checked and handed to
+`docker build -t berth:VERSION -` as it is, and nothing is unpacked. The
+program has to be a static Linux program for this machine's CPU. An image
+of that tag that holds the same program is not built again.
+
+The third is the server recipe's, and what `berth server deploy` runs once it
+has built an image: it takes the image as given, or keeps the container's own
+with --keep-image, and sets the options it names over those of the
+container. An option it names replaces the container's one for the same
+port, mount point or host name. Nothing changes when the container runs
+that image with those options already.
+
+Once a container runs, the images built from a berth that no container
+uses are removed, except the two newest.
 
 The new container gets the same name, mounts, published ports, restart
 policy, groups, extra hosts, network, logging, user and environment as the
@@ -25,11 +39,14 @@ new one does not come up, the old one is started again. Environment values
 go to docker in a private file, never on its command line.
 """
 import argparse
+import hashlib
+import io
 import json
 import os
 import re
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 
@@ -40,6 +57,17 @@ SETTLE = float(os.environ.get('DEVBOX_UPGRADE_SETTLE', '10'))
 # What `docker run` gives a container without --shm-size.
 DEFAULT_SHM = 64 * 1024 * 1024
 UNCHANGED = 'is unchanged'
+# Where the published images are, and the labels an image of berth has.
+BASELINE = 'ghcr.io/helightdev/berth'
+SELF_BUILT_REPOSITORY = 'berth'
+SOURCE_LABEL = 'dev.berth.source'
+BASELINE_LABEL = 'dev.berth.baseline'
+BINARY_LABEL = 'dev.berth.binary-sha256'
+SELF_BUILT = 'self-built'
+# How many images built from a berth stay when nothing uses them.
+KEPT_BUILDS = 2
+# What a build context of berth holds, and nothing else.
+CONTEXT = {'Dockerfile', 'requirements.txt', 'berth'}
 
 
 class Refused(Exception):
@@ -72,9 +100,22 @@ def version_key(text):
     return tuple(int(part) for part in numbers.groups()) if numbers else None
 
 
+def labels_of(image):
+    return (image.get('Config') or {}).get('Labels') or {}
+
+
 def image_version(image, ref):
-    labels = (image.get('Config') or {}).get('Labels') or {}
-    return labels.get('org.opencontainers.image.version') or ref.rsplit(':', 1)[-1]
+    return labels_of(image).get('org.opencontainers.image.version') or ref.rsplit(':', 1)[-1]
+
+
+def release_repository(image, ref):
+    """Where a release of the server is pulled from: the container's own
+    repository, or for one built from a berth the baseline its image names."""
+    labels = labels_of(image)
+    own = repository(ref)
+    if labels.get(SOURCE_LABEL) == SELF_BUILT or own in (SELF_BUILT_REPOSITORY, 'sha256'):
+        return labels.get(BASELINE_LABEL) or BASELINE
+    return own
 
 
 # Options of a container that would change what it is if they were dropped,
@@ -312,8 +353,8 @@ def upgrade(name, version):
         raise Refused(f'{version!r} is not a version of berth, such as 0.6.0')
     container = found_container(name)
     current = container['Config']['Image']
-    target = f'{repository(current)}:{version}'
     old_image = inspect('image', container['Image'])
+    target = f'{release_repository(old_image, current)}:{version}'
     refuse_older(name, image_version(old_image, current), version)
     options, environment, command = run_options(container, old_image)
     print(f'Pulling {target}', flush=True)
@@ -323,6 +364,7 @@ def upgrade(name, version):
         return
     replace(name, container, current, target, options, environment, command, version)
     print(f'{name} runs {target} now, with its data and options as they were.')
+    prune()
 
 
 def remake(name, image, pull, keep_image, asked):
@@ -354,7 +396,93 @@ def remake(name, image, pull, keep_image, asked):
         print(f'{name} {UNCHANGED}: it runs {current} with the options asked for.')
         return
     replace(name, container, current, target, wanted, environment, command, 'update')
-    print(f'{name} runs {target} now, with its data and options as they were and those asked for.')
+    asked_too = ' and those asked for' if asked else ''
+    print(f'{name} runs {target} now, with its data and options as they were{asked_too}.')
+    prune()
+
+
+def unfit(program, machine):
+    """Why `program` cannot run in the image on this machine, if it cannot:
+    it has to be a 64-bit Linux program for this CPU that names no
+    interpreter, as a static build does not."""
+    if program[:4] != b'\x7fELF':
+        return 'it is not a Linux program'
+    if program[4:6] != b'\x02\x01' or len(program) < 64:
+        return 'it is not a 64-bit Linux program'
+    number = lambda at, size: int.from_bytes(program[at:at + size], 'little')  # noqa: E731
+    wanted = {'x86_64': 62, 'amd64': 62, 'aarch64': 183, 'arm64': 183}.get(machine)
+    if number(18, 2) != wanted:
+        return f'it is built for another CPU than this machine\'s, {machine}'
+    table, size, count = number(32, 8), number(54, 2), number(56, 2)
+    for header in range(table, table + size * count, size or 1):
+        if header + 4 > len(program):
+            return 'its program header is cut short'
+        if number(header, 4) == 3:
+            return 'it loads the system\'s C library, as it is not a static build'
+    return None
+
+
+def read_context(context):
+    """The program in a build context of berth, once the context is one."""
+    try:
+        with tarfile.open(fileobj=io.BytesIO(context), mode='r:*') as tar:
+            members = tar.getmembers()
+            names = sorted(member.name for member in members)
+            if sorted(CONTEXT) != names or not all(member.isfile() for member in members):
+                raise Refused(f'The build context holds {", ".join(names) or "nothing"}, '
+                              f'not {", ".join(sorted(CONTEXT))} alone.')
+            return tar.extractfile('berth').read()
+    except tarfile.TarError as error:
+        raise Refused(f'The build context is not a tar stream: {error}') from error
+
+
+def build(name, version, context):
+    """The node's action with source=here: the image of the berth that sent
+    `context`, as berth:VERSION, and then the container from it."""
+    if not VERSION.match(version):
+        raise Refused(f'{version!r} is not a version of berth, such as 0.6.0')
+    container = found_container(name)
+    program = read_context(context)
+    machine = os.uname().machine
+    why = unfit(program, machine)
+    if why:
+        raise Refused(f'The berth sent cannot run in a server\'s image here: {why}. '
+                      'A release of berth for Linux can.')
+    digest = hashlib.sha256(program).hexdigest()
+    target = f'{SELF_BUILT_REPOSITORY}:{version}'
+    found = docker('image', 'inspect', target, check=False)
+    held = labels_of(json.loads(found.stdout)[0]).get(BINARY_LABEL) if found.returncode == 0 else None
+    if held == digest:
+        print(f'{target} holds this berth already ({digest[:12]}).', flush=True)
+    else:
+        print(f'Building {target} of berth {version} ({digest[:12]}) on this machine', flush=True)
+        built = subprocess.run([DOCKER, 'build', '--tag', target, '--build-arg', f'BERTH_VERSION={version}',
+                                '--build-arg', f'BERTH_SHA256={digest}', '-'], input=context)
+        if built.returncode != 0:
+            raise Refused(f'docker build of {target} failed, so {name} runs '
+                          f'{container["Config"]["Image"]} as before.')
+    remake(name, target, False, False, [])
+
+
+def prune():
+    """Remove the images built from a berth that no container uses, except
+    the newest few. One a container uses stays, whatever its age."""
+    listed = docker('image', 'ls', '--all', '--quiet', '--no-trunc',
+                    '--filter', f'label={SOURCE_LABEL}={SELF_BUILT}', check=False)
+    ids = list(dict.fromkeys(listed.stdout.split())) if listed.returncode == 0 else []
+    if len(ids) <= KEPT_BUILDS:
+        return
+    containers = docker('container', 'ls', '--all', '--quiet', '--no-trunc', check=False).stdout.split()
+    used = {inspect('container', container).get('Image') for container in containers}
+    images = sorted((inspect('image', image) for image in ids), key=lambda image: image.get('Created') or '',
+                    reverse=True)
+    for image in images[KEPT_BUILDS:]:
+        if image['Id'] in used:
+            continue
+        tags = image.get('RepoTags') or []
+        for reference in tags or [image['Id']]:
+            docker('image', 'rm', reference, check=False)
+        print(f'Removed the image {", ".join(tags) or image["Id"][:19]}, built from a berth and used by no container.')
 
 
 def main():
@@ -370,7 +498,13 @@ def main():
         asked = [(f'--{flag}', value) for flag in ('publish', 'volume', 'add-host', 'group-add')
                  for value in getattr(args, flag.replace('-', '_')) if value]
         work = lambda: remake(args.container, args.image, args.pull, args.keep_image, asked)  # noqa: E731
+    elif len(sys.argv) == 2 and os.environ.get('BERTH_ARG_SOURCE', '').strip() == 'here':
+        version = os.environ.get('BERTH_ARG_VERSION', '').strip()
+        work = lambda: build(sys.argv[1], version, sys.stdin.buffer.read())  # noqa: E731
     elif len(sys.argv) in (2, 3):
+        source = os.environ.get('BERTH_ARG_SOURCE', '').strip() or 'release'
+        if len(sys.argv) == 2 and source != 'release':
+            sys.exit(f'✗ source is release or here, not {source!r}')
         version = sys.argv[2] if len(sys.argv) == 3 else os.environ.get('BERTH_ARG_VERSION', '')
         work = lambda: upgrade(sys.argv[1], version.strip())  # noqa: E731
     else:
