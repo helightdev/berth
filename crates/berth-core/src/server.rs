@@ -4,6 +4,7 @@
 //!
 //! - `http://HOST:PORT`, `https://HOST[:PORT]`: over TCP, with the token
 //! - `unix:/path/to/serve.sock`: the socket of a `berth serve` on this machine
+//! - `here:`: the server in this process, which [`serve_here`] gives
 
 use crate::{Result, paths::Paths, store::kind};
 use berth_api::{
@@ -14,6 +15,16 @@ use berth_api::{
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::net::{TcpStream, UnixStream};
+
+/// The address of the server in this process.
+pub const HERE: &str = "here:";
+
+static DIAL: std::sync::OnceLock<client::Dial> = std::sync::OnceLock::new();
+
+/// Reach the server in this process, `here:`, through `dial`.
+pub fn serve_here(dial: client::Dial) {
+    let _ = DIAL.set(dial);
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Server {
@@ -150,6 +161,13 @@ impl Server {
     /// Open the server's portal, with the configured token if there is one.
     pub async fn portal(&self) -> client::Result<Portal> {
         let token = self.token.as_deref().unwrap_or("");
+        if self.url == HERE {
+            let dial = DIAL
+                .get()
+                .ok_or_else(|| Error::Transport("no server runs in this berth".into()))?;
+            let socket = client::websocket(dial().await?, ops::PORTAL, "").await?;
+            return Ok(Portal::over(socket));
+        }
         if let Some(path) = self.url.strip_prefix("unix:") {
             let stream = UnixStream::connect(path)
                 .await

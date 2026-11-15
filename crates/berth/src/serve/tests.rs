@@ -821,7 +821,8 @@ async fn a_hosts_actions_are_its_controllers_and_berths_own() {
             "secrets",
             "trust-key",
             "host-key",
-            "rename"
+            "rename",
+            "installer"
         ]
     );
     let status = &actions[0];
@@ -1437,7 +1438,8 @@ async fn the_server_is_set_up_through_the_api() {
             .contains("does not answer")
     );
 
-    // Some settings are a caller's to change, who gets in is not.
+    // The user the server runs as changes any setting on its socket; over
+    // the network only some are a caller's to change.
     let value = |value: &str| json!({"value": value});
     assert_eq!(
         send(client, "PUT", "/v1/settings/retention_days", value("30"))
@@ -1454,7 +1456,7 @@ async fn the_server_is_set_up_through_the_api() {
         )
         .await
         .0,
-        403
+        200
     );
     let (_, settings) = send(client, "GET", "/v1/settings", Value::Null).await;
     let days = settings
@@ -4033,4 +4035,113 @@ fn the_screen_keeps_the_address_a_server_gave_a_new_machine_and_opens_its_overvi
     app.save().unwrap();
     let kept = own.load(&served.state.paths).unwrap().unwrap();
     assert_eq!(kept["access"]["address"], "192.0.2.40", "{kept}");
+}
+
+/// What works with this machine's own drives and settings is offered to its
+/// user, on the socket or in the process, and not over the network.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_installer_and_every_setting_are_for_the_user_here() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state_in(dir.path(), Some("s3cret-token"));
+    let profile = json!({"hostname": "studio", "builder": {}, "access": {"address": "192.0.2.7", "link": ["sh", "-c", "exit 1"]}});
+    berth_core::profiles::Place::own("studio")
+        .unwrap()
+        .save(&state.paths, &profile)
+        .unwrap();
+    let socket = dir.path().join("serve.sock");
+    let unix = tokio::net::UnixListener::bind(&socket).unwrap();
+    let local = api::router(state.clone(), false);
+    tokio::spawn(async move { axum::serve(unix, local).await });
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = tcp.local_addr().unwrap();
+    let guarded = api::router(state.clone(), true);
+    tokio::spawn(async move { axum::serve(tcp, guarded).await });
+    let installer = |listed: &Value| {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|action| action["name"] == "installer")
+            .cloned()
+            .unwrap()
+    };
+
+    let mut client = Client::unix(&socket).await.unwrap();
+    let (status, listed) = send(&mut client, "GET", "/v1/hosts/studio/actions", Value::Null).await;
+    assert_eq!(status, 200, "{listed}");
+    let here = installer(&listed);
+    assert_eq!(here["available"], true, "{here}");
+    assert_eq!(here["arguments"][1]["secret"], true);
+    // Only a USB drive that is connected is written.
+    let act = json!({"arguments": {"device": "/dev/berth-test-none"}});
+    let (status, said) = send(
+        &mut client,
+        "POST",
+        "/v1/hosts/studio/actions/installer",
+        act,
+    )
+    .await;
+    assert_eq!(status, 400, "{said}");
+    assert!(
+        said["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no USB drive")
+    );
+
+    let (status, listed) = as_bearer(
+        address,
+        "s3cret-token",
+        "GET",
+        "/v1/hosts/studio/actions",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{listed}");
+    let elsewhere = installer(&listed);
+    assert_eq!(elsewhere["available"], false);
+    assert!(
+        elsewhere["why"]
+            .as_str()
+            .unwrap()
+            .contains("berth serve runs on"),
+        "{elsewhere}"
+    );
+    let (status, _) = as_bearer(
+        address,
+        "s3cret-token",
+        "POST",
+        "/v1/hosts/studio/actions/installer",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 501);
+
+    // Settings of the machine itself, such as the ISO folder, change only here.
+    let iso = json!({"value": "/srv/iso"});
+    let (status, _) = as_bearer(
+        address,
+        "s3cret-token",
+        "PUT",
+        "/v1/settings/iso_dir",
+        iso.clone(),
+    )
+    .await;
+    assert_eq!(status, 403);
+    let (status, said) = send(&mut client, "PUT", "/v1/settings/iso_dir", iso).await;
+    assert_eq!(status, 200, "{said}");
+    assert_eq!(state.paths.setting("iso_dir").as_deref(), Some("/srv/iso"));
+    let (_, listed) = send(&mut client, "GET", "/v1/settings", Value::Null).await;
+    let open = |listed: &Value| {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|setting| setting["key"] == "iso_dir")
+            .unwrap()["open"]
+            .clone()
+    };
+    assert_eq!(open(&listed), true);
+    let (_, listed) = as_bearer(address, "s3cret-token", "GET", "/v1/settings", Value::Null).await;
+    assert_eq!(open(&listed), false);
 }

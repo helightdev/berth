@@ -148,6 +148,8 @@ pub struct App {
     wanted: Option<String>,
     /// The screens are left.
     quit: bool,
+    /// An action of the open host to begin once the server has listed them.
+    pending: Option<&'static str>,
 }
 
 impl App {
@@ -216,6 +218,7 @@ impl App {
             installed: None,
             wanted: None,
             quit: false,
+            pending: None,
         };
         // A setup key signs in with the token it collects, whatever was kept.
         if let (Some(key), false) = (linked.setup_key, app.server.is_empty()) {
@@ -503,6 +506,7 @@ impl App {
                         .filter(|action| action.runs == berth_api::Runs::Berth)
                         .filter(|action| !["apply", "seed"].contains(&action.name.as_str()))
                         .collect();
+                    self.begin_pending();
                 }
                 Arrived::Actions(..) => {}
                 // One that was removed takes its page back to the list.
@@ -803,6 +807,28 @@ impl App {
         self.host.run(&action.name, body);
     }
 
+    /// Begin the action the set-up left the overview for, now that the
+    /// server has listed the host's actions.
+    fn begin_pending(&mut self) {
+        let Some(name) = self.pending else {
+            return;
+        };
+        // A host saved just now may not be listed yet: its actions come again.
+        if self.host.own.is_empty() {
+            return;
+        }
+        self.pending = None;
+        let index = self
+            .host
+            .actions()
+            .iter()
+            .position(|action| action.name == name);
+        match index {
+            Some(index) => self.choose(Entry::Pick(Pick::Action(index))),
+            None => self.status = format!("The server offers no action {name} for {}", self.name),
+        }
+    }
+
     fn choose(&mut self, entry: Entry) {
         match entry {
             Entry::Pick(Pick::Action(index)) => {
@@ -837,7 +863,7 @@ impl App {
             }
             Entry::Setup => {
                 if let Some(admin) = &self.admin {
-                    self.setup = Some(Setup::open(&self.name, admin));
+                    self.setup = Some(Setup::open(&self.name, admin, self.local()));
                     self.screen = Screen::Setup;
                 }
             }
@@ -1117,7 +1143,7 @@ impl App {
             self.address.clear();
             self.status = format!("{name} is kept on the server once it is saved");
             if let Some(admin) = &self.admin {
-                self.setup = Some(Setup::new(name, template, admin));
+                self.setup = Some(Setup::new(name, template, admin, self.local()));
                 self.screen = Screen::Setup;
             }
         }
@@ -1788,11 +1814,16 @@ impl App {
                     self.screen = Screen::Hosts;
                     return;
                 };
-                if let Flow::Leave = setup.event(event, admin, &mut self.status) {
+                let flow = setup.event(event, admin, &mut self.status);
+                if let Flow::Leave | Flow::Act(_) = flow {
                     // A host the server never got has no overview to go back to.
-                    let kept = setup.kept();
+                    let acting = matches!(flow, Flow::Act(_));
+                    let kept = setup.kept() || acting;
                     self.setup = None;
                     self.asked = None;
+                    if let Flow::Act(action) = flow {
+                        self.pending = Some(action);
+                    }
                     match kept {
                         true => {
                             let (name, address) = (self.name.clone(), self.address.clone());
