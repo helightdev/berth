@@ -164,6 +164,20 @@ pub fn tailnet_key(host: &str) -> Done<()> {
     Ok(())
 }
 
+/// `berth simulated-provisioner VERB`: the provisioner of a simulated
+/// server, which berth runs as the plugin `sim`, with the request on
+/// standard input.
+pub fn simulated_provisioner(verb: &str) -> Done<()> {
+    let mut input = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
+    let answer = berth_core::simulate::provision(verb, &input, &mut std::io::stderr())?;
+    match answer {
+        serde_json::Value::String(log) => print!("{log}"),
+        answer => println!("{answer}"),
+    }
+    Ok(())
+}
+
 /// `berth registry publish`: upload the release archive built here, and
 /// make it the release address of a host through the server.
 pub fn publish(
@@ -221,6 +235,15 @@ pub const WEB_GONE: &str = "--web does nothing any more: berth has no page in th
 
 /// `berth server …`: the server of this machine itself.
 pub fn server_command(command: args::Server) -> Done<()> {
+    // Before berth's own directories are looked for, which it never uses.
+    if let args::Server::Run(run) = &command
+        && (run.simulate || serve::simulate::asked())
+    {
+        if run.web {
+            out::warn(WEB_GONE);
+        }
+        return Ok(serve::simulate::command(run)?);
+    }
     let paths = Paths::locate()?;
     match command {
         args::Server::Run(run) => {

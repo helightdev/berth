@@ -500,6 +500,7 @@ mod tests {
             mode: "system".into(),
             applied: None,
             host_type,
+            simulated: false,
         };
         assert_eq!(seen(Ok(&version(None))), Some(HostType::Managed));
         assert_eq!(

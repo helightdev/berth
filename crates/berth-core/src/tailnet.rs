@@ -145,6 +145,9 @@ impl Control {
     /// Why berth cannot create keys at this control server, if it cannot.
     /// Only what berth knows without asking the server.
     pub fn problem(&self) -> Option<String> {
+        if crate::simulate::active().is_some() {
+            return None;
+        }
         let credential = match &self.credential {
             Ok(credential) => credential,
             Err(why) => return Some(why.clone()),
@@ -170,6 +173,13 @@ impl Control {
 
     /// A new pre-approved key that joins one host, once, within `lifetime` seconds.
     pub fn create_key(&self, description: &str, lifetime: u64) -> Result<String> {
+        // A simulated server's keys join nothing.
+        if crate::simulate::active().is_some() {
+            return Ok(format!(
+                "tskey-auth-simulated-{}",
+                crate::provision::new_token()?
+            ));
+        }
         if let Some(problem) = self.problem() {
             return Err(problem.into());
         }
@@ -320,6 +330,9 @@ enum Body {
 /// login is a line of curl's configuration, given on its standard input, and
 /// the body is a private file, so neither appears in the process list.
 fn call(url: &str, login: &str, body: Option<Body>) -> Result<(u16, Value)> {
+    if crate::simulate::active().is_some() {
+        return Err("A simulated server reaches no tailnet".into());
+    }
     let mut file = tempfile::NamedTempFile::new()?;
     let mut command = Command::new("curl");
     command.args([

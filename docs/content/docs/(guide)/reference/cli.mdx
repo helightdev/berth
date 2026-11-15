@@ -1380,13 +1380,18 @@ The berth server of this machine: running it, its setup key, its store and its A
 Serve the API over all hosts on a socket of this user, and over HTTP with --listen.
 
 ```text
-berth server run [--listen ADDRESS:PORT] [--expose]
+berth server run [--listen ADDRESS:PORT] [--expose] [--simulate] [--seed FILE] [--delay SECONDS] [--data DIR] [--keep]
 ```
 
 | Argument | What it is |
 | --- | --- |
 | `--listen ADDRESS:PORT` | Also listen over HTTP, behind a token. |
 | `--expose` | Allow an address other than this machine's own. |
+| `--simulate` | Run a simulated server to test an application against: the real API on a scratch store, with hosts and provisioners that reach no machine. |
+| `--seed FILE` | A JSON file with the hosts, provisioners, secrets and token the simulated server starts with. |
+| `--delay SECONDS` | Seconds a simulated step takes, 2 unless given; 0 for none. |
+| `--data DIR` | Keep the simulated server's state in DIR, an empty one or one of an earlier simulation, instead of a scratch directory. |
+| `--keep` | Leave the scratch directory when the simulated server ends. |
 
 ### berth server setup-key
 
@@ -1510,13 +1515,18 @@ berth server deploy [USER@]HOST [--container NAME] [--port PORT] [--release VERS
 Short for berth server run.
 
 ```text
-berth serve [--listen ADDRESS:PORT] [--expose]
+berth serve [--listen ADDRESS:PORT] [--expose] [--simulate] [--seed FILE] [--delay SECONDS] [--data DIR] [--keep]
 ```
 
 | Argument | What it is |
 | --- | --- |
 | `--listen ADDRESS:PORT` | Also listen over HTTP, behind a token. |
 | `--expose` | Allow an address other than this machine's own. |
+| `--simulate` | Run a simulated server to test an application against: the real API on a scratch store, with hosts and provisioners that reach no machine. |
+| `--seed FILE` | A JSON file with the hosts, provisioners, secrets and token the simulated server starts with. |
+| `--delay SECONDS` | Seconds a simulated step takes, 2 unless given; 0 for none. |
+| `--data DIR` | Keep the simulated server's state in DIR, an empty one or one of an earlier simulation, instead of a scratch directory. |
+| `--keep` | Leave the scratch directory when the simulated server ends. |
 
 ## berth login
 

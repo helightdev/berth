@@ -185,6 +185,10 @@ pub enum Command {
     #[cfg(target_os = "linux")]
     #[command(hide = true)]
     TailnetKey { host: String },
+    /// The provisioner of a simulated server, which it runs itself.
+    #[cfg(target_os = "linux")]
+    #[command(hide = true)]
+    SimulatedProvisioner { verb: String },
 }
 
 // ── host ────────────────────────────────────────────────────────────────────
@@ -960,6 +964,21 @@ pub struct ServerRun {
     /// and containers and units of that version still name it.
     #[arg(long, hide = true)]
     pub web: bool,
+    /// Run a simulated server to test an application against: the real API on a scratch store, with hosts and provisioners that reach no machine.
+    #[arg(long)]
+    pub simulate: bool,
+    /// A JSON file with the hosts, provisioners, secrets and token the simulated server starts with.
+    #[arg(long, value_name = "FILE", requires = "simulate")]
+    pub seed: Option<PathBuf>,
+    /// Seconds a simulated step takes, 2 unless given; 0 for none.
+    #[arg(long, value_name = "SECONDS", requires = "simulate")]
+    pub delay: Option<f64>,
+    /// Keep the simulated server's state in DIR, an empty one or one of an earlier simulation, instead of a scratch directory.
+    #[arg(long, value_name = "DIR", requires = "simulate")]
+    pub data: Option<PathBuf>,
+    /// Leave the scratch directory when the simulated server ends.
+    #[arg(long, requires = "simulate")]
+    pub keep: bool,
 }
 
 #[cfg(target_os = "linux")]
