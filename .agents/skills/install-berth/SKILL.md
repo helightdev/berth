@@ -96,7 +96,9 @@ then registers the provisioners. Check with `berth run big status` and
 The features never erase a disk. They make an Incus storage pool in a folder,
 or use one the user names in `devbox_incus_pool`. A server with Incus or Docker
 already keeps its pools, networks, trusted clients, containers and guests, and
-a provisioner registered for it by hand becomes the node's.
+a provisioner registered for it by hand becomes the node's when it names the
+node's address. The apply names any it left alone, with the command that makes
+it the node's: `berth provisioner run NAME adopt node=big`.
 
 Virtual machines need KVM. On a rented virtual server without it, set
 `devbox_incus_virtual_machines` to `false` in `ansible_vars`. For Sysbox beside
@@ -111,7 +113,8 @@ port 7777 on this machine only, Tailscale, `tailscale serve` with TLS and a
 
 ```bash
 curl -fsSL https://github.com/helightdev/berth/archive/refs/heads/main.tar.gz \
-  | tar xz --strip-components=1 --wildcards '*/recipes'
+  | tar xz --strip-components=1 --wildcards '*/recipes' \
+    '*/provision/ansible/roles/devbox/files/berth-server-upgrade.py'
 cd recipes/berth-server
 sudo ./install.sh -e tailscale_auth_key=tskey-auth-EXAMPLE
 ```
@@ -123,11 +126,16 @@ socket. Add the
 node from the server with `berth host add big node --user root --type node`,
 then as in the node's section above.
 
-A second run changes nothing in place. It leaves the container `berth` as it
-is and starts it when it was stopped. On a node, the node's action
-`upgrade-server` updates it to the version of the berth that asks. Elsewhere,
-run `sudo docker pull ghcr.io/helightdev/berth`, `sudo docker rm -f berth`,
-then `sudo ./install.sh`. The data in `/srv/berth` stays.
+A second run changes nothing in place. The container `berth` keeps its image,
+data and options. A stopped one is started. To update the
+server, fetch the recipe of the new version and run
+`sudo ./install.sh -e berth_server_update=true`. It makes the container again
+from the new image with the options of the old one, and starts the old one
+again if the new one fails. On a node, the node's action `upgrade-server` does
+the same. Never update with `docker rm -f berth`: a new container loses the
+options passed by hand, such as the name `incus-host` the provisioners of
+berth 0.5 reach. A server of berth 0.5 is updated before its clients and hosts:
+the page Upgrading from 0.5 in the docs has the order.
 
 ## Things that go wrong
 

@@ -30,6 +30,31 @@ pub fn settings() -> Settings {
     Settings::new(settings::folder(|name| std::env::var(name).ok()))
 }
 
+/// Take in what berth-remote kept, once, before a server is looked for, and
+/// say what became of it. Nothing is lost: its file goes only once berth has
+/// what was in it.
+pub fn take_in_remote(kept: &Settings, old: Option<&std::path::Path>) {
+    use super::out;
+    match kept.take_in(old) {
+        Ok(settings::TakenIn::Taken(server)) => {
+            out::note(format!("berth-remote's server is berth's now: {server}"))
+        }
+        Ok(settings::TakenIn::Left { theirs, ours, file }) => out::note(format!(
+            "berth-remote's settings in {} name the server {theirs}, and berth uses {ours}: the file is left as it is. To use {theirs}: berth login {theirs}",
+            file.display()
+        )),
+        Ok(settings::TakenIn::Nothing | settings::TakenIn::Same) => {}
+        Err(error) => out::warn(format!(
+            "berth-remote's settings were not taken in, and are left as they are: {error}"
+        )),
+    }
+}
+
+/// berth-remote's folder of settings for this user.
+pub fn remote_folder() -> Option<std::path::PathBuf> {
+    settings::old_folder(|name| std::env::var(name).ok())
+}
+
 fn variable(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
@@ -65,12 +90,16 @@ fn token(global: &Global, url: &str, kept: &Settings) -> Result<String> {
 /// The server this run uses, if one is named: by a flag, the environment,
 /// or the settings.
 pub fn named(global: &Global) -> Option<String> {
+    named_in(global, &settings())
+}
+
+fn named_in(global: &Global, kept: &Settings) -> Option<String> {
     global
         .server
         .clone()
         .filter(|server| !server.trim().is_empty())
         .or_else(|| variable("BERTH_SERVER"))
-        .or_else(|| settings().get(settings::SERVER))
+        .or_else(|| kept.get(settings::SERVER))
         .map(|server| berth_page::device::address(&server))
 }
 
@@ -78,9 +107,15 @@ impl Client {
     /// Reach the server this run uses.
     pub fn open(global: &Global) -> Result<Client> {
         let kept = settings();
-        let (url, token, finish) = match named(global) {
+        take_in_remote(&kept, remote_folder().as_deref());
+        Client::open_in(global, &kept)
+    }
+
+    /// Reach the server this run uses, with these settings.
+    pub fn open_in(global: &Global, kept: &Settings) -> Result<Client> {
+        let (url, token, finish) = match named_in(global, kept) {
             Some(url) => {
-                let token = token(global, &url, &kept)?;
+                let token = token(global, &url, kept)?;
                 (url, token, None)
             }
             None => match crate::local::server(false)? {
@@ -92,13 +127,42 @@ impl Client {
                 }
             },
         };
-        let portal = connect(&url, &token)?;
-        Ok(Client {
+        let in_process = finish.is_some();
+        let client = Client {
+            portal: connect(&url, &token)?,
             url,
-            portal,
             finish,
             sudo_ready: Default::default(),
+        };
+        // One in this process is this berth; any other may be older.
+        if !in_process {
+            let (version, api) = client.server_version()?;
+            if let Some(older) = berth_api::compat::older_server(&client.url, &version, api) {
+                return Err(Fail::refused(older));
+            }
+        }
+        Ok(client)
+    }
+
+    /// Reach the server this run uses, whatever its version, only to ask it.
+    pub fn open_any(global: &Global, kept: &Settings) -> Result<Client> {
+        let url =
+            named_in(global, kept).ok_or_else(|| Fail::unreachable("No berth server is set"))?;
+        let token = token(global, &url, kept)?;
+        Ok(Client {
+            portal: connect(&url, &token)?,
+            url,
+            finish: None,
+            sudo_ready: Default::default(),
         })
+    }
+
+    /// The server's version and the number of its API.
+    pub fn server_version(&self) -> Result<(String, u32)> {
+        let said = self.call("version", json!({}), None)?;
+        let version = said["version"].as_str().unwrap_or("").to_owned();
+        let api = said["api"].as_u64().unwrap_or(0) as u32;
+        Ok((version, api))
     }
 
     /// Whether the server runs in this process, and ends with it.

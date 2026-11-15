@@ -102,6 +102,50 @@ pub(super) fn internal(error: impl std::fmt::Display) -> Fail {
     Fail::new(code::INTERNAL, error.to_string())
 }
 
+/// What the core said when it did not do something: its words, and whether
+/// it refused before anything began. It crosses threads, as an error of the
+/// core does not.
+#[derive(Debug)]
+pub(super) struct Said {
+    pub refused: bool,
+    pub message: String,
+}
+
+impl From<Box<dyn std::error::Error>> for Said {
+    fn from(error: Box<dyn std::error::Error>) -> Said {
+        Said {
+            refused: berth_core::is_refused(error.as_ref()),
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<String> for Said {
+    fn from(message: String) -> Said {
+        Said {
+            refused: false,
+            message,
+        }
+    }
+}
+
+impl std::fmt::Display for Said {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// A request the core turned down: refused before anything began is a
+/// failed precondition, which berth's commands exit 3 for; anything else is
+/// a request that does not fit.
+pub(super) fn turned_down(said: impl Into<Said>) -> Fail {
+    let said = said.into();
+    match said.refused {
+        true => Fail::new(code::PRECONDITION, said.message),
+        false => Fail::new(code::BAD_REQUEST, said.message),
+    }
+}
+
 // ── What the answers look like ──────────────────────────────────────────────
 
 #[derive(Serialize, ToSchema)]
@@ -312,11 +356,30 @@ pub fn router(state: Arc<Serve>, guarded: bool) -> Router {
             );
         }
     }
+    // Not behind the guard: an address in a browser, as the recipes of berth 0.5 printed it.
+    router = router.route("/", get(front));
     // Added after the guard, which they are not behind: they check their key themselves.
     router = router.merge(keyed_routes().split_for_parts().0);
     router
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state)
+}
+
+/// What a browser finds at the server's address. It says nothing of the
+/// server, as anyone who reaches it may read it.
+pub const FRONT: &str = "This is a berth server.
+
+berth has no page in the browser any more. Use berth on your own machine,
+on Linux, macOS or Windows:
+
+    berth login https://THIS-SERVER
+    berth ui
+
+A link that ends in #setup-key=KEY holds a setup key: berth login asks for it.
+";
+
+async fn front() -> Response {
+    ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], FRONT).into_response()
 }
 
 /// What a request shows to be let in: a bearer, and the protocols of a
@@ -412,7 +475,7 @@ async fn portal(
             None => (ops::SERVE, String::new()),
         };
         let op = ops::find(table, name)
-            .ok_or_else(|| (code::NOT_FOUND, format!("No operation {name}")))?;
+            .ok_or_else(|| (code::NOT_FOUND, berth_api::compat::no_operation(name)))?;
         if !op.server_only.is_empty() {
             return Err((code::FORBIDDEN, op.server_only.into()));
         }

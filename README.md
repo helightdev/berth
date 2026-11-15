@@ -44,6 +44,10 @@ same screens. `install.sh` installs it on macOS too, and on Windows:
 irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex
 ```
 
+Coming from berth 0.5? Update the server first, then the clients and the
+hosts, as [Upgrading from 0.5](docs/content/docs/%28guide%29/use/upgrading.mdx)
+says.
+
 ## Quick start
 
 ```bash
@@ -65,6 +69,7 @@ The documentation site is built from [`docs/`](docs) (`cd docs && npm install &&
 - [Getting started](docs/content/docs/%28guide%29/start/install.mdx): installing berth and a first host.
 - [Deploying](docs/content/docs/%28guide%29/deploy/index.mdx): the install methods, and testing in QEMU.
 - [Using berth](docs/content/docs/%28guide%29/use/index.mdx): the terminal UI and commands, sign-ins, secrets and updates.
+- [Upgrading from 0.5](docs/content/docs/%28guide%29/use/upgrading.mdx): the order, what is converted, and going back.
 - [Extending](docs/content/docs/%28guide%29/extend/index.mdx): plugins, services and `berth serve`.
 - [Reference](docs/content/docs/%28guide%29/reference/index.mdx): tools, `box`, profile fields, building and releasing.
 - The API reference of berthd and `berth serve`, generated from [`docs/openapi/`](docs/openapi).

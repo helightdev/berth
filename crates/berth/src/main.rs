@@ -46,15 +46,7 @@ fn screens(global: &cli::args::Global, host: Option<&str>) -> cli::fail::Result<
     }
     let var = |name: &str| std::env::var(name).ok();
     let settings = Settings::new(settings::folder(var));
-    match settings.take_in(settings::old_folder(var).as_deref()) {
-        Ok(Some(server)) => {
-            cli::out::note(format!("berth-remote's server is berth's now: {server}"))
-        }
-        Ok(None) => {}
-        Err(error) => cli::out::warn(format!(
-            "berth-remote's settings were not taken in: {error}"
-        )),
-    }
+    cli::client::take_in_remote(&settings, settings::old_folder(var).as_deref());
     let mut linked = berth_page::device::Linked {
         server: global
             .server

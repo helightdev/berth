@@ -48,6 +48,10 @@ pub fn command(global: &Global, command: Host) -> Result<()> {
 /// The state of a host in a word or two, as the home list shows it.
 fn state_of(host: &Value) -> String {
     if host["reachable"] == true {
+        let api = host["api"].as_u64().unwrap_or(u64::MAX);
+        if api < u64::from(berth_api::compat::NEEDS_HOST_API) {
+            return styled("old controller", Style::Warn);
+        }
         return match &host["behind"] {
             Value::Null => styled("answers", Style::Good),
             _ => styled("behind", Style::Warn),

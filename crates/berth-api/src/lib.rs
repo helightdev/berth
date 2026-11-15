@@ -3,6 +3,7 @@
 
 #[cfg(feature = "client")]
 pub mod client;
+pub mod compat;
 pub mod escape;
 pub mod ops;
 #[cfg(feature = "client")]

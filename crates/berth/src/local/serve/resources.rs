@@ -7,7 +7,7 @@
 use super::{
     Serve,
     actions::{admit, answer, parse, refused},
-    api::{Answer, App, Fail, Ws, caller, internal, job_info},
+    api::{Answer, App, Fail, Said, Ws, caller, internal, job_info, turned_down},
     auth::Access,
 };
 use axum::{
@@ -39,9 +39,12 @@ fn bad(error: impl std::fmt::Display) -> Fail {
 
 /// A refusal of the core as an answer: a missing resource is 404, one that
 /// is busy 409, anything else a request that does not fit.
-fn refusal(error: impl std::fmt::Display) -> Fail {
-    let message = error.to_string();
-    if message.starts_with("No resource ") || message.starts_with("No provisioner ") {
+fn refusal(error: impl Into<Said>) -> Fail {
+    let said = error.into();
+    let message = said.message.clone();
+    if said.refused {
+        turned_down(said)
+    } else if message.starts_with("No resource ") || message.starts_with("No provisioner ") {
         Fail::new(code::NOT_FOUND, message)
     } else if message.starts_with("Something else is being done to")
         || message.contains(" already, ")
@@ -59,8 +62,8 @@ fn store(state: &Serve) -> Store {
 /// Run work of the core off the runtime: it waits for the provisioner.
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> berth_core::Result<T> + Send + 'static,
-) -> Answer<Result<T, String>> {
-    tokio::task::spawn_blocking(move || work().map_err(|error| error.to_string()))
+) -> Answer<Result<T, Said>> {
+    tokio::task::spawn_blocking(move || work().map_err(Said::from))
         .await
         .map_err(internal)
 }
@@ -244,7 +247,7 @@ async fn run_action(
     if !acting.changes() {
         let answered = blocking(move || acting.run(&paths, &options, &mut std::io::sink()))
             .await?
-            .map_err(|error| Fail::new(code::UNREACHABLE, error))?;
+            .map_err(|error| Fail::new(code::UNREACHABLE, error.message))?;
         return Ok(Acted {
             result: Some(answered.value()),
             ..Acted::default()

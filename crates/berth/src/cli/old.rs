@@ -147,9 +147,45 @@ fn is_action(noun: &str, word: &str) -> bool {
         .is_some_and(|thing| thing.find_subcommand(word).is_some())
 }
 
+/// The table of the old spellings on the page about upgrading, between its
+/// markers, as a test writes it.
+#[cfg(test)]
+fn table() -> String {
+    let mut out = String::from("| berth 0.5 | Now |\n| --- | --- |\n");
+    for (old, new) in OLD {
+        out += &format!("| `berth {}` | `{new}` |\n", old.join(" "));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The page about upgrading from 0.5, from the repository's root.
+    const PAGE: &str = "docs/content/docs/(guide)/use/upgrading.mdx";
+    const START: &str = "{/* old-spellings:start */}\n";
+    const END: &str = "{/* old-spellings:end */}";
+
+    #[test]
+    fn the_upgrade_page_lists_the_old_spellings() {
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(PAGE);
+        let text = std::fs::read_to_string(&file).unwrap();
+        let (before, rest) = text.split_once(START).expect("the start marker");
+        let (_, after) = rest.split_once(END).expect("the end marker");
+        // Blank lines around it, so that MDX reads it as a table.
+        let page = format!("{before}{START}\n{}\n{END}{after}", table());
+        if std::env::var_os("BERTH_UPDATE_DOCS").is_some() {
+            std::fs::write(&file, &page).unwrap();
+            return;
+        }
+        assert!(
+            text == page,
+            "{PAGE} is stale: write it again with BERTH_UPDATE_DOCS=1 cargo test -p berth"
+        );
+    }
 
     fn said(line: &str) -> Option<String> {
         let args: Vec<String> = std::iter::once("berth")

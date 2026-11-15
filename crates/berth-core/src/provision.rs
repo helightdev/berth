@@ -186,11 +186,11 @@ pub(crate) fn secrets(
 pub(crate) fn needs_secrets(name: &str, missing: &[String]) -> Result<()> {
     match missing {
         [] => Ok(()),
-        missing => Err(format!(
+        missing => Err(crate::Refused(format!(
             "{name} needs the secret{} {}: berth secret set NAME",
             if missing.len() == 1 { "" } else { "s" },
             missing.join(", ")
-        )
+        ))
         .into()),
     }
 }
@@ -529,7 +529,7 @@ pub fn prepare(paths: &Paths, store: &Store, host: &str, asked: &NewResource) ->
     // A new machine is on no tailnet, so a host that joins one needs a key
     // berth can make, before anything is created.
     if let Some(problem) = crate::tailnet::problem(paths, &profile.config, host) {
-        return Err(problem.into());
+        return Err(crate::Refused(problem).into());
     }
     let (scope, side) = profile.place.side();
     // Asked again after a failure, the provisioner finds the machine by its token.

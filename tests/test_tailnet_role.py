@@ -108,6 +108,16 @@ class TailnetTaskTests(unittest.TestCase):
         self.assertIn('secret tailnet_api_key', done.stdout)
         self.assertIn('devbox_install_tailscale to false', done.stdout)
 
+    def test_a_host_of_berth_0_5_that_was_never_joined_goes_on_without_the_tailnet(self):
+        problem = 'studio joins the tailnet at Tailscale, and berth cannot make its key. berth secret set tailnet_api_key'
+        done = self.run_tasks('tailnet.yml', LOGGED_OUT, devbox_tailnet_problem=problem,
+                              devbox_tailnet_optional=True)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn('The apply goes on without the tailnet', done.stdout)
+        self.assertIn(problem, done.stdout)
+        # Nothing tried to join it.
+        self.assertEqual(set(self.calls_made()), {'status --json'})
+
     def test_a_way_to_a_key_lets_the_play_go_on(self):
         command = ['touch', str(self.made)]
         self.assertEqual(self.run_tasks('tailnet_check.yml', LOGGED_OUT,

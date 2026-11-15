@@ -183,7 +183,9 @@ class Restore(unittest.TestCase):
         self.assertIn(str(absent), said)
         self.assertNotIn('Listening on', said)
         self.assertTrue(digest(database) == before, 'berth serve changed the database')
-        # SQLite's own files beside the database are no change; a key file or a new database would be.
-        self.assertEqual({path.name for path in self.keyless.iterdir()} - {'berth.db-wal', 'berth.db-shm'}, {'berth.db'})
+        # SQLite's own files and berth's empty lock beside the database are no change; a key file, a copy or a new database would be.
+        beside = {'berth.db-wal', 'berth.db-shm', 'berth.db.convert.lock'}
+        self.assertEqual({path.name for path in self.keyless.iterdir()} - beside, {'berth.db'})
+        self.assertEqual((self.keyless / 'berth.db.convert.lock').stat().st_size, 0)
         self.assertFalse((station.data / 'berth/serve.token').exists())
         self.assertFalse((station.data / 'berth/keys').exists())

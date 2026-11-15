@@ -150,6 +150,8 @@ pub struct App {
     quit: bool,
     /// An action of the open host to begin once the server has listed them.
     pending: Option<&'static str>,
+    /// Why the server is too old for these screens, once it said its version.
+    older: Rc<RefCell<Option<String>>>,
 }
 
 impl App {
@@ -171,7 +173,9 @@ impl App {
             })
             .unwrap_or_default();
         // A server on this machine is never kept: it is found again each run.
-        if !device::local(&server) {
+        // Another server named for this run, without its token, leaves the
+        // kept server and token alone until it signs in.
+        if !device::local(&server) && !token.is_empty() {
             device::store(Kept::Server, &server);
             device::store(Kept::Token, &token);
         }
@@ -219,6 +223,7 @@ impl App {
             wanted: None,
             quit: false,
             pending: None,
+            older: Rc::default(),
         };
         // A setup key signs in with the token it collects, whatever was kept.
         if let (Some(key), false) = (linked.setup_key, app.server.is_empty()) {
@@ -281,6 +286,15 @@ impl App {
         self.retry = None;
         match Portal::open(&self.server, &self.token) {
             Ok(portal) => {
+                // A server older than these screens would not understand what they send.
+                let (older, url) = (self.older.clone(), self.server.clone());
+                portal.call("version", None, json!({}), Value::Null, move |result| {
+                    if let Ok(said) = result {
+                        let version = said["version"].as_str().unwrap_or("");
+                        let api = said["api"].as_u64().unwrap_or(0) as u32;
+                        *older.borrow_mut() = berth_api::compat::older_server(&url, version, api);
+                    }
+                });
                 // Who the token is here decides what the page offers.
                 let admin = Admin::new(portal.clone(), self.data.clone());
                 admin.load();
@@ -300,6 +314,13 @@ impl App {
 
     /// Back to the token dialog, forgetting the token.
     fn sign_out(&mut self, why: &str) {
+        self.ask_token(why);
+        device::store(Kept::Token, "");
+    }
+
+    /// Back to the token dialog. The kept token stays until the one typed
+    /// next replaces it.
+    fn ask_token(&mut self, why: &str) {
         self.portal = None;
         self.admin = None;
         *self.data.borrow_mut() = Data::default();
@@ -311,7 +332,6 @@ impl App {
         self.host.disconnect();
         *self.hosts.borrow_mut() = Hosts::default();
         self.token.clear();
-        device::store(Kept::Token, "");
         self.typing = Input::default();
         self.refused = why.to_owned();
         self.screen = Screen::Token;
@@ -342,6 +362,7 @@ impl App {
             match installed.tick() {
                 Outcome::SignIn(token) => {
                     self.token = token;
+                    device::store(Kept::Server, &self.server);
                     device::store(Kept::Token, &self.token);
                     self.connect();
                 }
@@ -365,6 +386,16 @@ impl App {
         } else if !self.status.is_empty() && self.said.1.elapsed() >= SAID_FOR {
             self.status.clear();
         }
+        if let Some(older) = self.older.borrow_mut().take() {
+            self.portal = None;
+            self.admin = None;
+            self.host.disconnect();
+            *self.hosts.borrow_mut() = Hosts::default();
+            self.retry = None;
+            self.refused = older;
+            self.screen = Screen::Token;
+            return;
+        }
         match self.portal.as_ref().map(Portal::link) {
             Some(Link::Open) => {
                 self.proven = true;
@@ -372,13 +403,14 @@ impl App {
                     self.status.clear();
                 }
             }
-            // A token that never opened the portal is asked for again; one that
-            // has is the right one, and the server is only away.
-            Some(Link::Refused) if !self.proven && !self.local() => {
-                self.sign_out("The server did not open its portal for that token.");
+            // A token the server refused is asked for again. The kept one stays
+            // until another is given or the user signs out: a server that does
+            // not answer, or not yet, never costs the token.
+            Some(Link::Refused) if !self.local() => {
+                self.ask_token("The server did not take that token. Enter another, or sign out.");
                 return;
             }
-            Some(Link::Refused | Link::Lost) => {
+            Some(Link::Refused | Link::Unreached | Link::Lost) => {
                 self.portal = None;
                 self.host.disconnect();
                 self.retry = Some(Instant::now());
@@ -666,8 +698,10 @@ impl App {
             ],
             State::Old(version) => vec![
                 note(
-                    format!(
-                        "The host's tools ({version}) are older than this page needs. Applying its configuration, where berth serve runs, brings them up to date."
+                    berth_api::compat::controller_is_older(
+                        &self.name,
+                        version,
+                        self.host.host_type,
                     ),
                     theme::WARN,
                 ),
@@ -1420,7 +1454,15 @@ impl App {
         let mut lines: Vec<Line> = vec![];
         for host in hosts.list.iter() {
             let name = host["name"].as_str().unwrap_or("");
+            let older = host["api"]
+                .as_u64()
+                .is_some_and(|api| api < u64::from(berth_api::compat::NEEDS_HOST_API));
             let state = match (host["reachable"].as_bool(), host["version"].as_str()) {
+                // A controller too old for this berth is updated before it is worked with.
+                (Some(true), Some(version)) if older => Span::styled(
+                    format!("● {version} old controller"),
+                    Style::new().fg(theme::WARN),
+                ),
                 (Some(true), Some(version)) => {
                     Span::styled(format!("● {version}"), Style::new().fg(theme::GOOD))
                 }

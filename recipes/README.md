@@ -21,12 +21,13 @@ first user collects the server's token, with `berth login URL`, so the token nev
 
 ## Get the recipes
 
-A recipe needs only this folder. This fetches it into `recipes/` in the
-current directory:
+A recipe needs this folder, and `berth-server` also the helper that updates
+the server's container. This fetches them into the current directory:
 
 ```bash
 curl -fsSL https://github.com/helightdev/berth/archive/refs/heads/main.tar.gz \
-  | tar xz --strip-components=1 --wildcards '*/recipes'
+  | tar xz --strip-components=1 --wildcards '*/recipes' \
+    '*/provision/ansible/roles/devbox/files/berth-server-upgrade.py'
 ```
 
 The recipes share the tasks in `shared/`, so fetch the folder as a whole.

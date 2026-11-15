@@ -112,28 +112,55 @@ impl Settings {
         private_write(&file, text.as_bytes())
     }
 
-    /// Take in the server and token berth-remote kept in `old`, once: when
-    /// berth has no server of its own, they become berth's, and the old file
-    /// goes. Says which server was taken in.
-    pub fn take_in(&self, old: Option<&Path>) -> std::io::Result<Option<String>> {
+    /// Take in the server and token berth-remote kept in `old`, once. When
+    /// berth has no server, or the same one without a token, they become
+    /// berth's and the old file goes. When berth uses another server, or the
+    /// same with another token, the file stays, and that is said once.
+    pub fn take_in(&self, old: Option<&Path>) -> std::io::Result<TakenIn> {
         let Some(old) = old else {
-            return Ok(None);
+            return Ok(TakenIn::Nothing);
         };
         let file = old.join("settings.json");
         let Ok(bytes) = std::fs::read(&file) else {
-            return Ok(None);
+            return Ok(TakenIn::Nothing);
         };
         let kept: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         let text = |key: &str| kept[key].as_str().unwrap_or("").trim().to_owned();
         let (server, token) = (text("server"), text("token"));
-        let taken = match (server.is_empty(), self.get(SERVER)) {
-            (false, None) => {
+        // A file that names no server holds nothing to take in, and is left as it is.
+        if server.is_empty() {
+            return Ok(TakenIn::Nothing);
+        }
+        let same =
+            |one: &str, other: &str| one.trim_end_matches('/') == other.trim_end_matches('/');
+        let taken = match (self.get(SERVER), self.get(TOKEN)) {
+            (None, _) => {
                 self.set(&[(SERVER, &server), (TOKEN, &token)])?;
-                Some(server)
+                TakenIn::Taken(server)
             }
-            _ => None,
+            (Some(ours), None) if same(&ours, &server) && !token.is_empty() => {
+                self.set(&[(TOKEN, &token)])?;
+                TakenIn::Taken(server)
+            }
+            // Its contents are berth's already.
+            (Some(ours), ours_token)
+                if same(&ours, &server)
+                    && (token.is_empty() || ours_token.as_deref() == Some(&token)) =>
+            {
+                TakenIn::Same
+            }
+            (Some(ours), _) => {
+                if self.get(NOTED).as_deref() == Some(server.as_str()) {
+                    return Ok(TakenIn::Nothing);
+                }
+                self.set(&[(NOTED, &server)])?;
+                return Ok(TakenIn::Left {
+                    theirs: server,
+                    ours,
+                    file,
+                });
+            }
         };
-        // Its token is in berth's settings now, or berth uses another server.
         for gone in [file.clone(), file.with_extension("json.partial")] {
             match std::fs::remove_file(&gone) {
                 Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
@@ -143,6 +170,28 @@ impl Settings {
         let _ = std::fs::remove_dir(old);
         Ok(taken)
     }
+}
+
+/// The setting that remembers which server of berth-remote's settings was
+/// said to be left, so it is said once.
+const NOTED: &str = "berth_remote_noted";
+
+/// What became of berth-remote's settings.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TakenIn {
+    /// There were none, or they were said to be left before.
+    Nothing,
+    /// berth uses their server and token now; the old file is gone.
+    Taken(String),
+    /// berth had them already; the old file is gone.
+    Same,
+    /// berth uses another server, or the same with another token: the file
+    /// stays where it is.
+    Left {
+        theirs: String,
+        ours: String,
+        file: PathBuf,
+    },
 }
 
 /// Make the folder of the settings, which only its owner can open.
@@ -218,38 +267,96 @@ mod tests {
         assert_eq!(left, "{not json");
     }
 
+    fn remote(scratch: &Path, text: &str) -> PathBuf {
+        let old = scratch.join("berth-remote");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("settings.json"), text).unwrap();
+        old
+    }
+
     #[test]
     fn berth_remotes_server_is_taken_in_once() {
         let scratch = tempfile::tempdir().unwrap();
-        let old = scratch.path().join("berth-remote");
-        std::fs::create_dir_all(&old).unwrap();
-        std::fs::write(
-            old.join("settings.json"),
+        let old = remote(
+            scratch.path(),
             r#"{"server": "https://studio.example", "token": "s3cret"}"#,
-        )
-        .unwrap();
+        );
         let settings = Settings::new(Some(scratch.path().join("berth")));
         assert_eq!(
-            settings.take_in(Some(&old)).unwrap().as_deref(),
-            Some("https://studio.example")
+            settings.take_in(Some(&old)).unwrap(),
+            TakenIn::Taken("https://studio.example".into())
         );
         assert_eq!(settings.get(TOKEN).as_deref(), Some("s3cret"));
         assert!(!old.exists());
-        assert_eq!(settings.take_in(Some(&old)).unwrap(), None);
+        assert_eq!(settings.take_in(Some(&old)).unwrap(), TakenIn::Nothing);
+    }
 
-        // A berth that uses a server already keeps it.
-        std::fs::create_dir_all(&old).unwrap();
-        std::fs::write(
-            old.join("settings.json"),
-            r#"{"server": "https://dock.example", "token": "other"}"#,
-        )
-        .unwrap();
-        assert_eq!(settings.take_in(Some(&old)).unwrap(), None);
-        assert_eq!(
-            settings.get(SERVER).as_deref(),
-            Some("https://studio.example")
+    #[test]
+    fn berth_remotes_token_for_berths_own_server_is_taken_in() {
+        let scratch = tempfile::tempdir().unwrap();
+        let settings = Settings::new(Some(scratch.path().join("berth")));
+        settings.set(&[(SERVER, "https://studio.example")]).unwrap();
+        let old = remote(
+            scratch.path(),
+            r#"{"server": "https://studio.example/", "token": "s3cret"}"#,
         );
-        assert!(!old.join("settings.json").exists());
+        assert_eq!(
+            settings.take_in(Some(&old)).unwrap(),
+            TakenIn::Taken("https://studio.example/".into())
+        );
+        assert_eq!(settings.get(TOKEN).as_deref(), Some("s3cret"));
+        assert!(!old.exists());
+
+        // The same server and token are berth's already: the file goes.
+        let old = remote(
+            scratch.path(),
+            r#"{"server": "https://studio.example", "token": "s3cret"}"#,
+        );
+        assert_eq!(settings.take_in(Some(&old)).unwrap(), TakenIn::Same);
+        assert!(!old.exists());
+    }
+
+    #[test]
+    fn berth_remotes_other_server_is_left_and_said_once() {
+        let scratch = tempfile::tempdir().unwrap();
+        let settings = Settings::new(Some(scratch.path().join("berth")));
+        settings
+            .set(&[(SERVER, "https://studio.example"), (TOKEN, "mine")])
+            .unwrap();
+        for other in [
+            r#"{"server": "https://dock.example", "token": "other"}"#,
+            r#"{"server": "https://studio.example", "token": "other"}"#,
+        ] {
+            let old = remote(scratch.path(), other);
+            let file = old.join("settings.json");
+            let taken = settings.take_in(Some(&old)).unwrap();
+            assert!(
+                matches!(&taken, TakenIn::Left { file: left, ours, .. }
+                if *left == file && ours == "https://studio.example"),
+                "{taken:?}"
+            );
+            // The file stays, and is not spoken of again.
+            assert!(file.exists());
+            assert_eq!(settings.take_in(Some(&old)).unwrap(), TakenIn::Nothing);
+            assert_eq!(settings.get(TOKEN).as_deref(), Some("mine"));
+            assert_eq!(
+                settings.get(SERVER).as_deref(),
+                Some("https://studio.example")
+            );
+            std::fs::remove_dir_all(&old).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_file_of_berth_remote_with_no_server_is_left_as_it_is() {
+        let scratch = tempfile::tempdir().unwrap();
+        let settings = Settings::new(Some(scratch.path().join("berth")));
+        for text in ["{not json", r#"{"token": "s3cret"}"#] {
+            let old = remote(scratch.path(), text);
+            assert_eq!(settings.take_in(Some(&old)).unwrap(), TakenIn::Nothing);
+            assert!(old.join("settings.json").exists());
+        }
+        assert_eq!(settings.get(TOKEN), None);
     }
 
     #[cfg(unix)]

@@ -109,6 +109,10 @@ devbox_base_commands: [git, rg, jq, curl, python3, pip, uv, node, npm, gcc, g++,
 devbox_install_playwright: true
 devbox_install_docker: true
 devbox_install_tailscale: true
+# An apply of a host off the tailnet goes on without it when berth cannot
+# make the host's key, rather than stop. berth sets it once for the hosts of
+# berth 0.5 that it never joined by itself; it joins them once it can.
+devbox_tailnet_optional: false
 # Web console on port 9090, reachable over the tailnet or an SSH tunnel.
 devbox_install_cockpit: true
 devbox_cockpit_packages: [cockpit, cockpit-storaged, cockpit-packagekit, cockpit-files]

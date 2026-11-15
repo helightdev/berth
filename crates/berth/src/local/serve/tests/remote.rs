@@ -107,3 +107,138 @@ async fn the_screens_sign_in_with_a_setup_key_and_use_the_portal() {
     until("refusal", || refused.link() != Link::Connecting);
     assert_eq!(refused.link(), Link::Refused);
 }
+
+/// A server of berth 0.5.2 as its portal answers: every call with its version.
+async fn older_server(token: &'static str) -> String {
+    use axum::extract::ws::{Message, WebSocketUpgrade};
+    let portal = axum::routing::get(move |ws: WebSocketUpgrade| async move {
+        ws.protocols([token]).on_upgrade(|mut socket| async move {
+            while let Some(Ok(Message::Text(text))) = socket.recv().await {
+                let asked: Value = serde_json::from_str(text.as_str()).unwrap();
+                let said = json!({"id": asked["id"], "result": {"version": "0.5.2", "api": 1, "mode": "serve"}});
+                if socket.send(Message::Text(said.to_string().into())).await.is_err() {
+                    break;
+                }
+            }
+        })
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = axum::Router::new().route(berth_api::ops::PORTAL, portal);
+    tokio::spawn(async move { axum::serve(listener, router).await });
+    url
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_refuses_an_older_server_and_still_reads_its_version() {
+    use crate::cli::{args::Global, client::Client, fail};
+    let url = older_server("s3cret-token").await;
+    let dir = tempfile::tempdir().unwrap();
+    let token = dir.path().join("token");
+    std::fs::write(&token, "s3cret-token").unwrap();
+    let global = Global {
+        server: Some(url.clone()),
+        token_file: Some(token),
+        ..Global::default()
+    };
+    let kept = Settings::new(Some(dir.path().join("berth")));
+    let (opened, version) = tokio::task::spawn_blocking(move || {
+        let opened = Client::open_in(&global, &kept).map(|_| ());
+        let version = Client::open_any(&global, &kept).and_then(|client| client.server_version());
+        (opened, version)
+    })
+    .await
+    .unwrap();
+    let refused = opened.unwrap_err();
+    assert_eq!(refused.status, fail::REFUSED);
+    assert!(
+        refused
+            .message
+            .contains("is berth 0.5.2 (API 1), older than this berth")
+            && refused.message.contains("Update the server first"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(version.unwrap(), ("0.5.2".to_owned(), 1));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_screens_say_that_an_older_server_is_updated_first() {
+    let url = older_server("s3cret-token").await;
+    let client = tempfile::tempdir().unwrap();
+    let kept = client.path().join("berth");
+    let linked = Linked {
+        server: Some(url.clone()),
+        token: Some("s3cret-token".into()),
+        setup_key: None,
+    };
+    berth_page::device::install(linked, Settings::new(Some(kept.clone())));
+    let mut app = berth_page::App::new();
+    until("the older server", || {
+        app.tick();
+        screen(&mut app).contains("older than this berth")
+    });
+    // The token stays for when the server is updated.
+    assert_eq!(
+        Settings::new(Some(kept)).get(settings::TOKEN).as_deref(),
+        Some("s3cret-token")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_screens_keep_the_token_of_a_server_that_does_not_answer_or_refuses_it() {
+    // Nobody listens at this address.
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let away = format!("http://{}", closed.local_addr().unwrap());
+    drop(closed);
+    let client = tempfile::tempdir().unwrap();
+    let kept = client.path().join("berth");
+    let settings = Settings::new(Some(kept.clone()));
+    settings
+        .set(&[(settings::SERVER, &away), (settings::TOKEN, "s3cret-kept")])
+        .unwrap();
+    let linked = Linked {
+        server: None,
+        token: None,
+        setup_key: None,
+    };
+    berth_page::device::install(linked, Settings::new(Some(kept.clone())));
+    let mut app = berth_page::App::new();
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_secs(2) {
+        app.tick();
+        berth_page::pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        settings.get(settings::TOKEN).as_deref(),
+        Some("s3cret-kept")
+    );
+    drop(app);
+
+    // A server that refuses it asks for another, and the kept one stays until then.
+    let dir = tempfile::tempdir().unwrap();
+    let state = state_in(dir.path(), Some("s3cret-token"));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = api::router(state, true);
+    tokio::spawn(async move { axum::serve(listener, router).await });
+    settings
+        .set(&[(settings::SERVER, &url), (settings::TOKEN, "s3cret-kept")])
+        .unwrap();
+    let linked = Linked {
+        server: None,
+        token: None,
+        setup_key: None,
+    };
+    berth_page::device::install(linked, Settings::new(Some(kept.clone())));
+    let mut app = berth_page::App::new();
+    until("the refusal", || {
+        app.tick();
+        screen(&mut app).contains("did not take that token")
+    });
+    assert_eq!(
+        settings.get(settings::TOKEN).as_deref(),
+        Some("s3cret-kept")
+    );
+}

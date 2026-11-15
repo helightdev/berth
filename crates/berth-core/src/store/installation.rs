@@ -75,8 +75,31 @@ impl Installation {
     }
 
     /// Open the store with its keys, finishing or undoing a key change that
-    /// was interrupted.
+    /// was interrupted. A SQLite store an older berth wrote is copied first
+    /// ([`keep_before_converting`]).
     pub fn open(&self) -> crate::Result<Store> {
+        let _held = self.hold_converting()?;
+        self.open_held()
+    }
+
+    /// Held while a store is copied and converted, so that two berths copy
+    /// it once, before either converts it.
+    fn hold_converting(&self) -> crate::Result<Option<fs::File>> {
+        match &self.target {
+            Target::Sqlite(file) => Ok(Some(wait_lock(
+                &beside(file, "convert.lock"),
+                "converting the store",
+            )?)),
+            Target::Postgres(_) => Ok(None),
+        }
+    }
+
+    fn open_held(&self) -> crate::Result<Store> {
+        if let Target::Sqlite(file) = &self.target
+            && let Some(said) = keep_before_converting(file)?
+        {
+            eprintln!("berth: {said}");
+        }
         let store = Store::connect_trusting(&self.target, self.ca.as_deref())?;
         let keys = self.keys(&store)?;
         Ok(store.with_keys(keys, Some(self.key_file.clone())))
@@ -169,11 +192,190 @@ pub fn shared(paths: &Paths) -> crate::Result<Arc<Store>> {
     if let Some(store) = opened.get(&key) {
         return Ok(store.clone());
     }
-    let installation = Installation::of(paths);
-    let store = Arc::new(installation.open()?);
-    crate::import::run(paths, &installation, &store)?;
+    let store = Arc::new(open_converting(paths)?);
     opened.insert(key, store.clone());
     Ok(store)
+}
+
+/// Open the installation's store and take in what older versions kept. A
+/// store an older berth wrote is copied first, as it was, for that berth to
+/// go back to: once converted it reads it no more.
+pub fn open_converting(paths: &Paths) -> crate::Result<Store> {
+    let installation = Installation::of(paths);
+    // Held until the imports are done too, which convert it as well.
+    let _held = installation.hold_converting()?;
+    let store = installation.open_held()?;
+    if let Target::Postgres(_) = installation.target
+        && let Some(old) = older_writer(&store)?
+    {
+        eprintln!(
+            "berth: berth {} converts the store in PostgreSQL that berth {old} wrote, which berth {old} cannot read afterwards. Going back needs a dump made before, with pg_dump: {}",
+            berth_api::VERSION,
+            berth_api::compat::UPGRADE_DOCS
+        );
+    }
+    crate::import::run(paths, &installation, &store)?;
+    Ok(store)
+}
+
+/// The version of berth that last took the store in, when it is older than
+/// this one: a marker of this berth's imports is missing.
+fn older_writer(store: &Store) -> crate::Result<Option<String>> {
+    let names = store.names(super::kind::META, super::OWN)?;
+    // A store no berth took in yet is a new one.
+    if !names.iter().any(|name| name == crate::import::MARKER) {
+        return Ok(None);
+    }
+    if crate::import::MARKERS
+        .iter()
+        .all(|marker| names.iter().any(|name| name == marker))
+    {
+        return Ok(None);
+    }
+    let mut versions: Vec<String> = vec![];
+    for name in &names {
+        if let Some(value) = store.read_json(super::kind::META, super::OWN, name)?
+            && let Some(version) = value["version"].as_str()
+        {
+            versions.push(version.to_owned());
+        }
+    }
+    versions.sort_by_key(|version| version_key(version));
+    Ok(Some(versions.pop().unwrap_or_else(|| "0.5".into())))
+}
+
+fn version_key(version: &str) -> Vec<u64> {
+    version
+        .split(|c: char| !c.is_ascii_digit())
+        .filter_map(|part| part.parse().ok())
+        .collect()
+}
+
+/// Before this berth converts a SQLite store an older one wrote, for the
+/// first time, a consistent copy of it goes beside it, named for the schema
+/// and the berth it had, in place of any copy made before. The key file is
+/// not copied: the copy opens with the same one. Says what it did, or why
+/// not, and nothing when the store needs no conversion.
+pub fn keep_before_converting(file: &Path) -> crate::Result<Option<String>> {
+    use rusqlite::{Connection, OpenFlags};
+    if !file.is_file() {
+        return Ok(None);
+    }
+    let db = Connection::open_with_flags(
+        file,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    db.busy_timeout(std::time::Duration::from_secs(5))?;
+    let schema: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    // A file no berth wrote yet, or one of a newer berth, which opening refuses.
+    if schema == 0 || schema as usize > super::sqlite::MIGRATIONS.len() {
+        return Ok(None);
+    }
+    // A sealed store's values are not text, and then say no version.
+    let markers: Vec<(String, Vec<u8>)> = match db.prepare(
+        "SELECT name, value FROM state WHERE kind = 'meta' AND scope = '' AND name LIKE 'import:%'",
+    ) {
+        Ok(mut statement) => statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?,
+        // A schema older than the table of state.
+        Err(_) => vec![],
+    };
+    // An older schema, or a store an older berth took in: one that has the
+    // first import's marker and lacks one of this berth's. A store with none
+    // was made by this berth, as a copy or before its first import.
+    let marked = |marker: &str| markers.iter().any(|(name, _)| name == marker);
+    let older = (schema as usize) < super::sqlite::MIGRATIONS.len()
+        || (marked(crate::import::MARKER) && !crate::import::MARKERS.iter().all(|m| marked(m)));
+    if !older {
+        return Ok(None);
+    }
+    let mut versions: Vec<String> = markers
+        .iter()
+        .filter_map(|(_, value)| {
+            serde_json::from_slice::<serde_json::Value>(value).ok()?["version"]
+                .as_str()
+                .map(str::to_owned)
+        })
+        .collect();
+    versions.sort_by_key(|version| version_key(version));
+    let old = versions.pop();
+    let suffix = match &old {
+        Some(version) => format!("berth-{version}-schema-{schema}"),
+        None => format!("schema-{schema}"),
+    };
+    let copy = beside(file, &suffix);
+    let dir = file.parent().unwrap_or(Path::new("."));
+    let wal = PathBuf::from(format!("{}-wal", file.display()));
+    let size = fs::metadata(file)?.len() + fs::metadata(wal).map_or(0, |wal| wal.len());
+    let named = match &old {
+        Some(version) => format!("berth {version}"),
+        None => "the older berth".to_owned(),
+    };
+    if free_space(dir).is_some_and(|free| free < size + size / 10) {
+        return Ok(Some(format!(
+            "{} has no room for a copy of the store ({size} bytes), so none was made before berth {} converts it. {named} cannot read it afterwards: {}",
+            dir.display(),
+            berth_api::VERSION,
+            berth_api::compat::UPGRADE_DOCS
+        )));
+    }
+    // Made empty and private first, as the copy holds what the store does.
+    let partial = beside(file, &format!("{suffix}.partial"));
+    let _ = fs::remove_file(&partial);
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&partial)?;
+    }
+    if let Err(error) = db.execute("VACUUM INTO ?1", [partial.to_string_lossy()]) {
+        let _ = fs::remove_file(&partial);
+        return Ok(Some(format!(
+            "No copy of the store was made before berth {} converts it ({error}). {named} cannot read it afterwards: {}",
+            berth_api::VERSION,
+            berth_api::compat::UPGRADE_DOCS
+        )));
+    }
+    drop(db);
+    fs::rename(&partial, &copy)?;
+    // Only the latest copy is kept.
+    let prefix = format!(
+        "{}.",
+        file.file_name().unwrap_or_default().to_string_lossy()
+    );
+    for entry in fs::read_dir(dir)?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(rest) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        let earlier = (rest.starts_with("berth-") || rest.starts_with("schema-"))
+            && rest.contains("schema-")
+            && !rest.ends_with(".partial");
+        if earlier && entry.path() != copy {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    Ok(Some(format!(
+        "before berth {} converts the store, a copy of it as {named} left it is in {}. {named} needs that copy to go back: {}",
+        berth_api::VERSION,
+        copy.display(),
+        berth_api::compat::UPGRADE_DOCS
+    )))
+}
+
+/// The bytes free for this user in `dir`, when the system says.
+fn free_space(dir: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: the path is a C string and the struct is written by the call.
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    Some(stat.f_bavail as u64 * stat.f_frsize as u64)
 }
 
 #[cfg(test)]

@@ -6,7 +6,7 @@
 
 use super::{
     Remote, Serve,
-    api::{Answer, App, Fail, caller, internal, job_info, remote, report_path},
+    api::{Answer, App, Fail, Said, caller, internal, job_info, remote, report_path, turned_down},
     auth::Access,
     setup::{own_place, saved_profile},
 };
@@ -53,6 +53,9 @@ pub(super) struct Seen<'a> {
     pub observed: Option<HostType>,
     /// Why its controller did not answer, when it was asked and did not.
     pub unanswered: Option<&'a str>,
+    /// That its controller is too old for this berth, and how to update it,
+    /// when that is why it did not answer.
+    pub older: Option<&'a str>,
     /// The caller is on the machine the server runs on: in its process, or
     /// on its socket.
     pub local: bool,
@@ -171,17 +174,49 @@ pub(super) fn answer(acted: Acted) -> (StatusCode, Json<Acted>) {
     (status, Json(acted))
 }
 
-/// The actions a host's controller lists, asked for with a time limit.
-async fn controller_actions(remote: &Remote) -> Result<Vec<HostAction>, String> {
-    let link = remote
-        .link
-        .as_ref()
-        .ok_or_else(|| remote.problem.clone().unwrap_or_else(|| "no link".into()))?;
-    match tokio::time::timeout(Duration::from_secs(15), link.get::<Value>("/v1/actions")).await {
-        Ok(Ok(listed)) => Ok(berth_tui::host::list(listed, "actions")),
-        Ok(Err(error)) => Err(error.to_string()),
-        Err(_) => Err("no answer in time".into()),
+/// Why a host's controller did not list its actions.
+enum Unlisted {
+    /// It did not answer.
+    Unanswered(String),
+    /// It is older than this berth: what to say, with how to update it.
+    Older(String),
+}
+
+impl Unlisted {
+    fn said(self) -> String {
+        match self {
+            Unlisted::Unanswered(said) | Unlisted::Older(said) => said,
+        }
     }
+}
+
+/// The actions a host's controller lists, asked for with a time limit. A
+/// controller that does not know the call is asked its version, so that one
+/// of an older berth is said to be old rather than broken.
+async fn controller_actions(
+    remote: &Remote,
+    host_type: HostType,
+) -> Result<Vec<HostAction>, Unlisted> {
+    let link = remote.link.as_ref().ok_or_else(|| {
+        Unlisted::Unanswered(remote.problem.clone().unwrap_or_else(|| "no link".into()))
+    })?;
+    let error =
+        match tokio::time::timeout(Duration::from_secs(15), link.get::<Value>("/v1/actions")).await
+        {
+            Ok(Ok(listed)) => return Ok(berth_tui::host::list(listed, "actions")),
+            Ok(Err(error)) => error.to_string(),
+            Err(_) => return Err(Unlisted::Unanswered("no answer in time".into())),
+        };
+    Err(match remote.version().await {
+        Ok(version) => berth_api::compat::older_controller(
+            &remote.name,
+            &version.version,
+            version.api,
+            host_type,
+        )
+        .map_or(Unlisted::Unanswered(error), Unlisted::Older),
+        Err(_) => Unlisted::Unanswered(error),
+    })
 }
 
 /// What a host's controller says the host is, when it answers.
@@ -280,12 +315,13 @@ pub async fn host_actions(
     // A host of the type ssh has no controller to ask.
     let asked = match host_type::of(&profile) {
         HostType::Ssh => None,
-        _ => Some(controller_actions(&remote).await),
+        host_type => Some(controller_actions(&remote, host_type).await),
     };
-    let (listed, unanswered) = match &asked {
-        Some(Ok(listed)) => (Some(listed.as_slice()), None),
-        Some(Err(error)) => (None, Some(error.as_str())),
-        None => (None, None),
+    let (listed, unanswered, older) = match &asked {
+        Some(Ok(listed)) => (Some(listed.as_slice()), None, None),
+        Some(Err(Unlisted::Unanswered(error))) => (None, Some(error.as_str()), None),
+        Some(Err(Unlisted::Older(said))) => (None, None, Some(said.as_str())),
+        None => (None, None, None),
     };
     let secrets = secret_names(&state);
     let observed = observed(&remote).await;
@@ -297,6 +333,7 @@ pub async fn host_actions(
         host_type: host_type::of(&profile),
         observed,
         unanswered,
+        older,
         local: access.is_none(),
     })))
 }
@@ -326,22 +363,29 @@ pub async fn host_act(
     // berth's own are described without asking the host, which they do themselves.
     let builtin = HOST.iter().find(|builtin| builtin.name == action);
     let ssh_only = host_type::of(&profile) == HostType::Ssh;
-    let mut unanswered = None;
+    let (mut unanswered, mut older) = (None, None);
     let listed = match builtin {
         Some(_) if ssh_only || !THROUGH_CONTROLLER.contains(&action.as_str()) => None,
         // One that runs through the controller is described as the host answers.
-        Some(_) => match controller_actions(&remote).await {
+        Some(_) => match controller_actions(&remote, host_type::of(&profile)).await {
             Ok(listed) => Some(listed),
-            Err(error) => {
+            Err(Unlisted::Unanswered(error)) => {
                 unanswered = Some(error);
+                None
+            }
+            Err(Unlisted::Older(said)) => {
+                older = Some(said);
                 None
             }
         },
         None if ssh_only => Some(vec![]),
         None => Some(
-            controller_actions(&remote)
+            controller_actions(&remote, host_type::of(&profile))
                 .await
-                .map_err(|error| Fail::new(code::UNREACHABLE, error))?,
+                .map_err(|unlisted| match unlisted {
+                    Unlisted::Older(said) => Fail::new(code::PRECONDITION, said),
+                    unlisted => Fail::new(code::UNREACHABLE, unlisted.said()),
+                })?,
         ),
     };
     let secrets = secret_names(&state);
@@ -358,12 +402,17 @@ pub async fn host_act(
         host_type: host_type::of(&profile),
         observed,
         unanswered: unanswered.as_deref(),
+        older: older.as_deref(),
         local: access.is_none(),
     });
     let found = actions
         .iter()
         .find(|known| known.name == action)
-        .ok_or_else(|| no_action(&name, &action, &actions))?;
+        .ok_or_else(|| match &older {
+            // The controller's own actions are not known when it is too old to list them.
+            Some(said) => Fail::new(code::PRECONDITION, said.clone()),
+            None => no_action(&name, &action, &actions),
+        })?;
     let local = access.is_none();
     admit(&state, &caller(access), found, &act)?;
     if local && builtin.is_some() {
@@ -391,6 +440,7 @@ fn installation_list() -> Vec<Action> {
         host_type: HostType::Workstation,
         observed: None,
         unanswered: None,
+        older: None,
         local: false,
     };
     INSTALLATION
@@ -598,8 +648,7 @@ fn install_controller_action(seen: &Seen) -> Action {
 fn install_controller(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let remote = remote(&state, &name)?;
-        let bad =
-            |error: Box<dyn std::error::Error>| Fail::new(code::BAD_REQUEST, error.to_string());
+        let bad = |error: Box<dyn std::error::Error>| turned_down(error);
         let host =
             own_place(&name).and_then(|place| Host::load_at(&state.paths, place).map_err(bad))?;
         let password = act
@@ -630,8 +679,7 @@ fn install_controller(state: Arc<Serve>, name: String, act: Act) -> Run {
 fn apply(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let remote = remote(&state, &name)?;
-        let bad =
-            |error: Box<dyn std::error::Error>| Fail::new(code::BAD_REQUEST, error.to_string());
+        let bad = |error: Box<dyn std::error::Error>| turned_down(error);
         let host =
             own_place(&name).and_then(|place| Host::load_at(&state.paths, place).map_err(bad))?;
         let password = act
@@ -695,12 +743,11 @@ fn seed(state: Arc<Serve>, name: String, _: Act) -> Run {
         let (paths, registries) = (state.paths.clone(), Store::own(state.store.clone()));
         // It may publish the release and runs the seed builder, and waits for both.
         let seed = tokio::task::spawn_blocking(move || {
-            berth_core::seed::cloud(&paths, &registries, &name, false)
-                .map_err(|error| error.to_string())
+            berth_core::seed::cloud(&paths, &registries, &name, false).map_err(Said::from)
         })
         .await
         .map_err(internal)?
-        .map_err(|error| Fail::new(code::BAD_REQUEST, error))?;
+        .map_err(turned_down)?;
         // A seed's key joins the tailnet for a day, which whoever starts the machine needs to know.
         Ok(Acted {
             result: Some(json!({"user_data": seed.user_data, "tailnet": seed.tailnet})),
@@ -777,8 +824,7 @@ fn installer_action(seen: &Seen) -> Action {
 
 fn installer(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
-        let bad =
-            |error: Box<dyn std::error::Error>| Fail::new(code::BAD_REQUEST, error.to_string());
+        let bad = |error: Box<dyn std::error::Error>| turned_down(error);
         let text = |key: &str| act.arguments.get(key).map_or("", |value| value.trim());
         let device = text("device").to_owned();
         let password = act.arguments.get("password").cloned().unwrap_or_default();
@@ -799,7 +845,7 @@ fn installer(state: Arc<Serve>, name: String, act: Act) -> Run {
             && !iso.is_file()
         {
             return Err(Fail::new(
-                code::BAD_REQUEST,
+                code::PRECONDITION,
                 format!("The profile's ISO {} is not there", iso.display()),
             ));
         }
@@ -924,6 +970,7 @@ fn secrets_action(seen: &Seen) -> Action {
         return unavailable(action, Some(refusal.why));
     }
     let why = match (seen.host_actions, kept, seen.unanswered) {
+        _ if seen.older.is_some() => seen.older.map(str::to_owned),
         (_, _, Some(error)) => Some(format!(
             "The controller on {} does not answer, and the secrets go through it: {error}",
             seen.name
@@ -940,8 +987,7 @@ fn secrets_action(seen: &Seen) -> Action {
 fn secrets(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let remote = remote(&state, &name)?;
-        let bad =
-            |error: Box<dyn std::error::Error>| Fail::new(code::BAD_REQUEST, error.to_string());
+        let bad = |error: Box<dyn std::error::Error>| turned_down(error);
         let host = Host::load_at(&state.paths, own_place(&name)?).map_err(bad)?;
         let payload = Store::own(state.store.clone())
             .host_payload(&host.config)
@@ -984,14 +1030,16 @@ fn upgrade_server_action(seen: &Seen) -> Action {
         };
     }
     let why = match (seen.host_type, seen.unanswered) {
+        (HostType::Node, _) if seen.older.is_some() => seen.older.map(str::to_owned),
         (HostType::Node, Some(error)) => Some(format!(
             "The controller on {} does not answer, and the upgrade runs through it: {error}",
             seen.name
         )),
         (HostType::Node, None) => None,
         (other, _) => Some(format!(
-            "{} is a host of the type {other}: only a node's controller upgrades a berth server it runs",
-            seen.name
+            "{} is a host of the type {other}: only a node's controller upgrades a berth server it runs. A server of berth 0.5, and one on no node, is updated by its recipe: {}",
+            seen.name,
+            berth_api::compat::UPGRADE_DOCS
         )),
     };
     unavailable(action, why)
@@ -1656,6 +1704,7 @@ mod tests {
             host_type,
             observed: None,
             unanswered: None,
+            older: None,
             local: false,
         }
     }
@@ -1693,6 +1742,34 @@ mod tests {
         // Only a node's controller does it.
         let managed = upgrade_server_action(&seen(HostType::Managed, Some(&with), &profile));
         assert!(!managed.available && managed.why.contains("only a node's controller"));
+        assert!(managed.why.contains(berth_api::compat::UPGRADE_DOCS));
+    }
+
+    #[test]
+    fn a_controller_that_is_too_old_is_said_to_be_old() {
+        let profile =
+            json!({"type": "managed", "access": {"address": "192.0.2.12", "user": "root"}});
+        let said =
+            berth_api::compat::older_controller("big", "0.5.2", 1, HostType::Managed).unwrap();
+        let mut old = seen(HostType::Managed, None, &profile);
+        old.older = Some(&said);
+        let actions = host_list(&old);
+        let secrets = actions
+            .iter()
+            .find(|action| action.name == "secrets")
+            .unwrap();
+        assert!(!secrets.available);
+        assert_eq!(secrets.why, said);
+        assert!(
+            secrets.why.ends_with("berth run big install-controller"),
+            "{}",
+            secrets.why
+        );
+        let install = actions
+            .iter()
+            .find(|action| action.name == "install-controller")
+            .unwrap();
+        assert!(install.available, "{}", install.why);
     }
 
     #[test]

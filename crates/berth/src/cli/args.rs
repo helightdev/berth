@@ -171,7 +171,7 @@ pub enum Command {
     Logout,
     /// Install the latest release in this program's place.
     Update(Update),
-    /// The version of this berth.
+    /// The version of this berth, and of the server it uses.
     Version,
     /// The completions of a shell, to source from its start-up file.
     Completion {
@@ -920,6 +920,10 @@ pub struct ServerRun {
     /// Allow an address other than this machine's own.
     #[arg(long, requires = "listen")]
     pub expose: bool,
+    /// Taken and left unused: the page in the browser of berth 0.5 is gone,
+    /// and containers and units of that version still name it.
+    #[arg(long, hide = true)]
+    pub web: bool,
 }
 
 #[cfg(target_os = "linux")]

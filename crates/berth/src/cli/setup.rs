@@ -255,6 +255,10 @@ fn stopped(stop: Stop) -> Fail {
             question.label, question.flag
         )),
         Stop::Problems(problems) => {
+            // Only a secret the server lacks stops it: the command line was right.
+            let refused = problems
+                .iter()
+                .all(|problem| problem.field == Some(berth_tui::fields::Field::Tailscale));
             let said: Vec<String> = problems
                 .iter()
                 .map(|problem| match problem.field {
@@ -269,7 +273,11 @@ fn stopped(stop: Stop) -> Fail {
                     None => problem.text.clone(),
                 })
                 .collect();
-            Fail::usage(format!("Not saved: {}", said.join("; ")))
+            let said = format!("Not saved: {}", said.join("; "));
+            match refused {
+                true => Fail::refused(said),
+                false => Fail::usage(said),
+            }
         }
         Stop::Refused(why) if why == "Stopped" => Fail::exit(130),
         Stop::Refused(why) => Fail::usage(why),
