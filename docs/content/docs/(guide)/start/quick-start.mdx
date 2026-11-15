@@ -4,7 +4,7 @@ description: Create a profile for a host, install it, and open its desktop.
 icon: Zap
 ---
 
-This walks through a first host from berth's terminal UI. The example uses an Ubuntu 26.04 server you can already reach over SSH. The other ways to install differ only in what you choose on the Install tab.
+This walks through a first host, in berth's screens and then with the commands alone. The example uses an Ubuntu 26.04 server you can already reach over SSH, at `192.0.2.10`. The other ways to install differ only in what you choose on the Install tab. With no server set, berth keeps everything on your machine. No server has to run.
 
 <Callout title="Try it without a machine">
   The [container](/docs/deploy/container) runs the same desktop on Docker, and [QEMU](/docs/deploy/qemu) runs a whole host in a VM.
@@ -19,7 +19,7 @@ This walks through a first host from berth's terminal UI. The example uses an Ub
 berth ui studio
 ```
 
-A name berth does not know starts a new host, whose profile berth saves in its store under the name `studio`. `berth ui` alone opens the home screen, where `n` creates a host. `berth host create studio` asks the same questions on the command line. `berth host export studio` prints the profile as JSON.
+A name berth doesn't know starts a new host, whose profile berth saves in its store under the name `studio`. `berth ui` alone opens the home screen, where `n` creates a host. `berth host create studio` asks the same questions on the command line, as the last section shows. `berth host export studio` prints the profile as JSON.
 
 </Step>
 <Step>
@@ -75,7 +75,7 @@ The other methods are on [Deploying](/docs/deploy).
 
 ### Use the host
 
-Once the host has an SSH address, `berth studio` opens its **overview**. Run **Status** to check it, then **Access links and desktop password** for the address of the desktop.
+Once the host has an SSH address, `berth ui studio` opens its **overview**. Run **Status** to check it, then **Access links and desktop password** for the address of the desktop.
 
 <Screen name="overview" alt="The overview of a host with its actions" />
 
@@ -88,6 +88,19 @@ Installing a coding agent does not sign it in. Under **Sign-In**, **Sign in to C
 
 </Step>
 </Steps>
+
+## The same with the commands
+
+`berth host create` asks the questions of the four tabs in their order, below the command. Each flag answers one. With every answer given as a flag and `--no-input`, it asks nothing:
+
+```bash
+berth host create studio --method ssh --set address=192.0.2.10 --set user=ops \
+  --feature claude/cli --generate-passwords --no-input
+berth host apply studio
+berth host credentials studio
+```
+
+`berth host apply` follows the install as a job until it ends. `berth ls` lists the hosts and whether each answers, and `berth action list studio` names what it can do. `berth run studio status` runs one. A step that fails says which flag or field to fix, and exits with a status of its own. The reference lists [the exit statuses](/docs/reference/cli#exit-statuses).
 
 ## Next
 
