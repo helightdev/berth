@@ -291,6 +291,9 @@ pub enum Work {
     /// A function of berth: its output goes to the writer, and it says
     /// whether it went well.
     Function(Box<dyn FnOnce(&mut Output) -> bool + Send>),
+    /// A function of berth that ends with an exit code of its own, such as
+    /// that of a command it ran.
+    Coded(Box<dyn FnOnce(&mut Output) -> i32 + Send>),
     Program(Box<Program>),
     /// A session an action of a host's controller runs, by its id there,
     /// followed until it ends.
@@ -352,6 +355,7 @@ const PATIENCE: Duration = Duration::from_secs(300);
 fn execute(work: Work, out: &mut Output) -> Option<i32> {
     match work {
         Work::Function(function) => Some(if function(out) { 0 } else { 1 }),
+        Work::Coded(function) => Some(function(out)),
         Work::Program(program) => run_program(*program, out),
         Work::Session { controller, id } => follow(controller, &id, out),
     }

@@ -119,6 +119,8 @@ pub async fn get(State(state): App, Path(id): Path<String>) -> Answer<Json<Resou
     let seen = blocking(move || resource::status(&paths, &registries, &id, &options))
         .await?
         .map_err(refusal)?;
+    // What it said, such as endpoints that moved, is told to followers now.
+    state.notice();
     Ok(Json(seen))
 }
 
@@ -253,6 +255,9 @@ async fn run_action(
     request.token = token;
     request.held = acting.take_lock();
     request.secrets = acting.secrets();
+    // A command leaves berth's record as it is, so it holds no lock of the resource.
+    let exec = action == resource::EXEC;
+    request.changes = !exec;
     let ticket = match state.runner.reserve(request).map_err(refused)? {
         Reserved::Found(job) => {
             return Ok(Acted {
@@ -262,15 +267,16 @@ async fn run_action(
         }
         Reserved::New(ticket) => ticket,
     };
-    let work = Work::Function(Box::new(move |out| {
+    // The job ends as the command did, or with 1 when it could not be run.
+    let work = Work::Coded(Box::new(move |out| {
         match acting.run(&paths, &options, out) {
             Ok(answered) => {
                 say(out, &answered);
-                true
+                answered.exit_code.unwrap_or(0)
             }
             Err(error) => {
                 let _ = writeln!(out, "✗ {error}");
-                false
+                1
             }
         }
     }));

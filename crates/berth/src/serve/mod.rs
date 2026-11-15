@@ -5,6 +5,7 @@
 mod actions;
 mod api;
 mod auth;
+mod connect;
 mod docs;
 pub(crate) mod keys;
 mod provisioners;

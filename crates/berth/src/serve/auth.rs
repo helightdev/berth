@@ -493,6 +493,10 @@ mod tests {
             name("GET", "/v1/resources/r-a/logs", true),
             "resources.follow"
         );
+        assert_eq!(
+            name("GET", "/v1/resources/r-a/endpoints/db", true),
+            "resources.connect"
+        );
         assert!(operation("GET", "/v1/portal", true).unwrap().is_none());
         // What nobody knows below a host is not let through on a guess.
         assert!(operation("POST", "/v1/hosts/a/nothing", false).is_err());
@@ -522,6 +526,9 @@ mod tests {
                 .contains("operate")
         );
         assert!(auth.allows(&admin, port).is_ok());
+        let endpoint = ops::find(ops::SERVE, "resources.connect").unwrap();
+        assert!(auth.allows(&viewer, endpoint).is_err());
+        assert!(auth.allows(&admin, endpoint).is_ok());
         // An action's own role is asked the same way.
         assert!(auth.permits(&viewer, "apply", Role::Admin).is_err());
         assert!(

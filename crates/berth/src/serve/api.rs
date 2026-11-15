@@ -281,6 +281,7 @@ pub fn router(state: Arc<Serve>, guarded: bool) -> Router {
             // At the path of a plain GET, whose handler upgrades when asked to.
             "job" | "inbox" | "kv" | "resource-logs" => router,
             "events" => router.route(stream.path, get(events)),
+            "resource-connect" => router.route(stream.path, get(super::connect::connect)),
             other => panic!("no handler for the stream {other}"),
         };
     }
