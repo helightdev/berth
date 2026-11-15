@@ -9,7 +9,8 @@ crates=(-p berth-api -p berth-pty -p berth-core -p berth-tui -p berth -p berthd 
 
 # Each runs as the condition of an if, where set -e does not stop it: the
 # steps are joined with && instead.
-# nextest runs the test programs side by side; cargo test one after the other.
+# nextest runs the test programs side by side, which pays on a machine with
+# many cores. On CI's four it is slower than cargo test.
 rust-tests() {
   if cargo nextest --version >/dev/null 2>&1; then
     cargo nextest run --locked --no-fail-fast

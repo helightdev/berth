@@ -91,9 +91,6 @@ jobs:
       - uses: ./.github/actions/rust
         with:
           cache: test
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: nextest
       # The SSH tests start an sshd of their own.
       - name: Install sshd
         run: command -v sshd >/dev/null || [ -x /usr/sbin/sshd ] || { sudo apt-get update -q && sudo apt-get install -y --no-install-recommends openssh-server; }
