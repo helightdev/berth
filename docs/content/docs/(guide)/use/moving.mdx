@@ -119,9 +119,9 @@ berth moves everything it keeps under the old name to the new one, in one change
 | The host keys berth recorded, and the passwords it logs in with | Yes |
 | The record of its machine and its other resources | Yes, under the same id |
 | Its messages, its jobs and where its channel was read up to | Yes |
-| The machine, its hostname and its tailnet name | No |
+| The machine, its hostname and its name on the tailnet | No, unless `--hostname` |
 | The provisioner's name for the machine, such as the Incus instance `berth-test` | No |
 
-With `--hostname`, the new name becomes the profile's hostname as well. The machine takes it at its next apply, which also writes the profile the host keeps with the new name. The name has to suit a hostname then: lower-case letters, digits and `-`.
+With `--hostname`, the new name becomes the profile's hostname as well. The machine takes it at its next apply, which also writes the profile the host keeps with the new name. On a tailnet, that apply renames the host's [device](/docs/use/access#the-hosts-device) too, when berth has the API key. The name has to suit a hostname then: lower-case letters, digits and `-`.
 
 berth refuses when a host has the new name already. A job that is creating the host's machine blocks the rename until that job ends. To keep the host and make another like it, [duplicate](/docs/use/lifecycle#duplicating-a-host) it instead. When a [berth server](/docs/use/server) keeps the host, the server renames it as a job. On its overview and over the server's API it's the host's action **Rename**, `rename`.

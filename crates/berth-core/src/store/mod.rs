@@ -44,6 +44,9 @@ pub mod kind {
     pub const KEY: &str = "key";
     /// What berth knows of a host's SSH: its host keys and the keys it trusts.
     pub const ACCESS: &str = "access";
+    /// What berth knows of a host's device on the tailnet, and a new name
+    /// it is to take.
+    pub const TAILNET: &str = "tailnet";
     pub const TOKEN: &str = "token";
     pub const PLUGIN: &str = "plugin";
     pub const MIRROR: &str = "mirror";

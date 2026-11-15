@@ -294,7 +294,7 @@ pub fn rename_action() -> Action {
             berth_api::Argument {
                 name: "hostname".into(),
                 label: "Hostname too".into(),
-                help: "Make the new name the profile's hostname as well. The machine takes it at its next apply.".into(),
+                help: "Make the new name the profile's hostname as well. The machine takes it at its next apply, and so does its device on the tailnet.".into(),
                 default: "no".into(),
                 values: vec!["no".into(), "yes".into()],
                 ..Default::default()
