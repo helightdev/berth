@@ -156,8 +156,9 @@ impl Setup {
                 berth_api::profile::retire_qemu(&mut profile);
                 self.config = profile.clone();
                 self.saved = profile;
-                // A host with an address is one to install over SSH.
-                if !self.view().text(Field::SshHost).is_empty() {
+                // A host with an address, or of a type only SSH installs, is one to install over SSH.
+                let host_type = berth_api::profile::host_type(&self.config);
+                if !self.view().text(Field::SshHost).is_empty() || !self.action.offered(host_type) {
                     self.action = Action::Ssh;
                 }
                 // A profile saved with another kind opens as the machine's.

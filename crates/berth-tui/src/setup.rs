@@ -1120,7 +1120,11 @@ impl<'a> Profile<'a> {
     pub fn method_rows(&self, methods: &[Action]) -> Vec<Row> {
         let mut rows = vec![Row::heading("How To Install")];
         let chosen = self.way();
+        let host_type = berth_api::profile::host_type(self.config);
         for action in methods.iter().copied() {
+            if !action.offered(host_type) && action != chosen {
+                continue;
+            }
             let mark = if action == chosen { "●" } else { "○" };
             rows.push(Row::entry(
                 format!("  {mark} {}", action.label()),
@@ -1275,6 +1279,9 @@ impl<'a> Profile<'a> {
                 "The host's address is required: its name, IP address or tailnet name",
             ));
         }
+        if let Some(problem) = self.way_problem() {
+            problems.push(problem);
+        }
         if self.is_node() {
             problems.extend(self.placed_problems());
             return problems;
@@ -1290,6 +1297,22 @@ impl<'a> Profile<'a> {
             problems.extend(machine.problems());
         }
         problems
+    }
+
+    /// That the way chosen cannot install a host of the profile's type.
+    fn way_problem(&self) -> Option<Problem> {
+        let host_type = berth_api::profile::host_type(self.config);
+        let way = self.way();
+        if !self.serves_host() || way.types().contains(&host_type) {
+            return None;
+        }
+        Some(Problem::new(
+            Step::Install,
+            format!(
+                "{} installs a workstation, and this host's type is {host_type}: install it over SSH (method ssh), or make its type workstation",
+                way.label()
+            ),
+        ))
     }
 
     /// [`Profile::problems`], each on the tab of the field it is about.
@@ -1986,6 +2009,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_nodes_install_tab_offers_only_the_ways_over_ssh() {
+        for host_type in ["node", "managed", "ssh"] {
+            let config = json!({"target": "laptop", "type": host_type});
+            let rows = tab(&config, Action::Ssh, Step::Install, &incus());
+            let ways: Vec<&String> = rows.iter().filter(|row| row.starts_with("  ")).collect();
+            for way in ["From a provisioner", "USB installer", "Cloud-init seed"] {
+                assert!(
+                    !ways.iter().any(|row| row.ends_with(way)),
+                    "{host_type}: {rows:?}"
+                );
+            }
+            assert!(
+                ways.iter()
+                    .any(|row| row.ends_with("Existing host over SSH")),
+                "{host_type}: {rows:?}"
+            );
+        }
+        let rows = tab(
+            &json!({"target": "laptop"}),
+            Action::Ssh,
+            Step::Install,
+            &incus(),
+        );
+        assert!(
+            rows.iter().any(|row| row.ends_with("USB installer")),
+            "{rows:?}"
+        );
     }
 
     #[test]
