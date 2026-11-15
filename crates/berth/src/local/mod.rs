@@ -206,6 +206,9 @@ pub fn push_image(global: &Global, destination: &str, tag: &str) -> Done<()> {
     Ok(())
 }
 
+/// What `berth serve --web` says, as berth 0.5 had a page in the browser.
+pub const WEB_GONE: &str = "--web does nothing any more: berth has no page in the browser, and its screens are berth ui. Take --web out of this command line";
+
 /// `berth server …`: the server of this machine itself.
 pub fn server_command(command: args::Server) -> Done<()> {
     let paths = Paths::locate()?;
@@ -217,6 +220,9 @@ pub fn server_command(command: args::Server) -> Done<()> {
             }
             if run.expose {
                 words.push("--expose");
+            }
+            if run.web {
+                out::warn(WEB_GONE);
             }
             Ok(serve::command(&paths, &words)?)
         }

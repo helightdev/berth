@@ -294,6 +294,43 @@ fn message(id: u64, topic: &str, keep: &str) -> berth_api::Message {
     .unwrap()
 }
 
+#[tokio::test]
+async fn a_browser_and_a_client_of_berth_0_5_are_told_what_to_do() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state_in(dir.path(), Some("s3cret-token"));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = api::router(state, true);
+    tokio::spawn(async move { axum::serve(listener, router).await });
+    let connect = || async { tokio::net::TcpStream::connect(address).await.unwrap() };
+
+    // The address the recipes of 0.5 printed answers without a token, and says only what to run.
+    let mut client = Client::over(connect().await).await.unwrap();
+    let front = client
+        .send("GET", "/", &[], Default::default())
+        .await
+        .unwrap();
+    assert_eq!(front.status, 200);
+    let text = String::from_utf8(front.body.to_vec()).unwrap();
+    assert_eq!(text, api::FRONT);
+    assert!(text.contains("berth login https://THIS-SERVER") && !text.contains('<'));
+    assert!(!text.contains(berth_api::VERSION));
+    let refused = client.get::<Value>("/v1/hosts").await.unwrap_err();
+    assert_eq!(refused.status(), 401);
+
+    // A call only berth 0.5 makes says that the client is older.
+    let socket = client::websocket_at(connect().await, "berth", "/v1/portal", "s3cret-token")
+        .await
+        .unwrap();
+    let portal = berth_api::portal::Portal::over(socket);
+    let old = portal
+        .call("tasks.list", Some("studio"), Value::Null, None)
+        .await
+        .unwrap_err();
+    assert_eq!(old.status(), 404);
+    assert!(old.to_string().contains("a call of berth 0.5"), "{old}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn hosts_jobs_and_the_inbox_over_the_api() {
     let served = served().await;
@@ -1444,8 +1481,10 @@ async fn the_server_is_set_up_through_the_api() {
     assert!(!kept.to_string().contains("tailscale_a"), "{kept}");
     // A seed of a host that joins the tailnet is refused, with what to do,
     // while the server has no API key of the tailnet to make its key with.
+    // It is a refusal before anything began, which the command line exits 3 for.
     let (status, said) = send(client, "POST", "/v1/hosts/studio/actions/seed", Value::Null).await;
-    assert_eq!(status, 400, "{said}");
+    assert_eq!(status, 412, "{said}");
+    assert_eq!(crate::cli::fail::status_of(status), crate::cli::fail::REFUSED);
     let message = said["error"]["message"].as_str().unwrap();
     assert!(
         message.contains("berth secret set tailnet_api_key")
@@ -2587,8 +2626,9 @@ async fn machines_are_created_and_deleted_through_the_api() {
     // Refusals are answers of their own, before there is a job.
     let asked = json!({"provisioner": "vm", "host": "studio",
                        "arguments": {"server": "https://192.0.2.10:8443"}});
+    // A secret the server lacks is a refusal, which the command line exits 3 for.
     let (status, said) = send(client, "POST", "/v1/resources", asked.clone()).await;
-    assert_eq!(status, 400, "{said}");
+    assert_eq!(status, 412, "{said}");
     assert!(message(&said).contains("api_token"), "{said}");
     let secret = json!({"value": "tok-s3cret"});
     send(client, "PUT", "/v1/secrets/api_token", secret).await;

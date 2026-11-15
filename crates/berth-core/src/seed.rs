@@ -39,7 +39,7 @@ pub fn cloud(paths: &Paths, store: &Store, name: &str, delivered: bool) -> Resul
     crate::host_type::guard(&host, crate::host_type::Capability::Seed)?;
     // Nothing is published or made for a host that could not join.
     if let Some(problem) = tailnet::problem(paths, &host.config, name) {
-        return Err(problem.into());
+        return Err(crate::Refused(problem).into());
     }
     let source = paths.source()?;
     let dirs = apply::plugin_dirs(&plugins::found(

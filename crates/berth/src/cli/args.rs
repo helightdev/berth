@@ -907,6 +907,10 @@ pub struct ServerRun {
     /// Allow an address other than this machine's own.
     #[arg(long, requires = "listen")]
     pub expose: bool,
+    /// Taken and left unused: the page in the browser of berth 0.5 is gone,
+    /// and containers and units of that version still name it.
+    #[arg(long, hide = true)]
+    pub web: bool,
 }
 
 #[cfg(target_os = "linux")]

@@ -357,6 +357,20 @@ mod tests {
         assert_eq!(format!("{:?}", cli.command), format!("{:?}", cli2.command));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_command_line_of_a_server_of_0_5_still_starts_it() {
+        // Containers and units of berth 0.5 run the server with --web.
+        let cli = parse("serve --listen 0.0.0.0:7777 --expose --web").unwrap();
+        assert!(matches!(cli.command, Some(Command::Serve(serve)) if serve.web && serve.expose));
+        let help = command()
+            .find_subcommand_mut("serve")
+            .unwrap()
+            .render_help()
+            .to_string();
+        assert!(!help.contains("--web"), "{help}");
+    }
+
     #[test]
     fn a_host_may_have_the_name_of_an_action() {
         let cli = parse("host show list").unwrap();

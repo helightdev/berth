@@ -6,7 +6,9 @@
 
 use super::{
     Remote, Serve,
-    api::{Answer, App, Fail, caller, internal, job_info, remote, report_path},
+    api::{
+        Answer, App, Fail, Said, caller, internal, job_info, remote, report_path, turned_down,
+    },
     auth::Access,
     setup::{own_place, saved_profile},
 };
@@ -644,7 +646,7 @@ fn install_controller(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let remote = remote(&state, &name)?;
         let bad =
-            |error: Box<dyn std::error::Error>| Fail::new(code::BAD_REQUEST, error.to_string());
+            |error: Box<dyn std::error::Error>| turned_down(error);
         let host =
             own_place(&name).and_then(|place| Host::load_at(&state.paths, place).map_err(bad))?;
         let password = act
@@ -676,7 +678,7 @@ fn apply(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let remote = remote(&state, &name)?;
         let bad =
-            |error: Box<dyn std::error::Error>| Fail::new(code::BAD_REQUEST, error.to_string());
+            |error: Box<dyn std::error::Error>| turned_down(error);
         let host =
             own_place(&name).and_then(|place| Host::load_at(&state.paths, place).map_err(bad))?;
         let password = act
@@ -736,12 +738,11 @@ fn seed(state: Arc<Serve>, name: String, _: Act) -> Run {
         let (paths, registries) = (state.paths.clone(), Store::own(state.store.clone()));
         // It may publish the release and runs the seed builder, and waits for both.
         let seed = tokio::task::spawn_blocking(move || {
-            berth_core::seed::cloud(&paths, &registries, &name, false)
-                .map_err(|error| error.to_string())
+            berth_core::seed::cloud(&paths, &registries, &name, false).map_err(Said::from)
         })
         .await
         .map_err(internal)?
-        .map_err(|error| Fail::new(code::BAD_REQUEST, error))?;
+        .map_err(turned_down)?;
         // A seed's key joins the tailnet for a day, which whoever starts the machine needs to know.
         Ok(Acted {
             result: Some(json!({"user_data": seed.user_data, "tailnet": seed.tailnet})),
@@ -819,7 +820,7 @@ fn installer_action(seen: &Seen) -> Action {
 fn installer(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let bad =
-            |error: Box<dyn std::error::Error>| Fail::new(code::BAD_REQUEST, error.to_string());
+            |error: Box<dyn std::error::Error>| turned_down(error);
         let text = |key: &str| act.arguments.get(key).map_or("", |value| value.trim());
         let device = text("device").to_owned();
         let password = act.arguments.get("password").cloned().unwrap_or_default();
@@ -840,7 +841,7 @@ fn installer(state: Arc<Serve>, name: String, act: Act) -> Run {
             && !iso.is_file()
         {
             return Err(Fail::new(
-                code::BAD_REQUEST,
+                code::PRECONDITION,
                 format!("The profile's ISO {} is not there", iso.display()),
             ));
         }
@@ -983,7 +984,7 @@ fn secrets(state: Arc<Serve>, name: String, act: Act) -> Run {
     Box::pin(async move {
         let remote = remote(&state, &name)?;
         let bad =
-            |error: Box<dyn std::error::Error>| Fail::new(code::BAD_REQUEST, error.to_string());
+            |error: Box<dyn std::error::Error>| turned_down(error);
         let host = Host::load_at(&state.paths, own_place(&name)?).map_err(bad)?;
         let payload = Store::own(state.store.clone())
             .host_payload(&host.config)
