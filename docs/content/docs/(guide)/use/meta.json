@@ -6,6 +6,7 @@
     "overview",
     "cli",
     "types",
+    "lifecycle",
     "nodes",
     "server",
     "store",

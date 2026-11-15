@@ -152,7 +152,7 @@ pub async fn remove_host(State(state): App, Path(name): Path<String>) -> Answer<
         return Err(Fail::new(
             code::CONFLICT,
             format!(
-                "{name} has a machine berth created, {} of {}. Delete it first: berth resource remove {}",
+                "{name} has a machine berth created, {} of {}. Remove the host with its action remove: berth host remove {name} --destroy destroys the machine too, and without --destroy berth keeps the machine as the resource {}",
                 kept.record.external_id, kept.record.provisioner, kept.record.id
             ),
         ));

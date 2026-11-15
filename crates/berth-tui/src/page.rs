@@ -263,6 +263,93 @@ pub fn accept(actions: &[Action], mut dialog: Arguments) -> Accepted {
     }
 }
 
+// ── Removing a host from a list ─────────────────────────────────────────────
+
+/// What removing a host from the home screen asks: whether to forget it or
+/// also destroy the machine its provisioner made, and for destroying, once
+/// more. A host no provisioner made is only forgotten.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Removal {
+    pub name: String,
+    /// The provisioner that made its machine, and its id there.
+    pub machine: Option<(String, String)>,
+    /// Destroying was chosen, and is asked once more.
+    pub destroying: bool,
+}
+
+/// What a key in the removal's dialog leads to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Removing {
+    /// The dialog stays, maybe at its next question.
+    Stay,
+    Cancel,
+    /// Run the host's action remove, destroying its machine or not.
+    Run {
+        destroy: bool,
+    },
+}
+
+impl Removal {
+    /// The removal of a host as the server lists it: a machine with an id
+    /// there is one its provisioner made.
+    pub fn of(host: &serde_json::Value) -> Removal {
+        let machine = &host["machine"];
+        let made = machine["external_id"].as_str().unwrap_or("");
+        Removal {
+            name: host["name"].as_str().unwrap_or("").to_owned(),
+            machine: (!made.is_empty()).then(|| {
+                (
+                    machine["provisioner"].as_str().unwrap_or("").to_owned(),
+                    made.to_owned(),
+                )
+            }),
+            destroying: false,
+        }
+    }
+
+    /// The dialog's lines and its keys.
+    pub fn question(&self) -> (Vec<String>, &'static str) {
+        let name = &self.name;
+        match (&self.machine, self.destroying) {
+            (None, _) => (
+                vec![format!(
+                    "Forget {name}, with its profile and passwords? The machine is left as it is."
+                )],
+                " y forget · n no ",
+            ),
+            (Some((provisioner, id)), false) => (
+                vec![
+                    format!("Remove {name}? {provisioner} made its machine, {id}."),
+                    String::new(),
+                    "f forgets the host and leaves the machine as it is, under its provisioner's resources.".into(),
+                    format!("d destroys the machine with {provisioner} as well, with its disk."),
+                ],
+                " f forget · d destroy · Esc cancel ",
+            ),
+            (Some((provisioner, id)), true) => (
+                vec![format!(
+                    "Destroy {id} with {provisioner}, and its disk, and forget {name}? It cannot be undone."
+                )],
+                " y destroy · n no ",
+            ),
+        }
+    }
+
+    pub fn key(&mut self, key: char) -> Removing {
+        match (self.machine.is_some(), self.destroying, key) {
+            (false, _, 'y' | 'Y') => Removing::Run { destroy: false },
+            (true, false, 'f' | 'F') => Removing::Run { destroy: false },
+            (true, false, 'd' | 'D') => {
+                self.destroying = true;
+                Removing::Stay
+            }
+            (true, true, 'y' | 'Y') => Removing::Run { destroy: true },
+            (_, _, 'n' | 'N') => Removing::Cancel,
+            _ => Removing::Stay,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,6 +475,36 @@ mod tests {
         assert_eq!(
             (values["pool"].as_str(), values["size"].as_str()),
             ("fast", "200GiB")
+        );
+    }
+
+    #[test]
+    fn removing_a_host_a_provisioner_made_asks_to_forget_or_destroy() {
+        let made = serde_json::json!({"name": "studio", "machine": {"provisioner": "incus", "external_id": "berth-studio", "state": "running"}});
+        let mut removal = Removal::of(&made);
+        let (lines, keys) = removal.question();
+        assert_eq!(
+            lines[0],
+            "Remove studio? incus made its machine, berth-studio."
+        );
+        assert!(keys.contains("f forget") && keys.contains("d destroy"));
+        assert_eq!(removal.key('y'), Removing::Stay);
+        assert_eq!(removal.key('f'), Removing::Run { destroy: false });
+        assert_eq!(removal.key('d'), Removing::Stay);
+        assert!(
+            removal.question().0[0].starts_with("Destroy berth-studio with incus, and its disk")
+        );
+        assert_eq!(removal.key('d'), Removing::Stay);
+        assert_eq!(removal.key('y'), Removing::Run { destroy: true });
+        // One only planned, or none, is forgotten.
+        let planned = serde_json::json!({"name": "lab", "machine": {"provisioner": "incus", "external_id": "", "state": "planned"}});
+        let mut removal = Removal::of(&planned);
+        assert!(removal.machine.is_none());
+        assert_eq!(removal.key('d'), Removing::Stay);
+        assert_eq!(removal.key('y'), Removing::Run { destroy: false });
+        assert_eq!(
+            Removal::of(&serde_json::json!({"name": "dock"})).key('n'),
+            Removing::Cancel
         );
     }
 }

@@ -39,7 +39,7 @@ fn bad(error: impl std::fmt::Display) -> Fail {
 
 /// A refusal of the core as an answer: a missing resource is 404, one that
 /// is busy 409, anything else a request that does not fit.
-fn refusal(error: impl Into<Said>) -> Fail {
+pub(super) fn refusal(error: impl Into<Said>) -> Fail {
     let said = error.into();
     let message = said.message.clone();
     if said.refused {
@@ -218,7 +218,7 @@ pub async fn actions(State(state): App, Path(id): Path<String>) -> Answer<Json<V
 
 /// Run an action of a resource that has been admitted: one that only reads
 /// answers at once, the others are jobs of the resource.
-async fn run_action(
+pub(super) async fn run_action(
     state: Arc<Serve>,
     id: String,
     action: String,

@@ -141,9 +141,12 @@ pub fn create(client: &Client, create: &args::HostCreate) -> Result<()> {
         .call("hosts.get", json!({"name": name}), None)
         .is_ok()
     {
-        return match &create.provisioner {
-            Some(_) => make_saved(client, create),
-            None => Err(Fail::failed(format!(
+        // A duplicate's machine is planned with its provisioner already.
+        let planned =
+            host::machine_of(client, name)?.filter(|machine| machine["state"] == "planned");
+        return match (&create.provisioner, planned) {
+            (Some(_), _) | (None, Some(_)) => make_saved(client, create),
+            (None, None) => Err(Fail::failed(format!(
                 "There is a host {name} already. Change it with berth host set {name} KEY=VALUE, or berth ui {name}"
             ))),
         };
@@ -216,13 +219,19 @@ fn provisioners(client: &Client) -> Result<Vec<berth_api::ProvisionerInfo>> {
 /// as it is, as the Run tab of its set-up does.
 fn make_saved(client: &Client, create: &args::HostCreate) -> Result<()> {
     let name = &create.name;
-    if let Some(machine) = host::machine_of(client, name)? {
+    let machine = host::machine_of(client, name)?;
+    if let Some(machine) = machine
+        .as_ref()
+        .filter(|machine| !machine["external_id"].as_str().unwrap_or("").is_empty())
+    {
         return Err(Fail::failed(format!(
             "{name} has a machine already, {} of {}. berth host show {name} says how it is",
             machine["external_id"].as_str().unwrap_or(""),
             machine["provisioner"].as_str().unwrap_or("")
         )));
     }
+    // One planned, as for a duplicate, is made as it was planned unless told otherwise.
+    let planned = machine.filter(|machine| machine["state"] == "planned");
     let catalogue = Catalogue {
         provisioners: provisioners(client)?,
         ..Catalogue::default()
@@ -230,7 +239,12 @@ fn make_saved(client: &Client, create: &args::HostCreate) -> Result<()> {
     let mut flow = Flow::new(name, catalogue);
     flow.config = host::profile_of(client, name)?;
     let mut given = Given {
-        provisioner: create.provisioner.clone(),
+        provisioner: create.provisioner.clone().or_else(|| {
+            planned
+                .as_ref()
+                .and_then(|machine| machine["provisioner"].as_str())
+                .map(str::to_owned)
+        }),
         ..Given::default()
     };
     for word in &create.arguments {
@@ -240,6 +254,17 @@ fn make_saved(client: &Client, create: &args::HostCreate) -> Result<()> {
             ))
         })?;
         given.arguments.push((key.to_owned(), value.to_owned()));
+    }
+    if let Some(planned) =
+        planned.filter(|machine| machine["provisioner"].as_str() == given.provisioner.as_deref())
+    {
+        for (key, value) in planned["arguments"].as_object().into_iter().flatten() {
+            if !given.arguments.iter().any(|(known, _)| known == key) {
+                given
+                    .arguments
+                    .push((key.clone(), value.as_str().unwrap_or("").to_owned()));
+            }
+        }
     }
     flow.machine_questions(&given, &mut ask::asker())
         .map_err(stopped)?;

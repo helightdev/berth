@@ -1,0 +1,84 @@
+---
+title: Start, stop, copy and remove
+description: Starting and stopping a host, copying it under another name, and what removing it keeps or destroys.
+icon: Power
+---
+
+A host has four actions for its life as a machine, which are **Start**, **Stop**, **Duplicate** and **Remove**. They are listed on its [overview](/docs/use/overview#actions) with the other actions, and `berth action list HOST` lists them too. Each says whether it can run now, and why not when it can't. Each that changes something runs as a job of the server.
+
+| Action | Command | Role |
+| --- | --- | --- |
+| `start` | `berth host start studio` | operate |
+| `stop` | `berth host stop studio` | operate |
+| `duplicate` | `berth host duplicate studio attic [--create]` | admin |
+| `remove` | `berth host remove studio [--destroy]` | admin |
+
+`berth run studio ACTION NAME=VALUE` runs them as well, such as `berth run studio remove destroy=yes --yes`.
+
+## Starting and stopping
+
+A host declares whether it can be started and stopped. berth says so in `power` of the host in `hosts.list` and `hosts.show`:
+
+```json
+"power": { "start": true, "stop": true, "state": "stopped", "start_by": "provisioner", "stop_by": "provisioner" }
+```
+
+`start` and `stop` say whether berth can do either. `state` is `running`, `stopped` or `unknown`: running when the host's controller answers, and otherwise what its provisioner said last. `start_by` and `stop_by` name the way.
+
+| The host | Started by | Stopped by |
+| --- | --- | --- |
+| Made by a provisioner whose machines have the verbs `start` and `stop` | The provisioner | The provisioner, which keeps the disk |
+| Made by a provisioner without them | Nothing | What the profile's `power.stop` says, or nothing |
+| Any other host | Nothing | What the profile's `power.stop` says, or nothing |
+
+A host that declares nothing can be neither started nor stopped, and the action's reason says so. To let a host's controller shut it down, set the way in its profile:
+
+```bash
+berth host set dock power_stop=controller
+```
+
+For a host installed over SSH, the **Stopped by** row on the Install tab of its set-up sets the same field. Stopping by the controller ends the sessions on the host. The controller refuses while sessions run, unless you stop it with `berth run dock stop force=yes`. berth can't start such a host again, as nothing of berth runs on it while it's off: it's started by hand, or by whatever powers it. The [profile reference](/docs/reference/profile#power-power) lists the field.
+
+The home screen shows a host that is off as `◌ stopped` rather than as a host that doesn't answer. `s` starts the selected host when berth can start it.
+
+## Duplicating a host
+
+```bash
+berth host duplicate studio attic
+```
+
+This saves a copy of studio's profile as the host `attic`. The copy leaves out what belongs to the one machine:
+
+| What | In the copy |
+| --- | --- |
+| What is installed, the accounts, features, secrets and registries by name | Yes |
+| The SSH user, port and `auth` that berth logs in with | Yes |
+| The hostname | No. The copy takes its own name |
+| The address, and the command berth connects to it with. The address is also its name on a tailnet | No |
+| The hashes of the passwords berth generated, and those passwords | No. A hash you typed stays |
+| The host keys berth recorded, the passwords it logs in with, its jobs and messages | No |
+| The record of what was applied to it | No. That stays on the machine |
+
+The disk isn't cloned. The new host is installed from its profile, as any other.
+
+When a provisioner made studio's machine, the copy's machine is planned with the same provisioner and the same settings. It's shown as `planned` and is not made yet. The copy's Run tab offers **Create** with those settings, and `berth host create attic` makes it. With `--create`, or `create=yes`, the same job makes it at once.
+
+berth refuses the copy when a host has the new name already.
+
+## Removing a host
+
+```bash
+berth host remove studio
+```
+
+This forgets the host with its profile. The passwords berth generated and its host keys go with it. The machine is left as it is. berth asks first, and `--yes` answers.
+
+When a provisioner made the host's machine, removing it without `--destroy` keeps the machine's record as a resource of that provisioner with no host. `berth resource list` shows it, and `berth resource remove ID` deletes it later.
+
+```bash
+berth host remove studio --destroy
+```
+
+With `--destroy`, or `destroy=yes`, the provisioner destroys the machine with its disk first, and then berth forgets the host. The question before it says which provisioner and which machine. For a host no provisioner made, `--destroy` is refused, as there is nothing for berth to destroy. If destroying fails, the host and its machine's record stay, so you can try again. A node of the host on a tailnet stays: remove it there.
+
+On the home screen, `x` asks the same. For a host a provisioner made, `f` forgets it and leaves the machine, and `d` destroys the machine too, after asking once more.

@@ -86,6 +86,8 @@ pub struct Data {
     pub rolling: Option<Vec<u8>>,
     /// The hosts are different now.
     pub hosts_changed: bool,
+    /// A host a job removed, whose page closes.
+    pub gone: Option<String>,
 }
 
 impl Data {
@@ -492,20 +494,6 @@ impl Admin {
         );
     }
 
-    pub fn remove_host(&self, name: &str) {
-        let said = format!("Removed {name}. The host itself is as it was.");
-        self.call(
-            "hosts.remove",
-            json!({"name": name}),
-            Value::Null,
-            move |admin, _| {
-                let mut data = admin.data.borrow_mut();
-                data.said = Some(said);
-                data.hosts_changed = true;
-            },
-        );
-    }
-
     fn arrive(&self, what: Arrived) {
         self.data.borrow_mut().arrived.push(what);
     }
@@ -607,14 +595,34 @@ impl Admin {
         arguments: &std::collections::BTreeMap<String, String>,
         size: (u16, u16),
     ) {
-        let title = format!("{} · {name}", action.title());
+        self.run(name, &action.name, action.title(), arguments, size);
+    }
+
+    /// Run the host's action `action`, called `label`, as [`Admin::act`]
+    /// does. A host that is removed leaves its page once its job ended well.
+    pub fn run(
+        &self,
+        name: &str,
+        action: &str,
+        label: &str,
+        arguments: &std::collections::BTreeMap<String, String>,
+        size: (u16, u16),
+    ) {
+        let title = format!("{label} · {name}");
+        let (removes, host) = (action == "remove", name.to_owned());
         self.job(
-            &action.name,
+            action,
             name,
             json!({"arguments": arguments}),
             title,
             size,
-            |_| {},
+            move |admin| {
+                let mut data = admin.data.borrow_mut();
+                let ended = data.job.as_ref().and_then(|view| view.ended);
+                if removes && ended == Some(Some(0)) {
+                    data.gone = Some(host.clone());
+                }
+            },
         );
     }
 

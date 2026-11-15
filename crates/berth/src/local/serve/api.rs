@@ -21,7 +21,7 @@ use axum::{
 };
 use berth_api::{
     Applied, Behind, Done, ErrorBody, ErrorDetail, HostBehind, HostType, JobInfo, Message, Output,
-    Version, b64, client, code,
+    Power, PowerState, Version, b64, client, code,
     ops::{self, Role},
     streams,
 };
@@ -181,6 +181,35 @@ pub struct HostInfo {
     /// A rotation of a key it logs in with is not done on it yet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub rotating: bool,
+    /// Whether berth can start and stop it, and whether it runs: running
+    /// when its controller answers, else as its provisioner said last.
+    pub power: Power,
+    /// The machine a provisioner made for it, or one planned for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine: Option<HostMachine>,
+}
+
+/// The machine of a host, as berth's record of the resource has it.
+#[derive(Serialize, ToSchema)]
+pub struct HostMachine {
+    /// berth's id of the resource.
+    pub resource: String,
+    /// The provisioner that made it, or is to make it.
+    pub provisioner: String,
+    /// The provisioner's id of it; empty until it is made.
+    pub external_id: String,
+    /// As last seen, or `planned` for one not asked for yet.
+    pub state: String,
+}
+
+/// What the server knows of a host apart from asking it.
+pub(super) struct Known {
+    /// The type of its profile.
+    pub host_type: HostType,
+    /// A key it logs in with is being rotated.
+    pub rotating: bool,
+    pub power: Power,
+    pub machine: Option<HostMachine>,
 }
 
 /// A stored message: the host's message with where it came from.
@@ -519,9 +548,15 @@ pub(super) fn compare(state: &Serve) -> Compare {
 }
 
 /// What the server knows of a host apart from asking it: the type of its
-/// profile, and whether a key it logs in with is being rotated.
-pub(super) fn known(state: &Serve, name: &str) -> (HostType, bool) {
+/// profile, whether a key it logs in with is being rotated, and how it is
+/// started and stopped.
+pub(super) fn known(state: &Serve, name: &str) -> Known {
     let profile = super::setup::saved_profile(state, name).map(|(_, profile)| profile);
+    let machine = super::actions::machine_of(state, name);
+    let power = match &profile {
+        Ok(profile) => berth_core::host_type::power(name, profile, machine.as_ref()).power,
+        Err(_) => Power::default(),
+    };
     let host_type = profile
         .as_ref()
         .map_or(HostType::Workstation, berth_api::profile::host_type);
@@ -534,10 +569,20 @@ pub(super) fn known(state: &Serve, name: &str) -> (HostType, bool) {
             _ => false,
         }
     });
-    (host_type, rotating)
+    Known {
+        host_type,
+        rotating,
+        power,
+        machine: machine.map(|machine| HostMachine {
+            resource: machine.id,
+            provisioner: machine.provisioner,
+            external_id: machine.external_id,
+            state: machine.state,
+        }),
+    }
 }
 
-async fn info(remote: Arc<Remote>, compare: Compare, known: (HostType, bool)) -> HostInfo {
+async fn info(remote: Arc<Remote>, compare: Compare, known: Known) -> HostInfo {
     let seen = remote.version().await;
     let applied = seen
         .as_ref()
@@ -547,18 +592,28 @@ async fn info(remote: Arc<Remote>, compare: Compare, known: (HostType, bool)) ->
         seen.as_ref()
             .map_err(|error| error.starts_with(super::NO_BERTHD)),
     );
+    let reachable = seen.is_ok();
     HostInfo {
         name: remote.name.clone(),
         address: remote.address.clone(),
-        reachable: seen.is_ok(),
+        reachable,
         version: seen.as_ref().ok().map(|version| version.version.clone()),
         api: seen.as_ref().ok().map(|version| version.api),
         error: seen.err(),
         behind: applied.as_ref().and_then(|applied| compare(applied)),
         applied: applied.map(|applied| applied.berth),
-        host_type: known.0,
+        host_type: known.host_type,
         seen: observed,
-        rotating: known.1,
+        rotating: known.rotating,
+        power: Power {
+            // A host whose controller answers runs, whatever was said before.
+            state: match reachable {
+                true => PowerState::Running,
+                false => known.power.state,
+            },
+            ..known.power
+        },
+        machine: known.machine,
     }
 }
 
@@ -1222,7 +1277,7 @@ async fn proxy(
     }
     let remote = remote(&state, &name)?;
     // A host of the type ssh has no controller to pass this to; say what installs one.
-    let (host_type, _) = known(&state, &name);
+    let host_type = known(&state, &name).host_type;
     if let Err(refusal) = berth_core::host_type::check(
         &name,
         host_type,

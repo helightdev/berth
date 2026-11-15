@@ -1185,4 +1185,15 @@ mod tests {
         );
         assert!(setting("nothing=1").is_err());
     }
+
+    #[test]
+    fn how_a_host_is_stopped_is_a_setting_of_its_own() {
+        let mut config = json!({"type": "managed", "access": {"address": "192.0.2.4"}});
+        apply(&mut config, &[], &setting("power_stop=controller").unwrap()).unwrap();
+        assert_eq!(config["power"], json!({"stop": {"by": "controller"}}));
+        assert_eq!(berth_api::profile::power_way(&config, "stop"), "controller");
+        assert!(apply(&mut config, &[], &setting("power_stop=magic").unwrap()).is_err());
+        apply(&mut config, &[], &setting("power_stop=none").unwrap()).unwrap();
+        assert!(config.get("power").is_none(), "{config}");
+    }
 }

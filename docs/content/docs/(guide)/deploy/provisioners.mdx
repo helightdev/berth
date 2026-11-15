@@ -283,7 +283,7 @@ Its log: berth resource logs r-k3q7wz2m [--follow]
 
 The state comes from the provisioner each time you ask. A machine the platform no longer has is `missing`, and its record stays until you delete it through berth ([States](/docs/deploy/resources#states)).
 
-`berth host start HOST` and `stop` work only when the provisioner offers them. The actions above say which. The Run tab shows the machine's state and a **Start** and **Stop** row in the same cases, whatever install method is chosen.
+`berth host start HOST` and `stop` go through the provisioner when it offers them. The actions above say which, and so does the host's `power` ([Starting and stopping](/docs/use/lifecycle#starting-and-stopping)). The Run tab shows the machine's state and a **Start** and **Stop** row in the same cases, whatever install method is chosen.
 
 ## When it fails
 
@@ -302,11 +302,11 @@ A record without a machine is shown with a problem that says creating it did not
 berth host remove studio-2 --destroy
 ```
 
-berth asks before it deletes anything, and `-y` answers yes. It deletes the machine and then forgets the host. To delete the machine alone and keep the profile, use `berth resource remove ID`. Either runs the provisioner's `destroy` with the id it kept, never another, and then removes the record. A machine that is gone already counts as deleted. If deleting fails, the record stays so you can try again.
+berth asks before it deletes anything, names the machine, and `-y` answers yes. It deletes the machine and then forgets the host. To delete the machine alone and keep the profile, use `berth resource remove ID`. Either runs the provisioner's `destroy` with the id it kept, never another, and then removes the record. A machine that is gone already counts as deleted. If deleting fails, the host and the record stay so you can try again.
 
 The host's node on the tailnet is not removed. Remove it in the tailnet's admin console.
 
-Deleting needs the provisioner's plugin and its required secrets. Removing a host with `berth host remove` is refused while its machine exists. Delete the machine first.
+Deleting needs the provisioner's plugin and its required secrets. `berth host remove HOST` without `--destroy` forgets the host and leaves the machine. berth keeps its record as a resource of the provisioner with no host, which `berth resource remove ID` deletes later ([Removing a host](/docs/use/lifecycle#removing-a-host)).
 
 ## With a berth server
 
