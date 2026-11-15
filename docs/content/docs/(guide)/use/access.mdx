@@ -29,7 +29,7 @@ berth needs the control server's API key in the secret `tailnet_api_key`:
 
 ```bash
 berth secret set tailnet_api_key
-berth config tailnet_tags tag:berth          # if the tailnet wants tags
+berth config set tailnet_tags tag:berth          # if the tailnet wants tags
 ```
 
 The secret is one of these:
@@ -66,8 +66,8 @@ A new host on a berth without the secret starts with **Tailscale** off.
 [Headscale](https://headscale.net/) is a control server you run yourself, for the same `tailscale` client. Point berth at it:
 
 ```bash
-berth config tailnet_login_server https://hs.example.org
-berth config tailnet_user agents              # the user new hosts belong to
+berth config set tailnet_login_server https://hs.example.org
+berth config set tailnet_user agents              # the user new hosts belong to
 berth secret set tailnet_api_key              # from: headscale apikeys create
 ```
 

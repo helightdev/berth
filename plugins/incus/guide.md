@@ -116,7 +116,7 @@ size are under Machine on the Settings tab.
 `server` and `project` are the provisioner's own arguments. berth keeps them as
 its settings, which every machine and action uses unless the call gives a value:
 
-    berth provisioner ovh-incus run settings server=https://192.0.2.10:8443
+    berth provisioner set ovh-incus server=https://192.0.2.10:8443
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
@@ -145,7 +145,7 @@ you paste sets it up on its first boot, if the image has cloud-init.
 Make one with **+ New instance** under the hosts, or the action New instance
 on the provisioner's page. Both open a form laid out like a host's set-up, with every field on a row. Or:
 
-    berth provisioner ovh-incus run new-instance name=web image=debian/12
+    berth provisioner run ovh-incus new-instance name=web image=debian/12
 
 berth keeps it as a resource with a page of its own. There it starts, stops,
 changes and removes it, and shows its console log. The plugin marks it with
@@ -184,7 +184,7 @@ comes with some.
 
 ## Actions
 
-The provisioner's page in berth, and `berth provisioner NAME`, list these
+The provisioner's page in berth, and `berth provisioner show NAME`, list these
 actions:
 
 | Action | What it does |

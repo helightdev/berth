@@ -240,7 +240,7 @@ pub fn changed_key(name: &str, said: &str) -> Option<String> {
         || said.contains("Host key verification failed");
     changed.then(|| {
         format!(
-            "The SSH host key of {name} is not the one berth recorded: the machine was set up again or replaced, or something is in between. If you know which, accept the new key with: berth key host {name} --accept"
+            "The SSH host key of {name} is not the one berth recorded: the machine was set up again or replaced, or something is in between. If you know which, accept the new key with: berth host verify {name} --accept"
         )
     })
 }
@@ -318,7 +318,7 @@ mod tests {
         assert!(
             changed_key("studio", "Host key verification failed.")
                 .unwrap()
-                .contains("berth key host studio --accept")
+                .contains("berth host verify studio --accept")
         );
     }
 }

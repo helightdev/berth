@@ -4,15 +4,11 @@
 //! Registries are settings of the tool, because a server is the same for
 //! every host. A Sonatype Nexus server is one registry with its repositories
 //! under it. Both are kept in berth's store: registries as their JSON,
-//! secrets as their text, sealed when the store is encrypted. What is known
-//! of a berth server's is kept under the server's scope, with its secret
-//! values standing in as [`KEPT`].
+//! secrets as their text, sealed when the store is encrypted.
 
 use crate::{
     Result,
     paths::Paths,
-    plugins::valid_name,
-    server::{KEPT, Server},
     store::{self, kind},
 };
 use serde_json::{Map, Value, json};
@@ -36,16 +32,12 @@ pub fn type_label(kind: &str) -> &'static str {
 }
 pub const FORMATS: &[&str] = &["npm", "raw", "docker"];
 
-/// The registries and secrets of this installation, or what is known of a
-/// berth server's.
+/// The registries and secrets of this installation.
 #[derive(Clone)]
 pub struct Store {
     store: Arc<store::Store>,
-    /// [`store::OWN`], or the scope of the server.
+    /// [`store::OWN`].
     scope: String,
-    /// The berth serve these are the registries and secrets of. Changes go
-    /// there, and the values of its secrets stay there.
-    server: Option<Server>,
 }
 
 pub fn base64(data: &[u8]) -> String {
@@ -103,50 +95,23 @@ pub fn repository_url(registry: &Value, name: &str) -> String {
 }
 
 impl Store {
-    /// Those berth uses: the server's when one is configured, else its own.
+    /// This installation's.
     pub fn new(paths: &Paths) -> Result<Self> {
-        Ok(Store::of(store::shared(paths)?, Server::configured(paths)))
+        Ok(Store::own(store::shared(paths)?))
     }
 
-    /// This installation's own, whatever server its settings name: what
-    /// `berth serve` keeps and sends to its hosts.
+    /// This installation's, in a store that is open: what `berth serve`
+    /// keeps and sends to its hosts.
     pub fn own(store: Arc<store::Store>) -> Self {
-        Store::of(store, None)
-    }
-
-    /// What is known of `server`'s, or this installation's own without one.
-    pub fn of(store: Arc<store::Store>, server: Option<Server>) -> Self {
-        let scope = match &server {
-            Some(server) => server.scope(),
-            None => store::OWN.to_owned(),
-        };
         Store {
             store,
-            scope,
-            server,
+            scope: store::OWN.to_owned(),
         }
-    }
-
-    /// The server whose store this is.
-    pub fn server(&self) -> Option<&Server> {
-        self.server.as_ref()
     }
 
     /// Whether the values are sealed in the store.
     pub fn encrypted(&self) -> bool {
         self.store.encrypted()
-    }
-
-    /// Fails for a server's store, whose secrets have their values there.
-    fn own_values(&self, what: &str) -> Result<()> {
-        match &self.server {
-            Some(server) => Err(format!(
-                "{what} needs the secrets, which stay on the berth server at {}",
-                server.url
-            )
-            .into()),
-            None => Ok(()),
-        }
     }
 
     pub fn registries(&self) -> Result<Map<String, Value>> {
@@ -175,37 +140,14 @@ impl Store {
             .collect()
     }
 
-    /// Send the changes of the registries to the server, when there is one.
-    fn send_registries(&self, registries: &Map<String, Value>) -> Result<()> {
-        if let Some(server) = &self.server {
-            let known = self.registries()?;
-            for (name, registry) in registries {
-                if known.get(name) != Some(registry) {
-                    server.call(
-                        "registries.save",
-                        json!({"name": name}),
-                        Some(registry.clone()),
-                    )?;
-                }
-            }
-            for name in known.keys().filter(|name| !registries.contains_key(*name)) {
-                server.call("registries.remove", json!({"name": name}), None)?;
-            }
-        }
-        Ok(())
-    }
-
     /// Make these the registries, in one change of the store.
     pub fn save_registries(&self, registries: Map<String, Value>) -> Result<()> {
-        self.send_registries(&registries)?;
         let rows = Self::registry_rows(&registries);
         Ok(self.store.replace(&self.scope, &[kind::REGISTRY], &rows)?)
     }
 
-    /// Give a registry another name, with its stored login. Here it is one
-    /// change of the store; a server keeps logins by the registry's name and
-    /// drops the old one with it, so for a server's registry the login has
-    /// to be given again. Returns whether the login went with the name.
+    /// Give a registry another name, with its stored login, in one change of
+    /// the store. Returns whether there was a login to go with the name.
     pub fn rename_registry(&self, old: &str, new: &str) -> Result<bool> {
         let mut registries = self.registries()?;
         let registry = registries
@@ -216,11 +158,7 @@ impl Store {
         }
         registries.insert(new.to_owned(), registry.clone());
         let (old_login, new_login) = (format!("registry/{old}"), format!("registry/{new}"));
-        let login = match &self.server {
-            Some(_) => None,
-            None => self.store.read(kind::SECRET, &self.scope, &old_login)?,
-        };
-        self.send_registries(&registries)?;
+        let login = self.store.read(kind::SECRET, &self.scope, &old_login)?;
         let mut writes = vec![(
             kind::REGISTRY,
             self.scope.as_str(),
@@ -237,7 +175,7 @@ impl Store {
                 (kind::SECRET, &self.scope, &old_login),
             ],
         )?;
-        Ok(login.is_some() || self.server.is_none())
+        Ok(login.is_some())
     }
 
     fn registry(&self, name: &str) -> Result<Value> {
@@ -266,7 +204,7 @@ impl Store {
             .collect()
     }
 
-    /// Whether a secret has a value, here or on the server. Nothing is unsealed.
+    /// Whether a secret has a value. Nothing is unsealed.
     pub fn has_secret(&self, name: &str) -> Result<bool> {
         Ok(self.all_secret_names()?.iter().any(|known| known == name))
     }
@@ -281,20 +219,6 @@ impl Store {
     }
 
     pub fn set_secret(&self, name: &str, value: Option<&str>) -> Result<()> {
-        let value = match (&self.server, value) {
-            (Some(server), Some(value)) => {
-                let data = Some(json!({"value": value}));
-                server.call("secrets.set", json!({"name": name}), data)?;
-                Some(KEPT)
-            }
-            (Some(server), None) => {
-                if self.has_secret(name)? {
-                    server.call("secrets.remove", json!({"name": name}), None)?;
-                }
-                None
-            }
-            (None, value) => value,
-        };
         match value {
             Some(value) => self
                 .store
@@ -349,7 +273,6 @@ impl Store {
     /// What `devbox-secrets` on a host installs for a profile: the profile's
     /// secrets as environment variables and files, and the logins of its registries.
     pub fn host_payload(&self, profile: &Value) -> Result<Value> {
-        self.own_values("Sending secrets to a host")?;
         let list = |value: &Value| value.as_array().cloned().unwrap_or_default();
         let mut env = Map::new();
         let mut files = vec![];
@@ -483,7 +406,6 @@ fn http_status(url: &str, login: &Option<String>) -> std::result::Result<u16, St
 impl Store {
     /// A registry's login as a line of curl configuration, when one is stored.
     pub fn curl_login(&self, name: &str) -> Result<Option<String>> {
-        self.own_values("Logging in to a registry")?;
         let registry = self.registry(name)?;
         let quote = |text: &str| text.replace('\\', "\\\\").replace('"', "\\\"");
         Ok(
@@ -509,16 +431,6 @@ impl Store {
 /// the account may also upload is not tried. One line per thing checked,
 /// starting with ✓, ! or ✗.
 pub fn check(store: &Store, name: &str) -> Result<Vec<String>> {
-    // A server's registry is checked from the server, which has its login.
-    if let Some(server) = &store.server {
-        let checked = server.call("registries.check", json!({"name": name}), None)?;
-        return Ok(checked["lines"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|line| line.as_str().map(str::to_owned))
-            .collect());
-    }
     let registry = store.registry(name)?;
     let login = store.curl_login(name)?;
     let with_login = if login.is_some() {
@@ -671,118 +583,6 @@ pub fn describe(store: &Store) -> Result<Vec<String>> {
     Ok(lines)
 }
 
-/// `berth registry ...`
-pub fn registry_command(paths: &Paths, args: &[&str]) -> Result<()> {
-    let store = Store::new(paths)?;
-    let mut registries = store.registries()?;
-    match *args {
-        [] => {
-            let lines = describe(&store)?;
-            if lines.is_empty() {
-                println!(
-                    "No registries. Add one: berth registry add NAME {} URL [USERNAME]",
-                    TYPES.join("|")
-                );
-            }
-            lines.iter().for_each(|line| println!("{line}"));
-            return Ok(());
-        }
-        ["add", name, kind, url] | ["add", name, kind, url, _] => {
-            if !valid_name(name) || !TYPES.contains(&kind) {
-                return Err(format!("Usage: berth registry add NAME {} URL [USERNAME]  (without a user name the login is a token)", TYPES.join("|")).into());
-            }
-            if kind != "docker" && !url.starts_with("https://") && !url.starts_with("http://") {
-                return Err("This kind of registry needs its address with https://".into());
-            }
-            let mut registry = json!({"type": kind, "url": url.trim_end_matches('/')});
-            if let Some(user) = args.get(4) {
-                registry["username"] = json!(user);
-            }
-            // Adding again changes the address or user and keeps the repositories.
-            if let Some(known) = registries.get(name) {
-                registry["repositories"] = known["repositories"].clone();
-            }
-            registries.insert(name.to_owned(), registry);
-        }
-        ["repo", name, format, repository] | ["repo", name, format, repository, _] => {
-            let registry = registries
-                .get_mut(name)
-                .filter(|registry| registry["type"] == "nexus")
-                .ok_or_else(|| format!("{name} is not a Nexus registry"))?;
-            if !FORMATS.contains(&format) {
-                return Err(format!("Formats: {}", FORMATS.join(", ")).into());
-            }
-            let mut entry = json!({"format": format, "name": repository});
-            if let Some(address) = args.get(4) {
-                entry["address"] = json!(bare(address));
-            }
-            let mut repositories = registry["repositories"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            repositories.retain(|known| known["name"] != repository);
-            repositories.push(entry);
-            registry["repositories"] = json!(repositories);
-        }
-        ["check"] => {
-            for name in registries.keys() {
-                println!("{name}");
-                check(&store, name)?
-                    .iter()
-                    .for_each(|line| println!("  {line}"));
-            }
-            return Ok(());
-        }
-        ["check", name] => {
-            check(&store, name)?
-                .iter()
-                .for_each(|line| println!("{line}"));
-            return Ok(());
-        }
-        ["login", name] => {
-            store.registry(name)?;
-            let password = read_secret(&format!("Password or token for {name}"))?;
-            return store.set_secret(&format!("registry/{name}"), Some(&password));
-        }
-        ["remove", name] => {
-            registries
-                .remove(name)
-                .ok_or_else(|| format!("No registry {name}"))?;
-            store.set_secret(&format!("registry/{name}"), None)?;
-        }
-        _ => {
-            return Err("Usage: berth registry [add NAME TYPE URL [USERNAME] | repo NAME FORMAT REPOSITORY [ADDRESS] | login NAME | check [NAME] | remove NAME]".into());
-        }
-    }
-    store.save_registries(registries)
-}
-
-/// `berth secret ...`
-pub fn secret_command(paths: &Paths, args: &[&str]) -> Result<()> {
-    let store = Store::new(paths)?;
-    match *args {
-        [] => {
-            for name in store.all_secret_names()? {
-                println!("{name}");
-            }
-            Ok(())
-        }
-        // A host's SSH or sudo password is kept under the host's name.
-        ["set", name]
-            if valid_name(name)
-                || crate::provisioner::is_secret_name(name)
-                || name
-                    .strip_prefix("ssh/")
-                    .or_else(|| name.strip_prefix("sudo/"))
-                    .is_some_and(crate::profiles::valid_name) =>
-        {
-            store.set_secret(name, Some(&read_secret(&format!("Value of {name}"))?))
-        }
-        ["remove", name] => store.set_secret(name, None),
-        _ => Err("Usage: berth secret [set NAME | remove NAME]  (names: lower-case letters, digits, - and _; ssh/HOST and sudo/HOST are a host's SSH and sudo passwords, provisioner/NAME/SECRET a provisioner's own)".into()),
-    }
-}
-
 /// Split `REGISTRY` or `REGISTRY/REPOSITORY`, and find the registry.
 fn target(store: &Store, target: &str) -> Result<(String, Value, String)> {
     let (name, repository) = target.split_once('/').unwrap_or((target, ""));
@@ -793,7 +593,7 @@ fn target(store: &Store, target: &str) -> Result<(String, Value, String)> {
     ))
 }
 
-/// `berth publish REGISTRY/REPOSITORY`: put the release archive in a Nexus raw
+/// `berth registry publish REGISTRY/REPOSITORY`: put the release archive in a Nexus raw
 /// repository. Returns the address it is served at.
 pub fn publish(paths: &Paths, destination: &str) -> Result<String> {
     let dirs: Map<String, Value> =
@@ -870,7 +670,7 @@ pub fn publish_from(
     Ok(url)
 }
 
-/// `berth image push REGISTRY[/REPOSITORY] [TAG]`: push the container image
+/// `berth registry push-image REGISTRY[/REPOSITORY] [TAG]`: push the container image
 /// built by the Docker action.
 pub fn push_image(paths: &Paths, destination: &str, tag: &str) -> Result<String> {
     let store = Store::new(paths)?;
@@ -1050,45 +850,5 @@ mod tests {
         store.save_registries(registries).unwrap();
         let names: Vec<_> = store.registries().unwrap().keys().cloned().collect();
         assert_eq!(names, ["only"]);
-    }
-
-    #[test]
-    fn a_servers_scope_is_apart_and_holds_no_values() {
-        let (_home, opened) = opened();
-        let own = Store::own(opened.clone());
-        own.set_secret("github", Some("ghp-made-up")).unwrap();
-        // A server that does not answer: nothing is written for it.
-        let server = Server {
-            url: "unix:/nonexistent/serve.sock".into(),
-            token: None,
-        };
-        let served = Store::of(opened.clone(), Some(server.clone()));
-        assert!(served.set_secret("deploy", Some("value")).is_err());
-        assert!(served.all_secret_names().unwrap().is_empty());
-        // What a mirror wrote is seen there, and not here.
-        opened
-            .replace(
-                &server.scope(),
-                &[kind::SECRET, kind::REGISTRY],
-                &[
-                    (kind::SECRET, "deploy", KEPT.as_bytes().to_vec()),
-                    (
-                        kind::REGISTRY,
-                        "hub",
-                        br#"{"type":"docker","url":"ghcr.io"}"#.to_vec(),
-                    ),
-                ],
-            )
-            .unwrap();
-        assert_eq!(served.secret_names(), ["deploy"]);
-        assert_eq!(served.secret("deploy").unwrap().as_deref(), Some(KEPT));
-        assert!(served.registries().unwrap().contains_key("hub"));
-        assert!(served.host_payload(&json!({})).is_err());
-        assert_eq!(own.secret_names(), ["github"]);
-        assert!(own.registries().unwrap().is_empty());
-        assert_eq!(
-            own.secret("github").unwrap().as_deref(),
-            Some("ghp-made-up")
-        );
     }
 }

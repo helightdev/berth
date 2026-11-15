@@ -38,7 +38,7 @@ berth provisioner add docker docker/container
 Names take lowercase letters, digits, `-` and `_`, and start with a letter. The type stays as it was registered. To use another, register one under another name. See which provisioners you have, and whether each can be used here:
 
 ```bash
-berth provisioner
+berth provisioner list
 ```
 
 ```text
@@ -46,7 +46,7 @@ docker  Docker container (docker/container)
 ovh-incus  Incus virtual machine (incus/vm)  · not usable: ovh-incus needs the secrets incus_client_cert, incus_client_key: berth secret set NAME
 ```
 
-One that cannot be used says what to change, such as a [secret](#secrets) to set or a plugin to update. `berth provisioners` lists the same with what each asks for:
+One that cannot be used says what to change, such as a [secret](#secrets) to set or a plugin to update. `berth provisioner list` lists the same with what each asks for:
 
 ```text
 ovh-incus                Incus virtual machine
@@ -72,7 +72,7 @@ berth before named each provisioner by its type and kept one set of settings for
 ## A provisioner's page
 
 ```bash
-berth provisioner docker
+berth provisioner show docker
 ```
 
 ```text
@@ -91,7 +91,7 @@ Machines berth made with it
 Compose project berth made with it
   notes            notes  running · r-p5x2hd7a
 
-Actions (berth provisioner docker run ACTION)
+Actions (berth provisioner run docker ACTION)
   Create
     new-deployment     New compose project
     new-instance       New instance
@@ -126,12 +126,12 @@ What berth made is listed by kind, each with berth's id of the resource and the 
 A provisioner's own arguments say where it is, such as the Incus `server` or the Docker `host`. berth keeps their values as the provisioner's settings, in its store:
 
 ```bash
-berth provisioner ovh-incus run settings server=https://192.0.2.10:8443 project=lab
+berth provisioner set ovh-incus server=https://192.0.2.10:8443 project=lab
 ```
 
-Every call to the provisioner uses them, and so does each machine made with it unless `berth provision` is given another value. The record of a machine keeps the values it was made with, and an empty setting is forgotten. While a setting it needs has no value, berth prompts for it before each action.
+Every call to the provisioner uses them, and so does each machine made with it unless `berth host create --provisioner` is given another value. The record of a machine keeps the values it was made with, and an empty setting is forgotten. While a setting it needs has no value, berth prompts for it before each action.
 
-`berth provisioner NAME SETTING=VALUE…` asks another place this once, such as `berth provisioner ovh-incus server=https://192.0.2.11:8443`.
+`berth provisioner show NAME SETTING=VALUE…` asks another place this once, such as `berth provisioner show ovh-incus server=https://192.0.2.11:8443`.
 
 ### Secrets
 
@@ -146,9 +146,9 @@ The action `secrets` on the provisioner's page takes each in a hidden field. An 
 ### Actions
 
 ```bash
-berth provisioner docker actions
-berth provisioner docker run images
-berth provisioner docker run prune volumes=yes
+berth provisioner actions docker
+berth provisioner run docker images
+berth provisioner run docker prune volumes=yes
 ```
 
 In a terminal, `run` prompts for a required argument you leave out. It puts the action's question first, unless `--yes` is given. An action that only reads, such as `images`, answers at once. One that changes something runs as a job and shows its output as it comes. Only one such job runs at a time for a provisioner.
@@ -161,10 +161,10 @@ A provisioner sets up the new machine in one of two ways. The plugin chooses.
 
 | Kind | The new machine | berth waits for | What the profile needs |
 | --- | --- | --- | --- |
-| `seed` | Boots with berth's [cloud seed](/docs/deploy/cloud) made from the profile and sets itself up | berthd to answer, up to 30 minutes. It then prints the machine's provision state | What `berth seed` needs. A provisioner that puts the release archive into the machine itself does without a `release_url` |
+| `seed` | Boots with berth's [cloud seed](/docs/deploy/cloud) made from the profile and sets itself up | berthd to answer, up to 30 minutes. It then prints the machine's provision state | What `berth host seed` needs. A provisioner that puts the release archive into the machine itself does without a `release_url` |
 | `apply` | Starts with SSH and an account for berth | SSH to answer, up to 5 minutes. berth then applies the profile as `berth apply` does | An SSH user, `access.user` |
 
-For an `apply` provisioner the account is the profile's SSH user. It takes berth's [own key](/docs/reference/profile#the-key-of-berth-itself) and the keys of the profile's operator. If that user's sudo asks for a password, set `BERTH_SUDO_PASSWORD` for the command, or apply later with `berth apply HOST`.
+For an `apply` provisioner the account is the profile's SSH user. It takes berth's [own key](/docs/reference/profile#the-key-of-berth-itself) and the keys of the profile's operator. If that user's sudo asks for a password, berth asks for it at the terminal. A script gives it with `--sudo-password-stdin`, or keeps it as the secret `sudo/HOST`.
 
 A provisioner may report the machine's address and SSH port. berth writes them to `access.address` and `access.port` of the profile, but only where those are empty. A machine just made has a new SSH host key, so berth forgets the host key it recorded for the host and records the new one at the first login.
 
@@ -231,7 +231,7 @@ berth refuses to start while a required secret has no value.
 ### Create it
 
 ```bash
-berth provision studio-2 ovh-incus cpus=8
+berth host create studio-2 --provisioner ovh-incus cpus=8
 ```
 
 berth asks `Create a machine for studio-2 with Incus virtual machine (ovh-incus)? [y/N]`. `--yes` answers it. Arguments are `NAME=VALUE`. An argument that is required and has no default is asked for in a terminal when you leave it out. The others take their defaults.
@@ -247,18 +247,18 @@ In the terminal UI, choose **Create a machine** under **How To Install** on the 
 | --- | --- |
 | Install | **Provisioner**, a choice like any other. Space or Enter switches to the next one, and → chooses from the suggestions. Under it the required arguments, marked `*` |
 | Settings | Under **Machine**, the resources it has, such as CPUs, memory and disk. Under **Provisioner Options**, its other arguments |
-| Run | **Create machine**, and every problem |
+| Run | **Create with PROVISIONER**, and every problem |
 
-The first provisioner is chosen when the list arrives. There is no **Target** row. A created machine always has the target `cloud`. berth writes that into the profile before it creates the machine, on the command line as well. Enter on an argument changes it. A missing secret is a problem of the Install tab, and a bad resource value one of the Settings tab. **Create machine** on the Run tab asks once before it saves the profile and starts, and does not start while a problem is listed. The output is shown as it runs. The screens are the same with a [berth server](/docs/use/server) elsewhere.
+The first provisioner is chosen when the list arrives. There is no **Target** row. A created machine always has the target `cloud`. berth writes that into the profile before it creates the machine, on the command line as well. Enter on an argument changes it. A missing secret is a problem of the Install tab, and a bad resource value one of the Settings tab. **Create with PROVISIONER** on the Run tab asks once before it saves the profile and starts, and does not start while a problem is listed. The output is shown as it runs. The screens are the same with a [berth server](/docs/use/server) elsewhere.
 
 Only one thing runs at a time for a host. A second command for the same host is refused until the first ends.
 
 ## Look after the machine
 
-The machine is a [resource](/docs/deploy/resources) of the kind `machine`. `berth instance HOST` shows it by the host's name, as `berth resource ID` does:
+The machine is a [resource](/docs/deploy/resources) of the kind `machine`. `berth resource show` shows it by the host's name, as it does by its id:
 
 ```bash
-berth instance studio-2
+berth resource show studio-2
 ```
 
 ```text
@@ -271,18 +271,18 @@ Created    2026-11-12T20:14:03Z
 Asked      2026-11-13T08:02:11Z
 Arguments  cpus=8 disk=60GiB image=ubuntu/26.04/cloud memory=8GiB pool=default project=default server=https://192.0.2.10:8443
 
-Actions (berth resource r-k3q7wz2m run ACTION)
+Actions (berth resource run r-k3q7wz2m ACTION)
   start              Start
   stop               Stop
   change             Change
   remove             Delete the machine
 
-Its log: berth resource r-k3q7wz2m logs [--follow]
+Its log: berth resource logs r-k3q7wz2m [--follow]
 ```
 
 The state comes from the provisioner each time you ask. A machine the platform no longer has is `missing`, and its record stays until you delete it through berth ([States](/docs/deploy/resources#states)).
 
-`berth instance HOST start` and `stop` work only when the provisioner offers them. The actions above say which. The Run tab shows the machine's state and a **Start machine** and **Stop machine** row in the same cases, whatever install method is chosen.
+`berth host start HOST` and `stop` work only when the provisioner offers them. The actions above say which. The Run tab shows the machine's state and a **Start** and **Stop** row in the same cases, whatever install method is chosen.
 
 ## When it fails
 
@@ -290,22 +290,22 @@ What happens depends on how far it got.
 
 | It failed | What is left | To go on |
 | --- | --- | --- |
-| Before the provisioner gave an id | A record with a token, and perhaps a machine | `berth provision` again with the same provisioner. The provisioner finds the machine by the token and does not make a second one |
-| After it gave one, such as a boot that did not finish or a failed apply | The machine and its record. The message says so | Fix the cause and wait, or `berth apply HOST` for a failed apply. `berth resource ID remove` deletes the machine to start again |
+| Before the provisioner gave an id | A record with a token, and perhaps a machine | `berth host create HOST --provisioner PROVISIONER` again with the same provisioner. The provisioner finds the machine by the token and does not make a second one |
+| After it gave one, such as a boot that did not finish or a failed apply | The machine and its record. The message says so | Fix the cause and wait, or `berth apply HOST` for a failed apply. `berth resource remove ID` deletes the machine to start again |
 
-A record without a machine is shown with a problem that says creating it did not end. Asking for a different provisioner while it exists is refused. `berth resource ID remove` then forgets the record only. A machine the provisioner made anyway is not deleted.
+A record without a machine is shown with a problem that says creating it did not end. Asking for a different provisioner while it exists is refused. `berth resource remove ID` then forgets the record only. A machine the provisioner made anyway is not deleted.
 
 ## Delete the machine
 
 ```bash
-berth instance studio-2 destroy
+berth host remove studio-2 --destroy
 ```
 
-berth asks you to type the host's name. `--yes` skips that. `berth resource ID remove` does the same and asks yes or no. It runs the provisioner's `destroy` with the id it kept, never another, and then removes the record. A machine that is gone already counts as deleted. If deleting fails, the record stays so you can try again.
+berth asks before it deletes anything, and `-y` answers yes. It deletes the machine and then forgets the host. To delete the machine alone and keep the profile, use `berth resource remove ID`. Either runs the provisioner's `destroy` with the id it kept, never another, and then removes the record. A machine that is gone already counts as deleted. If deleting fails, the record stays so you can try again.
 
-The profile stays. The host's node on the tailnet is not removed. Remove it in the tailnet's admin console.
+The host's node on the tailnet is not removed. Remove it in the tailnet's admin console.
 
-Deleting needs the provisioner's plugin and its required secrets. Removing a host with `berth remove` is refused while its machine exists. Delete the machine first.
+Deleting needs the provisioner's plugin and its required secrets. Removing a host with `berth host remove` is refused while its machine exists. Delete the machine first.
 
 ## With a berth server
 
@@ -354,7 +354,7 @@ For an engine at `ssh://user@address`, the provisioner only sets `DOCKER_HOST`, 
 The container runs privileged by default. With `runtime=sysbox` it runs under [Sysbox](https://github.com/nestybox/sysbox) instead, which the Docker host needs to have. Read the limits in `plugins/docker/guide.md` before you use an engine that others share. In the container Chromium uses its setuid sandbox helper, as the [self-test](/docs/reference/on-the-host#the-self-test) describes.
 
 ```bash
-berth provision studio-2 docker runtime=sysbox
+berth host create studio-2 --provisioner docker runtime=sysbox
 ```
 
 ### Incus
@@ -367,5 +367,5 @@ Their actions only read: `server` says the server's version and whether it trust
 
 ```bash
 berth provisioner add ovh-incus incus/vm server=https://192.0.2.10:8443
-berth provision studio-2 ovh-incus
+berth host create studio-2 --provisioner ovh-incus
 ```

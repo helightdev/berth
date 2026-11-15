@@ -1,4 +1,4 @@
-"""The unattended installer of berth iso: its disk guard refused a disk with
+"""The unattended installer of berth host iso: its disk guard refused a disk with
 another serial, erased the one it was given and left the other alone, and the
 installed system boots without the installer. boot.py ran the installer and
 noted what it saw from outside the guest; these check that and the guest."""

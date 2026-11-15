@@ -113,7 +113,10 @@ pub struct Tab {
 }
 
 /// What a host's list offers to make besides hosts, as (kind, label).
-pub const MAKES: [(&str, &str); 2] = [("instance", "instance"), ("deployment", "compose project")];
+pub const MAKES: [(&str, &str); 2] = [
+    ("instance", "resource from an image"),
+    ("deployment", "compose project"),
+];
 
 /// The action of the dialog that registers a provisioner: its name, then
 /// its type, of `types`.
@@ -257,6 +260,12 @@ pub fn help(provisioner: Option<&ProvisionerInfo>, place: &str) -> String {
     if !provisioner.problem.is_empty() {
         text += &format!("It cannot be used here: {}\n\n", provisioner.problem);
     }
+    if !provisioner.node.is_empty() {
+        text += &format!(
+            "It lives on the node {}, whose feature offered it when the node was applied.\n\n",
+            provisioner.node
+        );
+    }
     let kinds: Vec<String> = provisioner
         .kinds
         .iter()
@@ -284,7 +293,7 @@ pub fn help(provisioner: Option<&ProvisionerInfo>, place: &str) -> String {
         text += &format!("Its settings: {}.\n\n", set.join(", "));
     }
     text + &format!(
-        "Enter opens its page, which asks it how it is.\n\nThe provisioners of {place}. From the command line: `berth provisioner {}`",
+        "Enter opens its page, which asks it how it is.\n\nThe provisioners of {place}. From the command line: `berth provisioner show {}`",
         provisioner.id
     )
 }
@@ -365,6 +374,32 @@ impl Page {
             .map(|(key, value)| format!("{key}={value}"))
             .collect();
         row("Arguments", &arguments.join(" "));
+        if !seen.endpoints.is_empty() {
+            lines.push((String::new(), Tone::Muted));
+            lines.push((
+                format!("Endpoints · berth port forward {} ENDPOINT", seen.id),
+                Tone::Plain,
+            ));
+            let width = seen
+                .endpoints
+                .iter()
+                .map(|endpoint| endpoint.name.chars().count())
+                .max()
+                .unwrap_or(0);
+            for endpoint in &seen.endpoints {
+                let hint = match endpoint.hint.is_empty() {
+                    true => String::new(),
+                    false => format!("  {}", endpoint.hint),
+                };
+                lines.push((
+                    format!(
+                        "  {:<width$}  {}:{}/{}{hint}",
+                        endpoint.name, endpoint.address, endpoint.port, endpoint.protocol
+                    ),
+                    Tone::Muted,
+                ));
+            }
+        }
         lines
     }
 
@@ -397,7 +432,7 @@ impl Page {
             (said, tone),
         ];
         // The settings row is one of them, in the same columns.
-        let settings = (!info.own.is_empty()).then_some("Settings".len());
+        let settings = (!info.own.is_empty() || !info.node.is_empty()).then_some("Settings".len());
         let width = state
             .details
             .iter()
@@ -411,6 +446,15 @@ impl Page {
                 Tone::Muted,
             )
         }));
+        if !info.node.is_empty() {
+            lines.push((
+                format!(
+                    "  {:<width$}  {}, whose feature offers it",
+                    "Node", info.node
+                ),
+                Tone::Muted,
+            ));
+        }
         if !info.own.is_empty() {
             let set: Vec<String> = info
                 .own
@@ -659,7 +703,7 @@ impl Tab {
             .collect();
         let Some((first, _)) = makers.first().cloned() else {
             return Asked::Nothing(Some(format!(
-                "No provisioner makes {label}s. Add one on the Provisioners tab"
+                "No provisioner makes a {label}. Add one on the Provisioners tab"
             )));
         };
         let form = Form::making(&format!("new {label}"), &format!("new-{kind}"), makers);
@@ -904,11 +948,11 @@ impl Tab {
                 &page.actions[index],
                 &match &page.resource {
                     Some(_) => format!(
-                        "berth resource {} run {}",
+                        "berth resource run {} {}",
                         page.id, page.actions[index].name
                     ),
                     None => format!(
-                        "berth provisioner {} run {}",
+                        "berth provisioner run {} {}",
                         page.id, page.actions[index].name
                     ),
                 },
@@ -917,11 +961,11 @@ impl Tab {
                 let held = &page.held()[index];
                 match (held.resource.is_empty(), held.kind.as_str()) {
                     (false, "machine") if !held.host.is_empty() => format!(
-                        "The machine of {}, {} as the provisioner calls it. Enter opens its page, with its state, its actions and its log. It is looked after as that host too, on the host's page. From the command line: `berth resource {}`",
+                        "The machine of {}, {} as the provisioner calls it. Enter opens its page, with its state, its actions and its log. It is looked after as that host too, on the host's page. From the command line: `berth resource show {}`",
                         held.host, held.id, held.resource
                     ),
                     (false, _) => format!(
-                        "The {} {}, {} as the provisioner calls it. Enter opens its page, with its state, its actions and its log. From the command line: `berth resource {}`",
+                        "The {} {}, {} as the provisioner calls it. Enter opens its page, with its state, its actions and its log. From the command line: `berth resource show {}`",
                         held.kind, held.name, held.id, held.resource
                     ),
                     (true, _) => format!(
@@ -931,15 +975,15 @@ impl Tab {
                 }
             }
             Some(Entry::Logs) => format!(
-                "Its log as its provisioner gives it, the last lines and then what follows, with secrets masked. From the command line: `berth resource {} logs --follow`",
+                "Its log as its provisioner gives it, the last lines and then what follows, with secrets masked. From the command line: `berth resource logs {} -f`",
                 page.id
             ),
             None if page.resource.is_some() => format!(
-                "Asking about the resource. From the command line: `berth resource {}`",
+                "Asking about the resource. From the command line: `berth resource show {}`",
                 page.id
             ),
             None => format!(
-                "Asking the provisioner how it is. From the command line: `berth provisioner {}`",
+                "Asking the provisioner how it is. From the command line: `berth provisioner show {}`",
                 page.id
             ),
         };
@@ -1310,7 +1354,10 @@ mod tests {
             Ok(vec![Action::default(), made.clone()]),
         );
         let form = tab.form().unwrap();
-        assert_eq!(form.context(), format!("{first} › new instance"));
+        assert_eq!(
+            form.context(),
+            format!("{first} › new resource from an image")
+        );
         assert!(!form.waiting());
         // Enter on its first row goes on to the next provisioner, which is asked.
         assert_eq!(
@@ -1490,7 +1537,7 @@ mod tests {
         assert!(
             shown
                 .help
-                .contains("berth provisioner docker/container run images")
+                .contains("berth provisioner run docker/container images")
         );
         let Asked::Run { action, values, .. } = tab.key(key(Code::Enter), &list, &mut Nowhere)
         else {
@@ -1634,7 +1681,7 @@ mod tests {
         let rows = text(&shown);
         assert_eq!(rows[0], "wiki · deployment of docker/container");
         assert!(rows.contains(&"  ▸ Show its log".to_owned()), "{rows:?}");
-        assert!(shown.help.contains("berth resource r-wiki run remove"));
+        assert!(shown.help.contains("berth resource run r-wiki remove"));
         // Removing asks first, and then runs as the resource's.
         tab.key(key(Code::Enter), &list, &mut Nowhere);
         assert_eq!(

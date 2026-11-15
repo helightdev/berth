@@ -201,7 +201,7 @@ fn run(
     // an askpass helper of its own, and takes it from this private file.
     let login = crate::keys::login_of(paths, host)?;
     let ssh_password = match login.auth {
-        berth_api::profile::Auth::Password if host.served(paths).is_none() => {
+        berth_api::profile::Auth::Password => {
             crate::registry::Store::own(crate::store::shared(paths)?)
                 .secret(&crate::keys::password_secret(&host.place))?
         }
@@ -233,6 +233,9 @@ fn run(
     // A password is Ansible's to hand to ssh, through its own helper; no
     // other program, such as the desktop's dialog, is ever asked for one.
     command.env("SSH_ASKPASS_REQUIRE", "never");
+    // A job's output is a log, not a terminal; its colours are kept for
+    // whoever shows it on one, and taken out for whoever does not.
+    command.env("ANSIBLE_FORCE_COLOR", "1");
     command.env("DEVBOX_BUILD_DIR", paths.build_dir());
     Ok(Prepared {
         command,
@@ -243,8 +246,7 @@ fn run(
 /// After a successful apply of a workstation that berth reaches as its
 /// operator: the role gave the operator sudo without a password, SSH with
 /// keys only and berth's keys, so the saved profile says so now. A password
-/// kept for the first apply is not needed again and is removed. A host of
-/// a berth server is settled by the server, which applies it.
+/// kept for the first apply is not needed again and is removed.
 pub fn settle(paths: &Paths, host: &Host) -> Result<()> {
     settle_with(paths, host, &mut std::io::sink())
 }
@@ -254,9 +256,6 @@ pub fn settle(paths: &Paths, host: &Host) -> Result<()> {
 /// A node that does not say is named on `out`, and its profile is settled
 /// all the same.
 pub fn settle_with(paths: &Paths, host: &Host, out: &mut dyn Write) -> Result<()> {
-    if host.served(paths).is_some() {
-        return Ok(());
-    }
     match settle_node(paths, host) {
         Ok(lines) => {
             for line in lines {
@@ -294,11 +293,9 @@ pub fn settle_with(paths: &Paths, host: &Host, out: &mut dyn Write) -> Result<()
 
 /// After a successful apply of a node: register the provisioners its
 /// features offer, and forget those they no longer do. Says what it did, a
-/// line each. A host of a berth server is the server's to settle.
+/// line each.
 pub fn settle_node(paths: &Paths, host: &Host) -> Result<Vec<String>> {
-    if host.served(paths).is_some()
-        || crate::host_type::of(&host.config) != crate::host_type::HostType::Node
-    {
+    if crate::host_type::of(&host.config) != crate::host_type::HostType::Node {
         return Ok(vec![]);
     }
     let offers = crate::node::reported(paths, host)

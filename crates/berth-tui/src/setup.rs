@@ -19,6 +19,29 @@ pub struct Feature {
     /// The group of the Features page it is listed in.
     pub group: String,
     pub help: String,
+    /// The types of host it is for; none says a workstation.
+    pub types: Vec<berth_api::HostType>,
+}
+
+impl Feature {
+    /// Whether a host of this type can have it.
+    pub fn fits(&self, host_type: berth_api::HostType) -> bool {
+        match self.types.is_empty() {
+            true => host_type == berth_api::HostType::Workstation,
+            false => self.types.contains(&host_type),
+        }
+    }
+}
+
+/// The types of host a feature of the catalogue is for, as the API says them.
+pub fn feature_types(feature: &Value) -> Vec<berth_api::HostType> {
+    feature["types"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(berth_api::HostType::parse)
+        .collect()
 }
 
 /// What a selectable row of a set-up page does when activated.
@@ -417,6 +440,13 @@ pub fn commit(config: &mut Value, field: Field, value: &str) -> Result<(), Strin
     {
         return Err(format!("Choose one of: {}", choices.join(", ")));
     }
+    // A type changes more than its field, such as a node's accounts going.
+    if field == Field::Type {
+        let host_type = berth_api::HostType::parse(value)
+            .ok_or_else(|| format!("Choose one of: {}", crate::fields::TYPES.join(", ")))?;
+        berth_api::profile::set_host_type(config, host_type);
+        return Ok(());
+    }
     if let Some(name) = spec.pointer.strip_prefix("/ansible_vars/")
         && value.is_empty()
     {
@@ -526,6 +556,29 @@ pub struct Profile<'a> {
 impl<'a> Profile<'a> {
     pub fn keys(&self, account: Account) -> Vec<String> {
         account_keys(self.config, account.name())
+    }
+
+    /// Whether the profile is a node's: a server applied without a desktop
+    /// or accounts of its own.
+    pub fn is_node(&self) -> bool {
+        berth_api::profile::host_type(self.config) == berth_api::HostType::Node
+    }
+
+    /// The type of host whose features the Features tab offers: a node's,
+    /// or else a workstation's, as only those two are given features.
+    fn feature_host_type(&self) -> berth_api::HostType {
+        match self.is_node() {
+            true => berth_api::HostType::Node,
+            false => berth_api::HostType::Workstation,
+        }
+    }
+
+    /// The features, by index, a host of this profile can have.
+    pub fn offered_features(&self) -> Vec<usize> {
+        let host_type = self.feature_host_type();
+        (0..self.features.len())
+            .filter(|index| self.features[*index].fits(host_type))
+            .collect()
     }
 
     pub fn text(&self, field: Field) -> &'a str {
@@ -662,6 +715,7 @@ impl<'a> Profile<'a> {
             true => &[Cockpit, Docker],
             false => &[],
         };
+        let host_type = self.feature_host_type();
         let builtin: [(&str, &[Field]); 6] = [
             ("Coding Agents", &[]),
             ("Agent Orchestrator", &[]),
@@ -684,10 +738,17 @@ impl<'a> Profile<'a> {
             .iter()
             .map(|(title, fields)| FeatureGroup {
                 title: (*title).to_owned(),
-                items: fields.iter().map(|field| Item::Field(*field)).collect(),
+                // berth's own things to install are a workstation's.
+                items: match self.is_node() {
+                    true => vec![],
+                    false => fields.iter().map(|field| Item::Field(*field)).collect(),
+                },
             })
             .collect();
         for (index, feature) in self.features.iter().enumerate() {
+            if !feature.fits(host_type) {
+                continue;
+            }
             let item = Item::Feature(index);
             let known = groups
                 .iter_mut()
@@ -769,6 +830,7 @@ impl<'a> Profile<'a> {
     pub fn fields(&self) -> Vec<Field> {
         use Field::*;
         match self.step {
+            Step::Features if self.is_node() => vec![],
             Step::Features => {
                 let mut fields = vec![
                     ToolsWeb,
@@ -833,6 +895,21 @@ impl<'a> Profile<'a> {
         }
         // A host below a workstation needs only to be reached.
         let host_type = berth_api::profile::host_type(self.config);
+        // A node is applied over SSH, without a desktop, and may join the tailnet.
+        if action == Action::Ssh && host_type == berth_api::HostType::Node {
+            return (
+                vec![],
+                vec![
+                    Type,
+                    SshHost,
+                    SshUser,
+                    SshPort,
+                    Login,
+                    AskBecomePass,
+                    Tailscale,
+                ],
+            );
+        }
         if action == Action::Ssh && host_type != berth_api::HostType::Workstation {
             let mut after = vec![Type, SshHost, SshUser, SshPort, Login];
             // Nothing is installed on a host of the type ssh, so nothing asks for sudo.
@@ -867,6 +944,8 @@ impl<'a> Profile<'a> {
             Action::Save | Action::Release | Action::Manage => return (vec![], vec![], vec![]),
             // The container only has the agent account.
             Action::Docker => return (vec![AgentUser], vec![], vec![]),
+            // A node has no accounts of its own: sessions run as the SSH user.
+            _ if self.is_node() => return (vec![], vec![("Access", vec![HardenSsh])], vec![]),
             _ => {}
         }
         let accounts = vec![
@@ -1098,7 +1177,7 @@ impl<'a> Profile<'a> {
         }
         for problem in own {
             rows.push(Row::info(Line::styled(
-                format!("✗ {}", problem.text),
+                format!("✗ {}", problem.shown()),
                 Style::new().fg(theme::BAD),
             )));
         }
@@ -1124,7 +1203,7 @@ impl<'a> Profile<'a> {
             }
             for problem in placed {
                 rows.push(Row::info(Line::styled(
-                    format!("  ✗ {}", problem.text),
+                    format!("  ✗ {}", problem.shown()),
                     bad,
                 )));
             }
@@ -1182,19 +1261,31 @@ impl<'a> Profile<'a> {
     pub fn problems(&self) -> Vec<String> {
         self.placed_problems()
             .into_iter()
-            .map(|problem| problem.text)
+            .map(|problem| problem.shown())
             .collect()
     }
 
     /// Every problem the profile and the machine show, each on its tab.
     pub fn problems_with(&self, machine: &crate::machine::Machine) -> Vec<Problem> {
+        let mut problems = vec![];
+        if self.action == Action::Ssh && self.text(Field::SshHost).is_empty() {
+            problems.push(Problem::of(
+                Step::Install,
+                Field::SshHost,
+                "The host's address is required: its name, IP address or tailnet name",
+            ));
+        }
+        if self.is_node() {
+            problems.extend(self.placed_problems());
+            return problems;
+        }
         // A host below a workstation is only reached: the workstation's settings do not apply.
         if self.action == Action::Ssh
             && berth_api::profile::host_type(self.config) != berth_api::HostType::Workstation
         {
-            return vec![];
+            return problems;
         }
-        let mut problems = self.placed_problems();
+        problems.extend(self.placed_problems());
         if self.action == Action::Machine && !machine.exists() {
             problems.extend(machine.problems());
         }
@@ -1206,12 +1297,29 @@ impl<'a> Profile<'a> {
         use Field::*;
         let action = self.action;
         let mut problems = Vec::new();
-        let mut check = |ok: bool, step: Step, message: &str| {
+        let mut check = |ok: bool, step: Step, field: Field, message: &str| {
             if !ok {
-                problems.push(Problem::new(step, message));
+                problems.push(Problem::of(step, field, message));
             }
         };
         if matches!(action, Action::Save | Action::Release | Action::Manage) {
+            return problems;
+        }
+        if self.is_node() {
+            if action != Action::Ssh {
+                problems.push(Problem::of(
+                    Step::Install,
+                    Type,
+                    "A node is applied over SSH to a server that is installed already: choose Existing host over SSH",
+                ));
+            }
+            // What the profile says that a node has not got, such as accounts.
+            // Its address is the SSH address's own problem.
+            for problem in berth_api::profile::problems(self.config) {
+                if !problem.contains("needs access.address") {
+                    problems.push(Problem::new(Step::Install, problem));
+                }
+            }
             return problems;
         }
         let settings = Step::Settings;
@@ -1219,6 +1327,7 @@ impl<'a> Profile<'a> {
         check(
             valid_username(agent),
             settings,
+            AgentUser,
             "Agent username is invalid or reserved by Ubuntu",
         );
         if action == Action::Docker {
@@ -1229,18 +1338,21 @@ impl<'a> Profile<'a> {
             check(
                 valid_hostname(hostname) || hostname.is_empty() && self.named,
                 Step::Install,
-                "Hostname is missing or invalid (F4 generates)",
+                Hostname,
+                "Hostname is missing or invalid",
             );
         }
         let operator = self.text(OperatorUser);
         check(
             valid_username(operator),
             settings,
+            OperatorUser,
             "Operator username is invalid or reserved by Ubuntu (operator and admin are)",
         );
         check(
             operator != agent,
             settings,
+            AgentUser,
             "Operator and agent need different usernames",
         );
         for (field, name) in [(OperatorHash, "Operator"), (AgentHash, "Agent")] {
@@ -1248,6 +1360,7 @@ impl<'a> Profile<'a> {
             check(
                 hash.is_empty() || valid_password_hash(hash),
                 settings,
+                field,
                 &format!("{name} password hash is not SHA-512 crypt or yescrypt"),
             );
         }
@@ -1255,6 +1368,7 @@ impl<'a> Profile<'a> {
             check(
                 self.keys(account).iter().all(|key| is_public_key(key)),
                 settings,
+                account.field(),
                 &format!("{name} has an SSH public key that is not a supported OpenSSH key"),
             );
         }
@@ -1263,6 +1377,7 @@ impl<'a> Profile<'a> {
                 || !self.text(AgentPrivileges).is_empty()
                 || !self.text(AgentHash).is_empty(),
             settings,
+            AgentHash,
             "Agent needs a password when passwordless sudo is off",
         );
         if action.installer() || action.seeds() {
@@ -1270,6 +1385,7 @@ impl<'a> Profile<'a> {
             check(
                 !self.keys(Account::Operator).is_empty() || !self.own_key.is_empty(),
                 settings,
+                OperatorKey,
                 "Operator needs an SSH key: add one, or make this berth's own",
             );
             // The USB installer asks for a password for the account it makes.
@@ -1278,7 +1394,8 @@ impl<'a> Profile<'a> {
             check(
                 !self.text(OperatorHash).is_empty() || action.seeds(),
                 settings,
-                "Operator password is required (F4 or F5)",
+                OperatorHash,
+                "Operator password is required",
             );
         }
         let geometry = self.text(Geometry);
@@ -1290,6 +1407,7 @@ impl<'a> Profile<'a> {
                     })
                 }),
             settings,
+            Geometry,
             "Desktop size must look like 1600x900",
         );
         if action.installer() {
@@ -1297,16 +1415,19 @@ impl<'a> Profile<'a> {
                 "serial" => check(
                     !self.text(DiskSerial).is_empty(),
                     settings,
+                    DiskSerial,
                     "Serial disk selection needs the target disk serial",
                 ),
                 "model" => check(
                     !self.text(DiskModel).is_empty(),
                     settings,
+                    DiskModel,
                     "Model disk selection needs a model pattern",
                 ),
                 "path" => check(
                     self.text(DiskPath).starts_with("/dev/"),
                     settings,
+                    DiskPath,
                     "Path disk selection needs a /dev/ path or pattern",
                 ),
                 _ => {}
@@ -1317,6 +1438,7 @@ impl<'a> Profile<'a> {
                         .iter()
                         .all(|field| !self.text(*field).is_empty()),
                     settings,
+                    WifiSsid,
                     "Wi-Fi needs an SSID and password",
                 );
             }
@@ -1327,6 +1449,7 @@ impl<'a> Profile<'a> {
             check(
                 !self.enabled(Tailscale) || self.tailnet_key,
                 Step::Install,
+                Tailscale,
                 "Tailscale is on, and berth has no API key of the tailnet to make the host's key: set the secret tailnet_api_key on the Secrets tab of the home screen, or switch Tailscale off",
             );
         }
@@ -1335,6 +1458,7 @@ impl<'a> Profile<'a> {
                 !self.text(ReleaseStore).is_empty()
                     || self.text(ReleaseUrl).starts_with("https://"),
                 settings,
+                ReleaseStore,
                 "Choose where to publish the release, or enter its HTTPS address",
             );
         }
@@ -1358,6 +1482,9 @@ pub struct Page<'a> {
 pub struct Problem {
     pub step: Step,
     pub text: String,
+    /// The field it is about, when it is about one: where the screens
+    /// point, and what the command line asks for or names as the flag.
+    pub field: Option<Field>,
 }
 
 impl Problem {
@@ -1365,6 +1492,24 @@ impl Problem {
         Problem {
             step,
             text: text.into(),
+            field: None,
+        }
+    }
+
+    /// A problem of one field.
+    pub fn of(step: Step, field: Field, text: impl Into<String>) -> Self {
+        Problem {
+            field: Some(field),
+            ..Problem::new(step, text)
+        }
+    }
+
+    /// What the screens show: the text, and the key that fixes it there.
+    pub fn shown(&self) -> String {
+        match self.field {
+            Some(field) if field.is_password_hash() => format!("{} (F4 or F5)", self.text),
+            Some(field) if field.can_generate() => format!("{} (F4 generates)", self.text),
+            _ => self.text.clone(),
         }
     }
 }
@@ -1384,6 +1529,7 @@ mod tests {
             label: key.into(),
             group: group.into(),
             help: String::new(),
+            types: vec![],
         };
         vec![
             feature("demo/agent", "coding agents"),
@@ -1615,7 +1761,7 @@ mod tests {
         let install = tab(&config, Action::Machine, Step::Install, &machine);
         // What has to be chosen, in order, and none of what has a default.
         let order = [
-            "● Create a machine",
+            "● From a provisioner",
             "Provisioner  Incus virtual machine",
             "└─ server *  Not set",
             "Hostname",
@@ -1646,7 +1792,7 @@ mod tests {
 
         let settings = tab(&config, Action::Machine, Step::Settings, &machine);
         let order = [
-            "Machine",
+            "Size",
             "├─ cpus  1",
             "└─ memory  1",
             "Provisioner Options",
@@ -1678,9 +1824,9 @@ mod tests {
         assert!(place(&run, "Install") < place(&run, "  ✗ server is required"));
         assert!(
             place(&run, "✗ server is required")
-                < place(&run, "[Create machine · Incus virtual machine]")
+                < place(&run, "[Create with Incus virtual machine]")
         );
-        assert!(place(&run, "[Create machine") < place(&run, "[Save · Ctrl+S]"));
+        assert!(place(&run, "[Create with") < place(&run, "[Save · Ctrl+S]"));
         assert!(
             !run.iter()
                 .any(|row| row.contains("✓ Ready") || row.contains("[Run ·"))
@@ -1709,7 +1855,7 @@ mod tests {
         assert!(
             !settings
                 .iter()
-                .any(|row| row.contains("Disk selection") || row.contains("Machine"))
+                .any(|row| row.contains("Disk selection") || row.contains("Size"))
         );
         assert_eq!(
             settings.last().unwrap(),
@@ -1774,7 +1920,7 @@ mod tests {
             placed
                 .iter()
                 .filter(|problem| problem.step == step)
-                .map(|problem| format!("✗ {}", problem.text))
+                .map(|problem| format!("✗ {}", problem.shown()))
                 .collect()
         };
         assert_eq!(

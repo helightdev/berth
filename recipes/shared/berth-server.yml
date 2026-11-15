@@ -66,7 +66,7 @@
 # The first user collects the token with this key, so whoever ran the
 # recipe hands on the key and never the token. Later runs leave it be.
 - name: Make a setup key for the first user of the new berth server
-  ansible.builtin.command: docker exec berth berth setup-key
+  ansible.builtin.command: docker exec berth berth server setup-key
   register: berth_setup_key
   when: berth_container.rc != 0
   changed_when: berth_setup_key.rc == 0
@@ -99,11 +99,10 @@
     with_key:
       - "berth server: {{ berth_url }}{{ berth_here }}"
       - "Setup key for the first user, valid for 24 hours: {{ berth_key }}"
-      - "With berth: berth connect {{ berth_url }} and paste the setup key when asked"
-      - "Or the screens: berth --server {{ berth_url }}, with the setup key in BERTH_SETUP_KEY"
-      - "The key ends when the user chooses Done. A new one: sudo docker exec berth berth setup-key"
+      - "With berth: berth login {{ berth_url }} and paste the setup key when asked"
+      - "The key ends once berth login has the token. A new one: sudo docker exec berth berth server setup-key"
     without_key:
       - "berth server: {{ berth_url }}{{ berth_here }}"
-      - "A setup key for a user to collect the token: sudo docker exec berth berth setup-key"
-      - "With it: berth connect {{ berth_url }}, or berth --server {{ berth_url }} with it in BERTH_SETUP_KEY"
+      - "A setup key for a user to collect the token: sudo docker exec berth berth server setup-key"
+      - "With it: berth login {{ berth_url }}"
       - "Or the token itself: sudo cat {{ berth_server_dir }}/data/berth/serve.token"

@@ -334,7 +334,6 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
             "echo 'bash: berthd: command not found' >&2; exit 127".into(),
         ],
         first_line: None,
-        via: None,
         ..LinkSpec::default()
     };
     served.state.add(Remote::new("broken", "192.0.2.1", broken));
@@ -374,6 +373,7 @@ async fn hosts_jobs_and_the_inbox_over_the_api() {
         subject: "host:broken".into(),
         action: "apply".into(),
         token: None,
+        stopped_by: None,
     };
     served.state.store.add_job(&job).unwrap();
     let jobs: Value = client.get("/v1/jobs").await.unwrap();
@@ -662,7 +662,6 @@ impl Berthd {
             program: self.program.to_string_lossy().into_owned(),
             args: vec!["connect".into(), "--dir".into(), dir],
             first_line: None,
-            via: None,
             ..LinkSpec::default()
         }
     }
@@ -1291,12 +1290,13 @@ async fn the_server_is_set_up_through_the_api() {
             "{name}"
         );
     }
+    // The server's own user, on its socket, chooses the command that reaches a host.
     let linked = json!({"builder": {}, "access": {"link": ["sh", "-c", "id"]}});
     assert_eq!(
-        send(client, "PUT", "/v1/hosts/studio/profile", linked)
+        send(client, "PUT", "/v1/hosts/linked/profile", linked)
             .await
             .0,
-        400
+        200
     );
     assert_eq!(
         send(client, "PUT", "/v1/hosts/studio/profile", json!([]))
@@ -1791,6 +1791,18 @@ async fn an_access_token_gets_in_with_the_role_it_names() {
     assert_eq!(status, 403, "{said}");
     let (status, said) = as_bearer(address, &admin, "PUT", "/v1/provisioners/vm", registered).await;
     assert_eq!(status, 200, "{said}");
+    // A command that reaches a host is not taken from a caller over the network.
+    let linked =
+        json!({"builder": {}, "access": {"address": "192.0.2.7", "link": ["sh", "-c", "id"]}});
+    let (status, said) =
+        as_bearer(address, &admin, "PUT", "/v1/hosts/linked/profile", linked).await;
+    assert_eq!(status, 400, "{said}");
+    assert!(
+        said["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("access.link")
+    );
     let profile = json!({"builder": {}, "access": {"address": "192.0.2.7"}});
 
     // Looking is for every role, using for two, set-up for one.
@@ -2737,7 +2749,7 @@ async fn machines_are_created_and_deleted_through_the_api() {
     let (status, said) = send(client, "DELETE", "/v1/hosts/studio", Value::Null).await;
     assert_eq!(status, 409, "{said}");
     assert!(
-        message(&said).contains(&format!("berth resource {id} remove")),
+        message(&said).contains(&format!("berth resource remove {id}")),
         "{said}"
     );
 
@@ -3153,9 +3165,9 @@ async fn berth_connect_saves_the_server_and_its_token() {
         let (dir, url) = (paths.config_dir.clone(), url.clone());
         tokio::task::spawn_blocking(move || {
             let settings = berth_page::settings::Settings::new(Some(dir));
-            crate::connect::connect_with(&settings, &url, &key)
+            crate::cli::login::claim(&settings, &url, &key)
                 .map(drop)
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.message)
         })
     };
     // A wrong key saves nothing.
@@ -3427,7 +3439,7 @@ fn generated_passwords_are_kept_where_the_host_is_and_shown_to_an_admin() {
         made["note"]
             .as_str()
             .unwrap()
-            .contains("berth credentials studio"),
+            .contains("berth host credentials studio"),
         "{made}"
     );
     let (status, kept) = ask("GET", "/v1/hosts/studio/credentials", Value::Null);
@@ -3444,19 +3456,6 @@ fn generated_passwords_are_kept_where_the_host_is_and_shown_to_an_admin() {
     assert_eq!(status, 404);
 
     runtime.shutdown_background();
-}
-
-#[test]
-fn a_serve_of_a_berth_that_uses_a_berth_server_does_not_start() {
-    let dir = tempfile::tempdir().unwrap();
-    let paths = Paths {
-        config_dir: dir.path().join("config"),
-        data_dir: dir.path().join("data"),
-    };
-    paths.set("server", "http://192.0.2.7:7777").unwrap();
-    let said = super::command(&paths, &[]).unwrap_err().to_string();
-    assert!(said.contains("berth config server \"\""), "{said}");
-    assert!(!paths.data_dir.join("serve.lock").exists());
 }
 
 #[test]
@@ -3680,7 +3679,7 @@ async fn a_host_added_by_its_address_has_a_type_and_actions_to_match() {
     for (name, why) in [
         ("apply", "neither a node nor a workstation"),
         ("seed", "not a workstation"),
-        ("secrets", "berth host install dock"),
+        ("secrets", "berth run dock install-controller"),
     ] {
         let action = find(name);
         assert_eq!(action["available"], false, "{action}");
@@ -3796,7 +3795,7 @@ async fn a_host_seen_to_be_a_workstation_never_gets_the_controller_alone() {
     let why = install["why"].as_str().unwrap();
     assert!(
         why.starts_with("box is a workstation; its profile here says ssh")
-            && why.contains("berth adopt box"),
+            && why.contains("berth host adopt box"),
         "{why}"
     );
     let (status, said) = send(
@@ -3924,7 +3923,7 @@ async fn a_host_removed_or_changed_in_the_store_by_another_process_is_not_listed
     let (_, hosts) = send(client, "GET", "/v1/hosts", Value::Null).await;
     assert_eq!(hosts[0]["address"], "192.0.2.40", "{hosts}");
 
-    // `berth remove` there takes it off the list, without a restart.
+    // `berth host remove` there takes it off the list, without a restart.
     berth_core::profiles::remove(paths, &place).unwrap();
     let (status, hosts) = send(client, "GET", "/v1/hosts", Value::Null).await;
     assert_eq!((status, hosts), (200, json!([])));
@@ -4228,13 +4227,8 @@ async fn a_command_runs_in_a_resource_as_a_job_that_ends_as_it_did() {
     assert_eq!(status, 202, "{acted}");
     let (output, code) = job_ended(&served.socket, acted["job"]["id"].as_str().unwrap()).await;
     assert_eq!(code, 3, "{output}");
-    for line in [
-        "▸ Running sh -c 'echo hi; exit 3' in db",
-        "hi from db",
-        "✗ sh exited with 3",
-    ] {
-        assert!(output.contains(line), "{line} in {output}");
-    }
+    // The output is the command's alone.
+    assert_eq!(output.trim(), "hi from db", "{output}");
     let request: Value =
         serde_json::from_str(&std::fs::read_to_string(fake.join("last.exec")).unwrap()).unwrap();
     assert_eq!(request["command"], json!(["sh", "-c", "echo hi; exit 3"]));
@@ -4287,6 +4281,52 @@ async fn a_command_runs_in_a_resource_as_a_job_that_ends_as_it_did() {
     )
     .await;
     assert_eq!(status, 404, "{said}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_running_job_is_stopped_through_the_api() {
+    use berth_core::runner::{Program, Request, Subject, Work};
+    let served = served().await;
+    let mut command = std::process::Command::new("sh");
+    command.args(["-c", "echo started; sleep 30"]);
+    let work = Work::Program(Box::new(Program {
+        command,
+        input: None,
+        files: vec![],
+    }));
+    let job = served
+        .state
+        .runner
+        .start(Request::new(Subject::Installation, "rollout"), work)
+        .unwrap();
+    let mut client = served.client().await;
+    let (status, stopping) = send(
+        &mut client,
+        "POST",
+        &format!("/v1/jobs/{}/stop", job.id),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 202, "{stopping}");
+    assert_eq!(stopping["stopped_by"], "the server's own user");
+    let (output, code) = job_ended(&served.socket, &job.id).await;
+    assert_eq!(code, 130, "{output}");
+    assert!(
+        output.contains("✗ Stopped by the server's own user"),
+        "{output}"
+    );
+    // One that has ended is not stopped again.
+    let (status, refused) = send(
+        &mut client,
+        "POST",
+        &format!("/v1/jobs/{}/stop", job.id),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        (status, &refused["error"]["code"]),
+        (409, &json!("conflict"))
+    );
 }
 
 /// A listener like `echo`, on an address of one of this machine's own

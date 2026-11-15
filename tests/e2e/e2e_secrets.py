@@ -18,14 +18,14 @@ class Secrets(unittest.TestCase):
         berth = cls.station.berth
         berth('secret', 'set', 'github', input=cls.token + '\n')
         berth('secret', 'set', 'deploy-key', input=cls.key)
-        berth('host', HOST, 'secret', 'github', 'env', 'GH_TOKEN')
-        berth('host', HOST, 'secret', 'deploy-key', 'file', '~/.config/e2e/deploy.key', '0640')
-        berth('registry', 'add', 'npm-e2e', 'npm', cls.registry.url, 'ci-user')
+        berth('host', 'set', HOST, 'secret.github=GH_TOKEN')
+        berth('host', 'set', HOST, 'secret.deploy-key=~/.config/e2e/deploy.key:0640')
+        berth('registry', 'add', 'npm-e2e', 'npm', cls.registry.url, '--user', 'ci-user')
         berth('registry', 'login', 'npm-e2e', input=cls.password + '\n')
-        berth('registry', 'add', 'images', 'docker', 'https://192.0.2.20:5000', 'pusher')
+        berth('registry', 'add', 'images', 'docker', 'https://192.0.2.20:5000', '--user', 'pusher')
         berth('registry', 'login', 'images', input='image-password\n')
         for name in ('npm-e2e', 'images'):
-            berth('host', HOST, 'registry', name, 'on')
+            berth('host', 'set', HOST, f'registry.{name}=on')
 
     @classmethod
     def tearDownClass(cls):
@@ -38,13 +38,13 @@ class Secrets(unittest.TestCase):
         return self.station.root_on_host(f'cat /home/{AGENT}/{path}').stdout
 
     def test_secret_values_stay_out_of_listings_and_the_profile(self):
-        listed = self.station.berth('secret').stdout
+        listed = self.station.berth('secret', 'list').stdout
         self.assertIn('github', listed)
         self.assertNotIn(self.token, listed)
-        self.assertNotIn(self.token, self.station.berth('profile', HOST).stdout)
-        given = self.station.berth('host', HOST).stdout
-        self.assertRegex(given, r'secret\s+github\s+env GH_TOKEN')
-        self.assertRegex(given, r'registry\s+npm-e2e')
+        self.assertNotIn(self.token, self.station.berth('host', 'export', HOST).stdout)
+        given = json.loads(self.station.berth('host', 'export', HOST).stdout)
+        self.assertIn({'name': 'github', 'env': 'GH_TOKEN'}, given['secrets'])
+        self.assertIn('npm-e2e', given['registries'])
 
     def test_a_registry_login_is_checked(self):
         checked = self.station.berth('registry', 'check', 'npm-e2e').stdout
@@ -52,8 +52,9 @@ class Secrets(unittest.TestCase):
         self.assertIn('✓ Login: accepted', checked)
         self.station.berth('registry', 'login', 'npm-e2e', input='not-the-password\n')
         try:
-            checked = self.station.berth('registry', 'check', 'npm-e2e').stdout
-            self.assertIn('login not accepted', checked)
+            refused = self.station.berth('registry', 'check', 'npm-e2e', check=False)
+            self.assertEqual(refused.returncode, 1)
+            self.assertIn('login not accepted', refused.stdout)
         finally:
             self.station.berth('registry', 'login', 'npm-e2e', input=self.password + '\n')
 
@@ -77,10 +78,10 @@ class Secrets(unittest.TestCase):
         self.assertEqual(shown.strip(), self.token[:15])
 
     def test_a_secret_turned_off_is_gone_after_the_next_send(self):
-        self.station.berth('host', HOST, 'secret', 'github', 'off')
+        self.station.berth('host', 'set', HOST, 'secret.github=')
         try:
             self.station.berth('run', HOST, 'secrets')
             self.assertNotIn('GH_TOKEN', self.agent_file('.config/devbox/secrets.env'))
         finally:
-            self.station.berth('host', HOST, 'secret', 'github', 'env', 'GH_TOKEN')
+            self.station.berth('host', 'set', HOST, 'secret.github=GH_TOKEN')
             self.station.berth('run', HOST, 'secrets')

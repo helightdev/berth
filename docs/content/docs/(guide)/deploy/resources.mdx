@@ -7,7 +7,7 @@ icon: Shapes
 A resource is something a [provisioner](/docs/deploy/provisioners) made for berth. A host's machine is one. A plugin can declare other kinds, such as the [deployments](/docs/deploy/deployments) of the Docker plugin. berth keeps a record of each resource in its store and looks after all of them the same way.
 
 ```bash
-berth resource
+berth resource list
 ```
 
 ```text
@@ -21,8 +21,8 @@ The list comes from berth's records, with each resource as it was last seen. ber
 
 | Kind | Belongs to | Made with |
 | --- | --- | --- |
-| `machine` | A saved host, at most one machine for each | `berth provision HOST PROVISIONER` ([Create the machine](/docs/deploy/provisioners#create-the-machine)) |
-| A kind its plugin declares, such as `deployment` or `instance` | No host | `berth deploy` for a deployment, the provisioner's `new-KIND` action, or `resources.create` for any kind |
+| `machine` | A saved host, at most one machine for each | `berth host create HOST --provisioner PROVISIONER` ([Create the machine](/docs/deploy/provisioners#create-the-machine)) |
+| A kind its plugin declares, such as `deployment` or `instance` | No host | `berth resource create` for a deployment, the provisioner's `new-KIND` action, or `resources.create` for any kind |
 
 A provisioner's page says which kinds it makes. Each kind lists which of `start`, `stop`, `change`, `logs` and `exec` its provisioner takes for it, and can bring actions of its own.
 
@@ -55,10 +55,10 @@ A missing resource keeps its record. berth does not forget a resource that was r
 
 ## Look at one
 
-`berth resource ID` asks the provisioner how the resource is now, and keeps what it says. A name works in place of the id while only one resource has that name.
+`berth resource show ID` asks the provisioner how the resource is now, and keeps what it says. A name works in place of the id while only one resource has that name.
 
 ```bash
-berth resource r-k3q7wz2m
+berth resource show r-k3q7wz2m
 ```
 
 ```text
@@ -71,13 +71,13 @@ Created    2026-11-12T20:14:03Z
 Asked      2026-11-13T08:02:11Z
 Arguments  cpus=8 disk=60GiB image=ubuntu/26.04/cloud memory=8GiB pool=default project=default server=https://192.0.2.10:8443
 
-Actions (berth resource r-k3q7wz2m run ACTION)
+Actions (berth resource run r-k3q7wz2m ACTION)
   start              Start
   stop               Stop
   change             Change
   remove             Delete the machine
 
-Its log: berth resource r-k3q7wz2m logs [--follow]
+Its log: berth resource logs r-k3q7wz2m [--follow]
 ```
 
 An action that cannot run now says why beside its name, such as a secret of the provisioner that has no value.
@@ -93,11 +93,11 @@ An action that cannot run now says why beside its name, such as a secret of the 
 | `remove` | Always | Remove it with its provisioner and forget the record. For a machine, the host's profile stays |
 
 ```bash
-berth resource r-k3q7wz2m actions
-berth resource r-k3q7wz2m run stop
-berth resource r-k3q7wz2m change cpus=4 memory=16GiB
-berth resource r-k3q7wz2m logs --tail 50 --follow
-berth resource r-k3q7wz2m remove
+berth resource actions r-k3q7wz2m
+berth resource run r-k3q7wz2m stop
+berth resource set r-k3q7wz2m cpus=4 memory=16GiB
+berth resource logs r-k3q7wz2m --tail 50 --follow
+berth resource remove r-k3q7wz2m
 ```
 
 `run` and `remove` put the action's question first, unless `--yes` is given. In a terminal, `run` prompts for a required argument you leave out. An action that only reads answers at once. One that changes something runs as a job and shows its output as it comes. berth then ends with the job's exit code.
@@ -178,12 +178,12 @@ A host's machine is a resource of the kind `machine`. These short forms go by th
 
 | Command | Is the same as |
 | --- | --- |
-| `berth provision HOST PROVISIONER [NAME=VALUE…]` | Making the machine and setting it up as the host |
-| `berth instance HOST` | `berth resource ID` |
-| `berth instance HOST start\|stop` | `berth resource ID run start\|stop` |
-| `berth instance HOST destroy [--yes]` | `berth resource ID remove`, but it asks you to type the host's name |
+| `berth host create HOST --provisioner PROVISIONER [NAME=VALUE…]` | Making the machine and setting it up as the host |
+| `berth resource show HOST` | `berth resource show ID` |
+| `berth host start HOST`, `berth host stop HOST` | `berth resource run ID start`, `berth resource run ID stop` |
+| `berth host remove HOST --destroy` | `berth resource remove ID`, and then `berth host remove HOST` |
 
-`berth remove HOST` is refused while the host has a machine berth made. Its message gives the command that deletes the machine.
+`berth host remove HOST` is refused while the host has a machine berth made. Its message gives the command that deletes the machine.
 
 ## Records, tokens and locks
 
@@ -193,11 +193,11 @@ A host's machine is kept beside the host's profile, and every other resource in 
 
 Each change is a job whose subject is `resource:ID`, and it holds the resource's lock while it runs. A second change to the same resource is refused until the first has ended. A host's machine shares the host's lock, so applying the host and changing its machine exclude each other.
 
-A caller can give a token of its own, such as `berth deploy --token TEXT` or `token` in a request. The same token again answers with the job the first call started, and nothing runs a second time.
+A caller of the API can give a token of its own, as `token` in a request. The same token again answers with the job the first call started, and nothing runs a second time.
 
 ### From an older berth
 
-An older berth kept the record of a host's machine beside its profile. The first run of this berth makes each of those a resource of the kind `machine`, with its provisioner's id and token. It says how many it converted, and does it once. `berth resource` lists them afterwards.
+An older berth kept the record of a host's machine beside its profile. The first run of this berth makes each of those a resource of the kind `machine`, with its provisioner's id and token. It says how many it converted, and does it once. `berth resource list` lists them afterwards.
 
 ## In the terminal UI
 
@@ -219,7 +219,7 @@ A host's machine is also on the host's Run tab, with its state and rows to start
 
 ## With a berth server
 
-With a [berth server](/docs/use/server) set, `berth resource`, `berth deploy` and the short forms use the server's resources. What changes one runs as a job there, with the server's plugins, secrets and provisioner settings.
+With a [berth server](/docs/use/server) set, `berth resource list`, `berth resource create` and the short forms use the server's resources. What changes one runs as a job there, with the server's plugins, secrets and provisioner settings.
 
 | Operation | Route | Role |
 | --- | --- | --- |

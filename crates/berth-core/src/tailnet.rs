@@ -115,7 +115,7 @@ impl Control {
             .and_then(|store| store.secret(TAILNET_API_KEY))
             .ok()
             .flatten()
-            .filter(|secret| !secret.is_empty() && secret != crate::server::KEPT);
+            .filter(|secret| !secret.is_empty());
         let credential = match secret {
             None => Err(format!("berth has no API key of the tailnet: {}", set_the_secret())),
             Some(secret) => Credential::parse(&secret).ok_or_else(|| {
@@ -154,10 +154,10 @@ impl Control {
                 "Headscale has no OAuth clients: the secret {TAILNET_API_KEY} is one of its API keys (headscale apikeys create)"
             )),
             (Some(_), _) if self.user.is_empty() && self.tags.is_empty() => Some(
-                "Headscale needs a user or tags for a new host's key: berth config tailnet_user NAME, or berth config tailnet_tags TAG".into(),
+                "Headscale needs a user or tags for a new host's key: berth config set tailnet_user NAME, or berth config set tailnet_tags TAG".into(),
             ),
             (None, Credential::Client { .. }) if self.tags.is_empty() => Some(
-                "Keys made by a Tailscale OAuth client carry tags: berth config tailnet_tags with the client's tags, such as tag:berth".into(),
+                "Keys made by a Tailscale OAuth client carry tags: berth config set tailnet_tags with the client's tags, such as tag:berth".into(),
             ),
             _ => None,
         }
@@ -970,11 +970,6 @@ mod tests {
             assert!(seen.recv().unwrap().line.starts_with("POST"));
         }
         assert_eq!(keys, ["hskey-auth-named", "hskey-auth-file"]);
-        // A berth that uses a berth server has none of its own hosts by name;
-        // berth serve refuses to start like that, so its children never do.
-        paths.set("server", "http://192.0.2.7:7777").unwrap();
-        let said = key_for(&paths, "studio").unwrap_err().to_string();
-        assert_eq!(said, "No host studio");
         let by_path = file.argument();
         assert_eq!(
             crate::profiles::Place::resolve(&paths, &by_path).unwrap(),

@@ -54,8 +54,8 @@ class Update(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.station.remove_host('alpha', check=False)
-        cls.station.berth('host', HOST, 'secret', 'up-key', 'off', check=False)
-        cls.station.berth('secret', 'remove', 'up-key', check=False)
+        cls.station.berth('host', 'set', HOST, 'secret.up-key=', check=False)
+        cls.station.berth('secret', 'remove', 'up-key', '-y', check=False)
 
     def run_as_agent(self, command):
         return self.station.berth('exec', HOST, '--', 'bash', '-c', command).stdout
@@ -76,22 +76,23 @@ class Update(unittest.TestCase):
         kept.plant(station, self.run_as_agent)
         secret = random_text('up-secret')
         station.berth('secret', 'set', 'up-key', input=secret + '\n')
-        station.berth('host', HOST, 'secret', 'up-key', 'file', '~/.config/e2e/up.key', '0600')
+        station.berth('host', 'set', HOST, 'secret.up-key=~/.config/e2e/up.key:0600')
         station.berth('run', HOST, 'secrets')
         session = station.berth('exec', HOST, '--keep', '--', 'echo', f'session {kept.mark}')
         self.assertIn(kept.mark, session.stdout)
 
         # A newer version in the registry.
         self.registry.publish(plugin_version('2.0.0'))
-        checked = station.berth('plugins', 'update', '--check', env=self.npm).stdout
-        self.assertRegex(checked, r'(?m)^up\s+1\.0\.0 → 2\.0\.0$')
-        updated = station.berth('plugins', 'update', 'up', env=self.npm).stdout
+        checked = station.berth('plugin', 'update', '--check', env=self.npm).stdout
+        self.assertRegex(checked, r'(?m)^up\s+1\.0\.0\s+2\.0\.0\s*$')
+        updated = station.berth('plugin', 'update', 'up', env=self.npm).output
         self.assertIn('✓ up 1.0.0 → 2.0.0', updated)
         self.assertIn(f'{HOST} needs applying: up 1.0.0 → 2.0.0', updated)
-        self.assertRegex(station.berth('plugins').stdout, rf'(?m)^up  {PACKAGE} 2\.0\.0  ')
+        plugins = json.loads(station.berth('plugin', 'list', '-o', 'json').stdout)['plugins']
+        self.assertIn(('up', PACKAGE, '2.0.0'), [(p['id'], p['package'], p['version']) for p in plugins])
 
         # The overview says so too.
-        overview = station.terminal(HOST, cols=160)
+        overview = station.terminal('ui', HOST, cols=160)
         try:
             overview.expect(r'Applied before these changed: up 1\.0\.0 → 2\.0\.0', timeout=60)
         finally:
@@ -101,7 +102,7 @@ class Update(unittest.TestCase):
         alpha = station.read_profile()
         alpha['ansible_vars'] = light_vars(['up/missing'])
         station.write_profile(alpha, name='alpha')
-        stopped = station.berth('apply', '--behind', check=False, timeout=900)
+        stopped = station.berth('rollout', check=False, timeout=900)
         self.assertEqual(stopped.returncode, 1, stopped.stdout)
         self.assertRegex(stopped.stdout, r'(?m)^alpha: failed: applying failed')
         self.assertRegex(stopped.stdout, rf'(?m)^{HOST}: not started$')
@@ -109,16 +110,16 @@ class Update(unittest.TestCase):
         station.remove_host('alpha')
 
         # Brought up to date.
-        rolled = station.berth('apply', '--behind', timeout=900).stdout
+        rolled = station.berth('rollout', timeout=900).stdout
         self.assertIn(f'▸ {HOST}: applying (up 1.0.0 → 2.0.0)', rolled)
         self.assertIn(f'✓ {HOST} is up to date', rolled)
         self.assertEqual(version_of(self.applied(), 'up'), '2.0.0')
-        self.assertIn(f'✓ {HOST} is current', station.berth('apply', '--behind').stdout)
+        self.assertIn(f'✓ {HOST} is current', station.berth('rollout').stdout)
 
         # What changed is there, and what went is gone.
         self.assertEqual(station.berth('run', HOST, 'up:hello').stdout.strip(), 'hello from 2.0.0')
         self.assertEqual(station.berth('run', HOST, 'up:added').stdout.strip(), 'added task')
-        tasks = station.berth('actions', HOST).stdout
+        tasks = station.berth('action', 'list', HOST).stdout
         self.assertNotIn('up:old', tasks)
         services = json.loads(station.root_on_host('cat /etc/berth/services.json').stdout)
         ours = [service['run'] for service in services if 'box serve up/echo' in service['run']]
@@ -131,7 +132,7 @@ class Update(unittest.TestCase):
         # And what the agent had is still there.
         kept.check(self, self.run_as_agent)
         self.assertEqual(self.run_as_agent('cat ~/.config/e2e/up.key').strip(), secret)
-        sessions = station.berth('sessions', HOST).stdout
+        sessions = station.berth('session', 'list', HOST).stdout
         self.assertIn(f'session {kept.mark}', sessions)
         notes = self.link.get('/v1/channel?topic=up/notes')
         messages = notes['messages'] if isinstance(notes, dict) else notes
@@ -148,8 +149,8 @@ class ShippedChanged(unittest.TestCase):
     def setUpClass(cls):
         cls.station = station = extended().station
         cls.link = station.link()
-        cls.current = station.berth('apply', '--behind').stdout
-        cls.refused = station.berth('plugins', 'update', 'shipit', check=False).stderr
+        cls.current = station.berth('rollout').stdout
+        cls.refused = station.berth('plugin', 'update', 'shipit', check=False).stderr
         # The same version, another task.
         source = SCRATCH / 'source-shipped/plugins/shipit/package.json'
         manifest = json.loads(source.read_text())
@@ -158,7 +159,7 @@ class ShippedChanged(unittest.TestCase):
         station.root_on_host('touch /var/run/reboot-required')
         sleeper = cls.link.post('/v1/sessions', {'kind': 'process', 'title': 'busy', 'command': ['sleep', '600']})
         try:
-            cls.rolled = station.berth('apply', '--behind', '--reboot', check=False, timeout=900)
+            cls.rolled = station.berth('rollout', '--reboot', check=False, timeout=900)
         finally:
             cls.link.post(f'/v1/sessions/{sleeper["id"]}/signal', {'signal': 'KILL'})
             station.root_on_host('rm -f /var/run/reboot-required')
@@ -188,8 +189,7 @@ class UpdateServed(unittest.TestCase):
         assert ended['exit_code'] == 0, unb64(
             cls.serve.call('GET', f'/v1/jobs/{applied.job["id"]}/output')['data_b64'])[-3000:]
         cls.station = Workstation('update-client', ssh_key=False)
-        cls.station.berth('config', 'server', cls.serve.url)
-        cls.station.berth('config', 'server_token', cls.serve.token)
+        cls.station.berth('login', cls.serve.url, '--token-stdin', input=cls.serve.token)
 
     def host(self):
         return self.serve.call('GET', f'/v1/hosts/{HOST}')
@@ -208,7 +208,7 @@ class UpdateServed(unittest.TestCase):
         self.registry.publish(plugin_version('2.0.0', 'berth-plugin-served'))
         # The tab of the terminal client asks the server. It lists every plugin
         # with its features before the row that adds one, so it is tall.
-        home = station.terminal(cols=160, rows=46)
+        home = station.terminal('ui', cols=160, rows=46)
         try:
             home.expect(HOST)
             home.send('6')
@@ -217,7 +217,7 @@ class UpdateServed(unittest.TestCase):
             home.expect(r'update available: 1\.0\.0 → 2\.0\.0', timeout=60)
         finally:
             home.close()
-        updated = station.berth('plugins', 'update').stdout
+        updated = station.berth('plugin', 'update').output
         self.assertIn('✓ served 1.0.0 → 2.0.0', updated)
         self.assertIn(f'{HOST} needs applying: served 1.0.0 → 2.0.0', updated)
         behind = self.host()['behind']
@@ -225,8 +225,7 @@ class UpdateServed(unittest.TestCase):
         listed = self.serve.call('GET', '/v1/hosts')
         self.assertTrue(any(host['name'] == HOST and 'behind' in host for host in listed))
 
-        rolled = station.berth('apply', '--behind', timeout=900)
-        self.assertIn(f'on the berth server at {self.serve.url}', rolled.stdout)
+        rolled = station.berth('rollout', timeout=900)
         self.assertIn(f'✓ {HOST} is up to date', rolled.stdout)
         self.assertRegex(rolled.stdout, rf'(?m)^{HOST}: up to date$')
         jobs = self.serve.call('GET', '/v1/jobs')

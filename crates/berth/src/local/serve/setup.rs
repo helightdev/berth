@@ -77,15 +77,18 @@ pub async fn profile(State(state): App, Path(name): Path<String>) -> Answer<Json
 pub async fn save_profile(
     State(state): App,
     Path(name): Path<String>,
+    access: Option<Extension<Access>>,
     Json(mut profile): Json<Value>,
 ) -> Answer<Json<Done>> {
+    // A caller on the socket or in berth itself is the server's own user.
+    let own_user = access.is_none();
     let place = own_place(&name)?;
     if !profile.is_object() {
         return Err(bad("A profile is an object"));
     }
     // A caller of an older layout: its access fields are read as now. A key
     // file it names is on another machine, so the server logs in with its own.
-    if let Some(builder) = profile["builder"].as_object_mut() {
+    if let Some(builder) = profile.get_mut("builder").and_then(Value::as_object_mut) {
         builder.remove("ssh_key");
     }
     berth_core::import::convert_layout(&state.paths, &name, &mut profile);
@@ -101,11 +104,13 @@ pub async fn save_profile(
         let store = berth_core::store::shared(&state.paths).map_err(internal)?;
         let known = berth_core::keys::ring::names(&store).map_err(internal)?;
         if key != berth_api::profile::BERTH_KEY && !known.iter().any(|known| known == key) {
-            return Err(bad(format!("The server has no key {key}. See: berth key")));
+            return Err(bad(format!(
+                "The server has no key {key}. See: berth key list"
+            )));
         }
     }
     // How the caller reached this server is not part of the host.
-    if let Some(builder) = profile["builder"].as_object_mut() {
+    if let Some(builder) = profile.get_mut("builder").and_then(Value::as_object_mut) {
         builder.remove("served");
         builder.remove("served_only");
     }
@@ -114,13 +119,13 @@ pub async fn save_profile(
     let kept = place.load(&state.paths).map_err(internal)?;
     let kept_access = kept.as_ref().map(berth_api::profile::Access::of);
     let link = kept_access.as_ref().and_then(|kept| kept.link.clone());
-    if access.link.is_some() && link != access.link {
+    if !own_user && access.link.is_some() && link != access.link {
         return Err(bad(
             "access.link is a command the server runs, and is set on the server itself",
         ));
     }
     let ssh = kept_access.is_some_and(|kept| kept.auth == berth_api::profile::Auth::Ssh);
-    if access.auth == berth_api::profile::Auth::Ssh && !ssh {
+    if !own_user && access.auth == berth_api::profile::Auth::Ssh && !ssh {
         return Err(bad(
             "access.auth ssh is the SSH configuration of the server's own account, and is set on the server itself",
         ));
@@ -147,7 +152,7 @@ pub async fn remove_host(State(state): App, Path(name): Path<String>) -> Answer<
         return Err(Fail::new(
             code::CONFLICT,
             format!(
-                "{name} has a machine berth created, {} of {}. Delete it first: berth resource {} remove",
+                "{name} has a machine berth created, {} of {}. Delete it first: berth resource remove {}",
                 kept.record.external_id, kept.record.provisioner, kept.record.id
             ),
         ));
@@ -374,7 +379,7 @@ pub async fn settings(
     State(state): App,
     access: Option<Extension<Access>>,
 ) -> Answer<Json<Vec<Setting>>> {
-    // The user the server runs as changes any of them, as berth config does.
+    // The user the server runs as changes any of them, as berth config set does.
     let local = access.is_none();
     let saved = state.paths.settings().map_err(internal)?;
     let settings = SETTINGS
@@ -408,7 +413,7 @@ pub async fn set_setting(
     if access.is_some() && !OPEN_SETTINGS.contains(&key.as_str()) {
         return Err(Fail::new(
             code::FORBIDDEN,
-            format!("{key} is set on the server itself, with berth config"),
+            format!("{key} is set on the server itself, with berth config set"),
         ));
     }
     state.paths.set(&key, &setting.value).map_err(bad)?;
@@ -571,6 +576,8 @@ pub struct FeatureInfo {
     /// The group of the Features page it is listed in.
     pub group: String,
     pub help: String,
+    /// The types of host it is for, such as `workstation` or `node`.
+    pub types: Vec<berth_api::HostType>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -593,11 +600,17 @@ pub async fn catalogue(State(state): App) -> Answer<Json<Catalogue>> {
     let features = found
         .iter()
         .flat_map(|plugin| {
-            plugin.features.iter().map(|feature| FeatureInfo {
+            let hosting = plugins::hosting(plugin);
+            plugin.features.iter().map(move |feature| FeatureInfo {
                 key: format!("{}/{}", plugin.id, feature.id),
                 label: feature.label.clone(),
                 group: feature.group.clone(),
                 help: feature.help.to_owned(),
+                types: hosting
+                    .iter()
+                    .find(|known| known.feature == feature.id)
+                    .map(|known| known.types.clone())
+                    .unwrap_or_else(|| vec![berth_api::HostType::Workstation]),
             })
         })
         .collect();
@@ -667,7 +680,7 @@ pub async fn generate(State(state): App, Json(asked): Json<Generate>) -> Answer<
                     Ok(Generated {
                         value,
                         note: format!(
-                            "Generated password kept in the server's store; see it with: berth credentials {}",
+                            "Generated password kept in the server's store; see it with: berth host credentials {}",
                             place.argument()
                         ),
                         password: Some(password),

@@ -63,7 +63,7 @@ impl Installed {
                         }
                     }
                     Ok((401, _)) => Claim::Failed(
-                        "The setup key was not taken: it is wrong, used up or expired. Make a new one where the server runs (berth setup-key), or give the token."
+                        "The setup key was not taken: it is wrong, used up or expired. Make a new one where the server runs (berth server setup-key), or give the token."
                             .into(),
                     ),
                     Ok((status, body)) => {
@@ -103,11 +103,10 @@ impl Installed {
         }
     }
 
-    fn commands(&self, token: &str) -> [String; 2] {
-        [
-            format!("berth config server {}", self.server),
-            format!("berth config server_token {token}"),
-        ]
+    /// What uses this server from berth on another machine: the command,
+    /// which reads the token from standard input, so it is in no argv.
+    fn commands(&self, _token: &str) -> [String; 1] {
+        [format!("berth login {} --token-stdin", self.server)]
     }
 
     /// A key on the screen, and what the status line then says.
@@ -142,7 +141,7 @@ impl Installed {
                 then(match answer {
                     Ok((200, _)) => None,
                     _ => Some(
-                        "The setup key was not ended. It stops by itself within a day, or with berth setup-key --remove where the server runs."
+                        "The setup key was not ended. It stops by itself within a day, or with berth server setup-key --revoke where the server runs."
                             .into(),
                     ),
                 })

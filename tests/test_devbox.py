@@ -394,7 +394,7 @@ class RenderTests(unittest.TestCase):
             path.write_text(json.dumps(config()))
             builder.checked_config(path,'cloud')
     def test_release_carries_plugins_berth_installed(self):
-        # berth plugins add puts a plugin in node_modules of berth's plugins folder.
+        # berth plugin add puts a plugin in node_modules of berth's plugins folder.
         with tempfile.TemporaryDirectory() as temp, patch.object(builder,'BUILD',Path(temp)/'build'):
             plugin=Path(temp)/'plugins/node_modules/berth-plugin-demo'
             (plugin/'tasks').mkdir(parents=True); (plugin/'node_modules/dep').mkdir(parents=True)

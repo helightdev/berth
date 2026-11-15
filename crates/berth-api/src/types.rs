@@ -174,10 +174,10 @@ pub fn type_mismatch(name: &str, intended: HostType, observed: Option<HostType>)
     Some(match observed {
         // Both keep the profile they were applied from.
         HostType::Workstation | HostType::Node => format!(
-            "{name} is a {observed}; its profile here says {intended}. To adopt it from the profile it keeps: berth adopt {name}"
+            "{name} is a {observed}; its profile here says {intended}. To adopt it from the profile it keeps: berth host adopt {name}"
         ),
         _ => format!(
-            "{name} has berth's controller; its profile here says {intended}. To adopt it: berth host type {name} managed"
+            "{name} has berth's controller; its profile here says {intended}. To adopt it: berth host set {name} type=managed"
         ),
     })
 }
@@ -656,6 +656,9 @@ pub struct JobInfo {
     /// How a roll-out went, host by host, once it has ended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<RolloutReport>,
+    /// Who stopped it before it ended by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_by: Option<String>,
 }
 
 // ── System ──────────────────────────────────────────────────────────────────
@@ -1553,6 +1556,9 @@ pub struct Rollout {
     /// These hosts, in this order; all saved hosts by name when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosts: Vec<String>,
+    /// Hosts left out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub except: Vec<String>,
     /// Also the hosts that are current.
     #[serde(default)]
     pub all: bool,
@@ -1580,6 +1586,9 @@ impl Rollout {
         if !self.hosts.is_empty() {
             arguments.insert("hosts".into(), self.hosts.join(","));
         }
+        if !self.except.is_empty() {
+            arguments.insert("except".into(), self.except.join(","));
+        }
         arguments
     }
 
@@ -1590,16 +1599,19 @@ impl Rollout {
             Some("yes" | "true") => Ok(true),
             Some(other) => Err(format!("{name} is yes or no, not {other}")),
         };
-        let hosts = arguments.get("hosts").map_or(vec![], |hosts| {
-            hosts
-                .split(',')
-                .map(str::trim)
-                .filter(|host| !host.is_empty())
-                .map(str::to_owned)
-                .collect()
-        });
+        let names = |key: &str| {
+            arguments.get(key).map_or(vec![], |hosts| {
+                hosts
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|host| !host.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+        };
         let rollout = Rollout {
-            hosts,
+            hosts: names("hosts"),
+            except: names("except"),
             all: flag("all")?,
             update: flag("update")?,
             reboot: flag("reboot")?,
@@ -1680,7 +1692,7 @@ mod tests {
         assert_eq!(HostType::from_level("node"), Some(HostType::Node));
         assert_eq!(
             type_mismatch("big", HostType::Managed, Some(HostType::Node)).unwrap(),
-            "big is a node; its profile here says managed. To adopt it from the profile it keeps: berth adopt big"
+            "big is a node; its profile here says managed. To adopt it from the profile it keeps: berth host adopt big"
         );
         assert_eq!(HostType::parse("controller"), None);
         assert_eq!(HostType::from_level("reachable"), Some(HostType::Ssh));

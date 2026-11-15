@@ -16,7 +16,7 @@ terminal. A set-up has these pieces:
 | berth server | Optional. `berth serve`, usually in a Docker container, reached over a tailnet with TLS. It keeps the hosts, profiles and secrets. |
 | Host | A machine berth logs in to over SSH. Its type is one of four: `ssh` means berth only logs in, `managed` adds berthd and box, `node` is a server berth applies without a desktop, and `workstation` is set up from a profile. A machine that exists is added with `berth host add NAME ADDRESS --user USER`. |
 | Node | A server for machines. Its features `incus/server` and `docker/engine` install Incus and Docker, and after the apply berth registers their provisioners, such as `big-incus-vm`, `big-incus-container` and `big-docker-container`. |
-| Provisioner | Creates the machine for a host, such as on Docker or Incus. Plugins bring the types `docker/container`, `incus/vm` and `incus/container`, and berth runs each provisioner under a name of its own, registered with `berth provisioner add NAME TYPE` or by a node. `berth provisioner` lists them, and the Provisioners tab of the terminal UI (key `2`) shows each one's page. |
+| Provisioner | Creates the machine for a host, such as on Docker or Incus. Plugins bring the types `docker/container`, `incus/vm` and `incus/container`, and berth runs each provisioner under a name of its own, registered with `berth provisioner add NAME TYPE` or by a node. `berth provisioner list` lists them, and the Provisioners tab of the terminal UI (key `2`) shows each one's page. |
 
 ## Where to look things up
 
@@ -79,10 +79,8 @@ x86_64 and a login as root or as an account with sudo. On the user's own
 machine, or on a berth connected to their server, with the made-up name `big`:
 
 ```bash
-berth host add big 192.0.2.20 --user root --auth ssh --type node
-berth profile big > big.json
-# in big.json: "ansible_vars": {"devbox_plugin_features": ["docker/engine", "incus/server"]}
-berth profile big --set big.json
+berth host add big 192.0.2.20 --user root --auth ssh --type node \
+  --feature docker/engine --feature incus/server
 berth apply big
 ```
 
@@ -93,7 +91,7 @@ The apply gives the SSH user berth's key and allows only keys for SSH. Root
 keeps a login with keys. Its `ufw` firewall keeps these open: SSH, the
 tailnet, the guests' bridge `incusbr0` and the Incus API on port 8444. berth
 then registers the provisioners. Check with `berth run big status` and
-`berth provisioner`.
+`berth provisioner list`.
 
 The features never erase a disk. They make an Incus storage pool in a folder,
 or use one the user names in `devbox_incus_pool`. A server with Incus or Docker
@@ -154,16 +152,16 @@ The server starts with a setup key. On the server machine this prints a
 one-time key that is valid for 24 hours:
 
 ```bash
-sudo docker exec berth berth setup-key
+sudo docker exec berth berth server setup-key
 ```
 
 The recipes make a key on the first run and print it at the end. Give the
 user the key and the address, which `tailscale serve status` shows:
 
-1. On their own machine they run `berth connect https://THIS-MACHINE.YOUR-TAILNET.ts.net` and enter the key.
-2. Or they run `berth --server https://THIS-MACHINE.YOUR-TAILNET.ts.net` with the key in `BERTH_SETUP_KEY`, which opens the screens. It works on Windows and macOS too.
+1. On their own machine they run `berth login https://THIS-MACHINE.YOUR-TAILNET.ts.net` and enter the key. It works on Windows and macOS too.
+2. Then `berth ui` opens the screens, and the other commands use that server.
 
-The key ends when they choose Done, or when `berth connect` has saved the token.
+The key ends when they choose Done, or when `berth login` has saved the token.
 
 **Return the setup key and the address to the user. Never read, store or print
 the permanent token in `serve.token`.**

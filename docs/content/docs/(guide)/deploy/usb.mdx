@@ -34,7 +34,7 @@ It opens on **Install**. Choose **USB installer** under **How To Install**, and 
 
 ### Optionally, join the tailnet
 
-**Tailscale** is on **Install** too. With it on, berth makes a one-use key through the control server's API each time it builds the installer, from the secret `tailnet_api_key` ([joining the tailnet](/docs/use/access#joining-the-tailnet)). Tailnets that require tags take them from `berth config tailnet_tags tag:devbox`. For a Headscale server, see [Headscale](/docs/use/access#headscale).
+**Tailscale** is on **Install** too. With it on, berth makes a one-use key through the control server's API each time it builds the installer, from the secret `tailnet_api_key` ([joining the tailnet](/docs/use/access#joining-the-tailnet)). Tailnets that require tags take them from `berth config set tailnet_tags tag:devbox`. For a Headscale server, see [Headscale](/docs/use/access#headscale).
 
 The key lasts 24 hours. When berth builds the image, it says until when the image can join the tailnet. A machine installed later is set up without the tailnet, and the next apply from berth joins it.
 
@@ -81,8 +81,8 @@ The installer is built on the machine the server runs on, which writes one of it
 The same from the command line:
 
 ```bash
-berth iso garage-laptop                     # downloads the ISO when none is set
-berth iso garage-laptop --write /dev/sdX    # and writes it, after asking
+berth host iso garage-laptop                     # downloads the ISO when none is set
+berth host iso garage-laptop --write /dev/sdX    # and writes it, after asking
 ```
 
 The image is `~/.local/share/berth/build/HOSTNAME-autoinstall.iso`. To write it by hand, use the script from the provisioning source. It accepts only a whole USB disk that is large enough and has no system mount on it, and unmounts anything else first:

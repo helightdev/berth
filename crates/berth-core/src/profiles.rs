@@ -8,7 +8,6 @@
 use crate::{
     Result,
     paths::Paths,
-    server::Server,
     store::{self, OWN, kind},
 };
 use serde_json::Value;
@@ -26,13 +25,10 @@ pub enum Place {
     File(PathBuf),
 }
 
-/// The scope of the saved hosts: the berth server's when one is set, and
-/// this installation's own otherwise.
-pub fn scope(paths: &Paths) -> String {
-    match Server::configured(paths) {
-        Some(server) => server.scope(),
-        None => OWN.to_owned(),
-    }
+/// The scope of the saved hosts: this installation's own. A client of a
+/// server elsewhere keeps none.
+pub fn scope(_: &Paths) -> String {
+    OWN.to_owned()
 }
 
 /// Whether a name can be a saved host's: it is a file name of its own on
@@ -383,14 +379,10 @@ mod tests {
         for bad in ["-x", ".hidden", "a b", ""] {
             assert!(Place::resolve(&paths, bad).is_err(), "{bad}");
         }
-        // With a berth server set, a name is one of the server's hosts.
+        // A berth server set for the commands leaves the saved hosts its own.
         paths.set("server", "http://192.0.2.7:7777").unwrap();
-        let served = Place::resolve(&paths, "studio").unwrap();
-        assert_eq!(served.server_url(), Some("http://192.0.2.7:7777"));
-        assert_eq!(
-            served.describe(),
-            "studio on the berth server at http://192.0.2.7:7777"
-        );
+        let own = Place::resolve(&paths, "studio").unwrap();
+        assert_eq!(own.server_url(), None);
         let path = home.path().join("x.json");
         assert_eq!(
             Place::resolve(&paths, path.to_str().unwrap()).unwrap(),

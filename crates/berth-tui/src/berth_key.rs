@@ -54,7 +54,7 @@ pub fn help(name: &str, public: &str, server: Option<&str>) -> String {
         _ => "",
     };
     format!(
-        "{whose}\n\nAdd it as an authorized key at your cloud provider, or to `~/.ssh/authorized_keys` on a host, and berth gets in without a key of yours; `berth key trust HOST` does that with a password used once.{more} The private half stays with berth: `berth key` lists the keys.\n\nEnter copies it.\n\n`{public}`"
+        "{whose}\n\nAdd it as an authorized key at your cloud provider, or to `~/.ssh/authorized_keys` on a host, and berth gets in without a key of yours; `berth key trust HOST` does that with a password used once.{more} The private half stays with berth: `berth key list` lists the keys.\n\nEnter copies it.\n\n`{public}`"
     )
 }
 

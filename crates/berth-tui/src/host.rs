@@ -714,11 +714,11 @@ pub fn action_help(host: &HostView, index: usize) -> String {
 /// of their own, the others are run by name.
 pub fn command_of(action: &str) -> String {
     match action {
-        "install-controller" => "berth host install HOST".into(),
+        "install-controller" => "berth run HOST install-controller".into(),
         "trust-key" => "berth key trust HOST".into(),
-        "host-key" => "berth key host HOST [--accept]".into(),
-        "apply" => "berth apply HOST".into(),
-        "seed" => "berth seed HOST".into(),
+        "host-key" => "berth host verify HOST [--accept]".into(),
+        "apply" => "berth host apply HOST".into(),
+        "seed" => "berth host seed HOST".into(),
         "rename" => "berth host rename HOST NAME [--hostname]".into(),
         name => format!("berth run HOST {name}"),
     }
@@ -735,7 +735,7 @@ pub fn session_help(host: &HostView, index: usize) -> String {
         (Some(ended), None) => format!("ended {ended}"),
     };
     format!(
-        "`{}` as {}, started {}, {state}. It lives on the host and goes on while nobody watches.\n\nEnter opens it here. x forgets one that has ended, with its output. From the command line: `berth attach HOST {id}` or `berth output HOST {id}`.",
+        "`{}` as {}, started {}, {state}. It lives on the host and goes on while nobody watches.\n\nEnter opens it here. x forgets one that has ended, with its output. From the command line: `berth session attach HOST {id}` or `berth session logs HOST {id}`.",
         session.command.join(" "),
         session.user,
         session.started,

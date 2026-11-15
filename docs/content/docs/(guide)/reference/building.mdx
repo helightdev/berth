@@ -45,7 +45,7 @@ For a debugger, `CARGO_PROFILE_DEV_DEBUG=true` gives berth's own crates full deb
 While changing the role or plugins, point berth at the checkout instead of the built-in copy:
 
 ```bash
-berth config source "$PWD"
+berth config set source "$PWD"
 ```
 
 ## Check
@@ -140,7 +140,7 @@ A tag with a suffix, such as `v0.4.0-rc.1`, makes a pre-release. Its programs sa
 
 ## On every system
 
-`berth` builds on Linux, macOS and Windows. Its installation, `berth serve` and the commands are compiled for Linux alone, in `crates/berth/src/local/`. On macOS and Windows it is the screens, `berth connect` and `berth update`, a client of a server elsewhere. The program builds on the system it is for:
+`berth` builds on Linux, macOS and Windows. Its installation, `berth serve` and the commands are compiled for Linux alone, in `crates/berth/src/local/`. On macOS and Windows it is the screens, `berth login` and `berth update`, a client of a server elsewhere. The program builds on the system it is for:
 
 ```bash
 cargo build --release --locked -p berth

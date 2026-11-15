@@ -1,4 +1,4 @@
-//! `berth store`: where the store is, sealing its values with a key, and
+//! `berth server store`: where the store is, sealing its values with a key, and
 //! copying it to another database.
 
 use crate::Result;
@@ -11,14 +11,14 @@ use std::io::{BufRead, IsTerminal, Write};
 /// Asks a yes-or-no question.
 type Confirm<'a> = &'a mut dyn FnMut(&str) -> Result<bool>;
 
-const USAGE: &str = "Usage: berth store [encrypt | rekey | decrypt [--yes]]
-       berth store copy TARGET | - | --target-file FILE [--into-existing]
+const USAGE: &str = "Usage: berth server store [status | encrypt | rekey | decrypt]
+       berth server store copy TARGET | - | --target-file FILE [--into-existing]
 
 copy writes everything of this store into TARGET, a SQLite file or a
 postgres:// URL, as the store setting takes it. A URL with a password shows
 up in the process list: give it on standard input (-) or in a file instead.";
 
-/// `berth store [encrypt | rekey | decrypt [--yes] | copy …]`
+/// `berth server store [status | encrypt | rekey | decrypt | copy …]`
 pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
     let installation = Installation::of(paths);
     let mut out = std::io::stdout().lock();
@@ -70,7 +70,7 @@ fn status(installation: &Installation, out: &mut dyn Write) -> Result<()> {
         )?,
         None => writeln!(
             out,
-            "Encrypted  no; berth store encrypt would keep its key in {file}"
+            "Encrypted  no; berth server store encrypt would keep its key in {file}"
         )?,
     }
     let report = store.seal_report()?;
@@ -125,7 +125,7 @@ fn encrypt(paths: &Paths, installation: &Installation, out: &mut dyn Write) -> R
     let file = &installation.key_file;
     if store.encrypted() || file.exists() {
         return Err(format!(
-            "The store is encrypted already, with the key in {}. berth store rekey changes the key",
+            "The store is encrypted already, with the key in {}. berth server store rekey changes the key",
             file.display()
         )
         .into());
@@ -146,7 +146,7 @@ fn rekey(paths: &Paths, installation: &Installation, out: &mut dyn Write) -> Res
     let _serve = hold_serve(paths)?;
     let store = installation.open()?;
     if !store.encrypted() {
-        return Err("The store is not encrypted: berth store encrypt makes its key".into());
+        return Err("The store is not encrypted: berth server store encrypt makes its key".into());
     }
     let _keys = hold_keys(installation)?;
     let (count, id) = rewrite_with_new_key(installation, &store)?;
@@ -217,7 +217,7 @@ fn same(one: &Target, other: &Target) -> bool {
     }
 }
 
-/// `berth store copy TARGET | - | --target-file FILE [--into-existing]`:
+/// `berth server store copy TARGET | - | --target-file FILE [--into-existing]`:
 /// every table of this store into another. It does not switch to it.
 fn copy(
     paths: &Paths,
@@ -295,7 +295,7 @@ fn copy(
     };
     writeln!(
         out,
-        "This berth still uses the {}. To switch: berth config store {shown}, or set BERTH_STORE.",
+        "This berth still uses the {}. To switch: berth config set store {shown}, or set BERTH_STORE.",
         installation.target.describe()
     )?;
     if from.encrypted() || from.seal_report()?.sealed > 0 {
@@ -463,7 +463,7 @@ mod tests {
         assert!(said.contains("  kv        1 rows"), "{said}");
         assert!(said.contains("Left out 1 rows"), "{said}");
         assert!(
-            said.contains(&format!("berth config store {}", target.display())),
+            said.contains(&format!("berth config set store {}", target.display())),
             "{said}"
         );
         assert!(said.contains("key file has to be there"), "{said}");

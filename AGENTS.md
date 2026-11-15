@@ -8,7 +8,7 @@ berth sets up and looks after agent workstations. These are Ubuntu machines with
 | --- | --- |
 | `crates/berth/` | The `berth` program, for Linux, macOS and Windows. `main.rs` opens the screens, the same on every system. On Linux, `src/local/` adds the commands and `berth serve` (`src/local/serve/`), behind one `#[cfg(target_os = "linux")]`, and `client_only.rs` stands in for it elsewhere. In `serve/`, `here.rs` is the server in berth's own process that the screens and commands use when no other is set, `actions.rs` has the actions of hosts and of the installation, `keys.rs` the key ring's routes, `provisioners.rs` and `resources.rs` those of provisioners and resources |
 | `crates/berth-api/` | Types and the operations table shared by every program (`ops.rs` names each operation, its HTTP route and its role) |
-| `crates/berth-core/` | Hosts, profiles, links to hosts, registries and secrets, and plugins. The store is in `store/`. `kept.rs` and `plugin_state.rs` write files from it, and `import.rs` takes in the files of older versions. `kept_profile.rs` is the profile a host keeps of itself and `berth adopt`. `runner.rs` runs every action as a job. `keys/` is the key ring and how berth logs in to hosts. `host_type.rs` says what a host of each type can do. `provisioner.rs` and `resource.rs` are the provisioners of plugins and what they made |
+| `crates/berth-core/` | Hosts, profiles, links to hosts, registries and secrets, and plugins. The store is in `store/`. `kept.rs` and `plugin_state.rs` write files from it, and `import.rs` takes in the files of older versions. `kept_profile.rs` is the profile a host keeps of itself and `berth host adopt`. `runner.rs` runs every action as a job. `keys/` is the key ring and how berth logs in to hosts. `host_type.rs` says what a host of each type can do. `provisioner.rs` and `resource.rs` are the provisioners of plugins and what they made |
 | `crates/berth-tui/` | The parts of the screens with no terminal in them |
 | `crates/berth-pty/` | Terminals for sessions |
 | `crates/berthd/`, `crates/box/` | The controller on each host and the agent's own tool there |
@@ -38,7 +38,7 @@ A new skill gets its own folder and a row here and in `.agents/skills/README.md`
 - Follow the `install-berth` skill. It says which recipe in `recipes/` fits and gives its command.
 - A recipe that erases disks needs the user's word first, for that server and those disks.
 - Do not write an enrollment key or a password into a file in the repository.
-- When a berth server is installed, give the user its address and a setup key from `berth setup-key`. Do not read or print the token in `serve.token`.
+- When a berth server is installed, give the user its address and a setup key from `berth server setup-key`. Do not read or print the token in `serve.token`.
 
 ## Build and check
 

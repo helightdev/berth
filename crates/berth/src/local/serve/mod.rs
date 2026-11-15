@@ -1,6 +1,5 @@
 //! `berth serve`: one API over all hosts, with the store. It reaches each
 //! host through a link, as the UI does, and adds nothing to a host's own API.
-//! The commands that only read the store (`inbox`, `kv`) are here too.
 
 mod actions;
 mod api;
@@ -22,10 +21,10 @@ use berth_core::{
     host::Host,
     link::{Link, LinkSpec},
     paths::Paths,
-    store::{self, Filter, Store, Stored, When},
+    store::{self, Store, Stored},
 };
 use futures_util::StreamExt;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -407,12 +406,11 @@ impl Serve {
                     .get(&host.name)
                     .cloned()
                     .or_else(|| host.kept_sudo_password(&self.paths))
-                    .or_else(|| std::env::var("BERTH_SUDO_PASSWORD").ok())
                     .map(Some)
                     .ok_or_else(|| {
                         format!(
-                            "{} asks for a sudo password: start berth serve again",
-                            host.name
+                            "{name}'s SSH user's sudo asks for a password, which this server was not given. Keep it with berth secret set sudo/{name}, or run berth serve on a terminal, which asks for it",
+                            name = host.name
                         )
                     }),
             };
@@ -550,21 +548,6 @@ fn lock(paths: &Paths) -> Result<std::fs::File> {
 
 const USAGE: &str = "Usage: berth serve [--listen ADDRESS:PORT [--expose]]";
 
-/// A berth set to use a berth server keeps that server's hosts, so its
-/// commands, and the ones a serve starts, would take a host's name for one of
-/// those. berth serve serves this installation's own hosts, and does not
-/// start like that.
-fn refuse_a_server(paths: &Paths) -> Result<()> {
-    match berth_core::server::Server::configured(paths) {
-        Some(server) => Err(format!(
-            "This berth uses the berth server at {}, so its hosts are that server's. berth serve serves the hosts of this machine: stop using the other server with berth config server \"\" (and unset BERTH_SERVER), then start berth serve again",
-            server.url
-        )
-        .into()),
-        None => Ok(()),
-    }
-}
-
 /// `berth serve [--listen ADDRESS:PORT [--expose]]`
 ///
 /// Over TCP every request shows the token, but the connection is plain HTTP,
@@ -598,14 +581,13 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
             Some(address)
         }
     };
-    refuse_a_server(paths)?;
     let _lock = lock(paths)?;
     let store = open_store(paths)?;
     store.end_lost_jobs()?;
     // From the next step on the store holds keys and passwords.
     if store.backend_name() == "postgres" && !store.encrypted() {
         eprintln!(
-            "berth serve: the PostgreSQL database holds this installation's keys and passwords readable; berth store encrypt seals them"
+            "berth serve: the PostgreSQL database holds this installation's keys and passwords readable; berth server store encrypt seals them"
         );
     }
     crate::local::restore_plugins(paths);
@@ -674,70 +656,4 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
         let _ = std::fs::remove_file(&socket);
         Ok(())
     })
-}
-
-/// `berth inbox [HOST] [--topic PREFIX] [--all]`: what the store holds.
-pub fn inbox_command(paths: &Paths, args: &[&str]) -> Result<()> {
-    let (mut host, mut topic, mut all) = (None, None, false);
-    let mut words = args.iter();
-    while let Some(word) = words.next() {
-        match *word {
-            "--all" => all = true,
-            "--topic" => topic = Some(*words.next().ok_or("--topic needs a prefix")?),
-            word if word.starts_with('-') => {
-                return Err("Usage: berth inbox [HOST] [--topic PREFIX] [--all]".into());
-            }
-            word => host = Some(word),
-        }
-    }
-    let store = open_store(paths)?;
-    let filter = Filter {
-        host,
-        topic,
-        before: None,
-        done: (!all).then_some(false),
-        limit: 200,
-    };
-    let (messages, next) = store.inbox(&filter)?;
-    for stored in messages.iter().rev() {
-        let message = &stored.message;
-        let mark = if stored.done { "✓" } else { " " };
-        println!(
-            "{mark} {}  {}#{}  {}  {}",
-            message.time, stored.host, message.id, message.topic, message.body
-        );
-    }
-    if next.is_some() {
-        eprintln!("(older messages not shown)");
-    }
-    Ok(())
-}
-
-/// `berth kv get|set|rm|ls NAMESPACE [KEY] [JSON]`
-pub fn kv_command(paths: &Paths, args: &[&str]) -> Result<()> {
-    let store = open_store(paths)?;
-    match *args {
-        ["ls", namespace] => {
-            for entry in store.list(namespace)? {
-                println!("{}\t{}\t{}", entry.key, entry.revision, entry.value);
-            }
-        }
-        ["get", namespace, key] => match store.get(namespace, key)? {
-            Some(entry) => println!("{}", entry.value),
-            None => return Err(format!("No {key} in {namespace}").into()),
-        },
-        ["set", namespace, key, value] => {
-            // Anything that is not JSON is taken as text.
-            let value = serde_json::from_str(value).unwrap_or_else(|_| json!(value));
-            let revision = store.put(namespace, key, &value, When::Always)?;
-            println!("{key} is at revision {revision}");
-        }
-        ["rm", namespace, key] => {
-            if !store.remove(namespace, key, When::Always)? {
-                return Err(format!("No {key} in {namespace}").into());
-            }
-        }
-        _ => return Err("Usage: berth kv get|set|rm|ls NAMESPACE [KEY] [JSON]".into()),
-    }
-    Ok(())
 }

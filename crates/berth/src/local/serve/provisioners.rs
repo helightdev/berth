@@ -52,7 +52,11 @@ fn known(state: &Serve, store: &Store, name: &str) -> Answer<ProvisionerInfo> {
     provision::list(&state.paths, store)
         .into_iter()
         .find(|known| known.id == name)
-        .ok_or_else(|| missing(format!("No provisioner {name}. See: berth provisioners")))
+        .ok_or_else(|| {
+            missing(format!(
+                "No provisioner {name}. See: berth provisioner list"
+            ))
+        })
 }
 
 #[utoipa::path(get, path = "/v1/provisioners", summary = "What the plugins can create machines and other resources with, what each asks for and can do, and whether it can be used here.", tag = "set-up",
@@ -174,6 +178,7 @@ pub async fn provisioner_act(
     }
     let mut request = Request::new(Subject::Provisioner(name), &action);
     request.token = act.token;
+    request.role = found.role;
     request.secrets = acting.secrets();
     let work = Work::Function(Box::new(move |out| {
         match acting.run(&paths, &options, out) {

@@ -15,13 +15,13 @@ berth keeps its state in one store: the hosts, their passwords, secrets, berth's
 | `store_ca` | A PEM file of certificate authorities to trust as well as the public ones, for a database with a private one |
 
 ```bash
-berth config store "/srv/berth/berth.db"
-berth config store ""                      # back to berth.db in the data directory
+berth config set store "/srv/berth/berth.db"
+berth config set store ""                      # back to berth.db in the data directory
 ```
 
 `BERTH_STORE`, `BERTH_STORE_KEY` and `BERTH_STORE_CA` in the environment take precedence over the settings. These three settings stay in `config.json`, as berth needs them to open the store.
 
-With `sslmode=require`, berth connects over TLS and checks the server's certificate and its host name. `verify-ca` and `verify-full` do the same. Without an `sslmode`, or with any other, the connection is plain. A URL can contain the password, and `berth config store URL` shows it in the process list for a moment. Write it into `config.json` yourself to avoid that.
+With `sslmode=require`, berth connects over TLS and checks the server's certificate and its host name. `verify-ca` and `verify-full` do the same. Without an `sslmode`, or with any other, the connection is plain. A URL can contain the password, and `berth config set store URL` shows it in the process list for a moment. Write it into `config.json` yourself to avoid that.
 
 ## Encrypt it
 
@@ -29,10 +29,10 @@ Without a key, every secret, password and key in the store is readable to anyone
 
 | Command | Does |
 | --- | --- |
-| `berth store` | Says where the store is, and how many of its values are sealed |
-| `berth store encrypt` | Makes the key file and seals every value with it |
-| `berth store rekey` | Seals the values with a new key, and keeps the previous one beside it as `store.key.old` |
-| `berth store decrypt [--yes]` | Writes the values plain again and moves the key file aside to `store.key.old` |
+| `berth server store status` | Says where the store is, and how many of its values are sealed |
+| `berth server store encrypt` | Makes the key file and seals every value with it |
+| `berth server store rekey` | Seals the values with a new key, and keeps the previous one beside it as `store.key.old` |
+| `berth server store decrypt [--yes]` | Writes the values plain again and moves the key file aside to `store.key.old` |
 
 Stop `berth serve` before you run them, as it would go on sealing with the key it loaded. The inbox, the jobs and the key-value store of `berth serve` are not sealed.
 
@@ -58,12 +58,12 @@ On a machine whose plugin directory lacks plugins of the store, berth writes the
 
 ## Move to another database
 
-`berth store copy` copies everything into another store, such as from the SQLite file to PostgreSQL:
+`berth server store copy` copies everything into another store, such as from the SQLite file to PostgreSQL:
 
 ```bash
-berth store copy - <<< "postgres://berth:PASSWORD@db.example.org/berth?sslmode=require"
-berth store copy /srv/berth/berth.db
-berth store copy --target-file ~/berth-database-url
+berth server store copy - <<< "postgres://berth:PASSWORD@db.example.org/berth?sslmode=require"
+berth server store copy /srv/berth/berth.db
+berth server store copy --target-file ~/berth-database-url
 ```
 
 `-` reads the target from standard input and `--target-file` from a file's first line. A URL as an argument shows up in the process list. The copy honours `store_ca`.
@@ -73,7 +73,7 @@ berth store copy --target-file ~/berth-database-url
 - Values are copied as they are, sealed or plain, and keep their times.
 - What this berth knows of berth servers is left out, as their next mirror fills it again.
 
-The copy does not switch. When it's done, switch with `berth config store TARGET` or `BERTH_STORE`. With an encrypted store, the key file has to be wherever the store is used.
+The copy does not switch. When it's done, switch with `berth config set store TARGET` or `BERTH_STORE`. With an encrypted store, the key file has to be wherever the store is used.
 
 ## Restore on a new machine
 
@@ -103,7 +103,7 @@ For PostgreSQL, set `store` to the database's URL. For SQLite, copy the file and
 
 ### Start it
 
-Run `berth list` or start `berth serve`. The hosts, secrets and settings are there. berth writes its SSH key and the token back. It logs in to the hosts with the same key, and clients of `berth serve` stay connected. It reinstalls your own plugins with npm.
+Run `berth ls` or start `berth serve`. The hosts, secrets and settings are there. berth writes its SSH key and the token back. It logs in to the hosts with the same key, and clients of `berth serve` stay connected. It reinstalls your own plugins with npm.
 
 </Step>
 </Steps>
@@ -129,4 +129,4 @@ docker run -d --name berth -p 127.0.0.1:7777:7777 \
   ghcr.io/helightdev/berth
 ```
 
-The variables are visible to anyone who can inspect the container. To keep the password out of them, write `store` into `/config/berth/config.json` instead. Mount the key's folder rather than the file alone, as a rekey writes beside it. To encrypt a new store, run `docker exec berth berth store encrypt` with `BERTH_STORE_KEY` set, after stopping the server.
+The variables are visible to anyone who can inspect the container. To keep the password out of them, write `store` into `/config/berth/config.json` instead. Mount the key's folder rather than the file alone, as a rekey writes beside it. To encrypt a new store, run `docker exec berth berth server store encrypt` with `BERTH_STORE_KEY` set, after stopping the server.

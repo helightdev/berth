@@ -156,7 +156,7 @@ pub fn run(paths: &Paths, installation: &Installation, store: &Store) -> Result<
         let registered = take_in_provisioners(store)?;
         if !registered.is_empty() {
             eprintln!(
-                "berth: the provisioners in use are registered as {}: see berth provisioner",
+                "berth: the provisioners in use are registered as {}: see berth provisioner list",
                 registered.join(", ")
             );
         }
@@ -550,7 +550,7 @@ pub(crate) fn convert_access(
             }
             Err(error) => {
                 converted.notices.push(format!(
-                    "{title} named the key file {}, which berth could not take into its key ring ({error}). It logs in with your SSH configuration now. Add the key with: berth key add NAME FILE, and choose it as the host's login",
+                    "{title} named the key file {}, which berth could not take into its key ring ({error}). It logs in with your SSH configuration now. Add the key with: berth key import NAME FILE, and choose it as the host's login",
                     file.display()
                 ));
                 Auth::Ssh

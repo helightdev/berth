@@ -85,7 +85,7 @@ class OwnKeyOnly:
         self.assertEqual(changed_tasks(self.second_apply.stdout), [])
 
     def test_tasks_are_listed_and_run(self):
-        self.assertRegex(self.berth('actions', HOST).stdout, r'(?m)^  secrets\s+')
+        self.assertRegex(self.berth('action', 'list', HOST).stdout, r'(?m)^secrets\s+')
         self.assertEqual(self.berth('run', HOST, 'sign-in:status').returncode, 0)
 
     def test_commands_run_as_each_account(self):
@@ -98,9 +98,9 @@ class OwnKeyOnly:
     def test_sessions_are_kept_and_attached_to(self):
         marker = random_text('own-key')
         self.berth('exec', HOST, '--keep', '--', 'echo', marker)
-        line = next(line for line in self.berth('sessions', HOST).stdout.splitlines() if marker in line)
-        self.assertEqual(self.berth('output', HOST, line.split()[0]).stdout.strip(), marker)
-        terminal = self.station.terminal('attach', HOST)
+        line = next(line for line in self.berth('session', 'list', HOST).stdout.splitlines() if marker in line)
+        self.assertEqual(self.berth('session', 'logs', HOST, line.split()[0]).stdout.strip(), marker)
+        terminal = self.station.terminal('session', 'attach', HOST)
         try:
             terminal.pump(2)
             terminal.send('echo "$(id -un) $((6 * 7))"\r')
@@ -113,14 +113,14 @@ class OwnKeyOnly:
     def test_secrets_are_sent_to_the_agent(self):
         value = random_text('own-key-secret')
         self.berth('secret', 'set', 'own-key-token', input=value + '\n')
-        self.berth('host', HOST, 'secret', 'own-key-token', 'env', 'OWN_KEY_TOKEN')
+        self.berth('host', 'set', HOST, 'secret.own-key-token=OWN_KEY_TOKEN')
         try:
             sent = self.berth('run', HOST, 'secrets')
             self.assertNotIn(value, sent.stdout + sent.stderr)
             env = self.root_on_host(f'cat /home/{AGENT}/.config/devbox/secrets.env')
             self.assertIn(f'export OWN_KEY_TOKEN={value}', env)
         finally:
-            self.berth('host', HOST, 'secret', 'own-key-token', 'off')
+            self.berth('host', 'set', HOST, 'secret.own-key-token=')
             self.berth('run', HOST, 'secrets')
 
 
@@ -152,12 +152,12 @@ class Direct(OwnKeyOnly, unittest.TestCase):
         profile = bare_profile(template)
         profile['access'].update(user=owner, sudo='password')
         cls.station.write_profile(profile)
-        typed = {'BERTH_SUDO_PASSWORD': cls.password}
-        cls.first_apply = cls.station.berth('apply', HOST, input='', env=typed, timeout=900)
+        typed = cls.password + '\n'
+        cls.first_apply = cls.station.berth('apply', HOST, '--sudo-password-stdin', input=typed, timeout=900)
         cls.owner_profile = cls.station.read_profile()
         profile['access']['user'] = OPERATOR
         cls.station.write_profile(profile)
-        cls.second_apply = cls.station.berth('apply', HOST, input='', env=typed, timeout=900)
+        cls.second_apply = cls.station.berth('apply', HOST, '--sudo-password-stdin', input=typed, timeout=900)
         cls.operator_profile = cls.station.read_profile()
 
     @classmethod
@@ -181,7 +181,7 @@ class Direct(OwnKeyOnly, unittest.TestCase):
         self.assertEqual(done.stdout.strip(), AGENT)
 
     def test_plain_ssh_and_the_files_of_the_agent(self):
-        self.assertEqual(self.berth('ssh', HOST, 'id -un').stdout.strip(), OPERATOR)
+        self.assertEqual(self.berth('ssh', HOST, '--', 'id -un').stdout.strip(), OPERATOR)
         link = BerthdLink(self.station)
         path = f'/home/{AGENT}/own-key.txt'
         content = random_text('written').encode()
@@ -204,8 +204,7 @@ class Served(OwnKeyOnly, unittest.TestCase):
         catalogue = cls.serve.call('GET', '/v1/setup')
         cls.serve.call('PUT', f'/v1/hosts/{HOST}/profile', bare_profile(catalogue['template']))
         cls.station = Workstation('own-key-client', ssh_key=False)
-        cls.station.berth('config', 'server', cls.serve.url)
-        cls.station.berth('config', 'server_token', cls.serve.token)
+        cls.station.berth('login', cls.serve.url, '--token-stdin', input=cls.serve.token)
         cls.first_apply = cls.station.berth('apply', HOST, input='', timeout=900)
         cls.second_apply = cls.station.berth('apply', HOST, input='', timeout=900)
 

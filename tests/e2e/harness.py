@@ -135,6 +135,18 @@ def source_with_plugins(name, plugins):
 # A workstation: a HOME and XDG directories of its own
 
 
+def follows_a_job(args):
+    """Whether berth follows a job of its server for these arguments."""
+    words = [arg for arg in args if not str(arg).startswith('-')]
+    first, second = (words + ['', ''])[:2]
+    return (first in ('apply', 'rollout')
+            or (first, second) in {('host', 'add'), ('host', 'apply'), ('host', 'adopt'), ('host', 'iso'), ('host', 'create'),
+                                   ('host', 'rename'), ('host', 'start'), ('host', 'stop'), ('key', 'trust'),
+                                   ('key', 'rotate'), ('resource', 'create'), ('resource', 'set'),
+                                   ('resource', 'remove'), ('resource', 'run'), ('provisioner', 'run'),
+                                   ('provisioner', 'set')})
+
+
 class Workstation:
     """A user's machine with berth: its own HOME, XDG directories and SSH key."""
 
@@ -186,7 +198,7 @@ class Workstation:
         of a host that is only made for that and removed again."""
         probe = 'key-file'
         self.write_profile({'hostname': probe, 'builder': {}, 'access': {'address': '192.0.2.1'}}, name=probe)
-        self.berth('inventory', probe)
+        self.berth('host', 'inventory', probe)
         self.remove_host(probe)
         return self.own_key
 
@@ -210,6 +222,11 @@ class Workstation:
     def berth(self, *args, input=None, check=True, timeout=600, env=None):
         done = subprocess.run([str(BERTH), *args], env={**self.env, **(env or {})}, cwd=self.home,
                               input=input, capture_output=True, text=True, timeout=timeout)
+        # What a job wrote goes to standard error, and the result to standard
+        # output; the tests of a command that follows a job read both.
+        done.output = done.stdout + done.stderr
+        if follows_a_job(args):
+            done.stdout = done.output
         if check and done.returncode != 0:
             raise AssertionError(f'berth {" ".join(args)} exited {done.returncode}:\n'
                                  f'{done.stdout[-4000:]}\n{done.stderr[-4000:]}')
@@ -234,15 +251,15 @@ class Workstation:
         return self.ssh(OPERATOR, f'sudo -n sh -c {shell_quote(command)}', check=check)
 
     def write_profile(self, profile, name=HOST):
-        """Save a host's profile in berth's store, as `berth profile --set` does."""
-        self.berth('profile', name, '--set', '-', input=json.dumps(profile, indent=2) + '\n')
+        """Save a host's profile in berth's store, as `berth host import` does."""
+        self.berth('host', 'import', name, '-', input=json.dumps(profile, indent=2) + '\n')
 
     def read_profile(self, name=HOST):
-        return json.loads(self.berth('profile', name).stdout)
+        return json.loads(self.berth('host', 'export', name).stdout)
 
     def remove_host(self, name=HOST, check=True):
         """Forget a host, with what berth keeps of it."""
-        return self.berth('remove', name, check=check)
+        return self.berth('host', 'remove', name, '-y', check=check)
 
     def link(self):
         return BerthdLink(self)
@@ -329,7 +346,7 @@ def provisioned():
     started = time.monotonic()
     first = station.berth('apply', HOST, timeout=900)
     station.apply_seconds = time.monotonic() - started
-    station.first_apply = first.stdout
+    station.first_apply = first.output
     wait_for('berthd answering', lambda: station.link().get('/v1/version'), timeout=60)
     _provisioned['workstation'] = station
     return station
@@ -493,12 +510,12 @@ def _enter_extended():
     station.env['BERTH_SOURCE'] = str(SCRATCH / 'source-shipped' if (SCRATCH / 'source-shipped').exists()
                                       else source_with_plugins('source-shipped', {
                                           'shipit': plugin_version('1.0.0', 'berth-plugin-shipit')}))
-    station.berth('plugins', 'add', str(FIXTURE))
+    station.berth('plugin', 'add', str(FIXTURE))
     registry.publish(plugin_version('1.0.0'))
-    station.berth('plugins', 'add', 'berth-plugin-up', env=registry.env())
+    station.berth('plugin', 'add', 'berth-plugin-up', env=registry.env())
     leave_the_tailnet(station)
-    station.berth('config', 'tailnet_login_server', headscale().url)
-    station.berth('config', 'tailnet_user', headscale().user)
+    station.berth('config', 'set', 'tailnet_login_server', headscale().url)
+    station.berth('config', 'set', 'tailnet_user', headscale().user)
     station.berth('secret', 'set', 'tailnet_api_key', input=headscale().api_key + '\n')
     station.write_profile(joining({**kept, 'ansible_vars': light_vars(EXTENDED_FEATURES)}))
     before = last_key_id()
@@ -510,10 +527,10 @@ def _enter_extended():
         leave_the_tailnet(station)
         station.write_profile(kept)
         for key in ('tailnet_login_server', 'tailnet_user'):
-            station.berth('config', key)
-        station.berth('secret', 'remove', 'tailnet_api_key', check=False)
+            station.berth('config', 'unset', key)
+        station.berth('secret', 'remove', 'tailnet_api_key', '-y', check=False)
         for package in ('berth-plugin-e2e', 'berth-plugin-up'):
-            station.berth('plugins', 'remove', package, check=False)
+            station.berth('plugin', 'remove', package, '-y', check=False)
     return Applied(station=station, kept=kept, first=first, second=second, before=before,
                    after_first=after_first), leave
 
@@ -542,12 +559,12 @@ def _enter_plain():
     station = provisioned()
     for package in ('berth-plugin-e2e', 'berth-plugin-up'):
         if (station.berth_dir / 'plugins/node_modules' / package).exists():
-            station.berth('plugins', 'remove', package)
+            station.berth('plugin', 'remove', package, '-y')
     kept = station.read_profile()
     leave_the_tailnet(station)
     join_by_hand(station)
-    station.berth('config', 'tailnet_login_server', headscale().url)
-    station.berth('config', 'tailnet_user', headscale().user)
+    station.berth('config', 'set', 'tailnet_login_server', headscale().url)
+    station.berth('config', 'set', 'tailnet_user', headscale().user)
     station.write_profile(joining({**kept, 'ansible_vars': light_vars()}, tailscale_auth_key=headscale().new_key(),
                                   tailscale_auto_key=False, tailscale_login_server=headscale().url))
     nodes, before = headscale().nodes(), last_key_id()
@@ -561,7 +578,7 @@ def _enter_plain():
         leave_the_tailnet(station)
         station.write_profile(kept)
         for key in ('tailnet_login_server', 'tailnet_user'):
-            station.berth('config', key)
+            station.berth('config', 'unset', key)
     return Applied(station=station, kept=kept, first=first, saved=saved, nodes=nodes, after=after,
                    before=before, refused=refused), leave
 
@@ -584,10 +601,9 @@ def _enter_served_extended():
     registry.publish(plugin_version('1.0.0', 'berth-plugin-served'))
     serve.call('POST', '/v1/plugins', {'spec': 'berth-plugin-served'})
     client = Workstation('served-client', ssh_key=False)
-    client.berth('config', 'server', serve.url)
-    client.berth('config', 'server_token', serve.token)
-    client.berth('config', 'tailnet_login_server', headscale().url)
-    client.berth('config', 'tailnet_user', headscale().user)
+    client.berth('login', serve.url, '--token-stdin', input=serve.token)
+    client.berth('config', 'set', 'tailnet_login_server', headscale().url)
+    client.berth('config', 'set', 'tailnet_user', headscale().user)
     client.berth('secret', 'set', 'tailnet_api_key', input=headscale().api_key + '\n')
     kept = serve.call('GET', f'/v1/hosts/{HOST}/profile')
     serve.call('PUT', f'/v1/hosts/{HOST}/profile',

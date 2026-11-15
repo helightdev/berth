@@ -56,7 +56,7 @@ class Restore(unittest.TestCase):
             folder.mkdir(mode=0o700)
         station.env.update(BERTH_STORE=str(keep / 'berth.db'), BERTH_STORE_KEY=str(keep / 'store.key'))
         # What the store says of itself when it is sealed.
-        cls.encrypted = station.berth('store', 'encrypt')
+        cls.encrypted = station.berth('server', 'store', 'encrypt')
         cls.own_public = station.own_public()
         cls.give_the_host_the_keys()
         key = station.own_key_file()
@@ -67,7 +67,7 @@ class Restore(unittest.TestCase):
             cls.fill(serve)
         finally:
             serve.stop()
-        cls.status = station.berth('store').stdout
+        cls.status = station.berth('server', 'store', 'status').stdout
         cls.sealed_file = (keep / 'berth.db').read_bytes()
         # The database and the key file are all that is kept.
         for name in ('berth.db', 'store.key'):

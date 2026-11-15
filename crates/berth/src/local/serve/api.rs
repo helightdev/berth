@@ -193,6 +193,7 @@ pub(super) fn job_info(paths: &berth_core::paths::Paths, job: store::Job) -> Job
         started: job.started,
         ended: job.ended,
         exit_code: job.exit_code,
+        stopped_by: job.stopped_by,
     }
 }
 
@@ -268,6 +269,7 @@ fn guarded_routes() -> OpenApiRouter<Arc<Serve>> {
         .routes(routes!(jobs))
         .routes(routes!(job))
         .routes(routes!(job_output))
+        .routes(routes!(stop_job))
         .routes(routes!(inbox))
         .routes(routes!(mark_done, mark_open))
         .routes(routes!(kv_list))
@@ -742,6 +744,53 @@ async fn job_output(
     Ok(Json(piece(&data, &query, job.ended.is_some())))
 }
 
+#[utoipa::path(post, path = "/v1/jobs/{id}/stop", summary = "Stop a running job: its programs end, a session it follows ends on its host, and its record says who stopped it.", tag = "jobs",
+    params(("id" = String, Path, description = "A job's id")),
+    responses((status = 202, description = "Asked to stop; it ends soon, as following it shows", body = JobInfo),
+              (status = 403, description = "The caller may not start a job of its kind, so may not stop it", body = ErrorBody),
+              (status = 404, description = "No such job", body = ErrorBody),
+              (status = 409, description = "It has ended already", body = ErrorBody),
+              (status = 501, description = "It runs in another berth serve of the same store", body = ErrorBody)))]
+async fn stop_job(
+    State(state): App,
+    access: Option<Extension<Access>>,
+    Path(id): Path<String>,
+) -> Answer<(StatusCode, Json<JobInfo>)> {
+    let job = find_job(&state, &id)?;
+    // Who may start a job of its kind may stop it.
+    if let (Some(Extension(access)), Some(role)) = (&access, state.runner.stop_role(&id)) {
+        state
+            .auth
+            .permits(access, "jobs.stop", role)
+            .map_err(|(kind, message)| Fail::new(kind, message))?;
+    }
+    let by = match &access {
+        None => "the server's own user".to_owned(),
+        Some(Extension(access)) => match &access.subject {
+            Some(subject) => subject.clone(),
+            None => format!("a caller with the role {}", access.role.name()),
+        },
+    };
+    use berth_core::runner::Stopping;
+    match state.runner.stop(&id, &by).map_err(internal)? {
+        Stopping::Asked | Stopping::AskedBefore(_) => {}
+        Stopping::Ended => {
+            return Err(Fail::new(
+                code::CONFLICT,
+                format!("Job {id} has ended already"),
+            ));
+        }
+        Stopping::NotHere => {
+            return Err(Fail::new(
+                code::NOT_AVAILABLE,
+                format!("Job {id} runs in another berth serve of this store, which can stop it"),
+            ));
+        }
+    }
+    let job = state.store.job(&id)?.unwrap_or(job);
+    Ok((StatusCode::ACCEPTED, Json(job_info(&state.paths, job))))
+}
+
 /// What is said of a job whose output file is not here. The store has the
 /// job, but its output stays in the data directory of the machine that ran
 /// it, which an installation restored on another machine does not have.
@@ -1101,6 +1150,15 @@ async fn proxy(
         }
     }
     let remote = remote(&state, &name)?;
+    // A host of the type ssh has no controller to pass this to; say what installs one.
+    let (host_type, _) = known(&state, &name);
+    if let Err(refusal) = berth_core::host_type::check(
+        &name,
+        host_type,
+        berth_core::host_type::Capability::Sessions,
+    ) {
+        return Err(Fail::new(code::PRECONDITION, refusal.why));
+    }
     // The secrets a host gets are the server's own: a caller cannot hand it others.
     if method == Method::POST && rest.trim_end_matches('/') == "actions/secrets" {
         return Err(Fail::new(

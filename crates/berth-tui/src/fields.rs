@@ -10,7 +10,7 @@ pub const DISK_TYPES: &[&str] = &["any", "ssd", "hdd"];
 /// for each of those.
 pub const LOGINS: &[&str] = &["berth", "password", "ssh"];
 /// The types a host can be meant to be, the whole profile first.
-pub const TYPES: &[&str] = &["workstation", "managed", "ssh"];
+pub const TYPES: &[&str] = &["workstation", "node", "managed", "ssh"];
 
 /// The pages of a host: its overview (`Manage`) and the tabs of the set-up
 /// flow. Each tab depends only on the ones before it.
@@ -56,7 +56,7 @@ pub const OFFERS: &[(&str, &str, &str)] = &[
     (
         "terminal",
         "Terminal",
-        "A shell on the host, in a panel here. Space switches between the agent account, with its tools on the PATH and the virtual desktop as its display, and the SSH user. It is a session of the host: Ctrl+Q leaves it running and it can be opened again from Sessions; exit or Ctrl+D ends it. The mouse wheel scrolls back. From the command line: `berth attach HOST`.",
+        "A shell on the host, in a panel here. Space switches between the agent account, with its tools on the PATH and the virtual desktop as its display, and the SSH user. It is a session of the host: Ctrl+Q leaves it running and it can be opened again from Sessions; exit or Ctrl+D ends it. The mouse wheel scrolls back. From the command line: `berth session attach HOST`.",
     ),
     (
         "apply",
@@ -76,7 +76,7 @@ pub const OFFERS: &[(&str, &str, &str)] = &[
     (
         "install-controller",
         "Install the controller",
-        "Put berthd and box on the host and start berth's controller, so that sessions, actions and files work there, without the rest of a workstation. The host's type becomes managed. Continues in the terminal. From the command line: `berth host install HOST`.",
+        "Put berthd and box on the host and start berth's controller, so that sessions, actions and files work there, without the rest of a workstation. The host's type becomes managed. Continues in the terminal. From the command line: `berth run HOST install-controller`.",
     ),
     (
         "ssh",
@@ -116,6 +116,41 @@ impl Action {
         Action::Docker,
     ];
 
+    /// The ways a berth server installs a host itself, as the screens and
+    /// `berth host create` offer them. The USB installer is built on the
+    /// machine the server runs on.
+    pub const SERVED: [Action; 5] = [
+        Action::Machine,
+        Action::Iso,
+        Action::CloudSeed,
+        Action::Ssh,
+        Action::Reach,
+    ];
+
+    /// The way's name on the command line, as `--method` takes it.
+    pub fn key(self) -> &'static str {
+        match self {
+            Action::Save => "save",
+            Action::Release => "release",
+            Action::UsbSeed => "usb-seed",
+            Action::Iso => "iso",
+            Action::CloudSeed => "cloud-seed",
+            Action::Machine => "provisioner",
+            Action::Apply => "inventory",
+            Action::Docker => "container",
+            Action::Ssh => "ssh",
+            Action::Reach => "ssh-only",
+            Action::Manage => "manage",
+        }
+    }
+
+    /// The way of [`Action::SERVED`] a name on the command line means.
+    pub fn by_key(key: &str) -> Option<Action> {
+        Action::SERVED
+            .into_iter()
+            .find(|action| action.key() == key)
+    }
+
     /// The action a way of the Install tab sets, with the type it gives the
     /// profile when it gives one.
     pub fn choose(self, config: &mut serde_json::Value) -> Action {
@@ -141,7 +176,7 @@ impl Action {
             Action::UsbSeed => "Render USB seed",
             Action::Iso => "USB installer",
             Action::CloudSeed => "Cloud-init seed",
-            Action::Machine => "Create a machine",
+            Action::Machine => "From a provisioner",
             Action::Apply => "This machine or an inventory",
             Action::Docker => "Container image",
             Action::Ssh => "Existing host over SSH",
@@ -164,7 +199,7 @@ impl Action {
                 "Generate cloud-init user data. Upload the generated release archive to the configured URL."
             }
             Action::Machine => {
-                "Have a provisioner create the machine, such as a container or a virtual machine on a server, and set it up as this host. Choose the provisioner below; plugins bring them. Its size is on the Settings tab, and Create is on the Run tab."
+                "Have a provisioner make the host, such as a container or a virtual machine on a server, and set it up. Choose the provisioner below; plugins bring them. Its size is on the Settings tab, and Create is on the Run tab."
             }
             Action::Apply => {
                 "Provision a dedicated Ubuntu host using Ansible. Blank inventory applies to this machine."
@@ -176,7 +211,7 @@ impl Action {
                 "Look after a host that is already set up, over SSH: show its status and access links, publish the desktop on the tailnet, run the smoke test, install updates or reboot. Pick the action on the overview."
             }
             Action::Ssh => {
-                "Install on an existing Ubuntu host over SSH. Enter a hostname, IP address or SSH config alias, and how berth logs in: its own key by default. A host that does not take that key yet gets it with berth key trust HOST and a password used once. Sudo prompts use the normal terminal."
+                "Install on an existing Ubuntu host over SSH. Enter a hostname, IP address or SSH config alias, and how berth logs in: its own key by default. A host that does not take that key yet gets it with berth key trust HOST and a password used once."
             }
             Action::Reach => {
                 "Add a host berth only logs in to over SSH, such as a server that stays as it is: nothing is installed on it. Enter a hostname, IP address or SSH config alias, and how berth logs in. Run saves it; a host that does not take berth's key yet gets it with berth key trust HOST. Its page can install the controller later, for sessions, actions and files."
@@ -271,6 +306,95 @@ pub enum Field {
 }
 
 impl Field {
+    /// Every field, in the order of the set-up tabs.
+    pub const ALL: [Field; 48] = {
+        use Field::*;
+        [
+            Type,
+            Target,
+            SshHost,
+            SshUser,
+            SshPort,
+            Login,
+            AskBecomePass,
+            Hostname,
+            Tailscale,
+            ToolsWeb,
+            ToolsNative,
+            ToolsJvm,
+            ToolsDotnet,
+            ToolsScripting,
+            ToolsScientific,
+            ToolsChrome,
+            Playwright,
+            SoftwareRendering,
+            Cockpit,
+            Docker,
+            OperatorUser,
+            OperatorKey,
+            OperatorHash,
+            AgentUser,
+            AgentHash,
+            AgentKey,
+            AgentPrivileges,
+            AgentSudo,
+            HardenSsh,
+            RecoveryCidr,
+            Geometry,
+            DiskMode,
+            DiskSerial,
+            DiskModel,
+            DiskPath,
+            DiskType,
+            Keyboard,
+            Wifi,
+            WifiSsid,
+            WifiPassword,
+            WifiInterface,
+            ReleaseStore,
+            ReleaseUrl,
+            ReleasePrivate,
+            Iso,
+            IsoSha,
+            UsbDevice,
+            Inventory,
+        ]
+    };
+
+    /// The field's name on the command line, as `--set KEY=VALUE` takes it:
+    /// its place in the profile, without the parts every field of a kind
+    /// shares.
+    pub fn key(self) -> String {
+        let pointer = self.spec().pointer.trim_start_matches('/');
+        for (part, instead) in [
+            ("access/", ""),
+            ("builder/", ""),
+            ("ansible_vars/devbox_", ""),
+            ("wifi/", "wifi_"),
+        ] {
+            if let Some(rest) = pointer.strip_prefix(part) {
+                return format!("{instead}{rest}");
+            }
+        }
+        pointer.to_owned()
+    }
+
+    /// The field a name on the command line means.
+    pub fn by_key(key: &str) -> Option<Field> {
+        Field::ALL.into_iter().find(|field| field.key() == key)
+    }
+
+    /// Whether `berth host create` asks for the field when it is shown and
+    /// not given: a choice most hosts make. Others are asked for only when
+    /// a problem names them.
+    pub fn asked(self) -> bool {
+        use Field::*;
+        matches!(
+            self,
+            Target | Type | SshHost | SshUser | OperatorUser | AgentUser
+        )
+    }
+
     pub fn spec(self) -> Spec {
         use Field::*;
         use Kind::*;
@@ -285,7 +409,7 @@ impl Field {
                 "Hostname",
                 "/hostname",
                 Text,
-                "Hostname assigned to the installed target. Lowercase letters, numbers and hyphens, starting with a letter. F4 generates one.",
+                "Hostname assigned to the installed target. Lowercase letters, numbers and hyphens, starting with a letter. Left empty, the host's name is used when it can be one.",
             ),
             Keyboard => (
                 "Keyboard layout",
@@ -369,7 +493,7 @@ impl Field {
                 "Wi-Fi SSID",
                 "/wifi/ssid",
                 Text,
-                "Wireless network name. Networks saved on this machine are listed in Suggestions. F5 unlocks their saved passwords, so choosing one also fills in its password.",
+                "Wireless network name. Networks saved on this machine are listed in Suggestions, and choosing one with its saved password fills that in too.",
             ),
             WifiPassword => (
                 "Wi-Fi password",
@@ -393,7 +517,7 @@ impl Field {
                 "Operator password hash",
                 "/operator_password_hash",
                 Secret,
-                "SHA-512 crypt or yescrypt hash of the operator password. F4 generates a password and hash, and berth credentials HOST shows the password later. F5 hashes a password you enter.",
+                "SHA-512 crypt or yescrypt hash of the operator password. Generate a password and hash, and berth host credentials HOST shows the password later, or enter a password to hash.",
             ),
             AgentUser => (
                 "Agent username",
@@ -411,7 +535,7 @@ impl Field {
                 "Agent password hash",
                 "/agent_password_hash",
                 Secret,
-                "Optional local password for the agent. F4 generates a password and hash, and berth credentials HOST shows the password later. F5 hashes a password you enter. Empty locks password login.",
+                "Optional local password for the agent. Generate a password and hash, and berth host credentials HOST shows the password later, or enter a password to hash. Empty locks password login.",
             ),
             AgentPrivileges => (
                 "Agent privileges",
@@ -555,7 +679,7 @@ impl Field {
                 "Type",
                 "/type",
                 Choice(TYPES),
-                "What berth does with the host. workstation: the whole profile, with the desktop, the agents and plugins. managed: berthd and box alone, for sessions, actions and files on a machine that stays as it is. ssh: nothing is installed; berth logs in over SSH. The type can change later: install the controller, or set workstation and apply.",
+                "What berth does with the host. workstation: the whole profile, with the desktop, the agents and plugins. node: a server for machines, applied without a desktop or accounts, with the plugin features that install Incus or Docker and register their provisioners. managed: berthd and box alone, for sessions, actions and files on a machine that stays as it is. ssh: nothing is installed; berth logs in over SSH. The type can change later: install the controller, or set workstation and apply.",
             ),
             UsbDevice => (
                 "Then write to USB drive",
@@ -605,7 +729,7 @@ impl Field {
         matches!(self.spec().kind, Kind::Text | Kind::Secret | Kind::Path)
     }
 
-    /// Fields with a Generate (F4) action.
+    /// Fields with a Generate action.
     pub fn can_generate(self) -> bool {
         matches!(self, Field::Hostname) || self.is_password_hash()
     }

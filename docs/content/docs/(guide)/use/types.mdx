@@ -56,16 +56,16 @@ Then berth asks the host what it is. A machine that berth set up before has a co
 A workstation or a node keeps its profile on the host as well. berth offers to [adopt](/docs/use/moving) it from there:
 
 ```bash
-berth adopt dock
+berth host adopt dock
 ```
 
 A host with berth's controller alone has nothing more to keep, and berth offers to save its type:
 
 ```bash
-berth host type dock managed
+berth host set dock type=managed
 ```
 
-`berth host type HOST TYPE` only changes the profile here. A host's page says the same when its controller reports more than its profile says. berth refuses to install the controller alone on a host that is a workstation or a node, whatever its profile here says. It asks the host's controller first, and the playbook checks the host's own record and the profile it keeps.
+`berth host set HOST type=TYPE` only changes the profile here. A host's page says the same when its controller reports more than its profile says. berth refuses to install the controller alone on a host that is a workstation or a node, whatever its profile here says. It asks the host's controller first, and the playbook checks the host's own record and the profile it keeps.
 
 In the terminal UI, create a host on the home screen and choose **Existing host, SSH only** on the **Install** tab. The address and the login are all the set-up asks for, and **Run** saves the host. For a managed host, choose **Existing host over SSH** and set **Type** to `managed`. **Run** then installs the controller.
 
@@ -86,14 +86,14 @@ A server that hosts Incus or Docker machines is a [node](/docs/use/nodes). berth
 ## Installing the controller
 
 ```bash
-berth host install dock
+berth run dock install-controller
 ```
 
 The controller is berthd and box with the files they read, from the same part of the role that a full apply runs. Nothing else of a workstation is installed: no accounts, desktop, agents or plugins. The SSH user is the account sessions run as, and its home is where the file calls may go. The host's type becomes `managed`, and its actions are status, update, reboot and secrets.
 
 The same is the host's action **Install the controller** on its overview, and over the API as `install-controller`. On a managed host it's called **Update the controller**: run it after updating berth, as berth's own version is all such a host is compared with. A workstation's controller comes with applying its configuration, so the action is not offered there.
 
-berth also refuses it on a host that is a workstation or a node whatever its profile here says. It asks the host's controller first. The role checks again on the host before it changes anything. It stops when the host's record says workstation or node. It also stops when berthd there serves an account other than the SSH user. Installing the controller alone on such a host would take the workstation's controller apart. The overview and `berth actions` say when a host is more than its profile, and how to adopt it.
+berth also refuses it on a host that is a workstation or a node whatever its profile here says. It asks the host's controller first. The role checks again on the host before it changes anything. It stops when the host's record says workstation or node. It also stops when berthd there serves an account other than the SSH user. Installing the controller alone on such a host would take the workstation's controller apart. The overview and `berth action list` say when a host is more than its profile, and how to adopt it.
 
 <Callout type="warn" title="A host without systemd">
   On a host with systemd the controller is a service that starts at boot. Without systemd, as in most containers, the controller is installed but nothing on the host starts it. berth says so and waits a minute for it to answer. The install fails when it doesn't. Something on the host then has to run `/usr/local/bin/berthd`, as the init of a container can.
@@ -104,7 +104,7 @@ berth also refuses it on a host that is a workstation or a node whatever its pro
 | From | To | How |
 | --- | --- | --- |
 | `ssh` | `managed` | Install the controller |
-| `ssh` or `managed` | `node` | `berth host type HOST node`, list its features, and apply ([Nodes](/docs/use/nodes)) |
+| `ssh` or `managed` | `node` | `berth host set HOST type=node`, list its features, and apply ([Nodes](/docs/use/nodes)) |
 | `ssh`, `managed` or `node` | `workstation` | Set **Type** to `workstation` in the set-up, fill in the rest of the tabs, and apply |
 
 berth never takes a host back to a type with less, and never removes what it installed. A node is not applied over a workstation that berth set up, as nothing would look after its desktop, agent and accounts any more. Making a profile a node's takes the fields of the agent and the operator out of it.

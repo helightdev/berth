@@ -168,6 +168,8 @@ pub struct Job {
     /// The caller's token: the same one again for the same subject and
     /// action finds this job.
     pub token: Option<String>,
+    /// Who stopped it, when it was stopped before it ended by itself.
+    pub stopped_by: Option<String>,
 }
 
 impl Job {
@@ -180,6 +182,7 @@ impl Job {
         json!({
             "id": self.id, "subject": self.subject, "action": action, "host": self.host,
             "started": self.started, "ended": self.ended, "exit_code": self.exit_code,
+            "stopped_by": self.stopped_by,
         })
     }
 }
@@ -370,6 +373,8 @@ pub trait Backend: Send {
     fn add_job(&mut self, job: &Job) -> Result<Job>;
     fn job_by_token(&mut self, subject: &str, action: &str, token: &str) -> Result<Option<Job>>;
     fn end_job(&mut self, id: &str, exit_code: Option<i32>, ended: &str) -> Result<()>;
+    /// Say who stopped a job that has not ended.
+    fn stop_job(&mut self, id: &str, by: &str) -> Result<()>;
     fn end_lost_jobs(&mut self, ended: &str) -> Result<usize>;
     fn job(&mut self, id: &str) -> Result<Option<Job>>;
     fn jobs(&mut self, limit: usize) -> Result<Vec<Job>>;
@@ -604,6 +609,11 @@ impl Store {
 
     pub fn end_job(&self, id: &str, exit_code: Option<i32>) -> Result<()> {
         self.backend().end_job(id, exit_code, &now())
+    }
+
+    /// Say who stopped a job that has not ended.
+    pub fn stop_job(&self, id: &str, by: &str) -> Result<()> {
+        self.backend().stop_job(id, by)
     }
 
     /// Jobs that were running when the program that ran them went away.

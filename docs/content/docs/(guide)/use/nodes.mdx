@@ -23,37 +23,31 @@ A node is a [host type](/docs/use/types) between `managed` and `workstation`. It
 Install Ubuntu on the server from your provider's panel, or with the [`rescue-install`](https://github.com/helightdev/berth/tree/main/recipes/rescue-install) recipe when that installer does not work. Then add it by its address as a node. This example uses the made-up name `big` and the address `192.0.2.20`:
 
 ```bash
-berth host add big 192.0.2.20 --user root --auth ssh --type node
-```
-
-List its features in the profile's `ansible_vars`, and apply it:
-
-```bash
-berth profile big > big.json
-# in big.json: "ansible_vars": {"devbox_plugin_features": ["docker/engine", "incus/server"]}
-berth profile big --set big.json
+berth host add big 192.0.2.20 --user root --auth ssh --type node \
+  --feature docker/engine --feature incus/server
 berth apply big
 ```
 
+`--feature` names the features it gets, which land in the profile's `ansible_vars` as `devbox_plugin_features`. `berth host set big feature.incus/server=off` changes them later. `berth host create big --type node` asks for the same at a terminal: the address, the login and the features, without a desktop or accounts. The screens show the same for a node: the type `node` on the Install tab, and only the features of a node on the Features tab.
+
 The first apply installs berth's key for the SSH user. A node added with `--auth password` is logged in to with berth's key afterwards, and berth forgets the password. `--auth ssh` stays as it is.
 
-An `ssh` or `managed` host becomes a node with `berth host type big node`. A node is not applied over a workstation that berth set up: the role stops before it changes anything.
+An `ssh` or `managed` host becomes a node with `berth host set big type=node`. A node is not applied over a workstation that berth set up: the role stops before it changes anything.
 
 | Profile field | On a node |
 | --- | --- |
 | `type` | `node` |
 | `access` | Where berth reaches it and as whom. The SSH user is the account sessions run as |
 | `target` | `cloud`, or `container` for a node without systemd. `laptop` is refused |
-| `tailscale_auth_key`, `tailscale_login_server` | As for a workstation |
 | `ansible_vars` | `devbox_plugin_features`, the settings of the features, and the node's own settings below |
-| The agent's and the operator's fields | Refused, as a node has neither account. `berth host type HOST node` takes them out |
+| The agent's and the operator's fields | Refused, as a node has neither account. `berth host set HOST type=node` takes them out |
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `devbox_ssh_from` | `any` | Who reaches SSH from outside the tailnet: `any`, or one address or network. The address an apply comes from always does |
 | `devbox_harden_ssh` | `true` | Keys only for SSH. It is skipped while the SSH user has no key |
 | `devbox_manage_firewall` | `true` | Set the node's firewall |
-| `devbox_install_tailscale` | `true` | Install Tailscale and join the tailnet with the profile's key |
+| `devbox_install_tailscale` | `true` | Install Tailscale and join the tailnet with a key berth makes ([Joining the tailnet](/docs/use/access#joining-the-tailnet)) |
 | `devbox_timezone` | `Europe/Berlin` | The node's time zone |
 
 ## Features for a node
@@ -105,7 +99,7 @@ Then check the node and its provisioners:
 
 ```bash
 berth run big status
-berth provisioner
+berth provisioner list
 ```
 
 ## The berth server on a node

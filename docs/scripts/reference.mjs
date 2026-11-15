@@ -1,5 +1,5 @@
 // The API reference, by operation, from the committed operation documents in
-// docs/openapi (`berthd operations`, `berth operations`). One folder per
+// docs/openapi (`berthd operations`, `berth server api operations`). One folder per
 // program under content/docs/api, one page per group of operations. The
 // overview and the portal page beside them are written by hand.
 // Plain Node, no packages.

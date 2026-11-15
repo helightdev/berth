@@ -16,7 +16,7 @@ The screens do everything through the API of a berth server, the same one on eve
 | When | The screens use |
 | --- | --- |
 | `--server`, or `BERTH_SERVER` is set | That server, for this run |
-| A server is kept, by `berth connect` or `berth config server` | That server ([A berth server](/docs/use/server)) |
+| A server is kept by `berth login` | That server ([A berth server](/docs/use/server)) |
 | Neither, and a `berth serve` of yours runs on this machine | Its socket, with no token |
 | Neither, on Linux | A server inside berth itself, for as long as the screens are open |
 | Neither, on macOS or Windows | The Connect dialog, for a server's address and its token |
@@ -33,7 +33,7 @@ The home screen has six tabs, switched with the number keys, or with Tab and Shi
 | --- | --- |
 | `1` Hosts | The server's hosts and their addresses, with a dot for whether each answered and why not. A host that still takes the old key of a [key rotation](/docs/use/accounts#rekeying) is marked `key rotation pending`. `n` creates one, `d` makes the selected one the default, `x` twice removes one, `r` asks again |
 | `2` Provisioners | The provisioners of the plugins, and whether each can be used. Enter opens the page of one, with how it is and what berth made with it, grouped by kind. Enter on one of its actions runs it. Enter on something it made opens that [resource's page](/docs/deploy/resources#in-the-terminal-ui), with its state, its actions and its log. Esc goes back a page ([Provisioners](/docs/deploy/provisioners#a-provisioners-page)) |
-| `3` Settings | The settings of `berth config` and the SSH keys of the server's key ring to copy. Over the network, only some settings change there; on the server's own machine, every one |
+| `3` Settings | The settings of `berth config list` and the SSH keys of the server's key ring to copy. Over the network, only some settings change there; on the server's own machine, every one |
 | `4` Registries | npm, Docker, file and Nexus registries ([Registries](/docs/use/registries)) |
 | `5` Secrets | Secret values, kept in the server's store ([Secrets](/docs/use/secrets)) |
 | `6` Plugins | Built-in and installed plugins, and adding, updating and removing your own ([Plugins](/docs/extend/plugins#updating-a-plugin)) |
@@ -53,7 +53,7 @@ Each tab depends only on the tabs before it. Install holds what you have to choo
 | `1` Install | How to install, with the target (not for a created machine, which is always `cloud`), the provisioner and its required arguments, the SSH address, the hostname and Tailscale |
 | `2` Features | The coding agents and T3 Code, with tool categories, browsers, graphics, Cockpit, Docker on the host and plugin features |
 | `3` Settings | Everything with a default. See the list below |
-| `4` Run | The last fields for the method, every problem grouped by tab, warnings, and the Run, Create machine and Save buttons |
+| `4` Run | The last fields for the method, every problem grouped by tab, warnings, and the Run, Create with PROVISIONER and Save buttons |
 
 The ways to install a host:
 

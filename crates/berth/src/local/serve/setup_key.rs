@@ -2,7 +2,7 @@
 //! the first user collect the server's token. Whoever installs the server can
 //! hand it on without ever holding the token, and it ends when the user says
 //! they are done or after a day. It is kept in the store and read from there
-//! on every request, so a running server takes one that `berth setup-key`
+//! on every request, so a running server takes one that `berth server setup-key`
 //! made in another process a moment ago.
 
 use super::{
@@ -74,7 +74,7 @@ fn current(store: &Store) -> Option<Stored> {
     Some(stored).filter(|stored| stored.key.len() >= 32)
 }
 
-/// `berth setup-key [--remove]`, where `berth serve` keeps its data.
+/// `berth server setup-key [--revoke]`, where `berth serve` keeps its data.
 pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
     match args {
         [] => {
@@ -82,8 +82,7 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
             println!("{key}");
             eprintln!(
                 "This setup key lets the first user collect the token of this berth server, until {} or until they are done.\n\
-                 With berth:  berth connect URL   and paste the key when asked,\n\
-                 or open the screens with the key in BERTH_SETUP_KEY: BERTH_SERVER=URL berth\n\
+                 With berth:  berth login URL   and paste the key when asked.\n\
                  URL is the server's address, such as https://studio.example.ts.net.",
                 rfc3339(expires)
             );
@@ -97,7 +96,7 @@ pub fn command(paths: &Paths, args: &[&str]) -> Result<()> {
             }
             Ok(())
         }
-        _ => Err("Usage: berth setup-key [--remove]".into()),
+        _ => Err("Usage: berth server setup-key [--revoke]".into()),
     }
 }
 

@@ -153,11 +153,10 @@ class ThroughTheServer(Joined, unittest.TestCase):
         self.serve.call('PUT', '/v1/hosts/cloud-5/profile', joining(draft))
         try:
             before = last_key_id()
-            seeded = self.client.berth('seed', 'cloud-5')
-            written = seeded.stdout.strip()
+            seeded = self.client.berth('host', 'seed', 'cloud-5')
             # Whoever starts the machine learns until when it can join.
             self.assertIn('joins the tailnet until', seeded.stderr)
-            seed = open(written).read()
+            seed = seeded.stdout
             made = [key for key in headscale().keys() if int(key['id']) > before]
             self.assertEqual(len(made), 1)
             self.assertFalse(made[0]['used'])

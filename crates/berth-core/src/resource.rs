@@ -146,7 +146,7 @@ pub fn find_by(paths: &Paths, given: &str) -> Result<Kept> {
         .collect();
     match named.as_slice() {
         [one] => Ok((*one).clone()),
-        [] => Err(format!("No resource {given}. See: berth resource").into()),
+        [] => Err(format!("No resource {given}. See: berth resource list").into()),
         _ => Err(format!(
             "Several resources are called {given}: name one by its id ({})",
             named
@@ -164,7 +164,7 @@ pub fn find(paths: &Paths, id: &str) -> Result<Kept> {
     list(paths)?
         .into_iter()
         .find(|kept| kept.record.id == id)
-        .ok_or_else(|| format!("No resource {id}. See: berth resource").into())
+        .ok_or_else(|| format!("No resource {id}. See: berth resource list").into())
 }
 
 /// The machine of the host whose profile is at `place`.
@@ -335,7 +335,7 @@ pub fn info(paths: &Paths, kept: &Kept, plugins: &[Plugin], busy: bool) -> Resou
         (true, false) => (
             "unknown".to_owned(),
             format!(
-                "Creating it did not end. Asking again finds the same one; removing it forgets it: berth resource {} remove",
+                "Creating it did not end. Asking again finds the same one; removing it forgets it: berth resource remove {}",
                 record.id
             ),
         ),
@@ -490,7 +490,7 @@ pub(crate) fn environment(store: &Store, wanted: &[ResourceSecret]) -> Result<Ma
     for secret in wanted {
         match store
             .secret(&secret.name)?
-            .filter(|value| !value.is_empty() && value != crate::server::KEPT)
+            .filter(|value| !value.is_empty())
         {
             Some(value) => {
                 given.insert(secret.variable().to_owned(), json!(value));
@@ -753,7 +753,7 @@ pub fn prepare(paths: &Paths, store: &Store, asked: &berth_api::NewResource) -> 
         .filter(|kept| !kept.record.external_id.is_empty())
     {
         return Err(format!(
-            "There is a {kind} {name} of {} already, {}. Change it with: berth resource {} change, or remove it first",
+            "There is a {kind} {name} of {} already, {}. Change it with: berth resource set {}, or remove it first",
             asked.provisioner, existing.record.id, existing.record.id
         )
         .into());
@@ -1014,7 +1014,7 @@ pub fn actions(paths: &Paths, store: &Store, kept: &Kept) -> Vec<Action> {
             .collect();
         let help = match kind.spec.is_some() {
             true => {
-                "Give it other values of its arguments, and its specification, which berth keeps and opens in the editor. From the command line a new one is given with: berth resource ID change --spec FILE"
+                "Give it other values of its arguments, and its specification, which berth keeps and opens in the editor. From the command line a new one is given with: berth resource set ID --spec FILE"
             }
             false => "Give it other values of its arguments, as its provisioner can.",
         };
@@ -1504,10 +1504,7 @@ impl Acting {
                 request,
                 command,
             } => {
-                say(
-                    out,
-                    &format!("▸ Running {} in {}", shown(&command), kept.title()),
-                );
+                // The output is the command's own, so berth adds no line of its own to it.
                 let answer = call(
                     &called.dir,
                     &called.provisioner,
@@ -1574,24 +1571,6 @@ pub fn argv(text: &str) -> Result<Vec<String>> {
         Some(first) if !first.is_empty() => Ok(words),
         _ => Err("Give the command to run".into()),
     }
-}
-
-/// A command as a line for people, each word quoted where it needs to be.
-fn shown(command: &[String]) -> String {
-    command
-        .iter()
-        .map(|word| {
-            let plain = !word.is_empty()
-                && word
-                    .chars()
-                    .all(|ch| ch.is_ascii_alphanumeric() || "-_./=:,@%+".contains(ch));
-            match plain {
-                true => word.clone(),
-                false => format!("'{}'", word.replace('\'', "'\\''")),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 // ── Its log ─────────────────────────────────────────────────────────────────

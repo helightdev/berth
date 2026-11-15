@@ -89,7 +89,7 @@ fn label(argument: &berth_api::Argument) -> &str {
 /// What the editor is called while it holds what is typed for `pick`.
 pub fn editor_title(pick: Pick, host: &str) -> String {
     match pick {
-        Pick::Delete => format!(" Type {host} to delete its machine "),
+        Pick::Delete => format!(" Type {host} to destroy what its provisioner made "),
         _ => " Edit ".into(),
     }
 }
@@ -441,7 +441,7 @@ impl Machine {
         }
         if let Some(instance) = self.machine() {
             return vec![note(&format!(
-                "{} created it · the Run tab has the machine",
+                "{} created it · the Run tab has it",
                 instance.provisioner
             ))];
         }
@@ -467,7 +467,7 @@ impl Machine {
         let mut rows = vec![];
         let resources = self.argument_rows(Step::Settings, |argument| argument.is_resource());
         if !resources.is_empty() {
-            rows.push(Row::heading("Machine"));
+            rows.push(Row::heading("Size"));
             rows.extend(resources);
         }
         let others = self.argument_rows(Step::Settings, |argument| !argument.is_resource());
@@ -491,16 +491,16 @@ impl Machine {
         let Some(instance) = self.machine() else {
             let label = self
                 .provisioner()
-                .map_or(String::new(), |known| format!(" · {}", known.label));
+                .map_or(String::new(), |known| format!(" with {}", known.label));
             return vec![Row::entry(
-                format!("[Create machine{label}]"),
+                format!("[Create{label}]"),
                 Entry::Machine(Pick::Create),
             )];
         };
-        let mut rows = vec![Row::heading("Machine")];
+        let mut rows = vec![Row::heading("Provisioner")];
         let line = |label: &str, value: &str| Row::info(value_line(label, value, Kind::Text));
         rows.push(line("  Created with", &instance.provisioner));
-        rows.push(line("  Machine", &instance.external_id));
+        rows.push(line("  Its name there", &instance.external_id));
         rows.push(line("  Resource", &instance.id));
         let colour = match instance.state.as_str() {
             "running" => theme::GOOD,
@@ -523,9 +523,9 @@ impl Machine {
         }
         for pick in Machine::actions(instance) {
             let text = match pick {
-                Pick::Start => "  ▸ Start machine",
-                Pick::Stop => "  ▸ Stop machine",
-                _ => "  ▸ Delete machine",
+                Pick::Start => "  ▸ Start",
+                Pick::Stop => "  ▸ Stop",
+                _ => "  ▸ Destroy",
             };
             rows.push(Row::entry(text, Entry::Machine(pick)));
         }
@@ -586,10 +586,10 @@ impl Machine {
                     false => text + " Space or Enter switches to the next value.",
                 }
             }
-            Pick::Create => "Creates the machine and sets it up as this host, with the profile saved first. The output is shown as it runs. When setting it up fails, the machine stays: Delete machine removes it.".into(),
-            Pick::Start => "Starts the machine.".into(),
-            Pick::Stop => "Stops the machine.".into(),
-            Pick::Delete => "Deletes the machine berth created for this host. The profile stays, and so does its node on the tailnet. Enter, then type the host's name to say so.".into(),
+            Pick::Create => "Creates the machine and sets it up as this host, with the profile saved first. The output is shown as it runs. When setting it up fails, the machine stays: Destroy removes it.".into(),
+            Pick::Start => "Starts the host's machine.".into(),
+            Pick::Stop => "Stops the host's machine.".into(),
+            Pick::Delete => "Destroys the machine the provisioner made for this host. The profile stays, and so does its node on the tailnet. Enter, then type the host's name to say so. From the command line: berth host remove HOST --destroy, which forgets the host too.".into(),
         }
     }
 
@@ -621,7 +621,7 @@ impl Machine {
             Pick::Create => match self.request() {
                 Ok(_) => {
                     let label = self.provisioner().map_or("", |known| known.label.as_str());
-                    self.question = Some(format!("Create a machine for {host} with {label}?"));
+                    self.question = Some(format!("Create {host} with {label}?"));
                     Next::Confirm
                 }
                 Err(problem) => Next::Say(problem),
@@ -652,7 +652,7 @@ impl Machine {
             }
             Pick::Delete if value.trim() == host => Next::Destroy,
             Pick::Delete if value.trim().is_empty() => Next::Nothing,
-            Pick::Delete => Next::Say(format!("Not deleted: type {host} to delete its machine")),
+            Pick::Delete => Next::Say(format!("Not destroyed: type {host} to say so")),
             _ => Next::Nothing,
         }
     }
@@ -829,10 +829,7 @@ mod tests {
             Next::Edit("4".into())
         );
         assert_eq!(picks(&machine.run_rows()), [Pick::Create]);
-        assert_eq!(
-            text(&machine.run_rows()),
-            ["[Create machine · Lab machine]"]
-        );
+        assert_eq!(text(&machine.run_rows()), ["[Create with Lab machine]"]);
     }
 
     #[test]
@@ -848,7 +845,7 @@ mod tests {
         assert_eq!(
             text(&machine.settings_rows()),
             [
-                "Machine",
+                "Size",
                 "  ├─ cpus  1",
                 "  ├─ memory  1",
                 "  └─ disk  1",
@@ -863,7 +860,7 @@ mod tests {
         let machine_rows = text(&machine.settings_rows());
         assert_eq!(
             machine_rows[..3],
-            ["Machine", "  ├─ cpus  1", "  └─ memory  1"]
+            ["Size", "  ├─ cpus  1", "  └─ memory  1"]
         );
         // The Suggestions panel lists them; the help says what the keys do.
         assert_eq!(
@@ -937,7 +934,7 @@ mod tests {
         assert_eq!(machine.enter(Pick::Create, "studio"), Next::Confirm);
         assert_eq!(
             machine.question.as_deref(),
-            Some("Create a machine for studio with Lab machine?")
+            Some("Create studio with Lab machine?")
         );
         let Next::Create(asked) = machine.answer(true) else {
             panic!("not created");
@@ -998,7 +995,7 @@ mod tests {
         assert!(machine.settings_rows().is_empty() && machine.problems().is_empty());
         let rows = machine.run_rows();
         let shown = text(&rows);
-        assert_eq!(shown[0], "Machine");
+        assert_eq!(shown[0], "Provisioner");
         assert!(shown.contains(&"  State  unknown".to_owned()));
         assert!(shown.contains(&"  Address  192.0.2.20".to_owned()));
         assert!(shown.contains(&"  ! lab/vm status said no state".to_owned()));

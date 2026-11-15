@@ -20,15 +20,8 @@ use ratatui::{
 use serde_json::{Value, json};
 use tui_input::Input;
 
-/// The ways the server installs a host itself. The USB installer is built
-/// on the machine the server runs on.
-const METHODS: [Action; 5] = [
-    Action::Machine,
-    Action::Iso,
-    Action::CloudSeed,
-    Action::Ssh,
-    Action::Reach,
-];
+/// The ways the server installs a host itself.
+const METHODS: [Action; 5] = Action::SERVED;
 
 /// The action of the host that builds its USB installer.
 pub const INSTALLER: &str = "installer";
@@ -55,6 +48,9 @@ pub struct Setup {
     features: Vec<Feature>,
     registries: Vec<String>,
     secrets: Vec<String>,
+    /// The accounts of a workstation, kept while the type says node, which
+    /// has none, so that choosing workstation again brings them back.
+    accounts: serde_json::Map<String, Value>,
     /// Where a release can be published.
     stores: Vec<String>,
     /// The server's own SSH public key.
@@ -128,6 +124,7 @@ impl Setup {
             own_key: String::new(),
             tailnet_key: false,
             ring_keys: vec![],
+            accounts: serde_json::Map::new(),
             list: ListState::default().with_selected(Some(0)),
             display: ListState::default(),
             editing: None,
@@ -228,12 +225,6 @@ impl Setup {
             problems.push(Problem::new(
                 Step::Install,
                 "The USB installer is built where berth serve runs, with berth ui there",
-            ));
-        }
-        if self.action == Action::Ssh && view.text(Field::SshHost).is_empty() {
-            problems.push(Problem::new(
-                Step::Install,
-                "The host's address is required: its name, IP address or tailnet name",
             ));
         }
         problems
@@ -346,6 +337,26 @@ impl Setup {
         setup::set_pointer(&mut self.config, field.spec().pointer, value);
     }
 
+    /// Give the profile another type, as `setup::commit` does, keeping a
+    /// workstation's accounts aside while it is a node.
+    fn choose_type(&mut self, name: &str) {
+        if name == berth_api::HostType::Node.name() {
+            for field in berth_api::profile::ACCOUNT_FIELDS {
+                if let Some(value) = self.config.get(*field) {
+                    self.accounts.insert((*field).to_owned(), value.clone());
+                }
+            }
+        }
+        let _ = setup::commit(&mut self.config, Field::Type, name);
+        if name == berth_api::HostType::Workstation.name()
+            && let Some(profile) = self.config.as_object_mut()
+        {
+            for (field, value) in std::mem::take(&mut self.accounts) {
+                profile.entry(field).or_insert(value);
+            }
+        }
+    }
+
     /// Toggle or cycle the field, or open the editor for free text.
     fn activate(&mut self, field: Field) -> Option<String> {
         if field == Field::Login {
@@ -364,6 +375,16 @@ impl Setup {
             return self.stores.is_empty().then(|| {
                 "No file server or raw repository yet. Add one on the Registries tab of the home screen.".into()
             });
+        }
+        if field == Field::Type {
+            let types = berth_tui::fields::TYPES;
+            let current = self.view().text(field);
+            let next = types
+                .iter()
+                .position(|known| *known == current)
+                .map_or(0, |index| (index + 1) % types.len());
+            self.choose_type(types[next]);
+            return None;
         }
         match field.spec().kind {
             Kind::Toggle => {

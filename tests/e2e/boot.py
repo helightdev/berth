@@ -2,8 +2,8 @@
 """Boot a real install in QEMU, set it up on first boot, and test it with
 berth over SSH.
 
-    ci/run.sh boot cloud     the Ubuntu cloud image with the seed of berth seed
-    ci/run.sh boot iso       the installer of berth iso, on a blank virtual disk
+    ci/run.sh boot cloud     the Ubuntu cloud image with the seed of berth host seed
+    ci/run.sh boot iso       the installer of berth host iso, on a blank virtual disk
     ci/run.sh boot cloud --keep -- boot_host.FirstBoot
 
 Only meant for the container of ci/boot.compose.yml. Logs, the timings and the
@@ -56,9 +56,11 @@ def use_control_server(station):
     """berth's settings and secret for the control server, so that the seed it
     renders carries a key berth made there."""
     url, key = control_server()
-    station.berth('config', 'tailnet_login_server', '' if url == 'tailscale' else url)
-    for setting in ('user', 'tags'):
-        station.berth('config', f'tailnet_{setting}', os.environ.get(f'BERTH_BOOT_CONTROL_{setting.upper()}', ''))
+    def setting(key, value):
+        station.berth('config', *(('set', key, value) if value else ('unset', key)))
+    setting('tailnet_login_server', '' if url == 'tailscale' else url)
+    for name in ('user', 'tags'):
+        setting(f'tailnet_{name}', os.environ.get(f'BERTH_BOOT_CONTROL_{name.upper()}', ''))
     station.berth('secret', 'set', 'tailnet_api_key', input=key + '\n')
 
 
@@ -172,15 +174,14 @@ def boot_cloud(run, side, station):
     with run.phase('fetch the cloud image'):
         image = vm.cloud_image()
     with run.phase('render the seed'):
-        station.berth('plugins', 'add', str(FIXTURE))
+        station.berth('plugin', 'add', str(FIXTURE))
         if control_server():
             use_control_server(station)
         station.write_profile(boot_profile(station, 'cloud', release_url=f'https://{vm.GATEWAY}/devbox-release.tar.gz'))
-        station.berth('seed', HOST, timeout=300)
+        user_data = station.berth('host', 'seed', HOST, timeout=300).stdout
         build = station.data / 'berth/build'
         side.publish(build / 'devbox-release.tar.gz')
-        user_data = (build / HOST / 'cloud/user-data').read_text()
-        shutil.copyfile(build / HOST / 'cloud/user-data', run.logs / 'user-data')
+        (run.logs / 'user-data').write_text(user_data)
     machine = vm.Machine(HOST, run)
     # The provider's part: the instance's name, and trust in the test side's
     # certificate authority, which the release server's certificate is from.
@@ -217,13 +218,13 @@ def install_iso(run, side, station):
     with run.phase('fetch the installer ISO'):
         iso, sha = vm.server_iso()
     with run.phase('build the installer'):
-        station.berth('plugins', 'add', str(FIXTURE))
+        station.berth('plugin', 'add', str(FIXTURE))
         if control_server():
             use_control_server(station)
         station.write_profile(boot_profile(station, 'iso', target_disk_mode='serial', target_disk_serial=TARGET,
                                            builder={'shipped_plugins': True, 'iso': str(iso),
                                                     'iso_sha256': sha}))
-        station.berth('iso', HOST, timeout=1800)
+        station.berth('host', 'iso', HOST, timeout=1800)
         built = station.data / 'berth/build' / f'{HOST}-autoinstall.iso'
         run.facts['installer_gb'] = round(built.stat().st_size / 2**30, 2)
 

@@ -182,20 +182,19 @@ def make_demo(root: Path) -> dict:
         access={"address": "192.0.2.31", "user": "ops"},
     )
     for host in (studio, cloud, laptop):
-        run(env, "profile", host["hostname"], "--set", "-", stdin=json.dumps(host, indent=2) + "\n")
-    run(env, "config", "default_host", "studio")
+        run(env, "host", "import", host["hostname"], "-", stdin=json.dumps(host, indent=2) + "\n")
+    run(env, "config", "set", "default_host", "studio")
     # Registries and a secret, through the commands; nothing is contacted.
-    run(env, "registry", "add", "nexus", "nexus", "https://nexus.example.com", "ci-user")
-    run(env, "registry", "repo", "nexus", "npm", "npm-group")
-    run(env, "registry", "repo", "nexus", "raw", "berth-releases")
-    run(env, "registry", "repo", "nexus", "docker", "docker-hosted", "nexus.example.com:8083")
-    run(env, "registry", "add", "ghcr", "docker", "ghcr.io", "demo-user")
+    run(env, "registry", "add", "nexus", "nexus", "https://nexus.example.com", "--user", "ci-user")
+    run(env, "registry", "add-repo", "nexus", "npm", "npm-group")
+    run(env, "registry", "add-repo", "nexus", "raw", "berth-releases")
+    run(env, "registry", "add-repo", "nexus", "docker", "docker-hosted", "--address", "nexus.example.com:8083")
+    run(env, "registry", "add", "ghcr", "docker", "ghcr.io", "--user", "demo-user")
     run(env, "secret", "set", "github", stdin="github_pat_demo_not_a_real_token\n")
     run(env, "secret", "set", "backup-password", stdin="correct-horse-demo\n")
     for host in ("studio", "cloud-1"):
-        run(env, "host", host, "secret", "github", "env", "GH_TOKEN")
-        run(env, "host", host, "registry", "nexus", "on")
-    run(env, "host", "studio", "secret", "backup-password", "file", "~/.config/berth-backup/password", "0600")
+        run(env, "host", "set", host, "secret.github=GH_TOKEN", "registry.nexus=on")
+    run(env, "host", "set", "studio", "secret.backup-password=~/.config/berth-backup/password:0600")
     return env
 
 
@@ -503,7 +502,7 @@ def save(name: str, screen: pyte.Screen, title: str, trim=True):
 
 
 def tui(env, name, args, keys, title, cols=120, rows=30, settle=1.5):
-    term = Terminal([str(BERTH), *args], env, cols, rows, env["HOME"])
+    term = Terminal([str(BERTH), "ui", *args], env, cols, rows, env["HOME"])
     try:
         term.pump(settle)
         for step in keys:
@@ -558,15 +557,15 @@ def pictures(env):
         "install-cloud": (False, lambda: tui(env, "install-cloud", ["cloud-1"],
                                              SETUP + ["<down>", "<down>", "<enter>", "4"],
                                              "berth cloud-1: run", rows=34)),
-        "list": (False, lambda: command(env, "list", ["list"])),
+        "list": (False, lambda: command(env, "list", ["ls"])),
         "overview": (True, lambda: tui(env, "overview", ["studio"], [2.5], "berth studio", rows=46)),
         "terminal": (True, lambda: tui(env, "terminal", ["studio"],
                                        [2.5, "<down>", "<enter>", 1.5, "id\r", "ls --color=never /srv/agent\r", 3.0],
                                        "berth studio: terminal", rows=20)),
-        "tasks": (True, lambda: command(env, "tasks", ["actions", "studio"])),
+        "tasks": (True, lambda: command(env, "tasks", ["action", "list", "studio"])),
         "exec": (True, lambda: command(env, "exec", ["exec", "studio", "--", "id"])),
-        "sessions": (True, lambda: command(env, "sessions", ["sessions", "studio"])),
-        "host": (False, lambda: command(env, "host", ["host", "studio"])),
+        "sessions": (True, lambda: command(env, "sessions", ["session", "list", "studio"])),
+        "host": (False, lambda: command(env, "host", ["host", "show", "studio"])),
     }
 
 

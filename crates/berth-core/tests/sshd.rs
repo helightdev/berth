@@ -221,7 +221,7 @@ fn first_contact_host_keys_and_rekeying_against_sshd() {
     let said = contact::works(&keys::login_of(&paths, &studio).unwrap())
         .unwrap_err()
         .to_string();
-    assert!(said.contains("berth key host studio --accept"), "{said}");
+    assert!(said.contains("berth host verify studio --accept"), "{said}");
     // First contact says so too, without a credential and with one, and the
     // credential is not sent to a machine that may not be the host.
     let said = contact::trust_key(&paths, &studio, None, false)
@@ -234,7 +234,7 @@ fn first_contact_host_keys_and_rekeying_against_sshd() {
         .unwrap_err()
         .to_string();
     assert!(said.starts_with("The SSH host key of studio"), "{said}");
-    assert!(said.contains("berth key host studio --accept"), "{said}");
+    assert!(said.contains("berth host verify studio --accept"), "{said}");
     assert_eq!(server.authorized(), authorized);
     let before = contact::host_key(&paths, &studio, false).unwrap();
     let after = contact::host_key(&paths, &studio, true).unwrap();

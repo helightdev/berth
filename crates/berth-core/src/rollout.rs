@@ -87,7 +87,9 @@ pub fn run(
             name: target.name().to_owned(),
             ..Default::default()
         };
-        if stopped {
+        // A roll-out that was stopped starts no other host.
+        if stopped || crate::runner::stopped().is_some() {
+            stopped = true;
             hosts.push(host);
             continue;
         }
@@ -334,15 +336,16 @@ impl Target for Live<'_> {
 
     fn apply(&mut self, out: &mut dyn Write) -> std::result::Result<(), String> {
         if self.host.asks_password() && self.password.is_none() {
-            return Err(
-                "its SSH user's sudo asks for a password: set BERTH_SUDO_PASSWORD, or apply it by itself"
-                    .into(),
-            );
+            return Err(format!(
+                "its SSH user's sudo asks for a password: keep it with berth secret set sudo/{name}, or apply it by itself with berth host apply {name}",
+                name = self.host.name
+            ));
         }
         let mut prepared = apply::prepare(self.paths, &self.host, self.password.as_deref())
             .map_err(|error| error.to_string())?;
         let (reader, writer) = std::io::pipe().map_err(|error| error.to_string())?;
         let copy = writer.try_clone().map_err(|error| error.to_string())?;
+        crate::runner::own_group(&mut prepared.command);
         let mut child = prepared
             .command
             .stdin(std::process::Stdio::null())
@@ -350,6 +353,7 @@ impl Target for Live<'_> {
             .stderr(copy)
             .spawn()
             .map_err(|error| format!("ansible-playbook: {error}"))?;
+        let _group = crate::runner::watch(&child);
         // The command holds the pipe's other ends; they close when it is dropped.
         drop(prepared.command);
         for line in std::io::BufReader::new(reader).lines() {
@@ -463,7 +467,7 @@ pub fn survey(paths: &Paths) -> Vec<api::HostBehind> {
     let hosts = Host::all(paths);
     let asked = runtime.block_on(futures_util::future::join_all(hosts.iter().map(
         |host| async move {
-            let password = std::env::var("BERTH_SUDO_PASSWORD").ok();
+            let password = host.kept_sudo_password(paths);
             let link = Link::new(host.link(paths, password.as_deref()).ok()?);
             // A host that refused the login a short while ago is left out,
             // as one that does not answer is.

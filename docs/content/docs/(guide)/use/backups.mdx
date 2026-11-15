@@ -20,7 +20,7 @@ On the host's **Features** tab, switch on **Backups** under System.
 
 ### Set the repository
 
-Set `devbox_backup_repository` in the profile's `ansible_vars`, in restic's rclone form. Edit the profile with `berth profile studio > studio.json`, then `berth profile studio --set studio.json`:
+Set `devbox_backup_repository` in the profile's `ansible_vars`, in restic's rclone form. Edit the profile with `berth host export studio > studio.json`, then `berth host import studio studio.json`:
 
 ```json title="In studio's profile"
 { "ansible_vars": { "devbox_backup_repository": "rclone:b2:my-bucket/studio" } }
@@ -36,8 +36,8 @@ The repository password and the rclone configuration go to the host as files:
 ```bash
 berth secret set backup-password
 berth secret set rclone-conf < ~/.config/rclone/rclone.conf
-berth host studio secret backup-password file ~/.config/berth-backup/password 0600
-berth host studio secret rclone-conf file ~/.config/rclone/rclone.conf 0600
+berth host set studio secret.backup-password=~/.config/berth-backup/password:0600
+berth host set studio secret.rclone-conf=~/.config/rclone/rclone.conf:0600
 berth run studio secrets
 ```
 
@@ -108,6 +108,6 @@ This page is about the agent's data on a host. On the machine that runs berth, b
 | The key file, when the store is encrypted | `~/.config/berth/store.key`. Keep it apart from the database |
 | The settings of this machine | `~/.config/berth/config.json` |
 
-With these, an installation can be [restored on another machine](/docs/use/store#restore-on-a-new-machine). `berth profile HOST` prints one host's profile, for a copy of that alone.
+With these, an installation can be [restored on another machine](/docs/use/store#restore-on-a-new-machine). `berth host export HOST` prints one host's profile, for a copy of that alone.
 
 Copy a SQLite store with `sqlite3 berth.db ".backup copy.db"`, which takes a consistent copy while berth runs.

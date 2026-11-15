@@ -12,8 +12,16 @@ berth-page.workspace = true
 berth-tui.workspace = true
 tokio.workspace = true
 serde_json = "1"
+serde.workspace = true
 tempfile = "3"
 crossterm = "=0.29.0"
+# The command line: its grammar, help, errors and shell completions.
+clap = { version = "4.5", features = ["derive", "wrap_help"] }
+clap_complete = "4.5"
+# The questions and progress drawn inline, below the command.
+ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
+tui-input.workspace = true
+futures-util.workspace = true
 
 # The installation, berth serve and the commands, on Linux, where hosts are
 # set up from.
@@ -21,8 +29,6 @@ crossterm = "=0.29.0"
 berth-core.workspace = true
 # For its API document, which berth serve's includes.
 berthd = { path = "../berthd" }
-futures-util.workspace = true
-serde.workspace = true
 axum.workspace = true
 utoipa.workspace = true
 utoipa-axum.workspace = true
@@ -32,5 +38,4 @@ jsonwebtoken = { version = "11", default-features = false, features = ["rust_cry
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Signs the access tokens of the tests.
 ring = "0.17"
-# Draws the screens of the tests.
-ratatui = { version = "=0.30.2", default-features = false }
+

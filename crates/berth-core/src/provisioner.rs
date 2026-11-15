@@ -223,7 +223,7 @@ pub fn adopted_name(paths: &Paths, name: &str, kind: &str) -> Result<String> {
 /// holds resources is kept: they would have no provisioner.
 pub fn remove_entry(paths: &Paths, store: &Store, name: &str) -> Result<()> {
     if entry(paths, name)?.is_none() {
-        return Err(format!("No provisioner {name}. See: berth provisioner").into());
+        return Err(format!("No provisioner {name}. See: berth provisioner list").into());
     }
     let held: Vec<String> = crate::resource::list(paths)?
         .into_iter()
@@ -232,7 +232,7 @@ pub fn remove_entry(paths: &Paths, store: &Store, name: &str) -> Result<()> {
         .collect();
     if !held.is_empty() {
         return Err(format!(
-            "{name} still holds {}. Remove {} first: berth resource ID remove",
+            "{name} still holds {}. Remove {} first: berth resource remove ID",
             held.join(", "),
             if held.len() == 1 { "it" } else { "them" }
         )
@@ -335,7 +335,7 @@ fn problem(
     match unset.is_empty() {
         true => String::new(),
         false => format!(
-            "{name} needs {}: berth provisioner {name} run {SETTINGS} {}",
+            "{name} needs {}: berth provisioner set {name} {}",
             unset.join(" and "),
             unset
                 .iter()
@@ -619,7 +619,7 @@ fn new_action(
             },
             match kind.id == "deployment" {
                 true =>
-                    " From the command line also: berth deploy NAME --provisioner PROVISIONER --spec FILE",
+                    " From the command line also: berth resource create NAME --provisioner PROVISIONER --spec FILE",
                 false => "",
             }
         ),
@@ -997,7 +997,7 @@ impl Acting {
                 let title = creating.kept().title();
                 creating.run(paths, &store, options, out)?;
                 Ok(Answered {
-                    message: format!("{title} is made. Its page: berth resource {id}"),
+                    message: format!("{title} is made. Its page: berth resource show {id}"),
                     details: vec![],
                     exit_code: None,
                 })
@@ -1042,6 +1042,7 @@ pub(crate) fn stream(
         .spawn()
         .map_err(|error| format!("{}: {error}", provisioner.command.display()))?;
     let group = child.id() as i32;
+    let _stopped = crate::runner::watch(&child);
     let mut input = serde_json::to_vec(asked)?;
     input.push(b'\n');
     let mut stdin = child.stdin.take().ok_or("no standard input")?;

@@ -1,6 +1,6 @@
 //! The profile a host keeps of itself. Every apply and every first boot leaves
 //! it on the host, so that a berth that does not have the profile, or has lost
-//! it, can take the host over from the host itself: `berth adopt`.
+//! it, can take the host over from the host itself: `berth host adopt`.
 
 use crate::{
     Result,

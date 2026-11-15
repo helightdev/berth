@@ -141,7 +141,7 @@ pub fn check(
         },
         (_, HostType::Ssh) if capability.allowed(HostType::Managed) => Refusal {
             why: format!(
-                "{name} is a host of the type ssh: berth's controller is not installed there, and {what} needs it. Install it with: berth host install {name}"
+                "{name} is a host of the type ssh: berth's controller is not installed there, and {what} needs it. Install it with: berth run {name} install-controller"
             ),
             raise: "install-controller",
         },
@@ -153,7 +153,7 @@ pub fn check(
         },
         (_, _) if capability.allowed(HostType::Node) => Refusal {
             why: format!(
-                "{name} is a host of the type {host_type}, neither a node nor a workstation: {what} needs berth to apply its profile. Make it a node (berth host type {name} node) or a workstation in its set-up, then apply it"
+                "{name} is a host of the type {host_type}, neither a node nor a workstation: {what} needs berth to apply its profile. Make it a node (berth host set {name} type=node) or a workstation in its set-up, then apply it"
             ),
             raise: "setup",
         },
@@ -345,7 +345,7 @@ mod tests {
     fn a_refusal_names_the_action_that_changes_the_type() {
         let refused = check("studio", HostType::Ssh, Capability::Sessions).unwrap_err();
         assert_eq!(refused.raise, "install-controller");
-        assert!(refused.why.contains("berth host install studio"));
+        assert!(refused.why.contains("berth run studio install-controller"));
         let refused = check("studio", HostType::Ssh, Capability::Apply).unwrap_err();
         assert_eq!(refused.raise, "setup");
         assert!(
@@ -381,7 +381,7 @@ mod tests {
         assert!(refused.why.starts_with("big is a node: applying"));
         let refused = check("big", HostType::Managed, Capability::Apply).unwrap_err();
         assert!(refused.why.contains("neither a node nor a workstation"));
-        assert!(refused.why.contains("berth host type big node"));
+        assert!(refused.why.contains("berth host set big type=node"));
         // The controller alone is never put over a node's.
         let action = install_controller_action("big", HostType::Managed, Some(HostType::Node));
         assert!(!action.available);
@@ -457,11 +457,11 @@ mod tests {
                 "{}",
                 action.why
             );
-            assert!(action.why.contains("berth adopt dock"));
+            assert!(action.why.contains("berth host adopt dock"));
         }
         assert_eq!(
             mismatch("dock", HostType::Ssh, Some(HostType::Managed)).unwrap(),
-            "dock has berth's controller; its profile here says ssh. To adopt it: berth host type dock managed"
+            "dock has berth's controller; its profile here says ssh. To adopt it: berth host set dock type=managed"
         );
         assert!(mismatch("dock", HostType::Workstation, Some(HostType::Managed)).is_none());
         assert!(mismatch("dock", HostType::Managed, None).is_none());

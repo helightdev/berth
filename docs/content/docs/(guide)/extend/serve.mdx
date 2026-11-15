@@ -60,24 +60,24 @@ The token is optional. The same token again for the same subject and action answ
 The inbox, jobs and key-value store are kept in berth's store for `retention_days` (90 by default), and are also readable without the server:
 
 ```bash
-berth inbox studio --topic ask/        # what is open; --all includes what is done
+berth inbox list studio --topic ask/        # what is open; --all includes what is done
 berth kv set ui layout '{"columns": 2}'
-berth kv ls ui
+berth kv list ui
 ```
 
 ## The store
 
 The store is where berth keeps the host profiles, with their generated passwords and the records of the machines it created. It also keeps the registries, secrets and settings. berth's own SSH key, the server's token and setup key and the list of your own plugins are there too, with the inbox, jobs and key-value store. It is `berth.db`, a SQLite file in berth's data directory, unless the `store` setting or `BERTH_STORE` names another file or a PostgreSQL database. [The store](/docs/use/store) says how to choose it, encrypt it, move it to another database and restore a server from it.
 
-`berth serve` serves the hosts of its own installation. It does not start on a berth that has the `server` setting, or `BERTH_SERVER`, as that berth's hosts are the other server's. Clear it with `berth config server ""`.
+`berth serve` serves the hosts of its own installation.
 
 | Command | Does |
 | --- | --- |
-| `berth profile HOST` | Prints a host's profile as JSON |
-| `berth profile HOST --set FILE` | Saves the profile in FILE as the host's, `-` for standard input |
-| `berth credentials HOST` | Prints the passwords berth generated for the host's accounts. `hosts.credentials` gives them to an admin of the server |
+| `berth host export HOST` | Prints a host's profile as JSON |
+| `berth host import HOST FILE` | Saves the profile in FILE as the host's, `-` for standard input |
+| `berth host credentials HOST` | Prints the passwords berth generated for the host's accounts. `hosts.credentials` gives them to an admin of the server |
 
-`berth store` says where the store is and whether its values are encrypted, and `berth store encrypt` seals them with a key file ([Encrypt it](/docs/use/store#encrypt-it)).
+`berth server store status` says where the store is and whether its values are encrypted, and `berth server store encrypt` seals them with a key file ([Encrypt it](/docs/use/store#encrypt-it)).
 
 ## Where it listens
 
@@ -140,8 +140,8 @@ The server's token is `admin`. The socket doesn't ask for a token and is `admin`
 `berth serve` can act as an OAuth 2.0 resource server. It then takes access tokens signed by an issuer you already run, such as Keycloak or Zitadel. berth doesn't keep users or sessions. The issuer decides who gets which role.
 
 ```bash title="On the server"
-berth config oauth_issuer https://id.example.com/realms/main
-berth config oauth_audience berth
+berth config set oauth_issuer https://id.example.com/realms/main
+berth config set oauth_audience berth
 ```
 
 | Setting | Meaning |
@@ -167,7 +167,7 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" https://berth.example.ts.net/v1/ac
 # {"role":"operate","setup":true,"subject":"ada"}
 ```
 
-An access token is used like the server's token. It works as a bearer and as the WebSocket protocol. berth takes it as `--token`, `BERTH_TOKEN` or `server_token`, and the screens when they ask for it.
+An access token is used like the server's token. It works as a bearer and as the WebSocket protocol. berth takes it with `--token-file` or `--token-stdin`, as `BERTH_TOKEN`, or kept by `berth login`, and the screens when they ask for it.
 
 The server says which issuer it trusts at `/.well-known/oauth-protected-resource`, without a token.
 
@@ -193,7 +193,7 @@ docker run -d -e BERTH_OAUTH_ISSUER=https://id.example.com/realms/main \
 By default an `admin` can set the server up over the network. To keep that on the server itself:
 
 ```bash title="On the server"
-berth config serve_setup off
+berth config set serve_setup off
 ```
 
 A caller over TCP is then `operate` at most, and the socket stays `admin`. Some things are refused from a caller of any role:
@@ -226,9 +226,9 @@ The image contains ansible-core, the OpenSSH client and Python, so it can also a
 ## The API documents
 
 ```bash
-berth operations    # every operation, for the portal and HTTP
-berth openapi       # OpenAPI 3 for the HTTP routes
-berth asyncapi      # AsyncAPI 3 for the streams
+berth server api operations    # every operation, for the portal and HTTP
+berth server api openapi       # OpenAPI 3 for the HTTP routes
+berth server api asyncapi      # AsyncAPI 3 for the streams
 ```
 
 The [API reference](/docs/api) is generated from them.

@@ -6,6 +6,8 @@
 //! them to the new version.
 
 use crate::Result;
+use crate::cli::args::Update;
+use crate::cli::out;
 use std::{fs, path::Path, process::Command};
 
 const REPOSITORY: &str = "https://github.com/helightdev/berth";
@@ -21,12 +23,16 @@ fn asset() -> Option<&'static str> {
     }
 }
 
-/// Where the releases are: GitHub's, or `BERTH_RELEASES` for a mirror.
-fn releases() -> String {
-    match std::env::var("BERTH_RELEASES") {
-        Ok(base) if !base.is_empty() => base.trim_end_matches('/').to_owned(),
-        _ => format!("{REPOSITORY}/releases"),
-    }
+/// The setting of this user's that names a mirror of the releases.
+pub const RELEASES: &str = "releases";
+
+/// Where the releases are: a mirror given with `--from` or kept as the
+/// `releases` setting, or else GitHub's.
+fn releases(from: Option<&str>) -> Option<String> {
+    from.map(str::to_owned)
+        .or_else(|| crate::cli::client::settings().get(RELEASES))
+        .filter(|base| !base.is_empty())
+        .map(|base| base.trim_end_matches('/').to_owned())
 }
 
 fn curl(args: &[&str]) -> Result<String> {
@@ -39,14 +45,14 @@ fn curl(args: &[&str]) -> Result<String> {
 }
 
 /// The newest release's version, from where `releases/latest` leads.
-fn latest() -> Result<String> {
-    let base = releases();
+fn latest(mirror: Option<&str>) -> Result<String> {
     // A mirror says it in a file; GitHub redirects to the tag.
-    if std::env::var_os("BERTH_RELEASES").is_some() {
+    if let Some(base) = mirror {
         return Ok(curl(&[&format!("{base}/latest/download/VERSION")])?
             .trim_start_matches('v')
             .to_owned());
     }
+    let base = format!("{REPOSITORY}/releases");
     let page = curl(&[
         "-o",
         "/dev/null",
@@ -76,13 +82,14 @@ pub(crate) fn newer(candidate: &str, current: &str) -> bool {
     parts(candidate) > parts(current)
 }
 
-/// `berth update [--check]`
-pub fn command(args: &[&str]) -> Result<()> {
-    let check = match args {
-        [] => false,
-        ["--check"] => true,
-        _ => return Err("Usage: berth update [--check]".into()),
-    };
+/// `berth update [--check] [--from URL]`
+pub fn command(update: &Update) -> crate::cli::fail::Result<()> {
+    Ok(install(update)?)
+}
+
+fn install(update: &Update) -> Result<()> {
+    let check = update.check;
+    let mirror = releases(update.from.as_deref());
     if cfg!(windows) {
         return Err("On Windows the new release is installed with install.ps1: irm https://raw.githubusercontent.com/helightdev/berth/main/install.ps1 | iex".into());
     }
@@ -93,13 +100,15 @@ pub fn command(args: &[&str]) -> Result<()> {
         .into());
     };
     let current = berth_api::VERSION;
-    let latest = latest()?;
+    let latest = latest(mirror.as_deref())?;
     if !newer(&latest, current) {
-        println!("berth {current} is the latest");
+        out::line(format!("berth {current} is the latest"));
         return Ok(());
     }
     if check {
-        println!("berth {latest} is out; this is {current}. Run berth update to install it.");
+        out::line(format!(
+            "berth {latest} is out; this is {current}. berth update installs it"
+        ));
         return Ok(());
     }
     let program = fs::canonicalize(std::env::current_exe()?)?;
@@ -109,7 +118,8 @@ pub fn command(args: &[&str]) -> Result<()> {
         .prefix(".berth-update")
         .tempdir_in(folder)
         .map_err(|error| format!("{}: {error}", folder.display()))?;
-    let url = format!("{}/download/v{latest}", releases());
+    let base = mirror.unwrap_or_else(|| format!("{REPOSITORY}/releases"));
+    let url = format!("{base}/download/v{latest}");
     let fetch = |name: &str| -> Result<()> {
         let to = work.path().join(name);
         curl(&["-o", &to.to_string_lossy(), &format!("{url}/{name}")]).map(|_| ())
@@ -137,9 +147,9 @@ pub fn command(args: &[&str]) -> Result<()> {
     checked.map_err(|_| "the download does not match its checksum; nothing was changed")?;
     run("tar", &["-xzf", asset, "berth"])?;
     replace(&work.path().join("berth"), &program)?;
-    println!("berth {current} → {latest}");
+    out::done(format!("berth {current} → {latest}"));
     if cfg!(target_os = "linux") {
-        println!("Hosts get the new berthd and box when their configuration is applied again.");
+        out::hint("Hosts get the new berthd and box when they are applied again: berth rollout");
     }
     Ok(())
 }

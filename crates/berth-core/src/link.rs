@@ -3,10 +3,7 @@
 //! connection whole, so each concurrent request or stream is its own process;
 //! idle ones are kept and used again.
 
-use crate::server::Server;
 use berth_api::client::{self, Client, Error, Frame, Response};
-use berth_api::ops::{self, Kind};
-use berth_api::portal::Portal;
 use futures_util::{Sink, Stream};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -29,8 +26,6 @@ pub struct LinkSpec {
     pub args: Vec<String>,
     /// Written before anything else: a sudo password.
     pub first_line: Option<String>,
-    /// Instead of a command: the host of this name behind a `berth serve`.
-    pub via: Option<(Server, String)>,
     /// Set in the command's environment, as ssh's askpass helper needs.
     pub env: Vec<(String, String)>,
     /// The host's name, for what is said when it fails.
@@ -102,8 +97,6 @@ pub type LinkStream = Pin<Box<dyn Duplex>>;
 
 pub struct Link {
     spec: LinkSpec,
-    /// The portal of the server the host is behind, once it is open.
-    portal: tokio::sync::Mutex<Option<Portal>>,
     idle: Mutex<Vec<Client>>,
     /// What the link commands last wrote to standard error.
     complaints: Arc<Mutex<String>>,
@@ -116,7 +109,6 @@ impl Link {
     pub fn new(spec: LinkSpec) -> Link {
         Link {
             spec,
-            portal: Default::default(),
             idle: Mutex::new(vec![]),
             complaints: Default::default(),
             worked: Default::default(),
@@ -209,7 +201,7 @@ impl Link {
         } else if let Some(changed) = crate::keys::known::changed_key(&self.spec.name, &said) {
             changed
         } else if said.contains("a password is required") {
-            format!("{said}: set BERTH_SUDO_PASSWORD")
+            format!("{said}: keep the sudo password with berth secret set sudo/HOST")
         } else {
             said
         })
@@ -231,9 +223,6 @@ impl Link {
         headers: &[(&str, &str)],
         body: &[u8],
     ) -> client::Result<Response> {
-        if let Some((server, host)) = &self.spec.via {
-            return self.send_via(server, host, method, path, body).await;
-        }
         let kept = self.idle.lock().unwrap().pop().filter(Client::usable);
         let mut attempt = kept.is_some();
         let mut client = match kept {
@@ -297,37 +286,14 @@ impl Link {
     }
 
     /// Run an action of the host, as `actions.run` takes it, and the session it
-    /// runs as. Through a berth server it is the host's action there, which
-    /// the server keeps a job of and gives the server's secrets to.
+    /// runs as.
     pub async fn run_action(&self, name: &str, body: &Value) -> client::Result<berth_api::Session> {
-        let Some((server, host)) = &self.spec.via else {
-            let path = format!("/v1/actions/{}", client::encode(name));
-            return self.post(&path, body).await;
-        };
-        let portal = self.portal(server).await?;
-        let args = serde_json::json!({"name": host, "action": name});
-        let acted = portal
-            .call("hosts.act", None, args, Some(body.clone()))
-            .await?;
-        serde_json::from_value(acted["session"].clone()).map_err(|_| {
-            Error::Transport(format!(
-                "{name} on {host} is not an action of its controller: run it with berth run {host} {name}"
-            ))
-        })
+        let path = format!("/v1/actions/{}", client::encode(name));
+        self.post(&path, body).await
     }
 
     /// Open a stream. It holds its connection for as long as it lives.
     pub async fn stream(&self, path: &str) -> client::Result<LinkStream> {
-        if let Some((server, host)) = &self.spec.via {
-            let (path, query) = path.split_once('?').unwrap_or((path, ""));
-            let (op, mut args) = recognised(Kind::Stream, "GET", path)?;
-            args.extend(parameters(query));
-            let portal = self.portal(server).await?;
-            let stream = portal
-                .open(op.name, Some(host), Value::Object(args))
-                .await?;
-            return Ok(Box::pin(stream));
-        }
         let conn = self.connect().await?;
         match client::websocket(conn, path, "").await {
             Ok(stream) => {
@@ -336,56 +302,6 @@ impl Link {
             }
             Err(error) => Err(self.explain(error).await),
         }
-    }
-
-    /// The server's portal: the one that is open, or a new one.
-    async fn portal(&self, server: &Server) -> client::Result<Portal> {
-        let mut portal = self.portal.lock().await;
-        match portal.as_ref().filter(|portal| portal.usable()) {
-            Some(portal) => Ok(portal.clone()),
-            None => {
-                let opened = server.portal().await?;
-                *portal = Some(opened.clone());
-                Ok(opened)
-            }
-        }
-    }
-
-    /// A request as the operation it is, through the server's portal.
-    async fn send_via(
-        &self,
-        server: &Server,
-        host: &str,
-        method: &str,
-        path: &str,
-        body: &[u8],
-    ) -> client::Result<Response> {
-        let (path, query) = path.split_once('?').unwrap_or((path, ""));
-        let (op, mut args) = recognised(Kind::Call, method, path)?;
-        args.extend(parameters(query));
-        let data = match (body.is_empty(), op.body) {
-            (true, _) => None,
-            (false, ops::Body::Bytes) => Some(serde_json::json!({"base64": berth_api::b64(body)})),
-            (false, ops::Body::Json) => Some(
-                serde_json::from_slice(body)
-                    .map_err(|error| Error::Transport(error.to_string()))?,
-            ),
-        };
-        let portal = self.portal(server).await?;
-        let result = portal
-            .call(op.name, Some(host), Value::Object(args), data)
-            .await?;
-        // Bytes come back wrapped; everything else is the JSON the request answers with.
-        let body = match result["base64"].as_str().and_then(berth_api::unb64) {
-            Some(bytes) if result.get("content_type").is_some() => bytes,
-            _ if result.is_null() => vec![],
-            _ => result.to_string().into_bytes(),
-        };
-        Ok(Response {
-            status: 200,
-            headers: Default::default(),
-            body: body.into(),
-        })
     }
 
     /// Whether the failure means the host has no berthd to talk to yet.
@@ -398,33 +314,6 @@ impl Link {
             .iter()
             .any(|sign| message.contains(sign))
     }
-}
-
-type Arguments = serde_json::Map<String, Value>;
-
-fn recognised(
-    kind: Kind,
-    method: &str,
-    path: &str,
-) -> client::Result<(&'static ops::Op, Arguments)> {
-    let (op, found) = ops::recognise(ops::HOST, kind, method, path)
-        .ok_or_else(|| Error::Transport(format!("{method} {path} is no operation of a host")))?;
-    let args = found
-        .into_iter()
-        .map(|(name, value)| (name.to_owned(), Value::String(value)));
-    Ok((op, args.collect()))
-}
-
-/// The parameters of a query string.
-fn parameters(query: &str) -> Arguments {
-    query
-        .split('&')
-        .filter(|pair| !pair.is_empty())
-        .map(|pair| {
-            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
-            (client::decode(name), Value::String(client::decode(value)))
-        })
-        .collect()
 }
 
 /// A runtime for a program that is not asynchronous itself.

@@ -138,6 +138,11 @@ pub(super) static INSTALLATION: &[Builtin] = &[
         describe: rotate_key_action,
         run: rotate_key,
     },
+    Builtin {
+        name: "adopt",
+        describe: adopt_action,
+        run: adopt,
+    },
 ];
 
 fn unavailable(mut action: Action, why: Option<String>) -> Action {
@@ -340,7 +345,11 @@ pub async fn host_act(
         ),
     };
     let secrets = secret_names(&state);
-    let observed = observed(&remote).await;
+    // Only installing the controller asks what the host is, which takes a login there.
+    let observed = match action.as_str() {
+        "install-controller" => observed(&remote).await,
+        _ => None,
+    };
     let actions = host_list(&Seen {
         name: &name,
         profile: &profile,
@@ -439,6 +448,16 @@ impl Controller for Through {
             .block_on(link.get::<Value>(path))
             .map_err(|error| error.to_string())
     }
+
+    fn stop(&mut self, id: &str) -> Result<(), String> {
+        let link = self.remote.link.as_ref().ok_or("no link to the host")?;
+        // TERM, so the session ends as it would and its transcript stays.
+        let path = format!("/v1/sessions/{}/signal", client::encode(id));
+        self.runtime
+            .block_on(link.post::<Value>(&path, &json!({"signal": "TERM"})))
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
 }
 
 /// Run an action of the host as a session there, with `input` on its standard
@@ -473,6 +492,7 @@ async fn run_action(
     }
     let mut request = Request::new(Subject::Host(remote.name.clone()), &action.name);
     request.token = act.token;
+    request.role = action.role;
     // An action is the host's own session, and runs beside the others there.
     request.changes = false;
     // The job is written first, so that of the callers with one token only
@@ -683,7 +703,9 @@ fn seed(state: Arc<Serve>, name: String, _: Act) -> Run {
 /// Why an action that works with this machine's own drives and files is
 /// not offered to a caller elsewhere.
 fn only_here(what: &str) -> String {
-    format!("{what} is done on the machine berth serve runs on: there, with berth ui or berth iso")
+    format!(
+        "{what} is done on the machine berth serve runs on: there, with berth ui or berth host iso"
+    )
 }
 
 fn installer_action(seen: &Seen) -> Action {
@@ -1011,6 +1033,12 @@ fn rollout_action(_: &Seen) -> Action {
                 help: "Host names, separated by commas, in the order to take them. All saved hosts when empty.".into(),
                 ..Argument::default()
             },
+            Argument {
+                name: "except".into(),
+                label: "Leave out".into(),
+                help: "Host names, separated by commas, that the roll-out leaves alone.".into(),
+                ..Argument::default()
+            },
             flag("all", "Also current hosts", "Apply the hosts that are current too."),
             flag("update", "Update", "Run each host's update action after applying."),
             flag("reboot", "Reboot", "Reboot a host that says it needs it, and wait for it to come back."),
@@ -1026,8 +1054,15 @@ fn rollout(state: Arc<Serve>, _: String, act: Act) -> Run {
         let options = Rollout::from_arguments(&act.arguments)
             .map_err(|error| Fail::new(code::BAD_REQUEST, error))?;
         let known: Vec<String> = state.hosts.read().unwrap().keys().cloned().collect();
-        let names = rollout::chosen(known, &options.hosts)
+        if let Some(unknown) = options.except.iter().find(|name| !known.contains(name)) {
+            return Err(Fail::new(
+                code::NOT_FOUND,
+                format!("No host {unknown} to leave out"),
+            ));
+        }
+        let mut names = rollout::chosen(known, &options.hosts)
             .map_err(|error| Fail::new(code::NOT_FOUND, error.to_string()))?;
+        names.retain(|name| !options.except.contains(name));
         let passwords: Vec<Option<String>> = names
             .iter()
             .map(|name| state.host(name).and_then(|remote| remote.password.clone()))
@@ -1165,7 +1200,10 @@ fn trust_key(state: Arc<Serve>, name: String, act: Act) -> Run {
                 let store = berth_core::store::shared(&state.paths).map_err(internal)?;
                 let halves = ring::read(&store, key, false).map_err(internal)?;
                 let halves = halves.ok_or_else(|| {
-                    Fail::new(code::NOT_FOUND, format!("No key {key}. See: berth key"))
+                    Fail::new(
+                        code::NOT_FOUND,
+                        format!("No key {key}. See: berth key list"),
+                    )
                 })?;
                 Some(Once::Key(halves))
             }
@@ -1345,6 +1383,205 @@ fn rotate_key(state: Arc<Serve>, _: String, act: Act) -> Run {
             .unwrap_or(berth_api::profile::BERTH_KEY)
             .to_owned();
         super::keys::start_rotation(&state, name, act.token)
+    })
+}
+
+// ── Adopting a host ─────────────────────────────────────────────────────────
+
+fn adopt_action(_: &Seen) -> Action {
+    let text = |name: &str, label: &str, help: &str| Argument {
+        name: name.into(),
+        label: label.into(),
+        help: help.into(),
+        ..Argument::default()
+    };
+    Action {
+        name: "adopt".into(),
+        label: "Adopt a host".into(),
+        help: "Take in a host another berth set up, from the profile it keeps, read over SSH with sudo so that it works while berthd is down. Without an address it is the saved host of that name, reached as its profile says. It runs as a job.".into(),
+        group: "Hosts".into(),
+        role: Role::Admin,
+        arguments: vec![
+            Argument {
+                required: true,
+                ..text("name", "Name", "The host's name here.")
+            },
+            text("address", "Address", "[USER@]ADDRESS to read the profile at; empty for the saved host of that name."),
+            text("port", "Port", "The SSH port, with an address."),
+            text("key", "Key file", "A private key file where the server runs, offered as well for reading the profile only."),
+            flag("force", "Replace", "Replace a host of that name, or a saved workstation's profile."),
+        ],
+        ..Action::default()
+    }
+}
+
+/// What adopting a host is to log in to, and where its profile goes.
+fn adopt_reach(
+    paths: &berth_core::paths::Paths,
+    name: &str,
+    act: &Act,
+) -> Result<(Place, berth_core::kept_profile::Reach), String> {
+    use berth_core::kept_profile as kept;
+    let force = act
+        .arguments
+        .get("force")
+        .is_some_and(|value| value == "yes" || value == "true");
+    let address = given(act, "address").unwrap_or("");
+    let port = given(act, "port").unwrap_or("");
+    let key = given(act, "key");
+    let place = Place::own(name).map_err(|error| error.to_string())?;
+    let saved = place.load(paths).map_err(|error| error.to_string())?;
+    let reach = match (&saved, address) {
+        (None, "") => {
+            return Err(format!(
+                "There is no host {name} to adopt by its own address. Say where it is: berth host adopt {name} [USER@]ADDRESS"
+            ));
+        }
+        // A host saved below a workstation says less than the host keeps;
+        // adopting it by its own address is what replacing it means.
+        (Some(profile), "") => {
+            if host_type::of(profile) == HostType::Workstation && !force {
+                return Err(format!(
+                    "{name} is saved as a workstation already. Replace its profile with the one it keeps with --force"
+                ));
+            }
+            let access = profile::Access::of(profile);
+            if access.link.is_some() || access.address.is_empty() {
+                return Err(format!(
+                    "{name} has no SSH address to read its profile at: berth host adopt {name} [USER@]ADDRESS"
+                ));
+            }
+            let given = kept::Reach::parse(&access.address, &access.port, key)
+                .map_err(|error| error.to_string())?;
+            kept::Reach {
+                key: given.key,
+                ..kept::Reach::of(&access)
+            }
+        }
+        (Some(_), _) if !force => {
+            return Err(format!(
+                "There is a host {name} already. Choose another name, or replace it with --force"
+            ));
+        }
+        (_, address) => {
+            kept::Reach::parse(address, port, key).map_err(|error| error.to_string())?
+        }
+    };
+    Ok((place, reach))
+}
+
+fn adopt(state: Arc<Serve>, _: String, act: Act) -> Run {
+    Box::pin(async move {
+        use berth_core::kept_profile as kept;
+        let name = given(&act, "name").unwrap_or_default().to_owned();
+        let (place, reach) = adopt_reach(&state.paths, &name, &act)
+            .map_err(|error| Fail::new(code::BAD_REQUEST, error))?;
+        let mut request = Request::new(Subject::Host(name.clone()), "adopt");
+        request.token = act.token.clone();
+        request.secrets = act.sudo_password.iter().cloned().collect();
+        let (serve, sudo) = (state.clone(), act.sudo_password.clone());
+        let work = Work::Function(Box::new(move |out| {
+            let paths = &serve.paths;
+            let target = reach.target();
+            let password = || -> berth_core::Result<String> {
+                sudo.clone().ok_or_else(|| {
+                    format!(
+                        "sudo asks for a password on {target}: give it with --sudo-password-stdin"
+                    )
+                    .into()
+                })
+            };
+            let adopted = kept::read(paths, &place, &reach, &password).and_then(|read| {
+                let access = profile::Access {
+                    address: reach.address.clone(),
+                    user: reach.user.clone(),
+                    port: reach.port.clone(),
+                    auth: read.auth.clone(),
+                    // The operator's sudo takes none; another account's may.
+                    sudo: read.sudo_asked.then_some(true),
+                    ..profile::Access::default()
+                };
+                let adopted = kept::adopted(paths, &place.title(), &read.kept, &access)?;
+                kept::save(paths, &place, &adopted)?;
+                Ok((read, adopted))
+            });
+            let (read, adopted) = match adopted {
+                Ok(done) => done,
+                Err(error) => {
+                    let _ = writeln!(out, "✗ {error}");
+                    return false;
+                }
+            };
+            serve.forget(&name);
+            serve.refresh(false);
+            let written = match (adopted.berth.as_str(), adopted.written.as_str()) {
+                ("", _) => String::new(),
+                (berth, "") => format!(" by berth {berth}"),
+                (berth, when) => format!(" by berth {berth} at {when}"),
+            };
+            let was = match adopted.host.as_str() {
+                old if old.is_empty() || old == name => String::new(),
+                old => format!(", where it was {old}"),
+            };
+            let _ = writeln!(
+                out,
+                "✓ Adopted {name} from {target}: its profile was written{written}{was}"
+            );
+            let store = Store::own(serve.store.clone());
+            let known = store.secret_names();
+            let mut left = vec![];
+            for secret in adopted.secrets() {
+                if !known.contains(&secret) {
+                    left.push(format!(
+                        "the value of secret {secret}: berth secret set {secret}"
+                    ));
+                }
+            }
+            let registries = store.registries().unwrap_or_default();
+            for registry in adopted.registries() {
+                if !registries.contains_key(&registry) {
+                    left.push(format!(
+                        "registry {registry}, with its login: berth registry add {registry} …"
+                    ));
+                }
+            }
+            if profile::joins_tailnet(&adopted.profile)
+                && !known.iter().any(|known| known == profile::TAILNET_API_KEY)
+            {
+                left.push(format!(
+                    "secret {}, which a host that has left the tailnet needs to join again",
+                    profile::TAILNET_API_KEY
+                ));
+            }
+            if !left.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "What did not come with it, and this berth has not got:"
+                );
+                for line in &left {
+                    let _ = writeln!(out, "  {line}");
+                }
+            }
+            let way = match read.auth {
+                Auth::Berth => "with this berth's key".to_owned(),
+                _ => "with the SSH configuration and agent of the server's account, until an apply has given the operator this berth's key".to_owned(),
+            };
+            let _ = writeln!(out, "berth logs in to it {way}.");
+            let _ = writeln!(
+                out,
+                "Next: berth apply {name}. It gives this berth's own key a block of its own in the operator's authorized_keys."
+            );
+            let _ = writeln!(
+                out,
+                "The berth that set the host up still has access: its key keeps its BERTH block until you delete that block by hand."
+            );
+            true
+        }));
+        let job = state.runner.start(request, work).map_err(refused)?;
+        Ok(Acted {
+            job: Some(job_info(&state.paths, job)),
+            ..Acted::default()
+        })
     })
 }
 
