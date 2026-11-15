@@ -53,9 +53,10 @@ The token comes from a [setup key](/docs/use/server#with-a-setup-key), from `--t
 | Bring every host that is behind up to date | `berth rollout` ([Updates](/docs/use/updates#bringing-hosts-up-to-date)) |
 | Rename a host | `berth host rename studio attic` ([Renaming a host](/docs/use/moving#renaming-a-host)) |
 | Take over a host from the profile it keeps | `berth host adopt studio 192.0.2.40` ([Moving a host](/docs/use/moving)) |
-| Start or stop the host's machine | `berth host start studio`, `berth host stop studio` |
+| Start or stop a host | `berth host start studio`, `berth host stop studio` ([Starting and stopping](/docs/use/lifecycle#starting-and-stopping)) |
+| Save a copy of a host under another name | `berth host duplicate studio attic` ([Duplicating a host](/docs/use/lifecycle#duplicating-a-host)) |
 | Forget a host | `berth host remove studio` |
-| Forget it and delete its machine | `berth host remove studio --destroy` |
+| Forget it and destroy the machine its provisioner made | `berth host remove studio --destroy` |
 
 `berth host create` asks what it needs to know when you're at a terminal. These are the questions of the set-up tabs of the screens, and the same rules check the answers. Each question has a flag. A script gives the answers with them:
 

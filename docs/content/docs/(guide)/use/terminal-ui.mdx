@@ -31,7 +31,7 @@ The home screen has six tabs, switched with the number keys, or with Tab and Shi
 
 | Tab | Holds |
 | --- | --- |
-| `1` Hosts | The server's hosts and their addresses, with a dot for whether each answered and why not. A host that still takes the old key of a [key rotation](/docs/use/accounts#rekeying) is marked `key rotation pending`. `n` creates one, `d` makes the selected one the default, `x` twice removes one, `r` asks again |
+| `1` Hosts | The server's hosts and their addresses, with a dot for whether each answered and why not. A host that still takes the old key of a [key rotation](/docs/use/accounts#rekeying) is marked `key rotation pending`. A host that is off shows `◌ stopped`. `n` creates one and `s` starts the selected one. `d` makes it the default. `x` removes it after asking whether to destroy its machine too ([Start, stop, copy and remove](/docs/use/lifecycle)). `r` asks again |
 | `2` Provisioners | The provisioners of the plugins, and whether each can be used. Enter opens the page of one, with how it is and what berth made with it, grouped by kind. Enter on one of its actions runs it. Enter on something it made opens that [resource's page](/docs/deploy/resources#in-the-terminal-ui), with its state, its actions and its log. Esc goes back a page ([Provisioners](/docs/deploy/provisioners#a-provisioners-page)) |
 | `3` Settings | The settings of `berth config list` and the SSH keys of the server's key ring to copy. Over the network, only some settings change there; on the server's own machine, every one |
 | `4` Registries | npm, Docker, file and Nexus registries ([Registries](/docs/use/registries)) |

@@ -181,9 +181,9 @@ A host's machine is a resource of the kind `machine`. These short forms go by th
 | `berth host create HOST --provisioner PROVISIONER [NAME=VALUE…]` | Making the machine and setting it up as the host |
 | `berth resource show HOST` | `berth resource show ID` |
 | `berth host start HOST`, `berth host stop HOST` | `berth resource run ID start`, `berth resource run ID stop` |
-| `berth host remove HOST --destroy` | `berth resource remove ID`, and then `berth host remove HOST` |
+| `berth host remove HOST --destroy` | `berth resource remove ID`, and then forgetting the host |
 
-`berth host remove HOST` is refused while the host has a machine berth made. Its message gives the command that deletes the machine.
+`berth host remove HOST` without `--destroy` forgets the host and keeps its machine's record as a resource with no host. A duplicate's machine is `planned` until it's made: its record keeps the provisioner and the arguments to make it with ([Duplicating a host](/docs/use/lifecycle#duplicating-a-host)).
 
 ## Records, tokens and locks
 

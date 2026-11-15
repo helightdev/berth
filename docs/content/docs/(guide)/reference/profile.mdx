@@ -132,6 +132,27 @@ An `ssh` or `managed` host needs only its type and `access`. A node also takes `
 }
 ```
 
+## Power (`power`)
+
+How berth stops a host that no provisioner made. A host a provisioner made is started and stopped through it, when its machines have the verbs `start` and `stop`. See [Starting and stopping](/docs/use/lifecycle#starting-and-stopping).
+
+<TypeTable
+  type={{
+    'stop.by': { type: '"controller"', description: 'The host\'s controller shuts the machine down. berth host set HOST power_stop=controller sets it, and power_stop=none removes it.' },
+    'start.by': { type: 'none yet', description: 'No way is supported yet: a host that is off has no controller to ask. A profile that names one is refused.' },
+  }}
+/>
+
+```json title="dock's profile"
+{
+  "type": "managed",
+  "access": { "address": "192.0.2.4", "user": "ops" },
+  "power": { "stop": { "by": "controller" } }
+}
+```
+
+Each of `stop` and `start` is an object, so that a way can take settings of its own beside `by`.
+
 ## Access (`access`)
 
 Where the host is and how berth logs in to it. Every host has it. See [Logging in to hosts](/docs/use/accounts#logging-in-to-hosts).
@@ -196,6 +217,6 @@ berth keeps more of a host in its store, beside the profile:
 | Generated passwords | The passwords F4 made for the host's accounts | `berth host credentials HOST` |
 | The machine's record | The [resource](/docs/deploy/resources) of a machine berth created for the host, with its provisioner and id | `berth host show HOST` |
 
-`berth host credentials` prints an account and its password to a line, and only to a terminal unless `--show` is given. For a berth server's host it asks the server, which keeps them. `berth host remove HOST` forgets the profile and both of these at once. It refuses while berth knows of a machine it created for the host.
+`berth host credentials` prints an account and its password to a line, and only to a terminal unless `--show` is given. For a berth server's host it asks the server, which keeps them. `berth host remove HOST` forgets the profile and both of these at once. A machine berth created for the host is left as it is, and its record stays as a resource with no host, unless `--destroy` destroys the machine too ([Removing a host](/docs/use/lifecycle#removing-a-host)). `berth host duplicate` copies neither to the new host.
 
 Secrets and registries a host gets are listed in the profile by name (`secrets`, `registries`). Their values stay in berth's store.
