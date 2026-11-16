@@ -17,6 +17,8 @@ pub use berth_api::compat::NEEDS_HOST_API as NEEDS_API;
 const POLL: Duration = Duration::from_secs(10);
 /// Lines of a process session's transcript kept for scrolling back.
 const HISTORY: usize = 5000;
+/// How long a terminal ended from its panel has after the hangup before it is killed.
+const END_PATIENCE: Duration = Duration::from_secs(5);
 
 /// The way to one host. Requests are answered later, as events.
 pub trait Transport {
@@ -49,6 +51,8 @@ pub enum Request {
         action: String,
         argument: String,
     },
+    /// Send a session a signal: `INT`, `TERM`, `HUP` or `KILL`.
+    Signal(String, &'static str),
 }
 
 pub enum Event {
@@ -78,6 +82,18 @@ pub enum Event {
     Error(String),
 }
 
+/// How far ending a terminal from its panel has got.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Ending {
+    No,
+    /// The panel asks whether to end it.
+    Asked,
+    /// It was sent a hangup, as closing a terminal window does, at that time.
+    HungUp(Instant),
+    /// It outlived the hangup and was killed.
+    Killed,
+}
+
 /// A session of the host shown in the terminal panel.
 pub struct View {
     pub id: String,
@@ -90,6 +106,7 @@ pub struct View {
     pub ours: bool,
     /// A shell: its panel closes by itself when it is left.
     pub shell: bool,
+    pub ending: Ending,
     /// The last bytes of output, for a question that arrives in two pieces.
     tail: Vec<u8>,
 }
@@ -105,6 +122,7 @@ impl View {
             ended: None,
             ours,
             shell,
+            ending: Ending::No,
             tail: vec![],
         }
     }
@@ -120,6 +138,7 @@ impl View {
             ended: None,
             ours: true,
             shell: false,
+            ending: Ending::No,
             tail: vec![],
         }
     }
@@ -460,6 +479,21 @@ impl HostView {
         }
     }
 
+    /// End the terminal in the panel: a hangup now, and a kill if it is
+    /// still running after [`END_PATIENCE`]. Its panel closes once it has ended.
+    pub fn end(&mut self) {
+        let Some(view) = self
+            .view
+            .as_mut()
+            .filter(|view| view.terminal && view.running())
+        else {
+            return;
+        };
+        view.ending = Ending::HungUp(Instant::now());
+        let id = view.id.clone();
+        self.send(Request::Signal(id, "HUP"));
+    }
+
     /// Type into the session in the panel.
     pub fn input(&self, bytes: Vec<u8>) {
         if !bytes.is_empty() && self.view.as_ref().is_some_and(View::running) {
@@ -561,6 +595,22 @@ impl HostView {
                     self.starting = None;
                     note = Some(message);
                 }
+            }
+        }
+        if let Some(view) = self.view.as_mut() {
+            match view.ending {
+                Ending::HungUp(when) if view.running() && when.elapsed() >= END_PATIENCE => {
+                    view.ending = Ending::Killed;
+                    let id = view.id.clone();
+                    self.send(Request::Signal(id, "KILL"));
+                }
+                // Ended from its panel: there is nothing left to look at.
+                Ending::HungUp(_) | Ending::Killed if !view.running() => {
+                    let (ours, title) = (view.ours, view.title.clone());
+                    self.close(ours);
+                    note = Some(format!("{title} ended"));
+                }
+                _ => {}
             }
         }
         if self.view.is_none()

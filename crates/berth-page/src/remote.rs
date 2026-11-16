@@ -245,6 +245,16 @@ impl Transport for Remote {
                     },
                 );
             }
+            Request::Signal(id, signal) => self.call(
+                "sessions.signal",
+                json!({"id": id}),
+                json!({"signal": signal}),
+                |result, events| {
+                    if let Err(error) = result {
+                        events.borrow_mut().push_back(Event::Error(error));
+                    }
+                },
+            ),
             Request::Choices { action, argument } => {
                 let args = json!({"action": action, "argument": argument});
                 self.call(

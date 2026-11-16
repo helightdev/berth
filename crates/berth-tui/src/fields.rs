@@ -59,7 +59,7 @@ pub const OFFERS: &[(&str, &str, &str)] = &[
     (
         "terminal",
         "Terminal",
-        "A shell on the host, in a panel here. Space switches between the agent account, with its tools on the PATH and the virtual desktop as its display, and the SSH user. It is a session of the host: Ctrl+Q leaves it running and it can be opened again from Sessions; exit or Ctrl+D ends it. The mouse wheel scrolls back. From the command line: `berth session attach HOST`.",
+        "A shell on the host, in a panel here. Space switches between the agent account, with its tools on the PATH and the virtual desktop as its display, and the SSH user. It is a session of the host: Ctrl+Q leaves it running and it can be opened again from Sessions; exit, Ctrl+D or Alt+X ends it. The mouse wheel scrolls back. From the command line: `berth session attach HOST`.",
     ),
     (
         "apply",
