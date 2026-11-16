@@ -3,7 +3,7 @@
 
 use crate::{
     event::{Click, Code, Event, Key, edit, paste},
-    host::{Arguments, HostView, View, argument_label},
+    host::{Arguments, Ending, HostView, View, argument_label},
     theme,
 };
 use ratatui::{
@@ -355,13 +355,15 @@ pub fn words(line: &str) -> Vec<(u16, String)> {
 }
 
 /// Draw a session of the host: the same panel, with what leaving it means
-/// there. Ctrl+Q leaves a running one.
+/// there. Ctrl+Q leaves a running one, and Alt+X ends a running terminal.
 pub fn draw_view(frame: &mut Frame, view: &View, note: &str) -> (Spots, Spots) {
-    let running = match view.terminal {
-        true => {
-            " Ctrl+V paste · Ctrl+Q leave it running · Click opens a link · Right-click copies · Wheel scrolls "
+    let running = match (view.terminal, view.ending) {
+        (true, Ending::No) => {
+            " Ctrl+Q leave it running · Alt+X end it · Ctrl+V paste · Click opens a link · Right-click copies · Wheel scrolls "
         }
-        false => {
+        (true, Ending::Asked) => " End the session? It stops whatever runs in it · y yes · n no ",
+        (true, _) => " Ending the session… · Ctrl+Q leave it running ",
+        (false, _) => {
             " Ctrl+Q leave it running · Click opens a link · Right-click copies · Wheel scrolls "
         }
     };
@@ -716,6 +718,20 @@ pub fn view_event(
                 });
             } else if !view.terminal {
                 // A transcript takes no typing.
+            } else if view.ending == Ending::Asked {
+                // While it asks, keys answer it and do not reach the shell.
+                match key.code {
+                    Code::Char('y' | 'Y') => {
+                        host.end();
+                        return Some("Ending the session".into());
+                    }
+                    Code::Char('n' | 'N') | Code::Esc => view.ending = Ending::No,
+                    _ => {}
+                }
+            } else if view.ending != Ending::No {
+                // It is being ended; typing would go nowhere useful.
+            } else if key.alt && !key.ctrl && matches!(key.code, Code::Char('x' | 'X')) {
+                view.ending = Ending::Asked;
             } else if key.is_ctrl('v') {
                 // Terminals that keep Ctrl+V to themselves paste by their own means.
                 return Some(match platform.paste() {
@@ -793,7 +809,120 @@ pub fn action_arguments_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::{Event as HostEvent, Request, Transport};
     use ratatui::{Terminal, backend::TestBackend};
+    use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+
+    /// A host that keeps what it was asked and answers what it is given.
+    #[derive(Clone, Default)]
+    struct Recorder {
+        asked: Rc<RefCell<Vec<String>>>,
+        answers: Rc<RefCell<VecDeque<HostEvent>>>,
+    }
+
+    impl Transport for Recorder {
+        fn send(&self, request: Request) {
+            let said = match request {
+                Request::Signal(id, signal) => format!("signal {id} {signal}"),
+                Request::Input(bytes) => format!("input {}", String::from_utf8_lossy(&bytes)),
+                Request::Delete(id) => format!("delete {id}"),
+                Request::Close => "close".into(),
+                _ => return,
+            };
+            self.asked.borrow_mut().push(said);
+        }
+        fn next(&self) -> Option<HostEvent> {
+            self.answers.borrow_mut().pop_front()
+        }
+    }
+
+    struct Nowhere;
+
+    impl Platform for Nowhere {
+        fn copy(&mut self, _: &str) -> bool {
+            false
+        }
+        fn paste(&mut self) -> Option<String> {
+            None
+        }
+        fn open(&mut self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_terminal_is_ended_from_its_panel_after_a_yes() {
+        let recorder = Recorder::default();
+        let mut host = HostView::default();
+        host.connect(Box::new(recorder.clone()));
+        let session: berth_api::Session = serde_json::from_value(serde_json::json!({
+            "id": "s1", "kind": "terminal", "title": "agent on studio", "command": ["bash"],
+            "user": "agent", "started_by": {"level": "agent", "uid": 1000},
+            "started": "2026-01-01T00:00:00Z",
+        }))
+        .unwrap();
+        host.view = Some(View::new(&session, 10, 100, true, true));
+        let press = |host: &mut HostView, key: Key| {
+            view_event(host, &vec![], &vec![], &Event::Key(key), &mut Nowhere)
+        };
+        let alt_x = Key {
+            alt: true,
+            ..Key::plain(Code::Char('x'))
+        };
+        // The footer offers it, and a click on the hint is the key.
+        let mut terminal = Terminal::new(TestBackend::new(110, 14)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_view(frame, host.view.as_ref().unwrap(), "");
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let footer: String = (0..14)
+            .map(|y| {
+                (0..110)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .find(|row| row.contains("Ctrl+Q"))
+            .unwrap_or_default();
+        assert!(footer.contains("Alt+X end it"), "{footer}");
+        assert_eq!(hint_key("Alt+X"), Some(alt_x));
+
+        // It asks first, and while it asks no key reaches the shell; no leaves it running.
+        press(&mut host, alt_x);
+        assert_eq!(host.view.as_ref().unwrap().ending, Ending::Asked);
+        press(&mut host, Key::plain(Code::Char('a')));
+        press(&mut host, Key::plain(Code::Char('n')));
+        assert_eq!(host.view.as_ref().unwrap().ending, Ending::No);
+        assert!(recorder.asked.borrow().is_empty());
+
+        // Yes hangs it up, and one still running after the patience is killed.
+        press(&mut host, alt_x);
+        press(&mut host, Key::plain(Code::Char('y')));
+        assert_eq!(*recorder.asked.borrow(), ["signal s1 HUP"]);
+        host.pump();
+        assert_eq!(recorder.asked.borrow().len(), 1);
+        host.view.as_mut().unwrap().ending =
+            Ending::HungUp(std::time::Instant::now() - std::time::Duration::from_secs(6));
+        host.pump();
+        assert_eq!(
+            *recorder.asked.borrow(),
+            ["signal s1 HUP", "signal s1 KILL"]
+        );
+
+        // Once it has ended its panel closes, and a session started from the panel is forgotten.
+        recorder
+            .answers
+            .borrow_mut()
+            .push_back(HostEvent::Exited("s1".into(), None));
+        let note = host.pump();
+        assert!(host.view.is_none());
+        assert_eq!(note.as_deref(), Some("agent on studio ended"));
+        assert_eq!(
+            *recorder.asked.borrow(),
+            ["signal s1 HUP", "signal s1 KILL", "close", "delete s1"]
+        );
+    }
 
     fn screen(width: u16, height: u16, status: &str) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
